@@ -19,6 +19,7 @@ services:
     # args ref: https://github.com/actions/runner/blob/68ff57dbc4c836d50f46602a8a53301fb9513eb4/src/Runner.Listener/CommandSettings.cs#L53
     entrypoint: >
       sh -c "
-      ./config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) &&
-      ./run.sh
+      cd /data/miles_ci
+      /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) &&
+      /home/runner/run.sh
       "
