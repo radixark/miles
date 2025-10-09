@@ -1,7 +1,11 @@
 import command_utils
 
 
-def main():
+def prepare():
+    TODO
+
+
+def execute():
     TODO
 
 
