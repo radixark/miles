@@ -15,6 +15,7 @@ def convert_checkpoint(model_name, model_type):
 def ray_start_and_submit(
     train_args: str,
     num_gpus: int,
+    model_type: str,
     master_addr: str = "127.0.0.1",
 ):
     exec_command(f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus} --disable-usage-stats")
@@ -30,9 +31,11 @@ def ray_start_and_submit(
 
     exec_command(
         # TODO should this 127.0.0.1 be `master_addr` instead
+        f'source "{script_dir}/../scripts/models/{model_type}.sh" && '
         f'ray job submit --address="http://127.0.0.1:8265" '
         f'--runtime-env-json="{runtime_env_json}"'
         '-- python3 train.py '
+        "${MODEL_ARGS[@]} "
         f'{train_args}'
     )
 
