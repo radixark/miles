@@ -54,7 +54,7 @@ def execute_train(
             "env_vars": {
                 "PYTHONPATH": "/root/Megatron-LM/",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NCCL_NVLS_ENABLE": check_has_nvlink(),
+                "NCCL_NVLS_ENABLE": "true" if check_has_nvlink() else "false",
                 "no_proxy": f"127.0.0.1,{master_addr}",
             }
         }
