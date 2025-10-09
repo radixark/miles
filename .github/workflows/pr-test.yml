@@ -15,7 +15,7 @@ jobs:
   e2e-test:
     # TODO may use run-ci label etc
     if: github.event.pull_request.draft == false
-    runs-on: ${{ matrix.info.runs_on }}
+    runs-on: self-hosted
     container:
       image: slimerl/slime:latest
       options: >
@@ -32,8 +32,8 @@ jobs:
       fail-fast: false
       matrix:
         info:
-          - {test_file: test_quick_start_glm4_9B.py, runs_on: 8-h100-runner}
-          - {test_file: test_qwen3_30B_A3B.py, runs_on: 8-h100-runner}
+          - {test_file: test_quick_start_glm4_9B.py}
+          - {test_file: test_qwen3_30B_A3B.py}
           # TODO use deterministic kernel
     defaults:
       run:
