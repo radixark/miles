@@ -68,6 +68,10 @@ def check_has_nvlink():
     return int(output) > 0
 
 
+def get_default_wandb_args():
+    return TODO
+
+
 def exec_command(cmd: str, capture_output: bool = False):
     print(f"EXEC: {cmd}", flush=True)
     result = subprocess.run(cmd, shell=True, check=True, capture_output=capture_output)

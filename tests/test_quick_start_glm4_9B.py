@@ -105,7 +105,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{wandb_args} "
+        f"{U.get_default_wandb_args()} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
