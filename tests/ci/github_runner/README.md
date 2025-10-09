@@ -5,6 +5,8 @@
 Write `.env` mimicking `.env.example`.
 The token can be found at https://github.com/radixark/miles/settings/actions/runners/new?arch=x64&os=linux.
 
+WARN: The `GITHUB_RUNNER_TOKEN` changes after a while.
+
 ### Step 2: Run
 
 ```shell
