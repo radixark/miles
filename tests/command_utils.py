@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 
@@ -17,10 +18,20 @@ def ray_start_and_submit(
     master_addr: str = "127.0.0.1",
 ):
     exec_command(f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus} --disable-usage-stats")
+
+    runtime_env_json = json.dumps({
+        "env_vars": {
+            "PYTHONPATH": "/root/Megatron-LM/",
+            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+            "NCCL_NVLS_ENABLE": has_nvlink,
+            "no_proxy": f"127.0.0.1,{master_addr}",
+        }
+    })
+
     exec_command(
         # TODO should this 127.0.0.1 be `master_addr` instead
         f'ray job submit --address="http://127.0.0.1:8265" '
-        '--runtime-env-json="${RUNTIME_ENV_JSON}"'
+        f'--runtime-env-json="{runtime_env_json}"'
         '-- python3 train.py '
         f'{train_args}'
     )
