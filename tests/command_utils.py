@@ -56,7 +56,7 @@ def execute_train(
         f'source "{repo_base_dir}/scripts/models/{model_type}.sh" && '
         # TODO should this 127.0.0.1 be `master_addr` instead
         f'ray job submit --address="http://127.0.0.1:8265" '
-        f'--runtime-env-json="{runtime_env_json}"'
+        f'--runtime-env-json="{runtime_env_json}" '
         "-- python3 train.py "
         "${MODEL_ARGS[@]} "
         f"{train_args}"
