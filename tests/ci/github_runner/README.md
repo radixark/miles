@@ -12,7 +12,7 @@ WARN: The `GITHUB_RUNNER_TOKEN` changes after a while.
 ```shell
 docker run --rm -it --privileged --pid=host -v /:/host_root ubuntu /bin/bash -c 'rm -rf /host_root/home/runner/externals && mkdir -p /host_root/home/runner/externals && chmod -R 777 /host_root/home/runner/externals'
 docker run -d --name temp-runner ghcr.io/actions/actions-runner:2.328.0 tail -f /dev/null
-docker cp temp-runner:/home/runner/externals /home/runner/externals
+docker cp temp-runner:/home/runner/externals/. /home/runner/externals
 docker rm -f temp-runner
 ls -alh /home/runner/externals
 ```
