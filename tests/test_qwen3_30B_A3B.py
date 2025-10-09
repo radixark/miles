@@ -58,7 +58,7 @@ def execute():
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
+        f"--max-tokens-per-gpu {1024 if TIGHT_HOST_MEMORY else 16384} "
     )
 
     grpo_args = (
