@@ -6,6 +6,7 @@ services:
     image: ghcr.io/actions/actions-runner:2.328.0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /data/miles_ci:/data/miles_ci
     deploy:
       replicas: 4
     restart: always
@@ -17,6 +18,6 @@ services:
     # ref: https://github.com/actions/runner
     entrypoint: >
       sh -c "
-      ./config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended &&
+      ./config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci &&
       ./run.sh
       "
