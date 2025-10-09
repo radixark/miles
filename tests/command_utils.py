@@ -24,7 +24,7 @@ def ray_start_and_submit(
         "env_vars": {
             "PYTHONPATH": "/root/Megatron-LM/",
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            "NCCL_NVLS_ENABLE": has_nvlink,
+            "NCCL_NVLS_ENABLE": check_has_nvlink(),
             "no_proxy": f"127.0.0.1,{master_addr}",
         }
     })
@@ -40,6 +40,13 @@ def ray_start_and_submit(
     )
 
 
-def exec_command(cmd: str):
+def check_has_nvlink():
+    output = exec_command("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
+    return int(output) > 0
+
+
+def exec_command(cmd: str, capture_output: bool = False):
     print(f"EXEC: {cmd}", flush=True)
-    subprocess.run(cmd, shell=True, check=True)
+    result = subprocess.run(cmd, shell=True, check=True, capture_output=capture_output)
+    if capture_output:
+        return result.stdout
