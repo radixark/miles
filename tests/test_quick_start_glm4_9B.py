@@ -94,6 +94,10 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--ci-test "
+
+        "--actor-num-nodes 1 "
+        "--actor-num-gpus-per-node 4 "
+        "--rollout-num-gpus 4 "
     )
 
     train_args = (
@@ -110,7 +114,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=2,
+        num_gpus=4,
         model_type=MODEL_TYPE,
     )
 

@@ -82,7 +82,7 @@ def execute():
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
+        "--rollout-num-gpus-per-engine 4 "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-moe-a2a-backend deepep "
         "--sglang-deepep-mode auto "
@@ -101,7 +101,11 @@ def execute():
         "--attention-backend flash "
         "--moe-token-dispatcher-type flex "
         "--moe-enable-deepep "
+
         "--ci-test "
+        "--actor-num-nodes 1 "
+        "--actor-num-gpus-per-node 4 "
+        "--colocate "
     )
 
     train_args = (
@@ -118,7 +122,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=2,
+        num_gpus=4,
         model_type=MODEL_TYPE,
     )
 
