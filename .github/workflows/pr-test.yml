@@ -25,6 +25,7 @@ jobs:
         info:
           - {test_name: test_quick_start_glm4_9B, runs_on: 8-h100-runner}
           - {test_name: test_qwen3_30B_A3B, runs_on: 8-h100-runner}
+          # TODO use deterministic kernel
     defaults:
       run:
         working-directory: ${{ github.workspace }}
