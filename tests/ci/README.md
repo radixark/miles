@@ -1,4 +1,10 @@
-# How to setup runner
+# Doc about CI
+
+## Configure secrets
+
+
+
+## Setup new GitHub runners
 
 ### Step 1: Env
 

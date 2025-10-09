@@ -20,6 +20,7 @@ services:
     # ref: https://github.com/actions/runner/issues/367#issuecomment-2007558723
     # ref: https://github.com/actions/runner
     # args ref: https://github.com/actions/runner/blob/68ff57dbc4c836d50f46602a8a53301fb9513eb4/src/Runner.Listener/CommandSettings.cs#L53
+    # TODO seems we should not run config.sh repeatedly
     entrypoint: >
       sh -c "
       cd /data/miles_ci &&
