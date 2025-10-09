@@ -1,8 +1,11 @@
+import os
+
 import command_utils as U
 
 MODEL_NAME = "GLM-Z1-9B-0414"
 MODEL_TYPE = "glm4-9B"
 
+ENABLE_FAST_CHECK = bool(int(os.environ.get("MILES_TEST_ENABLE_FAST_CHECK", "0")))
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -31,14 +34,14 @@ def execute():
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {128 if ENABLE_FAST_CHECK else 8192} "
         "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
         "--balance-data "
     )
 
     eval_args = (
-        "--eval-interval 20 "
+        f"{'' if ENABLE_FAST_CHECK else '--eval-interval 20 '}"
         "--eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 16384 "
