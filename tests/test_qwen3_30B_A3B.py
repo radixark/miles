@@ -6,6 +6,7 @@ MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 
 
+ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 
@@ -39,7 +40,7 @@ def execute():
     )
 
     eval_args = (
-        "--eval-interval 20 "
+        f"{'--eval-interval 20 ' if ENABLE_EVAL else ''}"
         "--eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 16384 "
