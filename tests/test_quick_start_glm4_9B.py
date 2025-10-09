@@ -111,7 +111,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=4,
+        num_gpus=8,
         model_type=MODEL_TYPE,
     )
 
