@@ -1,5 +1,4 @@
-# NOTE: need to have a `.env` file mimicking `.env.example`
-
+# Please refer to `README.md` for how to setup this GitHub action runner
 version: "3.9"
 
 services:
