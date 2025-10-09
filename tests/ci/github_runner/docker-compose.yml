@@ -18,6 +18,6 @@ services:
     # ref: https://github.com/actions/runner
     entrypoint: >
       sh -c "
-      ./config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci &&
+      ./config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) &&
       ./run.sh
       "
