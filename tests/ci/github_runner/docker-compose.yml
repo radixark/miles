@@ -17,6 +17,6 @@ services:
     # ref: https://github.com/actions/runner
     entrypoint: >
       sh -c "
-      ./config.sh --url https://github.com/radixark/miles --token ${GITHUB_RUNNER_TOKEN} --unattended &&
+      ./config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended &&
       ./run.sh
       "
