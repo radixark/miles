@@ -24,23 +24,25 @@ def ray_start_and_submit(
 ):
     exec_command(f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus} --disable-usage-stats")
 
-    runtime_env_json = json.dumps({
-        "env_vars": {
-            "PYTHONPATH": "/root/Megatron-LM/",
-            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            "NCCL_NVLS_ENABLE": check_has_nvlink(),
-            "no_proxy": f"127.0.0.1,{master_addr}",
+    runtime_env_json = json.dumps(
+        {
+            "env_vars": {
+                "PYTHONPATH": "/root/Megatron-LM/",
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                "NCCL_NVLS_ENABLE": check_has_nvlink(),
+                "no_proxy": f"127.0.0.1,{master_addr}",
+            }
         }
-    })
+    )
 
     exec_command(
         # TODO should this 127.0.0.1 be `master_addr` instead
         f'source "{repo_base_dir}/../scripts/models/{model_type}.sh" && '
         f'ray job submit --address="http://127.0.0.1:8265" '
         f'--runtime-env-json="{runtime_env_json}"'
-        '-- python3 train.py '
+        "-- python3 train.py "
         "${MODEL_ARGS[@]} "
-        f'{train_args}'
+        f"{train_args}"
     )
 
 

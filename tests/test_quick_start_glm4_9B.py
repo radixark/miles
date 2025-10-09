@@ -14,5 +14,5 @@ def execute():
     U.ray_start()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pass  # TODO make the functions executable via typer
