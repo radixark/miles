@@ -6,6 +6,4 @@ def main():
 
 
 if __name__ == '__main__':
-    import typer
-
-    typer.run(main)
+    pass  # TODO make the functions executable via typer
