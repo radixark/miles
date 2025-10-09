@@ -80,7 +80,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 " "--use-slime-router "
+    sglang_args = "--rollout-num-gpus-per-engine 2 " "--use-miles-router "
 
     misc_args = (
         # default dropout in megatron is 0.1
