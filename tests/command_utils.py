@@ -1,11 +1,6 @@
 import subprocess
 
 
-def exec_command(cmd: str):
-    print(f"EXEC: {cmd}", flush=True)
-    subprocess.run(cmd, shell=True, check=True)
-
-
 def convert_checkpoint(model_name, model_type):
     exec_command(
         f"source scripts/models/{model_type}.sh && "
@@ -14,3 +9,12 @@ def convert_checkpoint(model_name, model_type):
         f"--hf-checkpoint /root/models/{model_name} "
         f"--save /root/{model_name}_torch_dist"
     )
+
+
+def launch_train(num_gpus: int, master_addr: str = "127.0.0.1"):
+    exec_command(f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus} --disable-usage-stats")
+
+
+def exec_command(cmd: str):
+    print(f"EXEC: {cmd}", flush=True)
+    subprocess.run(cmd, shell=True, check=True)

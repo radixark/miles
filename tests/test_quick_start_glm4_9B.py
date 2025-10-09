@@ -11,7 +11,7 @@ def prepare():
 
 
 def execute():
-    TODO
+    U.ray_start()
 
 
 if __name__ == '__main__':
