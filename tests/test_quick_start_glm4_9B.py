@@ -120,4 +120,6 @@ def execute():
 
 
 if __name__ == "__main__":
-    pass  # TODO make the functions executable via typer
+    # TODO also use typer
+    prepare()
+    execute()
