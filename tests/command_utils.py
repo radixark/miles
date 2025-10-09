@@ -22,7 +22,10 @@ def ray_start_and_submit(
     model_type: str,
     master_addr: str = "127.0.0.1",
 ):
-    exec_command(f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus} --disable-usage-stats")
+    exec_command(
+        f"export PYTHONBUFFERED=16 && "
+        f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus} --disable-usage-stats"
+    )
 
     runtime_env_json = json.dumps(
         {
@@ -36,8 +39,9 @@ def ray_start_and_submit(
     )
 
     exec_command(
-        # TODO should this 127.0.0.1 be `master_addr` instead
+        f"export PYTHONBUFFERED=16 && "
         f'source "{repo_base_dir}/scripts/models/{model_type}.sh" && '
+        # TODO should this 127.0.0.1 be `master_addr` instead
         f'ray job submit --address="http://127.0.0.1:8265" '
         f'--runtime-env-json="{runtime_env_json}"'
         "-- python3 train.py "
