@@ -6,6 +6,7 @@ MODEL_NAME = "GLM-Z1-9B-0414"
 MODEL_TYPE = "glm4-9B"
 
 ENABLE_FAST_CHECK = bool(int(os.environ.get("MILES_TEST_ENABLE_FAST_CHECK", "0")))
+TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 
 def prepare():
