@@ -16,7 +16,7 @@ def convert_checkpoint(model_name, model_type):
     )
 
 
-def ray_start_and_submit(
+def execute_train(
     train_args: str,
     num_gpus: int,
     model_type: str,
