@@ -6,11 +6,11 @@ def exec_command(cmd: str):
     subprocess.run(cmd, shell=True, check=True)
 
 
-def convert_checkpoint():
+def convert_checkpoint(model_name, model_type):
     exec_command(
-        "source scripts/models/glm4-9B.sh && "
+        f"source scripts/models/{model_type}.sh && "
         "PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
-        "--hf-checkpoint /root/models/GLM-Z1-9B-0414 "
-        "--save /root/GLM-Z1-9B-0414_torch_dist"
+        f"--hf-checkpoint /root/models/{model_name} "
+        f"--save /root/{model_name}_torch_dist"
     )
