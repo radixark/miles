@@ -9,12 +9,17 @@ repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[1]
 
 
 def convert_checkpoint(model_name, model_type):
+    path_dst = f"/root/{model_name}_torch_dist"
+    if Path(path_dst).exists():
+        print(f"convert_checkpoint skip {path_dst} since exists")
+        return
+
     exec_command(
         f"source {repo_base_dir}/scripts/models/{model_type}.sh && "
         "PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
         f"--hf-checkpoint /root/models/{model_name} "
-        f"--save /root/{model_name}_torch_dist"
+        f"--save {path_dst}"
     )
 
 
@@ -24,17 +29,18 @@ def execute_train(
     model_type: str,
     master_addr: str = "127.0.0.1",
 ):
-    exec_command(
-        "pkill -9 sglang;"
-        "sleep 3;"
-        "ray stop --force;"
-        "pkill -9 ray;"
-        "pkill -9 python;"
-        "sleep 3;"
-        "pkill -9 ray;"
-        "pkill -9 python;"
-        "pkill -9 redis;"
-    )
+    # cannot be run in CI, o/w kill the parent script
+    # exec_command(
+    #     "pkill -9 sglang;"
+    #     "sleep 3;"
+    #     "ray stop --force;"
+    #     "pkill -9 ray;"
+    #     "pkill -9 python;"
+    #     "sleep 3;"
+    #     "pkill -9 ray;"
+    #     "pkill -9 python;"
+    #     "pkill -9 redis;"
+    # )
 
     exec_command(
         # will prevent ray from buffering stdout/stderr
