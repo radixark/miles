@@ -1,5 +1,7 @@
+import datetime
 import json
 import os
+import random
 import subprocess
 from pathlib import Path
 
@@ -69,7 +71,9 @@ def check_has_nvlink():
 
 
 def get_default_wandb_args():
-    name = os.environ.get("GITHUB_COMMIT_NAME")
+    name = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)}"
+    if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
+        name += f"_{x}"
 
     return (
         "--use-wandb "
