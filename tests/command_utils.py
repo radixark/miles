@@ -83,7 +83,7 @@ def check_has_nvlink():
 def get_default_wandb_args():
     wandb_api_key = os.environ.get("WANDB_API_KEY")
     if not wandb_api_key:
-        print("Skip wandb configuration since WANDB_API_KEY is not foudn")
+        print("Skip wandb configuration since WANDB_API_KEY is not found")
         return ""
 
     name = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)}"
