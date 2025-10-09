@@ -1,5 +1,7 @@
 import command_utils as U
 
+MODEL_NAME = "GLM-Z1-9B-0414"
+MODEL_TYPE = "glm4-9B"
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -7,13 +9,13 @@ def prepare():
     U.exec_command("hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k")
     U.exec_command("hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024")
 
-    U.convert_checkpoint(model_name="GLM-Z1-9B-0414", model_type="glm4-9B")
+    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE)
 
 
 def execute():
     ckpt_args = (
-        "--hf-checkpoint /root/models/GLM-Z1-9B-0414/ "
-        "--ref-load /root/GLM-Z1-9B-0414_torch_dist "
+        f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
+        f"--ref-load /root/{MODEL_TYPE}_torch_dist "
         "--fp8-format e4m3 "
         "--fp8-recipe blockwise "
     )
@@ -110,7 +112,7 @@ def execute():
     U.execute_train(
         train_args=train_args,
         num_gpus=2,
-        model_type="glm4-9B",
+        model_type=MODEL_TYPE,
     )
 
 
