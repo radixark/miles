@@ -7,6 +7,8 @@ def prepare():
     U.exec_command("hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k")
     U.exec_command("hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024")
 
+    U.exec_command("hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024")
+
 
 def execute():
     TODO
