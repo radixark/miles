@@ -78,11 +78,12 @@ class SGLangEngine(RayActor):
         self.args = args
         self.rank = rank
 
-    def init(self, dist_init_addr, port, nccl_port, external_ip=None):
+    def init(self, dist_init_addr, port, nccl_port, host=None):
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
 
-        server_args_dict = _compute_server_args(self.args, self.rank, dist_init_addr, nccl_port, port)
+        host = host or get_host_info()[1]
+        server_args_dict = _compute_server_args(self.args, self.rank, dist_init_addr, nccl_port, host, port)
 
         self.node_rank = server_args_dict["node_rank"]
         self.server_host = server_args_dict["host"]
@@ -297,7 +298,7 @@ class SGLangEngine(RayActor):
         return requests.post(f"http://{self.server_host}:{self.server_port}/stop_profile", json={})
 
 
-def _compute_server_args(args, rank, dist_init_addr, nccl_port, port):
+def _compute_server_args(args, rank, dist_init_addr, nccl_port, host, port):
     nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
     kwargs = {
@@ -307,7 +308,7 @@ def _compute_server_args(args, rank, dist_init_addr, nccl_port, port):
         # memory
         "enable_memory_saver": args.offload,
         # distributed
-        "host": get_host_info()[1],
+        "host": host,
         "port": port,
         "nccl_port": nccl_port,
         "nnodes": nnodes,
