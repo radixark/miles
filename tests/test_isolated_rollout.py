@@ -135,7 +135,7 @@ def _launch_sglang_router_and_engine():
     from sglang.srt.server_args import ServerArgs
 
     launch_server_process(ServerArgs(
-        model_path=TODO,
+        model_path=f"/root/models/{MODEL_NAME}/",
         trust_remote_code=True,
         host=SGLANG_ENGINE_IP,
         port=SGLANG_ENGINE_PORT,
