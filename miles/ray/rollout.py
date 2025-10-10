@@ -337,7 +337,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     if num_new_engines == 0:
         return num_new_engines
 
-    addr_and_ports = _allocate_rollout_engine_addr_and_ports(
+    addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
         args=args, num_engines=num_engines, rollout_engines=rollout_engines
     )
 
@@ -348,7 +348,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     return num_new_engines
 
 
-def _allocate_rollout_engine_addr_and_ports(*, args, num_engines, rollout_engines):
+def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout_engines):
     # get ports
     # there are 4 ports we need to allocate
     # 1. server port
