@@ -27,7 +27,7 @@ def convert_checkpoint(model_name, model_type):
 def execute_train(
     train_args: str,
     num_gpus: int,
-    model_type: str,
+    model_type: str = None,
     master_addr: str = "127.0.0.1",
     train_script: str = "train.py",
     use_model_args: bool = True,
