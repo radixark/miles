@@ -1,5 +1,3 @@
-import os
-
 import command_utils as U
 
 ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "1")
@@ -88,9 +86,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 2 " "--use-miles-router "
 
-    ci_args = (
-        "--ci-test "
-    )
+    ci_args = "--ci-test "
 
     misc_args = (
         # default dropout in megatron is 0.1

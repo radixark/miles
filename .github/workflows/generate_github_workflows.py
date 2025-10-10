@@ -23,7 +23,10 @@ def main():
         yaml_path = template_path.with_suffix("")
         with open(yaml_path, "w") as f:
             f.write(
-                "#" * 80 + "\n# This file is auto-generated from the .j2 file via generate_github_workflows.py. Do not edit manually.\n" + "#" * 80 + "\n"
+                "#" * 80
+                + "\n# This file is auto-generated from the .j2 file via generate_github_workflows.py. Do not edit manually.\n"
+                + "#" * 80
+                + "\n"
             )
             f.write(content)
 

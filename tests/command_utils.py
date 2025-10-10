@@ -117,6 +117,7 @@ def exec_command(cmd: str, capture_output: bool = False):
     if capture_output:
         return result.stdout
 
+
 _warned_bool_env_var_keys = set()
 
 

@@ -1,4 +1,3 @@
-import os
 import command_utils as U
 
 
@@ -83,7 +82,7 @@ def execute():
     ci_args = (
         "--ci-test "
         "--ci-metric-checker-key eval/gsm8k "
-        "--ci-metric-checker-threshold 0.55 " # loose threshold at 250 step
+        "--ci-metric-checker-threshold 0.55 "  # loose threshold at 250 step
     )
 
     misc_args = (

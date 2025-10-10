@@ -95,9 +95,7 @@ def execute():
         "--sglang-disable-radix-cache "
     )
 
-    ci_args = (
-        "--ci-test "
-    )
+    ci_args = "--ci-test "
 
     misc_args = (
         # default dropout in megatron is 0.1
