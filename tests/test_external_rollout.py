@@ -125,7 +125,7 @@ def execute():
         train_args=train_args,
         num_gpus=NUM_GPUS,
         model_type=MODEL_TYPE,
-        before_ray_job_submit=_launch_background(),
+        before_ray_job_submit=_launch_background,
     )
 
 
