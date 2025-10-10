@@ -63,9 +63,9 @@ def _parse_args():
 
 def _execute_print_only(args):
     free = []
-    _ensure_lock_files(args.lock_dir, args.lock_pattern, args.total_gpus)
+    _ensure_lock_files(lock_dir=args.lock_dir, pattern=args.lock_pattern, total_gpus=args.total_gpus)
     for i in range(args.total_gpus):
-        path = _get_lock_path(args.lock_dir, args.lock_pattern, i)
+        path = _get_lock_path(lock_dir=args.lock_dir, pattern=args.lock_pattern, i=i)
         try:
             fd = open(path, "w")
             try:
@@ -77,7 +77,8 @@ def _execute_print_only(args):
             fd.close()
         except Exception as e:
             print(f"Warning: Error while probing lock {path}: {e}", file=sys.stderr)
-    print(",".join(str(x) for x in free))
+
+    print("Free GPUs:", ",".join(str(x) for x in free))
 
 
 def _try_acquire(args):
