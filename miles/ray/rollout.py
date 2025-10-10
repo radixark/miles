@@ -353,7 +353,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
 
 def _allocate_rollout_engine_addr_and_ports_external(args, rollout_engines):
     addr_and_ports = []
-    for rank, _ in range(rollout_engines):
+    for rank, _ in rollout_engines:
         [host, port] = args.rollout_external_engine_addrs[rank].split(":")
         addr_and_ports.append(
             dict(
