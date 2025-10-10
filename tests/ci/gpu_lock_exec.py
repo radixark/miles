@@ -10,6 +10,34 @@ SLEEP_BACKOFF = 1.0
 
 
 def main():
+    args = _parse_args()
+
+    if args.print_only:
+        _execute_print_only(args)
+        return
+
+    locks = _try_acquire(args)
+
+    dev_list = ",".join(str(d) for d, _ in locks)
+    os.environ[args.target_env_name] = dev_list
+    print(f"Acquired GPUs: {dev_list}", flush=True)
+
+    cmd = args.cmd
+    if not cmd:
+        print("ERROR: missing command to run. Use -- before command.", file=sys.stderr)
+        for _, fd in locks:
+            try:
+                fd.close()
+            except Exception as e_close:
+                print(f"Warning: Failed to close lock file descriptor on missing command: {e_close}", file=sys.stderr)
+        sys.exit(2)
+
+    if cmd[0] == "--":
+        cmd = cmd[1:]
+    os.execvp(cmd[0], cmd)
+
+
+def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--count", type=int, default=None, help="Acquire this many GPUs (any free ones)")
     p.add_argument("--devices", type=str, default=None, help="Comma separated explicit devices to acquire (e.g. 0,1)")
@@ -33,25 +61,29 @@ def main():
         print("ERROR: --lock-pattern must contain '{i}' placeholder.", file=sys.stderr)
         sys.exit(2)
 
-    if args.print_only:
-        free = []
-        _ensure_lock_files(args.lock_dir, args.lock_pattern, args.total_gpus)
-        for i in range(args.total_gpus):
-            path = _get_lock_path(args.lock_dir, args.lock_pattern, i)
-            try:
-                fd = open(path, "w")
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                    free.append(i)
-                except BlockingIOError:
-                    pass
-                fd.close()
-            except Exception as e:
-                print(f"Warning: Error while probing lock {path}: {e}", file=sys.stderr)
-        print(",".join(str(x) for x in free))
-        sys.exit(0)
+    return args
 
+
+def _execute_print_only(args):
+    free = []
+    _ensure_lock_files(args.lock_dir, args.lock_pattern, args.total_gpus)
+    for i in range(args.total_gpus):
+        path = _get_lock_path(args.lock_dir, args.lock_pattern, i)
+        try:
+            fd = open(path, "w")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                free.append(i)
+            except BlockingIOError:
+                pass
+            fd.close()
+        except Exception as e:
+            print(f"Warning: Error while probing lock {path}: {e}", file=sys.stderr)
+    print(",".join(str(x) for x in free))
+
+
+def _try_acquire(args):
     if args.devices:
         devs = _parse_devices(args.devices)
         try:
@@ -68,24 +100,7 @@ def main():
         except TimeoutError as e:
             print("ERROR:", e, file=sys.stderr)
             sys.exit(1)
-
-    dev_list = ",".join(str(d) for d, _ in locks)
-    os.environ[args.target_env_name] = dev_list
-    print(f"Acquired GPUs: {dev_list}", flush=True)
-
-    cmd = args.cmd
-    if not cmd:
-        print("ERROR: missing command to run. Use -- before command.", file=sys.stderr)
-        for _, fd in locks:
-            try:
-                fd.close()
-            except Exception as e_close:
-                print(f"Warning: Failed to close lock file descriptor on missing command: {e_close}", file=sys.stderr)
-        sys.exit(2)
-
-    if cmd[0] == "--":
-        cmd = cmd[1:]
-    os.execvp(cmd[0], cmd)
+    return locks
 
 
 def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: int):
