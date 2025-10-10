@@ -17,9 +17,9 @@ def main():
         _execute_print_only(args)
         return
 
-    locks = _try_acquire(args)
+    fd_locks = _try_acquire(args)
 
-    dev_list = ",".join(str(d) for d, _ in locks)
+    dev_list = ",".join(d.gpu_id for d, _ in fd_locks)
     os.environ[args.target_env_name] = dev_list
     print(f"[gpu_lock_exec] Acquired GPUs: {dev_list}", flush=True)
 
@@ -91,12 +91,12 @@ def _try_acquire(args):
 
 
 def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: int):
-    fds = []
+    fd_locks = []
     start = time.time()
     try:
         _ensure_lock_files(lock_dir, pattern, max(devs) + 1)
         for d in devs:
-            fd_lock = FdLock(lock_dir, pattern, gpu_id=dev)
+            fd_lock = FdLock(lock_dir, pattern, gpu_id=d)
             fd_lock.open()
             while True:
                 try:
@@ -106,11 +106,11 @@ def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout:
                     if time.time() - start > timeout:
                         raise TimeoutError(f"Timeout while waiting for GPU {d}")
                     time.sleep(SLEEP_BACKOFF * random.random())
-            fds.append(fd_lock)
-        return fds
+            fd_locks.append(fd_lock)
+        return fd_locks
     except Exception as e:
         print(f"Error during specific GPU acquisition: {e}", file=sys.stderr)
-        for fd_lock in fds:
+        for fd_lock in fd_locks:
             fd_lock.close()
         raise
 
@@ -119,7 +119,7 @@ def _try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str,
     start = time.time()
     _ensure_lock_files(lock_dir, pattern, total_gpus)
     while True:
-        acquired: List = []
+        fd_locks: List = []
         for i in range(total_gpus):
             fd_lock = FdLock(lock_dir, pattern, gpu_id=i)
             try:
@@ -129,13 +129,13 @@ def _try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str,
                 continue
             try:
                 fd_lock.lock()
-                acquired.append(fd_lock)
-                if len(acquired) == count:
-                    return acquired
+                fd_locks.append(fd_lock)
+                if len(fd_locks) == count:
+                    return fd_locks
             except BlockingIOError:
-                for fd_lock in acquired:
+                for fd_lock in fd_locks:
                     fd_lock.close()
-                acquired = []
+                fd_locks = []
                 break
         if time.time() - start > timeout:
             raise TimeoutError(f"Timeout acquiring {count} GPUs (out of {total_gpus})")
