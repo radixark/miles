@@ -18,7 +18,7 @@ def execute():
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
-        "--input-key prompt "
+        "--input-key messages "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
