@@ -22,6 +22,10 @@ def main():
     os.environ[args.target_env_name] = dev_list
     print(f"[gpu_lock_exec] Acquired GPUs: {dev_list}", flush=True)
 
+    _os_execvp(args)
+
+
+def _os_execvp(args):
     cmd = args.cmd
     if cmd[0] == "--":
         cmd = cmd[1:]
