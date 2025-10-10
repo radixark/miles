@@ -85,7 +85,7 @@ def main():
     p.add_argument("--devices", type=str, default=None, help="Comma separated explicit devices to acquire (e.g. 0,1)")
     p.add_argument("--total-gpus", type=int, default=8, help="Total GPUs on the machine")
     p.add_argument("--timeout", type=int, default=3600, help="Seconds to wait for locks before failing")
-    p.add_argument("--env-prefix", type=str, default="CUDA_VISIBLE_DEVICES", help="Which env var to set for devices")
+    p.add_argument("--target-env-name", type=str, default="CUDA_VISIBLE_DEVICES", help="Which env var to set for devices")
     p.add_argument("--lock-dir", type=str, default="/dev/shm", help="Directory where lock files live")
     p.add_argument("--lock-pattern", type=str, default="custom_gpu_lock_{i}.lock", help='Filename pattern with "{i}" placeholder, e.g. "custom_gpu_lock_{i}.lock"')
     p.add_argument("--print-only", action="store_true", help="Probe free devices and print them (does NOT hold locks)")
@@ -133,7 +133,7 @@ def main():
             sys.exit(1)
 
     dev_list = ",".join(str(d) for d, _ in locks)
-    os.environ[args.env_prefix] = dev_list
+    os.environ[args.target_env_name] = dev_list
     print(f"Acquired GPUs: {dev_list}", flush=True)
 
     cmd = args.cmd
