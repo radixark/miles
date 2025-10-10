@@ -5,6 +5,9 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 
 
+FEW_GPU = bool(int(os.environ.get("MILES_TEST_FEW_GPU", "1")))
+
+
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir /root/models/{MODEL_NAME}")
@@ -83,7 +86,7 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 2 "
+        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
     )
 
     train_args = (
@@ -100,7 +103,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=4,
+        num_gpus=2 if FEW_GPU else 4,
         model_type=MODEL_TYPE,
         train_script="train_async.py",
     )

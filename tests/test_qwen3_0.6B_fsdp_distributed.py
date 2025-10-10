@@ -4,6 +4,9 @@ import command_utils as U
 MODEL_NAME = "Qwen3-0.6B"
 
 
+FEW_GPU = bool(int(os.environ.get("MILES_TEST_FEW_GPU", "1")))
+
+
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"huggingface-cli download Qwen/Qwen3-0.6B --local-dir /root/models/{MODEL_NAME}")
@@ -52,7 +55,7 @@ def execute():
 
     misc_args = (
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
+        f"--actor-num-gpus-per-node {2 if FEW_GPU else 4} "
         "--colocate "
         "--slime-backend fsdp "
     )
@@ -69,7 +72,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=4,
+        num_gpus=2 if FEW_GPU else 4,
         model_type=None,
     )
 
