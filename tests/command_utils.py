@@ -4,6 +4,7 @@ import os
 import random
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[1]
 
@@ -27,10 +28,9 @@ def convert_checkpoint(model_name, model_type):
 def execute_train(
     train_args: str,
     num_gpus: int,
-    model_type: str = None,
+    model_type: Optional[str],
     master_addr: str = "127.0.0.1",
     train_script: str = "train.py",
-    use_model_args: bool = True,
 ):
     exec_command(
         "pkill -9 sglang; "
@@ -68,10 +68,10 @@ def execute_train(
 
     source_cmd = (
         f'source "{repo_base_dir}/scripts/models/{model_type}.sh" && '
-        if use_model_args
+        if model_type is not None
         else ""
     )
-    model_args_str = "${MODEL_ARGS[@]}" if use_model_args else ""
+    model_args_str = "${MODEL_ARGS[@]}" if model_type is not None else ""
 
     exec_command(
         f"export PYTHONBUFFERED=16 && "

@@ -70,7 +70,7 @@ def execute():
     U.execute_train(
         train_args=train_args,
         num_gpus=4,
-        use_model_args=False,
+        model_type=None,
     )
 
 
