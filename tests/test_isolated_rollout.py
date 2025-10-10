@@ -1,3 +1,6 @@
+import multiprocessing
+import time
+
 import command_utils as U
 
 
@@ -134,20 +137,32 @@ def _launch_sglang_router_and_engine():
     from miles.backends.sglang_utils.sglang_engine import launch_server_process
     from sglang.srt.server_args import ServerArgs
     from sglang_router.launch_router import RouterArgs
+    from miles.utils.http_utils import run_router
 
     router_args = RouterArgs(
         host=SGLANG_ROUTER_IP,
         port=SGLANG_ROUTER_PORT,
         balance_abs_threshold=0,
     )
+    proc_router = multiprocessing.Process(
+        target=run_router,
+        args=(router_args,),
+    )
+    proc_router.daemon = True
+    proc_router.start()
+    time.sleep(3)
+    assert proc_router.is_alive()
 
-    launch_server_process(ServerArgs(
-        model_path=f"/root/models/{MODEL_NAME}/",
-        trust_remote_code=True,
-        host=SGLANG_ENGINE_IP,
-        port=SGLANG_ENGINE_PORT,
-        tp_size=2,
-    ))
+    launch_server_process(
+        ServerArgs(
+            model_path=f"/root/models/{MODEL_NAME}/",
+            trust_remote_code=True,
+            host=SGLANG_ENGINE_IP,
+            port=SGLANG_ENGINE_PORT,
+            tp_size=2,
+        ),
+        daemon=True,
+    )
 
     requests.post(
         f"http://{SGLANG_ROUTER_IP}:{SGLANG_ROUTER_PORT}/add_worker?url=http://{SGLANG_ENGINE_IP}:{SGLANG_ENGINE_PORT}"
