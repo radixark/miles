@@ -85,20 +85,17 @@ def _try_acquire(args):
     if args.devices:
         devs = _parse_devices(args.devices)
         try:
-            locks = _try_acquire_specific(devs, args.lock_dir, args.lock_pattern, args.timeout)
+            return _try_acquire_specific(devs, args.lock_dir, args.lock_pattern, args.timeout)
         except TimeoutError as e:
             print("ERROR:", e, file=sys.stderr)
             sys.exit(1)
     else:
-        if args.count is None:
-            print("ERROR: must provide --count N or --devices list", file=sys.stderr)
-            sys.exit(2)
+        assert args.count is not None
         try:
-            locks = _try_acquire_count(args.count, args.total_gpus, args.lock_dir, args.lock_pattern, args.timeout)
+            return _try_acquire_count(args.count, args.total_gpus, args.lock_dir, args.lock_pattern, args.timeout)
         except TimeoutError as e:
             print("ERROR:", e, file=sys.stderr)
             sys.exit(1)
-    return locks
 
 
 def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: int):
