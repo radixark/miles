@@ -20,7 +20,6 @@ jobs:
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
-      # We removed `-v /data/miles_ci/datasets:/root/datasets` because datasets are usually small and want to avoid stale/conflict
       options: >
         --gpus all
         --ipc=host
@@ -31,6 +30,7 @@ jobs:
         --memory-swap=0
         -v /data/miles_ci:/data/miles_ci
         -v /data/miles_ci/models:/root/models
+        -v /data/miles_ci/datasets:/root/datasets
     strategy:
       fail-fast: false
       matrix:
