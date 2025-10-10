@@ -19,7 +19,7 @@ def main():
 
     fd_locks = _try_acquire(args)
 
-    dev_list = ",".join(x.gpu_id for x, _ in fd_locks)
+    dev_list = ",".join(str(x.gpu_id) for x in fd_locks)
     os.environ[args.target_env_name] = dev_list
     print(f"[gpu_lock_exec] Acquired GPUs: {dev_list}", flush=True)
 
@@ -42,21 +42,20 @@ def _parse_args():
     p.add_argument(
         "--target-env-name", type=str, default="CUDA_VISIBLE_DEVICES", help="Which env var to set for devices"
     )
-    p.add_argument("--lock-dir", type=str, default="/dev/shm", help="Directory where lock files live")
     p.add_argument(
-        "--lock-pattern",
+        "--lock-path-pattern",
         type=str,
-        default="custom_gpu_lock_{i}.lock",
-        help='Filename pattern with "{i}" placeholder, e.g. "custom_gpu_lock_{i}.lock"',
+        default="/dev/shm/custom_gpu_lock_{i}.lock",
+        help='Filename pattern with "{i}" placeholder, e.g. "/dev/shm/custom_gpu_lock_{i}.lock"',
     )
     p.add_argument("--print-only", action="store_true", help="Probe free devices and print them (does NOT hold locks)")
     p.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to exec after '--' (required unless --print-only)")
     args = p.parse_args()
 
-    if "{i}" not in args.lock_pattern:
-        raise Exception("ERROR: --lock-pattern must contain '{i}' placeholder.")
+    if "{i}" not in args.lock_path_pattern:
+        raise Exception("ERROR: --lock-path-pattern must contain '{i}' placeholder.")
 
-    if not args.cmd:
+    if not args.cmd and not args.print_only:
         raise Exception("ERROR: missing command to run. Use -- before command.")
 
     return args
@@ -64,9 +63,9 @@ def _parse_args():
 
 def _execute_print_only(args):
     free = []
-    _ensure_lock_files(lock_dir=args.lock_dir, pattern=args.lock_pattern, total_gpus=args.total_gpus)
+    _ensure_lock_files(path_pattern=args.lock_path_pattern, total_gpus=args.total_gpus)
     for i in range(args.total_gpus):
-        path = _get_lock_path(lock_dir=args.lock_dir, pattern=args.lock_pattern, i=i)
+        path = _get_lock_path(path_pattern=args.lock_path_pattern, i=i)
         try:
             fd = open(path, "w")
             try:
@@ -85,18 +84,18 @@ def _execute_print_only(args):
 def _try_acquire(args):
     if args.devices:
         devs = _parse_devices(args.devices)
-        return _try_acquire_specific(devs, args.lock_dir, args.lock_pattern, args.timeout)
+        return _try_acquire_specific(devs, args.lock_path_pattern, args.timeout)
     else:
-        return _try_acquire_count(args.count, args.total_gpus, args.lock_dir, args.lock_pattern, args.timeout)
+        return _try_acquire_count(args.count, args.total_gpus, args.lock_path_pattern, args.timeout)
 
 
-def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: int):
+def _try_acquire_specific(devs: List[int], path_pattern: str, timeout: int):
     fd_locks = []
     start = time.time()
     try:
-        _ensure_lock_files(lock_dir, pattern, max(devs) + 1)
+        _ensure_lock_files(path_pattern, max(devs) + 1)
         for gpu_id in devs:
-            fd_lock = FdLock(lock_dir, pattern, gpu_id=gpu_id)
+            fd_lock = FdLock(path_pattern, gpu_id=gpu_id)
             fd_lock.open()
             while True:
                 try:
@@ -115,13 +114,13 @@ def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout:
         raise
 
 
-def _try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str, timeout: int):
+def _try_acquire_count(count: int, total_gpus: int, path_pattern: str, timeout: int):
     start = time.time()
-    _ensure_lock_files(lock_dir, pattern, total_gpus)
+    _ensure_lock_files(path_pattern, total_gpus)
     while True:
         fd_locks: List = []
         for gpu_id in range(total_gpus):
-            fd_lock = FdLock(lock_dir, pattern, gpu_id=gpu_id)
+            fd_lock = FdLock(path_pattern, gpu_id=gpu_id)
             try:
                 fd_lock.open()
             except Exception as e:
@@ -142,9 +141,9 @@ def _try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str,
         time.sleep(SLEEP_BACKOFF * random.random())
 
 class FdLock:
-    def __init__(self, lock_dir, pattern, gpu_id: int):
+    def __init__(self, path_pattern, gpu_id: int):
         self.gpu_id = gpu_id
-        self.path = _get_lock_path(lock_dir, pattern, self.gpu_id)
+        self.path = _get_lock_path(path_pattern, self.gpu_id)
         self.fd = None
 
     def open(self):
@@ -163,18 +162,20 @@ class FdLock:
             print(f"Warning: Failed to close file descriptor: {e}", file=sys.stderr)
         self.fd = None
 
-def _ensure_lock_files(lock_dir: str, pattern: str, total_gpus: int):
-    os.makedirs(lock_dir, exist_ok=True)
+def _ensure_lock_files(path_pattern: str, total_gpus: int):
+    lock_dir = os.path.dirname(path_pattern)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
     for gpu_id in range(total_gpus):
-        p = _get_lock_path(lock_dir, pattern, gpu_id)
+        p = _get_lock_path(path_pattern, gpu_id)
         try:
             open(p, "a").close()
         except Exception as e:
             print(f"Warning: Could not create lock file {p}: {e}", file=sys.stderr)
 
 
-def _get_lock_path(lock_dir: str, pattern: str, i: int) -> str:
-    return os.path.join(lock_dir, pattern.format(i=i))
+def _get_lock_path(path_pattern: str, i: int) -> str:
+    return path_pattern.format(i=i)
 
 
 def _parse_devices(s: str) -> List[int]:
