@@ -95,23 +95,23 @@ def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout:
     try:
         _ensure_lock_files(lock_dir, pattern, max(devs) + 1)
         for d in devs:
-            path = _get_lock_path(lock_dir, pattern, d)
-            fd = open(path, "w")
+            fd_lock = FdLock(lock_dir, pattern, gpu_id=dev)
+            fd_lock.open()
             while True:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fd_lock.lock()
                     break
                 except BlockingIOError:
                     if time.time() - start > timeout:
                         raise TimeoutError(f"Timeout while waiting for GPU {d}")
                     time.sleep(SLEEP_BACKOFF)
-            fds.append((d, fd))
+            fds.append(fd_lock)
         return fds
     except Exception as e:
         print(f"Error during specific GPU acquisition: {e}", file=sys.stderr)
-        for _, fd in fds:
+        for fd_lock in fds:
             try:
-                fd.close()
+                fd_lock.close()
             except Exception as e_close:
                 print(f"Warning: Failed to close lock file descriptor during cleanup: {e_close}", file=sys.stderr)
         raise
@@ -121,23 +121,23 @@ def _try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str,
     start = time.time()
     _ensure_lock_files(lock_dir, pattern, total_gpus)
     while True:
-        acquired: List[Tuple[int, object]] = []
+        acquired: List = []
         for i in range(total_gpus):
-            path = _get_lock_path(lock_dir, pattern, i)
+            fd_lock = FdLock(lock_dir, pattern, gpu_id=i)
             try:
-                fd = open(path, "w")
+                fd_lock.open()
             except Exception as e:
-                print(f"Warning: Could not open lock file {path}: {e}", file=sys.stderr)
+                print(f"Warning: Could not open lock file: {e}", file=sys.stderr)
                 continue
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired.append((i, fd))
+                fd_lock.lock()
+                acquired.append(fd_lock)
                 if len(acquired) == count:
                     return acquired
             except BlockingIOError:
-                for _, afd in acquired:
+                for fd_lock in acquired:
                     try:
-                        afd.close()
+                        fd_lock.close()
                     except Exception as e_close:
                         print(
                             f"Warning: Failed to close lock file descriptor during retry: {e_close}", file=sys.stderr
