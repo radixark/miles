@@ -34,9 +34,7 @@ concurrency:
 jobs:
 <% for job_name, config in jobs.items() %>
   << job_name >>:
-    if: >
-      ${{ github.event_name == 'workflow_dispatch' ||
-        (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>')) }}
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest

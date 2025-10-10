@@ -20,7 +20,9 @@ concurrency:
 jobs:
 
   e2e-test-short:
-    if: contains(github.event.pull_request.labels.*.name, 'run-ci-short')
+    if: >
+      ${{ github.event_name == 'workflow_dispatch' ||
+        (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short')) }}
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -59,7 +61,9 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-long:
-    if: contains(github.event.pull_request.labels.*.name, 'run-ci-long')
+    if: >
+      ${{ github.event_name == 'workflow_dispatch' ||
+        (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long')) }}
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
