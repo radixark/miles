@@ -10,9 +10,7 @@ FEW_GPU = bool(int(os.environ.get("MILES_TEST_FEW_GPU", "1")))
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"huggingface-cli download Qwen/Qwen3-0.6B --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command(
-        "huggingface-cli download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k"
-    )
+    U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
 
 def execute():
