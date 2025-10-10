@@ -17,8 +17,8 @@ def ensure_lock_files(lock_dir: str, pattern: str, total_gpus: int):
         p = lock_path(lock_dir, pattern, i)
         try:
             open(p, "a").close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: Could not create lock file {p}: {e}", file=sys.stderr)
 
 def try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: int):
     fds = []
@@ -38,12 +38,13 @@ def try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: 
                     time.sleep(SLEEP_BACKOFF)
             fds.append((d, fd))
         return fds
-    except Exception:
+    except Exception as e:
+        print(f"Error during specific GPU acquisition: {e}", file=sys.stderr)
         for _, fd in fds:
             try:
                 fd.close()
-            except:
-                pass
+            except Exception as e_close:
+                print(f"Warning: Failed to close lock file descriptor during cleanup: {e_close}", file=sys.stderr)
         raise
 
 def try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str, timeout: int):
@@ -55,7 +56,8 @@ def try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str, 
             path = lock_path(lock_dir, pattern, i)
             try:
                 fd = open(path, "w")
-            except Exception:
+            except Exception as e:
+                print(f"Warning: Could not open lock file {path}: {e}", file=sys.stderr)
                 continue
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -66,8 +68,8 @@ def try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str, 
                 for _, afd in acquired:
                     try:
                         afd.close()
-                    except:
-                        pass
+                    except Exception as e_close:
+                        print(f"Warning: Failed to close lock file descriptor during retry: {e_close}", file=sys.stderr)
                 acquired = []
                 break
         if time.time() - start > timeout:
@@ -108,8 +110,8 @@ def main():
                 except BlockingIOError:
                     pass
                 fd.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: Error while probing lock {path}: {e}", file=sys.stderr)
         print(",".join(str(x) for x in free))
         sys.exit(0)
 
@@ -140,8 +142,8 @@ def main():
         for _, fd in locks:
             try:
                 fd.close()
-            except:
-                pass
+            except Exception as e_close:
+                print(f"Warning: Failed to close lock file descriptor on missing command: {e_close}", file=sys.stderr)
         sys.exit(2)
 
     if cmd[0] == "--":
