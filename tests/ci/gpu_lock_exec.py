@@ -8,8 +8,10 @@ from typing import List, Tuple
 
 SLEEP_BACKOFF = 1.0
 
+
 def lock_path(lock_dir: str, pattern: str, i: int) -> str:
     return os.path.join(lock_dir, pattern.format(i=i))
+
 
 def ensure_lock_files(lock_dir: str, pattern: str, total_gpus: int):
     os.makedirs(lock_dir, exist_ok=True)
@@ -19,6 +21,7 @@ def ensure_lock_files(lock_dir: str, pattern: str, total_gpus: int):
             open(p, "a").close()
         except Exception as e:
             print(f"Warning: Could not create lock file {p}: {e}", file=sys.stderr)
+
 
 def try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: int):
     fds = []
@@ -47,6 +50,7 @@ def try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout: 
                 print(f"Warning: Failed to close lock file descriptor during cleanup: {e_close}", file=sys.stderr)
         raise
 
+
 def try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str, timeout: int):
     start = time.time()
     ensure_lock_files(lock_dir, pattern, total_gpus)
@@ -69,15 +73,19 @@ def try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str, 
                     try:
                         afd.close()
                     except Exception as e_close:
-                        print(f"Warning: Failed to close lock file descriptor during retry: {e_close}", file=sys.stderr)
+                        print(
+                            f"Warning: Failed to close lock file descriptor during retry: {e_close}", file=sys.stderr
+                        )
                 acquired = []
                 break
         if time.time() - start > timeout:
             raise TimeoutError(f"Timeout acquiring {count} GPUs (out of {total_gpus})")
         time.sleep(SLEEP_BACKOFF)
 
+
 def parse_devices(s: str) -> List[int]:
     return [int(x) for x in s.split(",") if x.strip() != ""]
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -85,9 +93,16 @@ def main():
     p.add_argument("--devices", type=str, default=None, help="Comma separated explicit devices to acquire (e.g. 0,1)")
     p.add_argument("--total-gpus", type=int, default=8, help="Total GPUs on the machine")
     p.add_argument("--timeout", type=int, default=3600, help="Seconds to wait for locks before failing")
-    p.add_argument("--target-env-name", type=str, default="CUDA_VISIBLE_DEVICES", help="Which env var to set for devices")
+    p.add_argument(
+        "--target-env-name", type=str, default="CUDA_VISIBLE_DEVICES", help="Which env var to set for devices"
+    )
     p.add_argument("--lock-dir", type=str, default="/dev/shm", help="Directory where lock files live")
-    p.add_argument("--lock-pattern", type=str, default="custom_gpu_lock_{i}.lock", help='Filename pattern with "{i}" placeholder, e.g. "custom_gpu_lock_{i}.lock"')
+    p.add_argument(
+        "--lock-pattern",
+        type=str,
+        default="custom_gpu_lock_{i}.lock",
+        help='Filename pattern with "{i}" placeholder, e.g. "custom_gpu_lock_{i}.lock"',
+    )
     p.add_argument("--print-only", action="store_true", help="Probe free devices and print them (does NOT hold locks)")
     p.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to exec after '--' (required unless --print-only)")
     args = p.parse_args()
@@ -149,6 +164,7 @@ def main():
     if cmd[0] == "--":
         cmd = cmd[1:]
     os.execvp(cmd[0], cmd)
+
 
 if __name__ == "__main__":
     main()

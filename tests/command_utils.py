@@ -66,11 +66,7 @@ def execute_train(
         }
     )
 
-    source_cmd = (
-        f'source "{repo_base_dir}/scripts/models/{model_type}.sh" && '
-        if model_type is not None
-        else ""
-    )
+    source_cmd = f'source "{repo_base_dir}/scripts/models/{model_type}.sh" && ' if model_type is not None else ""
     model_args_str = "${MODEL_ARGS[@]}" if model_type is not None else ""
 
     exec_command(
