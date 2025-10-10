@@ -4,7 +4,8 @@ import command_utils as U
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 2
-
+SGLANG_ROUTER_PORT = 31000
+SGLANG_ENGINE_PORT = 32000
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -95,9 +96,10 @@ def execute():
         # TODO support non-colocate (e.g. remove rollout engine resource occupation)
         "--colocate "
         # isolated-rollout related
-        "--sglang-external "
+        "--rollout-external "
+        f"--rollout-external-engine-addrs 127.0.0.1:{SGLANG_ENGINE_PORT} "
         "--sglang-router-ip 127.0.0.1 "
-        f"--sglang-router-port {TODO} "
+        f"--sglang-router-port {SGLANG_ROUTER_PORT} "
     )
 
     train_args = (
