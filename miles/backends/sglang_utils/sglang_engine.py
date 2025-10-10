@@ -26,9 +26,9 @@ def get_base_gpu_id(args, rank):
     return start_index
 
 
-def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-
+def launch_server_process(server_args: ServerArgs, daemon: bool = False) -> multiprocessing.Process:
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
+    p.daemon = daemon
     p.start()
 
     if server_args.node_rank != 0:
