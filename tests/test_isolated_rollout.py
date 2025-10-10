@@ -75,7 +75,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 1 " f"--sglang-mem-fraction-static 0.6 "
+    sglang_args = "--rollout-num-gpus-per-engine 2 " f"--sglang-mem-fraction-static 0.6 "
 
     ci_args = (
         "--ci-test "
@@ -132,8 +132,15 @@ def _launch_sglang_router_and_engine():
 
     import requests
     from miles.backends.sglang_utils.sglang_engine import launch_server_process
+    from sglang.srt.server_args import ServerArgs
 
-    launch_server_process(server_args)
+    launch_server_process(ServerArgs(
+        model_path=TODO,
+        trust_remote_code=True,
+        host=SGLANG_ENGINE_IP,
+        port=SGLANG_ENGINE_PORT,
+        tp_size=2,
+    ))
 
     requests.post(
         f"http://{SGLANG_ROUTER_IP}:{SGLANG_ROUTER_PORT}/add_worker?url=http://{SGLANG_ENGINE_IP}:{SGLANG_ENGINE_PORT}"
