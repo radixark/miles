@@ -3,7 +3,7 @@ import os
 import command_utils as U
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+TIGHT_DEVICE_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")))
 
 MODEL_NAME = "GLM-Z1-9B-0414"
 MODEL_TYPE = "glm4-9B"
@@ -62,7 +62,7 @@ def execute():
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 4608} "
+        f"--max-tokens-per-gpu {2048 if TIGHT_DEVICE_MEMORY else 4608} "
     )
 
     grpo_args = (

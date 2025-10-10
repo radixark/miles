@@ -2,6 +2,7 @@ import os
 import command_utils as U
 
 FEW_GPU = bool(int(os.environ.get("MILES_TEST_FEW_GPU", "1")))
+TIGHT_DEVICE_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")))
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -74,7 +75,9 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.7 "
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 1 " f"--sglang-mem-fraction-static {0.6 if TIGHT_DEVICE_MEMORY else 0.7} "
+    )
 
     misc_args = (
         # default dropout in megatron is 0.1
