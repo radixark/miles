@@ -1,18 +1,18 @@
 import os
 import command_utils as U
 
+FEW_GPU = bool(int(os.environ.get("MILES_TEST_FEW_GPU", "1")))
+
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-
-
-FEW_GPU = bool(int(os.environ.get("MILES_TEST_FEW_GPU", "1")))
+NUM_GPUS = 2 if FEW_GPU else 4
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir /root/models/{MODEL_NAME}")
     U.exec_command("huggingface-cli download --repo-type dataset zhuzilin/gsm8k --local-dir gsm8k")
-    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE)
+    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=NUM_GPUS)
 
 
 def execute():
@@ -103,7 +103,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=2 if FEW_GPU else 4,
+        num_gpus=NUM_GPUS,
         model_type=MODEL_TYPE,
         train_script="train_async.py",
     )

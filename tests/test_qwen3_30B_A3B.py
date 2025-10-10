@@ -2,12 +2,13 @@ import os
 
 import command_utils as U
 
-MODEL_NAME = "Qwen3-30B-A3B"
-MODEL_TYPE = "qwen3-30B-A3B"
-
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+
+MODEL_NAME = "Qwen3-30B-A3B"
+MODEL_TYPE = "qwen3-30B-A3B"
+NUM_GPUS = 8
 
 
 def prepare():
@@ -17,7 +18,7 @@ def prepare():
     U.exec_command("hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k")
     U.exec_command("hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024")
 
-    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE)
+    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=NUM_GPUS)
 
 
 def execute():
@@ -125,7 +126,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=8,
+        num_gpus=NUM_GPUS,
         model_type=MODEL_TYPE,
     )
 
