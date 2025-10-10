@@ -1,3 +1,21 @@
+<% set jobs = {
+    'e2e-test-short': {
+      'label': 'run-ci-short',
+      'tests': [
+        {'test_file': 'test_quick_start_glm4_9B.py', 'num_gpus': 8},
+        {'test_file': 'test_qwen3_30B_A3B.py', 'num_gpus': 8},
+      ],
+    },
+    'e2e-test-long': {
+      'label': 'run-ci-long',
+      'tests': [
+        {'test_file': 'test_qwen2.5_0.5B_gsm8k.py', 'num_gpus': 2},
+        {'test_file': 'test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 2},
+        {'test_file': 'test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 2},
+        {'test_file': 'test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 2},
+      ],
+    },
+} %>
 name: PR Test
 
 on:
@@ -14,10 +32,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  e2e-test:
+<% for job_name, config in jobs.items() %>
+  << job_name >>:
     if: >
-      ${{ github.event_name == 'workflow_dispatch' || 
-        (github.event.pull_request && contains(join(github.event.pull_request.labels.*.name, ','), matrix.info.required_label)) }}
+      ${{ github.event_name == 'workflow_dispatch' ||
+        (github.event.pull_request && contains(join(github.event.pull_request.labels.*.name, ','), '<< config.label >>')) }}
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
@@ -35,14 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info:
-          - {test_file: test_quick_start_glm4_9B.py, num_gpus: 8, required_label: run-ci-short}
-          - {test_file: test_qwen3_30B_A3B.py, num_gpus: 8, required_label: run-ci-short}
-          - {test_file: test_qwen2.5_0.5B_gsm8k.py, num_gpus: 2, required_label: run-ci-long}
-          - {test_file: test_qwen2.5_0.5B_gsm8k_async.py, num_gpus: 2, required_label: run-ci-long}
-          - {test_file: test_qwen3_0.6B_fsdp_colocated_2xGPU.py, num_gpus: 2, required_label: run-ci-long}
-          - {test_file: test_qwen3_0.6B_fsdp_distributed.py, num_gpus: 2, required_label: run-ci-long}
-          # TODO use deterministic kernel
+        info: << config.tests | tojson >>
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -61,3 +73,4 @@ jobs:
       - name: Execute
         shell: bash
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+<% endfor %>
