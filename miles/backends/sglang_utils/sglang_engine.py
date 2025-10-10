@@ -95,11 +95,14 @@ class SGLangEngine(RayActor):
             self._init_normal(server_args_dict)
 
     def _init_external(self, server_args_dict):
+        actual_server_args = TODO
+
         # sanity check values should agree
         for name, expect_value in server_args_dict.items():
             if name in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS:
                 continue
-            TODO
+            actual_value = actual_server_args.get(name)
+            assert actual_value == expect_value, f"{name=} {expect_value=} {actual_value=} {server_args_dict=} {actual_server_args=}"
 
     def _init_normal(self, server_args_dict):
         print(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
