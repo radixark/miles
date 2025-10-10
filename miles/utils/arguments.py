@@ -341,6 +341,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Use external SGLang instances instead of launching them inside the framework.",
             )
+            parser.add_argument(
+                "--rollout-external-engine-addrs",
+                type=str,
+                default=None,
+                nargs="+",
+                help="Address and ports of the external engines.",
+            )
             return parser
 
         # data
