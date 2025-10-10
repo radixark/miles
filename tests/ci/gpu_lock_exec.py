@@ -137,7 +137,7 @@ def _try_acquire_count(count: int, total_gpus: int, path_pattern: str, timeout: 
                 break
         if time.time() - start > timeout:
             raise TimeoutError(f"Timeout acquiring {count} GPUs (out of {total_gpus})")
-        print(f"try_acquire_count failed, sleep and retry (only got: {[x.gpu_id for x in fd_locks]})")
+        print(f"[gpu_lock_exec] try_acquire_count failed, sleep and retry (only got: {[x.gpu_id for x in fd_locks]})")
         time.sleep(SLEEP_BACKOFF * random.random())
 
 
