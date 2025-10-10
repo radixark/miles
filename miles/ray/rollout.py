@@ -69,6 +69,10 @@ class RolloutManager:
         self._health_check_timeout = args.rollout_health_check_timeout
         self._health_check_first_wait = args.rollout_health_check_first_wait
 
+    def dispose(self):
+        if self.args.ci_test:
+            self._metric_checker.dispose()
+
     def get_rollout_engines_and_lock(self):
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
