@@ -1,5 +1,5 @@
 ################################################################################
-# This file is auto-generated from a template. Do not edit manually.
+# This file is auto-generated from the .j2 file via generate_github_workflows.py. Do not edit manually.
 ################################################################################
 
 name: PR Test
