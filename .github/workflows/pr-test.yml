@@ -18,8 +18,7 @@ jobs:
     # TODO may use run-ci label etc
     if: >
       ${{ github.event_name == 'workflow_dispatch' || 
-        (github.event.pull_request && github.event.pull_request.draft == false && 
-        contains(join(github.event.pull_request.labels.*.name, ','), matrix.info.required_label)) }}
+        (github.event.pull_request && contains(join(github.event.pull_request.labels.*.name, ','), matrix.info.required_label)) }}
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
