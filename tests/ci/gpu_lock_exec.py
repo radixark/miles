@@ -121,23 +121,26 @@ def _try_acquire_count(count: int, total_gpus: int, path_pattern: str, timeout: 
         fd_locks: List = []
         for gpu_id in range(total_gpus):
             fd_lock = FdLock(path_pattern, gpu_id=gpu_id)
-            try:
-                fd_lock.open()
-            except Exception as e:
-                print(f"Warning: Could not open lock file: {e}", file=sys.stderr)
-                continue
+            fd_lock.open()
             try:
                 fd_lock.lock()
-                fd_locks.append(fd_lock)
-                if len(fd_locks) == count:
-                    return fd_locks
             except BlockingIOError:
-                for fd_lock in fd_locks:
-                    fd_lock.close()
-                break
+                fd_lock.close()
+                continue
+
+            fd_locks.append(fd_lock)
+            if len(fd_locks) == count:
+                return fd_locks
+
+        gotten_gpu_ids = [x.gpu_id for x in fd_locks]
+        for fd_lock in fd_locks:
+            fd_lock.close()
+        del fd_lock
+
         if time.time() - start > timeout:
             raise TimeoutError(f"Timeout acquiring {count} GPUs (out of {total_gpus})")
-        print(f"[gpu_lock_exec] try_acquire_count failed, sleep and retry (only got: {[x.gpu_id for x in fd_locks]})")
+
+        print(f"[gpu_lock_exec] try_acquire_count failed, sleep and retry (only got: {gotten_gpu_ids})")
         time.sleep(SLEEP_BACKOFF * random.random())
 
 
