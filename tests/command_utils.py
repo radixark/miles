@@ -130,9 +130,7 @@ def get_bool_env_var(name: str, default: str = "false") -> bool:
 
     if (value not in truthy_values) and (value not in falsy_values):
         if value not in _warned_bool_env_var_keys:
-            logger.warning(
-                f"get_bool_env_var({name}) see non-understandable value={value} and treat as false"
-            )
+            print(f"get_bool_env_var({name}) see non-understandable value={value} and treat as false")
         _warned_bool_env_var_keys.add(value)
 
     return value in truthy_values
