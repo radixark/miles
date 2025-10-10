@@ -34,11 +34,19 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     if server_args.node_rank != 0:
         return
 
-    base_url = server_args.url()
+    _wait_server_healthy(
+        base_url=server_args.url(),
+        api_key=server_args.api_key,
+        is_process_alive=lambda: p.is_alive(),
+    )
 
+    return p
+
+
+def _wait_server_healthy(base_url, api_key, is_process_alive):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
-        "Authorization": f"Bearer {server_args.api_key}",
+        "Authorization": f"Bearer {api_key}",
     }
 
     with requests.Session() as session:
@@ -50,7 +58,7 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
             except requests.RequestException:
                 pass
 
-            if not p.is_alive():
+            if not is_process_alive():
                 raise Exception("Server process terminated unexpectedly.")
 
             time.sleep(2)
@@ -65,12 +73,10 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
             except requests.RequestException:
                 pass
 
-            if not p.is_alive():
+            if not is_process_alive():
                 raise Exception("Server process terminated unexpectedly.")
 
             time.sleep(2)
-
-    return p
 
 
 class SGLangEngine(RayActor):
