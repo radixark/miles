@@ -78,7 +78,7 @@ class SGLangEngine(RayActor):
         self.args = args
         self.rank = rank
 
-    def init(self, dist_init_addr, port, nccl_port):
+    def init(self, dist_init_addr, port, nccl_port, external_ip=None):
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
 
