@@ -339,6 +339,7 @@ class UpdateWeightFromDistributed:
             param_data = param.data.contiguous()
 
             # Synchronous broadcast to avoid memory buildup
+            print(f"hi {type(param_data)=} {param_data=}")
             dist.broadcast(param_data, 0, group=self._model_update_groups, async_op=False)
 
             # Clean up immediately after broadcast
