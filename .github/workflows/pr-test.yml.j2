@@ -26,6 +26,12 @@ on:
     branches: [main]
     types: [synchronize, labeled]
   workflow_dispatch:
+    inputs:
+      infinite_run:
+        description: 'Run training infinitely'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -59,6 +65,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      MILES_TEST_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
 
     steps:
       - name: Checkout repository
