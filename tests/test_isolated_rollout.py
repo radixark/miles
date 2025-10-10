@@ -3,7 +3,6 @@ import time
 
 import command_utils as U
 
-
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 2
@@ -11,6 +10,7 @@ SGLANG_ROUTER_IP = "127.0.0.1"
 SGLANG_ROUTER_PORT = 31000
 SGLANG_ENGINE_IP = "127.0.0.1"
 SGLANG_ENGINE_PORT = 32000
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -134,6 +134,7 @@ def execute():
 
 def _launch_sglang_router():
     from sglang_router.launch_router import RouterArgs
+
     from miles.utils.http_utils import run_router
 
     print("launch_sglang_router", flush=True)
@@ -151,10 +152,12 @@ def _launch_sglang_router():
     time.sleep(3)
     assert proc_router.is_alive()
 
+
 def _launch_sglang_engine():
     import requests
-    from miles.backends.sglang_utils.sglang_engine import launch_server_process
     from sglang.srt.server_args import ServerArgs
+
+    from miles.backends.sglang_utils.sglang_engine import launch_server_process
 
     print("launch_sglang_engine", flush=True)
     launch_server_process(
