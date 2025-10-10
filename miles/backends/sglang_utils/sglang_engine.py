@@ -88,7 +88,13 @@ class SGLangEngine(RayActor):
         self.server_host = server_args_dict["host"]
         self.server_port = server_args_dict["port"]
 
-        self._init_normal(server_args_dict)
+        if self.args.rollout_external:
+            self._init_external(server_args_dict)
+        else:
+            self._init_normal(server_args_dict)
+
+    def _init_external(self, server_args_dict):
+        TODO
 
     def _init_normal(self, server_args_dict):
         print(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
