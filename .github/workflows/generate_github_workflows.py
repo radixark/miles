@@ -6,7 +6,8 @@ def main():
     """
     Generates GitHub workflow YAML files from Jinja2 templates.
     """
-    workflows_dir = Path(".github/workflows")
+    workflows_dir = Path(__file__).parent
+    print(f"Scan dir: {workflows_dir}")
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(workflows_dir)),
         block_start_string="<%",
