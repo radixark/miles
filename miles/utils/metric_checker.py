@@ -16,8 +16,8 @@ class MetricChecker:
         actual_value = metrics.get(self.args.ci_metric_checker_key)
         assert actual_value is not None, f"{metrics=} {self.args.ci_metric_checker_key=}"
 
-        check_success = actual_value >= self.args.ci_metric_checker_value
-        print(f"[MetricChecker] {check_success=} {actual_value=} {self.args.ci_metric_checker_value=}")
+        check_success = actual_value >= self.args.ci_metric_checker_threshold
+        print(f"[MetricChecker] {check_success=} {actual_value=} {self.args.ci_metric_checker_threshold=}")
 
         self._exists_check_success |= check_success
 
