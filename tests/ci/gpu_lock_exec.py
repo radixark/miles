@@ -110,10 +110,7 @@ def _try_acquire_specific(devs: List[int], lock_dir: str, pattern: str, timeout:
     except Exception as e:
         print(f"Error during specific GPU acquisition: {e}", file=sys.stderr)
         for fd_lock in fds:
-            try:
-                fd_lock.close()
-            except Exception as e_close:
-                print(f"Warning: Failed to close lock file descriptor during cleanup: {e_close}", file=sys.stderr)
+            fd_lock.close()
         raise
 
 
@@ -136,12 +133,7 @@ def _try_acquire_count(count: int, total_gpus: int, lock_dir: str, pattern: str,
                     return acquired
             except BlockingIOError:
                 for fd_lock in acquired:
-                    try:
-                        fd_lock.close()
-                    except Exception as e_close:
-                        print(
-                            f"Warning: Failed to close lock file descriptor during retry: {e_close}", file=sys.stderr
-                        )
+                    fd_lock.close()
                 acquired = []
                 break
         if time.time() - start > timeout:
@@ -164,7 +156,10 @@ class FdLock:
 
     def close(self):
         assert self.fd is not None
-        self.fd.close()
+        try:
+            self.fd.close()
+        except Exception as e:
+            print(f"Warning: Failed to close file descriptor: {e}", file=sys.stderr)
         self.fd = None
 
 def _ensure_lock_files(lock_dir: str, pattern: str, total_gpus: int):
