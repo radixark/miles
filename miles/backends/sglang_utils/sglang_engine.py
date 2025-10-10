@@ -183,6 +183,9 @@ class SGLangEngine(RayActor):
             raise TimeoutError("Timeout while flushing cache.")
 
     def shutdown(self):
+        if self.args.rollout_external:
+            return
+
         requests.post(
             f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}"
         )
