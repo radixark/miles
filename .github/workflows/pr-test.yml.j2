@@ -36,7 +36,7 @@ jobs:
   << job_name >>:
     if: >
       ${{ github.event_name == 'workflow_dispatch' ||
-        (github.event.pull_request && contains(join(github.event.pull_request.labels.*.name, ','), '<< config.label >>')) }}
+        (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>')) }}
     runs-on: self-hosted
     container:
       image: slimerl/slime:latest
