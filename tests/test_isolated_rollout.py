@@ -98,8 +98,9 @@ def execute():
         "--colocate "
         
         # isolated-rollout related
-        "--rollout-external-host 127.0.0.1 "
-        f"--rollout-external-port {TODO} "
+        "--sglang-external "
+        "--sglang-router-ip 127.0.0.1 "
+        f"--sglang-router-port {TODO} "
     )
 
     train_args = (
