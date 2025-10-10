@@ -59,4 +59,4 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/${{ matrix.info.test_file }}
+        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
