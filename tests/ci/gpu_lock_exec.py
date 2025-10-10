@@ -20,7 +20,7 @@ def main():
 
     dev_list = ",".join(str(d) for d, _ in locks)
     os.environ[args.target_env_name] = dev_list
-    print(f"Acquired GPUs: {dev_list}", flush=True)
+    print(f"[gpu_lock_exec] Acquired GPUs: {dev_list}", flush=True)
 
     cmd = args.cmd
     if cmd[0] == "--":
