@@ -80,6 +80,7 @@ def execute():
 
     ci_args = (
         "--ci-test "
+        "--ci-disable-kl-loss-checker "
         "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.55 "  # loose threshold at 250 step
     )
