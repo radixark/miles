@@ -122,7 +122,8 @@ def execute():
     )
 
     # Here we use infra in miles, but real users will use their own infra
-    _launch_sglang_router_and_engine()
+    _launch_sglang_router()
+    _launch_sglang_engine()
 
     U.execute_train(
         train_args=train_args,
