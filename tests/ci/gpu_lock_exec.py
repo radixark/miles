@@ -41,7 +41,7 @@ def _parse_args():
     p.add_argument("--count", type=int, default=None, help="Acquire this many GPUs (any free ones)")
     p.add_argument("--devices", type=str, default=None, help="Comma separated explicit devices to acquire (e.g. 0,1)")
     p.add_argument("--total-gpus", type=int, default=8, help="Total GPUs on the machine")
-    p.add_argument("--timeout", type=int, default=3600, help="Seconds to wait for locks before failing")
+    p.add_argument("--timeout", type=int, default=3600 * 24, help="Seconds to wait for locks before failing")
     p.add_argument(
         "--target-env-name", type=str, default="CUDA_VISIBLE_DEVICES", help="Which env var to set for devices"
     )
