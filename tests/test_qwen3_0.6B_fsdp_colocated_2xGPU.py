@@ -19,7 +19,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3000 "
+        f"--num-rollout {60} "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
