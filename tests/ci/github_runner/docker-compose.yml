@@ -10,8 +10,7 @@ services:
       # it requires this folder
       - /home/runner/externals:/home/runner/externals
     deploy:
-      # TODO 4 runner + lock gpu when running
-      replicas: 1
+      replicas: 4
     restart: always
     environment:
       RUNNER_ALLOW_RUNASROOT: "1"
