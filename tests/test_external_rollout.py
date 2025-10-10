@@ -167,6 +167,7 @@ def _launch_sglang_engine():
         ServerArgs(
             model_path=f"/root/models/{MODEL_NAME}/",
             trust_remote_code=True,
+            enable_memory_saver=True,
             host=SGLANG_ENGINE_IP,
             port=SGLANG_ENGINE_PORT,
             tp_size=2,
