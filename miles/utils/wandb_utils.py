@@ -49,6 +49,17 @@ def init_wandb_primary(args):
     else:
         settings_kwargs = dict(mode="shared", x_primary=True)
 
+    if args.sglang_enable_metrics:
+        print(f"Forward SGLang metrics to WandB.")
+        settings_kwargs |= dict(
+            x_stats_open_metrics_endpoints={
+                "sgl_engine": f"http://{TODO}/engine_metrics",
+            },
+            x_stats_open_metrics_filters={
+                "sgl_engine.*": {},
+            },
+        )
+
     # Prepare wandb init parameters
     init_kwargs = {
         "entity": args.wandb_team,
