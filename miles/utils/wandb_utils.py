@@ -43,12 +43,6 @@ def init_wandb_primary(args):
         group = args.wandb_group
         run_name = args.wandb_group
 
-    # Configure settings based on offline/online mode
-    if offline:
-        settings_kwargs = dict(mode="offline")
-    else:
-        settings_kwargs = dict(mode="shared", x_primary=True)
-
     # Prepare wandb init parameters
     init_kwargs = {
         "entity": args.wandb_team,
@@ -56,8 +50,13 @@ def init_wandb_primary(args):
         "group": group,
         "name": run_name,
         "config": args.__dict__,
-        "settings": wandb.Settings(**settings_kwargs),
     }
+
+    # Configure settings based on offline/online mode
+    if offline:
+        init_kwargs["settings"] = wandb.Settings(mode="offline")
+    else:
+        init_kwargs["settings"] = wandb.Settings(mode="shared", x_primary=True)
 
     # Add custom directory if specified
     if args.wandb_dir:
