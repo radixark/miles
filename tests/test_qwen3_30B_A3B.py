@@ -93,6 +93,7 @@ def execute():
         "--sglang-deepep-mode auto "
         "--sglang-max-running-requests 512 "
         "--sglang-disable-radix-cache "
+        "--sglang-enable-metrics "
     )
 
     ci_args = "--ci-test "
