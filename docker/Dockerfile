@@ -43,8 +43,15 @@ RUN if [ "${TARGET_VARIANT}" = "hopper" ]; then \
 # flash attn
 # the newest version megatron supports is v2.7.4.post1
 RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1
+
 # TODO shall we lock version
 RUN pip install flash-linear-attention
+
+# TODO why this is only installed in blackwell and not in hopper?
+RUN git clone https://github.com/Dao-AILab/flash-attention.git && cd flash-attention/ && git checkout 27f501d && cd hopper/ && python setup.py install
+RUN python_path=`python -c "import site; print(site.getsitepackages()[0])"` && \
+   mkdir -p $python_path/flash_attn_3 && \
+   wget -P $python_path/flash_attn_3 https://raw.githubusercontent.com/Dao-AILab/flash-attention/27f501dbe011f4371bff938fe7e09311ab3002fa/hopper/flash_attn_interface.py
 
 WORKDIR /root/
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
