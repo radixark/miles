@@ -45,9 +45,10 @@ RUN if [ "${TARGET_VARIANT}" = "hopper" ]; then \
 RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1
 
 # TODO shall we lock version
+# TODO why this is only installed in hopper?
 RUN pip install flash-linear-attention
 
-# TODO why this is only installed in blackwell and not in hopper?
+# TODO why this is only installed in blackwell?
 RUN git clone https://github.com/Dao-AILab/flash-attention.git && cd flash-attention/ && git checkout 27f501d && cd hopper/ && python setup.py install
 RUN python_path=`python -c "import site; print(site.getsitepackages()[0])"` && \
    mkdir -p $python_path/flash_attn_3 && \
