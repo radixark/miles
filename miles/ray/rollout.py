@@ -19,6 +19,7 @@ from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.types import Sample
 from miles.utils.wandb_utils import init_wandb_secondary
+from miles.rollout.base_types import RolloutFnCallOutput
 
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
 
@@ -99,7 +100,7 @@ class RolloutManager:
             # if debug train only, we don't generate evaluation data
             return
         # TODO: add fault tolerance to eval
-        data = self.eval_generate_rollout(self.args, rollout_id, self.data_source, evaluation=True)
+        data = _call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
@@ -123,7 +124,7 @@ class RolloutManager:
             )["samples"]
             data = [Sample.from_dict(sample) for sample in data]
         else:
-            data = self.generate_rollout(self.args, rollout_id, self.data_source, evaluation=False)
+            data = _call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
             # flatten the data if it is a list of lists
             while isinstance(data[0], list):
                 data = sum(data, [])
@@ -472,3 +473,9 @@ def _log_rollout_data(rollout_id, args, samples, rollout_time):
 
         tb = _TensorboardAdapter(args)
         tb.log(data=log_dict, step=step)
+
+def _call_rollout_fn(fn, *args, **kwargs):
+    output = fn(*args, **kwargs)
+    if not isinstance(output, RolloutFnCallOutput):
+        output = RolloutFnCallOutput(samples=output)
+    return output
