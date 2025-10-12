@@ -11,8 +11,6 @@ RUN apt install -y nvtop
 # TODO: change to pip install sglang-router after it has a new release
 RUN pip install sglang-router --force-reinstall
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git --no-cache-dir --force-reinstall
-RUN pip install ray[default]
-RUN pip install httpx[http2] wandb pylatexenc blobfile accelerate "mcp[cli]"
 
 # mbridge
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git --no-deps
