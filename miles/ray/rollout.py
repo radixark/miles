@@ -485,4 +485,7 @@ def _compute_zero_std_metrics(args, all_samples: List[Sample]):
 
     interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
 
-    return TODO
+    return {
+        f"rollout/zero_std/count_{reward}": len(items)
+        for reward, items in group_by(interesting_rewards).items()
+    }
