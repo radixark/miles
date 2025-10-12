@@ -24,7 +24,6 @@ RUN pip -v install --no-build-isolation git+https://github.com/NVIDIA/Transforme
 # the newest version megatron supports is v2.7.4
 RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1
 RUN pip install flash-linear-attention
-RUN pip install git+https://github.com/huggingface/transformers.git@main
 
 WORKDIR /root/
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
