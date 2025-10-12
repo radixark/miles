@@ -12,9 +12,6 @@ RUN apt install -y nvtop
 RUN pip install sglang-router --force-reinstall
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git --no-cache-dir --force-reinstall
 
-# mbridge
-RUN pip install git+https://github.com/ISEEKYAN/mbridge.git --no-deps
-
 RUN TORCH_CUDA_ARCH_LIST="8.0;8.9;9.0;9.0a" pip install git+https://github.com/fanshiqing/grouped_gemm@v1.1.4
 # apex
 RUN NVCC_APPEND_FLAGS="--threads 4" \

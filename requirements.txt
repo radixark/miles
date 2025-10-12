@@ -11,3 +11,4 @@ torch
 transformers
 wandb
 blobfile
+git+https://github.com/ISEEKYAN/mbridge.git
