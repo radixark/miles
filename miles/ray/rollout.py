@@ -480,6 +480,9 @@ def _compute_zero_std_metrics(args, all_samples: List[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
 
-    sample_groups = group_by(all_samples, lambda s: s.group_index)
-    filtered_sample_groups = [g for g in sample_groups if _is_zero_std(g)]
+    all_sample_groups = group_by(all_samples, lambda s: s.group_index)
+    interesting_sample_groups = [g for g in all_sample_groups if _is_zero_std(g)]
+
+    interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
+
     return TODO
