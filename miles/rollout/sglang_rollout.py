@@ -401,7 +401,7 @@ def _call_dynamic_filter(fn, *args, **kwargs):
 
 class _MetricGatherer:
     def __init__(self):
-        self._dynamic_filter_drop_reason_count = defaultdict()
+        self._dynamic_filter_drop_reason_count = defaultdict(lambda: 0)
 
     def on_dynamic_filter_drop(self, reason: Optional[str]):
         if not reason:
