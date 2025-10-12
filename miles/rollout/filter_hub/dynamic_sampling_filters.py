@@ -1,10 +1,9 @@
 import torch
-from miles.utils.types import Sample
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 
+from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.utils.types import Sample
 
 __all__ = ["check_reward_nonzero_std"]
-
 
 
 def check_reward_nonzero_std(args, samples: list[Sample], **kwargs):
