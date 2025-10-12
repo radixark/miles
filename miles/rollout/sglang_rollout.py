@@ -4,7 +4,7 @@ import copy
 import io
 from argparse import Namespace
 from collections import defaultdict
-from typing import Any, Callable, Union, Optional
+from typing import Any, Callable, Optional, Union
 
 from PIL import Image
 from tqdm import tqdm
