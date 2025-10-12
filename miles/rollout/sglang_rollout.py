@@ -381,9 +381,12 @@ async def generate_rollout_async(
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
 
+    num_successful_samples = sum(1 for group in data for _sample in group)
+    metrics = metric_gatherer.collect(num_successful_samples=num_successful_samples)
+
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
-    return RolloutFnCallOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
+    return RolloutFnCallOutput(samples=data, metrics=metrics), aborted_samples
 
 
 def _call_dynamic_filter(fn, *args, **kwargs):
@@ -408,9 +411,9 @@ class _MetricGatherer:
             return
         self._dynamic_filter_drop_reason_count[reason] += 1
 
-    def collect(self):
+    def collect(self, num_successful_samples: int):
         return {
-            f"rollout/dynamic_filter/drop_{reason}": count
+            f"rollout/dynamic_filter/drop_ratio/{reason}": count / num_successful_samples
             for reason, count in self._dynamic_filter_drop_reason_count.items()
         }
 
