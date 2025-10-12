@@ -19,6 +19,7 @@ from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.types import Sample
 from miles.utils.wandb_utils import init_wandb_secondary
+from miles.utils.iter_utils import group_by
 
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
 
@@ -475,4 +476,5 @@ def _log_rollout_data(rollout_id, args, samples, rollout_time):
         tb.log(data=log_dict, step=step)
 
 def _compute_zero_std_metrics(samples):
+    sample_groups = group_by(samples, lambda s: s.group_index)
     return TODO
