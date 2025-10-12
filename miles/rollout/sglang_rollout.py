@@ -357,6 +357,7 @@ async def generate_rollout_async(
             assert len(group) == args.n_samples_per_prompt
             dynamic_filter_output = _call_dynamic_filter(dynamic_filter, args, group)
             if not dynamic_filter_output.keep:
+                metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
                 state.remaining_batch_size -= 1
                 continue
 
@@ -401,7 +402,7 @@ class _MetricGatherer:
     def __init__(self):
         pass
 
-    def on_dynamic_filter(self, reason: Optional[str]):
+    def on_dynamic_filter_drop(self, reason: Optional[str]):
         if not reason:
             return
         TODO
