@@ -12,7 +12,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.ray.rollout_data_source import RolloutDataSourceWithBuffer
-from miles.rollout.base_types import RolloutFnCallOutput
+from miles.rollout.base_types import call_rollout_fn
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import find_available_port, get_host_info, init_http_client
 from miles.utils.metric_checker import MetricChecker
@@ -100,7 +100,7 @@ class RolloutManager:
             # if debug train only, we don't generate evaluation data
             return
         # TODO: add fault tolerance to eval
-        data = _call_rollout_fn(
+        data = call_rollout_fn(
             self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
         ).metrics
         metrics = _log_eval_rollout_data(rollout_id, self.args, data)
@@ -127,7 +127,7 @@ class RolloutManager:
             data = [Sample.from_dict(sample) for sample in data]
             metrics = None
         else:
-            data = _call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
+            data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
             metrics = data.metrics
             data = data.samples
             # flatten the data if it is a list of lists
@@ -478,13 +478,3 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
 
         tb = _TensorboardAdapter(args)
         tb.log(data=log_dict, step=step)
-
-
-def _call_rollout_fn(fn, *args, evaluation: bool, **kwargs):
-    output = fn(*args, **kwargs, evaluation=evaluation)
-
-    # compatibility for legacy version
-    if not isinstance(output, RolloutFnCallOutput):
-        output = RolloutFnCallOutput(metrics=output) if evaluation else RolloutFnCallOutput(samples=output)
-
-    return output
