@@ -85,9 +85,9 @@ class RolloutManager:
         monitor_started = self._health_monitor.start()
         start_time = time.time()
         try:
-            data = self._get_rollout_data(rollout_id=rollout_id)
+            data, metrics = self._get_rollout_data(rollout_id=rollout_id)
             self._save_debug_rollout_data(data, rollout_id=rollout_id)
-            _log_rollout_data(rollout_id, self.args, data, time.time() - start_time)
+            _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
             data = self._convert_samples_to_train_data(data)
             return Box(ray.put(data))
         finally:
@@ -125,9 +125,11 @@ class RolloutManager:
                 open(self.args.load_debug_rollout_data.format(rollout_id=rollout_id), "rb"),
             )["samples"]
             data = [Sample.from_dict(sample) for sample in data]
+            metrics = None
         else:
             data = _call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
-            data = data.samples  # TODO also handle metrics
+            metrics = data.metrics
+            data = data.samples
             # flatten the data if it is a list of lists
             while isinstance(data[0], list):
                 data = sum(data, [])
@@ -137,7 +139,7 @@ class RolloutManager:
                 origin_data_length = len(data)
                 data = data[:trim_len]
                 print(f"trim number of samples from {origin_data_length} to {trim_len}")
-        return data
+        return data, metrics
 
     def _save_debug_rollout_data(self, data, rollout_id):
         # TODO to be refactored (originally Buffer._set_data)
@@ -449,11 +451,11 @@ def _log_eval_rollout_data(rollout_id, args, data):
     return log_dict
 
 
-def _log_rollout_data(rollout_id, args, samples, rollout_time):
+def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if args.load_debug_rollout_data:
         return
 
-    log_dict = {}
+    log_dict = {**(rollout_extra_metrics or {})}
     response_lengths = [
         sum(sample.loss_mask) if sample.loss_mask is not None else sample.response_length for sample in samples
     ]
