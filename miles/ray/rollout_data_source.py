@@ -45,8 +45,6 @@ class RolloutDataSource:
             self.dataset = None
 
     def get_samples(self, num_samples):
-        samples = []
-
         # TODO unify the two branches
         if self.dataset is not None:
             if self.sample_offset + num_samples <= len(self.dataset):
@@ -60,14 +58,6 @@ class RolloutDataSource:
                     self.dataset.shuffle(self.epoch_id)
                 prompt_samples += self.dataset.samples[:num_samples]
                 self.sample_offset = num_samples
-            for prompt_sample in prompt_samples:
-                group = []
-                for _ in range(self.args.n_samples_per_prompt):
-                    sample = copy.deepcopy(prompt_sample)
-                    sample.index = self.sample_index
-                    self.sample_index += 1
-                    group.append(sample)
-                samples.append(group)
         else:
             for _ in range(num_samples):
                 group = []
@@ -79,6 +69,15 @@ class RolloutDataSource:
                     group.append(sample)
                 samples.append(group)
 
+        samples = []
+        for prompt_sample in prompt_samples:
+            group = []
+            for _ in range(self.args.n_samples_per_prompt):
+                sample = copy.deepcopy(prompt_sample)
+                sample.index = self.sample_index
+                self.sample_index += 1
+                group.append(sample)
+            samples.append(group)
         return samples
 
     def add_samples(self, samples: list[list[Sample]]):
