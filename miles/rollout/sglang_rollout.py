@@ -327,6 +327,8 @@ async def generate_rollout_async(
         load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path is not None else None
     )
 
+    metric_gatherer = _MetricGatherer()
+
     # target_data_size is the total number of valid samples to get
     target_data_size = args.rollout_batch_size
 
@@ -379,7 +381,7 @@ async def generate_rollout_async(
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
-    return RolloutFnCallOutput(samples=data), aborted_samples
+    return RolloutFnCallOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
 
 
 def _call_dynamic_filter(fn, *args, **kwargs):
