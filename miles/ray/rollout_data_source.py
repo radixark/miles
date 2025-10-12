@@ -16,6 +16,7 @@ class RolloutDataSource:
         self.args = args
 
         self.epoch_id = 0
+        self.sample_group_index = 0
         self.sample_index = 0
         self.sample_offset = 0
         # TODO remove this
@@ -82,6 +83,7 @@ class RolloutDataSource:
         state_dict = {
             "sample_offset": self.sample_offset,
             "epoch_id": self.epoch_id,
+            "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
             "metadata": self.metadata,
         }
@@ -106,6 +108,7 @@ class RolloutDataSource:
         state_dict = torch.load(path)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
+        self.sample_group_index = state_dict.get("sample_group_index", 0)
         self.sample_index = state_dict.get("sample_index", 0)
         self.metadata = state_dict.get("metadata", {})
 
