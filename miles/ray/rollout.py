@@ -100,8 +100,9 @@ class RolloutManager:
             # if debug train only, we don't generate evaluation data
             return
         # TODO: add fault tolerance to eval
-        data = _call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
-        data = data.metrics
+        data = _call_rollout_fn(
+            self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
+        ).metrics
         metrics = _log_eval_rollout_data(rollout_id, self.args, data)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
