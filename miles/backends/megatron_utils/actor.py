@@ -83,8 +83,9 @@ class MegatronTrainRayActor(TrainRayActor):
             # Load old_actor checkpoint
             self.load_other_checkpoint("old_actor", args.load)
             # Create rollout_actor as a copy of current actor
-            self.weights["rollout_actor"] = {}
-            self.update_cpu_params_dict(self.weights["rollout_actor"])
+            if args.update_weights_interval == 1:
+                self.weights["rollout_actor"] = {}
+                self.update_cpu_params_dict(self.weights["rollout_actor"])
 
         update_weight_cls = UpdateWeightFromTensor if self.args.colocate else UpdateWeightFromDistributed
         self.weight_updater = update_weight_cls(
@@ -416,13 +417,16 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("after update_weights")
 
             if getattr(self.args, "keep_old_actor", False):
-                print("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
-                # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
-                # First copy rollout_actor to old_actor
-                for name in self.weights["old_actor"]:
-                    self.weights["old_actor"][name].copy_(self.weights["rollout_actor"][name])
-                # Then copy current actor to rollout_actor
-                self.update_cpu_params_dict(self.weights["rollout_actor"])
+                if self.args.update_weights_interval == 1:
+                    print("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
+                    # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
+                    # First copy rollout_actor to old_actor
+                    for name in self.weights["old_actor"]:
+                        self.weights["old_actor"][name].copy_(self.weights["rollout_actor"][name])
+                    # Then copy current actor to rollout_actor
+                    self.update_cpu_params_dict(self.weights["rollout_actor"])
+                else:
+                    self.update_cpu_params_dict(self.weights["old_actor"])
 
         if self.args.offload and hasattr(mpu, "destroy_process_groups"):
             mpu.destroy_process_groups()
