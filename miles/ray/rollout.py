@@ -15,6 +15,7 @@ from miles.ray.rollout_data_source import RolloutDataSourceWithBuffer
 from miles.rollout.base_types import call_rollout_fn
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import find_available_port, get_host_info, init_http_client
+from miles.utils.iter_utils import group_by
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
@@ -463,6 +464,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     if args.rollout_num_gpus is not None:
         log_dict["perf/tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
     log_dict["perf/longest_sample_tokens_per_sec"] = max(response_lengths) / rollout_time
+    log_dict |= _compute_zero_std_metrics(args, samples)
     print(f"perf {rollout_id}: {log_dict}")
     step = (
         rollout_id
@@ -478,3 +480,20 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
 
         tb = _TensorboardAdapter(args)
         tb.log(data=log_dict, step=step)
+
+
+def _compute_zero_std_metrics(args, all_samples: List[Sample]):
+    # only compute in GRPO-like algorithms where one prompt has multiple responses
+    if args.advantage_estimator == "ppo":
+        return {}
+
+    def _is_zero_std(samples: List[Sample]):
+        rewards = [sample.get_reward_value(args) for sample in samples]
+        return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
+
+    all_sample_groups = group_by(all_samples, lambda s: s.group_index)
+    interesting_sample_groups = [g for g in all_sample_groups.values() if _is_zero_std(g)]
+
+    interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
+
+    return {f"rollout/zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
