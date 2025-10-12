@@ -487,17 +487,13 @@ def _compute_zero_std_metrics(args, all_samples: List[Sample]):
     if args.advantage_estimator == "ppo":
         return {}
 
-    print(f"hi {all_samples=}")
-
     def _is_zero_std(samples: List[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
 
     all_sample_groups = group_by(all_samples, lambda s: s.group_index)
     interesting_sample_groups = [g for g in all_sample_groups.values() if _is_zero_std(g)]
-    print(f"hi {interesting_sample_groups=}")
 
     interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
-    print(f"hi {interesting_rewards=}")
 
     return {f"rollout/zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
