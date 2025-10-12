@@ -457,6 +457,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_time):
     if args.rollout_num_gpus is not None:
         log_dict["perf/tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
     log_dict["perf/longest_sample_tokens_per_sec"] = max(response_lengths) / rollout_time
+    log_dict |= _compute_zero_std_metrics(samples)
     print(f"perf {rollout_id}: {log_dict}")
     step = (
         rollout_id
@@ -472,3 +473,6 @@ def _log_rollout_data(rollout_id, args, samples, rollout_time):
 
         tb = _TensorboardAdapter(args)
         tb.log(data=log_dict, step=step)
+
+def _compute_zero_std_metrics(samples):
+    return TODO
