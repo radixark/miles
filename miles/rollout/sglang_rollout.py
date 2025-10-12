@@ -502,7 +502,7 @@ def generate_rollout(
         args, rollout_id, data_buffer.get_samples, evaluation=evaluation
     )
     data_buffer.add_samples(aborted_samples)
-    return completed_samples
+    return RolloutFnCallOutput(samples=completed_samples)
 
 
 def generate_abortable_samples(
