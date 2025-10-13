@@ -5,6 +5,8 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from megatron.core import mpu
 
+from miles.utils.misc import get_tensor_info
+
 
 def get_logits_and_tokens_offset_with_cp(
     total_length: int,
@@ -57,6 +59,11 @@ def get_sum_of_sample_mean(
     if cp_size == 1:
 
         def sum_of_sample_mean(x: torch.Tensor):
+            print(
+                f"sum_of_sample_mean "
+                f"{get_tensor_info(x)=} "
+                f"{get_tensor_info(response_lengths)=} "
+            )
             return sum(
                 [
                     (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
@@ -65,6 +72,11 @@ def get_sum_of_sample_mean(
             )
 
         def sum_of_token(x: torch.Tensor):
+            print(
+                f"sum_of_token "
+                f"{get_tensor_info(x)=} "
+                f"{get_tensor_info(response_lengths)=} "
+            )
             return sum(
                 [(x_i * loss_mask_i).sum() for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks)]
             )
