@@ -23,6 +23,7 @@ from miles.utils.types import Sample
 from miles.utils.wandb_utils import init_wandb_secondary
 
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
+from ..utils.misc import get_tensor_info
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -167,6 +168,13 @@ class RolloutManager:
         ):
             # group norm
             rewards = torch.tensor(raw_rewards, dtype=torch.float)
+            print(
+                f"post_process_rewards before-reshape "
+                f"{raw_rewards=} "
+                f"{get_tensor_info(rewards)=} "
+                f"{self.args.n_samples_per_prompt=} "
+                f"{self.args.rollout_batch_size=} "
+            )
             if rewards.shape[-1] == self.args.n_samples_per_prompt * self.args.rollout_batch_size:
                 rewards = rewards.reshape(-1, self.args.n_samples_per_prompt)
             else:
