@@ -100,6 +100,9 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {1 if FEW_GPU else 4} "
         "--colocate "
+        
+        # temp add to print
+        "--normalize-advantages "
     )
 
     train_args = (
