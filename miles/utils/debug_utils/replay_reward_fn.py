@@ -17,7 +17,11 @@ def main(
 
 async def _main_async(samples, custom_rm_path):
     rm_function = load_function(custom_rm_path)
-    await asyncio.gather(*[rm_function(None, sample) for sample in samples])
+    rewards = await asyncio.gather(*[rm_function(None, sample) for sample in samples])
+
+    # TODO improve output
+    for sample, reward in zip(samples, rewards, strict=True):
+        print(f"reward={reward} sample={sample}")
 
 
 if __name__ == '__main__':
