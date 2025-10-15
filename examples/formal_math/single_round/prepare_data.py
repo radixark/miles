@@ -31,7 +31,7 @@ def process_flc(
     ds = load_dataset("m-a-p/FineLeanCorpus", split="train")
     ds = _add_metadata_column(ds, dataset_name="flc")
     ds = ds.shuffle(seed=42)
-    ds = ds.select_columns("id", "statement", "lean_code")
+    ds = ds.select_columns(["id", "statement", "lean_code"])
     ds = ds.select(range(train_flc_select_num_rows + val_flc_select_num_rows))
     ds = ds.train_test_split(test_size=val_flc_select_num_rows, shuffle=False, seed=42)
 
@@ -107,6 +107,8 @@ def main(
     val_flc_select_num_rows: Annotated[int, typer.Option()] = 100,
 ):
     dir_output = Path(dir_output_base) / f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}"
+    dir_output.mkdir(parents=True, exist_ok=True)
+
     process_flc(
         dir_output=dir_output,
         train_flc_select_num_rows=train_flc_select_num_rows,
