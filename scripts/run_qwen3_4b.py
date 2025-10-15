@@ -99,6 +99,9 @@ def execute():
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
+        "--actor-num-nodes 1 "
+        "--actor-num-gpus-per-node 8 "
+        "--colocate "
     )
 
     train_args = (
