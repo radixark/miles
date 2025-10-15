@@ -34,7 +34,6 @@ def execute():
     rollout_args = (
         f"--prompt-data /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_train.jsonl "
         "--input-key prompt "
-        "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
         "--custom-rm-path reward_fn.reward_fn "
