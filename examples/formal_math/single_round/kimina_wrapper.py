@@ -3,7 +3,7 @@ from typing import List, Callable
 
 from kimina_client import AsyncKiminaClient, CheckResponse
 
-_KILL_PREVIOUS_KIMINA_DOCKER = bool(int(os.environ.get("MILES_KILL_PREVIOUS_KIMINA_DOCKER")))
+_KILL_PREVIOUS_KIMINA_DOCKER = bool(int(os.environ.get("MILES_KILL_PREVIOUS_KIMINA_DOCKER", "1")))
 
 
 class KiminaServerAndClientCluster:
@@ -33,11 +33,18 @@ def _create_servers() -> List["_KiminaServer"]:
 # TODO handle docker stop more gracefully
 class _KiminaServer:
     def __init__(self):
-        self._docker_start()
-
-    def _docker_start(self):
-        TODO
+        if _KILL_PREVIOUS_KIMINA_DOCKER:
+            _docker_stop_all()
+        _docker_start()
 
     @property
     def api_url(self):
         return TODO
+
+
+def _docker_start():
+    TODO
+
+
+def _docker_stop_all():
+    TODO
