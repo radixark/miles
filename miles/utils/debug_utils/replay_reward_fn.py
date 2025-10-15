@@ -7,7 +7,8 @@ import typer
 def main(
     rollout_data_path: Annotated[str, typer.Option()],
 ):
-    data = torch.load(rollout_data_path)
+    pack = torch.load(rollout_data_path)
+    samples = pack["samples"]
     TODO
 
 
