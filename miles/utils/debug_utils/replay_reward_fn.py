@@ -24,5 +24,5 @@ async def _main_async(samples, custom_rm_path):
         print(f"reward={reward} sample={sample}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     typer.run(main)
