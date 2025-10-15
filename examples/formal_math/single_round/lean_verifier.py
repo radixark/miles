@@ -1,6 +1,6 @@
 from typing import List, Callable
 
-from kimina_client import AsyncKiminaClient
+from kimina_client import AsyncKiminaClient, CheckResponse
 
 
 class LeanVerifier:
@@ -8,7 +8,7 @@ class LeanVerifier:
         self._servers = _create_servers()
         self._client_cluster = _KiminaClientCluster(TODO)
 
-    async def check(self, *args, **kwargs):
+    async def check(self, *args, **kwargs) -> CheckResponse:
         return await self._client_cluster.check(*args, **kwargs)
 
 

@@ -2,6 +2,7 @@ from typing import Optional
 
 from lean_verifier import LeanVerifier
 
+_TIMEOUT = 60
 
 class RewardFn:
     def __init__(self):
@@ -13,7 +14,7 @@ class RewardFn:
             if code is None:
                 return dict(reward_value=0.0, error_cat=code_error_cat)
 
-            response = await self._lean_verifier.async_verify(codes=[dict(code=code, custom_id="dummy_id")], timeout=60)
+            response = await self._lean_verifier.check(codes=[dict(code=code, custom_id="dummy_id")], timeout=_TIMEOUT)
             assert len(response["results"]) == 1, f"{response=}"
             raw_result = response["results"][0]
             parsed_result = parse_client_response(raw_result)
