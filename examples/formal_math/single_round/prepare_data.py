@@ -7,7 +7,6 @@ from pathlib import Path
 from datasets import load_dataset
 
 self_stem = Path(__file__).stem
-dir_data = Path(f"/host_home/server_data/{self_stem}")
 
 # https://github.com/deepseek-ai/DeepSeek-Prover-V2
 _PROMPT_TEMPLATE = """
