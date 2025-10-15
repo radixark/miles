@@ -1,9 +1,11 @@
 from typing import Optional
 
+from lean_verifier import LeanVerifier
+
 
 class RewardFn:
     def __init__(self):
-        TODO
+        self._lean_verifier = LeanVerifier()
 
     def __call__(self, args, sample, **kwargs):
         TODO
