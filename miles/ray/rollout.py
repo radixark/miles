@@ -154,12 +154,11 @@ class RolloutManager:
             # TODO may improve the format
             if evaluation:
                 dump_data = dict(
-                    data={
-                        dataset_name: dict(
-                            samples=[sample.to_dict() for sample in info["samples"]],
-                        )
+                    samples=[
+                        sample.to_dict()
                         for dataset_name, info in data.items()
-                    }
+                        for sample in info["samples"]
+                    ]
                 )
             else:
                 dump_data = dict(
