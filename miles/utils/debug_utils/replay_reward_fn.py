@@ -13,7 +13,7 @@ def main(
     custom_rm_path: Annotated[str, typer.Option()],
 ):
     if not ray.is_initialized():
-        ray.start()
+        ray.init()
 
     pack = torch.load(rollout_data_path)
     asyncio.run(_main_async(samples=pack["samples"], custom_rm_path=custom_rm_path))
@@ -28,5 +28,5 @@ async def _main_async(samples, custom_rm_path):
         print(f"recomputed_reward={reward} sample={sample}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     typer.run(main)
