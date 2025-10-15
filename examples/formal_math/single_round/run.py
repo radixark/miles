@@ -1,3 +1,4 @@
+import datetime
 import os
 import sys
 from pathlib import Path
@@ -108,6 +109,8 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
+        # for debug
+        f"--save-debug-rollout-data /root/miles_debug_rollout_data/{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}/{{rollout_id}}.pt "
     )
 
     train_args = (
