@@ -58,7 +58,7 @@ def _create_actor_per_node(actor_cls) -> List:
 @ray.remote
 class _KiminaServerActor:
     def __init__(self):
-        self.addr = get_current_node_ip()
+        self.addr = _get_current_node_host_ip()
         self.port = get_free_port()
 
         if _KILL_PREVIOUS_KIMINA_DOCKER:
@@ -103,3 +103,9 @@ def _docker_stop_all():
         '[ -n "$ids" ] && docker stop $ids && docker rm $ids; '
         'true'
     )
+
+# TODO move to utils?
+def _get_current_node_host_ip():
+    # https://stackoverflow.com/questions/22944631
+    out = exec_command("ip route show default | awk '/default/ {print $3}'", capture_output=True)
+    return out.strip()
