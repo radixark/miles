@@ -32,7 +32,6 @@ def process_flc(
     ds = _add_metadata_column(ds, dataset_name="flc")
 
     def _process_prompt(x):
-        x = _ensure_remove_prefix(x, _LEANABELL_ORIGINAL_PREFIX)
         x = _convert_to_by_sorry(x)
         x = _PROMPT_TEMPLATE.format(x)
         x = _to_messages(x)
@@ -41,7 +40,7 @@ def process_flc(
     def _process_batch(batch):
         return {"prompt": [_process_prompt(x) for x in batch["prompt"]]}
 
-    ds = ds.map(_process_batch, batched=True, num_proc=16)
+    ds = ds.map(_process_batch, batched=True, num_proc=128)
     _write_file(ds, "flc_train")
     _write_file(TODO, "flc_val")
 
@@ -72,12 +71,9 @@ def _write_file(ds, stem):
     print("Example data", ds[:3])
 
 
-def _ensure_remove_prefix(s: str, prefix: str):
-    assert s.startswith(prefix), f"{prefix=} {s=}"
-    return s.removeprefix(prefix)
-
-
 def _convert_to_by_sorry(s: str):
+    if "by sorry" in s:
+        return s
     return _ensure_remove_pattern(s, r' *:=\n? *(by)? *\n?$') + " := by\n  sorry"
 
 
