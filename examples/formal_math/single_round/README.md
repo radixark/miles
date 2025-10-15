@@ -2,6 +2,7 @@
 
 ```shell
 # install dependencies
+apt update && apt install -y docker
 pip install kimina-client
 
 # prepare data
