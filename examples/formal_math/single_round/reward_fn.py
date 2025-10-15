@@ -26,7 +26,7 @@ class RewardFn:
             if code is None:
                 return dict(reward_value=0.0, error_cat=code_error_cat)
 
-            resp = await self._verifier.check(snips=code, timeout=_TIMEOUT)
+            resp = await self._verifier.check(snips=code, timeout=_TIMEOUT, show_progress=False)
             result = _single(resp.results)
             analysis = result.analyze()
             is_valid = analysis.status == SnippetStatus.valid
