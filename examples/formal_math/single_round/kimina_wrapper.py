@@ -62,10 +62,11 @@ class _KiminaServerActor:
 
 
 def _docker_start(port: int):
+    name = f"kimina_lean_server_auto_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)}"
     exec_command(
         "docker run "
         "-d "
-        f"--name kimina_lean_server_auto_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)} "
+        f"--name {name} "
         "--restart unless-stopped "
         # "--env-file .env "  # do not use env yet
         f"-p 80:{port} "
