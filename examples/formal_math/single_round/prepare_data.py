@@ -23,6 +23,8 @@ The plan should highlight key ideas, intermediate lemmas, and proof structures t
 """.strip()
 
 
+_NEEDLE_THEOREM = "theorem "
+
 def process_flc(
     dir_output: Path,
     train_flc_select_num_rows: int,
@@ -35,10 +37,18 @@ def process_flc(
     ds = ds.select(range(train_flc_select_num_rows + val_flc_select_num_rows))
     ds = ds.train_test_split(test_size=val_flc_select_num_rows, shuffle=False, seed=42)
 
+    def _filter_batch(batch):
+        return [
+            # we remove multi-theorem data currently
+            lean_code.count(_NEEDLE_THEOREM) == 1
+            for lean_code in batch["lean_code"]
+        ]
+
+    ds = ds.filter(_filter_batch, batched=True, num_proc=64)
+
     def _process_prompt(statement, lean_code):
-        needle = "theorem "
-        assert lean_code.count(needle) == 1, f"{lean_code=}"
-        x = lean_code.replace(needle, f"/- {statement} -/\n{needle}")
+        assert lean_code.count(_NEEDLE_THEOREM) == 1, f"{lean_code=}"
+        x = lean_code.replace(_NEEDLE_THEOREM, f"/- {statement} -/\n{_NEEDLE_THEOREM}")
 
         x = _PROMPT_TEMPLATE.format(x)
         x = _to_messages(x)
