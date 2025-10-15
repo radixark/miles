@@ -1,7 +1,9 @@
 import os
 from typing import List
 
+import ray
 from kimina_client import AsyncKiminaClient, CheckResponse
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 # TODO handle docker stop more gracefully later
 _KILL_PREVIOUS_KIMINA_DOCKER = bool(int(os.environ.get("MILES_KILL_PREVIOUS_KIMINA_DOCKER", "1")))
@@ -17,7 +19,7 @@ class KiminaServerAndClientCluster:
 
 
 class _KiminaClientCluster:
-    def __init__(self, servers: List["_KiminaServer"]):
+    def __init__(self, servers: List["_KiminaServerActor"]):
         self._clients = [AsyncKiminaClient(api_url=server.api_url) for server in servers]
         self._next_client_index = 0
 
@@ -27,11 +29,26 @@ class _KiminaClientCluster:
         return await client.check(*args, **kwargs)
 
 
-def _create_servers() -> List["_KiminaServer"]:
-    return TODO
+def _create_servers() -> List["_KiminaServerActor"]:
+    # for simplicity, we use all available nodes
+    nodes = [n for n in ray.nodes() if n.get("Alive")]
+    assert len(nodes) > 0
+
+    actors = []
+    for node in nodes:
+        scheduling = NodeAffinitySchedulingStrategy(node_id=(node["NodeID"]), soft=False)
+        actors.append(_KiminaServerActor.options(
+            name=None,
+            lifetime="detached",
+            scheduling_strategy=scheduling,
+            num_cpus=0.001,
+        ).remote())
+
+    return actors
 
 
-class _KiminaServer:
+@ray.remote
+class _KiminaServerActor:
     def __init__(self):
         if _KILL_PREVIOUS_KIMINA_DOCKER:
             _docker_stop_all()
