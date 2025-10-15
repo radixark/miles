@@ -5,16 +5,25 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from tests import command_utils as U
 
+MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
 
 
+def prepare():
+    U.exec_command("mkdir -p /root/models /root/datasets")
+    U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.hf_download_dataset("zhuzilin/gsm8k")
+    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=NUM_GPUS)
+
+
 def execute():
+    load_save_path = f"/root/models/{MODEL_NAME}_ckpt__{Path(__file__).stem}/"
     ckpt_args = (
-        "--hf-checkpoint /root/Qwen3-4B "
-        "--ref-load /root/Qwen3-4B_torch_dist "
-        "--load /root/Qwen3-4B_miles/ "
-        "--save /root/Qwen3-4B_miles/ "
+        f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
+        f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        f"--load {load_save_path} "
+        f"--save {load_save_path} "
         "--save-interval 20 "
     )
 
