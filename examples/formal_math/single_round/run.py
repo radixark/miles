@@ -36,7 +36,7 @@ def execute():
         "--input-key prompt "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--custom-rm-path reward_fn.reward_fn "
+        "--custom-rm-path examples.formal_math.single_round.reward_fn.reward_fn "
         "--reward-key reward_value "
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
