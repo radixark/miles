@@ -91,7 +91,7 @@ def process_minif2f(
 
 def _write_file(ds, path):
     ds.to_json(path)
-    print(f"Write to {path}, example data:")
+    print(f"Write to {path}, {len(ds)=}, example data:")
     pprint.pprint([ds[i] for i in range(3)])
 
 
