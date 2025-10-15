@@ -1,5 +1,6 @@
 import importlib
 import subprocess
+from typing import Optional
 
 import ray
 
@@ -31,9 +32,15 @@ class SingletonMeta(type):
         return cls._instances[cls]
 
 
-def exec_command(cmd: str, capture_output: bool = False):
+def exec_command(cmd: str, capture_output: bool = False) -> Optional[str]:
     print(f"EXEC: {cmd}", flush=True)
-    result = subprocess.run(["bash", "-c", cmd], shell=False, check=True, capture_output=capture_output)
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        shell=False,
+        check=True,
+        capture_output=capture_output,
+        **(dict(text=True) if capture_output else {}),
+    )
     if capture_output:
         return result.stdout
 
