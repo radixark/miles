@@ -1,7 +1,11 @@
+import logging
+import traceback
 from typing import Optional
 
 from kimina_wrapper import KiminaServerAndClientCluster
 from kimina_client import SnippetStatus
+
+logger = logging.getLogger(__name__)
 
 _TIMEOUT = 60
 
