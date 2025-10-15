@@ -1,4 +1,6 @@
+import datetime
 import os
+import random
 from typing import List
 from miles.utils.misc import exec_command
 
@@ -63,7 +65,7 @@ def _docker_start(port: int):
     exec_command(
         "docker run "
         "-d "
-        "--name TODO "
+        f"--name kimina_lean_server_auto_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)} "
         "--restart unless-stopped "
         # "--env-file .env "  # do not use env yet
         f"-p 80:{port} "
