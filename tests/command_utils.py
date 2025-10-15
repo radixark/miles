@@ -2,9 +2,11 @@ import datetime
 import json
 import os
 import random
-import subprocess
 from pathlib import Path
 from typing import Optional
+from miles.utils.misc import exec_command
+
+_ = exec_command
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[1]
 
@@ -100,7 +102,10 @@ def get_default_wandb_args(test_file: str, run_name_prefix: Optional[str] = None
         print("Skip wandb configuration since WANDB_API_KEY is not found")
         return ""
 
-    test_name = Path(test_file).stem
+    test_file = Path(test_file)
+    test_name = test_file.stem
+    if len(test_name) < 6:
+        test_name = f"{test_file.parent.name}_{test_name}"
 
     run_name = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)}"
     if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
@@ -115,13 +120,6 @@ def get_default_wandb_args(test_file: str, run_name_prefix: Optional[str] = None
         f"--wandb-group {run_name} "
         f"--wandb-key ${{WANDB_API_KEY}} "
     )
-
-
-def exec_command(cmd: str, capture_output: bool = False):
-    print(f"EXEC: {cmd}", flush=True)
-    result = subprocess.run(["bash", "-c", cmd], shell=False, check=True, capture_output=capture_output)
-    if capture_output:
-        return result.stdout
 
 
 _warned_bool_env_var_keys = set()
