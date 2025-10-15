@@ -22,7 +22,10 @@ The plan should highlight key ideas, intermediate lemmas, and proof structures t
 """.strip()
 
 
-def process_train(select_num_rows: int):
+def process_flc(
+    train_flc_select_num_rows: int,
+    val_flc_select_num_rows: int,
+):
     ds = load_dataset("m-a-p/FineLeanCorpus", split="train")
     ds = ds.select_columns("id", "statement", "lean_code")
     ds = _add_metadata_column(ds, dataset_name="flc")
@@ -43,7 +46,7 @@ def process_train(select_num_rows: int):
     _write_file(TODO, "flc_val")
 
 
-def process_val(select_num_rows: int):
+def process_minif2f():
     ds = load_dataset("AI-MO/minif2f_test", split="train")
     ds = _add_metadata_column(ds, dataset_name="minif2f")
     ds = ds.remove_columns(["name", "informal_prefix"])
@@ -99,11 +102,14 @@ def _add_metadata_column(ds, dataset_name: str):
 
 
 def main(
-        train_select_num_rows: Annotated[int, typer.Option()] = None,
-        val_select_num_rows: Annotated[int, typer.Option()] = None,
+    train_flc_select_num_rows: Annotated[int, typer.Option()] = 20000,
+    val_flc_select_num_rows: Annotated[int, typer.Option()] = 200,
 ):
-    process_train(select_num_rows=train_select_num_rows)
-    process_val(select_num_rows=val_select_num_rows)
+    process_flc(
+        train_flc_select_num_rows=train_flc_select_num_rows,
+        val_flc_select_num_rows=val_flc_select_num_rows,
+    )
+    process_minif2f()
 
 
 if __name__ == "__main__":
