@@ -1,9 +1,12 @@
+import os
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "tests"))
 
 import command_utils as U
+
+dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -29,7 +32,7 @@ def execute():
     )
 
     rollout_args = (
-        "--prompt-data /root/datasets/TODO "
+        f"--prompt-data /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_train.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
@@ -48,8 +51,8 @@ def execute():
     eval_args = (
         "--eval-interval 20 "
         "--eval-prompt-data "
-        "minif2f TODO "
-        "flc TODO "
+        f"minif2f /root/datasets/formal_math_single_round/{dataset_transform_id}/minif2f_test.jsonl "
+        f"flc /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_test.jsonl "
         "--n-samples-per-eval-prompt 16 "
         "--eval-max-response-len 16384 "
         "--eval-top-p 0.7 "
