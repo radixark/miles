@@ -82,5 +82,6 @@ def _docker_start(port: int):
 def _docker_stop_all():
     exec_command(
         'ids=$(docker ps -a --filter "name=kimina_lean_server_auto" -q); '
-        '[ -n "$ids" ] && docker stop $ids && docker rm $ids'
+        '[ -n "$ids" ] && docker stop $ids && docker rm $ids; '
+        'true'
     )
