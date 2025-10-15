@@ -32,8 +32,7 @@ class RewardFn:
                 lean_result=result.model_dump(),
             )
         except Exception as e:
-            logger.warning(f"Error in reward_value model: {e=} {sample.prompt=} {sample.response=}")
-            traceback.print_exc()
+            logger.warning(f"Error in RewardFn: {e=} {sample.prompt=} {sample.response=}")
             return dict(reward_value=0.0, error_cat="PYTHON_ERROR", error_details=str(e))
 
 
