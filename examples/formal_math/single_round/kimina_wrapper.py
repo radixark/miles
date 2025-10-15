@@ -15,7 +15,7 @@ _KILL_PREVIOUS_KIMINA_DOCKER = bool(int(os.environ.get("MILES_KILL_PREVIOUS_KIMI
 
 class KiminaServerAndClientCluster:
     def __init__(self):
-        self._servers = _create_servers()
+        self._servers = _create_actor_per_node(actor_cls=_KiminaServerActor)
         self._client_cluster = _KiminaClientCluster(self._servers)
 
     async def check(self, *args, **kwargs) -> CheckResponse:
@@ -33,7 +33,7 @@ class _KiminaClientCluster:
         return await client.check(*args, **kwargs)
 
 
-def _create_servers() -> List["_KiminaServerActor"]:
+def _create_actor_per_node(actor_cls) -> List:
     # for simplicity, we use all available nodes
     nodes = [n for n in ray.nodes() if n.get("Alive")]
     assert len(nodes) > 0
@@ -41,7 +41,7 @@ def _create_servers() -> List["_KiminaServerActor"]:
     actors = []
     for node in nodes:
         actors.append(
-            _KiminaServerActor.options(
+            actor_cls.options(
                 name=None,
                 lifetime="detached",
                 scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node["NodeID"], soft=False),
