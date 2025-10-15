@@ -74,7 +74,7 @@ def _docker_start(port: int):
         f"--name {name} "
         "--restart unless-stopped "
         # "--env-file .env "  # do not use env yet
-        f"-p 80:{port} "
+        f"-p {port}:8000 "
         f"projectnumina/kimina-lean-server:2.0.0"
     )
 
