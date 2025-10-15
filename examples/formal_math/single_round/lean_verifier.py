@@ -1,17 +1,15 @@
-import kimina_client
+from typing import List
+
+from kimina_client import AsyncKiminaClient
 
 
 class LeanVerifier:
     def __init__(self):
-        TODO
+        self._servers = _launch_servers()
+        self._clients = [AsyncKiminaClient(TODO) for server in self._servers]
 
-    def check(self):
+    async def check(self):
         return TODO
-
-
-class _KiminaServerPack:
-    def __init__(self):
-        TODO
 
 
 # TODO handle docker stop more gracefully
