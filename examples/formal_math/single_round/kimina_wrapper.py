@@ -36,11 +36,10 @@ def _create_servers() -> List["_KiminaServerActor"]:
 
     actors = []
     for node in nodes:
-        scheduling = NodeAffinitySchedulingStrategy(node_id=(node["NodeID"]), soft=False)
         actors.append(_KiminaServerActor.options(
             name=None,
             lifetime="detached",
-            scheduling_strategy=scheduling,
+            scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node["NodeID"], soft=False),
             num_cpus=0.001,
         ).remote())
 
