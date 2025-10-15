@@ -5,5 +5,5 @@ Commands
 pip install kimina-client
 
 # prepare data
-python examples/formal_math/single_round/prepare_data.py --dir-output-base /root/
+python examples/formal_math/single_round/prepare_data.py --dir-output-base /root/datasets/formal_math_single_round/
 ```
