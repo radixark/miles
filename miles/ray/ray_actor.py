@@ -1,6 +1,3 @@
-import ray
-from miles.utils.http_utils import is_port_available
-
 from miles.utils.misc import get_current_node_ip, get_free_port
 
 

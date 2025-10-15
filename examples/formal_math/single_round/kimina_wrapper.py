@@ -2,12 +2,12 @@ import datetime
 import os
 import random
 from typing import List
-from miles.utils.misc import exec_command
-from miles.utils.misc import get_current_node_ip, get_free_port
 
 import ray
 from kimina_client import AsyncKiminaClient, CheckResponse
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+from miles.utils.misc import exec_command, get_current_node_ip, get_free_port
 
 # TODO handle docker stop more gracefully later
 _KILL_PREVIOUS_KIMINA_DOCKER = bool(int(os.environ.get("MILES_KILL_PREVIOUS_KIMINA_DOCKER", "1")))
@@ -40,12 +40,14 @@ def _create_servers() -> List["_KiminaServerActor"]:
 
     actors = []
     for node in nodes:
-        actors.append(_KiminaServerActor.options(
-            name=None,
-            lifetime="detached",
-            scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node["NodeID"], soft=False),
-            num_cpus=0.001,
-        ).remote())
+        actors.append(
+            _KiminaServerActor.options(
+                name=None,
+                lifetime="detached",
+                scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node["NodeID"], soft=False),
+                num_cpus=0.001,
+            ).remote()
+        )
 
     return actors
 
@@ -66,7 +68,9 @@ class _KiminaServerActor:
 
 
 def _docker_start(port: int):
-    name = f"kimina_lean_server_auto_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)}"
+    name = (
+        f"kimina_lean_server_auto_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)}"
+    )
     exec_command(
         "docker run "
         "-d "

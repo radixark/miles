@@ -1,10 +1,9 @@
 import logging
 import re
-import traceback
 from typing import Optional, Tuple
 
-from kimina_wrapper import KiminaServerAndClientCluster
 from kimina_client import SnippetStatus
+from kimina_wrapper import KiminaServerAndClientCluster
 
 logger = logging.getLogger(__name__)
 
