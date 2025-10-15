@@ -100,7 +100,7 @@ def _add_metadata_column(ds, dataset_name: str):
 
 def main(
     train_flc_select_num_rows: Annotated[int, typer.Option()] = 20000,
-    val_flc_select_num_rows: Annotated[int, typer.Option()] = 200,
+    val_flc_select_num_rows: Annotated[int, typer.Option()] = 100,
 ):
     process_flc(
         train_flc_select_num_rows=train_flc_select_num_rows,
