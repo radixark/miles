@@ -98,7 +98,7 @@ def _maybe_shuffle_and_select(ds, select_num_rows):
 
 
 def _add_metadata_column(ds, dataset_name: str):
-    return ds.add_column("metadata", [dict(question_id=f"{dataset_name}__{i}") for i in range(len(ds))])
+    return ds.add_column("metadata", [dict(question_id=f"{dataset_name}__idx{i}") for i in range(len(ds))])
 
 
 def main(
