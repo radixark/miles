@@ -35,6 +35,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--custom-rm-path reward_fn.reward_fn "
+        "--reward-key reward_value "
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
