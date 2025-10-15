@@ -50,8 +50,8 @@ def process_flc(
         ]}
 
     ds = ds.map(_process_batch, batched=True, num_proc=64, remove_columns=["statement", "lean_code"])
-    _write_file(ds, "flc_train")
-    _write_file(TODO, "flc_val")
+    _write_file(ds["train"], "flc_train")
+    _write_file(ds["test"], "flc_test")
 
 
 def process_minif2f():
