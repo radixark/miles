@@ -119,6 +119,12 @@ class _SolvableByRolloutDumpFilter:
         return interesting_question_ids
 
 
+_LEANABELL_ORIGINAL_PREFIX = '''Complete the following Lean 4 code with explanatory comments preceding each line of code:
+
+```lean4
+'''
+
+
 def process_leanabell(
     dir_output: Path,
 ):
@@ -126,10 +132,11 @@ def process_leanabell(
     ds = _add_metadata_column(ds, dataset_name="leanabell")
     ds = ds.shuffle(seed=42)
 
-    def _compute_messages(prompt, output):
+    def _compute_messages(raw_prompt, raw_output):
+        question_lean = _ensure_remove_prefix(raw_prompt, _LEANABELL_ORIGINAL_PREFIX)
         return [
-            {"role": "user", "content": TODO},
-            {"role": "assistant", "content": TODO},
+            {"role": "user", "content": _PROMPT_TEMPLATE.format(question_lean)},
+            {"role": "assistant", "content": f"```lean\n{raw_output}"},
         ]
 
     def _process_batch(batch):
@@ -138,6 +145,10 @@ def process_leanabell(
     ds = ds.map(_process_batch, batched=True)
     _write_file(ds, dir_output / "leanabell.jsonl")
 
+
+def _ensure_remove_prefix(s: str, prefix: str):
+    assert s.startswith(prefix), f"{prefix=} {s=}"
+    return s.removeprefix(prefix)
 
 
 def process_minif2f(
