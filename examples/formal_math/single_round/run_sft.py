@@ -35,7 +35,7 @@ def execute():
 
     sft_args = (
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
-        f"--prompt-data {TODO} "
+        f"--prompt-data /root/datasets/formal_math_single_round/{dataset_transform_id}/leanabell.parquet "
         "--input-key messages "
         "--rollout-shuffle "
         # NOTE temporarily only 1 epoch to speed up
