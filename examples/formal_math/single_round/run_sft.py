@@ -73,7 +73,6 @@ def execute():
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.95 "
-
         # https://docs.nvidia.com/megatron-core/developer-guide/latest/api-guide/optimizer_cpu_offload.html
         "--optimizer-cpu-offload "
         "--overlap-cpu-optimizer-d2h-h2d "
