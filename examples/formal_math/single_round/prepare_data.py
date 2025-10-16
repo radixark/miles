@@ -2,6 +2,7 @@ import datetime
 import pprint
 import random
 import re
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -94,6 +95,15 @@ def process_flc(
 class _SolvableByRolloutDumpFilter:
     @staticmethod
     def compute_interesting_question_ids(paths):
+        paths = paths.split(",")
+        interesting_question_ids = set()
+        with ProcessPoolExecutor(max_workers=64) as executor:
+            for partial_question_ids in executor.map(_SolvableByRolloutDumpFilter._compute_interesting_question_ids_one, paths):
+                interesting_question_ids |= partial_question_ids
+        return interesting_question_ids
+
+    @staticmethod
+    def _compute_interesting_question_ids_one(paths):
         df_samples = _SolvableByRolloutDumpFilter._compute_df_samples(paths)
         return _SolvableByRolloutDumpFilter._compute_interesting_question_ids_from_df_samples(df_samples)
 
