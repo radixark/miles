@@ -136,7 +136,7 @@ def process_leanabell(
     def _compute_messages(raw_prompt, raw_output):
         question_lean = _ensure_remove_prefix(raw_prompt, _LEANABELL_ORIGINAL_PREFIX)
 
-        assert question_lean.endswith(":= by")
+        assert question_lean.endswith(":= by"), f"{question_lean=}"
         question_lean += " sorry"
 
         return [
