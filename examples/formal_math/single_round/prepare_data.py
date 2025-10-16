@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import polars as pl
+import torch
 import typer
 from datasets import load_dataset
 
@@ -93,11 +94,28 @@ class _SolvableByRolloutDumpFilter:
     @staticmethod
     def compute_df_samples(paths: str):
         paths = paths.split(",")
-        return TODO
+        df_samples = pl.concat([
+            pl.DataFrame(torch.load(p)["samples"])
+            for p in tqdm(paths, desc='load eval dumps')
+        ])
+        print(f"{df_samples=}")
+        return df_samples
 
     @staticmethod
     def compute_interesting_question_ids(df_samples: pl.DataFrame):
-        return TODO
+        df = df_samples
+
+        df = df.select(
+            'prompt', 'response',
+            pl.col('reward').struct.field('reward_value'),
+            pl.col('metadata').struct.field('question_id'),
+        )
+        df = df.group_by('question_id').agg(pl.col('reward_value').mean())
+
+        interesting_question_ids = df.filter(pl.col('reward_value') > 0)["question_id"].sort().to_list()
+        print(f"{len(interesting_question_ids)=} {interesting_question_ids[:5]=}")
+
+        return interesting_question_ids
 
 
 def process_minif2f(
