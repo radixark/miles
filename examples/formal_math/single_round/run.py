@@ -51,10 +51,7 @@ def execute():
     )
 
     eval_args = (
-        "--eval-interval 20 "
-        "--n-samples-per-eval-prompt 1 "
-        "--eval-max-response-len 16384 "
-        "--eval-top-p 0.7 "
+        "--eval-interval 20 " "--n-samples-per-eval-prompt 1 " "--eval-max-response-len 16384 " "--eval-top-p 0.7 "
     )
 
     if mode == "pre_eval_flc":
