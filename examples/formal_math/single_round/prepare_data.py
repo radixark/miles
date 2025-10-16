@@ -151,8 +151,8 @@ def process_leanabell(
             ]
         }
 
-    ds = ds.map(_process_batch, batched=True, num_proc=64)
-    _write_file(ds, dir_output / "leanabell.jsonl")
+    ds = ds.map(_process_batch, batched=True, num_proc=64, remove_columns=["prompt", "output"])
+    _write_file(ds, dir_output / "leanabell.parquet")
 
 
 def _ensure_remove_prefix(s: str, prefix: str):
@@ -182,7 +182,13 @@ def process_minif2f(
 
 
 def _write_file(ds, path):
-    ds.to_json(path)
+    if path.endswith(".json"):
+        ds.to_json(path)
+    if path.endswith(".parquet"):
+        ds.to_parquet(path)
+    else:
+        raise NotImplementedError(f"{path=}")
+
     print(f"Write to {path}, {len(ds)=}, example data:")
     pprint.pprint([ds[i] for i in range(3)])
 
