@@ -10,7 +10,7 @@ import command_utils as U
 
 
 # TODO unify "arg" prefix
-enable_dynamic_sampling = os.environ["ARG_ENABLE_DYNAMIC_SAMPLING"]
+enable_dynamic_sampling = bool(int(os.environ.get("ARG_ENABLE_DYNAMIC_SAMPLING", "0")))
 
 dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
 mode = os.environ.get("MILES_MODE", "train")
