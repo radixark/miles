@@ -60,7 +60,7 @@ def execute():
         "--recompute-num-layers 1 "
         # --micro-batch-size 1
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 20480 "
+        "--max-tokens-per-gpu 9216 "
     )
 
     optimizer_args = (
