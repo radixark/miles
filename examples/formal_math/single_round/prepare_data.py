@@ -10,7 +10,6 @@ import polars as pl
 import torch
 import typer
 from datasets import load_dataset
-from tqdm.auto import tqdm
 
 self_stem = Path(__file__).stem
 
