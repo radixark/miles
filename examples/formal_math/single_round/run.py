@@ -11,6 +11,7 @@ import command_utils as U
 
 # TODO unify "arg" prefix
 enable_dynamic_sampling = bool(int(os.environ.get("ARG_ENABLE_DYNAMIC_SAMPLING", "0")))
+load_path = os.environ.get("ARG_LOAD_PATH")
 
 dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
 mode = os.environ.get("MILES_MODE", "train")
@@ -25,7 +26,8 @@ NUM_GPUS = 8
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=NUM_GPUS)
+    if load_path is None:
+        U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=NUM_GPUS)
 
 
 def execute():
@@ -35,7 +37,7 @@ def execute():
     ckpt_args = (
         f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
         f"--ref-load /root/{MODEL_NAME}_torch_dist "
-        f"--load {load_save_path} "
+        f"--load {load_path or load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
     )
