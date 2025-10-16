@@ -30,8 +30,6 @@ def execute():
         f"{optimizer_args} "
         f"{U.get_default_wandb_args(__file__)} "
         f"{perf_args} "
-        f"{eval_args} "
-        f"{sglang_args} "
         f"{misc_args} "
     )
 
