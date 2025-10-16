@@ -45,8 +45,7 @@ def process_flc(
     ds = ds.filter(
         lambda batch: [
             _filter_row(lean_code, difficulty)
-            for lean_code, difficulty in
-            zip(batch["lean_code"], batch["difficulty"], strict=True)
+            for lean_code, difficulty in zip(batch["lean_code"], batch["difficulty"], strict=True)
         ],
         batched=True,
         num_proc=64,
