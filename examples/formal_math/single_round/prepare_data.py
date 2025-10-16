@@ -1,3 +1,4 @@
+from tqdm.auto import tqdm
 import datetime
 import pprint
 import random
