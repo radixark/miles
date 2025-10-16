@@ -135,6 +135,7 @@ def main(
         Path(dir_output_base) / f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}"
     )
     dir_output.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {dir_output}")
 
     process_flc(
         dir_output=dir_output,
