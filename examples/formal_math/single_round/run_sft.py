@@ -24,7 +24,16 @@ def prepare():
 def execute():
     run_id = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}"
 
-    train_args = TODO
+    train_args = (
+        f"{ckpt_args} "
+        f"{rollout_args} "
+        f"{optimizer_args} "
+        f"{U.get_default_wandb_args(__file__)} "
+        f"{perf_args} "
+        f"{eval_args} "
+        f"{sglang_args} "
+        f"{misc_args} "
+    )
 
     U.execute_train(
         train_args=train_args,
