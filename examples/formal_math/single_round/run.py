@@ -1,5 +1,6 @@
 import datetime
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -121,7 +122,7 @@ def execute():
         "--actor-num-gpus-per-node 8 "
         "--colocate "
         # for debug
-        f"--save-debug-rollout-data /root/shared_data/{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}/{{rollout_id}}.pt "
+        f"--save-debug-rollout-data /root/shared_data/{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}/{{rollout_id}}.pt "
     )
 
     train_args = (
