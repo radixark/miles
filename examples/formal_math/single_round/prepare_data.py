@@ -1,4 +1,3 @@
-import polars as pl
 import datetime
 import pprint
 import random
@@ -6,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Optional
 
+import polars as pl
 import typer
 from datasets import load_dataset
 
@@ -53,8 +53,9 @@ def process_flc(
     ds = ds.filter(
         lambda batch: [
             _filter_row(lean_code, difficulty, metadata)
-            for lean_code, difficulty, metadata
-            in zip(batch["lean_code"], batch["difficulty"], batch["metadata"], strict=True)
+            for lean_code, difficulty, metadata in zip(
+                batch["lean_code"], batch["difficulty"], batch["metadata"], strict=True
+            )
         ],
         batched=True,
         num_proc=64,
