@@ -127,7 +127,10 @@ def process_leanabell(
     ds = ds.shuffle(seed=42)
 
     def _compute_messages(prompt, output):
-        return TODO
+        return [
+            {"role": "user", "content": TODO},
+            {"role": "assistant", "content": TODO},
+        ]
 
     def _process_batch(batch):
         return {"messages": [_compute_messages(prompt, output) for prompt, output in zip(batch["prompt"], batch["output"], strict=True)]}
