@@ -74,6 +74,7 @@ def process_flc(
         assert lean_code.count(_NEEDLE_THEOREM) == 1, f"{lean_code=}"
         x = lean_code.replace(_NEEDLE_THEOREM, f"/- {statement} -/\n{_NEEDLE_THEOREM}")
 
+        x = _convert_to_by_sorry(x)
         x = _PROMPT_TEMPLATE.format(x)
         x = _to_messages(x)
         return x
@@ -135,9 +136,7 @@ def process_leanabell(
 
     def _compute_messages(raw_prompt, raw_output):
         question_lean = _ensure_remove_prefix(raw_prompt, _LEANABELL_ORIGINAL_PREFIX)
-
-        assert question_lean.endswith(":= by"), f"{question_lean=}"
-        question_lean += " sorry"
+        question_lean = _convert_to_by_sorry(question_lean)
 
         return [
             {"role": "user", "content": _PROMPT_TEMPLATE.format(question_lean)},
@@ -152,7 +151,7 @@ def process_leanabell(
             ]
         }
 
-    ds = ds.map(_process_batch, batched=True)
+    ds = ds.map(_process_batch, batched=True, num_proc=64)
     _write_file(ds, dir_output / "leanabell.jsonl")
 
 
