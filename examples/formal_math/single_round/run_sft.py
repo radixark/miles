@@ -46,7 +46,6 @@ def execute():
         "--calculate-per-token-loss "
         "--disable-compute-advantages-and-returns "
         "--debug-train-only "
-        "--apply-chat-template "
     )
 
     perf_args = (
