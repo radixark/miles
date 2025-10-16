@@ -33,7 +33,7 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
 
     samples = data_buffer.get_samples(args.rollout_batch_size)
 
-    for sample in samples:
+    for i, sample in enumerate(samples):
         (sample,) = sample
         messages = sample.prompt
         token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(messages)
@@ -43,5 +43,8 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         sample.response_length = response_length
         sample.reward = 0
         sample.loss_mask = loss_mask[-response_length:]
+
+        if i == 0:
+            print(f"sft_rollout::generate_rollout example data: {sample}")
 
     return samples
