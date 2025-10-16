@@ -10,7 +10,7 @@ import command_utils as U
 
 dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
 mode = os.environ.get("MILES_MODE", "train")
-assert mode in {"train", "pre_eval_flc"}
+assert mode in {"train", "eval_flc"}
 
 # MODEL_NAME, MODEL_TYPE = "Qwen3-4B", "qwen3-4B"
 MODEL_NAME, MODEL_TYPE = "Qwen3-8B", "qwen3-8B"
@@ -54,7 +54,7 @@ def execute():
         "--eval-interval 20 " "--n-samples-per-eval-prompt 1 " "--eval-max-response-len 16384 " "--eval-top-p 0.7 "
     )
 
-    if mode == "pre_eval_flc":
+    if mode == "eval_flc":
         flc_chunk = os.environ["MILES_FLC_CHUNK"]
         eval_args += (
             "--eval-prompt-data "
