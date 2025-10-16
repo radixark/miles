@@ -54,7 +54,7 @@ def process_flc(
     print(f"Filtered dataset: {len(ds)=}")
 
     ds = ds.shuffle(seed=42)
-    ds = ds.select_columns(["id", "statement", "lean_code"])
+    ds = ds.select_columns(["id", "statement", "lean_code", "metadata"])
     ds = ds.select(range(train_flc_select_num_rows + val_flc_select_num_rows))
     ds = ds.train_test_split(test_size=val_flc_select_num_rows, shuffle=False, seed=42)
     print(f"Split dataset: {len(ds['train'])=} {len(ds['test'])=}")
