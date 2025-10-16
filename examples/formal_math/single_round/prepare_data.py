@@ -41,8 +41,8 @@ def process_flc(
     print(f"Loaded dataset: {len(ds)=}")
     ds = _add_metadata_column(ds, dataset_name="flc", column_id="id")
 
-    if filter_solvable_by_rollout_dumps:
-        interesting_question_ids = _SolvableByRolloutDumpFilter.compute_interesting_question_ids(df_samples)
+    if (x := filter_solvable_by_rollout_dumps):
+        interesting_question_ids = _SolvableByRolloutDumpFilter.compute_interesting_question_ids(x)
 
     def _filter_row(lean_code, difficulty, metadata):
         return (
