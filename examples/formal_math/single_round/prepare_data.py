@@ -182,12 +182,13 @@ def process_minif2f(
 
 
 def _write_file(ds, path):
-    if path.endswith(".json"):
-        ds.to_json(path)
-    if path.endswith(".parquet"):
-        ds.to_parquet(path)
-    else:
-        raise NotImplementedError(f"{path=}")
+    match path.suffix:
+        case ".json":
+            ds.to_json(path)
+        case ".pareut":
+            ds.to_parquet(path)
+        case _:
+            raise NotImplementedError(f"{path=}")
 
     print(f"Write to {path}, {len(ds)=}, example data:")
     pprint.pprint([ds[i] for i in range(3)])
