@@ -1,4 +1,3 @@
-from tqdm.auto import tqdm
 import datetime
 import pprint
 import random
@@ -10,6 +9,7 @@ import polars as pl
 import torch
 import typer
 from datasets import load_dataset
+from tqdm.auto import tqdm
 
 self_stem = Path(__file__).stem
 
@@ -95,10 +95,10 @@ class _SolvableByRolloutDumpFilter:
     @staticmethod
     def compute_df_samples(paths: str):
         paths = paths.split(",")
-        df_samples = pl.concat([
-            pl.DataFrame(torch.load(p)["samples"])
-            for p in tqdm(paths, desc='load eval dumps')
-        ], how='diagonal_relaxed')
+        df_samples = pl.concat(
+            [pl.DataFrame(torch.load(p)["samples"]) for p in tqdm(paths, desc="load eval dumps")],
+            how="diagonal_relaxed",
+        )
         print(f"{df_samples=}")
         return df_samples
 
@@ -107,22 +107,23 @@ class _SolvableByRolloutDumpFilter:
         df = df_samples
 
         df = df.select(
-            'prompt', 'response',
-            pl.col('reward').struct.field('reward_value'),
-            pl.col('metadata').struct.field('question_id'),
+            "prompt",
+            "response",
+            pl.col("reward").struct.field("reward_value"),
+            pl.col("metadata").struct.field("question_id"),
         )
-        df = df.group_by('question_id').agg(pl.col('reward_value').mean())
+        df = df.group_by("question_id").agg(pl.col("reward_value").mean())
 
-        interesting_question_ids = df.filter(pl.col('reward_value') > 0)["question_id"].sort().to_list()
+        interesting_question_ids = df.filter(pl.col("reward_value") > 0)["question_id"].sort().to_list()
         print(f"{len(interesting_question_ids)=} {interesting_question_ids[:5]=}")
 
         return interesting_question_ids
 
 
-_LEANABELL_ORIGINAL_PREFIX = '''Complete the following Lean 4 code with explanatory comments preceding each line of code:
+_LEANABELL_ORIGINAL_PREFIX = """Complete the following Lean 4 code with explanatory comments preceding each line of code:
 
 ```lean4
-'''
+"""
 
 
 def process_leanabell(
@@ -140,7 +141,12 @@ def process_leanabell(
         ]
 
     def _process_batch(batch):
-        return {"messages": [_compute_messages(prompt, output) for prompt, output in zip(batch["prompt"], batch["output"], strict=True)]}
+        return {
+            "messages": [
+                _compute_messages(prompt, output)
+                for prompt, output in zip(batch["prompt"], batch["output"], strict=True)
+            ]
+        }
 
     ds = ds.map(_process_batch, batched=True)
     _write_file(ds, dir_output / "leanabell.jsonl")
