@@ -98,7 +98,7 @@ class _SolvableByRolloutDumpFilter:
         df_samples = pl.concat([
             pl.DataFrame(torch.load(p)["samples"])
             for p in tqdm(paths, desc='load eval dumps')
-        ])
+        ], how='diagonal_relaxed')
         print(f"{df_samples=}")
         return df_samples
 
