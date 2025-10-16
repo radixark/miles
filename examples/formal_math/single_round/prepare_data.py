@@ -32,7 +32,7 @@ def process_flc(
     val_flc_select_num_rows: int,
 ):
     ds = load_dataset("m-a-p/FineLeanCorpus", split="train")
-    ds = ds.add_column("metadata", [dict(question_id=f"flc__idx{i}") for i in range(len(ds))])
+    ds = _add_metadata_column(ds, dataset_name="flc")
 
     def _filter_batch(batch):
         return [
@@ -73,7 +73,7 @@ def process_minif2f(
     dir_output: Path,
 ):
     ds = load_dataset("AI-MO/minif2f_test", split="train")
-    ds = ds.add_column("metadata", [dict(question_id=f"minif2f__idx{i}") for i in range(len(ds))])
+    ds = _add_metadata_column(ds, dataset_name="minif2f")
     ds = ds.shuffle(seed=42)
     ds = ds.remove_columns(["name", "informal_prefix"])
 
@@ -107,6 +107,10 @@ def _ensure_remove_pattern(text: str, pattern: str):
 
 def _to_messages(content):
     return [{"role": "user", "content": content}]
+
+
+def _add_metadata_column(ds, dataset_name: str):
+    return ds.add_column("metadata", [dict(question_id=f"{dataset_name}__idx{i}") for i in range(len(ds))])
 
 
 def main(
