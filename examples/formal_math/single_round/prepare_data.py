@@ -197,7 +197,7 @@ def process_minif2f(
 
 def _write_file(ds, path):
     match path.suffix:
-        case ".json":
+        case ".jsonl":
             ds.to_json(path)
         case ".parquet":
             ds.to_parquet(path)
