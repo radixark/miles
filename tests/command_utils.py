@@ -73,6 +73,7 @@ def execute_train(
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
                 "no_proxy": f"127.0.0.1,{master_addr}",
+                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             }
         }
     )
