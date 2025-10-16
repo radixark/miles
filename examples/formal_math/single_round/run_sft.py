@@ -24,7 +24,7 @@ def prepare():
 def execute():
     run_id = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}"
 
-    CKPT_ARGS = (
+    ckpt_args = (
         "--hf-checkpoint /root/Qwen3-4B-Base/ "
         "--ref-load /root/Qwen3-4B-Base_torch_dist "
         "--load /root/Qwen3-4B-Base_miles/ "
@@ -32,7 +32,7 @@ def execute():
         "--save-interval 1000 "
     )
 
-    SFT_ARGS = (
+    sft_args = (
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
         "--prompt-data /root/openhermes2_5.parquet "
         "--input-key messages "
@@ -46,7 +46,7 @@ def execute():
         "--debug-train-only "
     )
 
-    PERF_ARGS = (
+    perf_args = (
         "--tensor-model-parallel-size 1 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
@@ -63,7 +63,7 @@ def execute():
         "--max-tokens-per-gpu 9216 "
     )
 
-    OPTIMIZER_ARGS = (
+    optimizer_args = (
         "--optimizer adam "
         "--lr 1e-5 "
         "--lr-warmup-iters 128 "
@@ -75,14 +75,7 @@ def execute():
         "--adam-beta2 0.95 "
     )
 
-    WANDB_ARGS = (
-        # --use-wandb
-        # --wandb-project miles-dev
-        # --wandb-group qwen3-4B-base-sft
-        # --wandb-key ${WANDB_KEY}
-    )
-
-    MISC_ARGS = (
+    misc_args = (
         # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
@@ -95,7 +88,6 @@ def execute():
 
     train_args = (
         f"{ckpt_args} "
-        f"{rollout_args} "
         f"{optimizer_args} "
         f"{U.get_default_wandb_args(__file__)} "
         f"{perf_args} "
