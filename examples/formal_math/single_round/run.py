@@ -8,6 +8,8 @@ sys.path.append(str(Path(__file__).resolve().parents[3] / "tests"))
 import command_utils as U
 
 dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
+mode = os.environ.get("MILES_MODE", "train")
+assert mode in {"train", "eval"}
 
 # MODEL_NAME, MODEL_TYPE = "Qwen3-4B", "qwen3-4B"
 MODEL_NAME, MODEL_TYPE = "Qwen3-8B", "qwen3-8B"
@@ -49,13 +51,23 @@ def execute():
 
     eval_args = (
         "--eval-interval 20 "
-        "--eval-prompt-data "
-        f"minif2f /root/datasets/formal_math_single_round/{dataset_transform_id}/minif2f_test.jsonl "
-        f"flc /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_test.jsonl "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 16384 "
         "--eval-top-p 0.7 "
     )
+
+    if mode == "eval":
+        eval_args += (
+            "--eval-prompt-data "
+            f"minif2f /root/datasets/formal_math_single_round/{dataset_transform_id}/minif2f_test.jsonl@[{TODO}] "
+            f"flc /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_test.jsonl@[{TODO}] "
+        )
+    else:
+        eval_args += (
+            "--eval-prompt-data "
+            f"minif2f /root/datasets/formal_math_single_round/{dataset_transform_id}/minif2f_test.jsonl "
+            f"flc /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_test.jsonl "
+        )
 
     perf_args = (
         "--tensor-model-parallel-size 2 "
