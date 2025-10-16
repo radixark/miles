@@ -49,7 +49,8 @@ def execute():
     )
 
     perf_args = (
-        f"--tensor-model-parallel-size {os.environ.get('ARG_TP_SIZE', '1')} "
+        # TP1 + no-cpu-adam + expendable segments => NCCL error (is it oom?) when saving ckpt
+        f"--tensor-model-parallel-size {os.environ.get('ARG_TP_SIZE', '2')} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
