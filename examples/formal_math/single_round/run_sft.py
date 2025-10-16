@@ -35,10 +35,11 @@ def execute():
 
     sft_args = (
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
-        "--prompt-data /root/openhermes2_5.parquet "
+        f"--prompt-data {TODO} "
         "--input-key messages "
         "--rollout-shuffle "
-        "--num-epoch 3 "
+        # NOTE temporarily only 1 epoch to speed up
+        "--num-epoch 1 "
         "--rollout-batch-size 128 "
         "--global-batch-size 128 "
         "--loss-type sft_loss "
