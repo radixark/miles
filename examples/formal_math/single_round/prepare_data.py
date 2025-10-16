@@ -119,6 +119,10 @@ class _SolvableByRolloutDumpFilter:
         return interesting_question_ids
 
 
+def process_leanabell():
+    TODO
+
+
 def process_minif2f(
     dir_output: Path,
 ):
@@ -168,6 +172,7 @@ def _add_metadata_column(ds, dataset_name: str, column_id=None):
 
 
 def main(
+    mode: Annotated[str, typer.Option()] = "rl",
     dir_output_base: Annotated[str, typer.Option()] = "/root/datasets/formal_math_single_round/",
     train_flc_select_num_rows: Annotated[int, typer.Option()] = 20000,
     val_flc_select_num_rows: Annotated[int, typer.Option()] = 100,
@@ -180,16 +185,21 @@ def main(
     dir_output.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {dir_output}")
 
-    process_flc(
-        dir_output=dir_output,
-        train_flc_select_num_rows=train_flc_select_num_rows,
-        val_flc_select_num_rows=val_flc_select_num_rows,
-        filter_difficulty=filter_difficulty,
-        filter_solvable_by_rollout_dumps=filter_solvable_by_rollout_dumps,
-    )
-    process_minif2f(
-        dir_output=dir_output,
-    )
+    if mode == "rl":
+        process_flc(
+            dir_output=dir_output,
+            train_flc_select_num_rows=train_flc_select_num_rows,
+            val_flc_select_num_rows=val_flc_select_num_rows,
+            filter_difficulty=filter_difficulty,
+            filter_solvable_by_rollout_dumps=filter_solvable_by_rollout_dumps,
+        )
+        process_minif2f(
+            dir_output=dir_output,
+        )
+    elif mode == "sft":
+        TODO
+    else:
+        raise NotImplementedError(f"{mode=}")
 
 
 if __name__ == "__main__":
