@@ -131,10 +131,11 @@ silver + pearls + spices = 1636 := by
     """,
         ),
         # from leanabell SFT output
-        (
-            '''<|im_start|>user\nComplete the following Lean 4 code:\n\n```lean4\nimport Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\n/-- Evaluate $\\log_327$. Show that it is 3.-/\ntheorem mathd_algebra_484 : Real.log 27 / Real.log 3 = 3 := by\n  sorry\n```\n\nBefore producing the Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies.\nThe plan should highlight key ideas, intermediate lemmas, and proof structures that will guide the construction of the final formal proof.<|im_end|>\n<|im_start|>assistant\n''',
-            ''''```lean\n  /-\n  To evaluate \\(\\log_3 27\\), we start by expressing 27 as a power of 3. We know that \\(27 = 3^2\\). Therefore, we can rewrite the expression as:\n  \\[\n  \\log_3 27 = \\log_3 (3^2) = 3\n  \\]\n  This completes the proof.\n  -/\n  -- Use the definition of Real.logb to rewrite the expression.\n  simp [Real.logb, show (3 : ℝ) = 2 by norm_num, show (27 : ℝ) = 3 ^ 2 by norm_num]\n  -- Simplify the expression using the properties of logarithms and arithmetic operations.\n  <;> simp [Real.logb, show (3 : ℝ) = 2 by norm_num, show (27 : ℝ) = 3 ^ 2 by norm_num]\n  -- Normalize the numerical values to confirm the result.\n  <;> norm_num\n  -- Ensure the final result is correct by checking reflexivity.\n  <;> rfl\n``` <|im_end|>''',
-        ),
+        # TODO: provide a correct example
+        # (
+        #     '''<|im_start|>user\nComplete the following Lean 4 code:\n\n```lean4\nimport Mathlib\nimport Aesop\n\nset_option maxHeartbeats 0\n\nopen BigOperators Real Nat Topology Rat\n\n/-- Evaluate $\\log_327$. Show that it is 3.-/\ntheorem mathd_algebra_484 : Real.log 27 / Real.log 3 = 3 := by\n  sorry\n```\n\nBefore producing the Lean 4 code to formally prove the given theorem, provide a detailed proof plan outlining the main proof steps and strategies.\nThe plan should highlight key ideas, intermediate lemmas, and proof structures that will guide the construction of the final formal proof.<|im_end|>\n<|im_start|>assistant\n''',
+        #     ''''```lean\n  /-\n  To evaluate \\(\\log_3 27\\), we start by expressing 27 as a power of 3. We know that \\(27 = 3^2\\). Therefore, we can rewrite the expression as:\n  \\[\n  \\log_3 27 = \\log_3 (3^2) = 3\n  \\]\n  This completes the proof.\n  -/\n  -- Use the definition of Real.logb to rewrite the expression.\n  simp [Real.logb, show (3 : ℝ) = 2 by norm_num, show (27 : ℝ) = 3 ^ 2 by norm_num]\n  -- Simplify the expression using the properties of logarithms and arithmetic operations.\n  <;> simp [Real.logb, show (3 : ℝ) = 2 by norm_num, show (27 : ℝ) = 3 ^ 2 by norm_num]\n  -- Normalize the numerical values to confirm the result.\n  <;> norm_num\n  -- Ensure the final result is correct by checking reflexivity.\n  <;> rfl\n``` <|im_end|>''',
+        # ),
     ]
 
     import ray
