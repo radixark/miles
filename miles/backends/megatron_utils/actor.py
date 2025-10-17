@@ -74,7 +74,9 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         expected_start_rollout_id = loaded_rollout_id + 1
-        assert args.start_rollout_id == expected_start_rollout_id, f"{args.start_rollout_id=} {expected_start_rollout_id=}"
+        assert (
+            args.start_rollout_id == expected_start_rollout_id
+        ), f"{args.start_rollout_id=} {expected_start_rollout_id=}"
 
         self.weights = {"actor": {}}
         self.update_cpu_params_dict(self.weights["actor"])
