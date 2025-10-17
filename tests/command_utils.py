@@ -36,12 +36,12 @@ def execute_train(
     train_args: str,
     num_gpus: int,
     model_type: Optional[str],
-    master_addr: str = "127.0.0.1",
     train_script: str = "train.py",
     before_ray_job_submit=None,
     extra_env_vars={},
 ):
     external_ray = bool(int(os.environ.get("MILES_SCRIPT_EXTERNAL_RAY", "0")))
+    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
     exec_command(
         "pkill -9 sglang; "
@@ -77,6 +77,7 @@ def execute_train(
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
                 "no_proxy": f"127.0.0.1,{master_addr}",
+                "MASTER_ADDR": master_addr,
                 **extra_env_vars,
             }
         }
