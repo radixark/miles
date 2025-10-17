@@ -442,9 +442,9 @@ def _log_eval_rollout_data(rollout_id, args, data):
         if args.log_passrate:
             log_dict |= dict_add_prefix(compute_pass_rate(
                 flat_rewards=TODO,
-                group_size=TODO,
+                group_size=args.n_samples_per_eval_prompt,
                 num_groups=TODO,
-            ), "eval/")
+            ), f"eval/{key}-")
 
     print(f"eval {rollout_id}: {log_dict}")
 
