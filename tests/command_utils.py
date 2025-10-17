@@ -100,7 +100,13 @@ def _cleanup_node():
     )
 
 
+# NOTE: this is just one naive implementation; for environment w/ Slurm or Kubernetes, it should be simpler.
+#       we can generalize this later if it is needed.
 def _start_ray_worker_nodes():
+    node_ips = os.environ.get("MILES_SCRIPT_START_RAY_WORKER_NODE_IPS", "")
+    if not node_ips:
+        return
+
     return TODO
 
 
