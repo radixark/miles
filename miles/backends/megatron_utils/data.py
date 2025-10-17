@@ -17,6 +17,7 @@ from miles.utils.timer import Timer
 from miles.utils.types import RolloutBatch
 
 from .cp_utils import get_sum_of_sample_mean, slice_with_cp
+from ...utils.metric_utils import compute_pass_rate
 
 
 def get_batch(
@@ -409,7 +410,7 @@ def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -
             if key != "raw_reward":
                 continue
 
-            TODO
+            log_dict |= compute_pass_rate(rewards=val)
 
         gather_log_data("passrate", args, rollout_id, log_dict)
 
