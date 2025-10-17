@@ -132,7 +132,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.prof.start()
 
         Timer().start("train_wait")
-        return start_rollout_id
 
     @torch.no_grad()
     def update_cpu_params_dict(self, params_dict: Dict[str, torch.Tensor]) -> None:

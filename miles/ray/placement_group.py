@@ -151,7 +151,7 @@ def create_training_models(args, pgs, rollout_manager, wandb_run_id):
     else:
         critic_model = None
 
-    start_rollout_ids = ray.get(
+    ray.get(
         actor_model.async_init(args, role="actor", with_ref=args.kl_coef != 0 or args.use_kl_loss)
     )
 
