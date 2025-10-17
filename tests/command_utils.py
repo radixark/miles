@@ -109,7 +109,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: Optional[str] = None
     if len(test_name) < 6:
         test_name = f"{test_file.parent.name}_{test_name}"
 
-    wandb_run_name = run_id or f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000000)}"
+    wandb_run_name = run_id or create_run_id()
     if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
         wandb_run_name += f"_{x}"
     if (x := run_name_prefix) is not None:
@@ -121,7 +121,12 @@ def get_default_wandb_args(test_file: str, run_name_prefix: Optional[str] = None
         f"--wandb-project miles-ci-{test_name} "
         f"--wandb-group {wandb_run_name} "
         f"--wandb-key ${{WANDB_API_KEY}} "
+        "--disable-wandb-random-suffix "
     )
+
+
+def create_run_id() -> str:
+    return datetime.datetime.now().strftime('%y%m%d-%H%M%S') + f'-{random.Random().randint(0, 999):03d}'
 
 
 _warned_bool_env_var_keys = set()
