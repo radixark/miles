@@ -474,7 +474,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
         log_dict["perf/tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
     log_dict["perf/longest_sample_tokens_per_sec"] = max(response_lengths) / rollout_time
     log_dict |= _compute_zero_std_metrics(args, samples)
-    log_dict |= _compute_reward_cat_metrics(args, samples)
+    log_dict |= dict_add_prefix(_compute_reward_cat_metrics(args, samples), f"rollout/")
     print(f"perf {rollout_id}: {log_dict}")
     step = (
         rollout_id
