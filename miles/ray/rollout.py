@@ -17,6 +17,7 @@ from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import find_available_port, get_host_info, init_http_client
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.metric_utils import compute_pass_rate, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.types import Sample
@@ -438,6 +439,14 @@ def _log_eval_rollout_data(rollout_id, args, data):
         if "truncated" in data[key]:
             truncated = data[key]["truncated"]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
+        if args.log_passrate:
+            log_dict |= dict_add_prefix(
+                compute_pass_rate(
+                    flat_rewards=rewards,
+                    group_size=args.n_samples_per_eval_prompt,
+                ),
+                f"eval/{key}-",
+            )
 
     print(f"eval {rollout_id}: {log_dict}")
 
