@@ -84,6 +84,7 @@ def execute():
             f"flc /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_train.jsonl@[{flc_chunk}] "
             # pass@32 is common for formal math
             "--n-samples-per-eval-prompt 32 "
+            "--log-passrate "
         )
     else:
         eval_args += (
