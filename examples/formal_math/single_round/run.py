@@ -51,7 +51,7 @@ def execute():
         "--rollout-shuffle "
         "--custom-rm-path examples.formal_math.single_round.reward_fn.reward_fn "
         "--reward-key reward_value "
-        "--log-reward-category error_cat "
+        "--log-reward-category reward_cat "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
