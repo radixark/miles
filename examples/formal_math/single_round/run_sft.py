@@ -66,7 +66,7 @@ def execute():
 
     optimizer_args = (
         "--optimizer adam "
-        f"--lr {os.environ.get('ARG_LR', '1e-5')} "
+        f"--lr {os.environ.get('ARG_LR', '2e-4')} "
         "--lr-decay-style cosine "
         "--min-lr 1e-6 "
         "--lr-warmup-fraction 0.1 "
