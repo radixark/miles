@@ -152,8 +152,9 @@ def execute():
         "--log-passrate "
     )
 
-    if mode in {"eval_pass_at_k", "eval_flc"}:
-        misc_args += "--debug-rollout-only "
+    # should not use debug-rollout-only when doing eval, b/c the weights should be from megatron weights
+    # if mode in {"eval_pass_at_k", "eval_flc"}:
+    #     misc_args += "--debug-rollout-only "
 
     train_args = (
         f"{ckpt_args} "
