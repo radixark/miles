@@ -84,7 +84,6 @@ def execute():
             f"flc /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_train.jsonl@[{flc_chunk}] "
             # pass@32 is common for formal math
             "--n-samples-per-eval-prompt 32 "
-            "--log-passrate "
         )
     else:
         eval_args += (
@@ -95,7 +94,6 @@ def execute():
         if mode == "eval_pass_at_k":
             eval_args += (
                 "--n-samples-per-eval-prompt 32 "
-                "--log-passrate "
             )
 
     perf_args = (
@@ -151,6 +149,7 @@ def execute():
         "--colocate "
         # for debug
         f"--save-debug-rollout-data /root/shared_data/{run_id}/{{rollout_id}}.pt "
+        "--log-passrate "
     )
 
     if mode in {"eval_pass_at_k", "eval_flc"}:
