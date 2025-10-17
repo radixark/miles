@@ -49,7 +49,7 @@ def execute_train(
         f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus} --disable-usage-stats"
     )
 
-    start_ray_worker_nodes()
+    _start_ray_worker_nodes()
 
     if (f := before_ray_job_submit) is not None:
         f()
@@ -59,7 +59,7 @@ def execute_train(
             "env_vars": {
                 "PYTHONPATH": "/root/Megatron-LM/",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                "NCCL_NVLS_ENABLE": str(int(_check_has_nvlink())),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 **extra_env_vars,
             }
@@ -100,7 +100,11 @@ def _cleanup_node():
     )
 
 
-def check_has_nvlink():
+def _start_ray_worker_nodes():
+    return TODO
+
+
+def _check_has_nvlink():
     output = exec_command("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
     return int(output) > 0
 
