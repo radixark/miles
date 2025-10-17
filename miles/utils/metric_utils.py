@@ -1,12 +1,11 @@
 import math
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 
 def dict_add_prefix(d: Dict[str, Any], prefix: str) -> Dict[str, Any]:
-    return {f'{prefix}{k}': v for k, v in d.items()}
-
+    return {f"{prefix}{k}": v for k, v in d.items()}
 
 
 def compute_pass_rate(
