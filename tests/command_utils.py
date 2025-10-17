@@ -104,8 +104,8 @@ def _cleanup_node():
 # NOTE: this is just one naive implementation for environment without Slurm or Kubernetes.
 #       we can generalize this later if it is needed (e.g. someone also does not have Slurm/Kubernetes).
 def _start_ray_worker_nodes():
-    node_ips = os.environ.get("MILES_SCRIPT_START_RAY_WORKER_NODE_IPS", "").split(",")
-    if not node_ips:
+    worker_node_ips = os.environ.get("MILES_SCRIPT_START_RAY_WORKER_NODE_IPS", "").split(",")
+    if not worker_node_ips:
         return
 
     def _execute_ssh(node_ip: str, command_inner: str):
@@ -115,9 +115,9 @@ def _start_ray_worker_nodes():
         _execute_ssh(node_ip, f"just miles-docker-run-without-exec")
         _execute_ssh(node_ip, f"just miles-start-ray-worker {head_node_ip}:6379")
 
-    print(f"Start ray worker nodes: {node_ips}", flush=True)
+    print(f"Start ray worker nodes: {worker_node_ips}", flush=True)
     with ThreadPoolExecutor(max_workers=100) as executor:
-        list(executor.map(_execute_one, node_ips))
+        list(executor.map(_execute_one, worker_node_ips))
 
 
 def _check_has_nvlink():
