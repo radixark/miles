@@ -13,9 +13,6 @@ def compute_pass_rate(
     group_size: int,
     num_groups: Optional[int] = None,
 ):
-    if group_size == 1:
-        return {}
-
     if num_groups is None:
         num_groups = len(flat_rewards) // group_size
 
