@@ -106,7 +106,8 @@ def execute():
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 9216 "
+        # see OOM when 9216
+        "--max-tokens-per-gpu 8192 "
     )
 
     grpo_args = (
