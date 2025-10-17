@@ -46,7 +46,7 @@ def execute_train(
     exec_command(
         "pkill -9 sglang; "
         "sleep 3; "
-        "ray stop --force; "
+        f"{'' if external_ray else 'ray stop --force; '}"
         f"{'' if external_ray else 'pkill -9 ray; '}"
         # cannot be run in CI, o/w kill the parent script
         # TODO: do we really need this kill? (or can we instead kill miles)

@@ -149,7 +149,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
-        "--actor-num-nodes 1 "
+        f"--actor-num-nodes {os.environ.get('ARG_ACTOR_NUM_NODES', '1')} "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
         # for debug
