@@ -106,8 +106,9 @@ def execute():
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        # see OOM when 9216
-        "--max-tokens-per-gpu 8192 "
+        # see OOM when 9216 or 8192
+        # TODO examine why this happens only in e.g. AC6588
+        "--max-tokens-per-gpu 6144 "
     )
 
     grpo_args = (
