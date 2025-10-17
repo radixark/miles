@@ -9,7 +9,7 @@ import requests
 from kimina_client import AsyncKiminaClient, CheckResponse
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from miles.utils.misc import exec_command, get_free_port
+from miles.utils.misc import exec_command, get_free_port, get_current_node_host_ip
 
 # TODO handle docker stop more gracefully later
 _KILL_PREVIOUS_KIMINA_DOCKER = bool(int(os.environ.get("MILES_KILL_PREVIOUS_KIMINA_DOCKER", "1")))
@@ -57,7 +57,7 @@ def _create_actor_per_node(actor_cls) -> List:
 @ray.remote
 class _KiminaServerActor:
     def __init__(self):
-        self.addr = _get_current_node_host_ip()
+        self.addr = get_current_node_host_ip()
         self.port = get_free_port()
 
         if _KILL_PREVIOUS_KIMINA_DOCKER:
@@ -102,10 +102,3 @@ def _docker_stop_all():
         '[ -n "$ids" ] && docker stop $ids && docker rm $ids; '
         "true"
     )
-
-
-# TODO move to utils?
-def _get_current_node_host_ip():
-    # https://stackoverflow.com/questions/22944631
-    out = exec_command("ip route show default | awk '/default/ {print $3}'", capture_output=True)
-    return out.strip()

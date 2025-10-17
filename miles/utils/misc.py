@@ -52,6 +52,12 @@ def get_current_node_ip():
     return address
 
 
+def get_current_node_host_ip():
+    # https://stackoverflow.com/questions/22944631
+    out = exec_command("ip route show default | awk '/default/ {print $3}'", capture_output=True)
+    return out.strip()
+
+
 def get_free_port(start_port=10000, consecutive=1):
     # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available
     port = start_port

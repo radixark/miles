@@ -109,6 +109,8 @@ def _start_ray_worker_nodes():
     if not worker_node_ips:
         return
 
+    head_node_ip = TODO
+
     def _execute_ssh(node_ip: str, command_inner: str):
         exec_command(f"ssh {node_ip} 'cd /data/tom/primary_synced/tom_sglang_server/misc && {command_inner}'")
 
