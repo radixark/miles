@@ -39,7 +39,7 @@ def execute():
     ckpt_args = (
         f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
         f"--ref-load {arg_ref_load or f'/root/{MODEL_NAME}_torch_dist'} "
-        f"--load {load_save_path} "
+        f"--load {arg_load or load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
     )
