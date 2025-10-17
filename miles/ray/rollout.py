@@ -508,6 +508,7 @@ def _compute_zero_std_metrics(args, all_samples: List[Sample]):
 
     return {f"rollout/zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
 
+
 def _compute_reward_cat_metrics(args, all_samples: List[Sample]):
     reward_cat_key = args.log_reward_category
     if reward_cat_key is None:
@@ -515,7 +516,4 @@ def _compute_reward_cat_metrics(args, all_samples: List[Sample]):
 
     samples_of_reward_cat = group_by(all_samples, lambda s: s.reward[reward_cat_key])
 
-    return {
-        f"error_cat/{reward_cat}": len(s) / len(all_samples)
-        for reward_cat, s in samples_of_reward_cat.items()
-    }
+    return {f"error_cat/{reward_cat}": len(s) / len(all_samples) for reward_cat, s in samples_of_reward_cat.items()}
