@@ -39,7 +39,7 @@ class MegatronTrainRayActor(TrainRayActor):
         role: str,
         wandb_run_id: str,
         with_ref: bool = False,
-    ) -> Optional[int]:
+    ):
         super().init(args, role, wandb_run_id, with_ref)
 
         init(args)
