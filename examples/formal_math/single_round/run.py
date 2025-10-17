@@ -11,7 +11,8 @@ import command_utils as U
 
 # TODO unify "arg" prefix
 enable_dynamic_sampling = bool(int(os.environ.get("ARG_ENABLE_DYNAMIC_SAMPLING", "0")))
-ref_load = os.environ.get("ARG_REF_LOAD")
+arg_ref_load = os.environ.get("ARG_REF_LOAD")
+arg_load = os.environ.get("ARG_LOAD")
 eval_max_response_len = os.environ.get("ARG_EVAL_MAX_RESPONSE_LEN")
 
 dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
@@ -27,7 +28,7 @@ NUM_GPUS = 8
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    if ref_load is None:
+    if arg_ref_load is None:
         U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=NUM_GPUS)
 
 
@@ -37,7 +38,7 @@ def execute():
     load_save_path = f"/root/models/{MODEL_NAME}_ckpt__{Path(__file__).stem}_{run_id}/"
     ckpt_args = (
         f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
-        f"--ref-load {ref_load or f'/root/{MODEL_NAME}_torch_dist'} "
+        f"--ref-load {arg_ref_load or f'/root/{MODEL_NAME}_torch_dist'} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
