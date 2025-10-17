@@ -24,7 +24,7 @@ class RewardFn:
         try:
             code, code_error_cat = _assemble_code(prompt=sample.prompt, response=sample.response)
             if code is None:
-                return dict(reward_value=0.0, error_cat=code_error_cat)
+                return dict(reward_value=0.0, reward_cat=code_error_cat)
 
             resp = await self._verifier.check(snips=code, timeout=_TIMEOUT, show_progress=False)
             result = _single(resp.results)
@@ -33,13 +33,13 @@ class RewardFn:
 
             return dict(
                 reward_value=float(is_valid),
-                error_cat=None if is_valid else f"lean_{analysis.status.value}",
+                reward_cat="success" if is_valid else f"lean_{analysis.status.value}",
                 lean_result=result.model_dump(),
                 extracted_code=code,
             )
         except Exception as e:
             logger.warning(f"Error in RewardFn: {e=} {sample.prompt=} {sample.response=}")
-            return dict(reward_value=0.0, error_cat="PYTHON_ERROR", error_details=str(e))
+            return dict(reward_value=0.0, reward_cat="python_error", error_details=str(e))
 
 
 def _single(arr):
