@@ -153,10 +153,6 @@ def create_training_models(args, pgs, rollout_manager, wandb_run_id):
 
     ray.get(actor_model.async_init(args, role="actor", with_ref=args.kl_coef != 0 or args.use_kl_loss))
 
-    assert len(set(start_rollout_ids)) == 1
-    if args.start_rollout_id is None:
-        args.start_rollout_id = start_rollout_ids[0]
-
     if args.use_critic:
         ray.get(critic_init_handle)
         actor_model.connect(critic_model)
