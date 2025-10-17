@@ -35,6 +35,7 @@ class RewardFn:
                 reward_value=float(is_valid),
                 error_cat=None if is_valid else f"lean_{analysis.status.value}",
                 lean_result=result.model_dump(),
+                extracted_code=code,
             )
         except Exception as e:
             logger.warning(f"Error in RewardFn: {e=} {sample.prompt=} {sample.response=}")
