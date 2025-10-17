@@ -73,12 +73,10 @@ class MegatronTrainRayActor(TrainRayActor):
             Timer().start("train_wait")
             return
 
-        expected_start_rollout_ids = {loaded_rollout_id + 1}
-        if loaded_rollout_id == 0:
-            expected_start_rollout_ids |= {0}
+        expected_start_rollout_id = 0 if loaded_rollout_id == 0 else (loaded_rollout_id + 1)
         assert (
-            args.start_rollout_id in expected_start_rollout_ids
-        ), f"{args.start_rollout_id=} {expected_start_rollout_ids=}"
+            args.start_rollout_id == expected_start_rollout_id
+        ), f"{args.start_rollout_id=} {expected_start_rollout_id=}"
 
         self.weights = {"actor": {}}
         self.update_cpu_params_dict(self.weights["actor"])
