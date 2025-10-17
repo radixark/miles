@@ -100,12 +100,17 @@ def _cleanup_node():
     )
 
 
-# NOTE: this is just one naive implementation; for environment w/ Slurm or Kubernetes, it should be simpler.
-#       we can generalize this later if it is needed.
+# NOTE: this is just one naive implementation for environment without Slurm or Kubernetes.
+#       we can generalize this later if it is needed (e.g. someone also does not have Slurm/Kubernetes).
 def _start_ray_worker_nodes():
     node_ips = os.environ.get("MILES_SCRIPT_START_RAY_WORKER_NODE_IPS", "")
     if not node_ips:
         return
+
+    cmd_ssh = TODO
+
+    exec_command(f"{cmd_ssh} just miles-docker-run-without-exec")
+    exec_command(f"{cmd_ssh} docker exec -it tom_miles_adhoc_0 {TODO}")
 
     return TODO
 
