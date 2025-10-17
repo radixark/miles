@@ -17,7 +17,7 @@ eval_max_response_len = os.environ.get("ARG_EVAL_MAX_RESPONSE_LEN")
 
 dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
 mode = os.environ.get("MILES_MODE", "train")
-assert mode in {"train", "eval_flc"}
+assert mode in {"train", "eval", "eval_flc"}
 
 # MODEL_NAME, MODEL_TYPE = "Qwen3-4B", "qwen3-4B"
 MODEL_NAME, MODEL_TYPE = "Qwen3-8B", "qwen3-8B"
@@ -59,7 +59,7 @@ def execute():
         "--balance-data "
     )
 
-    if mode == "eval_flc":
+    if mode in {"eval", "eval_flc"}:
         rollout_args += "--num-rollout 0 "
     else:
         rollout_args += "--num-rollout 3000 "
@@ -92,6 +92,11 @@ def execute():
             f"minif2f /root/datasets/formal_math_single_round/{dataset_transform_id}/minif2f_test.jsonl "
             f"flc /root/datasets/formal_math_single_round/{dataset_transform_id}/flc_test.jsonl "
         )
+        if mode == "eval":
+            eval_args += (
+                "--n-samples-per-eval-prompt 32 "
+                "--log-passrate "
+            )
 
     perf_args = (
         "--tensor-model-parallel-size 2 "
@@ -148,7 +153,7 @@ def execute():
         f"--save-debug-rollout-data /root/shared_data/{run_id}/{{rollout_id}}.pt "
     )
 
-    if mode == "eval_flc":
+    if mode in {"eval", "eval_flc"}:
         misc_args += "--debug-rollout-only "
 
     train_args = (
