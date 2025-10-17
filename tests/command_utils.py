@@ -108,10 +108,16 @@ def _start_ray_worker_nodes():
     if not node_ips:
         return
 
+    head_node_port = 6379
+
     def _execute_one(node_ip: str):
         cmd_ssh = TODO
         exec_command(f"{cmd_ssh} just miles-docker-run-without-exec")
-        exec_command(f"{cmd_ssh} docker exec -it tom_miles_adhoc_0 {TODO}")
+        exec_command(
+            f"{cmd_ssh} "
+            f"docker exec -it tom_miles_adhoc_0 "
+            f"/bin/bash -c 'ray start --address={head_node_ip}:{head_node_port}'"
+        )
 
     print(f"Start ray worker nodes: {node_ips}", flush=True)
     with ThreadPoolExecutor(max_workers=100) as executor:
