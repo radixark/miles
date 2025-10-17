@@ -8,6 +8,7 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.utils.checkpoint_utils import get_latest_checkpointed_iteration
 
 
 def reset_arg(parser, name, **kwargs):
@@ -1114,12 +1115,8 @@ def miles_validate_args(args):
                 "please make sure it is a valid megatron checkpoint directory."
             )
 
-    # TODO: During loading, we need to set the start_rollout_id here.
-    if (
-        args.load is None
-        or not os.path.exists(args.load)
-        or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
-    ):
+    load_ckpt_iter = get_latest_checkpointed_iteration(args.load)
+    if load_ckpt_iter is None:
         args.no_load_optim = True
         args.no_load_rng = True
         args.finetune = True
@@ -1127,6 +1124,8 @@ def miles_validate_args(args):
         if args.ref_ckpt_step is not None:
             args.ckpt_step = args.ref_ckpt_step
         args.start_rollout_id = 0
+    else:
+        args.start_rollout_id = load_ckpt_iter + 1
 
     if args.eval_interval is not None:
         assert args.eval_prompt_data is not None, "eval_prompt_data must be set when eval_interval is set"
