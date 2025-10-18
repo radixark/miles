@@ -7,6 +7,7 @@ FROM ishandhanani/sglang:gb300-1015 AS sglang
 ARG SGLANG_VERSION
 ARG MEGATRON_COMMIT=ca9797e95e88d93623b0f69831529a1b521297ac
 ARG ENABLE_BLACKWELL_BUILD=0
+ARG ENABLE_CUDA_13=0
 
 RUN apt update
 RUN apt install -y nvtop
@@ -38,7 +39,13 @@ RUN pip install pybind11
 # the newest version megatron supports is v2.7.4
 RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1
 RUN pip install flash-linear-attention
-RUN pip -v install --no-build-isolation transformer_engine[pytorch]
+
+# TE does not have wheel on cuda 13 yet, thus need to install from source
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+          pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@stable \
+        else \
+          pip -v install --no-build-isolation transformer_engine[pytorch] \
+        fi
 
 WORKDIR /root/
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
