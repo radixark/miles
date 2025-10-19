@@ -9,7 +9,6 @@ ARG MEGATRON_COMMIT=ca9797e95e88d93623b0f69831529a1b521297ac
 
 ARG ENABLE_BLACKWELL_BUILD=0
 ARG ENABLE_CUDA_13=0
-# TODO remove
 ARG ENABLE_TIGHT_BUILD_RES=0
 
 RUN apt update
@@ -38,9 +37,16 @@ RUN NVCC_APPEND_FLAGS="--threads 4" \
   --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git
 # transformer engine, we install with --no-deps to avoid installing torch and torch-extensions
 RUN pip install pybind11
+
 # flash attn
 # the newest version megatron supports is v2.7.4
-RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1
+RUN if [ "$ENABLE_TIGHT_BUILD_RES" = "1" ]; then \
+      export MAX_JOBS=32; \
+    else \
+      export MAX_JOBS=64; \
+    fi && \
+    pip -v install flash-attn==2.7.4.post1
+
 RUN pip install flash-linear-attention
 
 # TE does not have wheel on cuda 13 yet, thus need to install from source
