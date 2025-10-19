@@ -232,13 +232,14 @@ def _add_metadata_column(ds, dataset_name: str, column_id=None):
 def main(
     mode: Annotated[str, typer.Option()] = "rl",
     dir_output_base: Annotated[str, typer.Option()] = "/root/datasets/formal_math_single_round/",
+    output_name: Annotated[str, typer.Option()] = None,
     train_flc_select_num_rows: Annotated[int, typer.Option()] = 20000,
     val_flc_select_num_rows: Annotated[int, typer.Option()] = 100,
     filter_difficulty: Annotated[Optional[int], typer.Option()] = None,
     filter_solvable_by_rollout_dumps: Annotated[Optional[str], typer.Option()] = None,
 ):
-    dir_output = (
-        Path(dir_output_base) / f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}"
+    dir_output = Path(dir_output_base) / (
+        output_name or f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}"
     )
     dir_output.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {dir_output}")
