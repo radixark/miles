@@ -14,9 +14,12 @@ MODEL_TYPE = "qwen3-30B-A3B"
 
 match mode:
     case "8xh100":
-        num_gpus = 8
+        num_gpus_for_convert = num_gpus = 8
     case "4xgb300":
-        num_gpus = 4
+        num_gpus_for_convert = num_gpus = 4
+    case "8xgb300":
+        num_gpus_for_convert = 4
+        num_gpus = 8
     case _:
         raise NotImplementedError(f"{mode=}")
 
@@ -26,7 +29,7 @@ def prepare():
     U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
-    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=num_gpus)
+    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=num_gpus_for_convert)
 
 
 # TODO improve layering: split algorithm vs infra
