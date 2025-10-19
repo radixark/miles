@@ -13,7 +13,7 @@ arg_ref_load = os.environ.get("ARG_REF_LOAD")
 arg_load = os.environ.get("ARG_LOAD")
 eval_max_response_len = os.environ.get("ARG_EVAL_MAX_RESPONSE_LEN")
 
-dataset_transform_id = os.environ["MILES_DATASET_TRANSFORM_ID"]
+dataset_transform_id = os.environ.get("MILES_DATASET_TRANSFORM_ID")
 mode = os.environ.get("MILES_MODE", "train")
 assert mode in {"train", "eval_pass_at_k", "eval_flc"}
 

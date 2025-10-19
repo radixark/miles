@@ -104,8 +104,11 @@ def _docker_stop_all():
     )
 
 
-# TODO move to utils?
 def _get_current_node_host_ip():
+    # when RL container uses network=host
+    return "127.0.0.1"
+
+    # when RL container does not use network=host
     # https://stackoverflow.com/questions/22944631
-    out = exec_command("ip route show default | awk '/default/ {print $3}'", capture_output=True)
-    return out.strip()
+    # out = exec_command("ip route show default | awk '/default/ {print $3}'", capture_output=True)
+    # return out.strip()
