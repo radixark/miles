@@ -51,9 +51,9 @@ RUN pip install flash-linear-attention
 
 # TE does not have wheel on cuda 13 yet, thus need to install from source
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-          pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@stable \
+          pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@stable; \
         else \
-          pip -v install --no-build-isolation transformer_engine[pytorch] \
+          pip -v install --no-build-isolation "transformer_engine[pytorch]"; \
         fi
 
 WORKDIR /root/
