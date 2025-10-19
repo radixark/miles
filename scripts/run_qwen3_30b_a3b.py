@@ -29,6 +29,7 @@ def prepare():
     U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=num_gpus)
 
 
+# TODO improve layering: split algorithm vs infra
 def execute():
     load_save_path = (
         f"/root/models/{MODEL_NAME}_ckpt__{Path(__file__).stem}__{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}/"
