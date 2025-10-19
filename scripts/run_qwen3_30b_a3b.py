@@ -12,13 +12,13 @@ mode = os.environ.get("MILES_SCRIPT_MODE", "8xh100")
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 
-if mode == "8xh100":
-    num_gpus = 8
-elif mode == "4xgb300":
-    num_gpus = 4
-    TODO
-else:
-    raise NotImplementedError(f"{mode=}")
+match mode:
+    case "8xh100":
+        num_gpus = 8
+    case "4xgb300":
+        num_gpus = 4
+    case _:
+        raise NotImplementedError(f"{mode=}")
 
 
 def prepare():
@@ -66,12 +66,6 @@ def execute():
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
-        "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
-        "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -79,6 +73,28 @@ def execute():
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 20480 "
     )
+
+    match mode:
+        case "8xh100":
+            perf_args += (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 1 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+        case "4xgb300":
+            perf_args += (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 1 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 4 "
+                "--expert-tensor-parallel-size 1 "
+            )
+        case _:
+            raise NotImplementedError(f"{mode=}")
 
     grpo_args = (
         "--advantage-estimator grpo "
