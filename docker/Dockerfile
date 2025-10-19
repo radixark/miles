@@ -45,7 +45,7 @@ RUN if [ "$ENABLE_TIGHT_BUILD_RES" = "1" ]; then \
     else \
       export MAX_JOBS=64; \
     fi && \
-    MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 \
+    pip -v install flash-attn==2.7.4.post1
 
 RUN pip install flash-linear-attention
 
