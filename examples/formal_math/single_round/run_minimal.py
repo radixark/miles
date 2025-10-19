@@ -2,6 +2,7 @@
 Example to demonstrate how to launch training.
 You can also do the same using a .sh or others, and we use Python here just for simplicity.
 """
+
 import json
 import os
 import subprocess
@@ -78,10 +79,7 @@ optimizer_args = (
     "--adam-beta2 0.98 "
 )
 
-sglang_args = (
-    "--rollout-num-gpus-per-engine 8 "
-    "--sglang-mem-fraction-static 0.7 "
-)
+sglang_args = "--rollout-num-gpus-per-engine 8 " "--sglang-mem-fraction-static 0.7 "
 
 misc_args = (
     "--attention-dropout 0.0 "
