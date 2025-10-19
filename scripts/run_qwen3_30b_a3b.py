@@ -141,7 +141,7 @@ def execute():
             sglang_args = (
                 "--rollout-num-gpus-per-engine 4 "
                 # fused_moe_kernel triton seems to have issue on GB300
-                "--sglang-ep-size 4"
+                "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.8 "
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 257, 8)) + " "
             )
@@ -157,7 +157,7 @@ def execute():
             )
             sglang_args = (
                 "--rollout-num-gpus-per-engine 4 "
-                "--sglang-ep-size 4"
+                "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 257, 8)) + " "
             )
