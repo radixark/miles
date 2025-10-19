@@ -144,6 +144,21 @@ def execute():
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 257, 8)) + " "
             )
             misc_args += "--actor-num-gpus-per-node 4 "
+        case "8xgb300":
+            perf_args += (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 1 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+            sglang_args = (
+                "--rollout-num-gpus-per-engine 4 "
+                "--sglang-mem-fraction-static 0.7 "
+                "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 257, 8)) + " "
+            )
+            misc_args += "--actor-num-gpus-per-node 4 "
         case _:
             raise NotImplementedError(f"{mode=}")
 
