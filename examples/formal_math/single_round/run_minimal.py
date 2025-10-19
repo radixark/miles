@@ -17,7 +17,6 @@ NUM_GPUS = 8
 ckpt_args = (
     f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
     f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
-    "--save-interval 20 "
 )
 
 rollout_args = (
