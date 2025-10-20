@@ -3,6 +3,7 @@ import json
 import os
 from typing import Any, Dict
 
+import torch
 import yaml
 from transformers import AutoConfig
 
@@ -61,7 +62,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--num-gpus-per-node",
                 type=int,
-                default=8,
+                default=torch.cuda.device_count(),
                 help=(
                     "Number of gpus per node for rollout."
                     "Notice: If you are going to use less than 8 gpus per node under colocate mode, you should set this number."
