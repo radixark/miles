@@ -14,7 +14,13 @@ MODEL_NAME, MODEL_TYPE = "Qwen3-8B", "qwen3-8B"
 
 NUM_GPUS = 8
 
-ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+ckpt_args = (
+    f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
+    f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    "--save-interval 20 "
+    f"--load /root/{MODEL_NAME}_miles "
+    f"--save /root/{MODEL_NAME}_miles "
+)
 
 rollout_args = (
     "--prompt-data /root/datasets/formal_math_single_round/minimal_demo/flc_train.jsonl "

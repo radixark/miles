@@ -12,7 +12,7 @@ ARG ENABLE_CUDA_13=0
 ARG ENABLE_TIGHT_BUILD_RES=0
 
 RUN apt update
-RUN apt install -y nvtop
+RUN apt install -y nvtop numactl
 
 # TODO: change to pip install sglang-router after it has a new release
 RUN pip install sglang-router --force-reinstall

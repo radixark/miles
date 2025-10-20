@@ -5,7 +5,7 @@ For the minimal demo:
 ```shell
 # install dependencies
 apt update && apt install -y docker-cli
-pip install kimina-client
+pip install kimina-client polars
 
 # prepare data
 python examples/formal_math/single_round/prepare_data.py --output-name minimal_demo
