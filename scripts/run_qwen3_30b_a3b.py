@@ -127,9 +127,7 @@ def execute():
             )
             misc_args += "--actor-num-gpus-per-node 8 "
             optimizer_args += (
-                "--optimizer-cpu-offload "
-                "--overlap-cpu-optimizer-d2h-h2d "
-                "--use-precision-aware-optimizer "
+                "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
         case "4xgb300":
             perf_args += (
