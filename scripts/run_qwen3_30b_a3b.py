@@ -95,9 +95,6 @@ def execute():
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        "--optimizer-cpu-offload "
-        "--overlap-cpu-optimizer-d2h-h2d "
-        "--use-precision-aware-optimizer "
     )
 
     misc_args = (
@@ -129,6 +126,11 @@ def execute():
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 257, 8)) + " "
             )
             misc_args += "--actor-num-gpus-per-node 8 "
+            optimizer_args += (
+                "--optimizer-cpu-offload "
+                "--overlap-cpu-optimizer-d2h-h2d "
+                "--use-precision-aware-optimizer "
+            )
         case "4xgb300":
             perf_args += (
                 "--tensor-model-parallel-size 4 "
