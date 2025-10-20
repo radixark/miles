@@ -32,10 +32,17 @@ RUN if [ "${ENABLE_BLACKWELL_BUILD}" = "1" ]; then \
     TORCH_CUDA_ARCH_LIST="$TLIST" pip install git+https://github.com/fanshiqing/grouped_gemm@v1.1.4
 
 # apex
-RUN NVCC_APPEND_FLAGS="--threads 4" \
+RUN if [ "$ENABLE_TIGHT_BUILD_RES" = "2" ]; then \
+          export NVCC_APPEND_FLAGS="--threads 1"; \
+          PARALLEL=4; \
+        else \
+          export NVCC_APPEND_FLAGS="--threads 4"; \
+          PARALLEL=8; \
+        fi && \
   pip -v install --disable-pip-version-check --no-cache-dir \
   --no-build-isolation \
-  --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git
+  --config-settings "--build-option=--cpp_ext --cuda_ext --parallel ${PARALLEL}" git+https://github.com/NVIDIA/apex.git
+
 # transformer engine, we install with --no-deps to avoid installing torch and torch-extensions
 RUN pip install pybind11
 
