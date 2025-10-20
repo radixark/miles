@@ -64,13 +64,15 @@ def execute():
     )
 
     eval_args = (
-        "--eval-interval 20 "
-        "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
-        "--n-samples-per-eval-prompt 16 "
-        # TODO temp hack
-        # "--eval-max-response-len 16384 "
-        "--eval-max-response-len 100 "
-        "--eval-top-p 0.7 "
+        # TODO
+        # "--eval-interval 20 "
+        # "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+        # "--n-samples-per-eval-prompt 16 "
+        # # TODO temp hack
+        # # "--eval-max-response-len 16384 "
+        # "--eval-max-response-len 100 "
+        # "--eval-top-p 0.7 "
+        ""
     )
 
     perf_args = (
