@@ -32,7 +32,13 @@ def prepare():
     U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
-    U.convert_checkpoint(model_name=MODEL_NAME, model_type=MODEL_TYPE, num_gpus=num_gpus_for_convert)
+    U.convert_checkpoint(
+        model_name=MODEL_NAME,
+        model_type=MODEL_TYPE,
+        num_gpus=num_gpus_for_convert,
+        # To support multi-node training, for simplicity, we put model into shared folder
+        dir_dst="/root/models",
+    )
 
 
 # TODO improve layering: split algorithm vs infra
@@ -42,7 +48,7 @@ def execute():
     )
     ckpt_args = (
         f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
-        f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
