@@ -9,6 +9,7 @@ ARG MEGATRON_COMMIT=ca9797e95e88d93623b0f69831529a1b521297ac
 
 ARG ENABLE_BLACKWELL_BUILD=0
 ARG ENABLE_CUDA_13=0
+# Can be 0,1,2, larger value means resource is more limited
 ARG ENABLE_TIGHT_BUILD_RES=0
 
 RUN apt update
