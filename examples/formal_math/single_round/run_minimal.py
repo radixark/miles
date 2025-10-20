@@ -15,7 +15,7 @@ MODEL_NAME, MODEL_TYPE = "Qwen3-8B", "qwen3-8B"
 NUM_GPUS = 8
 
 ckpt_args = (
-    f"--hf-checkpoint /root/models/{MODEL_NAME}/ " 
+    f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
     f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     "--save-interval 20 "
     f"--load /root/{MODEL_NAME}_miles "
