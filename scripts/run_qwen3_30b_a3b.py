@@ -20,6 +20,9 @@ match mode:
     case "8xgb300":
         num_gpus_for_convert = 4
         num_gpus = 8
+    case "32xgb300":
+        num_gpus_for_convert = 4
+        num_gpus = 32
     case _:
         raise NotImplementedError(f"{mode=}")
 
@@ -106,7 +109,6 @@ def execute():
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
-        "--actor-num-nodes 1 "
         "--colocate "
     )
 
@@ -130,7 +132,7 @@ def execute():
                 "--overlap-cpu-optimizer-d2h-h2d "
                 "--use-precision-aware-optimizer "
             )
-            misc_args += "--actor-num-gpus-per-node 8 "
+            misc_args += "--actor-num-gpus-per-node 8 " "--actor-num-nodes 1 "
         case "4xgb300":
             perf_args += (
                 "--tensor-model-parallel-size 4 "
@@ -147,7 +149,7 @@ def execute():
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 513, 8)) + " "
             )
-            misc_args += "--actor-num-gpus-per-node 4 "
+            misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 1 "
         case "8xgb300":
             perf_args += (
                 "--tensor-model-parallel-size 4 "
@@ -163,7 +165,23 @@ def execute():
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 513, 8)) + " "
             )
-            misc_args += "--actor-num-gpus-per-node 4 "
+            misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 2 "
+        case "32xgb300":
+            perf_args += (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 1 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+            sglang_args = (
+                "--rollout-num-gpus-per-engine 4 "
+                "--sglang-ep-size 4 "
+                "--sglang-mem-fraction-static 0.7 "
+                "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 513, 8)) + " "
+            )
+            misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 8 "
         case _:
             raise NotImplementedError(f"{mode=}")
 
