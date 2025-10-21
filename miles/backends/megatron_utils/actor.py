@@ -241,6 +241,11 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
     def train(self, rollout_id: int, rollout_data_ref: Box) -> None:
+        self._train_inner(rollout_id, rollout_data_ref)
+        torch.cuda.synchronize()
+        dist.barrier(group=get_gloo_group())
+
+    def _train_inner(self, rollout_id: int, rollout_data_ref: Box) -> None:
         Timer().end("train_wait")
 
         if self.args.offload:
