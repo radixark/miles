@@ -10,6 +10,7 @@ from packaging import version
 from torch.distributed.tensor import DTensor
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+from miles.utils import temp_utils
 
 # Import FSDP v2 components based on PyTorch version
 if version.parse(torch.__version__) >= version.parse("2.6"):
@@ -329,6 +330,8 @@ class FSDPTrainRayActor(TrainRayActor):
             self.compute_log_prob("ref", packed_batches, store_prefix="ref_")
 
         self.compute_log_prob("actor", packed_batches)
+        if temp_utils.ENABLE_DEBUG_PRINT:
+            print(f"compute_log_prob(actor): {packed_batches['log_probs'].tolist()=}")
 
         for metric_key in ["log_probs", "ref_log_probs", "advantages", "returns", "raw_rewards"]:
             if metric_key not in packed_batches[0]:
