@@ -218,6 +218,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     batch[f"{store_prefix}log_probs"] = gather_log_probs_packed(
                         logits, batch["tokens"], self.args.rollout_temperature
                     )
+                    if model_tag == "actor" and temp_utils.ENABLE_DEBUG_PRINT:
+                        print(f"compute_log_prob(actor): {batch['log_probs'].tolist()=}")
             return rollout_data
 
         finally:
@@ -330,8 +332,6 @@ class FSDPTrainRayActor(TrainRayActor):
             self.compute_log_prob("ref", packed_batches, store_prefix="ref_")
 
         self.compute_log_prob("actor", packed_batches)
-        if temp_utils.ENABLE_DEBUG_PRINT:
-            print(f"compute_log_prob(actor): {packed_batches['log_probs'].tolist()=}")
 
         for metric_key in ["log_probs", "ref_log_probs", "advantages", "returns", "raw_rewards"]:
             if metric_key not in packed_batches[0]:
