@@ -28,7 +28,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        f"--num-rollout 3000 "
+        f"--num-rollout {1 if MODE == 'debug_one_sample' else 3000} "
         f"--rollout-batch-size {1 if MODE == 'debug_one_sample' else 32} "
         f"--n-samples-per-prompt {1 if MODE == 'debug_one_sample' else 8} "
         f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 1024} "
@@ -125,7 +125,7 @@ def execute():
             "NCCL_ALGO": "Ring",
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-            "SGLANG_DUMPER_ENABLE": "0",  # temporary
+            # "SGLANG_DUMPER_ENABLE": "0",  # temporary
         },
     )
 
