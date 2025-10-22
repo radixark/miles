@@ -155,7 +155,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if temp_utils.ENABLE_DEBUG_PRINT:
         info = temp_utils.extract_ids_and_logprobs(output)[0]["io"]
-        print(f"Rollout response:\n" f"{info.token_ids=}\n" f"{info.logprobs=}\n")
+        print(f"Rollout input: {payload=}")
+        print(f"Rollout response:\n{info.token_ids=}\n{info.logprobs=}\n")
 
     # Extract new response tokens
 

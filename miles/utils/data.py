@@ -8,6 +8,7 @@ import ray
 import torch.distributed as dist
 
 from miles.utils.types import Sample
+from miles.utils import temp_utils
 from .seqlen_balancing import get_seqlen_balanced_partitions
 from .timer import Timer
 
@@ -70,6 +71,9 @@ class Dataset:
                         prompt_content.append({"type": media_type, "path": media_path})
             else:
                 prompt_content = data.get(prompt_key)
+
+            if temp_utils.ENABLE_DEBUG_PRINT:
+                prompt_content = prompt_content[:10]
 
             if apply_chat_template:
                 if tool_key is not None:
