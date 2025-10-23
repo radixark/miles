@@ -31,7 +31,7 @@ def execute():
         f"--num-rollout {1 if MODE == 'debug_one_sample' else 3000} "
         f"--rollout-batch-size {32 if MODE == 'debug_one_sample' else 32} "
         f"--n-samples-per-prompt {8 if MODE == 'debug_one_sample' else 8} "
-        f"--rollout-max-response-len {10 if MODE == 'debug_one_sample' else 1024} "
+        f"--rollout-max-response-len {1024 if MODE == 'debug_one_sample' else 1024} "
         "--rollout-temperature 0.8 "
         # temp remove this to make test easier
         # "--over-sampling-batch-size 64 "
