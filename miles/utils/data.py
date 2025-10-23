@@ -73,7 +73,7 @@ class Dataset:
             else:
                 prompt_content = data.get(prompt_key)
 
-            if temp_utils.ENABLE_DEBUG_PRINT:
+            if temp_utils.ENABLE_DEBUG_SHORT_PROMPT:
                 prompt_content = prompt_content[:10]
 
             if apply_chat_template:
