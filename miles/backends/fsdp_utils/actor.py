@@ -127,29 +127,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.offload_trainer:
             self.sleep(("model"))
 
-        if 1:
-            torch.cuda.memory._record_memory_history(
-                # True,
-                # keep 100,000 alloc/free events from before the snapshot
-                max_entries=100000,
-                # record stack information for the trace events
-                # trace_alloc_record_context=True,
-                stacks="all",
-            )
-
-            def oom_observer(device, alloc, device_alloc, device_free):
-                # snapshot right after an OOM happened
-                print("saving allocated state during OOM")
-                snapshot = torch.cuda.memory._snapshot()
-                from pickle import dump
-
-                dump(
-                    snapshot,
-                    open(f"/host_home/temp_sglang_server2local/oom_rank-{torch.distributed.get_rank()}_{args.memory_snapshot_path}", "wb"),
-                )
-
-            torch._C._cuda_attach_out_of_memory_observer(oom_observer)
-
         Timer().start("train_wait")
         self.global_step = 0
         self.micro_step = 0
