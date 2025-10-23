@@ -145,7 +145,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 dump(
                     snapshot,
-                    open(f"/host_home/temp_sglang_server2local/oom_rank-{torch.distributed.get_rank()}_{args.memory_snapshot_path}", "wb"),
+                    open(f"/host_home/temp_sglang_server2local/oom_rank-{torch.distributed.get_rank()}.pickle", "wb"),
                 )
 
             torch._C._cuda_attach_out_of_memory_observer(oom_observer)

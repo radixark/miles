@@ -1206,6 +1206,8 @@ def miles_validate_args(args):
     if args.colocate:
         args.offload = True
         # args.offload_trainer = True  # TODO temp not enable for debugging
+        args.offload_trainer = False  # TODO temp not enable for debugging
+
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             print(
                 f"rollout_num_gpus {args.rollout_num_gpus} != actor_num_gpus_per_node {args.actor_num_gpus_per_node} "
