@@ -125,7 +125,7 @@ def execute():
             "NCCL_ALGO": "Ring",
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-            # "SGLANG_DUMPER_ENABLE": "0",  # temporary
+            "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
         },
     )
 
