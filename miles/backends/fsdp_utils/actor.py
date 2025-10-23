@@ -9,11 +9,12 @@ import ray
 import torch
 import torch.distributed as dist
 from packaging import version
+from sglang.srt.debug_utils.dumper import dumper
 from torch.distributed.tensor import DTensor
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+
 from miles.utils import temp_utils
-from sglang.srt.debug_utils.dumper import dumper
 
 # Import FSDP v2 components based on PyTorch version
 if version.parse(torch.__version__) >= version.parse("2.6"):
@@ -449,11 +450,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 rollout_log_probs = rollout_log_probs.to(device=log_probs.device)
 
                 if temp_utils.ENABLE_DEBUG_PRINT:
-                    print(
-                        f"compute-tis "
-                        f"{old_log_probs.tolist()=} "
-                        f"{rollout_log_probs.tolist()=} "
-                    )
+                    print(f"compute-tis " f"{old_log_probs.tolist()=} " f"{rollout_log_probs.tolist()=} ")
 
                 tis = torch.exp(old_log_probs - rollout_log_probs)
                 ois = (-ppo_kl).exp()
