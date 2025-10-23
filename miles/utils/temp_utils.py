@@ -2,7 +2,7 @@ import dataclasses
 import os
 from typing import List
 
-ENABLE_DEBUG_PRINT = True
+ENABLE_DEBUG_PRINT = bool(int(os.environ.get("SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT", "0")))
 
 ENABLE_DEBUG_SHORT_PROMPT = True
 # ENABLE_DEBUG_SHORT_PROMPT = False

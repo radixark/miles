@@ -9,7 +9,7 @@ import command_utils as U
 MODEL_NAME = "Qwen3-0.6B"
 
 MODE = os.environ.get("MILES_SCRIPT_MODE", "normal")
-assert MODE in {"normal", "debug_one_sample"}
+assert MODE in {"normal", "debug_minimal", "debug_one_sample"}
 
 
 def prepare():
@@ -40,7 +40,7 @@ def execute():
     )
 
     eval_args = ""
-    if MODE != "debug_one_sample":
+    if MODE == "normal":
         eval_args = (
             "--eval-interval 20 "
             "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
@@ -126,6 +126,7 @@ def execute():
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
             "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
+            "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",
         },
     )
 
