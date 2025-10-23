@@ -85,6 +85,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "This will always be true when --colocate is set."
                 ),
             )
+            # TODO temp
+            parser.add_argument(
+                "--offload-trainer",
+                action="store_true",
+                default=False,
+            )
 
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
@@ -1199,6 +1205,7 @@ def miles_validate_args(args):
     # always true on offload for colocate at the moment.
     if args.colocate:
         args.offload = True
+        # args.offload_trainer = True  # TODO temp not enable for debugging
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             print(
                 f"rollout_num_gpus {args.rollout_num_gpus} != actor_num_gpus_per_node {args.actor_num_gpus_per_node} "
