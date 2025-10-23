@@ -7,6 +7,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "tests"))
 import command_utils as U
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-0.6B")
+assert MODEL_NAME in {"Qwen3-0.6B", "Qwen3-4B"}
 
 MODE = os.environ.get("MILES_SCRIPT_MODE", "normal")
 assert MODE in {"normal", "debug_minimal", "debug_one_sample"}
@@ -106,6 +107,13 @@ def execute():
         "--train-backend fsdp "
         "--deterministic-mode "
     )
+
+    if MODEL_NAME == "Qwen3-4B":
+        misc_args += (
+            "--use-dynamic-batch-size "
+            # TODO pick a good value
+            "--max-tokens-per-gpu 2048 "
+        )
 
     train_args = (
         f"{ckpt_args} "
