@@ -447,6 +447,13 @@ class FSDPTrainRayActor(TrainRayActor):
                 rollout_log_probs = torch.cat([batch["rollout_log_probs"] for batch in unpacked_batches], dim=0)
                 rollout_log_probs = rollout_log_probs.to(device=log_probs.device)
 
+                if temp_utils.ENABLE_DEBUG_PRINT:
+                    print(
+                        f"compute-tis "
+                        f"{old_log_probs.tolist()=} "
+                        f"{rollout_log_probs.tolist()=} "
+                    )
+
                 tis = torch.exp(old_log_probs - rollout_log_probs)
                 ois = (-ppo_kl).exp()
                 tis_clip = torch.clamp(
