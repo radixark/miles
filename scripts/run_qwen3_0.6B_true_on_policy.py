@@ -77,7 +77,7 @@ def execute():
         "--sglang-enable-metrics "
         "--sglang-enable-deterministic-inference "
         "--sglang-attention-backend fa3 "
-        f"--sglang-mem-fraction-static 0.35 "
+        f"--sglang-mem-fraction-static 0.65 "
         f"{'--sglang-disable-cuda-graph ' if MODE == 'debug_one_sample' else ''}"
     )
 
