@@ -236,7 +236,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             model_args["pixel_values"] = batch["pixel_values"]
                         logits = self.model(**model_args).logits
                     batch[f"{store_prefix}log_probs"] = gather_log_probs_packed(
-                        logits, batch["tokens"], self.args.rollout_temperature
+                        logits, batch["tokens"], temperature=self.args.rollout_temperature
                     )
                     if model_tag == "actor" and temp_utils.ENABLE_DEBUG_PRINT:
                         print(f"compute_log_prob(actor): {batch['log_probs'].tolist()=}")
@@ -691,7 +691,10 @@ def gather_log_probs(logits: torch.Tensor, input_ids: torch.Tensor, rollout_temp
 
 
 def gather_log_probs_packed(
-    logits: torch.Tensor, input_ids: torch.Tensor, cu_seqlens: torch.Tensor | float | None = None
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    cu_seqlens: torch.Tensor | float | None = None,
+    temperature: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Gather next-token log probabilities for packed sequences.
 
@@ -709,6 +712,9 @@ def gather_log_probs_packed(
         # Remove batch dimension for packed sequences
         logits = logits.squeeze(0)
         input_ids = input_ids.squeeze(0)
+
+    if temperature is not None:
+        logits = logits.div(temperature)
 
     # Shift for next-token prediction: logits[:-1] predicts input_ids[1:]
     log_probs = torch.log_softmax(logits[:-1], dim=-1)
