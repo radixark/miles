@@ -28,15 +28,15 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        f"--num-rollout {3000 if MODE == 'debug_one_sample' else 3000} "
-        f"--rollout-batch-size {32 if MODE == 'debug_one_sample' else 32} "
-        f"--n-samples-per-prompt {8 if MODE == 'debug_one_sample' else 8} "
-        f"--rollout-max-response-len {1024 if MODE == 'debug_one_sample' else 1024} "
+        f"--num-rollout {2 if MODE == 'debug_one_sample' else 3000} "
+        f"--rollout-batch-size {1 if MODE == 'debug_one_sample' else 32} "
+        f"--n-samples-per-prompt {1 if MODE == 'debug_one_sample' else 8} "
+        f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 1024} "
         "--rollout-temperature 0.8 "
         # temp remove this to make test easier
         # "--over-sampling-batch-size 64 "
         # "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        f"--global-batch-size {256 if MODE == 'debug_one_sample' else 256} "
+        f"--global-batch-size {1 if MODE == 'debug_one_sample' else 256} "
     )
 
     eval_args = ""
@@ -78,7 +78,7 @@ def execute():
         "--sglang-enable-deterministic-inference "
         "--sglang-attention-backend fa3 "
         f"--sglang-mem-fraction-static 0.35 "
-        # f"{'--sglang-disable-cuda-graph ' if MODE == 'debug_one_sample' else ''}"
+        f"{'--sglang-disable-cuda-graph ' if MODE == 'debug_one_sample' else ''}"
     )
 
     fsdp_args = (
@@ -125,7 +125,7 @@ def execute():
             "NCCL_ALGO": "Ring",
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-            "SGLANG_DUMPER_ENABLE": "0",  # temporary
+            # "SGLANG_DUMPER_ENABLE": "0",  # temporary
         },
     )
 
