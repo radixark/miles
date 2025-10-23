@@ -423,8 +423,6 @@ def _start_router(args):
             port=args.sglang_router_port,
             balance_abs_threshold=0,
             prometheus_port=find_available_port(random.randint(4000, 5000)),
-            # TODO temp hack
-            health_check_timeout_secs=60,
         )
 
         if hasattr(router_args, "log_level"):
