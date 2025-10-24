@@ -19,7 +19,7 @@ def read_file(path):
     path, row_slice = _parse_generalized_path(path)
 
     if path.endswith(".jsonl"):
-        df = pd.read_json(path, lines=True)
+        df = pd.read_json(path, lines=True, dtype={"label": str})
     elif path.endswith(".parquet"):
         df = pd.read_parquet(path, dtype_backend="pyarrow")
     else:
@@ -91,8 +91,9 @@ class Dataset:
 
             # TODO: this is slow.
             if max_length is not None:
+                raw_prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
                 if not multimodal_keys:
-                    if len(prompt) > max_length:
+                    if len(raw_prompt_ids) > max_length:
                         continue
 
             self.origin_samples.append(
