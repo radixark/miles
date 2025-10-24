@@ -1,3 +1,4 @@
+import time
 from argparse import Namespace
 from collections.abc import Iterable
 from contextlib import nullcontext
@@ -10,6 +11,7 @@ from packaging import version
 from torch.distributed.tensor import DTensor
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+from miles.utils.memory_utils import print_memory
 
 # Import FSDP v2 components based on PyTorch version
 if version.parse(torch.__version__) >= version.parse("2.6"):
@@ -159,7 +161,7 @@ class FSDPTrainRayActor(TrainRayActor):
         None, all registered regions are paused. See the torch_memory_saver
         tagged API for details.
         """
-        if not getattr(self.args, "offload", False):
+        if not self.args.offload_train:
             return
 
         if isinstance(tags, str):
@@ -167,6 +169,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if torch_memory_saver is not None:
             torch_memory_saver.pause()
+
+        torch.cuda.synchronize()
+        dist.barrier(group=get_gloo_group())
 
     def wake_up(self, tags: str | Iterable[str] | None) -> None:
         """Resume CUDA memory for all tracked tensors via torch_memory_saver.
@@ -177,11 +182,21 @@ class FSDPTrainRayActor(TrainRayActor):
         None, all registered regions are resumed. See the torch_memory_saver
         tagged API for details.
         """
-        if not getattr(self.args, "offload", False):
+        if not self.args.offload_train:
             return
 
         if isinstance(tags, str):
             tags = (tags,)
+
+        # TODO this is copy-pasted from megatron side; should unify the two
+        # there are weird times when sglang is not offloaded immediately, so we wait here.
+        mem_fraction_static = self.args.sglang_mem_fraction_static or 0.8
+        for _ in range(60):
+            memory_info = print_memory("before wake_up model")
+            if memory_info["used_GB"] >= mem_fraction_static * memory_info["total_GB"]:
+                time.sleep(1)
+                continue
+            break
 
         if torch_memory_saver is not None:
             torch_memory_saver.resume()
@@ -430,6 +445,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
             pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
 
+            rollout_log_probs = torch.cat([batch["rollout_log_probs"] for batch in unpacked_batches], dim=0)
+            rollout_log_probs = rollout_log_probs.to(device=log_probs.device)
+
             # Apply TIS before sample mean calculation
             if self.args.use_tis:
                 # Initialize TIS variables
@@ -443,9 +461,6 @@ class FSDPTrainRayActor(TrainRayActor):
                     and batch["rollout_log_probs"].numel() > 0
                     for batch in unpacked_batches
                 ), "rollout_log_probs must be provided as non-empty torch.Tensor for TIS"
-
-                rollout_log_probs = torch.cat([batch["rollout_log_probs"] for batch in unpacked_batches], dim=0)
-                rollout_log_probs = rollout_log_probs.to(device=log_probs.device)
 
                 tis = torch.exp(old_log_probs - rollout_log_probs)
                 ois = (-ppo_kl).exp()
