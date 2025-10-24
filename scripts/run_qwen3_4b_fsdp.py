@@ -6,7 +6,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "tests"))
 
 import command_utils as U
 
-MODEL_NAME = "Qwen3-4B"
+MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-4B")
 NUM_GPUS = 8
 
 
@@ -22,15 +22,9 @@ def prepare():
 
 
 def execute():
-    # load_save_path = (
-    #     f"/root/models/{MODEL_NAME}_ckpt__{Path(__file__).stem}__{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}/"
-    # )
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
-        # f"--ref-load /root/{MODEL_NAME}_torch_dist "
-        # f"--load {load_save_path} "
-        # f"--save {load_save_path} "
-        # "--save-interval 20 "
+        f"--hf-checkpoint /root/models/{MODEL_NAME} "
+        # "--ref-load /root/models/{MODEL_NAME} "
     )
 
     rollout_args = (
@@ -49,6 +43,13 @@ def execute():
         "--balance-data "
     )
 
+    # when using tiny response len, cannot do dynamic sampling
+    if MODE != "debug_minimal":
+        rollout_args += (
+            "--over-sampling-batch-size 64 "
+            "--dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+        )
+
     eval_args = ""
     if MODE != "debug_minimal":
         eval_args += (
@@ -59,7 +60,7 @@ def execute():
             "--eval-top-p 0.7 "
         )
 
-    perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 4096 "
+    perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -69,11 +70,11 @@ def execute():
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
-        "--use-tis "
     )
 
     optimizer_args = (
         "--optimizer adam "
+        # "--optimizer deepspeed_cpu_adam "
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.1 "
@@ -81,14 +82,14 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.7 "
+    # TODO improve mem-frac
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.28 "
 
     fsdp_args = (
         "--train-backend fsdp "
-        # "--gradient-checkpointing "
-        # "--attn-implementation flash_attention_2 "
-        f"--update-weights-bucket-size {512 * 1024 * 1024} "
-        # "--fsdp-full-params "
+        "--attn-implementation flash_attention_2 "
+        "--gradient-checkpointing "
+        f"--update-weights-bucket-size {512 * 1024 * 1024} "  # 512MB
     )
 
     misc_args = "--actor-num-nodes 1 " "--actor-num-gpus-per-node 8 " "--colocate "
