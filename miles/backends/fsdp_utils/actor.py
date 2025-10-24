@@ -1,5 +1,3 @@
-import os
-import time
 from argparse import Namespace
 from collections.abc import Iterable
 from contextlib import nullcontext
@@ -9,12 +7,9 @@ import ray
 import torch
 import torch.distributed as dist
 from packaging import version
-from sglang.srt.debug_utils.dumper import dumper
 from torch.distributed.tensor import DTensor
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
-
-from miles.utils import temp_utils
 
 # Import FSDP v2 components based on PyTorch version
 if version.parse(torch.__version__) >= version.parse("2.6"):
@@ -213,17 +208,6 @@ class FSDPTrainRayActor(TrainRayActor):
             self.model.eval()
             need_restore = True
 
-        if model_tag == "actor" and temp_utils.ENABLE_DEBUG_PROFILE:
-            torch_profiler = torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ],
-                with_stack=True,
-                record_shapes=True,
-            )
-            torch_profiler.start()
-
         try:
             rollout_data = {f"{store_prefix}log_probs": []}
             with timer(f"{store_prefix}log_probs") and torch.no_grad():
@@ -240,8 +224,6 @@ class FSDPTrainRayActor(TrainRayActor):
                     batch[f"{store_prefix}log_probs"] = gather_log_probs_packed(
                         logits, batch["tokens"], temperature=self.args.rollout_temperature
                     )
-                    if model_tag == "actor" and temp_utils.ENABLE_DEBUG_PRINT:
-                        print(f"compute_log_prob(actor): {batch['log_probs'].tolist()=}")
             return rollout_data
 
         finally:
@@ -249,13 +231,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.update_gpu_params_dict(self.weights["actor"])
                 self.model.train()
                 torch.cuda.synchronize()
-
-            if model_tag == "actor" and temp_utils.ENABLE_DEBUG_PROFILE:
-                torch_profiler.stop()
-                filename = str(time.time()) + "-actor.trace.json.gz"
-                p = os.path.join(temp_utils.PROFILE_OUTPUT_DIR, filename)
-                print(f"Write to: {p}")
-                torch_profiler.export_chrome_trace(p)
 
     def packed_data(
         self, rollout_data: dict[str, list[torch.Tensor]]
@@ -450,9 +425,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 rollout_log_probs = torch.cat([batch["rollout_log_probs"] for batch in unpacked_batches], dim=0)
                 rollout_log_probs = rollout_log_probs.to(device=log_probs.device)
-
-                if temp_utils.ENABLE_DEBUG_PRINT:
-                    print(f"compute-tis " f"{old_log_probs.tolist()=} " f"{rollout_log_probs.tolist()=} ")
 
                 tis = torch.exp(old_log_probs - rollout_log_probs)
                 log_tis = old_log_probs - rollout_log_probs
@@ -709,10 +681,6 @@ def gather_log_probs_packed(
     Returns:
         A tensor of shape [T-1] (or [B, T-1]) with log-probabilities of targets.
     """
-
-    dumper.dump("compute_logprobs__raw_logits", logits)
-    dumper.dump("compute_logprobs__input_ids", input_ids)
-
     # Handle batch dimension - logits should be [batch_size, seq_len, vocab_size]
     if logits.dim() == 3:
         # Remove batch dimension for packed sequences
@@ -721,16 +689,13 @@ def gather_log_probs_packed(
 
     if temperature is not None:
         logits = logits.div(temperature)
-    dumper.dump("compute_logprobs__logits_after_temperature", logits)
 
     # Shift for next-token prediction: logits[:-1] predicts input_ids[1:]
     log_probs = torch.log_softmax(logits[:-1], dim=-1)
     targets = input_ids[1:].to(device=log_probs.device)
-    dumper.dump("compute_logprobs_raw_logprobs", log_probs)
 
     # Gather log probs for targets
     gathered = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
-    dumper.dump("compute_logprobs_gathered_logprobs", gathered)
 
     # Apply mask to exclude first tokens
     return gathered

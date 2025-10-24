@@ -23,7 +23,6 @@ from miles.utils.ray_utils import Box
 from miles.utils.types import Sample
 from miles.utils.wandb_utils import init_wandb_secondary
 
-from ..utils import temp_utils
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -132,23 +131,12 @@ class RolloutManager:
             data = [Sample.from_dict(sample) for sample in data]
             metrics = None
         else:
-            if temp_utils.ENABLE_DEBUG_PROFILE:
-                ray.get(
-                    [
-                        engine.start_profile.remote(output_dir=temp_utils.PROFILE_OUTPUT_DIR, num_steps=3)
-                        for engine in self.rollout_engines
-                    ]
-                )
-
             data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
             metrics = data.metrics
             data = data.samples
             # flatten the data if it is a list of lists
             while isinstance(data[0], list):
                 data = sum(data, [])
-
-            # if temp_utils.ENABLE_DEBUG_PRINT:
-            #     ray.get([engine.stop_profile.remote() for engine in self.rollout_engines])
 
             if len(data) % self.args.global_batch_size != 0:
                 trim_len = (len(data) // self.args.global_batch_size) * self.args.global_batch_size

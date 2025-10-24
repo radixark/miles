@@ -12,7 +12,6 @@ from transformers import AutoTokenizer
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
-from miles.utils import temp_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.http_utils import get, post
@@ -145,18 +144,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_token_ids
 
-    if temp_utils.ENABLE_DEBUG_PRINT:
-        payload |= {
-            "logprob_start_len": 0,
-            # "return_text_in_logprobs": True,
-        }
-
     output = await post(url, payload)
-
-    if temp_utils.ENABLE_DEBUG_PRINT:
-        info = temp_utils.extract_ids_and_logprobs(output)[0]["io"]
-        print(f"Rollout input: {payload=}")
-        print(f"Rollout response:\n{info.token_ids=}\n{info.logprobs=}\n")
 
     # Extract new response tokens
 
