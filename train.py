@@ -77,6 +77,7 @@ def train(args):
             else:
                 actor_model.offload()
 
+        if args.offload_rollout:
             ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
 
         actor_model.update_weights()
