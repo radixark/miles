@@ -18,7 +18,7 @@ def available_memory():
         "free_GB": _byte_to_gb(free),
         "used_GB": _byte_to_gb(total - free),
         "allocated_GB": _byte_to_gb(torch.cuda.memory_allocated(device)),
-        "reserved_GB": _byte_to_gb(torch.cuda.memory_allocated(device)),
+        "reserved_GB": _byte_to_gb(torch.cuda.memory_reserved(device)),
     }
 
 
