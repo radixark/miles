@@ -1,5 +1,7 @@
-import torch
 from pickle import dump
+
+import torch
+
 
 def attach_oom_dump_memory_history():
     torch.cuda.memory._record_memory_history(
