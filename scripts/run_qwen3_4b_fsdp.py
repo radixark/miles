@@ -38,14 +38,16 @@ def execute():
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
-        "--rollout-max-response-len 8192 "
+        # TODO temp
+        # "--rollout-max-response-len 8192 "
+        "--rollout-max-response-len 100 "
         "--rollout-temperature 0.8 "
         "--global-batch-size 256 "
         "--balance-data "
     )
 
     eval_args = (
-        # TODO enable later
+        # TODO temp
         # "--eval-interval 20 "
         "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 16 "
