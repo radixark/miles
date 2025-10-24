@@ -1226,12 +1226,7 @@ def miles_validate_args(args):
 
     # always true on offload for colocate at the moment.
     if args.colocate:
-        # TODO
-        # TODO temp
-        # TODO
-        print("HACK: temp rm offload_train")
-        # args.offload_train = args.offload_rollout = True
-        args.offload_rollout = True
+        args.offload_train = args.offload_rollout = True
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             print(
                 f"rollout_num_gpus {args.rollout_num_gpus} != actor_num_gpus_per_node {args.actor_num_gpus_per_node} "

@@ -216,8 +216,6 @@ class UpdateWeightFromTensor:
 
                 torch.cuda.synchronize()
 
-                long_lived_refs = []
-
                 # Use flattened bucket approach similar to Megatron and full_params=True
                 if use_flattened_tensor_bucket:
                     print("Using flattened tensor bucket")
@@ -233,7 +231,6 @@ class UpdateWeightFromTensor:
                     serialized_tensors = []
                     for dtype, named_tensors in named_tensors_by_dtypes.items():
                         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
-                        long_lived_refs.append(flattened_tensor_bucket)
                         metadata = flattened_tensor_bucket.get_metadata()
                         flattened_tensor_data = {
                             "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
@@ -290,11 +287,6 @@ class UpdateWeightFromTensor:
 
                     del gathered_serialized_batches, kwargs
                     clear_memory()
-
-                # TODO improve
-                torch.cuda.synchronize()
-                dist.barrier(group=self._ipc_gather_group)
-                del long_lived_refs
 
             if dist.get_rank() == self._ipc_gather_src:
                 ref = self._ipc_engine.flush_cache.remote()
