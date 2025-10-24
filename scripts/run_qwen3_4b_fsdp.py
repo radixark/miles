@@ -86,6 +86,12 @@ def execute():
         # "--fsdp-full-params "
     )
 
+    misc_args = (
+        "--actor-num-nodes 1 "
+        "--actor-num-gpus-per-node 8 "
+        "--colocate "
+    )
+
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -96,6 +102,7 @@ def execute():
         f"{eval_args} "
         f"{sglang_args} "
         f"{fsdp_args} "
+        f"{misc_args} "
     )
 
     U.execute_train(
