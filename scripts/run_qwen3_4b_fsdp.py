@@ -83,7 +83,7 @@ def execute():
     )
 
     # TODO improve mem-frac
-    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.28 "
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.5 "
 
     fsdp_args = (
         "--train-backend fsdp "
