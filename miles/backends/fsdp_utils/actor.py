@@ -426,7 +426,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 rollout_log_probs = rollout_log_probs.to(device=log_probs.device)
 
                 tis = torch.exp(old_log_probs - rollout_log_probs)
-                log_tis = old_log_probs - rollout_log_probs
                 ois = (-ppo_kl).exp()
                 tis_clip = torch.clamp(
                     tis, min=getattr(self.args, "tis_clip_low", 0.1), max=getattr(self.args, "tis_clip", 2.0)
@@ -438,6 +437,11 @@ class FSDPTrainRayActor(TrainRayActor):
             pg_loss = sum_of_sample_mean(pg_loss, response_lengths, loss_masks)
             pg_clipfrac = sum_of_sample_mean(pg_clipfrac, response_lengths, loss_masks)
             ppo_kl = sum_of_sample_mean(ppo_kl.abs(), response_lengths, loss_masks)
+
+            train_rollout_logprob_diff = old_log_probs - rollout_log_probs
+            train_rollout_logprob_diff = sum_of_sample_mean(
+                train_rollout_logprob_diff, response_lengths, loss_masks
+            ).detach()
 
             loss = pg_loss
 
@@ -462,6 +466,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 "pg_loss": pg_loss.detach(),
                 "pg_clipfrac": pg_clipfrac.detach(),
                 "ppo_kl": ppo_kl.detach(),
+                "train_rollout_logprob_diff": train_rollout_logprob_diff,
             }
 
             if self.args.use_kl_loss:
@@ -473,7 +478,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 reported["tis_clipfrac"] = sum_of_sample_mean(
                     tis_clipfrac.float(), response_lengths, loss_masks
                 ).detach()
-                reported["log_tis"] = sum_of_sample_mean(log_tis, response_lengths, loss_masks).detach()
 
             # Scale loss for gradient accumulation
             loss = loss * dist.get_world_size() / self.args.global_batch_size
