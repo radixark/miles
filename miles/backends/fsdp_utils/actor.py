@@ -70,10 +70,7 @@ class FSDPTrainRayActor(TrainRayActor):
         torch.manual_seed(args.seed)
 
         if args.record_memory_history:
-            profile_utils.attach_oom_dump_memory_history(
-                memory_snapshot_dir=args.memory_snapshot_dir,
-                memory_snapshot_path=args.memory_snapshot_path,
-            )
+            profile_utils.attach_oom_dump_memory_history(profile_utils.get_memory_snapshot_full_path(args))
 
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
