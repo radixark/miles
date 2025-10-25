@@ -19,5 +19,11 @@ def attach_oom_dump_memory_history(path_dump):
     torch._C._cuda_attach_out_of_memory_observer(oom_observer)
 
 
+def dump_snapshot_and_stop(path_dump):
+    print(f"Dump memory snapshot to: {path_dump}")
+    torch.cuda.memory._dump_snapshot(path_dump)
+    torch.cuda.memory._record_memory_history(enabled=None)
+
+
 def get_memory_snapshot_full_path(args):
     return args.memory_snapshot_dir / f"oom_rank-{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
