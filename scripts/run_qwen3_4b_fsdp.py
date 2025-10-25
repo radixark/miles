@@ -9,6 +9,7 @@ import command_utils as U
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-4B")
 NUM_GPUS = 8
 
+EXTRA_ARGS = os.environ.get("MILES_SCRIPT_EXTRA_ARGS", "")
 
 MODE = os.environ.get("MILES_SCRIPT_MODE", "normal")
 assert MODE in {"normal", "debug_minimal"}
@@ -127,6 +128,7 @@ def execute():
         f"{fsdp_args} "
         f"{misc_args} "
         f"{true_on_policy_args} "
+        f"{EXTRA_ARGS} "
     )
 
     U.execute_train(
