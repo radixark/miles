@@ -53,8 +53,9 @@ def execute():
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
 
+    # sometimes disable eval to speed up debugging
     eval_args = ""
-    if MODE != "debug_minimal":
+    if (MODE != "debug_minimal") and bool(int(os.environ.get("MILES_SCRIPT_ENABLE_EVAL", "1"))):
         eval_args += (
             "--eval-interval 20 "
             "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
@@ -86,7 +87,10 @@ def execute():
     )
 
     # TODO improve mem-frac
-    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.6 "
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 1 "
+        f"--sglang-mem-fraction-static {os.environ.get('MILES_SCRIPT_SGLANG_MEM_FRACTION_STATIC' ,'0.6')} "
+    )
 
     fsdp_args = (
         "--train-backend fsdp "
