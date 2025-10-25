@@ -99,7 +99,7 @@ def execute():
         f"--update-weights-bucket-size {512 * 1024 * 1024} "  # 512MB
     )
 
-    misc_args = "--actor-num-nodes 1 " "--actor-num-gpus-per-node 8 " "--colocate "
+    misc_args = "--actor-num-nodes 1 " "--actor-num-gpus-per-node 8 " "--colocate " "--use-fault-tolerance "
 
     true_on_policy_args = ""
     true_on_policy_envs = {}
