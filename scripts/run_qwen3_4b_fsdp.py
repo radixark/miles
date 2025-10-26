@@ -23,6 +23,8 @@ def prepare():
     U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
+    U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
+    U.hf_download_dataset("zyzshishui0627/IFBench")
 
 
 def execute():
@@ -62,8 +64,24 @@ def execute():
         )
         if MULTI_EVAL:
             eval_config_text = '''
-TODO
-'''
+eval:
+  defaults:
+    max_response_len: 16384
+    top_p: 0.7
+  datasets:
+    - name: aime
+      path: /root/datasets/aime-2024/aime-2024.jsonl
+      rm_type: deepscaler
+      n_samples_per_eval_prompt: 16
+    - name: gpqa
+      path: /root/datasets/gpqa_diamond/gpqa_eval.jsonl
+      rm_type: gpqa
+      n_samples_per_eval_prompt: 2
+    - name: ifbench
+      path: /root/datasets/IFBench/IFBench_eval.jsonl
+      rm_type: ifbench
+      n_samples_per_eval_prompt: 1
+'''.strip()
             eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text)} "
         else:
             eval_args += (
