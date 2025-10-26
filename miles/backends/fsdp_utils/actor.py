@@ -1,6 +1,5 @@
 import time
 from argparse import Namespace
-from collections.abc import Iterable
 from contextlib import nullcontext
 from itertools import accumulate
 
@@ -53,8 +52,10 @@ class FSDPTrainRayActor(TrainRayActor):
     def init(self, args: Namespace, role: str, wandb_run_id: str, with_ref: bool = False) -> int:  # type: ignore[override]
         super().init(args, role, wandb_run_id, with_ref)
 
+        # TODO extract to function
         if args.true_on_policy_mode:
             from sglang.srt.batch_invariant_ops import enable_batch_invariant_mode
+            from transformers.models.qwen3 import modeling_qwen3
 
             print("FSDPTrainRayActor call enable_batch_invariant_mode for true-on-policy")
             enable_batch_invariant_mode(
@@ -62,6 +63,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 # and disabling it will make it aligned
                 enable_bmm=False,
             )
+
+            modeling_qwen3.apply_rotary_pos_emb = torch.compile(dynamic=True)(modeling_qwen3.apply_rotary_pos_emb)
 
         # Update rank and world_size for wandb secondary initialization (using actual distributed values)
         args.rank = dist.get_rank()
@@ -146,71 +149,68 @@ class FSDPTrainRayActor(TrainRayActor):
         self.max_tokens_per_gpu = args.max_tokens_per_gpu  # From main arguments
 
         if self.args.offload_train:
-            self.sleep(("model"))
+            self.sleep()
 
         Timer().start("train_wait")
         self.global_step = 0
         self.micro_step = 0
         return 0
 
-    def sleep(self, tags: str | Iterable[str] | None) -> None:
-        """Pause CUDA memory for all tracked tensors via torch_memory_saver.
-
-        When offloading is enabled, this forwards tags to
-        `torch_memory_saver.pause`. If `tags` is a string, that tag is paused.
-        If `tags` is an iterable of strings, each tag is paused. If `tags` is
-        None, all registered regions are paused. See the torch_memory_saver
-        tagged API for details.
-        """
+    def sleep(self) -> None:
+        """Pause CUDA memory for all tracked tensors."""
         if not self.args.offload_train:
             return
 
-        # Try to avoid this case:
-        # * FSDP contains a lot of cached memory and sleep
-        # * SGLang resumes and allocate some memory
-        # * FSDP resumes but realize there is no enough memory, thus OOM currently, but indeed the cache can be (partially) freed to fulfill requirements
-        # TODO: improve it later
-        clear_memory()
+        print_memory("before offload model")
 
-        if isinstance(tags, str):
-            tags = (tags,)
+        match self.args.offload_train_mode:
+            case "tms":
+                # Try to avoid this case:
+                # * FSDP contains a lot of cached memory and sleep
+                # * SGLang resumes and allocate some memory
+                # * FSDP resumes but realize there is no enough memory, thus OOM currently, but indeed the cache can be (partially) freed to fulfill requirements
+                # TODO: improve it later
+                clear_memory()
 
-        if torch_memory_saver is not None:
-            torch_memory_saver.pause()
+                torch_memory_saver.pause()
+            case "move":
+                self.model.cpu()
+                move_torch_optimizer(self.optimizer, "cpu")
+                clear_memory()
+            case _:
+                raise NotImplementedError
 
         torch.cuda.synchronize()
         dist.barrier(group=get_gloo_group())
+        print_memory("after offload model")
 
-    def wake_up(self, tags: str | Iterable[str] | None) -> None:
-        """Resume CUDA memory for all tracked tensors via torch_memory_saver.
-
-        When offloading is enabled, this forwards tags to
-        `torch_memory_saver.resume`. If `tags` is a string, that tag is resumed.
-        If `tags` is an iterable of strings, each tag is resumed. If `tags` is
-        None, all registered regions are resumed. See the torch_memory_saver
-        tagged API for details.
-        """
+    def wake_up(self) -> None:
+        """Resume CUDA memory for all tracked tensors."""
         if not self.args.offload_train:
             return
 
-        if isinstance(tags, str):
-            tags = (tags,)
+        match self.args.offload_train_mode:
+            case "tms":
+                # TODO this is copy-pasted from megatron side; should unify the two
+                # there are weird times when sglang is not offloaded immediately, so we wait here.
+                mem_fraction_static = self.args.sglang_mem_fraction_static or 0.8
+                for _ in range(60):
+                    memory_info = print_memory("before wake_up model")
+                    if memory_info["used_GB"] >= mem_fraction_static * memory_info["total_GB"]:
+                        time.sleep(1)
+                        continue
+                    break
 
-        # TODO this is copy-pasted from megatron side; should unify the two
-        # there are weird times when sglang is not offloaded immediately, so we wait here.
-        mem_fraction_static = self.args.sglang_mem_fraction_static or 0.8
-        for _ in range(60):
-            memory_info = print_memory("before wake_up model")
-            if memory_info["used_GB"] >= mem_fraction_static * memory_info["total_GB"]:
-                time.sleep(1)
-                continue
-            break
-
-        if torch_memory_saver is not None:
-            torch_memory_saver.resume()
+                torch_memory_saver.resume()
+            case "move":
+                self.model.cuda()
+                move_torch_optimizer(self.optimizer, "cuda")
+            case _:
+                raise NotImplementedError
 
         torch.cuda.synchronize()
         dist.barrier(group=get_gloo_group())
+        print_memory("after wake_up model")
 
     def save_model(self, iteration: int) -> None:
         """Save model state and optimizer state for the given iteration.
@@ -361,7 +361,7 @@ class FSDPTrainRayActor(TrainRayActor):
         Timer().end("train_wait")
 
         if self.args.offload_train:
-            self.wake_up(("model"))
+            self.wake_up()
 
         world_size = dist.get_world_size()
         rank = dist.get_rank()
@@ -618,7 +618,11 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
             dist.barrier(group=get_gloo_group())
 
-        with torch_memory_saver.disable() if self.args.offload_train and not torch.version.hip else nullcontext():
+        with (
+            torch_memory_saver.disable()
+            if self.args.offload_train and self.args.offload_train_mode == "tms" and not torch.version.hip
+            else nullcontext()
+        ):
             self.weight_updater.update_weights()
 
     @torch.no_grad()
@@ -767,3 +771,19 @@ def sum_of_sample_mean(x: torch.Tensor, response_lengths: list[int], loss_masks:
             for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks)
         ]
     )
+
+
+@torch.no_grad()
+def move_torch_optimizer(optimizer, device):
+    """ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py"""
+    if not optimizer.state:
+        return
+
+    for param_group in optimizer.param_groups:
+        for param in param_group["params"]:
+            state = optimizer.state[param]
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(device, non_blocking=True)
+
+    torch.cuda.synchronize()

@@ -61,7 +61,7 @@ class RayTrainGroup:
             **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
         }
 
-        if self.args.offload_train:
+        if self.args.offload_train and self.args.offload_train_mode == "tms":
             import torch_memory_saver
 
             dynlib_path = os.path.join(
@@ -126,7 +126,7 @@ class RayTrainGroup:
         return ray.get([actor.update_weights.remote() for actor in self._actor_handlers])
 
     def offload(self):
-        return ray.get([actor.sleep.remote(("model")) for actor in self._actor_handlers])
+        return ray.get([actor.sleep.remote() for actor in self._actor_handlers])
 
     def clear_memory(self):
         return ray.get([actor.clear_memory.remote() for actor in self._actor_handlers])
