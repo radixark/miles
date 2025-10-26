@@ -4,7 +4,7 @@ import time
 from argparse import Namespace
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional
 
 import ray
 import torch
