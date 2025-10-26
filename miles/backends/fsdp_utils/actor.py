@@ -610,7 +610,11 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
             dist.barrier(group=get_gloo_group())
 
-        with torch_memory_saver.disable() if self.args.offload_train and not torch.version.hip else nullcontext():
+        with (
+            torch_memory_saver.disable()
+            if self.args.offload_train and self.args.offload_train_mode == "tms" and not torch.version.hip
+            else nullcontext()
+        ):
             self.weight_updater.update_weights()
 
     @torch.no_grad()
