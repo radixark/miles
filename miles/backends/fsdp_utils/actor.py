@@ -172,11 +172,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # TODO: improve it later
         clear_memory()
 
-        if isinstance(tags, str):
-            tags = (tags,)
-
-        if torch_memory_saver is not None:
-            torch_memory_saver.pause()
+        torch_memory_saver.pause()
 
         torch.cuda.synchronize()
         dist.barrier(group=get_gloo_group())
@@ -193,9 +189,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        if isinstance(tags, str):
-            tags = (tags,)
-
         # TODO this is copy-pasted from megatron side; should unify the two
         # there are weird times when sglang is not offloaded immediately, so we wait here.
         mem_fraction_static = self.args.sglang_mem_fraction_static or 0.8
@@ -206,8 +199,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 continue
             break
 
-        if torch_memory_saver is not None:
-            torch_memory_saver.resume()
+        torch_memory_saver.resume()
 
         torch.cuda.synchronize()
         dist.barrier(group=get_gloo_group())
