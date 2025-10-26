@@ -145,7 +145,7 @@ class FSDPTrainRayActor(TrainRayActor):
         self.max_tokens_per_gpu = args.max_tokens_per_gpu  # From main arguments
 
         if self.args.offload_train:
-            self.sleep(("model"))
+            self.sleep()
 
         Timer().start("train_wait")
         self.global_step = 0
