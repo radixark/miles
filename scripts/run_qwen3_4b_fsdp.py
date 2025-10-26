@@ -82,7 +82,7 @@ eval:
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 '''.strip()
-            eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text)} "
+            eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text, 'yaml')} "
         else:
             eval_args += (
                 "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "

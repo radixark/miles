@@ -1,3 +1,4 @@
+import time
 import datetime
 import json
 import os
@@ -166,3 +167,10 @@ def get_bool_env_var(name: str, default: str = "false") -> bool:
 
 def get_env_enable_infinite_run():
     return get_bool_env_var("MILES_TEST_ENABLE_INFINITE_RUN", "false")
+
+
+def save_to_temp_file(text: str, ext: str):
+    path = Path(f"/tmp/miles_temp_file_{time.time()}_{random.randrange(0, 10000000)}.{ext}")
+    path.write_text(text)
+    print(f"Write the following content to {path=}: {text=}")
+    return str(path)
