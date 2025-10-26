@@ -170,7 +170,7 @@ class FSDPTrainRayActor(TrainRayActor):
         torch.cuda.synchronize()
         dist.barrier(group=get_gloo_group())
 
-    def wake_up(self, tags: str | Iterable[str] | None) -> None:
+    def wake_up(self) -> None:
         """Resume CUDA memory for all tracked tensors."""
         if not self.args.offload_train:
             return
