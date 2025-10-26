@@ -1,6 +1,5 @@
 import time
 from argparse import Namespace
-from collections.abc import Iterable
 from contextlib import nullcontext
 from itertools import accumulate
 
