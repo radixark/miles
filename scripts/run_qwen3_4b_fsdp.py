@@ -47,7 +47,7 @@ def execute():
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if MODE == 'debug_minimal' else 16384} "
+        f"--rollout-max-response-len {100 if MODE == 'debug_minimal' else 8192} "
         "--rollout-temperature 0.8 "
         "--global-batch-size 256 "
         "--balance-data "
