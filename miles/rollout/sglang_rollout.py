@@ -555,7 +555,7 @@ async def eval_rollout_single_dataset(
             print(
                 "eval_rollout_single_dataset example data:",
                 [str(sample.prompt) + sample.response],
-                sample.reward,
+                f"reward={sample.reward}",
                 flush=True,
             )
             do_print = False
