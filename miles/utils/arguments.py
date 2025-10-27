@@ -432,6 +432,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument("--apply-chat-template", action="store_true", default=False)
+            # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
+            parser.add_argument("--apply-chat-template-kwargs", type=json.loads, default="{}")
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--label-key", type=str, default=None, help="JSON dataset key")
             parser.add_argument(
