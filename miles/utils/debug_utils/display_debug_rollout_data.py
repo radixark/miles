@@ -25,4 +25,5 @@ def main(
 
 
 if __name__ == "__main__":
+    """python -m miles.utils.debug_utils.display_debug_rollout_data --load-debug-rollout-data ..."""
     typer.run(main)
