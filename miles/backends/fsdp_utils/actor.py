@@ -421,6 +421,7 @@ class FSDPTrainRayActor(TrainRayActor):
         self.optimizer.zero_grad(set_to_none=True)
         for mbs_id, packed_batch in enumerate(packed_batches):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                print(f'hi call model forward {packed_batch["position_ids"].shape=} {packed_batch["position_ids"]=}')
                 logits = self.model(
                     input_ids=packed_batch["tokens"].unsqueeze(0),
                     attention_mask=None,

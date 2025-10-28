@@ -138,6 +138,8 @@ eval:
         "--offload-train-mode move "
         "--use-fault-tolerance "
         f"--save-debug-rollout-data /root/shared_data/{run_id}/{{rollout_id}}.pt "
+        # TODO temp
+        "--load-debug-rollout-data '/root/shared_data/251028-000127-982/{rollout_id}.pt' --record-memory-history --memory-snapshot-num-steps 1 --memory-snapshot-dir /host_home/temp_sglang_server2local "
     )
 
     true_on_policy_args = ""
