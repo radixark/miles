@@ -812,3 +812,5 @@ def apply_fsdp2(model):
     for idx, module in enumerate(modules):
         fully_shard(module)
     fully_shard(model)
+
+    return model
