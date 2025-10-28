@@ -588,7 +588,7 @@ class FSDPTrainRayActor(TrainRayActor):
             aggregated = {}
             for k in reported_accum.keys():
                 aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (self.args.global_batch_size)
-            reported_accum = {}
+            reported_accum.clear()
             if dist.get_rank() == 0:
                 log_dict = {
                     f"train/{k}": (val.item() if torch.is_tensor(val) else val) for k, val in aggregated.items()
