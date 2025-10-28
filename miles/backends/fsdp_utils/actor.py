@@ -248,7 +248,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         try:
             rollout_data = {f"{store_prefix}log_probs": []}
-            with timer(f"{store_prefix}log_probs") and torch.no_grad():
+            with timer(f"{store_prefix}log_probs"), torch.no_grad():
                 for batch in packed_batches:
                     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                         model_args = {
