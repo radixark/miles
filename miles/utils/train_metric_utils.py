@@ -35,7 +35,7 @@ def log_perf_data_raw(
     if "perf/train_wait_time" in log_dict and "perf/train_time" in log_dict:
         total_time = log_dict["perf/train_wait_time"] + log_dict["perf/train_time"]
         if total_time > 0:
-            log_dict["perf/total_train_time"] = total_time
+            log_dict["perf/step_time"] = total_time
             log_dict["perf/wait_time_ratio"] = log_dict["perf/train_wait_time"] / total_time
 
     print(f"perf {rollout_id}: {log_dict}")
