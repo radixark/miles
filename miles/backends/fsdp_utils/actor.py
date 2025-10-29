@@ -14,7 +14,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import profile_utils
+from miles.utils import profile_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
 from miles.utils.distributed_utils import get_gloo_group
@@ -440,6 +440,13 @@ class FSDPTrainRayActor(TrainRayActor):
             and (rollout_id == s - 1)
         ):
             profile_utils.dump_snapshot_and_stop(profile_utils.get_memory_snapshot_full_path(self.args))
+
+        train_metric_utils.log_perf_data_raw(
+            rollout_id=rollout_id,
+            args=self.args,
+            is_primary_rank=dist.get_rank() == 0,
+            compute_total_fwd_flops=None,
+        )
 
     def _train_step(self, packed_batch, world_size, reported_accum, mbs_id, grad_accum):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
