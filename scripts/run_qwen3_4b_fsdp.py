@@ -119,7 +119,7 @@ eval:
 
     # TODO improve mem-frac
     sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {os.environ.get('MILES_SCRIPT_ROLLOUT_NUM_GPUS_PER_ENGINE', '1')} "
         f"--sglang-mem-fraction-static {os.environ.get('MILES_SCRIPT_SGLANG_MEM_FRACTION_STATIC', '0.8')} "
         "--sglang-chunked-prefill-size 4096 "
     )
