@@ -182,6 +182,7 @@ eval:
     )
 
 
+@U.dataclass_cli
 def main(args: ScriptArgs):
     prepare(args)
     execute(args)

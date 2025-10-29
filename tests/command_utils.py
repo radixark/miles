@@ -7,13 +7,12 @@ from pathlib import Path
 from typing import Optional
 
 from miles.utils.misc import exec_command
-from miles.utils.typer_utils import patch_typer
+from miles.utils.typer_utils.patch_typer import dataclass_cli
 
-_ = exec_command
+_ = exec_command, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[1]
 
-patch_typer()
 
 def convert_checkpoint(model_name, model_type, num_gpus: int, dir_dst="/root"):
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
@@ -177,4 +176,3 @@ def save_to_temp_file(text: str, ext: str):
     path.write_text(text)
     print(f"Write the following content to {path=}: {text=}")
     return str(path)
-
