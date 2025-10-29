@@ -132,9 +132,11 @@ eval:
         f"--update-weights-bucket-size {512 * 1024 * 1024} "  # 512MB
     )
 
+    num_nodes = math.ceil(args.num_gpus / U.NUM_GPU_OF_HARDWARE[args.hardware])
+    num_gpus_per_node = min(args.num_gpus, U.NUM_GPU_OF_HARDWARE[args.hardware])
     misc_args = (
-        f"--actor-num-nodes {math.ceil(args.num_gpus / U.NUM_GPU_OF_HARDWARE[args.hardware])} "
-        f"--actor-num-gpus-per-node {min(args.num_gpus, U.NUM_GPU_OF_HARDWARE[args.hardware])} "
+        f"--actor-num-nodes {num_nodes} "
+        f"--actor-num-gpus-per-node {num_gpus_per_node} "
         "--colocate "
         "--offload-train-mode move "
         """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
@@ -176,7 +178,7 @@ eval:
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=args.num_gpus,
+        num_gpus=num_gpus_per_node,
         model_type=None,
         extra_env_vars={
             **true_on_policy_envs,

@@ -37,6 +37,7 @@ def hf_download_dataset(full_name: str):
 
 def execute_train(
     train_args: str,
+    # TODO rename to "num_gpus_per_node"
     num_gpus: int,
     model_type: Optional[str],
     train_script: str = "train.py",
@@ -176,6 +177,7 @@ def save_to_temp_file(text: str, ext: str):
     path.write_text(text)
     print(f"Write the following content to {path=}: {text=}")
     return str(path)
+
 
 NUM_GPU_OF_HARDWARE = {
     "H100": 8,
