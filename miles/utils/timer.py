@@ -2,6 +2,8 @@ from contextlib import contextmanager
 from functools import wraps
 from time import time
 
+import torch.distributed
+
 from .misc import SingletonMeta
 
 __all__ = ["Timer", "timer"]
@@ -15,14 +17,16 @@ class Timer(metaclass=SingletonMeta):
     def start(self, name):
         assert name not in self.start_time, f"Timer {name} already started."
         self.start_time[name] = time()
-        print(f"Timer {name} start")
+        if torch.distributed.get_rank() == 0:
+            print(f"Timer {name} start")
 
     def end(self, name):
         assert name in self.start_time, f"Timer {name} not started."
         elapsed_time = time() - self.start_time[name]
         self.add(name, elapsed_time)
         del self.start_time[name]
-        print(f"Timer {name} end (elapsed: {elapsed_time:.1f}s)")
+        if torch.distributed.get_rank() == 0:
+            print(f"Timer {name} end (elapsed: {elapsed_time:.1f}s)")
 
     def reset(self, name=None):
         if name is None:
