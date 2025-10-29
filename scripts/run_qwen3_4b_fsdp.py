@@ -15,7 +15,8 @@ import command_utils as U
 class ScriptArgs:
     mode: Literal["normal", "debug_minimal"] = "normal"
     model_name: str = "Qwen3-4B-Instruct-2507"
-    num_gpus: int = 8
+    num_nodes: int = 1
+    num_gpus_per_node: int = 8
     hardware: Literal["H100"] = "H100"
     extra_args: str = ""
     multi_eval: bool = True
@@ -132,11 +133,9 @@ eval:
         f"--update-weights-bucket-size {512 * 1024 * 1024} "  # 512MB
     )
 
-    num_nodes = math.ceil(args.num_gpus / U.NUM_GPU_OF_HARDWARE[args.hardware])
-    num_gpus_per_node = min(args.num_gpus, U.NUM_GPU_OF_HARDWARE[args.hardware])
     misc_args = (
-        f"--actor-num-nodes {num_nodes} "
-        f"--actor-num-gpus-per-node {num_gpus_per_node} "
+        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--offload-train-mode move "
         """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
@@ -178,7 +177,7 @@ eval:
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=num_gpus_per_node,
+        num_gpus=args.num_gpus_per_node,
         model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
