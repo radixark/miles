@@ -15,6 +15,7 @@ class ScriptArgs:
     mode: Literal["normal", "debug_minimal"] = "normal"
     model_name: str = "Qwen3-4B-Instruct-2507"
     num_gpus: int = 8
+    hardware: Literal["H100"] = "H100"
     extra_args: str = ""
     multi_eval: bool = True
     true_on_policy: bool = False
