@@ -121,7 +121,7 @@ eval:
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 " f"--sglang-mem-fraction-static 0.8 " "--sglang-chunked-prefill-size 4096 "
+        f"--rollout-num-gpus-per-engine 1 " f"--sglang-mem-fraction-static 0.75 " "--sglang-chunked-prefill-size 4096 "
     )
 
     fsdp_args = (
