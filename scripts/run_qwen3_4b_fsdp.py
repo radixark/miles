@@ -98,7 +98,7 @@ eval:
                 "--eval-top-p 0.7 "
             )
 
-    perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
+    perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 32768 "
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -133,7 +133,7 @@ eval:
 
     misc_args = (
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {args.num_gpus} "
+        f"--actor-num-gpus-per-node {min(args.num_gpus, 8)} "
         "--colocate "
         "--offload-train-mode move "
         """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
