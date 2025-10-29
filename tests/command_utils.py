@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from miles.utils.misc import exec_command
-from miles.utils.typer_utils.patch_typer import dataclass_cli
+from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command, dataclass_cli
 
