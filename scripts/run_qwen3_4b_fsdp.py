@@ -36,9 +36,13 @@ def prepare(args: ScriptArgs):
 def execute(args: ScriptArgs):
     run_id = U.create_run_id()
 
+    load_save_path = f"/root/shared_data/{run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint /root/models/{args.model_name} "
         # "--ref-load /root/models/{args.model_name} "
+        f"--load {load_save_path} "
+        f"--save {load_save_path} "
+        "--save-interval 20 "
     )
 
     rollout_args = (
