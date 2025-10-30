@@ -17,7 +17,7 @@ from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import find_available_port, get_host_info, init_http_client
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_checker import MetricChecker
-from miles.utils.metric_utils import compute_pass_rate, dict_add_prefix
+from miles.utils.metric_utils import compute_pass_rate, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.types import Sample
@@ -490,6 +490,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     if args.rollout_num_gpus is not None:
         log_dict["perf/tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
     log_dict["perf/longest_sample_tokens_per_sec"] = max(response_lengths) / rollout_time
+    log_dict |= dict_add_prefix(compute_statistics(response_lengths), f"rollout/response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= dict_add_prefix(_compute_reward_cat_metrics(args, samples), f"rollout/")
     print(f"perf {rollout_id}: {log_dict}")
