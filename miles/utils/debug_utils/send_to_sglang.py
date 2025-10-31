@@ -8,6 +8,7 @@ from openai import AsyncOpenAI
 from miles.utils.data import read_file
 
 
+# can unify w/ sglang_rollout.py later, e.g. add RM, if needed
 def main(
     prompt_data: Annotated[str, typer.Option()],
     url: Annotated[str, typer.Option()] = "http://localhost:30000/v1",
@@ -18,7 +19,7 @@ def main(
     rollout_top_p: Annotated[float, typer.Option()] = 1.0,
 ):
     """
-    Send prompts to SGLang with arguments in the same format as main Slime.
+    Minimally send prompts to SGLang using OpenAI endpoints with arguments in the same format as main Slime.
 
     Example usage:
     python -m miles.utils.debug_utils.send_to_sglang --prompt-data /root/datasets/aime-2024/aime-2024.jsonl --input-key prompt --n-samples-per-prompt 16 --rollout-max-response-len 32768 --rollout-temperature 0.8 --rollout-top-p 0.7
