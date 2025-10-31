@@ -168,7 +168,7 @@ eval:
                 "--tensor-model-parallel-size 2 "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 2 "
+                "--context-parallel-size 4 "
                 "--expert-model-parallel-size 1 "
                 "--expert-tensor-parallel-size 1 "
                 "--recompute-granularity full "
@@ -183,7 +183,7 @@ eval:
                 # need to comment this when using model with MLA
                 "--attention-backend flash "
             )
-            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 16384 "
+            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
 
         case _:
             raise NotImplementedError
