@@ -2,7 +2,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import typer
 
@@ -15,6 +15,7 @@ import command_utils as U
 class ScriptArgs:
     mode: Literal["normal", "debug_minimal"] = "normal"
     model_name: str = "Qwen3-4B-Instruct-2507"
+    megatron_model_type: Optional[str] = None
     num_nodes: int = 1
     num_gpus_per_node: int = 8
     hardware: Literal["H100"] = "H100"
@@ -26,6 +27,13 @@ class ScriptArgs:
     enable_eval: bool = True
     train_backend: Literal["fsdp", "megatron"] = "fsdp"
 
+    def __post_init__(self):
+        if self.train_backend == "megatron":
+            self.megatron_model_type = {
+                "Qwen3-4B-Instruct-2507": "qwen3-4B",
+                "Qwen3-4B-Base": "qwen3-4B",
+            }[self.model_name]
+
 
 def prepare(args: ScriptArgs):
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -34,6 +42,10 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/aime-2024")
     U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
     U.hf_download_dataset("zyzshishui0627/IFBench")
+    if args.train_backend == "megatron":
+        U.convert_checkpoint(
+            model_name=args.model_name, model_type=args.megatron_model_type, num_gpus=args.num_gpus_per_node
+        )
 
 
 def execute(args: ScriptArgs):
@@ -216,7 +228,7 @@ eval:
     U.execute_train(
         train_args=train_args,
         num_gpus=args.num_gpus_per_node,
-        model_type=None,
+        model_type=args.megatron_model_type,
         extra_env_vars={
             **misc_env_vars,
             **true_on_policy_envs,
