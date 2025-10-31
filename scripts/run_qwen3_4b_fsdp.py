@@ -24,6 +24,7 @@ class ScriptArgs:
     true_on_policy: bool = False
     dynamic_sampling: bool = False
     enable_eval: bool = True
+    train_backend: Literal["fsdp", "megatron"] = "fsdp"
 
 
 def prepare(args: ScriptArgs):
@@ -131,12 +132,20 @@ eval:
         f"--rollout-num-gpus-per-engine 1 " f"--sglang-mem-fraction-static 0.75 " "--sglang-chunked-prefill-size 4096 "
     )
 
-    fsdp_args = (
-        "--train-backend fsdp "
-        "--attn-implementation flash_attention_2 "
-        "--gradient-checkpointing "
-        f"--update-weights-bucket-size {512 * 1024 * 1024} "  # 512MB
-    )
+    match args.train_backend:
+        case "fsdp":
+            train_backend_args = (
+                "--train-backend fsdp "
+                "--attn-implementation flash_attention_2 "
+                "--gradient-checkpointing "
+                f"--update-weights-bucket-size {512 * 1024 * 1024} "  # 512MB
+            )
+        case "megatron":
+            train_backend_args = (
+                TODO
+            )
+        case _:
+            raise NotImplementedError
 
     misc_args = (
         f"--actor-num-nodes {args.num_nodes} "
@@ -182,7 +191,7 @@ eval:
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
-        f"{fsdp_args} "
+        f"{train_backend_args} "
         f"{misc_args} "
         f"{true_on_policy_args} "
         f"{args.extra_args} "
