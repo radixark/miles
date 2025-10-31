@@ -1,3 +1,4 @@
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ class ScriptArgs:
     num_gpus_per_node: int = 8
     hardware: Literal["H100"] = "H100"
     extra_args: str = ""
+    extra_env_vars: str = "{}"
     multi_eval: bool = True
     true_on_policy: bool = False
     dynamic_sampling: bool = False
@@ -184,6 +186,7 @@ eval:
         model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
+            **json.loads(args.extra_env_vars),
         },
     )
 
