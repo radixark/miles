@@ -1,13 +1,15 @@
+import asyncio
 from typing import Annotated
 
 import typer
+from openai import AsyncOpenAI
 
 from miles.utils.data import read_file
 
 
 def main(
     prompt_data: Annotated[str, typer.Option()],
-    url: Annotated[str, typer.Option()] = "http://localhost:30000",
+    url: Annotated[str, typer.Option()] = "http://localhost:30000/v1",
     input_key: Annotated[str, typer.Option()] = "input",
     n_samples_per_prompt: Annotated[int, typer.Option()] = 1,
     rollout_max_response_len: Annotated[int, typer.Option()] = 1024,
@@ -21,10 +23,27 @@ def main(
     python -m miles.utils.debug_utils.send_to_sglang --prompt-data /root/datasets/aime-2024/aime-2024.jsonl --input-key prompt --n-samples-per-prompt 16 --rollout-max-response-len 32768 --rollout-temperature 0.8 --rollout-top-p 0.7
     """
 
-    for row in read_file(prompt_data):
-        input_messages = row[input_key]
-        TODO
+    async def _main_async():
+        for row in read_file(prompt_data):
+            for repeat_index in range(n_samples_per_prompt):
+                await _run_one(row)
+
+    async def _run_one(row):
+        resp = await client.chat.completions.create(
+            messages=row[input_key],
+            model="dummy_model",
+            max_tokens=rollout_max_response_len,
+            temperature=rollout_temperature,
+            top_p=rollout_top_p,
+        )
+        return dict(
+            **row,
+            response=resp.choices[0].message.content,
+        )
+
+    client = AsyncOpenAI(api_key="dummy_key", base_url=url)
+    asyncio.run(_main_async())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     typer.run(main)
