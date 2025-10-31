@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Annotated
 
 import typer
@@ -24,11 +25,16 @@ def main(
     """
 
     async def _main_async():
-        for row in read_file(prompt_data):
-            for repeat_index in range(n_samples_per_prompt):
-                await _run_one(row)
+        tasks = [
+            asyncio.create_task(_run_one(row, row_index=row_index, repeat_index=repeat_index))
+            for row_index, row in enumerate(read_file(prompt_data))
+            for repeat_index in range(n_samples_per_prompt)
+        ]
+        outputs = await asyncio.gather(*tasks)
+        for output in outputs:
+            print(json.dumps(output))
 
-    async def _run_one(row):
+    async def _run_one(row, row_index: int, repeat_index: int):
         resp = await client.chat.completions.create(
             messages=row[input_key],
             model="dummy_model",
@@ -37,6 +43,8 @@ def main(
             top_p=rollout_top_p,
         )
         return dict(
+            row_index=row_index,
+            repeat_index=repeat_index,
             **row,
             response=resp.choices[0].message.content,
         )
