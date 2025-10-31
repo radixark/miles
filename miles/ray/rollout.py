@@ -495,6 +495,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= dict_add_prefix(_compute_reward_cat_metrics(args, samples), f"rollout/")
     log_dict["rollout/repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
+    log_dict["rollout/truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
     print(f"perf {rollout_id}: {log_dict}")
     step = (
         rollout_id
