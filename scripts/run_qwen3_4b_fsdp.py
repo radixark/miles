@@ -88,6 +88,7 @@ def execute(args: ScriptArgs):
 
     if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
         rollout_args += (
+            # Shall we increase this since we have to do 2 rounds now
             "--over-sampling-batch-size 128 "
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
