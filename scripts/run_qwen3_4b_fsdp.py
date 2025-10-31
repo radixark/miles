@@ -148,6 +148,14 @@ eval:
         f"--dump-details /root/shared_data/{run_id}/dump_details "
     )
 
+    misc_env_vars = {}
+
+    if args.model_name == "Qwen3-4B-Base":
+        misc_args += "--sglang-context-length 36000 "
+        misc_env_vars |= {
+            "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
+        }
+
     true_on_policy_args = ""
     true_on_policy_envs = {}
     if args.true_on_policy:
@@ -185,6 +193,7 @@ eval:
         num_gpus=args.num_gpus_per_node,
         model_type=None,
         extra_env_vars={
+            **misc_env_vars,
             **true_on_policy_envs,
             **json.loads(args.extra_env_vars),
         },
