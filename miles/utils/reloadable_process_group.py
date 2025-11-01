@@ -264,16 +264,6 @@ def _wrap_low_level_call(f):
     try:
         return f()
     except Exception as e:
-        # TODO temp hack!!!
-        print(f"_wrap_low_level_call see {e=}")
-        import traceback
-        traceback.print_stack()
-        print_memory("after torch distributed error")
-        print("temp hack: clear mem and retry the inner func!!!", flush=True)
-        clear_memory()
-        print_memory("after hack clear memory (and before real call)")
-        return f()
-
-        # mem_info = print_memory("after torch distributed error")
-        # e.add_note(f"{mem_info=}")
-        # raise
+        mem_info = print_memory("after torch distributed error")
+        e.add_note(f"{mem_info=}")
+        raise
