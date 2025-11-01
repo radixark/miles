@@ -46,7 +46,7 @@ def monkey_patch_torch_dist():
 
     def get_new_function(func):
         def new_function(*args, **kwargs):
-            args = (arg.group if isinstance(arg, ReloadableProcessGroup) else arg for arg in args)
+            args = tuple([arg.group if isinstance(arg, ReloadableProcessGroup) else arg for arg in args])
             kwargs = {k: (v.group if isinstance(v, ReloadableProcessGroup) else v) for k, v in kwargs.items()}
             return _wrap_low_level_call(lambda: func(*args, **kwargs))
 
