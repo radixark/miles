@@ -147,9 +147,7 @@ eval:
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 " "--sglang-chunked-prefill-size 4096 "
-    )
+    sglang_args = f"--rollout-num-gpus-per-engine 1 " "--sglang-chunked-prefill-size 4096 "
 
     match args.train_backend:
         case "fsdp":
