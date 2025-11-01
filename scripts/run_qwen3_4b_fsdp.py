@@ -166,10 +166,10 @@ eval:
 
         case "megatron":
             train_backend_args = (
-                "--tensor-model-parallel-size 2 "
+                "--tensor-model-parallel-size 1 "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 4 "
+                "--context-parallel-size 8 "
                 "--expert-model-parallel-size 1 "
                 "--expert-tensor-parallel-size 1 "
                 "--recompute-granularity full "
@@ -186,7 +186,7 @@ eval:
             )
             # TODO improve
             sglang_args += f"--sglang-mem-fraction-static 0.7 "
-            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
+            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 8192 "
 
         case _:
             raise NotImplementedError
