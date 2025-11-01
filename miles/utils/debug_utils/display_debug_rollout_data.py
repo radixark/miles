@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated
+from typing import Annotated, List, Literal
 
 import torch
 import typer
@@ -27,8 +27,9 @@ def main(
     load_debug_rollout_data: Annotated[str, typer.Option()],
     show_metrics: bool = True,
     show_samples: bool = True,
+    category: List[Literal["train", "eval"]] = ["train", "eval"],
 ):
-    for rollout_id, path in _get_rollout_dump_paths(load_debug_rollout_data):
+    for rollout_id, path in _get_rollout_dump_paths(load_debug_rollout_data, category):
         print("-" * 80)
         print(f"{rollout_id=} {path=}")
         print("-" * 80)
@@ -53,14 +54,15 @@ def main(
                 print(json.dumps({k: v for k, v in sample.items() if k in _WHITELIST_KEYS}))
 
 
-def _get_rollout_dump_paths(load_debug_rollout_data: str):
+def _get_rollout_dump_paths(load_debug_rollout_data: str, categories: List[str]):
     # may improve later
     for rollout_id in range(100):
-        for path in [
-            load_debug_rollout_data.format(rollout_id=f"eval_{rollout_id}"),
-            load_debug_rollout_data.format(rollout_id=rollout_id),
-        ]:
-            path = Path(path)
+        for category in categories:
+            prefix = {
+                "train": "",
+                "eval": "eval_",
+            }[category]
+            path = Path(load_debug_rollout_data.format(rollout_id=f"{prefix}{rollout_id}"))
             if path.exists():
                 yield rollout_id, path
 
