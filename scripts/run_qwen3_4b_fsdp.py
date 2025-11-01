@@ -148,7 +148,7 @@ eval:
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 " f"--sglang-mem-fraction-static 0.75 " "--sglang-chunked-prefill-size 4096 "
+        f"--rollout-num-gpus-per-engine 1 " "--sglang-chunked-prefill-size 4096 "
     )
 
     match args.train_backend:
@@ -161,6 +161,7 @@ eval:
                 "--offload-train-mode move "
                 """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
             )
+            sglang_args += f"--sglang-mem-fraction-static 0.75 "
             perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 32768 "
 
         case "megatron":
@@ -183,6 +184,8 @@ eval:
                 # need to comment this when using model with MLA
                 "--attention-backend flash "
             )
+            # TODO improve
+            sglang_args += f"--sglang-mem-fraction-static 0.7 "
             perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
 
         case _:
