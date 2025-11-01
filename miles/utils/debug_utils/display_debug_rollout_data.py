@@ -56,7 +56,7 @@ def main(
 
 def _get_rollout_dump_paths(load_debug_rollout_data: str, categories: List[str]):
     # may improve later
-    for rollout_id in range(100):
+    for rollout_id in range(1000):
         for category in categories:
             prefix = {
                 "train": "",
