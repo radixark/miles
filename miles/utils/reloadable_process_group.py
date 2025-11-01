@@ -48,23 +48,7 @@ def monkey_patch_torch_dist():
         def new_function(*args, **kwargs):
             args = (arg.group if isinstance(arg, ReloadableProcessGroup) else arg for arg in args)
             kwargs = {k: (v.group if isinstance(v, ReloadableProcessGroup) else v) for k, v in kwargs.items()}
-            
-            # TODO temp
-            # return _wrap_low_level_call(lambda: func(*args, **kwargs))
-
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                # TODO temp hack!!!
-                print(f"_wrap_low_level_call see {e=}")
-                import traceback
-                traceback.print_stack()
-                print_memory("after torch distributed error")
-                print("temp hack: clear mem and retry the inner func!!!", flush=True)
-                clear_memory()
-                print_memory("after hack clear memory (and before real call)")
-                print(f"hi going to call again {args=} {kwargs=}", flush=True)
-                return func(*args, **kwargs)
+            return _wrap_low_level_call(lambda: func(*args, **kwargs))
 
         return new_function
 
