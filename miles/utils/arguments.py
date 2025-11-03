@@ -615,11 +615,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for reference model. "
             )
-            parser.add_argument(
-                "--disable-loss-div-num-tokens",
-                action="store_false",
-                dest="loss_div_num_tokens",
-            )
             reset_arg(parser, "--load", type=str, default=None)
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
