@@ -101,5 +101,5 @@ RUN rm /root/.tmux.conf
 # TODO: this fix will be upstreamed later
 RUN (cd /tmp && git clone -b feat/v350_plus_8045 https://github.com/fzyzcjy/triton.git && cd triton && pip install -r python/requirements.txt && pip install -e .)
 
-# TODO: this fix will be upstreamed later
+# This patch is merged into main, but we are using stable version, thus still need it
 RUN curl -L https://github.com/NVIDIA/TransformerEngine/pull/2286.patch -o /tmp/te2286.patch && (cd /usr/local/lib/python3.12/dist-packages/transformer_engine && (patch -p2 < /tmp/te2286.patch))
