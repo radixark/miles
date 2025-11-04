@@ -1,18 +1,16 @@
 ARG SGLANG_VERSION=latest
-# TODO will unify after it is merged into sglang main
-# FROM lmsysorg/sglang:${SGLANG_VERSION} AS sglang
-FROM ishandhanani/sglang:gb300-tom-deepep AS sglang
+FROM TODO AS sglang
 
 # we need to write this again after from
 ARG SGLANG_VERSION
-ARG MEGATRON_COMMIT=ca9797e95e88d93623b0f69831529a1b521297ac
+ARG MEGATRON_COMMIT=core_v0.14.0
 
 ARG ENABLE_BLACKWELL_BUILD=0
 ARG ENABLE_CUDA_13=0
 ARG ENABLE_TIGHT_BUILD_RES=0
 
 RUN apt update
-RUN apt install -y nvtop
+RUN apt install -y nvtop rsync
 
 # TODO: change to pip install sglang-router after it has a new release
 RUN pip install sglang-router --force-reinstall
@@ -28,7 +26,7 @@ RUN if [ "${ENABLE_BLACKWELL_BUILD}" = "1" ]; then \
         else \
           export TLIST="8.0;8.9;9.0;9.0a"; \
         fi && \
-    TORCH_CUDA_ARCH_LIST="$TLIST" pip install git+https://github.com/fanshiqing/grouped_gemm@v1.1.4
+    TORCH_CUDA_ARCH_LIST="$TLIST" pip install git+https://github.com/fanshiqing/grouped_gemm@v1.1.4 --no-build-isolation
 
 # apex
 RUN NVCC_APPEND_FLAGS="--threads 4" \
@@ -45,7 +43,7 @@ RUN if [ "$ENABLE_TIGHT_BUILD_RES" = "1" ]; then \
     else \
       export MAX_JOBS=64; \
     fi && \
-    pip -v install flash-attn==2.7.4.post1
+    pip -v install flash-attn==2.7.4.post1 --no-build-isolation
 
 RUN pip install flash-linear-attention
 
@@ -56,18 +54,20 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
           pip -v install --no-build-isolation "transformer_engine[pytorch]"; \
         fi
 
+RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
+    cd flash-attention/ && git submodule update --init && cd hopper/ && python setup.py install && \
+    export python_path=`python -c "import site; print(site.getsitepackages()[0])"` && \
+    mkdir -p $python_path/flash_attn_3 && \
+    cp flash_attn_interface.py $python_path/flash_attn_3/flash_attn_interface.py
+
 WORKDIR /root/
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
-    cd Megatron-LM && \
+    cd Megatron-LM && git checkout ${MEGATRON_COMMIT} && \
     pip install -e .
-
-# remove the cudnn installed by megatron
-RUN pip uninstall nvidia-cudnn-cu12 -y
 
 # sandwitch norm for GLM models
 COPY patch/${SGLANG_VERSION}/megatron.patch /root/Megatron-LM/
 RUN cd Megatron-LM && \
-    git checkout ${MEGATRON_COMMIT} && \
     git apply megatron.patch --3way && \
     if grep -R -n '^<<<<<<< ' .; then \
       echo "Patch failed to apply cleanly. Please resolve conflicts." && \
