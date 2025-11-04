@@ -98,7 +98,7 @@ RUN cd /sgl-workspace/sglang && \
 
 RUN rm /root/.tmux.conf
 
-# TODO: this fix will be upstreamed later
+# This patch from masahi will be included in later Triton releases
 RUN (cd /tmp && git clone -b feat/v350_plus_8045 https://github.com/fzyzcjy/triton.git && cd triton && pip install -r python/requirements.txt && pip install -e .)
 
 # This patch is merged into main, but we are using stable version, thus still need it
