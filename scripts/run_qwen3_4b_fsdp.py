@@ -167,7 +167,7 @@ eval:
                 f"--tensor-model-parallel-size {2 if args.num_gpus_per_node == 8 else 1} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 4 "
+                f"--context-parallel-size {4 if args.num_gpus_per_node == 8 else 1} "
                 "--expert-model-parallel-size 1 "
                 "--expert-tensor-parallel-size 1 "
                 "--recompute-granularity full "
