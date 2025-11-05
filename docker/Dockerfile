@@ -88,16 +88,17 @@ RUN cd Megatron-LM && \
     fi && \
     rm megatron.patch
 
-# sglang patch
-COPY patch/${SGLANG_VERSION}/sglang.patch /sgl-workspace/sglang/
-RUN cd /sgl-workspace/sglang && \
-  git update-index --refresh && \
-  git apply sglang.patch && \
-  if grep -R -n '^<<<<<<< ' .; then \
-    echo "Patch failed to apply cleanly. Please resolve conflicts." && \
-    exit 1; \
-  fi && \
-  rm sglang.patch
+# TODO
+## sglang patch
+#COPY patch/${SGLANG_VERSION}/sglang.patch /sgl-workspace/sglang/
+#RUN cd /sgl-workspace/sglang && \
+#  git update-index --refresh && \
+#  git apply sglang.patch && \
+#  if grep -R -n '^<<<<<<< ' .; then \
+#    echo "Patch failed to apply cleanly. Please resolve conflicts." && \
+#    exit 1; \
+#  fi && \
+#  rm sglang.patch
 
 RUN rm /root/.tmux.conf
 
