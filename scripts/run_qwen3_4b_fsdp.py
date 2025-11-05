@@ -164,7 +164,7 @@ eval:
 
         case "megatron":
             train_backend_args = (
-                "--tensor-model-parallel-size 2 "
+                f"--tensor-model-parallel-size {2 if args.num_gpus_per_node == 8 else 1} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 4 "
