@@ -203,6 +203,7 @@ eval:
     misc_args = (
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{run_id}/dump_details "
