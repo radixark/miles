@@ -17,8 +17,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-4B-Instruct-2507"
     megatron_model_type: Optional[str] = None
     num_nodes: int = 1
-    num_gpus_per_node: int = 8
-    hardware: Literal["H100"] = "H100"
+    num_gpus_per_node: Optional[int] = None
+    hardware: Literal["H100", "GB300"] = "H100"
     extra_args: str = ""
     extra_env_vars: str = "{}"
     multi_eval: bool = True
@@ -33,6 +33,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
                 "Qwen3-4B-Base": "qwen3-4B",
             }[self.model_name]
+
+        if self.num_gpus_per_node is None:
+            self.num_gpus_per_node = {
+                "H100": 8,
+                "GB300": 4,
+            }[self.hardware]
 
 
 def prepare(args: ScriptArgs):
