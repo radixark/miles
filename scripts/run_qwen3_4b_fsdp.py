@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 "H100": 8,
                 "GB300": 4,
             }[self.hardware]
+
+        if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
+            self.num_nodes = int(x)
 
 
 def prepare(args: ScriptArgs):
