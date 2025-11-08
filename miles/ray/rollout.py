@@ -422,6 +422,8 @@ def _start_router(args):
             port=args.sglang_router_port,
             balance_abs_threshold=0,
             prometheus_port=find_available_port(random.randint(4000, 5000)),
+            # The default 60s seems too long
+            health_check_interval_secs=20,
         )
 
         if hasattr(router_args, "log_level"):
