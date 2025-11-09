@@ -3,6 +3,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import typer
 
@@ -20,6 +21,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "deepseek-v3"
     num_gpus_per_node: int = 4
     enable_eval: bool = True
+    extra_args: str = ""
+    extra_env_vars: str = "{}"
 
 
 @app.command()
