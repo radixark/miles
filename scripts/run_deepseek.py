@@ -116,18 +116,15 @@ def execute(args: ScriptArgs):
         "--rollout-num-gpus-per-engine 64 "
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-enable-ep-moe "
-
         # dp attention
         "--sglang-enable-dp-attention "
         "--sglang-dp-size 8 "
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
         "--sglang-disable-radix-cache "
-
         # enable deepep for sglang
         "--sglang-enable-deepep-moe "
         "--sglang-deepep-mode auto "
-
         # make every dp rank has 128 concurrency
         "--sglang-server-concurrency 1024 "
     )
@@ -140,11 +137,9 @@ def execute(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
-
         # use deepep for megatron
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
-
         # ------------
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "

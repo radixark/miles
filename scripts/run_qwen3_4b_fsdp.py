@@ -2,7 +2,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Literal, Optional
 
 import typer
 
