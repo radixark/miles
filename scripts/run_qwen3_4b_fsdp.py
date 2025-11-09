@@ -44,7 +44,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"huggingface-cli download deepseek-ai/{args.model_name} --local-dir /root/models/{args.model_name}")
+    U.exec_command(
+        f"huggingface-cli download deepseek-ai/{args.model_name} --local-dir /root/models/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
     TODO_convert_ckpt
@@ -74,10 +76,10 @@ def execute(args: ScriptArgs):
         "--n-samples-per-prompt 8 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
         "--rollout-temperature 0.8 "
-
+        # ------------
         "--over-sampling-batch-size 256 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-
+        # ------------
         "--num-steps-per-rollout 4"
         "--balance-data "
     )
