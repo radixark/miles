@@ -133,7 +133,7 @@ def train(args: ScriptArgs):
         "--over-sampling-batch-size 256 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         # ------------
-        "--num-steps-per-rollout 4"
+        "--num-steps-per-rollout 4 "
         "--balance-data "
     )
 
@@ -192,7 +192,8 @@ def train(args: ScriptArgs):
     sglang_args = (
         "--rollout-num-gpus-per-engine 64 "
         "--sglang-mem-fraction-static 0.7 "
-        "--sglang-enable-ep-moe "
+        "--sglang-tp-size 64 "
+        "--sglang-ep-size 64 "
         # dp attention
         "--sglang-enable-dp-attention "
         "--sglang-dp-size 8 "
