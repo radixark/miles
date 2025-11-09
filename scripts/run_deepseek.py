@@ -25,6 +25,13 @@ def prepare(args: ScriptArgs):
     )
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
+
+    U.exec_command(
+        "python tools/fp8_cast_bf16.py "
+        f"--input-fp8-hf-path /root/models/{args.model_name} "
+        f"--output-bf16-hf-path /root/models/{args.model_name}-bf16/"
+    )
+
     TODO_convert_ckpt
 
 
