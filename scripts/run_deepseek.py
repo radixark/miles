@@ -50,6 +50,7 @@ def _fp8_cast_bf16(args: ScriptArgs):
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _convert_to_megatron_ckpt(args)
+    # TODO cp file
 
 
 def _convert_to_megatron_ckpt(args: ScriptArgs):
@@ -58,9 +59,10 @@ def _convert_to_megatron_ckpt(args: ScriptArgs):
     if Path(path_dst).exists():
         return
 
-    print(f"{os.environ.get('SLURM_JOB_NODELIST')=} {os.environ.get('SLURM_NODEID')=}")
-    master_addr = U.slurm_get_node_hosts()[0]
-    node_rank = int(os.environ.get("SLURM_NODEID"))
+    # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
+    print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
+    master_addr = os.environ['SLURM_JOB_HOSTNAMES'].split("\n")[0]
+    node_rank = int(os.environ["SLURM_NODEID"])
     U.exec_command(
         "source scripts/models/deepseek-v3.sh && "
         "PYTHONPATH=/root/Megatron-LM/ torchrun "
