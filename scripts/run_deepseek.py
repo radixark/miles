@@ -46,15 +46,17 @@ def prepare_spmd(args: ScriptArgs):
     """This SPMD script needs to be executed once per node."""
     path_dst = f"/root/models/{args.model_name}_torch_dist"
     if not Path(path_dst).exists():
-        print(f"{os.environ.get('MASTER_ADDR')=} {os.environ.get('SLURM_NODEID')=}")
+        print(f"{os.environ.get('SLURM_JOB_NODELIST')=} {os.environ.get('SLURM_NODEID')=}")
+        master_addr = U.slurm_get_node_hosts()[0]
+        node_rank = int(os.environ.get("SLURM_NODEID"))
         U.exec_command(
             "source scripts/models/deepseek-v3.sh && "
             "PYTHONPATH=/root/Megatron-LM/ torchrun "
             f"--nproc-per-node {args.num_gpus_per_node} "
-            "--master-addr ${MASTER_ADDR} "
+            f"--master-addr {master_addr} "
             "--master-port 12345 "
             f"--nnodes={args.num_nodes} "
-            "--node-rank ${SLURM_NODEID} "
+            f"--node-rank {node_rank} "
             "tools/convert_hf_to_torch_dist.py "
             "${MODEL_ARGS[@]} "
             "--tensor-model-parallel-size 1 "

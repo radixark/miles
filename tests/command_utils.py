@@ -202,5 +202,6 @@ def save_to_temp_file(text: str, ext: str):
     return str(path)
 
 
-def slurm_get_node_ips():
-    exec_command('scontrol show hostnames "$SLURM_JOB_NODELIST"', capture_output=True)
+def slurm_get_node_hosts():
+    hosts = exec_command('scontrol show hostnames "$SLURM_JOB_NODELIST"', capture_output=True)
+    return hosts.split(" ")
