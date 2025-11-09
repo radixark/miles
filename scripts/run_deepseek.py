@@ -213,6 +213,8 @@ def train(args: ScriptArgs):
         "--sglang-server-concurrency 1024 "
         f"--sglang-max-running-requests {sglang_num_gpus * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        # For quick experiments
+        '''--json-model-override-args '{"num_hidden_layers": 5}' '''
     )
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
