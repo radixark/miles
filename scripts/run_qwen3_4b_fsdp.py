@@ -2,7 +2,6 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
 
 import typer
 
@@ -13,43 +12,26 @@ import command_utils as U
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["normal", "debug_minimal"] = "normal"
-    model_name: str = "Qwen3-4B-Instruct-2507"
-    megatron_model_type: Optional[str] = None
-    num_gpus_per_node: Optional[int] = None
-    hardware: Literal["H100", "GB300"] = "H100"
-    extra_args: str = ""
-    extra_env_vars: str = "{}"
-    multi_eval: bool = True
-    true_on_policy: bool = False
-    dynamic_sampling: bool = False
-    enable_eval: bool = True
-    train_backend: Literal["fsdp", "megatron"] = "fsdp"
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        if self.train_backend == "megatron":
-            self.megatron_model_type = {
-                "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
-                "Qwen3-4B-Base": "qwen3-4B",
-            }[self.model_name]
-
-        if self.num_gpus_per_node is None:
-            self.num_gpus_per_node = {
-                "H100": 8,
-                "GB300": 4,
-            }[self.hardware]
+    model_name: str = "DeepSeek-V3"
+    megatron_model_type: str = "deepseek-v3"
+    num_gpus_per_node: int = 4
 
 
 def prepare(args: ScriptArgs):
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(
-        f"huggingface-cli download deepseek-ai/{args.model_name} --local-dir /root/models/{args.model_name}"
-    )
+    U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir /root/models/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
-    TODO_convert_ckpt
+    U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
+    U.hf_download_dataset("zyzshishui0627/IFBench")
+    if args.train_backend == "megatron":
+        U.convert_checkpoint(
+            model_name=args.model_name,
+            model_type=args.megatron_model_type,
+            num_gpus=args.num_gpus_per_node,
+            # TODO unify
+            dir_dst="/root/models",
+        )
 
 
 def execute(args: ScriptArgs):
@@ -58,31 +40,40 @@ def execute(args: ScriptArgs):
     load_save_path = f"/root/shared_data/{run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint /root/models/{args.model_name} "
-        f"--ref-load /root/models/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
     )
+    if args.train_backend == "megatron":
+        ckpt_args += (
+            # FSDP does not support this
+            f"--ref-load /root/models/{args.model_name}_torch_dist "
+        )
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
+        # By default it is thinking mode
+        # """--apply-chat-template-kwargs '{"enable_thinking":false}' """
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 128 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 64 "
+        "--n-samples-per-prompt 16 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
         "--rollout-temperature 0.8 "
-        # ------------
-        "--over-sampling-batch-size 256 "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        # ------------
-        "--num-steps-per-rollout 4"
+        "--global-batch-size 1024 "
         "--balance-data "
     )
+
+    if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
+        rollout_args += (
+            # Shall we increase this since we have to do 2 rounds now
+            "--over-sampling-batch-size 128 "
+            "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+        )
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
