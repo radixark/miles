@@ -133,6 +133,19 @@ def execute(args: ScriptArgs):
     )
 
     misc_args = (
+        # default dropout in megatron is 0.1
+        "--attention-dropout 0.0 "
+        "--hidden-dropout 0.0 "
+        # should be good for model performance
+        "--accumulate-allreduce-grads-in-fp32 "
+        "--attention-softmax-in-fp32 "
+        "--attention-backend flash "
+
+        # use deepep for megatron
+        "--moe-enable-deepep "
+        "--moe-token-dispatcher-type flex "
+
+        # ------------
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
