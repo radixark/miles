@@ -50,7 +50,6 @@ def _fp8_cast_bf16(args: ScriptArgs):
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _convert_to_megatron_ckpt(args)
-    _cp_model_to_local(args)
 
 
 def _convert_to_megatron_ckpt(args: ScriptArgs):
@@ -82,6 +81,13 @@ def _convert_to_megatron_ckpt(args: ScriptArgs):
         f"--hf-checkpoint /root/models/{args.model_name}-bf16/ "
         f"--save {path_dst} "
     )
+
+
+# TODO improve these commadns
+@app.command()
+@U.dataclass_cli
+def prepare_cp(args: ScriptArgs):
+    _cp_model_to_local(args)
 
 
 def _cp_model_to_local(args: ScriptArgs):
