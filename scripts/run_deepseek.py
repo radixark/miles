@@ -60,8 +60,8 @@ def prepare_spmd(args: ScriptArgs):
             "--expert-model-parallel-size 4 "
             "--decoder-first-pipeline-num-layers 7 "
             "--decoder-last-pipeline-num-layers 6 "
-            "--hf-checkpoint $BASE_DIR/DeepSeek-R1-bf16/ "
-            "--save $BASE_DIR/DeepSeek-R1_torch_dist/ "
+            "--hf-checkpoint /root/models/DeepSeek-R1-bf16/ "
+            f"--save {path_dst} "
         )
 
 
