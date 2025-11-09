@@ -192,14 +192,17 @@ def train(args: ScriptArgs):
 
     sglang_num_gpus = args.num_gpus_per_node * args.num_nodes
     sglang_decode_max_bs = 256
+    sglang_world_size = 64
+    sglang_attn_dp_size = 8
+    sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
     sglang_args = (
-        "--rollout-num-gpus-per-engine 64 "
+        f"--rollout-num-gpus-per-engine {sglang_world_size} "
         "--sglang-mem-fraction-static 0.7 "
-        "--sglang-tp-size 64 "
-        "--sglang-ep-size 64 "
+        f"--sglang-tp-size {sglang_world_size} "
+        f"--sglang-ep-size {sglang_world_size} "
         # dp attention
         "--sglang-enable-dp-attention "
-        "--sglang-dp-size 8 "
+        f"--sglang-dp-size {sglang_attn_dp_size} "
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
         "--sglang-disable-radix-cache "
@@ -208,7 +211,7 @@ def train(args: ScriptArgs):
         "--sglang-deepep-mode low_latency "
         # make every dp rank has 128 concurrency
         "--sglang-server-concurrency 1024 "
-        f"--sglang-max-running-requests {sglang_num_gpus * sglang_decode_max_bs} "
+        f"--sglang-max-running-requests {sglang_num_gpus * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
     )
     sglang_extra_env_vars = {
