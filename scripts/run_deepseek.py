@@ -48,7 +48,7 @@ def prepare_spmd(args: ScriptArgs):
             "source scripts/models/deepseek-v3.sh && "
             "PYTHONPATH=/root/Megatron-LM/ torchrun "
             f"--nproc-per-node {args.num_gpus_per_node} "
-            "--master-addr TODO "
+            "--master-addr ${MASTER_ADDR} "
             "--master-port 12345 "
             f"--nnodes={args.num_nodes} "
             "--node-rank TODO "
@@ -67,7 +67,7 @@ def prepare_spmd(args: ScriptArgs):
 
 @app.command()
 @U.dataclass_cli
-def execute(args: ScriptArgs):
+def train(args: ScriptArgs):
     run_id = U.create_run_id()
 
     load_save_path = f"/root/shared_data/{run_id}/checkpoints"
