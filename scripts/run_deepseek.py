@@ -63,36 +63,13 @@ def execute(args: ScriptArgs):
     # sometimes disable eval to speed up debugging
     eval_args = ""
     if (args.mode != "debug_minimal") and args.enable_eval:
-        eval_max_response_len = 32768
-        eval_args += "--eval-interval 20 "
-        if args.multi_eval:
-            eval_config_text = f"""
-eval:
-  defaults:
-    max_response_len: {eval_max_response_len}
-    top_p: 0.7
-  datasets:
-    - name: aime
-      path: /root/datasets/aime-2024/aime-2024.jsonl
-      rm_type: math
-      n_samples_per_eval_prompt: 16
-    - name: gpqa
-      path: /root/datasets/gpqa_diamond/gpqa_eval.jsonl
-      rm_type: gpqa
-      n_samples_per_eval_prompt: 2
-    - name: ifbench
-      path: /root/datasets/IFBench/IFBench_eval.jsonl
-      rm_type: ifbench
-      n_samples_per_eval_prompt: 1
-""".strip()
-            eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text, 'yaml')} "
-        else:
-            eval_args += (
-                "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
-                "--n-samples-per-eval-prompt 16 "
-                f"--eval-max-response-len {eval_max_response_len} "
-                "--eval-top-p 0.7 "
-            )
+        eval_args += (
+            "--eval-interval 20 "
+            "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+            "--n-samples-per-eval-prompt 8 "
+            "--eval-max-response-len 32768 "
+            "--eval-top-p 0.7 "
+        )
 
     grpo_args = (
         "--advantage-estimator grpo "
