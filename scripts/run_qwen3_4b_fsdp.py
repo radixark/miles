@@ -56,15 +56,11 @@ def execute(args: ScriptArgs):
     load_save_path = f"/root/shared_data/{run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint /root/models/{args.model_name} "
+        f"--ref-load /root/models/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
     )
-    if args.train_backend == "megatron":
-        ckpt_args += (
-            # FSDP does not support this
-            f"--ref-load /root/models/{args.model_name}_torch_dist "
-        )
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
