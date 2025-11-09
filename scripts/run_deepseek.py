@@ -42,7 +42,11 @@ def prepare_head(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
-    TODO_convert_ckpt
+    path_dst = f"/root/models/{args.model_name}_torch_dist"
+    if not Path(path_dst).exists():
+        U.exec_command(
+            ""
+        )
 
 
 @app.command()
