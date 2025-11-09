@@ -225,9 +225,7 @@ class SGLangEngine(RayActor):
         print(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
             worker_url = f"http://{self.server_host}:{self.server_port}"
-            requests.delete(
-                f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}"
-            )
+            requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}")
         kill_process_tree(self.process.pid)
 
     def get_weight_version(self):

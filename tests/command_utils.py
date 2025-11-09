@@ -45,6 +45,7 @@ class ExecuteTrainConfig:
         if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
             self.num_nodes = int(x)
 
+
 def execute_train(
     train_args: str,
     # TODO rename to "num_gpus_per_node"

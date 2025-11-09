@@ -117,7 +117,9 @@ async def _post(client, url, payload, max_retries=60):
             else:
                 response_text = None
 
-            print(f"Error: {e}, retrying... (attempt {retry_count}/{max_retries}, url={url}, response={response_text})")
+            print(
+                f"Error: {e}, retrying... (attempt {retry_count}/{max_retries}, url={url}, response={response_text})"
+            )
             if retry_count >= max_retries:
                 print(f"Max retries ({max_retries}) reached, failing... (url={url})")
                 raise e
