@@ -67,25 +67,20 @@ def execute(args: ScriptArgs):
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
-        # By default it is thinking mode
-        # """--apply-chat-template-kwargs '{"enable_thinking":false}' """
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 64 "
-        "--n-samples-per-prompt 16 "
+        "--rollout-batch-size 128 "
+        "--n-samples-per-prompt 8 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
         "--rollout-temperature 0.8 "
-        "--global-batch-size 1024 "
+
+        "--over-sampling-batch-size 256 "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+
+        "--num-steps-per-rollout 4"
         "--balance-data "
     )
-
-    if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
-        rollout_args += (
-            # Shall we increase this since we have to do 2 rounds now
-            "--over-sampling-batch-size 128 "
-            "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        )
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
