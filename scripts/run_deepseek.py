@@ -202,7 +202,7 @@ def train(args: ScriptArgs):
         "--sglang-disable-radix-cache "
         # enable deepep for sglang
         "--sglang-moe-a2a-backend deepep "
-        "--sglang-deepep-mode auto "
+        "--sglang-deepep-mode low_latency "
         # make every dp rank has 128 concurrency
         "--sglang-server-concurrency 1024 "
     )
