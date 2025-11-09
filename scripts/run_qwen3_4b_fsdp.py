@@ -17,8 +17,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     model_name: str = "Qwen3-4B-Instruct-2507"
     megatron_model_type: Optional[str] = None
-    num_nodes: int = 1
-    num_gpus_per_node: Optional[int] = None
     hardware: Literal["H100", "GB300"] = "H100"
     extra_args: str = ""
     extra_env_vars: str = "{}"
@@ -29,20 +27,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_backend: Literal["fsdp", "megatron"] = "fsdp"
 
     def __post_init__(self):
+        super().__post_init__()
         if self.train_backend == "megatron":
             self.megatron_model_type = {
                 "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
                 "Qwen3-4B-Base": "qwen3-4B",
             }[self.model_name]
-
-        if self.num_gpus_per_node is None:
-            self.num_gpus_per_node = {
-                "H100": 8,
-                "GB300": 4,
-            }[self.hardware]
-
-        if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
-            self.num_nodes = int(x)
 
 
 def prepare(args: ScriptArgs):

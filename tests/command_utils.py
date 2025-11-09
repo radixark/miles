@@ -5,7 +5,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
 from miles.utils.misc import exec_command
 from miles.utils.typer_utils import dataclass_cli
@@ -39,6 +39,19 @@ def hf_download_dataset(full_name: str):
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
+    hardware: Literal["H100", "GB300"] = "H100"
+    num_nodes: int = 1
+    num_gpus_per_node: Optional[int] = None
+
+    def __post_init__(self):
+        if self.num_gpus_per_node is None:
+            self.num_gpus_per_node = {
+                "H100": 8,
+                "GB300": 4,
+            }[self.hardware]
+
+        if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
+            self.num_nodes = int(x)
 
 
 def execute_train(
