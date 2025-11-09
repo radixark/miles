@@ -50,7 +50,7 @@ def _fp8_cast_bf16(args: ScriptArgs):
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _convert_to_megatron_ckpt(args)
-    # TODO cp file
+    _cp_model_to_local(args)
 
 
 def _convert_to_megatron_ckpt(args: ScriptArgs):
@@ -82,6 +82,15 @@ def _convert_to_megatron_ckpt(args: ScriptArgs):
         f"--hf-checkpoint /root/models/{args.model_name}-bf16/ "
         f"--save {path_dst} "
     )
+
+
+def _cp_model_to_local(args: ScriptArgs):
+    path_src = f"/root/models/{args.model_name}_torch_dist"
+    path_dst = f"/root/local_data/{args.model_name}_torch_dist"
+    if Path(path_dst).exists():
+        return
+
+    U.exec_command(f"mkdir -p {path_dst} && cp -r {path_src}/* {path_dst}")
 
 
 @app.command()
