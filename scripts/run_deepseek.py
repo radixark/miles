@@ -33,6 +33,7 @@ def prepare_single(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/aime-2024")
     _fp8_cast_bf16(args)
 
+
 def _fp8_cast_bf16(args: ScriptArgs):
     path_bf16_hf = f"/root/models/{args.model_name}-bf16/"
     if Path(path_bf16_hf).exists():
@@ -49,6 +50,7 @@ def _fp8_cast_bf16(args: ScriptArgs):
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _convert_to_megatron_ckpt(args)
+
 
 def _convert_to_megatron_ckpt(args: ScriptArgs):
     """This script needs to be executed once per node."""
