@@ -2,7 +2,6 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
 
 import typer
 
@@ -13,33 +12,9 @@ import command_utils as U
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["normal", "debug_minimal"] = "normal"
-    model_name: str = "Qwen3-4B-Instruct-2507"
-    megatron_model_type: Optional[str] = None
-    num_gpus_per_node: Optional[int] = None
-    hardware: Literal["H100", "GB300"] = "H100"
-    extra_args: str = ""
-    extra_env_vars: str = "{}"
-    multi_eval: bool = True
-    true_on_policy: bool = False
-    dynamic_sampling: bool = False
-    enable_eval: bool = True
-    train_backend: Literal["fsdp", "megatron"] = "fsdp"
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        if self.train_backend == "megatron":
-            self.megatron_model_type = {
-                "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
-                "Qwen3-4B-Base": "qwen3-4B",
-            }[self.model_name]
-
-        if self.num_gpus_per_node is None:
-            self.num_gpus_per_node = {
-                "H100": 8,
-                "GB300": 4,
-            }[self.hardware]
+    model_name: str = "DeepSeek-V3"
+    megatron_model_type: str = "deepseek-v3"
+    num_gpus_per_node: int = 4
 
 
 def prepare(args: ScriptArgs):
