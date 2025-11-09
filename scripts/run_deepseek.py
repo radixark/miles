@@ -16,7 +16,12 @@ import command_utils as U
 class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "DeepSeek-V3"
     megatron_model_type: str = "deepseek-v3"
-    hardware: Literal["GB300"] = "GB300"
+    num_gpus_per_node: int = 4
+    num_nodes: int = 1
+
+    def __post_init__(self):
+        if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
+            self.num_nodes = int(x)
 
 
 def prepare(args: ScriptArgs):
