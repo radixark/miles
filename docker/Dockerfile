@@ -116,3 +116,7 @@ RUN SGL_KERNEL_VERSION=0.3.16.post4 && \
 RUN rm -rf /sgl-workspace/nvshmem && \
     unset NVSHMEM_DIR && \
     (cd /sgl-workspace/DeepEP && TORCH_CUDA_ARCH_LIST="9.0;10.0;10.3" pip install --no-build-isolation --verbose .)
+
+# temporary hack
+RUN curl -L https://github.com/NVIDIA/Megatron-LM/commit/d8c6aa4c0b5d4c15ec1196802bce292d4580ed4a.patch -o /root/temp.patch && (cd /root/Megatron-LM && (patch -p1 < /root/temp.patch))
+
