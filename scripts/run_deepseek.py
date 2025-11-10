@@ -192,7 +192,7 @@ def train(args: ScriptArgs):
 
     sglang_num_gpus = args.num_gpus_per_node * args.num_nodes
     sglang_decode_max_bs = 256
-    sglang_world_size = 8
+    sglang_world_size = 64
     sglang_attn_dp_size = 8
     sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
     sglang_args = (
