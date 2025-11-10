@@ -212,6 +212,7 @@ def train(args: ScriptArgs):
         # make every dp rank has 128 concurrency
         "--sglang-server-concurrency 1024 "
         f"--sglang-max-running-requests {sglang_num_gpus * sglang_decode_max_bs // sglang_attn_tp_size} "
+        f"--sglang-chunked-prefill-size {sglang_num_gpus * sglang_decode_max_bs} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # For quick experiments
         '''--sglang-json-model-override-args '{"num_hidden_layers": 5}' '''
