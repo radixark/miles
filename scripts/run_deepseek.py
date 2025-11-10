@@ -150,11 +150,11 @@ def train(args: ScriptArgs):
 
     perf_args = (
         # TODO choose a good config (currently randomly change to suit 64gpu)
-        "--tensor-model-parallel-size 8 "
+        "--tensor-model-parallel-size 4 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 4 "
         "--context-parallel-size 4 "
-        "--expert-model-parallel-size 32 "
+        "--expert-model-parallel-size 16 "
         "--expert-tensor-parallel-size 1 "
         "--decoder-last-pipeline-num-layers 13 "
         # ------------
