@@ -247,7 +247,7 @@ def train(args: ScriptArgs):
         f"--sglang-chunked-prefill-size {sglang_num_gpus * sglang_decode_max_bs} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # For quick experiments
-        """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
+        # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
     )
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
