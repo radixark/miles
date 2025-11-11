@@ -17,6 +17,7 @@ app = typer.Typer()
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
+    model_org: str = "deepseek-ai"
     model_name: str = "DeepSeek-V3"
     megatron_model_type: str = "deepseek-v3"
     num_gpus_per_node: int = 4
@@ -31,7 +32,7 @@ def prepare_single(args: ScriptArgs):
     """This script only needs to be executed on one node."""
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(
-        f"huggingface-cli download deepseek-ai/{args.model_name} --local-dir /root/models/{args.model_name}"
+        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir /root/models/{args.model_name}"
     )
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
