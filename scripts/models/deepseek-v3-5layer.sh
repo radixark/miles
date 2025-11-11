@@ -1,4 +1,5 @@
-NLAYERS=61
+# NOTE the only difference b/t this and deepseek-v3.sh is the number of layers
+NLAYERS=5
 FIRST_K_DENSE_REPLACE=3
 
 arr=()
