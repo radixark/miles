@@ -181,5 +181,7 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
         return f"shape={x.shape} dtype={x.dtype} device={x.device} stride={x.stride()} req_grad={x.requires_grad} min={min} max={max} mean={mean}"
 
     ans = quantize_params(args, name, converted_named_tensors, quantization_config)
-    print(f"hi convert_to_hf {name=} {get_tensor_info(param)=} {quantization_config=} {[(name, get_tensor_info(w)) for name, w in ans]=}")
+    print(
+        f"hi convert_to_hf {name=} {get_tensor_info(param)=} {quantization_config=} {[(name, get_tensor_info(w)) for name, w in ans]=}"
+    )
     return ans
