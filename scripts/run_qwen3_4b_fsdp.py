@@ -13,7 +13,7 @@ import command_utils as U
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id = U.create_run_id()
+    run_id: str = U.create_run_id()
     model_name: str = "Qwen3-4B-Instruct-2507"
     megatron_model_type: Optional[str] = None
     num_gpus_per_node: Optional[int] = None
