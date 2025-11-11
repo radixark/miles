@@ -68,7 +68,7 @@ def _convert_to_megatron_ckpt(args: ScriptArgs):
     master_addr = os.environ["SLURM_JOB_HOSTNAMES"].split("\n")[0]
     node_rank = int(os.environ["SLURM_NODEID"])
     U.exec_command(
-        "source scripts/models/deepseek-v3.sh && "
+        f"source scripts/models/{args.megatron_model_type}.sh && "
         "PYTHONPATH=/root/Megatron-LM/ torchrun "
         f"--nproc-per-node {args.num_gpus_per_node} "
         f"--master-addr {master_addr} "
