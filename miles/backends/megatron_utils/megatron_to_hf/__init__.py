@@ -6,6 +6,7 @@ from sglang.srt.model_loader.utils import should_deepgemm_weight_requant_ue8m0
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
+from sglang.srt.layers import deep_gemm_wrapper
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
@@ -106,13 +107,22 @@ def quantize_params(args, megatron_name, converted_named_params, quantization_co
         "self_attention.linear_q_down_proj.weight",
         "self_attention.linear_q_up_proj.weight",
         "self_attention.linear_kv_down_proj.weight",
-        "self_attention.linear_kv_up_proj.weight",
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
             quantize_named_params.extend(quantize_param(converted_name, param, weight_block_size))
 
         return quantize_named_params
+
+    if rest == "self_attention.linear_kv_up_proj.weight":
+        assert all("kv_b_proj" in x for x, _ in converted_named_params), f"{converted_named_params}"
+        if not deep_gemm_wrapper.DEEPGEMM_BLACKWELL:
+            # TODO cleanup repeated logic above
+            return [
+                info
+                for converted_name, param in converted_named_params
+                for info in quantize_param(converted_name, param, weight_block_size)
+            ]
 
     # for other parameters, we just return the original converted_named_params
     return converted_named_params
