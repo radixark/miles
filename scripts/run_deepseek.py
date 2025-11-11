@@ -265,9 +265,10 @@ def train(args: ScriptArgs):
         # need to comment this when using model with MLA
         # "--attention-backend flash "
         f"--update-weight-buffer-size {8 * 1024 ** 3} "
+        # TODO maybe enable it
         # use deepep for megatron
-        "--moe-enable-deepep "
-        "--moe-token-dispatcher-type flex "
+        # "--moe-enable-deepep "
+        # "--moe-token-dispatcher-type flex "
         # ------------
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
