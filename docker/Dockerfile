@@ -113,6 +113,10 @@ RUN SGL_KERNEL_VERSION=0.3.16.post4 && \
     python3 -m pip install https://github.com/sgl-project/whl/releases/download/v${SGL_KERNEL_VERSION}/sgl_kernel-${SGL_KERNEL_VERSION}+cu130-cp310-abi3-manylinux2014_$(uname -m).whl --force-reinstall --no-deps
 
 # temporary hack
+# NOTE: must patch DeepEP *before* reinstalling it
+RUN curl -L https://github.com/fzyzcjy/DeepEP/commit/814e508537c6ffc775d59f6f1b9ba43f3a65968c.patch -o /root/temp.patch && (cd /sgl-workspace/DeepEP && (patch -p1 < /root/temp.patch))
+
+# temporary hack
 RUN rm -rf /sgl-workspace/nvshmem && \
     unset NVSHMEM_DIR && \
     (cd /sgl-workspace/DeepEP && TORCH_CUDA_ARCH_LIST="9.0;10.0;10.3" pip install --no-build-isolation --verbose .)
