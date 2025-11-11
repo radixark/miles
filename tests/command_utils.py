@@ -43,6 +43,7 @@ class ExecuteTrainConfig:
 
     def __post_init__(self):
         if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
+            print(f"Use SLURM_JOB_NUM_NODES={x} in scripts.")
             self.num_nodes = int(x)
 
 
