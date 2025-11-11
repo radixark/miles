@@ -224,7 +224,6 @@ def train(args: ScriptArgs):
         "--use-precision-aware-optimizer "
     )
 
-    sglang_num_gpus = args.num_gpus_per_node * args.num_nodes
     sglang_decode_max_bs = 256
     sglang_world_size = 4 if args.num_nodes <= 2 else 64
     sglang_attn_dp_size = 1 if args.num_nodes <= 2 else 8
@@ -245,8 +244,8 @@ def train(args: ScriptArgs):
         "--sglang-deepep-mode low_latency "
         # make every dp rank has 128 concurrency
         "--sglang-server-concurrency 1024 "
-        f"--sglang-max-running-requests {sglang_num_gpus * sglang_decode_max_bs // sglang_attn_tp_size} "
-        f"--sglang-chunked-prefill-size {sglang_num_gpus * sglang_decode_max_bs} "
+        f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+        f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
