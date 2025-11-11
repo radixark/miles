@@ -28,7 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.model_name == "DeepSeek-V3-0324-5layer":
             self.model_org = "fzyzcjy"
-            self.megatron_model_type = "deepseek-V3-0324-5layer"
+            self.megatron_model_type = "deepseek-V3-5layer"
 
 
 @app.command()
