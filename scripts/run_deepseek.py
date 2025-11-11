@@ -150,12 +150,15 @@ def train(args: ScriptArgs):
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
         "--rollout-temperature 0.8 "
         # ------------
-        "--over-sampling-batch-size 256 "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        # ------------
         "--num-steps-per-rollout 4 "
         "--balance-data "
     )
+
+    if args.mode != "debug_minimal":
+        rollout_args += (
+            "--over-sampling-batch-size 256 "
+            "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+        )
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
