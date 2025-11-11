@@ -264,6 +264,7 @@ def train(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         # "--attention-backend flash "
+        f"--update-weight-buffer-size {8 * 1024 ** 3} "
         # use deepep for megatron
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
