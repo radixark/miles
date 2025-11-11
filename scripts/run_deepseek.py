@@ -169,7 +169,6 @@ def train(args: ScriptArgs):
             "--eval-top-p 0.7 "
         )
 
-    # TODO choose a good config (currently randomly change to suit 64gpu)
     if args.num_nodes == 1:
         perf_args = (
             "--tensor-model-parallel-size 1 "
@@ -180,6 +179,7 @@ def train(args: ScriptArgs):
             "--expert-tensor-parallel-size 1 "
         )
     else:
+        # TODO choose a good config (currently randomly change to suit 64gpu)
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
