@@ -106,9 +106,11 @@ class _TorchMemoryProfiler(_BaseMemoryProfiler):
 
 class _MemrayMemoryProfiler(_BaseMemoryProfiler):
     def start(self):
+        print("Memray tracker started.")
         import memray
         self._tracker = memray.Tracker(file_name=self._path_dump)
         self._tracker.__enter__()
 
     def stop(self):
+        print(f"Memray tracker stopped and dump snapshot to: {self._path_dump}")
         self._tracker.__exit__(None, None, None)
