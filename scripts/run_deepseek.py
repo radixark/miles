@@ -194,7 +194,7 @@ def train(args: ScriptArgs):
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
-            "--pipeline-model-parallel-size 4 "
+            f"--pipeline-model-parallel-size {1 if args.model_name == 'DeepSeek-V3-0324-5layer' else 4} "
             "--context-parallel-size 4 "
             "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
