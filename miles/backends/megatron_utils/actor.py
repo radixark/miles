@@ -25,7 +25,6 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.types import RolloutBatch
 from miles.utils.wandb_utils import init_wandb_secondary
 
-from ...utils import profile_utils
 from ...utils.profile_utils import TrainProfiler
 from .checkpoint import load_checkpoint
 from .cp_utils import slice_log_prob_with_cp

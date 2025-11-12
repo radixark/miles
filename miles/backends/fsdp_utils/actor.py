@@ -14,7 +14,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import profile_utils, train_dump_utils, train_metric_utils
+from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
 from miles.utils.distributed_utils import get_gloo_group

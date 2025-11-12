@@ -26,9 +26,9 @@ class TrainProfiler:
             self._torch_profiler_overall.step()
 
         if (
-                self._memory_profiler_overall is not None
-                and ((s := self.args.memory_snapshot_num_steps) is not None)
-                and (rollout_id == s - 1)
+            self._memory_profiler_overall is not None
+            and ((s := self.args.memory_snapshot_num_steps) is not None)
+            and (rollout_id == s - 1)
         ):
             self._memory_profiler_overall.stop()
 
@@ -83,8 +83,8 @@ class _BaseMemoryProfiler:
 
     def __init__(self, args):
         self._path_dump = (
-                Path(args.memory_snapshot_dir)
-                / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
+            Path(args.memory_snapshot_dir)
+            / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
         )
 
     def start(self):
@@ -107,7 +107,8 @@ class _TorchMemoryProfiler(_BaseMemoryProfiler):
 
         def oom_observer(device, alloc, device_alloc, device_free):
             print(
-                f"Observe OOM, will dump snapshot to {self._path_dump}. ({device=} {alloc=} {device_alloc=} {device_free=})")
+                f"Observe OOM, will dump snapshot to {self._path_dump}. ({device=} {alloc=} {device_alloc=} {device_free=})"
+            )
             torch.cuda.memory._dump_snapshot(self._path_dump)
 
         torch._C._cuda_attach_out_of_memory_observer(oom_observer)
@@ -126,6 +127,7 @@ class _MemrayMemoryProfiler(_BaseMemoryProfiler):
     def start(self):
         print("Memray tracker started.")
         import memray
+
         self._tracker = memray.Tracker(file_name=self._path_dump)
         self._tracker.__enter__()
 
