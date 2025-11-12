@@ -78,7 +78,7 @@ class _BaseMemoryProfiler:
         c = {
             "torch": _TorchMemoryProfiler,
             "memray": _MemrayMemoryProfiler,
-        }[args.memory_history_recorder]
+        }[args.memory_recorder]
         return c(args)
 
     def __init__(self, args):
