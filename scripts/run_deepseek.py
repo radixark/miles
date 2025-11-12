@@ -150,7 +150,6 @@ def train(args: ScriptArgs):
         "--num-rollout 3000 "
         "--rollout-batch-size 128 "
         "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
         "--rollout-temperature 0.8 "
         # ------------
         "--num-steps-per-rollout 4 "
@@ -168,7 +167,6 @@ def train(args: ScriptArgs):
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += (
             "--eval-interval 20 "
-            "--eval-max-response-len 32768 "
             "--eval-top-p 0.7 "
         )
 
@@ -176,18 +174,23 @@ def train(args: ScriptArgs):
         case "dapo_aime":
             rollout_args += (
                 "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+                f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
             )
             eval_args += (
                 "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
+                "--eval-max-response-len 32768 "
             )
         case "gsm8k":
             rollout_args += (
                 "--prompt-data /root/datasets/gsm8k/train.parquet "
+                # Deliberately make it very short for this easy task
+                f"--rollout-max-response-len 256 "
             )
             eval_args += (
                 "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
                 "--n-samples-per-eval-prompt 1 "
+                "--eval-max-response-len 256 "
             )
 
     if args.num_nodes <= 2:
