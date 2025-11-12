@@ -142,7 +142,6 @@ def train(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
@@ -165,15 +164,13 @@ def train(args: ScriptArgs):
     # sometimes disable eval to speed up debugging
     eval_args = ""
     if (args.mode != "debug_minimal") and args.enable_eval:
-        eval_args += (
-            "--eval-interval 20 "
-            "--eval-top-p 0.7 "
-        )
+        eval_args += "--eval-interval 20 " "--eval-top-p 0.7 "
 
     match args.task:
         case "dapo_aime":
             rollout_args += (
                 "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+                "--input-key prompt "
                 f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
             )
             eval_args += (
@@ -184,6 +181,7 @@ def train(args: ScriptArgs):
         case "gsm8k":
             rollout_args += (
                 "--prompt-data /root/datasets/gsm8k/train.parquet "
+                "--input-key messages "
                 # Deliberately make it very short for this easy task
                 f"--rollout-max-response-len 256 "
             )
