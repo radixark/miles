@@ -27,7 +27,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         super().__post_init__()
-        if (m := re.match(r"(\d+)layer", self.model_name)) is None:
+        if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.model_org = "fzyzcjy"
             self.megatron_model_type = f"deepseek-v3-{m.group(1)}layer"
 
@@ -91,7 +91,7 @@ def _convert_to_megatron_ckpt(args: ScriptArgs):
         f"--hf-checkpoint /root/models/{args.model_name}-bf16/ "
         f"--save {path_dst} "
     )
-    if args.num_nodes == 1 and (re.match(r"(\d+)layer", args.model_name) is not None):
+    if args.num_nodes == 1 and (re.search(r"(\d+)layer", args.model_name) is not None):
         cmd += (
             "--tensor-model-parallel-size 1 "
             "--pipeline-model-parallel-size 1 "
@@ -221,7 +221,7 @@ def train(args: ScriptArgs):
             "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
         )
-        if re.match(r"(\d+)layer", args.model_name) is None:
+        if re.search(r"(\d+)layer", args.model_name) is None:
             perf_args += "--decoder-last-pipeline-num-layers 13 "
     perf_args += (
         # ------------
