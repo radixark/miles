@@ -222,9 +222,7 @@ def train(args: ScriptArgs):
             "--expert-tensor-parallel-size 1 "
         )
         if re.match(r"\dlayer", args.model_name) is None:
-            perf_args += (
-                "--decoder-last-pipeline-num-layers 13 "
-            )
+            perf_args += "--decoder-last-pipeline-num-layers 13 "
     perf_args += (
         # ------------
         "--recompute-granularity full "
