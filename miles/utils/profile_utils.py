@@ -17,7 +17,7 @@ class TrainProfiler:
         self.args = args
         self._prof_overall = None
         if args.use_pytorch_profiler and ("train_overall" in args.profile_target):
-            self._prof_overall = _create_profiler(args, name="train_overall")
+            self._prof_overall = _create_torch_profiler(args, name="train_overall")
             self._prof_overall.start()
 
     def step(self):
@@ -38,14 +38,14 @@ def _profile_simple_loop(iterator, args, name):
         yield from iterator
         return
 
-    prof = _create_profiler(args, name=name)
+    prof = _create_torch_profiler(args, name=name)
     prof.start()
     for item in iterator:
         yield item
         prof.step()
 
 
-def _create_profiler(args, name):
+def _create_torch_profiler(args, name):
     return torch.profiler.profile(
         schedule=torch.profiler.schedule(
             # TODO the train_actor and train_log_probs ones may need to have different args to control step
