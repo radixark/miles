@@ -17,36 +17,6 @@ def dump_snapshot_and_stop(path_dump):
     TODO
 
 
-class _TorchMemoryProfiler:
-    def __init__(self, args):
-        self.args = args
-        self.path_dump = (
-            Path(args.memory_snapshot_dir)
-            / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
-        )
-
-    def start(self):
-        print("Attach OOM dump memory history.")
-
-        torch.cuda.memory._record_memory_history(
-            max_entries=1000000,
-            # record stack information for the trace events
-            # trace_alloc_record_context=True,
-            stacks="all",
-        )
-
-        def oom_observer(device, alloc, device_alloc, device_free):
-            print(f"Observe OOM, will dump snapshot to {self.path_dump}. ({device=} {alloc=} {device_alloc=} {device_free=})")
-            torch.cuda.memory._dump_snapshot(self.path_dump)
-
-        torch._C._cuda_attach_out_of_memory_observer(oom_observer)
-
-    def stop(self):
-        print(f"Dump memory snapshot to: {self.path_dump}")
-        torch.cuda.memory._dump_snapshot(self.path_dump)
-        torch.cuda.memory._record_memory_history(enabled=None)
-
-
 class TrainProfiler:
     def __init__(self, args):
         self.args = args
@@ -99,3 +69,32 @@ def _create_profiler(args, name):
         profile_memory=True,
         with_flops=True,
     )
+
+class _TorchMemoryProfiler:
+    def __init__(self, args):
+        self.args = args
+        self.path_dump = (
+                Path(args.memory_snapshot_dir)
+                / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
+        )
+
+    def start(self):
+        print("Attach OOM dump memory history.")
+
+        torch.cuda.memory._record_memory_history(
+            max_entries=1000000,
+            # record stack information for the trace events
+            # trace_alloc_record_context=True,
+            stacks="all",
+        )
+
+        def oom_observer(device, alloc, device_alloc, device_free):
+            print(f"Observe OOM, will dump snapshot to {self.path_dump}. ({device=} {alloc=} {device_alloc=} {device_free=})")
+            torch.cuda.memory._dump_snapshot(self.path_dump)
+
+        torch._C._cuda_attach_out_of_memory_observer(oom_observer)
+
+    def stop(self):
+        print(f"Dump memory snapshot to: {self.path_dump}")
+        torch.cuda.memory._dump_snapshot(self.path_dump)
+        torch.cuda.memory._record_memory_history(enabled=None)
