@@ -22,6 +22,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
+    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
     def __post_init__(self):
         super().__post_init__()
@@ -38,8 +39,12 @@ def prepare_single(args: ScriptArgs):
     U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir /root/models/{args.model_name}"
     )
-    U.hf_download_dataset("zhuzilin/dapo-math-17k")
-    U.hf_download_dataset("zhuzilin/aime-2024")
+    match args.task:
+        case "dapo_aime":
+            U.hf_download_dataset("zhuzilin/dapo-math-17k")
+            U.hf_download_dataset("zhuzilin/aime-2024")
+        case "gsm8k":
+            U.hf_download_dataset("zhuzilin/gsm8k")
     _fp8_cast_bf16(args)
 
 
@@ -137,7 +142,6 @@ def train(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
@@ -164,11 +168,27 @@ def train(args: ScriptArgs):
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += (
             "--eval-interval 20 "
-            "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
-            "--n-samples-per-eval-prompt 8 "
             "--eval-max-response-len 32768 "
             "--eval-top-p 0.7 "
         )
+
+    match args.task:
+        case "dapo_aime":
+            rollout_args += (
+                "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+            )
+            eval_args += (
+                "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+                "--n-samples-per-eval-prompt 8 "
+            )
+        case "gsm8k":
+            rollout_args += (
+                "--prompt-data /root/datasets/gsm8k/train.parquet "
+            )
+            eval_args += (
+                "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
+                "--n-samples-per-eval-prompt 1 "
+            )
 
     if args.num_nodes <= 2:
         perf_args = (
