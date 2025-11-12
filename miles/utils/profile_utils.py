@@ -3,11 +3,6 @@ from pathlib import Path
 
 import torch
 
-try:
-    pass
-except ImportError:
-    pass
-
 
 def attach_oom_dump_memory_history(path_dump):
     TODO
@@ -70,14 +65,22 @@ def _create_profiler(args, name):
         with_flops=True,
     )
 
-class _TorchMemoryProfiler:
+
+class _BaseMemoryProfiler:
     def __init__(self, args):
-        self.args = args
-        self.path_dump = (
+        self._path_dump = (
                 Path(args.memory_snapshot_dir)
                 / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
         )
 
+    def start(self):
+        raise NotImplementedError
+
+    def stop(self):
+        raise NotImplementedError
+
+
+class _TorchMemoryProfiler(_BaseMemoryProfiler):
     def start(self):
         print("Attach OOM dump memory history.")
 
@@ -89,12 +92,23 @@ class _TorchMemoryProfiler:
         )
 
         def oom_observer(device, alloc, device_alloc, device_free):
-            print(f"Observe OOM, will dump snapshot to {self.path_dump}. ({device=} {alloc=} {device_alloc=} {device_free=})")
-            torch.cuda.memory._dump_snapshot(self.path_dump)
+            print(
+                f"Observe OOM, will dump snapshot to {self._path_dump}. ({device=} {alloc=} {device_alloc=} {device_free=})")
+            torch.cuda.memory._dump_snapshot(self._path_dump)
 
         torch._C._cuda_attach_out_of_memory_observer(oom_observer)
 
     def stop(self):
-        print(f"Dump memory snapshot to: {self.path_dump}")
-        torch.cuda.memory._dump_snapshot(self.path_dump)
+        print(f"Dump memory snapshot to: {self._path_dump}")
+        torch.cuda.memory._dump_snapshot(self._path_dump)
         torch.cuda.memory._record_memory_history(enabled=None)
+
+
+class _MemrayMemoryProfiler(_BaseMemoryProfiler):
+    def start(self):
+        import memray
+        self._tracker = memray.Tracker(file_name=self._path_dump)
+        self._tracker.__enter__()
+
+    def stop(self):
+        self._tracker.__exit__(None, None, None)
