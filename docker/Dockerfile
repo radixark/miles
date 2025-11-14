@@ -41,7 +41,6 @@ RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@383bec3919
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
-# sandwitch norm for GLM models
 COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
 RUN cd Megatron-LM && \
     git update-index --refresh && \
@@ -52,7 +51,6 @@ RUN cd Megatron-LM && \
     fi && \
     rm megatron.patch
 
-# sglang patch
 COPY docker/patch/${PATCH_VERSION}/sglang.patch /sgl-workspace/sglang/
 RUN cd /sgl-workspace/sglang && \
   git update-index --refresh && \
