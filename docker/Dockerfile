@@ -45,6 +45,7 @@ RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
 # sandwitch norm for GLM models
 COPY patch/${SGLANG_VERSION}/megatron.patch /root/Megatron-LM/
 RUN cd Megatron-LM && \
+    git update-index --refresh && \
     git apply megatron.patch --3way && \
     if grep -R -n '^<<<<<<< ' .; then \
       echo "Patch failed to apply cleanly. Please resolve conflicts." && \
@@ -55,6 +56,7 @@ RUN cd Megatron-LM && \
 # sglang patch
 COPY patch/${SGLANG_VERSION}/sglang.patch /sgl-workspace/sglang/
 RUN cd /sgl-workspace/sglang && \
+  git update-index --refresh && \
   git apply sglang.patch && \
   if grep -R -n '^<<<<<<< ' .; then \
     echo "Patch failed to apply cleanly. Please resolve conflicts." && \
