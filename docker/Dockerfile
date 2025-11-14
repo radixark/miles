@@ -8,7 +8,6 @@ ARG MEGATRON_COMMIT=core_v0.14.0
 RUN apt update
 RUN apt install -y nvtop rsync
 
-# TODO: change to pip install sglang-router after it has a new release
 RUN pip install sglang-router==0.2.1 --force-reinstall
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@383bec3919fc266b25bdaaa0447ebd1ee9275f1e --no-cache-dir --force-reinstall
 RUN pip install ray[default]
@@ -27,7 +26,9 @@ RUN pip install pybind11
 # flash attn
 # the newest version megatron supports is v2.7.4
 RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
+
 RUN pip install flash-linear-attention==0.4.0
+
 RUN pip -v install --no-build-isolation 'transformer_engine[pytorch]==2.8.0'
 
 WORKDIR /root/
