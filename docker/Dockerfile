@@ -14,8 +14,7 @@ RUN pip install sglang-router==0.2.1 --force-reinstall
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@383bec3919fc266b25bdaaa0447ebd1ee9275f1e --no-cache-dir --force-reinstall
 RUN pip install ray[default] httpx[http2] wandb pylatexenc blobfile accelerate "mcp[cli]"
 
-# flash attn
-# the newest version megatron supports is v2.7.4
+# TransformerEngines does not support too high FA2
 RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
 
 RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
