@@ -4,5 +4,8 @@ release:
 
     cd ..
 
-    docker build -f docker/Dockerfile . -t radixark/miles:{{version}}
-    docker push radixark/miles:{{version}}
+    docker build -f docker/Dockerfile . -t radixark/miles:$VERSION
+    docker push radixark/miles:$VERSION
+
+    docker tag radixark/miles:$VERSION radixark/miles:latest
+    docker push radixark/miles:latest
