@@ -11,7 +11,8 @@ services:
       - /home/runner/externals:/home/runner/externals
       - ./:/host_pwd
     deploy:
-      replicas: 8
+      replicas: 1  # for quick experiments
+      # replicas: 8
     restart: always
     environment:
       RUNNER_ALLOW_RUNASROOT: "1"
