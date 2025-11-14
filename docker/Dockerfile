@@ -24,14 +24,12 @@ RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
     cp flash_attn_interface.py $python_path/flash_attn_3/flash_attn_interface.py && \
     rm -rf flash-attention/
 
-# mbridge
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
 RUN pip install flash-linear-attention==0.4.0
 
 RUN pip -v install --no-build-isolation 'transformer_engine[pytorch]==2.8.0'
 
-# apex
 RUN NVCC_APPEND_FLAGS="--threads 4" \
   pip -v install --disable-pip-version-check --no-cache-dir \
   --no-build-isolation \
