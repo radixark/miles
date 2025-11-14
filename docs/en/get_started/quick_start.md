@@ -29,12 +29,12 @@ Please execute the following commands to pull the latest image and start an inte
 
 ```shell
 # Pull the latest image
-docker pull lmsysorg/miles:latest
+docker pull radixark/miles:latest
 
 # Start the container
 docker run --rm --gpus all --ipc=host --shm-size=16g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
-  -it lmsysorg/miles:latest /bin/bash
+  -it radixark/miles:latest /bin/bash
 ```
 
 ### Install miles
