@@ -36,7 +36,7 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> t
     return y
 
 
-def main(fp8_path, bf16_path, max_loaded_files):
+def main(fp8_path, bf16_path):
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(bf16_path, exist_ok=True)
     os.system("cp -rf " + fp8_path + "/config.json " + bf16_path)
@@ -87,7 +87,7 @@ def main(fp8_path, bf16_path, max_loaded_files):
         save_file(new_state_dict, new_safetensor_file)
 
         # Memory management: keep only the 2 most recently used files
-        if len(loaded_files) > max_loaded_files:
+        if len(loaded_files) > 2:
             oldest_file = next(iter(loaded_files))
             del loaded_files[oldest_file]
             torch.cuda.empty_cache()
@@ -106,6 +106,5 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--input-fp8-hf-path", type=str, required=True)
     parser.add_argument("--output-bf16-hf-path", type=str, required=True)
-    parser.add_argument("--max-loaded-files", type=int, default=2)
     args = parser.parse_args()
-    main(args.input_fp8_hf_path, args.output_bf16_hf_path, args.max_loaded_files)
+    main(args.input_fp8_hf_path, args.output_bf16_hf_path)
