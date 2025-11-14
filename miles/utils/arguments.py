@@ -960,6 +960,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=["train_overall"],
                 nargs="+",
             )
+            parser.add_argument(
+                "--memory-recorder",
+                type=str,
+                choices=["torch", "memray"],
+                default="torch",
+            )
             return parser
 
         def add_network_arguments(parser):
