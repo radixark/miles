@@ -1,0 +1,3 @@
+release version:
+    docker build . -t radixark/miles:{{version}}
+    docker push radixark/miles:{{version}}
