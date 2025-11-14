@@ -6,8 +6,12 @@ ARG MEGATRON_COMMIT=core_v0.14.0
 
 WORKDIR /root/
 
+# ======================================== Apt dependencies =============================================
+
 RUN apt update
 RUN apt install -y nvtop rsync
+
+# ====================================== Python dependencies ============================================
 
 # The compilation is slow, thus should be put at top
 # TransformerEngines does not support too high FA2
@@ -41,6 +45,8 @@ RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@383bec3919
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
+# ====================================== Patches ============================================
+
 COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
 RUN cd Megatron-LM && \
     git update-index --refresh && \
@@ -60,5 +66,7 @@ RUN cd /sgl-workspace/sglang && \
     exit 1; \
   fi && \
   rm sglang.patch
+
+# ================================= Misc lightweight operations =======================================
 
 RUN rm /root/.tmux.conf
