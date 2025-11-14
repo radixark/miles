@@ -16,19 +16,9 @@ RUN pip install httpx[http2] wandb pylatexenc blobfile accelerate "mcp[cli]"
 # mbridge
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-# apex
-RUN NVCC_APPEND_FLAGS="--threads 4" \
-  pip -v install --disable-pip-version-check --no-cache-dir \
-  --no-build-isolation \
-  --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4 \
-
 # flash attn
 # the newest version megatron supports is v2.7.4
 RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
-
-RUN pip install flash-linear-attention==0.4.0
-
-RUN pip -v install --no-build-isolation 'transformer_engine[pytorch]==2.8.0'
 
 WORKDIR /root/
 RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
@@ -37,6 +27,16 @@ RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
     mkdir -p $python_path/flash_attn_3 && \
     cp flash_attn_interface.py $python_path/flash_attn_3/flash_attn_interface.py && \
     rm -rf flash-attention/
+
+RUN pip install flash-linear-attention==0.4.0
+
+RUN pip -v install --no-build-isolation 'transformer_engine[pytorch]==2.8.0'
+
+# apex
+RUN NVCC_APPEND_FLAGS="--threads 4" \
+  pip -v install --disable-pip-version-check --no-cache-dir \
+  --no-build-isolation \
+  --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4 \
 
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
     cd Megatron-LM && git checkout ${MEGATRON_COMMIT} && \
