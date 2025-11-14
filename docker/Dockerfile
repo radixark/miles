@@ -32,7 +32,7 @@ RUN pip -v install --no-build-isolation 'transformer_engine[pytorch]==2.8.0'
 RUN NVCC_APPEND_FLAGS="--threads 4" \
   pip -v install --disable-pip-version-check --no-cache-dir \
   --no-build-isolation \
-  --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4 \
+  --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4
 
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
     cd Megatron-LM && git checkout ${MEGATRON_COMMIT} && \
