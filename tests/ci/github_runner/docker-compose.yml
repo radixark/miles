@@ -24,6 +24,6 @@ services:
     entrypoint: >
       sh -c "
       cd /data/miles_ci &&
-      /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) &&
+      /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) --disableupdate &&
       /home/runner/run.sh
       "
