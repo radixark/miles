@@ -1,3 +1,5 @@
+accelerate
+blobfile
 datasets
 httpx[http2]
 mcp[cli]
