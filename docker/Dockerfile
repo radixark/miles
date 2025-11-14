@@ -1,8 +1,7 @@
 ARG SGLANG_VERSION=v0.5.5.post2
 FROM lmsysorg/sglang:${SGLANG_VERSION} AS sglang
 
-# we need to write this again after from
-ARG SGLANG_VERSION
+ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=core_v0.14.0
 
 WORKDIR /root/
@@ -44,7 +43,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
 # sandwitch norm for GLM models
-COPY docker/patch/${SGLANG_VERSION}/megatron.patch /root/Megatron-LM/
+COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
 RUN cd Megatron-LM && \
     git update-index --refresh && \
     git apply megatron.patch --3way && \
@@ -55,7 +54,7 @@ RUN cd Megatron-LM && \
     rm megatron.patch
 
 # sglang patch
-COPY docker/patch/${SGLANG_VERSION}/sglang.patch /sgl-workspace/sglang/
+COPY docker/patch/${PATCH_VERSION}/sglang.patch /sgl-workspace/sglang/
 RUN cd /sgl-workspace/sglang && \
   git update-index --refresh && \
   git apply sglang.patch && \
