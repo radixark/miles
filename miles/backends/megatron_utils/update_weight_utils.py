@@ -432,6 +432,7 @@ class UpdateWeightFromTensor:
             current_params, current_infos = self._gather_bucket_params(self.param_info_buckets[i], weights)
             refs = self._update_converted_params_from_tensor(current_params, current_infos)
             ray.get(refs)
+            del current_params, current_infos
 
         dist.barrier(group=get_gloo_group())
 
@@ -509,11 +510,6 @@ class UpdateWeightFromTensor:
             converted_named_tensors.extend(
                 convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
             )
-
-        tensor_ptrs_to_keep = set(x.data_ptr() for _, x in converted_named_tensors)
-        for tensor in gathered_params:
-            if tensor.data_ptr() not in tensor_ptrs_to_keep:
-                dispose_tensor(tensor)
 
         all_refs = []
 
