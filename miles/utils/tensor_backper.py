@@ -3,11 +3,11 @@ from typing import Callable, Dict, Iterable, Tuple
 
 import torch
 
-NamedParametersGetter = Callable[[], Iterable[Tuple[str, torch.Tensor]]]
+_SourceGetter = Callable[[], Iterable[Tuple[str, torch.Tensor]]]
 
 
 class TensorBackuper:
-    def __init__(self, source_getter: NamedParametersGetter):
+    def __init__(self, source_getter: _SourceGetter):
         self._source_getter = source_getter
         self._backups: Dict[str, Dict[str, torch.Tensor]] = defaultdict()
 
