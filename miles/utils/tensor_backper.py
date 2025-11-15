@@ -85,19 +85,16 @@ class _TensorBackuperNoop(TensorBackuper):
         ans = dict(self._source_getter())
         ans = {k: v.detach() for k, v in ans.items()}
         assert _compute_hash_dict(ans) == self._backup_hash_dict
-        # print(f"hi get {self._backup_hash_dict=}")
         return ans
 
     def backup(self, tag: str) -> None:
         assert tag == self._single_tag
         self._backup_hash_dict = _compute_hash_dict(dict(self._source_getter()))
-        # print(f"hi backup {self._backup_hash_dict=}")
         torch.cuda.synchronize()
 
     def restore(self, tag: str) -> None:
         assert tag == self._single_tag
         assert _compute_hash_dict(dict(self._source_getter())) == self._backup_hash_dict
-        # print(f"hi restore {self._backup_hash_dict=}")
         torch.cuda.synchronize()
 
 
