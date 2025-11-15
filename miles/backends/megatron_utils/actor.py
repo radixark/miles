@@ -87,7 +87,6 @@ class MegatronTrainRayActor(TrainRayActor):
         self.weights_backuper = TensorBackuper(
             source_getter=lambda: named_parameters(self.args, self.model),
         )
-        self.weights = {"actor": {}}
         self.weights_backuper.backup("actor")
 
         if with_ref:
@@ -98,7 +97,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.load_other_checkpoint("old_actor", args.load)
             # Create rollout_actor as a copy of current actor
             if args.update_weights_interval == 1:
-                self.weights["rollout_actor"] = {}
                 self.weights_backuper.backup("rollout_actor")
 
         update_weight_cls = UpdateWeightFromTensor if self.args.colocate else UpdateWeightFromDistributed
@@ -310,7 +308,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with inverse_timer("train_wait"), timer("train"):
             if self.args.compute_advantages_and_returns:
-                if "ref" in self.weights:
+                if "ref" in self.weights_backuper.backup_tags:
                     if self.args.use_routing_replay:
                         os.environ["ROUTING_REPLAY_STAGE"] = "fallthrough"
                     rollout_data.update(
@@ -346,7 +344,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     )
 
                 # when there is old actor, we need to update the model params to actor manually
-                if "old_actor" in self.weights:
+                if "old_actor" in self.weights_backuper.backup_tags:
                     self.weights_backuper.restore("actor")
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
@@ -385,7 +383,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if (
             self.args.ref_update_interval is not None
             and (rollout_id + 1) % self.args.ref_update_interval == 0
-            and "ref" in self.weights
+            and "ref" in self.weights_backuper.backup_tags
         ):
             with timer("ref_model_update"):
                 if is_megatron_main_rank():

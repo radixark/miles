@@ -11,6 +11,10 @@ class TensorBackuper:
         self._source_getter = source_getter
         self._backups: Dict[str, Dict[str, torch.Tensor]] = defaultdict()
 
+    @property
+    def backup_tags(self):
+        return list(self._backups)
+
     @torch.no_grad()
     def backup(self, tag: str) -> None:
         backup_dict = self._backups[tag]
