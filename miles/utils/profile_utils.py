@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import print_memory
 
 
 class TrainProfiler:
@@ -115,8 +115,6 @@ class _TorchMemoryProfiler(_BaseMemoryProfiler):
             traceback.print_stack()
             torch.cuda.memory._dump_snapshot(self._path_dump)
             print_memory("when oom")
-            clear_memory()
-            print_memory("when oom (after clear memory)")
 
         torch._C._cuda_attach_out_of_memory_observer(oom_observer)
 
