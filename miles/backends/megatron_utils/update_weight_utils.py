@@ -19,6 +19,7 @@ try:
 except:
     from sglang.srt.patch_torch import monkey_patch_torch_reductions
 from sglang.srt.utils import MultiprocessingSerializer
+from sglang.srt.utils import dispose_tensor
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
@@ -509,6 +510,9 @@ class UpdateWeightFromTensor:
                 convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
             )
 
+        for tensor in gathered_params:
+            dispose_tensor(tensor)
+
         all_refs = []
 
         refs_colocated = self._send_to_colocated_engine(converted_named_tensors)
@@ -546,8 +550,12 @@ class UpdateWeightFromTensor:
                     "metadata": metadata,
                 }
                 serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
+                for _, tensor in named_tensors:
+                    dispose_tensor(tensor)
         else:
             serialized_tensors = MultiprocessingSerializer.serialize(converted_named_tensors, output_str=True)
+
+        torch.cuda.empty_cache()
 
         serialized_named_tensors = (
             [None] * dist.get_world_size(self._ipc_gather_group) if self._ipc_gather_src == dist.get_rank() else None
