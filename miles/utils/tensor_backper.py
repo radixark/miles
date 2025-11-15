@@ -83,13 +83,21 @@ class _TensorBackuperNoop(TensorBackuper):
 
     def get(self, tag: str):
         ans = dict(self._source_getter())
-        assert _compute_hash(ans) == self._backup_hash_dict
+        assert _compute_hash_dict(ans) == self._backup_hash_dict
         return ans
 
     def backup(self, tag: str) -> None:
         assert tag == self._single_tag
-        self._backup_hash_dict = _compute_hash(dict(self._source_getter()))
+        self._backup_hash_dict = _compute_hash_dict(dict(self._source_getter()))
 
     def restore(self, tag: str) -> None:
         assert tag == self._single_tag
-        assert _compute_hash(dict(self._source_getter())) == self._backup_hash_dict
+        assert _compute_hash_dict(dict(self._source_getter())) == self._backup_hash_dict
+
+
+def _compute_hash_dict(tensors: Dict[str, torch.Tensor]):
+    return {k: _compute_hash_tensor(v) for k, v in tensors.items()}
+
+
+def _compute_hash_tensor(x: torch.Tensor):
+    return TODO
