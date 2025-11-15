@@ -423,7 +423,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     print("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
                     # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
                     # First copy rollout_actor to old_actor
-                    self.weights_backuper.duplicate(src_tag="rollout_actor", dst_tag="old_actor")
+                    self.weights_backuper.copy(src_tag="rollout_actor", dst_tag="old_actor")
                     # Then copy current actor to rollout_actor
                     self.weights_backuper.backup("rollout_actor")
                 else:
@@ -455,7 +455,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if model_tag == "ref" and self.args.ref_ckpt_step is not None:
             self.args.ckpt_step = old_ckpt_step
 
-        self.weights[model_tag] = {}
         self.weights_backuper.backup(model_tag)
 
     def connect_actor_critic(

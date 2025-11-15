@@ -25,7 +25,7 @@ class TensorBackuper:
         torch.cuda.synchronize()
 
     @torch.no_grad()
-    def duplicate(self, *, src_tag: str, dst_tag: str):
+    def copy(self, *, src_tag: str, dst_tag: str):
         for name in self._backups[dst_tag]:
             self._backups[dst_tag][name].copy_(self._backups[src_tag][name])
 
