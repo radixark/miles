@@ -7,8 +7,37 @@ _SourceGetter = Callable[[], Iterable[Tuple[str, torch.Tensor]]]
 
 
 class TensorBackuper:
+    @staticmethod
+    def create(*args, **kwargs):
+        c = {
+            TODO: _TensorBackuperNormal,
+            TODO: _TensorBackuperNoop,
+        }[TODO]
+        return c(*args, **kwargs)
+
     def __init__(self, source_getter: _SourceGetter):
         self._source_getter = source_getter
+
+    @property
+    def backup_tags(self):
+        raise NotImplementedError
+
+    def get(self, tag: str):
+        raise NotImplementedError
+
+    def backup(self, tag: str):
+        raise NotImplementedError
+
+    def copy(self, *, src_tag: str, dst_tag: str):
+        raise NotImplementedError
+
+    def restore(self, tag: str):
+        raise NotImplementedError
+
+
+class _TensorBackuperNormal(TensorBackuper):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._backups: Dict[str, Dict[str, torch.Tensor]] = defaultdict()
 
     @property
