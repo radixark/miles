@@ -84,7 +84,7 @@ def train(args):
             if args.rollout_global_dataset:
                 ray.get(rollout_manager.save.remote(rollout_id))
 
-        if TODO:
+        if args.enable_weights_backuper:
             actor_model.clear_memory()
             onload_rollout()
             actor_model.update_weights()
