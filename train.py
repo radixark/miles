@@ -85,14 +85,14 @@ def train(args):
                 ray.get(rollout_manager.save.remote(rollout_id))
 
         if args.enable_weights_backuper:
+            offload_train()
+            onload_rollout()
+            actor_model.update_weights()
+        else:
             actor_model.clear_memory()
             onload_rollout()
             actor_model.update_weights()
             offload_train()
-        else:
-            offload_train()
-            onload_rollout()
-            actor_model.update_weights()
 
         if args.offload_rollout:
             if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
