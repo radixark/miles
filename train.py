@@ -77,11 +77,11 @@ def train(args):
                         actor_model.offload()
                 else:
                     actor_model.offload()
+            else:
+                actor_model.clear_memory()
 
         def onload_rollout():
             if args.offload_rollout:
-                if not args.offload_train:
-                    actor_model.clear_memory()
                 ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
 
         if TODO:
