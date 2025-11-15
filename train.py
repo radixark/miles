@@ -69,20 +69,30 @@ def train(args):
             if args.rollout_global_dataset:
                 ray.get(rollout_manager.save.remote(rollout_id))
 
-        if args.offload_train:
-            if args.use_critic:
-                critic_model.offload()
-                if rollout_id >= args.num_critic_only_steps:
+        def offload_train():
+            if args.offload_train:
+                if args.use_critic:
+                    critic_model.offload()
+                    if rollout_id >= args.num_critic_only_steps:
+                        actor_model.offload()
+                else:
                     actor_model.offload()
-            else:
-                actor_model.offload()
 
-        if args.offload_rollout:
-            if not args.offload_train:
-                actor_model.clear_memory()
-            ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+        def onload_rollout():
+            if args.offload_rollout:
+                if not args.offload_train:
+                    actor_model.clear_memory()
+                ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
 
-        actor_model.update_weights()
+        if TODO:
+            actor_model.clear_memory()
+            onload_rollout()
+            actor_model.update_weights()
+            offload_train()
+        else:
+            offload_train()
+            onload_rollout()
+            actor_model.update_weights()
 
         if args.offload_rollout:
             if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
