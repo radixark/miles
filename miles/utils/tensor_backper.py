@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Dict, Iterable, Callable, Tuple, Any
+from typing import Callable, Dict, Iterable, Tuple
 
 import torch
 

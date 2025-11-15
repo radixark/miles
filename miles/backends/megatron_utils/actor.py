@@ -27,6 +27,7 @@ from miles.utils.types import RolloutBatch
 from miles.utils.wandb_utils import init_wandb_secondary
 
 from ...utils.profile_utils import TrainProfiler
+from ...utils.tensor_backper import TensorBackuper
 from .checkpoint import load_checkpoint
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
 from .data import DataIterator, get_data_iterator, log_perf_data, log_rollout_data, sync_actor_critic_data
@@ -34,7 +35,6 @@ from .initialize import init, is_megatron_main_rank
 from .loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor, named_parameters
-from ...utils.tensor_backper import TensorBackuper
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -192,6 +192,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         from megatron.core.transformer.transformer_block import get_num_layers_to_build
         from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+
         from miles.utils.routing_replay import RoutingReplay
 
         for iterator in data_iterator:
