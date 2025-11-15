@@ -19,7 +19,7 @@ try:
 except:
     from sglang.srt.patch_torch import monkey_patch_torch_reductions
 
-from sglang.srt.utils import MultiprocessingSerializer, dispose_tensor
+from sglang.srt.utils import MultiprocessingSerializer
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
@@ -548,8 +548,6 @@ class UpdateWeightFromTensor:
                     "metadata": metadata,
                 }
                 serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
-                for _, tensor in named_tensors:
-                    dispose_tensor(tensor)
         else:
             serialized_tensors = MultiprocessingSerializer.serialize(converted_named_tensors, output_str=True)
 
