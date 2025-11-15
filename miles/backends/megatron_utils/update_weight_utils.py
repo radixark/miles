@@ -510,8 +510,10 @@ class UpdateWeightFromTensor:
                 convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
             )
 
+        tensor_ptrs_to_keep = set(x.data_ptr() for _, x in converted_named_tensors)
         for tensor in gathered_params:
-            dispose_tensor(tensor)
+            if tensor.data_ptr() not in tensor_ptrs_to_keep:
+                dispose_tensor(tensor)
 
         all_refs = []
 
