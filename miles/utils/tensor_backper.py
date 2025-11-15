@@ -36,8 +36,8 @@ class TensorBackuper:
 
 
 class _TensorBackuperNormal(TensorBackuper):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, source_getter):
+        super().__init__(source_getter=source_getter)
         self._backups: Dict[str, Dict[str, torch.Tensor]] = defaultdict()
 
     @property
@@ -71,8 +71,8 @@ class _TensorBackuperNormal(TensorBackuper):
 
 
 class _TensorBackuperNoop(TensorBackuper):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, source_getter):
+        super().__init__(source_getter=source_getter)
         self._only_tag = TODO
 
     @property
