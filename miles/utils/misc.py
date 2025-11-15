@@ -73,7 +73,7 @@ def get_free_port(start_port=10000, consecutive=1):
 def configure_logger(prefix: str = ""):
     logging.basicConfig(
         level=logging.INFO,
-        format=f"[%(asctime)s{prefix}] %(message)s",
+        format=f"[%(asctime)s{prefix}] %(filename)s:%(lineno)d - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
     )
