@@ -74,16 +74,22 @@ class _TensorBackuperNoop(TensorBackuper):
     def __init__(self, source_getter, single_tag):
         super().__init__(source_getter=source_getter)
         self._single_tag = single_tag
+        # Sanity check for safety
+        self._backup_hash_dict = None
 
     @property
     def backup_tags(self):
         return [self._single_tag]
 
     def get(self, tag: str):
-        return dict(self._source_getter())
+        ans = dict(self._source_getter())
+        assert _compute_hash(ans) == self._backup_hash_dict
+        return ans
 
     def backup(self, tag: str) -> None:
         assert tag == self._single_tag
+        self._backup_hash_dict = _compute_hash(dict(self._source_getter()))
 
     def restore(self, tag: str) -> None:
         assert tag == self._single_tag
+        assert _compute_hash(dict(self._source_getter())) == self._backup_hash_dict
