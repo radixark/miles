@@ -83,6 +83,8 @@ class _TensorBackuperNoop(TensorBackuper):
 
     def get(self, tag: str):
         ans = dict(self._source_getter())
+        # TODO temp hack
+        ans = {k: v.cpu() for k, v in ans.items()}
         assert _compute_hash_dict(ans) == self._backup_hash_dict
         return ans
 
