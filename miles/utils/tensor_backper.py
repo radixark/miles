@@ -8,12 +8,11 @@ _SourceGetter = Callable[[], Iterable[Tuple[str, torch.Tensor]]]
 
 class TensorBackuper:
     @staticmethod
-    def create(*args, **kwargs):
-        c = {
-            TODO: _TensorBackuperNormal,
-            TODO: _TensorBackuperNoop,
-        }[TODO]
-        return c(*args, **kwargs)
+    def create(source_getter, single_tag):
+        if single_tag is None:
+            return _TensorBackuperNormal(source_getter=source_getter)
+        else:
+            return _TensorBackuperNoop(source_getter=source_getter, single_tag=single_tag)
 
     def __init__(self, source_getter: _SourceGetter):
         self._source_getter = source_getter
@@ -71,19 +70,19 @@ class _TensorBackuperNormal(TensorBackuper):
 
 
 class _TensorBackuperNoop(TensorBackuper):
-    def __init__(self, source_getter):
+    def __init__(self, source_getter, single_tag):
         super().__init__(source_getter=source_getter)
-        self._only_tag = TODO
+        self._single_tag = single_tag
 
     @property
     def backup_tags(self):
-        return [self._only_tag]
+        return [self._single_tag]
 
     def get(self, tag: str):
         return dict(self._source_getter())
 
     def backup(self, tag: str) -> None:
-        assert tag == self._only_tag
+        assert tag == self._single_tag
 
     def restore(self, tag: str) -> None:
-        assert tag == self._only_tag
+        assert tag == self._single_tag
