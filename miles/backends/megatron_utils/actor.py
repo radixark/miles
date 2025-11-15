@@ -88,7 +88,7 @@ class MegatronTrainRayActor(TrainRayActor):
             source_getter=lambda: named_parameters(self.args, self.model),
         )
         self.weights = {"actor": {}}
-        self.weights_backuper.backup(self.weights["actor"])
+        self.weights_backuper.backup("actor")
 
         if with_ref:
             self.load_other_checkpoint("ref", args.ref_load)
@@ -99,7 +99,7 @@ class MegatronTrainRayActor(TrainRayActor):
             # Create rollout_actor as a copy of current actor
             if args.update_weights_interval == 1:
                 self.weights["rollout_actor"] = {}
-                self.weights_backuper.backup(self.weights["rollout_actor"])
+                self.weights_backuper.backup("rollout_actor")
 
         update_weight_cls = UpdateWeightFromTensor if self.args.colocate else UpdateWeightFromDistributed
         self.weight_updater = update_weight_cls(
@@ -116,7 +116,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             # recover to actor in the end.
-            self.weights_backuper.restore(self.weights["actor"])
+            self.weights_backuper.restore("actor")
             self.sleep()
 
         self.rollout_engines = None
@@ -246,7 +246,7 @@ class MegatronTrainRayActor(TrainRayActor):
         num_microbatches: list[int],
         store_prefix: str = "",
     ) -> Dict[str, list[torch.Tensor]]:
-        self.weights_backuper.restore(self.weights[model_tag])
+        self.weights_backuper.restore(model_tag)
 
         with timer(f"{store_prefix}log_probs"):
             return forward_only(
@@ -347,7 +347,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 # when there is old actor, we need to update the model params to actor manually
                 if "old_actor" in self.weights:
-                    self.weights_backuper.restore(self.weights["actor"])
+                    self.weights_backuper.restore("actor")
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
                 # because we may need normalize the whole rollout.
@@ -379,7 +379,7 @@ class MegatronTrainRayActor(TrainRayActor):
             RoutingReplay.clear_all()
 
         # update the cpu actor weight to the latest model
-        self.weights_backuper.backup(self.weights["actor"])
+        self.weights_backuper.backup("actor")
 
         # Update ref model if needed
         if (
@@ -390,7 +390,7 @@ class MegatronTrainRayActor(TrainRayActor):
             with timer("ref_model_update"):
                 if is_megatron_main_rank():
                     print(f"Updating ref model at rollout_id {rollout_id}")
-                self.weights_backuper.backup(self.weights["ref"])
+                self.weights_backuper.backup("ref")
 
         log_perf_data(rollout_id, self.args)
 
@@ -428,9 +428,9 @@ class MegatronTrainRayActor(TrainRayActor):
                     for name in self.weights["old_actor"]:
                         self.weights["old_actor"][name].copy_(self.weights["rollout_actor"][name])
                     # Then copy current actor to rollout_actor
-                    self.weights_backuper.backup(self.weights["rollout_actor"])
+                    self.weights_backuper.backup("rollout_actor")
                 else:
-                    self.weights_backuper.backup(self.weights["old_actor"])
+                    self.weights_backuper.backup("old_actor")
 
         if self.args.offload_train:
             destroy_process_groups()
@@ -459,7 +459,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.ckpt_step = old_ckpt_step
 
         self.weights[model_tag] = {}
-        self.weights_backuper.backup(self.weights[model_tag])
+        self.weights_backuper.backup(model_tag)
 
     def connect_actor_critic(
         self,
