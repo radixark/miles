@@ -43,7 +43,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
     runs-on: self-hosted
     container:
-      image: slimerl/slime:latest
+      image: radixark/miles:latest
       options: >
         --gpus all
         --ipc=host

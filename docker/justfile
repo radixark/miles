@@ -1,0 +1,12 @@
+release:
+    #!/bin/bash
+    set -euxo pipefail
+    cd ..
+
+    VERSION="$(cat docker/version.txt | tr -d '\n')"
+
+    docker build -f docker/Dockerfile . -t radixark/miles:$VERSION
+    docker push radixark/miles:$VERSION
+
+    docker tag radixark/miles:$VERSION radixark/miles:latest
+    docker push radixark/miles:latest
