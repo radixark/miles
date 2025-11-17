@@ -69,15 +69,18 @@ RUN cd Megatron-LM && \
     fi && \
     rm megatron.patch
 
+# TODO temporarily skip patching for GB300 (and require users to bring their own sglang version). should add back later.
 COPY docker/patch/${PATCH_VERSION}/sglang.patch /sgl-workspace/sglang/
-RUN cd /sgl-workspace/sglang && \
+RUN if [ "$ENABLE_CUDA_13" = "0" ]; then \
+  cd /sgl-workspace/sglang && \
   git update-index --refresh && \
   git apply sglang.patch && \
   if grep -R -n '^<<<<<<< ' .; then \
     echo "Patch failed to apply cleanly. Please resolve conflicts." && \
     exit 1; \
   fi && \
-  rm sglang.patch
+  rm sglang.patch; \
+fi
 
 # ================================= Misc lightweight operations =======================================
 
