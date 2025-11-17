@@ -24,7 +24,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.observability_utils import init_observability_secondary
+from miles.utils.observability_utils import init_observability
 
 from ...utils.profile_utils import TrainProfiler
 from . import checkpoint
@@ -69,7 +69,7 @@ class FSDPTrainRayActor(TrainRayActor):
         args.world_size = dist.get_world_size()
 
         if dist.get_rank() == 0:
-            init_observability_secondary(args, wandb_run_id)
+            init_observability(args, wandb_run_id, primary=False)
 
         self.args = args
         self.fsdp_full_state_dict_opts = StateDictOptions(

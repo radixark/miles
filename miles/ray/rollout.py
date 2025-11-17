@@ -22,7 +22,7 @@ from miles.utils.metric_utils import compute_pass_rate, compute_statistics, dict
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.types import Sample
-from miles.utils.observability_utils import init_observability_secondary
+from miles.utils.observability_utils import init_observability
 
 from ..utils.metric_utils import has_repetition
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
@@ -40,8 +40,10 @@ class RolloutManager:
         self.pg = pg
         _start_router(args)
         # TODO make args immutable
-        init_observability_secondary(
-            args, wandb_run_id, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+        init_observability(
+            args, wandb_run_id,
+            primary=False,
+            router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
         )
         init_http_client(args)
 
