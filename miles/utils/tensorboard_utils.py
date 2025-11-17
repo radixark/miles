@@ -38,7 +38,7 @@ class _TensorboardAdapter(metaclass=SingletonMeta):
         # Get tensorboard directory from environment variable or use default path
         tensorboard_dir = os.environ.get("TENSORBOARD_DIR", f"tensorboard_log/{tb_project_name}/{tb_experiment_name}")
         os.makedirs(tensorboard_dir, exist_ok=True)
-        print(f"Saving tensorboard log to {tensorboard_dir}.")
+        logger.info(f"Saving tensorboard log to {tensorboard_dir}.")
         self._writer = SummaryWriter(tensorboard_dir)
 
     def log(self, data, step):

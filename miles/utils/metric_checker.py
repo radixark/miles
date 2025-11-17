@@ -17,10 +17,10 @@ class MetricChecker:
         assert actual_value is not None, f"{metrics=} {self.args.ci_metric_checker_key=}"
 
         check_success = actual_value >= self.args.ci_metric_checker_threshold
-        print(f"[MetricChecker] {check_success=} {actual_value=} {self.args.ci_metric_checker_threshold=}")
+        logger.info(f"[MetricChecker] {check_success=} {actual_value=} {self.args.ci_metric_checker_threshold=}")
 
         self._exists_check_success |= check_success
 
     def dispose(self):
         assert self._exists_check_success, "[MetricChecker] accuracy check failed"
-        print(f"[MetricChecker] pass dispose check", flush=True)
+        logger.info(f"[MetricChecker] pass dispose check", flush=True)

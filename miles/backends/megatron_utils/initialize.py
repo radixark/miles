@@ -59,7 +59,7 @@ def init(args):
 
     # Random seeds for reproducibility.
     if args.rank == 0:
-        print("> setting random seeds to {} ...".format(args.seed))
+        logger.info("> setting random seeds to {} ...".format(args.seed))
     _set_random_seed(
         args.seed,
         args.data_parallel_random_init,
@@ -79,7 +79,7 @@ def init(args):
 
     if args.deterministic_mode:
         if args.rank == 0:
-            print("> running in deterministic mode")
+            logger.info("> running in deterministic mode")
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True, warn_only=False)

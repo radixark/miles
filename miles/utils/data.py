@@ -26,7 +26,7 @@ def read_file(path):
         raise ValueError(f"Unsupported file format: {path}. Supported formats are .jsonl and .parquet.")
 
     if row_slice is not None:
-        print(f"read_file path={path} slice {len(df)=} rows into {row_slice=}")
+        logger.info(f"read_file path={path} slice {len(df)=} rows into {row_slice=}")
         df = df.iloc[row_slice]
 
     for _, row in df.iterrows():

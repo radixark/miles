@@ -113,7 +113,7 @@ def gather_log_data(
         reduced_log_dict = {
             f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / dp_size for key in log_dict
         }
-        print(f"{metric_name} {rollout_id}: {reduced_log_dict}")
+        logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
         # Calculate step once to avoid duplication
         step = (

@@ -60,7 +60,7 @@ def _create_placement_group(num_gpus):
     pg_reordered_bundle_indices = [bundle_info[0] for bundle_info in sorted(bundle_infos, key=sort_key)]
     for i in range(num_bundles):
         actual_bundle_index = pg_reordered_bundle_indices[i]
-        print(
+        logger.info(
             f"  bundle {i:4}, actual_bundle_index: {actual_bundle_index:4}, "
             f"node: {gpu_ids[actual_bundle_index][0]}, gpu: {gpu_ids[actual_bundle_index][1]}"
         )
@@ -95,7 +95,7 @@ def create_placement_groups(args):
             critic_offset = args.actor_num_nodes * args.actor_num_gpus_per_node
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
-    print(f"Creating placement group with {num_gpus} GPUs...")
+    logger.info(f"Creating placement group with {num_gpus} GPUs...")
     pg, actor_pg_reordered_bundle_indices = _create_placement_group(num_gpus)
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]

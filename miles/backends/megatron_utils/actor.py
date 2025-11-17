@@ -388,7 +388,7 @@ class MegatronTrainRayActor(TrainRayActor):
         ):
             with timer("ref_model_update"):
                 if is_megatron_main_rank():
-                    print(f"Updating ref model at rollout_id {rollout_id}")
+                    logger.info(f"Updating ref model at rollout_id {rollout_id}")
                 self.weights_backuper.backup("ref")
 
         log_perf_data(rollout_id, self.args)
@@ -421,7 +421,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:
-                    print("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
+                    logger.info("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
                     # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
                     # First copy rollout_actor to old_actor
                     self.weights_backuper.copy(src_tag="rollout_actor", dst_tag="old_actor")

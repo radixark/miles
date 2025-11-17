@@ -32,7 +32,7 @@ def print_memory(msg, clear_before_print: bool = False):
 
     memory_info = available_memory()
     # Need to print for all ranks, b/c different rank can have different behaviors
-    print(
+    logger.info(
         f"[Rank {dist.get_rank()}] Memory-Usage {msg}{' (cleared before print)' if clear_before_print else ''}:",
         memory_info,
     )

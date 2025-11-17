@@ -648,7 +648,7 @@ def train(
                 if accumulated_step_id == 0 and "train/kl_loss" in log_dict:
                     assert log_dict["train/kl_loss"] == 0.0, f"{log_dict=}"
 
-            print(f"{role_tag}step {accumulated_step_id}: {log_dict}")
+            logger.info(f"{role_tag}step {accumulated_step_id}: {log_dict}")
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
     if pre_hook_enabled:
         disable_forward_pre_hook(model)

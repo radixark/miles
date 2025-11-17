@@ -60,7 +60,7 @@ def run_router(args):
             return 1
         return 0
     except Exception as e:
-        print(e)
+        logger.info(e)
         return 1
 
 
@@ -117,11 +117,11 @@ async def _post(client, url, payload, max_retries=60):
             else:
                 response_text = None
 
-            print(
+            logger.info(
                 f"Error: {e}, retrying... (attempt {retry_count}/{max_retries}, url={url}, response={response_text})"
             )
             if retry_count >= max_retries:
-                print(f"Max retries ({max_retries}) reached, failing... (url={url})")
+                logger.info(f"Max retries ({max_retries}) reached, failing... (url={url})")
                 raise e
             await asyncio.sleep(1)
             continue
@@ -214,7 +214,7 @@ async def post(url, payload, max_retries=60):
                 obj_ref = actor.do_post.remote(url, payload, max_retries)
                 return await asyncio.to_thread(ray.get, obj_ref)
         except Exception as e:
-            print(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
+            logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
     return await _post(_http_client, url, payload, max_retries)
