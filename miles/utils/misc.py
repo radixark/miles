@@ -1,5 +1,4 @@
 import importlib
-import logging
 import subprocess
 from typing import Optional
 
@@ -67,13 +66,3 @@ def get_free_port(start_port=10000, consecutive=1):
     while not all(is_port_available(port + i) for i in range(consecutive)):
         port += 1
     return port
-
-
-# ref: SGLang
-def configure_logger(prefix: str = ""):
-    logging.basicConfig(
-        level=logging.INFO,
-        format=f"[%(asctime)s{prefix}] %(filename)s:%(lineno)d - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,
-    )
