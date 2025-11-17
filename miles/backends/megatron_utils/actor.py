@@ -51,8 +51,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        if is_megatron_main_rank():
-            init_observability(args, primary=False)
+        init_observability(args, primary=False, enable_wandb=is_megatron_main_rank())
 
         self.prof = TrainProfiler(args)
 

@@ -68,8 +68,7 @@ class FSDPTrainRayActor(TrainRayActor):
         args.rank = dist.get_rank()
         args.world_size = dist.get_world_size()
 
-        if dist.get_rank() == 0:
-            init_observability(args, primary=False)
+        init_observability(args, primary=False, enable_wandb=dist.get_rank() == 0)
 
         self.args = args
         self.fsdp_full_state_dict_opts = StateDictOptions(
