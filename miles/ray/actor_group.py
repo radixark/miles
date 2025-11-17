@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 import ray
 from ray.util.placement_group import PlacementGroup
