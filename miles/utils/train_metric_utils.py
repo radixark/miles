@@ -42,6 +42,6 @@ def log_perf_data_raw(
 
     logger.info(f"perf {rollout_id}: {log_dict}")
 
-    step = compute_rollout_step(self.args, rollout_id)
+    step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
     tracking_utils.log(args, log_dict, step_key="rollout/step")
