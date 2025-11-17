@@ -21,10 +21,10 @@ from miles.utils.context_utils import with_defer
 from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.observability_utils import init_observability
 from miles.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.observability_utils import init_observability
 
 from ...utils.profile_utils import TrainProfiler
 from . import checkpoint

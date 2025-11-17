@@ -19,12 +19,12 @@ from miles.utils.context_utils import with_defer
 from miles.utils.data import process_rollout_data
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.observability_utils import init_observability
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.routing_replay import RoutingReplay
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.types import RolloutBatch
-from miles.utils.observability_utils import init_observability
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
