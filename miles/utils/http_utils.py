@@ -209,8 +209,6 @@ async def post(url, payload, max_retries=60):
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:
-            import ray
-
             actor = _next_actor()
             if actor is not None:
                 return await actor.do_post.remote(url, payload, max_retries)
