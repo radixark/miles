@@ -1,5 +1,5 @@
-ARG SGLANG_VERSION=v0.5.5.post1
-FROM lmsysorg/sglang:${SGLANG_VERSION} AS sglang
+ARG SGLANG_IMAGE_TAG=v0.5.5.post1
+FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=core_v0.14.0
