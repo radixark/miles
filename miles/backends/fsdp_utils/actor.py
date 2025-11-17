@@ -25,6 +25,7 @@ from miles.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
+from miles.utils.metric_utils import compute_rollout_step
 
 from ...utils import tracking_utils
 from ...utils.profile_utils import TrainProfiler
@@ -465,14 +466,7 @@ class FSDPTrainRayActor(TrainRayActor):
             ).item()
         if dist.get_rank() == 0:
             logger.info(f"rollout {rollout_id}: {log_dict}")
-            log_dict["rollout/step"] = (
-                rollout_id
-                if not self.args.wandb_always_use_train_step
-                else rollout_id
-                * self.args.rollout_batch_size
-                * self.args.n_samples_per_prompt
-                // self.args.global_batch_size
-            )
+            log_dict["rollout/step"] = compute_rollout_step(self.args, rollout_id)
             tracking_utils.log(self.args, log_dict, step_key="rollout/step")
 
         with timer("actor_train"):

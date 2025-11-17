@@ -110,3 +110,14 @@ def has_repetition(text: str = None):
         return True
     else:
         return False
+
+
+def compute_rollout_step(args, rollout_id):
+    return (
+        rollout_id
+        if not args.wandb_always_use_train_step
+        else rollout_id
+             * args.rollout_batch_size
+             * args.n_samples_per_prompt
+             // args.global_batch_size
+    )
