@@ -1,4 +1,10 @@
-release:
+release-primary:
+    just _release-raw
+
+release-gb300:
+    just _release-raw
+
+_release-raw:
     #!/bin/bash
     set -euxo pipefail
     cd ..
