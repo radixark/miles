@@ -299,7 +299,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
 
     # abort all the requests
     for url in response["urls"]:
-        logger.info(f"Abort request for {url}", flush=True)
+        logger.info(f"Abort request for {url}")
         await post(f"{url}/abort_request", {"abort_all": True})
 
     # make sure all the pending tasks are finished
@@ -320,7 +320,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
             count += len(group)
 
     if args.partial_rollout:
-        logger.info(f"Collected {count} partial samples into the data buffer", flush=True)
+        logger.info(f"Collected {count} partial samples into the data buffer")
 
     return aborted_samples
 

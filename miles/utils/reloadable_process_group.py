@@ -18,7 +18,7 @@ def monkey_patch_torch_dist():
         assert dist.old_new_group == old_new_group_dict[pid]
         return
 
-    logger.info("Applying monkey patch to torch.distributed", flush=True)
+    logger.info("Applying monkey patch to torch.distributed")
 
     old_new_group = dist.new_group
     old_new_group_dict[pid] = old_new_group
@@ -142,7 +142,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
     @staticmethod
     def reload_process_groups():
         pid = os.getpid()
-        logger.info(f"Reloading {len(ReloadableProcessGroup.GROUPS[pid])} process groups in pid {pid}", flush=True)
+        logger.info(f"Reloading {len(ReloadableProcessGroup.GROUPS[pid])} process groups in pid {pid}")
         old_new_group = old_new_group_dict[pid]
         for reloadable_group in ReloadableProcessGroup.GROUPS[pid]:
             if reloadable_group.group is not None:
