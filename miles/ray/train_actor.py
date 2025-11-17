@@ -11,6 +11,7 @@ from torch_memory_saver import torch_memory_saver
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
 from miles.utils.distributed_utils import init_gloo_group
+from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
 
 
@@ -24,6 +25,8 @@ def get_local_gpu_id():
 
 class TrainRayActor(RayActor):
     def __init__(self, world_size, rank, master_addr, master_port):
+        configure_logger()
+
         self._world_size = world_size
         self._rank = rank
         if master_addr:
