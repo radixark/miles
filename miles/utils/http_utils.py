@@ -213,9 +213,7 @@ async def post(url, payload, max_retries=60):
 
             actor = _next_actor()
             if actor is not None:
-                # Use a thread to avoid blocking the event loop on ray.get
-                obj_ref = actor.do_post.remote(url, payload, max_retries)
-                return await asyncio.to_thread(ray.get, obj_ref)
+                return await actor.do_post.remote(url, payload, max_retries)
         except Exception as e:
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
