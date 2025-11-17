@@ -94,7 +94,4 @@ RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
     curl -L https://github.com/NVIDIA/TransformerEngine/pull/2286.patch -o /root/te2286.patch && (cd /usr/local/lib/python3.12/dist-packages/transformer_engine && (patch -p2 < /root/te2286.patch)); \
   fi
 
-# temporary hack
-RUN curl -L https://github.com/NVIDIA/Megatron-LM/commit/d8c6aa4c0b5d4c15ec1196802bce292d4580ed4a.patch -o /root/temp.patch && (cd /root/Megatron-LM && (patch -p1 < /root/temp.patch))
-
 RUN rm /root/.tmux.conf
