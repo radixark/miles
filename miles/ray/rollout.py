@@ -11,6 +11,7 @@ import torch
 import wandb
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils import tracking_utils
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.ray.rollout_data_source import RolloutDataSourceWithBuffer
 from miles.rollout.base_types import call_rollout_fn
@@ -480,15 +481,8 @@ def _log_eval_rollout_data(rollout_id, args, data):
         if not args.wandb_always_use_train_step
         else rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
     )
-    if args.use_wandb:
-        log_dict["eval/step"] = step
-        wandb.log(log_dict)
-
-    if args.use_tensorboard:
-        from miles.utils.tensorboard_utils import _TensorboardAdapter
-
-        tb = _TensorboardAdapter(args)
-        tb.log(data=log_dict, step=step)
+    log_dict["eval/step"] = step
+    tracking_utils.log(args, log_dict, step_key="eval/step")
 
     return log_dict
 
@@ -510,15 +504,8 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
         if not args.wandb_always_use_train_step
         else rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
     )
-    if args.use_wandb:
-        log_dict["rollout/step"] = step
-        wandb.log(log_dict)
-
-    if args.use_tensorboard:
-        from miles.utils.tensorboard_utils import _TensorboardAdapter
-
-        tb = _TensorboardAdapter(args)
-        tb.log(data=log_dict, step=step)
+    log_dict["rollout/step"] = step
+    tracking_utils.log(args, log_dict, step_key="rollout/step")
 
 
 def _compute_metrics_from_samples(args, samples):

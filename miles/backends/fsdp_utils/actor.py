@@ -474,7 +474,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 * self.args.n_samples_per_prompt
                 // self.args.global_batch_size
             )
-            tracking_utils.log(self.args, log_dict)
+            tracking_utils.log(self.args, log_dict, step_key="rollout/step")
 
         with timer("actor_train"):
             reported_accum: dict[str, list[torch.Tensor]] = {}
@@ -665,7 +665,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 logger.info(f"step {self.global_step}: {log_dict}")
 
                 log_dict["train/step"] = self.global_step
-                tracking_utils.log(self.args, log_dict)
+                tracking_utils.log(self.args, log_dict, step_key="train/step")
             self.global_step += 1
 
     @timer

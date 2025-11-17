@@ -126,7 +126,7 @@ def gather_log_data(
             else rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
         )
         reduced_log_dict["rollout/step"] = step
-        tracking_utils.log(args, reduced_log_dict)
+        tracking_utils.log(args, reduced_log_dict, step_key="rollout/step")
 
         return reduced_log_dict
     else:

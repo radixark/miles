@@ -24,6 +24,7 @@ from megatron.training.training import get_model
 
 from miles.utils.memory_utils import clear_memory
 
+from miles.utils import tracking_utils
 from .checkpoint import load_checkpoint, save_checkpoint
 from .cp_utils import slice_with_cp
 from .data import DataIterator, get_batch
@@ -635,15 +636,8 @@ def train(
             for param_group_id, param_group in enumerate(optimizer.param_groups):
                 log_dict[f"train/{role_tag}lr-pg_{param_group_id}"] = opt_param_scheduler.get_lr(param_group)
 
-            if args.use_wandb:
-                log_dict["train/step"] = accumulated_step_id
-                wandb.log(log_dict)
-
-            if args.use_tensorboard:
-                from miles.utils.tensorboard_utils import _TensorboardAdapter
-
-                tb = _TensorboardAdapter(args)
-                tb.log(data=log_dict, step=accumulated_step_id)
+            log_dict["train/step"] = accumulated_step_id
+            tracking_utils.log(args, log_dict, step_key="train/step")
 
             if args.ci_test and not args.ci_disable_kl_checker:
                 if step_id == 0 and "train/ppo_kl" in log_dict and "train/pg_clipfrac" in log_dict:
