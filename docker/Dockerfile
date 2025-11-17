@@ -36,8 +36,9 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 RUN pip install flash-linear-attention==0.4.0
 
 # TE does not have wheel on cuda 13 yet, thus need to install from source
+# TODO upgrade to 2.8 in cu13 branch
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.8; \
+      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@70f536662ae10a62a54f4ed1ba92e3314c5cfd69; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.8.0"; \
     fi
