@@ -1,4 +1,4 @@
-# NOTE: This image is subject to change and will be unified with the main image soon
+# NOTE: This image contains hacks, is subject to change and will be unified with the main image soon
 
 ARG SGLANG_VERSION=latest
 ARG SGLANG_IMAGE_TAG
