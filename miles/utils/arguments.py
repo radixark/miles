@@ -1169,15 +1169,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
     return add_miles_arguments
 
 
-def warning_for_unfinished_backend(backend: str):
-    print("⚠️ " * 50)
-    print(
-        f"⚠️  MILES_BACKEND {backend} is experimental and not yet verified.\n"
-        "⚠️  Please avoid using it unless you are actively developing it."
-    )
-    print("⚠️ " * 50)
-
-
 def parse_args(add_custom_arguments=None):
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
 
@@ -1202,7 +1193,6 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
-        warning_for_unfinished_backend(backend)
         from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)

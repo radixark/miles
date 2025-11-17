@@ -431,6 +431,7 @@ class UpdateWeightFromTensor:
             current_params, current_infos = self._gather_bucket_params(self.param_info_buckets[i], weights)
             refs = self._update_converted_params_from_tensor(current_params, current_infos)
             ray.get(refs)
+            del current_params, current_infos
 
         dist.barrier(group=get_gloo_group())
 
@@ -530,12 +531,15 @@ class UpdateWeightFromTensor:
 
     def _send_to_colocated_engine(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> list[ObjectRef]:
         if use_flattened_tensor_bucket:
-            converted_named_tensors_by_dtypes = {}
-            for name, tensor in converted_named_tensors:
-                dtype = tensor.dtype
-                if dtype not in converted_named_tensors_by_dtypes:
-                    converted_named_tensors_by_dtypes[dtype] = []
-                converted_named_tensors_by_dtypes[dtype].append((name, tensor))
+            if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+                converted_named_tensors_by_dtypes = {"dtype": converted_named_tensors}
+            else:
+                converted_named_tensors_by_dtypes = {}
+                for name, tensor in converted_named_tensors:
+                    dtype = tensor.dtype
+                    if dtype not in converted_named_tensors_by_dtypes:
+                        converted_named_tensors_by_dtypes[dtype] = []
+                    converted_named_tensors_by_dtypes[dtype].append((name, tensor))
 
             serialized_tensors = []
             for dtype, named_tensors in converted_named_tensors_by_dtypes.items():
