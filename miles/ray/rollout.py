@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 from typing import List, Union
 
-from miles.utils.metric_utils import compute_rollout_step
 import numpy as np
 import ray
 import torch
@@ -20,7 +19,7 @@ from miles.utils.http_utils import find_available_port, get_host_info, init_http
 from miles.utils.iter_utils import group_by
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
-from miles.utils.metric_utils import compute_pass_rate, compute_statistics, dict_add_prefix
+from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils import init_tracking

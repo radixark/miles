@@ -21,11 +21,11 @@ from miles.utils.context_utils import with_defer
 from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
-from miles.utils.metric_utils import compute_rollout_step
 
 from ...utils import tracking_utils
 from ...utils.profile_utils import TrainProfiler
@@ -33,7 +33,6 @@ from . import checkpoint
 from .data_packing import pack_sequences, pad_packed_sequence_with_cp, unpack_sequences
 from .fsdp_cpu_adam_wrapper import FSDPCPUAdamWrapper
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
-
 
 logger = logging.getLogger(__name__)
 

@@ -9,11 +9,10 @@ import torch.nn.functional as F
 from megatron.core import mpu
 from megatron.core.packed_seq_params import PackedSeqParams
 
-from miles.utils.metric_utils import compute_rollout_step
 from miles.utils import train_metric_utils
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.flops_utils import calculate_fwd_flops
-from miles.utils.metric_utils import compute_pass_rate
+from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
