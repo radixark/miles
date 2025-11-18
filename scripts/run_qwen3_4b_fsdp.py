@@ -28,8 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 "Qwen3-4B-Base": "qwen3-4B",
             }[self.model_name]
 
-        if self.num_gpus_per_node is None:
-            self.num_gpus_per_node = U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def prepare(args: ScriptArgs):
