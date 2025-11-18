@@ -1,7 +1,6 @@
 import datetime
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "tests"))
