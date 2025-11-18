@@ -22,8 +22,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_backend: Literal["fsdp", "megatron"] = "fsdp"
 
     def __post_init__(self):
-        super().__post_init__()
-
         if self.train_backend == "megatron":
             self.megatron_model_type = {
                 "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",

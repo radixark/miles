@@ -43,12 +43,8 @@ def hf_download_dataset(full_name: str):
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
-    num_nodes: int = 1
+    num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
-
-    def __post_init__(self):
-        if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
-            self.num_nodes = int(x)
 
 
 def execute_train(

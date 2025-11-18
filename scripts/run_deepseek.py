@@ -27,7 +27,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
     def __post_init__(self):
-        super().__post_init__()
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.model_org = "fzyzcjy"
             self.megatron_model_type = f"deepseek-v3-{m.group(1)}layer"
