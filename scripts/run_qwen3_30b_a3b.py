@@ -36,9 +36,7 @@ def prepare(args: ScriptArgs):
 
 # TODO improve layering: split algorithm vs infra
 def execute(args: ScriptArgs):
-    load_save_path = (
-        f"/root/models/{args.model_name}_ckpt__{Path(__file__).stem}__{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}/"
-    )
+    load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint /root/models/{args.model_name}/ "
         f"--ref-load /root/models/{args.model_name}_torch_dist "
