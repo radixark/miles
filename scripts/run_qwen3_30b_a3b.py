@@ -131,7 +131,7 @@ def execute(args: ScriptArgs):
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
             misc_args += "--actor-num-gpus-per-node 8 " "--actor-num-nodes 1 "
-        case ("GB300", "1"):
+        case ("GB300", 1):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -147,7 +147,7 @@ def execute(args: ScriptArgs):
                 "--sglang-cuda-graph-max-bs 512 "
             )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 1 " "--num-gpus-per-node 4"
-        case ("GB300", "2"):
+        case ("GB300", 2):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -163,7 +163,7 @@ def execute(args: ScriptArgs):
                 "--sglang-cuda-graph-max-bs 512 "
             )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 2 " "--num-gpus-per-node 4"
-        case ("GB300", "4"):
+        case ("GB300", 4):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
