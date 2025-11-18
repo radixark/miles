@@ -13,6 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: Optional[int] = None
     hardware: Literal["H100", "GB300"] = "H100"
+    enable_eval: bool = True
     extra_args: str = ""
 
     def __post_init__(self):
@@ -54,19 +55,21 @@ def execute(args: ScriptArgs):
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 0.8 "
         "--global-batch-size 256 "
         "--balance-data "
     )
 
-    eval_args = (
-        "--eval-interval 20 "
-        "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
-        "--n-samples-per-eval-prompt 16 "
-        "--eval-max-response-len 16384 "
-        "--eval-top-p 0.7 "
-    )
+    eval_args = ""
+    if (args.mode != "debug_minimal") and args.enable_eval:
+        eval_args += (
+            "--eval-interval 20 "
+            "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+            "--n-samples-per-eval-prompt 16 "
+            "--eval-max-response-len 16384 "
+            "--eval-top-p 0.7 "
+        )
 
     perf_args = (
         "--recompute-granularity full "
