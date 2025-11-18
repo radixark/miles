@@ -29,10 +29,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             }[self.model_name]
 
         if self.num_gpus_per_node is None:
-            self.num_gpus_per_node = {
-                "H100": 8,
-                "GB300": 4,
-            }[self.hardware]
+            self.num_gpus_per_node = U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def prepare(args: ScriptArgs):
