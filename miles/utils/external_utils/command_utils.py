@@ -1,3 +1,7 @@
+"""
+This file is not for miles framework itself, but as an optional utility to easily launch miles jobs and tests.
+"""
+
 import datetime
 import json
 import os
