@@ -18,7 +18,7 @@ def prepare():
 
 
 def execute():
-    run_id = U.create_run_id()
+    run_id: str = U.create_run_id()
 
     load_save_path = f"/root/models/{MODEL_NAME}_ckpt__{Path(__file__).stem}_{run_id}/"
     ckpt_args = (

@@ -18,7 +18,7 @@ app = typer.Typer()
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id = U.create_run_id()
+    run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
     model_name: str = "DeepSeek-V3"
     megatron_model_type: str = "deepseek-v3"
