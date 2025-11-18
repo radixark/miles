@@ -11,7 +11,6 @@ from typing import Literal
 
 import typer
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "tests"))
 
 import command_utils as U
 
