@@ -57,7 +57,7 @@ def execute_train(
     extra_env_vars={},
     config: ExecuteTrainConfig = ExecuteTrainConfig(),
 ):
-    external_ray = bool(int(os.environ.get("MILES_SCRIPT_EXTERNAL_RAY", "0")))
+    external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
     train_backend_fsdp = "--train-backend fsdp" in train_args
