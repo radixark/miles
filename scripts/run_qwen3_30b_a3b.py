@@ -187,7 +187,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
