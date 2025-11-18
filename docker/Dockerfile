@@ -54,15 +54,13 @@ RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@383bec3919fc266b25bdaaa0447ebd1ee9275f1e --no-cache-dir --force-reinstall
 
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
-
-# ================================= Misc lightweight operations =======================================
-
 # This patch from masahi will be included in later Triton releases
 RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
     (cd /root && git clone -b feat/v350_plus_8045 https://github.com/fzyzcjy/triton.git && cd triton && pip install -r python/requirements.txt && pip install --verbose -e .); \
   fi
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt
 
 # Temporarily install another sgl-kernel version for GB300 without rebuilding the whole image
 RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
