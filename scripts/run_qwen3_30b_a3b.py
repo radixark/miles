@@ -142,7 +142,7 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 "--rollout-num-gpus-per-engine 4 "
-                "--sglang-ep-size 4 "
+                # "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
             )
@@ -158,7 +158,7 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 "--rollout-num-gpus-per-engine 4 "
-                "--sglang-ep-size 4 "
+                # "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
             )
@@ -174,7 +174,7 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 "--rollout-num-gpus-per-engine 4 "
-                "--sglang-ep-size 4 "
+                # "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
             )
