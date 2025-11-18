@@ -78,7 +78,7 @@ def execute(args: ScriptArgs):
         "--recompute-num-layers 1 "
         # "--micro-batch-size 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 20480 "
+        "--max-tokens-per-gpu 32768 "
     )
 
     grpo_args = (
