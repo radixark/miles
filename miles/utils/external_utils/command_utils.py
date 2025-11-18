@@ -170,7 +170,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: Optional[str] = None
     # do not put wandb_api_key value here to avoid leaking to logs explicitly
     return (
         "--use-wandb "
-        f"--wandb-project miles-ci-{test_name} "
+        f"--wandb-project miles-{test_name} "
         f"--wandb-group {wandb_run_name} "
         f"--wandb-key ${{WANDB_API_KEY}} "
         "--disable-wandb-random-suffix "
