@@ -1,3 +1,4 @@
+import typer
 import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,12 +33,12 @@ match mode:
 
 def prepare(args: ScriptArgs):
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir /root/models/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
     U.convert_checkpoint(
-        model_name=MODEL_NAME,
-        megatron_model_type=MODEL_TYPE,
+        model_name=args.model_name,
+        megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=num_gpus_for_convert,
         # To support multi-node training, for simplicity, we put model into shared folder
         dir_dst="/root/models",
@@ -47,11 +48,11 @@ def prepare(args: ScriptArgs):
 # TODO improve layering: split algorithm vs infra
 def execute(args: ScriptArgs):
     load_save_path = (
-        f"/root/models/{MODEL_NAME}_ckpt__{Path(__file__).stem}__{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}/"
+        f"/root/models/{args.model_name}_ckpt__{Path(__file__).stem}__{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}/"
     )
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
-        f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+        f"--hf-checkpoint /root/models/{args.model_name}/ "
+        f"--ref-load /root/models/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
