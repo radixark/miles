@@ -16,7 +16,7 @@ from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command, dataclass_cli
 
-repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[1]
+repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
 
 def convert_checkpoint(model_name, megatron_model_type, num_gpus_per_node: int, dir_dst="/root"):
