@@ -111,8 +111,8 @@ def execute(args: ScriptArgs):
         "--colocate "
     )
 
-    match mode:
-        case "8xh100":
+    match (args.hardware, args.num_nodes):
+        case ("H100", 1):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -130,7 +130,7 @@ def execute(args: ScriptArgs):
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
             misc_args += "--actor-num-gpus-per-node 8 " "--actor-num-nodes 1 "
-        case "4xgb300":
+        case ("GB300", "1"):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -146,7 +146,7 @@ def execute(args: ScriptArgs):
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 513, 8)) + " "
             )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 1 " "--num-gpus-per-node 4"
-        case "8xgb300":
+        case ("GB300", "2"):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -162,7 +162,7 @@ def execute(args: ScriptArgs):
                 "--sglang-cuda-graph-bs 1 2 4 8 " + " ".join(str(x) for x in range(16, 513, 8)) + " "
             )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 2 " "--num-gpus-per-node 4"
-        case "32xgb300":
+        case ("GB300", "4"):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -179,7 +179,7 @@ def execute(args: ScriptArgs):
             )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 8 " "--num-gpus-per-node 4"
         case _:
-            raise NotImplementedError(f"{mode=}")
+            raise NotImplementedError
 
     train_args = (
         f"{ckpt_args} "
