@@ -51,10 +51,10 @@ def execute_train(
     train_args: str,
     num_gpus_per_node: int,
     megatron_model_type: Optional[str],
-    config: ExecuteTrainConfig = ExecuteTrainConfig(),
     train_script: str = "train.py",
     before_ray_job_submit=None,
     extra_env_vars={},
+    config: ExecuteTrainConfig = ExecuteTrainConfig(),
 ):
     external_ray = bool(int(os.environ.get("MILES_SCRIPT_EXTERNAL_RAY", "0")))
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
