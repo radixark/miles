@@ -2,7 +2,7 @@ import datetime
 from pathlib import Path
 
 
-import command_utils as U
+import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"

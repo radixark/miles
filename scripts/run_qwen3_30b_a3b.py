@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 
-import command_utils as U
+import miles.utils.external_utils.command_utils as U
 
 mode = os.environ.get("MILES_SCRIPT_MODE", "8xh100")
 

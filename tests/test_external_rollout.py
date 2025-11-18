@@ -1,7 +1,7 @@
 import multiprocessing
 import time
 
-import command_utils as U
+import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"

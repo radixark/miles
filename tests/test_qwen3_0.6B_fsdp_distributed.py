@@ -1,4 +1,4 @@
-import command_utils as U
+import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-0.6B"
 

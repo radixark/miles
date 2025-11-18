@@ -1,6 +1,6 @@
 import os
 
-import command_utils as U
+import miles.utils.external_utils.command_utils as U
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))

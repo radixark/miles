@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 
-import command_utils as U
+import miles.utils.external_utils.command_utils as U
 
 
 # TODO unify "arg" prefix
