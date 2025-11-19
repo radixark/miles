@@ -33,22 +33,29 @@ def convert_checkpoint(
         print(f"convert_checkpoint skip {path_dst} since exists")
         return
 
+    multinode_args = ""
     if multinode:
         # This variable can be provided via:
         # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
         print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
-        master_addr = os.environ["SLURM_JOB_HOSTNAMES"].split("\n")[0]
+        job_hostnames = os.environ["SLURM_JOB_HOSTNAMES"].strip().split("\n")
+        master_addr = job_hostnames[0]
+        nnodes = len(job_hostnames)
         node_rank = int(os.environ["SLURM_NODEID"])
+
+        multinode_args = (
+            f"--master-addr {master_addr} "
+            "--master-port 23456 "
+            f"--nnodes={nnodes} "
+            f"--node-rank {node_rank} "
+        )
 
     exec_command(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH=/root/Megatron-LM "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
-        f"--master-addr {master_addr} "
-        "--master-port 23456 "
-        f"--nnodes={num_nodes} "
-        f"--node-rank {node_rank} "
+        f"{multinode_args}"
         f"tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
         f"--hf-checkpoint /root/models/{model_name} "
