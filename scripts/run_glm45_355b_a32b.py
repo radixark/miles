@@ -136,16 +136,6 @@ def train(args: ScriptArgs):
             "--expert-model-parallel-size 4 "
             "--expert-tensor-parallel-size 1 "
         )
-    elif args.num_nodes <= 4:
-        # TODO remove this temp cfg
-        perf_args = (
-            "--tensor-model-parallel-size 4 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 4 "
-            "--expert-model-parallel-size 4 "
-            "--expert-tensor-parallel-size 1 "
-        )
     else:
         # TODO choose a good config (currently randomly change to suit 64gpu)
         perf_args = (
