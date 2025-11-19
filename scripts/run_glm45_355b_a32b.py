@@ -49,7 +49,6 @@ def prepare_spmd(args: ScriptArgs):
     )
 
 
-# TODO improve these commadns
 @app.command()
 @U.dataclass_cli
 def prepare_cp(args: ScriptArgs):
