@@ -81,7 +81,7 @@ def prepare_spmd(args: ScriptArgs):
             "--decoder-last-pipeline-num-layers 6 "
         )
 
-    U.convert_to_checkpoint(
+    U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
