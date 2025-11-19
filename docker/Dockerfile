@@ -102,5 +102,7 @@ fi
 
 # ====================================== Install main package ============================================
 
-RUN git clone --depth=1 --branch v${SGL_VERSION} https://github.com/radixark/miles /root/miles && \
-    (cd /root/miles && pip install -e .)
+RUN git clone https://github.com/radixark/miles /root/miles && \
+    cd /root/miles && \
+    git checkout ${MILES_COMMIT} && \
+    pip install -e .
