@@ -5,8 +5,6 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=core_v0.14.0
-# TODO may improve
-ARG MILES_COMMIT=main
 
 ARG ENABLE_CUDA_13=0
 
@@ -104,6 +102,8 @@ fi
 
 # ====================================== Install main package ============================================
 
+# TODO may improve
+ARG MILES_COMMIT=main
 RUN git clone https://github.com/radixark/miles /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
