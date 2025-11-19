@@ -137,17 +137,15 @@ def train(args: ScriptArgs):
             "--expert-tensor-parallel-size 1 "
         )
     else:
-        # TODO choose a good config (currently randomly change to suit 64gpu)
+        # TODO choose a good config
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
-            f"--pipeline-model-parallel-size {1 if args.model_name == 'DeepSeek-V3-0324-5layer' else 4} "
-            "--context-parallel-size 4 "
+            f"--pipeline-model-parallel-size 4 "
+            "--context-parallel-size 2 "
             "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
         )
-        if re.search(r"(\d+)layer", args.model_name) is None:
-            perf_args += "--decoder-last-pipeline-num-layers 13 "
     perf_args += (
         # ------------
         "--recompute-granularity full "
