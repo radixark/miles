@@ -100,3 +100,7 @@ RUN if [ "$ENABLE_CUDA_13" = "0" ]; then \
   rm sglang.patch; \
 fi
 
+# ====================================== Install main package ============================================
+
+RUN git clone --depth=1 --branch v${SGL_VERSION} https://github.com/radixark/miles /root/miles && \
+    (cd /root/miles && pip install -e .)
