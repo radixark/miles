@@ -308,21 +308,22 @@ class FSDPTrainRayActor(TrainRayActor):
                 for batch in self.prof.iterate_train_log_probs(
                     tqdm(packed_batches, desc=f"{store_prefix}log_probs", disable=dist.get_rank() != 0)
                 ):
+                    # TODO: remove the autocast in the future
                     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                         model_args = self._get_model_inputs_args(batch)
                         if "pixel_values" in batch:
                             model_args["pixel_values"] = batch["pixel_values"]
                         logits = self.model(**model_args).logits.squeeze(0)
-                        log_probs_result, entropy_result = get_logprob_and_entropy_with_cp(
-                            logits=logits,
-                            target_tokens=batch["tokens"],
-                            cp_rank=self.cp_rank,
-                            cp_size=self.cp_size,
-                            cp_group=self.cp_group,
-                            model_input_ids=model_args["input_ids"],
-                            allow_compile=not self.args.true_on_policy_mode,
-                            temperature=self.args.rollout_temperature,
-                        )
+                    log_probs_result, entropy_result = get_logprob_and_entropy_with_cp(
+                        logits=logits,
+                        target_tokens=batch["tokens"],
+                        cp_rank=self.cp_rank,
+                        cp_size=self.cp_size,
+                        cp_group=self.cp_group,
+                        model_input_ids=model_args["input_ids"],
+                        allow_compile=not self.args.true_on_policy_mode,
+                        temperature=self.args.rollout_temperature,
+                    )
                     batch[f"{store_prefix}log_probs"] = log_probs_result
                     if store_prefix == "":
                         batch["entropy"] = entropy_result
@@ -503,6 +504,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.update_cpu_params_dict(self.weights["ref"])
 
     def _train_step(self, packed_batch, reported_accum, mbs_id, grad_accum):
+        # TODO: remove the autocast in the future
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             # Prepare model inputs
             model_args = self._get_model_inputs_args(packed_batch)
@@ -510,17 +512,17 @@ class FSDPTrainRayActor(TrainRayActor):
                 **model_args,
             ).logits.squeeze(0)
 
-            # Compute log probs and entropy (unified for both CP and non-CP modes)
-            log_probs, entropy_result = get_logprob_and_entropy_with_cp(
-                logits=logits,
-                target_tokens=packed_batch["tokens"],
-                cp_rank=self.cp_rank,
-                cp_size=self.cp_size,
-                cp_group=self.cp_group,
-                model_input_ids=model_args["input_ids"],
-                allow_compile=not self.args.true_on_policy_mode,
-                temperature=self.args.rollout_temperature,
-            )
+        # Compute log probs and entropy (unified for both CP and non-CP modes)
+        log_probs, entropy_result = get_logprob_and_entropy_with_cp(
+            logits=logits,
+            target_tokens=packed_batch["tokens"],
+            cp_rank=self.cp_rank,
+            cp_size=self.cp_size,
+            cp_group=self.cp_group,
+            model_input_ids=model_args["input_ids"],
+            allow_compile=not self.args.true_on_policy_mode,
+            temperature=self.args.rollout_temperature,
+        )
         packed_batch["cur_log_probs"] = log_probs
         packed_batch["entropy"] = entropy_result
 
