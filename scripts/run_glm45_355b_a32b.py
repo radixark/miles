@@ -197,6 +197,7 @@ def train(args: ScriptArgs):
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
     )
+    sglang_extra_env_vars = {}
     # sglang_extra_env_vars = {
     #     "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
     # }
