@@ -1,6 +1,13 @@
-# Miles
+<div align="center" id="sglangtop">
+<img src="https://raw.githubusercontent.com/radixark/miles/main/imgs/miles_logo.png" alt="logo" width="400" margin="10px"></img>
 
 [![GitHub Repo](https://img.shields.io/badge/github-radixark%2Fmiles-black?logo=github)](https://github.com/radixark/miles)
+
+
+</div>
+
+--------------------------------------------------------------------------------
+> A journey of a thousand miles begins with a single step.
 
 **Miles** is an enterprise-facing reinforcement learning framework for **large-scale MoE post-training and production workloads**, forked from and co-evolving with **[slime](https://github.com/THUDM/slime)**.
 
@@ -10,11 +17,6 @@ Miles keeps slime’s lightweight, modular design, but focuses on:
 - Stable, controllable RL for large MoE models  
 - Production-grade features  
 
-<p align="left">
-  <img src="imgs/miles_logo.png" alt="Miles Logo" width="500">
-</p>
-
-> A journey of a thousand miles begins with a single step.
 
 ---
 
