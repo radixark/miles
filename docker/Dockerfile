@@ -5,6 +5,8 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=core_v0.14.0
+# TODO may improve
+ARG MILES_COMMIT=main
 
 ARG ENABLE_CUDA_13=0
 
