@@ -19,18 +19,12 @@ app = typer.Typer()
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
-    model_org: str = "deepseek-ai"
-    model_name: str = "DeepSeek-V3"
-    megatron_model_type: str = "deepseek-v3"
+    model_org: str = "zai-org"
+    model_name: str = "GLM-4.5"
+    megatron_model_type: str = "glm4.5-355B-A32B"
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
-    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-
-    def __post_init__(self):
-        if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
-            self.model_org = "fzyzcjy"
-            self.megatron_model_type = f"deepseek-v3-{m.group(1)}layer"
 
 
 @app.command()
@@ -41,25 +35,8 @@ def prepare_single(args: ScriptArgs):
     U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir /root/models/{args.model_name}"
     )
-    match args.task:
-        case "dapo_aime":
-            U.hf_download_dataset("zhuzilin/dapo-math-17k")
-            U.hf_download_dataset("zhuzilin/aime-2024")
-        case "gsm8k":
-            U.hf_download_dataset("zhuzilin/gsm8k")
-    _fp8_cast_bf16(args)
-
-
-def _fp8_cast_bf16(args: ScriptArgs):
-    path_bf16_hf = f"/root/models/{args.model_name}-bf16/"
-    if Path(path_bf16_hf).exists():
-        return
-
-    U.exec_command(
-        "python tools/fp8_cast_bf16.py "
-        f"--input-fp8-hf-path /root/models/{args.model_name} "
-        f"--output-bf16-hf-path {path_bf16_hf} "
-    )
+    U.hf_download_dataset("zhuzilin/dapo-math-17k")
+    U.hf_download_dataset("zhuzilin/aime-2024")
 
 
 @app.command()
