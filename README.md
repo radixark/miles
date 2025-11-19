@@ -18,6 +18,10 @@ Miles keeps slime’s lightweight, modular design, but focuses on:
 - Production-grade features  
 
 
+## News
+- [2025/11] Introduce Miles - born after slime towards enterprise RL training ([blog](https://lmsys.org/blog/2025-11-19-miles/)).
+
+
 ---
 
 ## Table of Contents
