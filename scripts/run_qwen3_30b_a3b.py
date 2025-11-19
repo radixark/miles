@@ -143,7 +143,7 @@ def execute(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                "--rollout-num-gpus-per-engine 4 "
+                "--rollout-num-gpus-per-engine 2 "
                 # "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
@@ -160,7 +160,7 @@ def execute(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                "--rollout-num-gpus-per-engine 4 "
+                "--rollout-num-gpus-per-engine 2 "
                 # "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
@@ -177,7 +177,7 @@ def execute(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                "--rollout-num-gpus-per-engine 4 "
+                "--rollout-num-gpus-per-engine 2 "
                 # "--sglang-ep-size 4 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
