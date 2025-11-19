@@ -44,6 +44,7 @@ def execute(args: ScriptArgs):
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
+        "--save-retain-interval 20 "
     )
 
     rollout_args = (
