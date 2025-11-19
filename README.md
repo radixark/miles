@@ -1,8 +1,233 @@
-## Miles
-(TODO: make a logo of Miles, and then put the sentence below it)
+# Miles
 
-A journey of a thousand miles is made one small step at a time
+[![GitHub Repo](https://img.shields.io/badge/github-radixark%2Fmiles-black?logo=github)](https://github.com/radixark/miles)
 
-## Acknowledgment
-Miles is forked and then built on top of slime (https://github.com/THUDM/slime).
+**Miles** is an enterprise-facing reinforcement learning framework for **large-scale MoE post-training and production workloads**, forked from and co-evolving with **[slime](https://github.com/THUDM/slime)**.
+
+Miles keeps slime’s lightweight, modular design, but focuses on:
+
+- New hardware support (e.g., GB300 and beyond)  
+- Stable, controllable RL for large MoE models  
+- Production-grade behavior: determinism, on-policy alignment, and better failure modes  
+
+<p align="center">
+  <img src="imgs/miles_logo.png" alt="Miles Logo" width="200">
+</p>
+
+> A journey of a thousand miles begins with a single step.
+
+---
+
+## Table of Contents
+- [Quick Start](#quick-start)
+- [Arguments Walkthrough](#arguments-walkthrough)
+- [Developer Guide](#developer-guide)
+- [Key Features](#key-features)
+- [Roadmap](#roadmap)
+- [Architecture Overview](#architecture-overview)
+- [FAQ & Acknowledgements](#faq--acknowledgements)
+- [Relationship to slime](#relationship-to-slime)
+
+---
+
+## Quick Start
+
+> **Note:** Miles is under active development. Commands and examples may evolve; please check the repo for the latest instructions.
+
+### Installation
+
+```bash
+git clone https://github.com/radixark/miles.git
+cd miles
+pip install -e .
+```
+
+### Running an Example
+
+We provide example scripts (e.g. formal mathematics / Lean) showing SFT + RL training with Miles.
+
+```bash
+# Example (placeholder, adapt to actual script names in the repo)
+python examples/lean/run_sft.py \
+  --config-path configs/...
+
+python examples/lean/run_rl.py \
+  --config-path configs/...
+```
+
+More examples and detailed guides will live under `examples/` and `docs/` in this repository.
+
+---
+
+## Arguments Walkthrough
+
+Arguments in Miles follow the same three-layer pattern as slime:
+
+1. **Megatron arguments**
+
+   * Miles reads Megatron arguments via `PYTHONPATH`.
+   * Example: `--tensor-model-parallel-size 2`.
+
+2. **SGLang arguments**
+
+   * All SGLang arguments are supported.
+   * They must be prefixed with `--sglang-`.
+   * Example: `--mem-fraction-static` → `--sglang-mem-fraction-static`.
+
+3. **Miles-specific arguments**
+
+   * For Miles-only options, see:
+
+     * [`miles/utils/arguments.py`](miles/utils/arguments.py) (path may vary slightly depending on repo layout)
+
+For more detailed usage, please refer to the documentation and example configs in the repo as they become available.
+ 
+
+
+## Key Features
+
+Miles starts from slime’s proven backbone and adds a series of system-level upgrades for production environments.
+
+### ✅ Determinism & True On-Policy
+
+Miles extends slime’s deterministic training and supports **infrastructure-level true on-policy support** for SGLang + FSDP:
+
+- Keeps the mismatch between **training** and **inference** effectively at **zero**  
+- Aligns numerical behavior end-to-end between training and deployment  
+- Uses:
+  - FlashAttention-3  
+  - DeepGEMM  
+  - Batch-invariant kernels from Thinking Machines Lab  
+  - `torch.compile` and careful alignment of numeric operations  
+
+This makes Miles suitable for **high-stakes experiments** where repeatability, auditability, and production debugging matter.
+
+### 🧮 Memory Robustness & Efficiency
+
+To fully utilize precious GPU memory **without** constant OOM failures, Miles includes:
+
+- Graceful handling of benign OOMs via error propagation  
+- Memory margins to avoid NCCL-related OOM issues  
+- Fixes for FSDP excessive memory usage  
+- Support for move-based and partial offloading  
+- Host peak memory savings for smoother multi-node training  
+
+The goal is to let large MoE jobs run **closer to the hardware limit** while staying stable.
+
+### ⚡ Speculative Training
+
+Miles adds **speculative training** support tailored for RL:
+
+- Performs **online SFT on the draft model during RL**, instead of freezing it  
+- Avoids draft policy drift away from the target model  
+- Achieves **25%+ rollout speedup** vs. frozen MTP, especially in later training stages  
+- Includes:
+  - MTP with sequence packing + CP  
+  - Proper loss masking and edge-case handling  
+  - LM head / embedding gradient isolation  
+  - Weight sync flows between Megatron and SGLang  
+
+### 🧱 Hardware & Examples
+
+Miles actively tracks new hardware and provides usable examples:
+
+- GB300 training support, with more recipes coming  
+- A **formal mathematics (Lean)** example with SFT / RL scripts, showcasing Miles in a verifiable environment setting  
+
+### 🛠 Miscellaneous Improvements
+
+Additional engineering improvements include:
+
+- Enhanced FSDP training backend  
+- Option to deploy the **rollout subsystem independently** outside the main framework  
+- Better debugging & profiling: more metrics, post-hoc analyzers, and profiler integration  
+- Gradual refactoring for clarity and maintainability  
+
+---
+
+## Roadmap
+
+We are actively evolving Miles toward a **production-ready RL engine** for large-scale MoE and multimodal workloads. Current roadmap items include:
+
+- **Large-scale MoE RL recipes** on new hardware (e.g., GB300 and successors)  
+- **Multimodal training** support  
+- **Rollout accelerations**  
+  - Compatibility with SGLang spec v2 for improved performance  
+  - More advanced speculative training schemes (e.g., EAGLE3-style, multi-spec layers)  
+- **Elasticity & fault tolerance**  
+  - More robust handling of GPU / node failures in long-running jobs  
+- **Resource scheduling for async training**  
+  - Balancing training and serving in large-scale asynchronous RL systems  
+
+We’ll continue to iterate based on feedback from users across research labs, startups, and enterprise teams.
+
+---
+
+## Architecture Overview
+
+Miles inherits slime’s core architecture and extends it with production-grade features.
+
+**Module overview:**
+
+- **training (Megatron)**  
+  Main training loop. Reads data from the Data Buffer and synchronizes parameters to the rollout subsystem after updates.
+
+- **rollout (SGLang + router)**  
+  Generates new samples, including rewards / verifier outputs, and writes them back to the Data Buffer.
+
+- **data buffer**  
+  Manages prompt initialization, custom data sources, and rollout generation strategies. Serves as the bridge between training and rollout.
+
+This decoupled design lets you:
+
+- Swap in different algorithms / reward functions without touching rollout code  
+- Customize rollout engines independently from training  
+- Scale rollouts and training differently depending on hardware and deployment constraints  
+
+---
+
+
+## Developer Guide
+
+* **Contributions welcome!**
+  We’re especially interested in:
+
+  * New hardware backends & tuning
+  * MoE RL recipes
+  * Stability / determinism improvements
+  * Multimodal & speculative training use cases
+
+* We recommend using [pre-commit](https://pre-commit.com/) to keep style consistent:
+
+```bash
+apt install pre-commit -y
+pre-commit install
+
+# run pre-commit to ensure code style consistency
+pre-commit run --all-files --show-diff-on-failure --color=always
+```
+
+* For debugging tips, performance tuning, and internal architecture notes, see the `docs/` and `developer_guide/` folders (coming soon).
+
+---
+
+## FAQ & Acknowledgements
+
+* For FAQs, please see `docs/en/get_started/qa.md` (to be added as the project matures).
+* **Huge thanks** to the **slime** authors and community — Miles would not exist without slime’s design and ecosystem.
+* We also acknowledge and rely on the broader LLM infra ecosystem, including SGLang, Megatron-LM, and related tools.
+
+If you use **Miles** in your work, we encourage you to:
+
+* Cite **slime** (see their README for the latest BibTeX); and
+* Mention Miles and the RadixArk team in your repo / paper.
+
+---
+
+## Links
+
+* **Miles GitHub**: [https://github.com/radixark/miles](https://github.com/radixark/miles)
+* **slime GitHub**: [https://github.com/THUDM/slime](https://github.com/THUDM/slime)
+
+We’re excited to see what you build — whether you choose **slime**, **Miles**, or both in different parts of your stack. 🚀
 
