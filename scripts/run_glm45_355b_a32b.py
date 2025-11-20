@@ -25,7 +25,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
     rollout_fp8: bool = False
     dynamic_sampling: bool = False
-    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    # TODO use more complex task
+    task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
 
 
 @app.command()
