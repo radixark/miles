@@ -207,7 +207,7 @@ def train(args: ScriptArgs):
         # "--use-precision-aware-optimizer "
     )
 
-    # TODO enable EP
+    # TODO optimize parameters, especially for FP8
     # sglang_decode_max_bs = 256
     sglang_world_size = min(32, args.num_gpus_per_node * args.num_nodes)
     sglang_attn_dp_size = 4
