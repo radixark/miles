@@ -210,7 +210,7 @@ def train(args: ScriptArgs):
     # TODO optimize parameters, especially for FP8
     # sglang_decode_max_bs = 256
     sglang_world_size = min(32, args.num_gpus_per_node * args.num_nodes)
-    sglang_attn_dp_size = 4
+    # sglang_attn_dp_size = 4
     # sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
