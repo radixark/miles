@@ -86,6 +86,9 @@ def prepare_cp(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
+    # ensure files are there is it was not synced before
+    prepare_cp(args)
+
     hf_checkpoint = (
         f"/root/models/{args.model_name}_FP8"
         if args.rollout_fp8

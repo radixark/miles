@@ -103,6 +103,9 @@ def prepare_cp(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
+    # ensure files are there is it was not synced before
+    prepare_cp(args)
+
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint /root/models/{args.model_name} "
