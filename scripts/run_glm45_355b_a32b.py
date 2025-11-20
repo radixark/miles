@@ -128,10 +128,11 @@ def train(args: ScriptArgs):
             )
 
     if args.num_nodes <= 4:
+        # Not really runnable, useful for --debug-rollout-only
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
-            f"--pipeline-model-parallel-size 2 "
+            f"--pipeline-model-parallel-size 1 "
             "--context-parallel-size 2 "
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
