@@ -152,6 +152,7 @@ def train(args: ScriptArgs):
         "--kl-loss-type low_var_kl "
         "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
+        # TODO wrong?
         "--eps-clip 1e-4 "
         "--eps-clip-high 2e-4 "
         "--use-tis "
