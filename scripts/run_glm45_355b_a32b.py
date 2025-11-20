@@ -84,9 +84,15 @@ def prepare_cp(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
+    hf_checkpoint = (
+        f"/root/models/{args.model_name}_FP8"
+        if args.rollout_fp8
+        else f"/root/models/{args.model_name}"
+    )
+
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name} "
+        f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load /root/local_data/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
