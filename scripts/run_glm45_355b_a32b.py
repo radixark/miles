@@ -2,8 +2,8 @@
 This file is in preview, and will be further refined and optimized.
 """
 
-import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import typer
@@ -23,6 +23,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
+    rollout_fp8: bool = False
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
 
@@ -40,6 +41,23 @@ def prepare_single(args: ScriptArgs):
             U.hf_download_dataset("zhuzilin/aime-2024")
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k")
+
+    if args.rollout_fp8:
+        _convert_hf_to_fp8(args)
+
+
+def _convert_hf_to_fp8(args: ScriptArgs):
+    path_output = f"/root/models/{args.model_name}-FP8/"
+    if Path(path_output).exists():
+        return
+
+    U.exec_command(
+        "python tools/convert_hf_to_fp8.py "
+        f"--model-dir /root/models/{args.model_name} "
+        f"--save-dir {path_output} "
+        "--strategy block --block-size 128 128 "
+        "--max-workers 4"
+    )
 
 
 @app.command()
