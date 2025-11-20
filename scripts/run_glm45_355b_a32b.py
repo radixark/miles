@@ -107,11 +107,13 @@ def train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 128 "
+        # TODO enlarge
+        "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         # ------------
-        "--num-steps-per-rollout 4 "
+        # TODO enlarge
+        "--num-steps-per-rollout 1 "
         "--balance-data "
         "--rollout-stop-token-ids 151329 151336 151338 "
     )
