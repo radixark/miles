@@ -2,10 +2,9 @@ from types import MethodType
 
 import torch.nn
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.transformer.attention import SelfAttentionSubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
-from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-from megatron.core.transformer.attention import SelfAttentionSubmodules
 
 
 def get_qwen3_next_spec(args, config, vp_stage):
