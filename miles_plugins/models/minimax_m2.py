@@ -22,4 +22,5 @@ def get_qwen3_next_spec(args, config, vp_stage):
     for layer_id in range(num_layers_to_build):
         layer_spec = transformer_layer_spec.layer_specs[layer_id]
         TODO
+
     return transformer_layer_spec
