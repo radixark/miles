@@ -27,7 +27,7 @@ MODEL_ARGS=(
     --qk-layernorm
 
     # MoE :: Router
-    --moe-router-load-balancing-type none
+    --moe-router-load-balancing-type seq_aux_loss  # may not be needed?
     --moe-router-pre-softmax
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
