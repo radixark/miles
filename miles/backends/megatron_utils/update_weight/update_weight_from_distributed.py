@@ -10,12 +10,13 @@ import torch.distributed as dist
 from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
-
 from tqdm import tqdm
 
+# TODO do not use it here
+from miles.backends.megatron_utils.megatron_to_hf.processors.padding_remover import remove_padding
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
-from .common import all_gather_param, named_parameters, remove_padding
+from .common import all_gather_param, named_parameters
 from .megatron_to_hf import convert_to_hf  # noqa: F401
 
 
