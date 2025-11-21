@@ -23,6 +23,7 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
 _cached_tensors = {}
 
 
+# TODO optimize code details
 def _convert_to_hf_core(args, model_name, name, param):
     if "glm4moe" in model_name:
         converted_named_tensors = convert_glm4moe_to_hf(args, name, param)
