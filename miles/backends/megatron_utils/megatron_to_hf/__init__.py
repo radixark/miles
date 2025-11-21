@@ -1,9 +1,3 @@
-try:
-    from sglang.srt.model_loader.utils import should_deepgemm_weight_requant_ue8m0
-except ImportError:
-    should_deepgemm_weight_requant_ue8m0 = None
-
-
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
