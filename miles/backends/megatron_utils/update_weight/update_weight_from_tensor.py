@@ -67,7 +67,7 @@ class UpdateWeightFromTensor:
         self.model_name = model_name
         self.vocab_size = vocab_size
         self.quantization_config = quantization_config
-        self.param_info_buckets = _get_param_info_buckets(self.args, self.model)
+        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model)
         self.weight_version = 0
 
         # create the group within megatron.
@@ -135,9 +135,11 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
-        for param_infos in tqdm(self.param_info_buckets, disable=rank != 0, desc="Update weights"):
-            megatron_full_params = _get_megatron_full_params(param_infos, megatron_local_weights)
-            refs = self._update_converted_params_from_tensor(megatron_full_params, param_infos)
+        for megatron_local_param_infos in tqdm(
+            self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
+        ):
+            megatron_full_params = _get_megatron_full_params(megatron_local_param_infos, megatron_local_weights)
+            refs = self._update_converted_params_from_tensor(megatron_full_params, megatron_local_param_infos)
             ray.get(refs)
             del megatron_full_params
 
@@ -244,7 +246,7 @@ def _send_to_colocated_engine(
 
 
 def _get_megatron_full_params(
-    param_infos: Sequence[ParamInfo],
+    megatron_local_param_infos: Sequence[ParamInfo],
     megatron_local_weights,
 ) -> Sequence[torch.Tensor]:
     monkey_patch_torch_reductions()
@@ -253,7 +255,7 @@ def _get_megatron_full_params(
     rank = dist.get_rank()
     # init params:
     params = []
-    for info in param_infos:
+    for info in megatron_local_param_infos:
         if dist.get_rank() == info.src_rank:
             params.append(
                 torch.nn.Parameter(
@@ -268,7 +270,7 @@ def _get_megatron_full_params(
     # broadcast params across pp ranks
     if pp_size > 1:
         handles = []
-        for info, param in zip(param_infos, params):
+        for info, param in zip(megatron_local_param_infos, params):
             if info.src_rank in dist.get_process_group_ranks(mpu.get_pipeline_model_parallel_group()):
                 handles.append(
                     torch.distributed.broadcast(
@@ -281,7 +283,7 @@ def _get_megatron_full_params(
     # broadcast params across ep ranks
     if ep_size > 1:
         handles = []
-        for info, param in zip(param_infos, params):
+        for info, param in zip(megatron_local_param_infos, params):
             if ".experts." in info.name:
                 src_rank = (
                     info.src_rank
@@ -297,21 +299,21 @@ def _get_megatron_full_params(
             handle.wait()
 
     # Set tp attrs for all params
-    for info, param in zip(param_infos, params):
+    for info, param in zip(megatron_local_param_infos, params):
         for key, value in info.attrs.items():
             setattr(param, key, value)
 
     # Batch async all_gather for all parameters
-    gathered_params = all_gather_params_async(list(zip(param_infos, params)))
+    gathered_params = all_gather_params_async(list(zip(megatron_local_param_infos, params)))
 
     return gathered_params
 
 
-def _get_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
+def _get_megatron_local_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
     """
     Partition params into buckets ≤ update_weight_buffer_size (with TP replication).
     """
-    param_infos = _get_param_infos(args, model)
+    param_infos = _get_megatron_local_param_infos(args, model)
     param_info_buckets = [[]]  # Start with one empty bucket
     buffer_size = 0  # Track current bucket size in bytes
 
@@ -337,7 +339,7 @@ def _get_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -
     return param_info_buckets
 
 
-def _get_param_infos(args: Namespace, model: Sequence[torch.nn.Module]) -> list[ParamInfo]:
+def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Module]) -> list[ParamInfo]:
     """
     Build global param metadata: collect → exchange PP/EP → resolve duplicates (MTP virtual PP)
     by min src_rank → validate. Returns sorted ParamInfo identical across all ranks.
