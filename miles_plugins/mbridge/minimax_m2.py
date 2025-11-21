@@ -28,7 +28,6 @@ class MinimaxM2Bridge(LLMBridge):
             "model.layers.{layer_number}.self_attn.v_proj.weight",
         ],
     }
-
     _MLP_MAPPING = {
         "pre_mlp_layernorm": [
             "model.layers.{layer_number}.post_attention_layernorm.weight"
