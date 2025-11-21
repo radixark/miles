@@ -49,8 +49,8 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
                 inner_cls=inner_cls,
                 num_heads=num_heads,
                 tp_group=tp_group,
-                tp_group_rank=TODO,
-                tp_group_size=TODO,
+                tp_group_rank=torch.distributed.get_rank(tp_group),
+                tp_group_world_size=torch.distributed.get_world_size(tp_group),
             )
         ),
     )
@@ -62,7 +62,7 @@ class _PerLayerRMSNormExtraArgs:
     num_heads: int
     tp_group: any
     tp_group_rank: int
-    tp_group_size: int
+    tp_group_world_size: int
 
 
 # ref: WrappedTorchNorm, TENorm
@@ -84,7 +84,7 @@ class _PerLayerRMSNorm:
 
             x = original_forward(x)
 
-            x = _slice(x, dim=-1, rank=extra.tp_group_rank, num_slices=extra.tp_group_size)
+            x = _slice(x, dim=-1, rank=extra.tp_group_rank, num_slices=extra.tp_group_world_size)
             assert x.shape == original_shape
 
             return x
