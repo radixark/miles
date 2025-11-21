@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from types import MethodType
 
 import torch.nn
@@ -41,19 +42,27 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
     return ModuleSpec(
         module=_PerLayerRMSNorm,
         params=dict(
-            inner_cls=inner_cls,
-            num_heads=num_heads,
+            extra=_PerLayerRMSNormExtraArgs(
+                inner_cls=inner_cls,
+                num_heads=num_heads,
+            )
         ),
     )
 
 
+@dataclass
+class _PerLayerRMSNormExtraArgs:
+    inner_cls: type
+    num_heads: int
+
+
 # ref: WrappedTorchNorm, TENorm
 class _PerLayerRMSNorm:
-    def __new__(cls, *args, hidden_size: int, inner_cls: type, num_heads: int, **kwargs):
+    def __new__(cls, *args, hidden_size: int, extra: _PerLayerRMSNormExtraArgs, **kwargs):
         # MiniMax-M2 head_dim, can remove this assertion when more model is to be supported
         assert hidden_size == 128
 
-        obj = inner_cls(*args, hidden_size=hidden_size * num_heads, **kwargs)
+        obj = extra.inner_cls(*args, hidden_size=hidden_size * extra.num_heads, **kwargs)
 
         original_forward = obj.forward
 
