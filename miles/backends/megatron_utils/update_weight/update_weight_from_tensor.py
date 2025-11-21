@@ -143,7 +143,7 @@ class UpdateWeightFromTensor:
 
         dist.barrier(group=get_gloo_group())
 
-    # TODO rename fn
+    # TODO rename and split fn
     def _update_converted_params_from_tensor(
         self, megatron_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]
     ) -> list[ObjectRef]:
