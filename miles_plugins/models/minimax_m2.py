@@ -26,7 +26,11 @@ def get_qwen3_next_spec(args, config, vp_stage):
         assert isinstance(self_attention_submodules, SelfAttentionSubmodules)
         for k in ["q_layernorm", "k_layernorm"]:
             v_old = getattr(self_attention_submodules, k)
-            v_new = create_per_layer_rms_norm(v_old)
+            v_new = _create_per_layer_rms_norm(v_old)
             setattr(self_attention_submodules, k, v_new)
 
     return transformer_layer_spec
+
+
+def _create_per_layer_rms_norm(original_cls: type) -> type:
+    return TODO
