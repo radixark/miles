@@ -1,3 +1,4 @@
+import torch.nn
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
@@ -45,9 +46,13 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
     )
 
 
-class _PerLayerRMSNorm:
+class _PerLayerRMSNorm(torch.nn.Module):
     def __init__(self, *args, hidden_size: int, inner_cls: type, num_heads: int, **kwargs):
+        super().__init__(*args, **kwargs)
+
         # MiniMax-M2 head_dim, can remove this assertion when more model is to be supported
         assert hidden_size == 128
 
         self._inner = inner_cls(*args, hidden_size=hidden_size * num_heads, **kwargs)
+
+        TODO_weights
