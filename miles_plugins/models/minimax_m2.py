@@ -1,3 +1,9 @@
+erom megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.transformer.spec_utils import ModuleSpec
+from megatron.core.transformer.transformer_block import get_num_layers_to_build
+from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+
+
 def get_qwen3_next_spec(args, config, vp_stage):
     # Define the decoder block spec
     kwargs = {
@@ -12,17 +18,8 @@ def get_qwen3_next_spec(args, config, vp_stage):
     # Slice the layer specs to only include the layers that are built in this pipeline stage.
     # Note: MCore layer_number starts at 1
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
-    offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
-
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
     for layer_id in range(num_layers_to_build):
-        if hf_config.layer_types[layer_id + offset] == "linear_attention":
-            layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
-            layer_specs.submodules.self_attention = ModuleSpec(
-                module=Attention,
-                params={"args": args},
-            )
-            transformer_layer_spec.layer_specs[layer_id] = layer_specs
-        transformer_layer_spec.layer_specs[layer_id].submodules.mlp.submodules.shared_experts.params = {"gate": True}
+        layer_spec = transformer_layer_spec.layer_specs[layer_id]
+        TODO
     return transformer_layer_spec
