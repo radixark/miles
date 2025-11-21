@@ -1,3 +1,5 @@
+from types import MethodType
+
 import torch.nn
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
@@ -52,7 +54,14 @@ class _PerLayerRMSNorm:
         # MiniMax-M2 head_dim, can remove this assertion when more model is to be supported
         assert hidden_size == 128
 
-        corrected_hidden_size = hidden_size * num_heads
-        del hidden_size
+        obj = inner_cls(*args, hidden_size=hidden_size * num_heads, **kwargs)
 
-        return TODO
+        original_forward = obj.forward
+
+        def _modified_forward(*args, **kwargs):
+            TODO
+            return original_forward(*args, **kwargs)
+
+        obj.forward = MethodType(_modified_forward, obj)
+
+        return obj
