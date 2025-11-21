@@ -23,7 +23,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
-    rollout_fp8: bool = False
     dynamic_sampling: bool = False
     # TODO use more complex task
     task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
@@ -43,9 +42,6 @@ def prepare_single(args: ScriptArgs):
             U.hf_download_dataset("zhuzilin/aime-2024")
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k")
-
-    if args.rollout_fp8:
-        _convert_hf_to_fp8(args)
 
 
 def _convert_hf_to_fp8(args: ScriptArgs):
@@ -89,15 +85,9 @@ def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
     prepare_cp(args)
 
-    hf_checkpoint = (
-        f"/root/models/{args.model_name}_FP8"
-        if args.rollout_fp8
-        else f"/root/models/{args.model_name}"
-    )
-
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint {hf_checkpoint} "
+        f"--hf-checkpoint /root/models/{args.model_name} "
         f"--ref-load /root/local_data/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
