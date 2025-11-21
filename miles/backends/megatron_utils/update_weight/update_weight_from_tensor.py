@@ -14,7 +14,7 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
-from .distributed_primitives import update_weights_from_distributed, connect_rollout_engines_from_distributed, disconnect_rollout_engines_from_distributed
+from .update_weight_from_distributed import update_weights_from_distributed, connect_rollout_engines_from_distributed, disconnect_rollout_engines_from_distributed
 
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
