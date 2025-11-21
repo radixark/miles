@@ -1,7 +1,8 @@
-erom megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+from megatron.core.transformer.attention import SelfAttentionSubmodules
 
 
 def get_qwen3_next_spec(args, config, vp_stage):
@@ -21,6 +22,11 @@ def get_qwen3_next_spec(args, config, vp_stage):
 
     for layer_id in range(num_layers_to_build):
         layer_spec = transformer_layer_spec.layer_specs[layer_id]
-        TODO
+        self_attention_submodules = layer_spec.submodules.self_attention.submodules
+        assert isinstance(self_attention_submodules, SelfAttentionSubmodules)
+        for k in ["q_layernorm", "k_layernorm"]:
+            v_old = getattr(self_attention_submodules, k)
+            v_new = create_per_layer_rms_norm(v_old)
+            setattr(self_attention_submodules, k, v_new)
 
     return transformer_layer_spec
