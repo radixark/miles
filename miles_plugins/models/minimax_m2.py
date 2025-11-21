@@ -24,25 +24,27 @@ def get_qwen3_next_spec(args, config, vp_stage):
         layer_spec = transformer_layer_spec.layer_specs[layer_id]
         self_attention_submodules = layer_spec.submodules.self_attention.submodules
         assert isinstance(self_attention_submodules, SelfAttentionSubmodules)
-        for k in ["q_layernorm", "k_layernorm"]:
+        for k, num_heads in [
+            ("q_layernorm", TODO),
+            ("k_layernorm", TODO),
+        ]:
             v_old = getattr(self_attention_submodules, k)
-            v_new = _create_per_layer_rms_norm(v_old)
+            v_new = _create_per_layer_rms_norm(v_old, num_heads=num_heads)
             setattr(self_attention_submodules, k, v_new)
 
     return transformer_layer_spec
 
 
-def _create_per_layer_rms_norm(original_cls: type) -> type:
+def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
     return ModuleSpec(
         module=_PerLayerRMSNorm,
         params=dict(
-            original_cls=original_cls,
+            inner_cls=inner_cls,
+            num_heads=num_heads,
         ),
     )
 
 
 class _PerLayerRMSNorm:
-    def __init__(self, *args, original_cls: type, **kwargs):
-        # TODO handle hidden_size
-        original_obj = original_cls(*args, **kwargs)
-        TODO
+    def __init__(self, *args, hidden_size: int, inner_cls: type, num_heads: int, **kwargs):
+        self._inner = inner_cls(*args, hidden_size=hidden_size * num_heads, **kwargs)
