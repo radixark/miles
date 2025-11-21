@@ -92,3 +92,12 @@ def _all_gather(x, *, group, concat_dim: int):
     out_list = TODO
     torch.distributed.all_gather(out_list, x, group=group)
     return torch.concat(out_list, dim=concat_dim)
+
+
+def _slice(x, *, dim: int, rank: int, num_slices: int):
+    tensor_len = x.shape[dim]
+
+    slice_len, remainder = divmod(tensor_len, num_slices)
+    assert remainder == 0
+
+    return torch.narrow(x, dim=dim, start=slice_len * rank, length=slice_len)
