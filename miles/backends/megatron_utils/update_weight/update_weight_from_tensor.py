@@ -137,9 +137,8 @@ class UpdateWeightFromTensor:
 
         num_buckets = len(self.param_info_buckets)
         for i in tqdm(range(num_buckets), disable=rank != 0, desc="Update weights"):
-            param_infos = self.param_info_buckets[i]
-            # TODO the `param_infos` seems unchanged, maybe directly use it
-            current_params, current_infos = _gather_bucket_megatron_params(param_infos, megatron_all_weights)
+            current_infos = self.param_info_buckets[i]
+            current_params = _gather_bucket_megatron_params(current_infos, megatron_all_weights)
             refs = self._update_converted_params_from_tensor(current_params, current_infos)
             ray.get(refs)
             del current_params, current_infos
@@ -233,7 +232,7 @@ class UpdateWeightFromTensor:
 def _gather_bucket_megatron_params(
     param_infos: Sequence[ParamInfo],
     megatron_all_weights,
-) -> tuple[Sequence[torch.Tensor], Sequence[ParamInfo]]:
+) -> Sequence[torch.Tensor]:
     monkey_patch_torch_reductions()
     pp_size = mpu.get_pipeline_model_parallel_world_size()
     ep_size = mpu.get_expert_model_parallel_world_size()
@@ -291,7 +290,7 @@ def _gather_bucket_megatron_params(
     # Batch async all_gather for all parameters
     gathered_params = all_gather_params_async(list(zip(param_infos, params)))
 
-    return gathered_params, param_infos
+    return gathered_params
 
 
 def get_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
