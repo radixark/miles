@@ -137,16 +137,16 @@ class UpdateWeightFromTensor:
 
         for param_infos in tqdm(self.param_info_buckets, disable=rank != 0, desc="Update weights"):
             megatron_full_params = _get_megatron_full_params(param_infos, megatron_local_weights)
-            refs = self._update_converted_params_from_tensor(megatron_full_params, param_infos)
+            hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, param_infos)
+            refs = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
             del megatron_full_params
 
         dist.barrier(group=get_gloo_group())
 
-    # TODO rename and split fn
-    def _update_converted_params_from_tensor(
+    def _convert_to_hf_named_tensors(
         self, megatron_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]
-    ) -> list[ObjectRef]:
+    ):
         # TODO extract this part
         hf_named_tensors = []
         for info, param in zip(param_infos, megatron_params):
@@ -154,7 +154,9 @@ class UpdateWeightFromTensor:
             hf_named_tensors.extend(
                 convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
             )
+        return hf_named_tensors
 
+    def _send_hf_params(self, hf_named_tensors) -> list[ObjectRef]:
         all_refs = []
 
         refs_colocated = self._send_to_colocated_engine(hf_named_tensors)
