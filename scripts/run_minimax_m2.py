@@ -43,29 +43,10 @@ def prepare_single(args: ScriptArgs):
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k")
 
-
-def _convert_hf_to_fp8(args: ScriptArgs):
-    path_output = f"/root/models/{args.model_name}-FP8/"
-    if Path(path_output).exists():
-        return
-
-    U.exec_command(
-        "python tools/convert_hf_to_fp8.py "
-        f"--model-dir /root/models/{args.model_name} "
-        f"--save-dir {path_output} "
-        "--strategy block --block-size 128 128 "
-        "--max-workers 4"
-    )
-
-
-@app.command()
-@U.dataclass_cli
-def prepare_spmd(args: ScriptArgs):
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
-        multinode=True,
         dir_dst="/root/models",
     )
 
