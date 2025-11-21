@@ -40,13 +40,17 @@ def get_qwen3_next_spec(args, config, vp_stage):
 
 
 def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
+    tp_group = TODO
+
     return ModuleSpec(
         module=_PerLayerRMSNorm,
         params=dict(
             extra=_PerLayerRMSNormExtraArgs(
                 inner_cls=inner_cls,
                 num_heads=num_heads,
-                tp_group=TODO,
+                tp_group=tp_group,
+                tp_group_rank=TODO,
+                tp_group_size=TODO,
             )
         ),
     )
@@ -57,6 +61,8 @@ class _PerLayerRMSNormExtraArgs:
     inner_cls: type
     num_heads: int
     tp_group: any
+    tp_group_rank: int
+    tp_group_size: int
 
 
 # ref: WrappedTorchNorm, TENorm
@@ -78,7 +84,7 @@ class _PerLayerRMSNorm:
 
             x = original_forward(x)
 
-            x = TODO_slice
+            x = _slice(x, dim=-1, rank=extra.tp_group_rank, num_slices=extra.tp_group_size)
             assert x.shape == original_shape
 
             return x
