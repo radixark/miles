@@ -33,4 +33,16 @@ def get_qwen3_next_spec(args, config, vp_stage):
 
 
 def _create_per_layer_rms_norm(original_cls: type) -> type:
-    return TODO
+    return ModuleSpec(
+        module=_PerLayerRMSNorm,
+        params=dict(
+            original_cls=original_cls,
+        ),
+    )
+
+
+class _PerLayerRMSNorm:
+    def __init__(self, *args, original_cls: type, **kwargs):
+        # TODO handle hidden_size
+        original_obj = original_cls(*args, **kwargs)
+        TODO
