@@ -1,7 +1,7 @@
-import torch.distributed.nn
 from dataclasses import dataclass
 from types import MethodType
 
+import torch.distributed.nn
 import torch.nn
 from megatron.core import mpu
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
