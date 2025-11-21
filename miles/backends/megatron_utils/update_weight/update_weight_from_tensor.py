@@ -137,7 +137,7 @@ class UpdateWeightFromTensor:
 
         num_buckets = len(self.param_info_buckets)
         for i in tqdm(range(num_buckets), disable=rank != 0, desc="Update weights"):
-            current_params, current_infos = _gather_bucket_params(self.param_info_buckets[i], weights)
+            current_params, current_infos = _gather_bucket_megatron_params(self.param_info_buckets[i], weights)
             refs = self._update_converted_params_from_tensor(current_params, current_infos)
             ray.get(refs)
             del current_params, current_infos
@@ -147,17 +147,16 @@ class UpdateWeightFromTensor:
     def _update_converted_params_from_tensor(
         self, gathered_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]
     ) -> list[ObjectRef]:
-
-        converted_named_tensors = []
+        hf_named_tensors = []
         for info, param in zip(param_infos, gathered_params):
             param = remove_padding(info.name, param, self.vocab_size)
-            converted_named_tensors.extend(
+            hf_named_tensors.extend(
                 convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
             )
 
         all_refs = []
 
-        refs_colocated = self._send_to_colocated_engine(converted_named_tensors)
+        refs_colocated = self._send_to_colocated_engine(hf_named_tensors)
         all_refs.extend(refs_colocated)
 
         if self.use_distribute and self._is_distributed_src_rank:
@@ -167,7 +166,7 @@ class UpdateWeightFromTensor:
                 self._model_update_groups,
                 self.weight_version,
                 self.distributed_rollout_engines,
-                converted_named_tensors,
+                hf_named_tensors,
             )
             if refs_distributed:
                 all_refs.extend(refs_distributed)
@@ -230,7 +229,7 @@ class UpdateWeightFromTensor:
         return []
 
 
-def _gather_bucket_params(
+def _gather_bucket_megatron_params(
     param_infos: Sequence[ParamInfo],
     weights,
 ) -> tuple[Sequence[torch.Tensor], Sequence[ParamInfo]]:
