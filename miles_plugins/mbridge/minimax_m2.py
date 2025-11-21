@@ -27,11 +27,6 @@ class MinimaxM2Bridge(LLMBridge):
             "model.layers.{layer_number}.self_attn.k_proj.weight",
             "model.layers.{layer_number}.self_attn.v_proj.weight",
         ],
-        "self_attention.linear_qkv.bias": [
-            "model.layers.{layer_number}.self_attn.q_proj.bias",
-            "model.layers.{layer_number}.self_attn.k_proj.bias",
-            "model.layers.{layer_number}.self_attn.v_proj.bias",
-        ],
     }
 
     _MLP_MAPPING = {
@@ -48,6 +43,7 @@ class MinimaxM2Bridge(LLMBridge):
         "mlp.experts.linear_fc2": [
             "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight"
         ],
+        "mlp.router.expert_bias": ["model.layers.{layer_number}.block_sparse_moe.e_score_correction_bias"],
     }
 
     def _weight_name_mapping_mlp(self, name: str) -> list[str]:
