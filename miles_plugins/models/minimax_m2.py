@@ -47,4 +47,5 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
 
 class _PerLayerRMSNorm:
     def __init__(self, *args, hidden_size: int, inner_cls: type, num_heads: int, **kwargs):
+        assert hidden_size == 128  # MiniMax-M2 head_dim
         self._inner = inner_cls(*args, hidden_size=hidden_size * num_heads, **kwargs)
