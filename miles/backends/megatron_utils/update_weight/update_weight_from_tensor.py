@@ -137,76 +137,12 @@ class UpdateWeightFromTensor:
 
         num_buckets = len(self.param_info_buckets)
         for i in tqdm(range(num_buckets), disable=rank != 0, desc="Update weights"):
-            current_params, current_infos = self._gather_bucket_params(self.param_info_buckets[i], weights)
+            current_params, current_infos = _gather_bucket_params(self.param_info_buckets[i], weights)
             refs = self._update_converted_params_from_tensor(current_params, current_infos)
             ray.get(refs)
             del current_params, current_infos
 
         dist.barrier(group=get_gloo_group())
-
-    def _gather_bucket_params(
-        self,
-        param_infos: Sequence[ParamInfo],
-        weights,
-    ) -> tuple[Sequence[torch.Tensor], Sequence[ParamInfo]]:
-        monkey_patch_torch_reductions()
-        pp_size = mpu.get_pipeline_model_parallel_world_size()
-        ep_size = mpu.get_expert_model_parallel_world_size()
-        rank = dist.get_rank()
-        # init params:
-        params = []
-        for info in param_infos:
-            if dist.get_rank() == info.src_rank:
-                params.append(
-                    torch.nn.Parameter(
-                        weights[info.name].to(device=torch.cuda.current_device(), non_blocking=True),
-                        requires_grad=False,
-                    )
-                )
-            else:
-                params.append(torch.empty(info.shape, dtype=info.dtype, device=torch.cuda.current_device()))
-        torch.cuda.synchronize()
-
-        # broadcast params across pp ranks
-        if pp_size > 1:
-            handles = []
-            for info, param in zip(param_infos, params):
-                if info.src_rank in dist.get_process_group_ranks(mpu.get_pipeline_model_parallel_group()):
-                    handles.append(
-                        torch.distributed.broadcast(
-                            param, src=info.src_rank, group=mpu.get_pipeline_model_parallel_group(), async_op=True
-                        )
-                    )
-            for handle in handles:
-                handle.wait()
-
-        # broadcast params across ep ranks
-        if ep_size > 1:
-            handles = []
-            for info, param in zip(param_infos, params):
-                if ".experts." in info.name:
-                    src_rank = (
-                        info.src_rank
-                        if info.src_rank in dist.get_process_group_ranks(mpu.get_expert_model_parallel_group())
-                        else rank
-                    )
-                    handles.append(
-                        torch.distributed.broadcast(
-                            param, src=src_rank, group=mpu.get_expert_model_parallel_group(), async_op=True
-                        )
-                    )
-            for handle in handles:
-                handle.wait()
-
-        # Set tp attrs for all params
-        for info, param in zip(param_infos, params):
-            for key, value in info.attrs.items():
-                setattr(param, key, value)
-
-        # Batch async all_gather for all parameters
-        gathered_params = all_gather_params_async(list(zip(param_infos, params)))
-
-        return gathered_params, param_infos
 
     def _update_converted_params_from_tensor(
         self, gathered_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]
@@ -292,6 +228,70 @@ class UpdateWeightFromTensor:
                 refs.append(self._ipc_engine.update_weights_from_tensor.remote(**kwargs))
             return refs
         return []
+
+
+def _gather_bucket_params(
+    param_infos: Sequence[ParamInfo],
+    weights,
+) -> tuple[Sequence[torch.Tensor], Sequence[ParamInfo]]:
+    monkey_patch_torch_reductions()
+    pp_size = mpu.get_pipeline_model_parallel_world_size()
+    ep_size = mpu.get_expert_model_parallel_world_size()
+    rank = dist.get_rank()
+    # init params:
+    params = []
+    for info in param_infos:
+        if dist.get_rank() == info.src_rank:
+            params.append(
+                torch.nn.Parameter(
+                    weights[info.name].to(device=torch.cuda.current_device(), non_blocking=True),
+                    requires_grad=False,
+                )
+            )
+        else:
+            params.append(torch.empty(info.shape, dtype=info.dtype, device=torch.cuda.current_device()))
+    torch.cuda.synchronize()
+
+    # broadcast params across pp ranks
+    if pp_size > 1:
+        handles = []
+        for info, param in zip(param_infos, params):
+            if info.src_rank in dist.get_process_group_ranks(mpu.get_pipeline_model_parallel_group()):
+                handles.append(
+                    torch.distributed.broadcast(
+                        param, src=info.src_rank, group=mpu.get_pipeline_model_parallel_group(), async_op=True
+                    )
+                )
+        for handle in handles:
+            handle.wait()
+
+    # broadcast params across ep ranks
+    if ep_size > 1:
+        handles = []
+        for info, param in zip(param_infos, params):
+            if ".experts." in info.name:
+                src_rank = (
+                    info.src_rank
+                    if info.src_rank in dist.get_process_group_ranks(mpu.get_expert_model_parallel_group())
+                    else rank
+                )
+                handles.append(
+                    torch.distributed.broadcast(
+                        param, src=src_rank, group=mpu.get_expert_model_parallel_group(), async_op=True
+                    )
+                )
+        for handle in handles:
+            handle.wait()
+
+    # Set tp attrs for all params
+    for info, param in zip(param_infos, params):
+        for key, value in info.attrs.items():
+            setattr(param, key, value)
+
+    # Batch async all_gather for all parameters
+    gathered_params = all_gather_params_async(list(zip(param_infos, params)))
+
+    return gathered_params, param_infos
 
 
 def get_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
