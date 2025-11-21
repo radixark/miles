@@ -10,7 +10,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 
 
-def get_qwen3_next_spec(args, config, vp_stage):
+def get_minimax_m2_spec(args, config, vp_stage):
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,
