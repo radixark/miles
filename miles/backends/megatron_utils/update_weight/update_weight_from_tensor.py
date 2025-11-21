@@ -67,7 +67,7 @@ class UpdateWeightFromTensor:
         self.model_name = model_name
         self.vocab_size = vocab_size
         self.quantization_config = quantization_config
-        self.param_info_buckets = get_param_info_buckets(self.args, self.model)
+        self.param_info_buckets = _get_param_info_buckets(self.args, self.model)
         self.weight_version = 0
 
         # create the group within megatron.
@@ -292,11 +292,11 @@ def _get_megatron_full_params(
     return gathered_params
 
 
-def get_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
+def _get_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
     """
     Partition params into buckets ≤ update_weight_buffer_size (with TP replication).
     """
-    param_infos = get_param_infos(args, model)
+    param_infos = _get_param_infos(args, model)
     param_info_buckets = [[]]  # Start with one empty bucket
     buffer_size = 0  # Track current bucket size in bytes
 
@@ -322,7 +322,7 @@ def get_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) ->
     return param_info_buckets
 
 
-def get_param_infos(args: Namespace, model: Sequence[torch.nn.Module]) -> list[ParamInfo]:
+def _get_param_infos(args: Namespace, model: Sequence[torch.nn.Module]) -> list[ParamInfo]:
     """
     Build global param metadata: collect → exchange PP/EP → resolve duplicates (MTP virtual PP)
     by min src_rank → validate. Returns sorted ParamInfo identical across all ranks.
