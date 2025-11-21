@@ -46,13 +46,13 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
     )
 
 
-class _PerLayerRMSNorm(torch.nn.Module):
-    def __init__(self, *args, hidden_size: int, inner_cls: type, num_heads: int, **kwargs):
-        super().__init__(*args, **kwargs)
-
+# ref: WrappedTorchNorm, TENorm
+class _PerLayerRMSNorm:
+    def __new__(cls, *args, hidden_size: int, inner_cls: type, num_heads: int, **kwargs):
         # MiniMax-M2 head_dim, can remove this assertion when more model is to be supported
         assert hidden_size == 128
 
-        self._inner = inner_cls(*args, hidden_size=hidden_size * num_heads, **kwargs)
+        corrected_hidden_size = hidden_size * num_heads
+        del hidden_size
 
-        TODO_weights
+        return TODO
