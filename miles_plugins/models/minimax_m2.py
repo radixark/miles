@@ -59,9 +59,9 @@ class _PerLayerRMSNorm:
         original_forward = obj.forward
 
         def _modified_forward(x: torch.Tensor) -> torch.Tensor:
-            x = TODO
+            x = TODO_ag
             x = original_forward(x)
-            x = TODO
+            x = TODO_slice
             return x
 
         obj.forward = MethodType(_modified_forward, obj)
