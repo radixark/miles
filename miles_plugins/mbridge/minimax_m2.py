@@ -82,13 +82,9 @@ class MinimaxM2Bridge(LLMBridge):
             moe_router_pre_softmax=True,
             # Other optimizations
             persist_layer_norm=True,
-            bias_activation_fusion=True,
-            bias_dropout_fusion=True,
             # GLM specific
             qk_layernorm=self.hf_config.use_qk_norm,
-            add_qkv_bias=True,
+            add_qkv_bias=False,
             add_bias_linear=False,
-            # post_mlp_layernorm=True,
-            # post_self_attn_layernorm=True,
-            rotary_interleaved=True,
+            rotary_interleaved=TODO,
         )
