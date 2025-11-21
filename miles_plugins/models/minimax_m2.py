@@ -45,9 +45,6 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
     tp_group_rank = torch.distributed.get_rank(tp_group)
     tp_group_world_size = torch.distributed.get_world_size(tp_group)
 
-    if tp_group_world_size == 1:
-        return inner_cls
-
     return ModuleSpec(
         module=_PerLayerRMSNorm,
         params=dict(
