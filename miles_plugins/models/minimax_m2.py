@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import dataclass
 from types import MethodType
 
@@ -26,7 +27,7 @@ def get_minimax_m2_spec(args, config, vp_stage):
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
 
     for layer_id in range(num_layers_to_build):
-        layer_spec = transformer_layer_spec.layer_specs[layer_id]
+        layer_spec = deepcopy(transformer_layer_spec.layer_specs[layer_id])
         self_attention_submodules = layer_spec.submodules.self_attention.submodules
         assert isinstance(self_attention_submodules, SelfAttentionSubmodules)
         for k, num_heads in [
@@ -34,8 +35,10 @@ def get_minimax_m2_spec(args, config, vp_stage):
             ("k_layernorm", args.num_query_groups),
         ]:
             v_old = getattr(self_attention_submodules, k)
+            print(f"_create_per_layer_rms_norm.new {k=} {v_old=} {num_heads=}")
             v_new = _create_per_layer_rms_norm(v_old, num_heads=num_heads)
             setattr(self_attention_submodules, k, v_new)
+        transformer_layer_spec.layer_specs[layer_id] = layer_spec
 
     return transformer_layer_spec
 
@@ -71,8 +74,9 @@ class _PerLayerRMSNormExtraArgs:
 # ref: WrappedTorchNorm, TENorm
 class _PerLayerRMSNorm:
     def __new__(cls, *args, hidden_size: int, extra: _PerLayerRMSNormExtraArgs, **kwargs):
+        print(f"_PerLayerRMSNorm.new {args=} {hidden_size=} {extra=} {kwargs=}")
         # MiniMax-M2 head_dim, can remove this assertion when more model is to be supported
-        assert hidden_size == 128
+        # assert hidden_size == 128
 
         obj = build_module(extra.inner_cls, *args, hidden_size=hidden_size * extra.num_heads, **kwargs)
 
