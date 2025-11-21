@@ -86,5 +86,5 @@ class MinimaxM2Bridge(LLMBridge):
             qk_layernorm=self.hf_config.use_qk_norm,
             add_qkv_bias=False,
             add_bias_linear=False,
-            rotary_interleaved=TODO,
+            rotary_interleaved=False,  # TODO should glm also be changed
         )
