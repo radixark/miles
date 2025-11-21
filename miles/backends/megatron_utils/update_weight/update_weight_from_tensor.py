@@ -135,11 +135,11 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
-        for current_infos in tqdm(self.param_info_buckets, disable=rank != 0, desc="Update weights"):
-            current_megatron_params = _get_megatron_full_params(current_infos, megatron_local_weights)
-            refs = self._update_converted_params_from_tensor(current_megatron_params, current_infos)
+        for param_infos in tqdm(self.param_info_buckets, disable=rank != 0, desc="Update weights"):
+            megatron_full_params = _get_megatron_full_params(param_infos, megatron_local_weights)
+            refs = self._update_converted_params_from_tensor(megatron_full_params, param_infos)
             ray.get(refs)
-            del current_megatron_params
+            del megatron_full_params
 
         dist.barrier(group=get_gloo_group())
 
