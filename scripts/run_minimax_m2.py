@@ -17,9 +17,9 @@ app = typer.Typer()
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
-    model_org: str = "zai-org"
-    model_name: str = "GLM-4.5"
-    megatron_model_type: str = "glm4.5-355B-A32B"
+    model_org: str = "MiniMaxAI"
+    model_name: str = "MiniMax-M2"
+    megatron_model_type: str = "minimax-m2"
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
