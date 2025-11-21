@@ -1,4 +1,7 @@
 MODEL_ARGS=(
+    # Spec
+    --spec "miles_plugins.models.minimax_m2" "get_minimax_m2_spec"
+
     # Numbers :: Common
     --num-layers 62
     --hidden-size 3072
