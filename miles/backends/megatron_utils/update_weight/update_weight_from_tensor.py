@@ -133,16 +133,17 @@ class UpdateWeightFromTensor:
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-        megatron_all_weights = self.weights_getter()
+        megatron_local_weights = self.weights_getter()
 
         for current_infos in tqdm(self.param_info_buckets, disable=rank != 0, desc="Update weights"):
-            current_megatron_params = _gather_bucket_megatron_params(current_infos, megatron_all_weights)
+            current_megatron_params = _gather_bucket_megatron_params(current_infos, megatron_local_weights)
             refs = self._update_converted_params_from_tensor(current_megatron_params, current_infos)
             ray.get(refs)
             del current_megatron_params
 
         dist.barrier(group=get_gloo_group())
 
+    # TODO rename fn
     def _update_converted_params_from_tensor(
         self, megatron_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]
     ) -> list[ObjectRef]:
@@ -230,7 +231,7 @@ class UpdateWeightFromTensor:
 
 def _gather_bucket_megatron_params(
     param_infos: Sequence[ParamInfo],
-    megatron_all_weights,
+    megatron_local_weights,
 ) -> Sequence[torch.Tensor]:
     monkey_patch_torch_reductions()
     pp_size = mpu.get_pipeline_model_parallel_world_size()
@@ -242,7 +243,7 @@ def _gather_bucket_megatron_params(
         if dist.get_rank() == info.src_rank:
             params.append(
                 torch.nn.Parameter(
-                    megatron_all_weights[info.name].to(device=torch.cuda.current_device(), non_blocking=True),
+                    megatron_local_weights[info.name].to(device=torch.cuda.current_device(), non_blocking=True),
                     requires_grad=False,
                 )
             )
