@@ -6,7 +6,7 @@ import torch.nn
 from megatron.core import mpu
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.attention import SelfAttentionSubmodules
-from megatron.core.transformer.spec_utils import ModuleSpec
+from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 
 
@@ -74,7 +74,7 @@ class _PerLayerRMSNorm:
         # MiniMax-M2 head_dim, can remove this assertion when more model is to be supported
         assert hidden_size == 128
 
-        obj = extra.inner_cls(*args, hidden_size=hidden_size * extra.num_heads, **kwargs)
+        obj = build_module(extra.inner_cls, *args, hidden_size=hidden_size * extra.num_heads, **kwargs)
 
         if extra.tp_group_world_size > 1:
             original_forward = obj.forward
