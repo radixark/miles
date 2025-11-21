@@ -24,6 +24,8 @@ from tqdm import tqdm
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.types import ParamInfo
 
+from .distributed_primitives import update_weights_from_distributed, connect_rollout_engines_from_distributed, disconnect_rollout_engines_from_distributed
+
 from .megatron_to_hf import convert_to_hf  # noqa: F401
 
 try:
