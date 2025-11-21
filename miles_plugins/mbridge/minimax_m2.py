@@ -68,18 +68,27 @@ class MinimaxM2Bridge(LLMBridge):
         return convert_names
 
     def _build_config(self):
-        hf_config = self.hf_config
         return self._build_base_config(
+            use_cpu_initialization=False,
             # MoE specific
-            num_moe_experts=hf_config.num_local_experts,
-            moe_aux_loss_coeff=hf_config.router_aux_loss_coef,
-            moe_router_topk=hf_config.num_experts_per_tok,
-            moe_router_pre_softmax=True,
-            moe_router_load_balancing_type="none",  # turn off aux_loss as it hurts perf in RL
-            moe_router_score_function="softmax",
-            moe_shared_expert_intermediate_size=None,  # mixtral has no shared expert
-            moe_shared_expert_overlap=False,  # mixtral has no shared expert
-            moe_ffn_hidden_size=hf_config.intermediate_size,
+            moe_ffn_hidden_size=self.hf_config.intermediate_size,
             moe_router_bias_update_rate=0.001,
+            moe_router_topk=self.hf_config.num_experts_per_tok,
+            num_moe_experts=self.hf_config.num_local_experts,
+            moe_router_load_balancing_type="none",  # default None for RL
             moe_grouped_gemm=True,
+            moe_router_score_function="sigmoid",
+            moe_router_enable_expert_bias=True,
+            moe_router_pre_softmax=True,
+            # Other optimizations
+            persist_layer_norm=True,
+            bias_activation_fusion=True,
+            bias_dropout_fusion=True,
+            # GLM specific
+            qk_layernorm=self.hf_config.use_qk_norm,
+            add_qkv_bias=True,
+            add_bias_linear=False,
+            # post_mlp_layernorm=True,
+            # post_self_attn_layernorm=True,
+            rotary_interleaved=True,
         )
