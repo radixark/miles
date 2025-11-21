@@ -144,9 +144,9 @@ class UpdateWeightFromTensor:
 
         dist.barrier(group=get_gloo_group())
 
-    def _convert_to_hf_named_tensors(self, megatron_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
+    def _convert_to_hf_named_tensors(self, megatron_full_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
         hf_named_tensors = []
-        for info, param in zip(param_infos, megatron_params):
+        for info, param in zip(param_infos, megatron_full_params):
             param = remove_padding(info.name, param, self.vocab_size)
             hf_named_tensors.extend(
                 convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
