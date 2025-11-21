@@ -75,10 +75,10 @@ class _PerLayerRMSNorm:
 
         original_forward = obj.forward
 
+        # Slow, should optimize later
         def _modified_forward(x: torch.Tensor) -> torch.Tensor:
             original_shape = x.shape
 
-            # Slow, should optimize later
             x = _all_gather(x, group=extra.tp_group, concat_dim=-1)
             assert x.shape[-1] == hidden_size * extra.num_heads
 
