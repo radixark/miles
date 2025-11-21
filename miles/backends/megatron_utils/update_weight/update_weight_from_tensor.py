@@ -137,9 +137,9 @@ class UpdateWeightFromTensor:
 
         num_buckets = len(self.param_info_buckets)
         for i in tqdm(range(num_buckets), disable=rank != 0, desc="Update weights"):
-            current_params, current_infos = _gather_bucket_megatron_params(
-                self.param_info_buckets[i], megatron_all_weights
-            )
+            param_infos = self.param_info_buckets[i]
+            # TODO the `param_infos` seems unchanged, maybe directly use it
+            current_params, current_infos = _gather_bucket_megatron_params(param_infos, megatron_all_weights)
             refs = self._update_converted_params_from_tensor(current_params, current_infos)
             ray.get(refs)
             del current_params, current_infos
