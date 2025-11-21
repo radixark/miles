@@ -76,23 +76,24 @@ class _PerLayerRMSNorm:
 
         obj = extra.inner_cls(*args, hidden_size=hidden_size * extra.num_heads, **kwargs)
 
-        original_forward = obj.forward
+        if extra.tp_group_world_size > 1:
+            original_forward = obj.forward
 
-        # Slow, should optimize later
-        def _modified_forward(x: torch.Tensor) -> torch.Tensor:
-            original_shape = x.shape
+            # Slow, should optimize later
+            def _modified_forward(x: torch.Tensor) -> torch.Tensor:
+                original_shape = x.shape
 
-            x = _all_gather(x, group=extra.tp_group, concat_dim=-1)
-            assert x.shape[-1] == hidden_size * extra.num_heads
+                x = _all_gather(x, group=extra.tp_group, concat_dim=-1)
+                assert x.shape[-1] == hidden_size * extra.num_heads
 
-            x = original_forward(x)
+                x = original_forward(x)
 
-            x = _slice(x, dim=-1, rank=extra.tp_group_rank, num_slices=extra.tp_group_world_size)
-            assert x.shape == original_shape
+                x = _slice(x, dim=-1, rank=extra.tp_group_rank, num_slices=extra.tp_group_world_size)
+                assert x.shape == original_shape
 
-            return x
+                return x
 
-        obj.forward = MethodType(_modified_forward, obj)
+            obj.forward = MethodType(_modified_forward, obj)
 
         return obj
 
