@@ -12,7 +12,7 @@ from sglang.srt.utils import MultiprocessingSerializer
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from .hf_weight_source_direct import HfWeightSourceDirect
+from .hf_weight_iterator_direct import HfWeightIteratorDirect
 from .megatron_to_hf import convert_to_hf  # noqa: F401
 from .update_weight_from_distributed import (
     connect_rollout_engines_from_distributed,
@@ -58,7 +58,7 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
 
-        self._hf_weight_source = HfWeightSourceDirect(
+        self._hf_weight_iterator = HfWeightIteratorDirect(
             args=args, model=model, model_name=model_name, quantization_config=quantization_config
         )
 
@@ -127,7 +127,7 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
-        for hf_named_tensors in self._hf_weight_source.get_hf_weight_chunks(megatron_local_weights):
+        for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             refs = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
 

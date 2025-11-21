@@ -20,7 +20,7 @@ from .common import all_gather_params_async, named_parameters
 from .megatron_to_hf import convert_to_hf  # noqa: F401
 
 
-class HfWeightSourceDirect:
+class HfWeightIteratorDirect:
     def __init__(self, args, model, model_name, quantization_config):
         self.args = args
         self.model = model
