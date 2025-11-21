@@ -25,8 +25,8 @@ def get_qwen3_next_spec(args, config, vp_stage):
         self_attention_submodules = layer_spec.submodules.self_attention.submodules
         assert isinstance(self_attention_submodules, SelfAttentionSubmodules)
         for k, num_heads in [
-            ("q_layernorm", TODO),
-            ("k_layernorm", TODO),
+            ("q_layernorm", args.num_attention_heads),
+            ("k_layernorm", args.num_query_groups),
         ]:
             v_old = getattr(self_attention_submodules, k)
             v_new = _create_per_layer_rms_norm(v_old, num_heads=num_heads)
@@ -47,5 +47,7 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
 
 class _PerLayerRMSNorm:
     def __init__(self, *args, hidden_size: int, inner_cls: type, num_heads: int, **kwargs):
-        assert hidden_size == 128  # MiniMax-M2 head_dim
+        # MiniMax-M2 head_dim, can remove this assertion when more model is to be supported
+        assert hidden_size == 128
+
         self._inner = inner_cls(*args, hidden_size=hidden_size * num_heads, **kwargs)
