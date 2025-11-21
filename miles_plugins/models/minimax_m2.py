@@ -95,7 +95,8 @@ class _PerLayerRMSNorm:
 
 
 def _all_gather(x, *, group, concat_dim: int):
-    out_list = TODO
+    group_world_size = torch.distributed.get_world_size(group)
+    out_list = [torch.empty_like(x) for _ in range(group_world_size)]
     torch.distributed.all_gather(out_list, x, group=group)
     return torch.concat(out_list, dim=concat_dim)
 
