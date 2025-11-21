@@ -1,4 +1,4 @@
-import torch.distributed
+import torch.distributed.nn
 from dataclasses import dataclass
 from types import MethodType
 
@@ -95,10 +95,7 @@ class _PerLayerRMSNorm:
 
 
 def _all_gather(x, *, group, concat_dim: int):
-    TODO_backward_pass
-    group_world_size = torch.distributed.get_world_size(group)
-    out_list = [torch.empty_like(x) for _ in range(group_world_size)]
-    torch.distributed.all_gather(out_list, x, group=group)
+    out_list = torch.distributed.nn.all_gather(x, group=group)
     return torch.concat(out_list, dim=concat_dim)
 
 
