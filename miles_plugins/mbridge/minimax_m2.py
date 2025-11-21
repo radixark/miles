@@ -1,5 +1,4 @@
-from mbridge.core import register_model, LLMBridge
-from mbridge.models import Qwen2MoEBridge
+from mbridge.core import LLMBridge, register_model
 
 
 @register_model("minimax_m2")
@@ -10,18 +9,10 @@ class MinimaxM2Bridge(LLMBridge):
         "output_layer.weight": "lm_head.weight",
     }
     _ATTENTION_MAPPING = {
-        "self_attention.linear_proj.weight": [
-            "model.layers.{layer_number}.self_attn.o_proj.weight"
-        ],
-        "self_attention.linear_qkv.layer_norm_weight": [
-            "model.layers.{layer_number}.input_layernorm.weight"
-        ],
-        "self_attention.q_layernorm.weight": [
-            "model.layers.{layer_number}.self_attn.q_norm.weight"
-        ],
-        "self_attention.k_layernorm.weight": [
-            "model.layers.{layer_number}.self_attn.k_norm.weight"
-        ],
+        "self_attention.linear_proj.weight": ["model.layers.{layer_number}.self_attn.o_proj.weight"],
+        "self_attention.linear_qkv.layer_norm_weight": ["model.layers.{layer_number}.input_layernorm.weight"],
+        "self_attention.q_layernorm.weight": ["model.layers.{layer_number}.self_attn.q_norm.weight"],
+        "self_attention.k_layernorm.weight": ["model.layers.{layer_number}.self_attn.k_norm.weight"],
         "self_attention.linear_qkv.weight": [
             "model.layers.{layer_number}.self_attn.q_proj.weight",
             "model.layers.{layer_number}.self_attn.k_proj.weight",
@@ -29,19 +20,13 @@ class MinimaxM2Bridge(LLMBridge):
         ],
     }
     _MLP_MAPPING = {
-        "pre_mlp_layernorm": [
-            "model.layers.{layer_number}.post_attention_layernorm.weight"
-        ],
-        "mlp.router.weight": [
-            "model.layers.{layer_number}.block_sparse_moe.gate.weight"
-        ],
+        "pre_mlp_layernorm": ["model.layers.{layer_number}.post_attention_layernorm.weight"],
+        "mlp.router.weight": ["model.layers.{layer_number}.block_sparse_moe.gate.weight"],
         "mlp.experts.linear_fc1": [
             "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w1.weight",
             "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w3.weight",
         ],
-        "mlp.experts.linear_fc2": [
-            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight"
-        ],
+        "mlp.experts.linear_fc2": ["model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight"],
         "mlp.router.expert_bias": ["model.layers.{layer_number}.block_sparse_moe.e_score_correction_bias"],
     }
 
@@ -53,15 +38,10 @@ class MinimaxM2Bridge(LLMBridge):
                 if "{expert_id}" in mapping_names[0]:
                     expert_id = name.split("weight")[-1]
                     convert_names.extend(
-                        [
-                            x.format(layer_number=layer_number, expert_id=expert_id)
-                            for x in mapping_names
-                        ]
+                        [x.format(layer_number=layer_number, expert_id=expert_id) for x in mapping_names]
                     )
                 else:
-                    convert_names.extend(
-                        [x.format(layer_number=layer_number) for x in mapping_names]
-                    )
+                    convert_names.extend([x.format(layer_number=layer_number) for x in mapping_names])
                 break
         if len(convert_names) == 0:
             raise NotImplementedError(f"Unsupported parameter name: {name}")
