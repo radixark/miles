@@ -31,7 +31,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
 @app.command()
 @U.dataclass_cli
 def prepare_single(args: ScriptArgs):
-    """This script only needs to be executed on one node."""
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir /root/models/{args.model_name}"
