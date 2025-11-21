@@ -1,3 +1,4 @@
+import torch.distributed
 from dataclasses import dataclass
 from types import MethodType
 
@@ -45,6 +46,7 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
             extra=_PerLayerRMSNormExtraArgs(
                 inner_cls=inner_cls,
                 num_heads=num_heads,
+                tp_group=TODO,
             )
         ),
     )
@@ -54,6 +56,7 @@ def _create_per_layer_rms_norm(inner_cls: type, num_heads: int) -> type:
 class _PerLayerRMSNormExtraArgs:
     inner_cls: type
     num_heads: int
+    tp_group: any
 
 
 # ref: WrappedTorchNorm, TENorm
@@ -67,12 +70,25 @@ class _PerLayerRMSNorm:
         original_forward = obj.forward
 
         def _modified_forward(x: torch.Tensor) -> torch.Tensor:
+            original_shape = x.shape
+
             # Slow, should optimize later
-            x = TODO_ag
+            x = _all_gather(x, group=extra.tp_group, concat_dim=-1)
+            assert x.shape[-1] == hidden_size * extra.num_heads
+
             x = original_forward(x)
+
             x = TODO_slice
+            assert x.shape == original_shape
+
             return x
 
         obj.forward = MethodType(_modified_forward, obj)
 
         return obj
+
+
+def _all_gather(x, *, group, concat_dim: int):
+    out_list = TODO
+    torch.distributed.all_gather(out_list, x, group=group)
+    return torch.concat(out_list, dim=concat_dim)
