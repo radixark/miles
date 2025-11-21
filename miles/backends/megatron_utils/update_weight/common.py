@@ -8,24 +8,7 @@ import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
-try:
-    pass
-except:
-    pass
-
 from miles.utils.types import ParamInfo
-
-from .megatron_to_hf import convert_to_hf  # noqa: F401
-
-try:
-    try:
-        from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
-    except ImportError:
-        from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
-
-    use_flattened_tensor_bucket = True
-except Exception:
-    use_flattened_tensor_bucket = False
 
 
 def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:

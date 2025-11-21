@@ -11,26 +11,12 @@ from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
-try:
-    pass
-except:
-    pass
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 from .common import all_gather_param, named_parameters, remove_padding
 from .megatron_to_hf import convert_to_hf  # noqa: F401
-
-try:
-    try:
-        from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
-    except ImportError:
-        from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
-
-    use_flattened_tensor_bucket = True
-except Exception:
-    use_flattened_tensor_bucket = False
 
 
 class UpdateWeightFromDistributed:
