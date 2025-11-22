@@ -20,6 +20,7 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
+from .update_weight.common import named_parameters
 
 from miles.utils import tracking_utils
 from miles.utils.memory_utils import clear_memory
