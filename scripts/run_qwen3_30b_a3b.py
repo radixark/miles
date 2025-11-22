@@ -121,8 +121,11 @@ def execute(args: ScriptArgs):
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
     )
 
-    if args.enable_megatron_bridge:
-        misc_args += "--megatron-to-hf-mode bridge "
+    # TODO
+    # TODO
+    # TODO
+    # if args.enable_megatron_bridge:
+    #     misc_args += "--megatron-to-hf-mode bridge "
 
     match (args.hardware, args.num_nodes):
         case ("H100", 1):
