@@ -21,4 +21,10 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
 
 def _change_conversion_tasks_weights(vanilla_conversion_tasks, new_weight_dict):
-    return TODO
+    def _handle_one(task):
+        if task.param_weight is None:
+            return task
+
+        return TODO
+
+    return [_handle_one(task) for task in vanilla_conversion_tasks]
