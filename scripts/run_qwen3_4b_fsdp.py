@@ -27,6 +27,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.megatron_model_type = {
                 "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
                 "Qwen3-4B-Base": "qwen3-4B",
+                "Qwen3-4B": "qwen3-4B",
             }[self.model_name]
 
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
