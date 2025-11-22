@@ -19,7 +19,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
         renamed_megatron_local_weights = {_strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
-        conversion_tasks = _change_conversion_tasks_weights(
+        conversion_tasks = _process_conversion_tasks(
             self._vanilla_conversion_tasks, renamed_megatron_local_weights
         )
         with megatron_bridge_utils.patch_megatron_model(self.model):
@@ -31,7 +31,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             )
 
 
-def _change_conversion_tasks_weights(vanilla_conversion_tasks, new_weight_dict):
+def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
     def _handle_one(task):
         if task.param_weight is None:
             return task
@@ -40,10 +40,11 @@ def _change_conversion_tasks_weights(vanilla_conversion_tasks, new_weight_dict):
             task.param_name in new_weight_dict
         ), f"{task.param_name=} not in new_weight_dict ({list(new_weight_dict)=})"
         new_param_weight = new_weight_dict[task.param_name]
+        new_param_weight = new_param_weight.cuda()
 
         return dataclasses.replace(task, param_weight=new_param_weight)
 
-    return [_handle_one(task) for task in vanilla_conversion_tasks]
+    return (_handle_one(task) for task in vanilla_conversion_tasks)
 
 
 def _strip_param_name_prefix(name: str):
