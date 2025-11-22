@@ -4,6 +4,7 @@ from miles.utils import megatron_bridge_utils
 from miles.utils.iter_utils import chunk_named_params_by_size
 
 from .hf_weight_iterator_base import HfWeightIteratorBase
+from ..megatron_to_hf import postprocess_hf_param
 
 
 class HfWeightIteratorBridge(HfWeightIteratorBase):
@@ -21,11 +22,20 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
         renamed_megatron_local_weights = {_strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
         conversion_tasks = _process_conversion_tasks(self._vanilla_conversion_tasks, renamed_megatron_local_weights)
         with megatron_bridge_utils.patch_megatron_model(self.model):
-            vanilla_named_weights = self._bridge.export_hf_weights(
+            named_weights = self._bridge.export_hf_weights(
                 self.model, cpu=False, conversion_tasks=conversion_tasks
             )
+            named_weights = (
+                (hf_param_name, postprocess_hf_param(
+                    args=self.args,
+                    megatron_param_name=megatron_param_name,
+                    hf_param_name=hf_param_name,
+                    param=weight,
+                ))
+                for hf_param_name, weight, megatron_param_name in named_weights
+            )
             yield from chunk_named_params_by_size(
-                vanilla_named_weights, chunk_size=self.args.update_weight_buffer_size
+                named_weights, chunk_size=self.args.update_weight_buffer_size
             )
 
 
@@ -43,6 +53,7 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
         return dataclasses.replace(task, param_weight=new_param_weight)
 
     return _MapWithLen(_handle_one, vanilla_conversion_tasks)
+
 
 
 def _strip_param_name_prefix(name: str):
