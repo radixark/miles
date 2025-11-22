@@ -5,7 +5,6 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 
-
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 except:
@@ -16,8 +15,8 @@ from tqdm import tqdm
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
+from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_params_async, named_parameters
-from .megatron_to_hf import convert_to_hf  # noqa: F401
 
 
 class HfWeightIteratorDirect:
