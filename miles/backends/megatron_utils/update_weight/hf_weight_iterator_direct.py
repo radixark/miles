@@ -1,3 +1,4 @@
+import dataclasses
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -191,7 +192,7 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
             for name, info in infos.items():
                 if name not in param_infos:
                     # here we need to set the src_rank to the rank within the expert model parallel group
-                    info.src_rank = src_rank
+                    info = dataclasses.replace(info, src_rank=src_rank)
                     param_infos[name] = info
 
     param_infos = list(param_infos.values())
