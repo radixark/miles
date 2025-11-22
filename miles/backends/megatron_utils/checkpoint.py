@@ -24,8 +24,11 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
 
 
 def _is_hf_checkpoint(path: str):
-    AutoConfig.from_pretrained(path)
-    return TODO
+    try:
+        AutoConfig.from_pretrained(path)
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _load_checkpoint_hf(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
