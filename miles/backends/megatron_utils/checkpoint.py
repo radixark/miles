@@ -1,5 +1,4 @@
 # TODO: may need to copy those 2 functions and do refactoring.
-from megatron.training.checkpointing import save_checkpoint
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.global_vars import get_args
 from transformers import AutoConfig
