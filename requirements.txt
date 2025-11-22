@@ -3,6 +3,7 @@ blobfile
 datasets
 httpx[http2]
 mcp[cli]
+megatron-bridge
 omegaconf
 pillow
 pylatexenc
