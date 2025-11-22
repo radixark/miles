@@ -26,7 +26,9 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             vanilla_named_weights = self._bridge.export_hf_weights(
                 self.model, cpu=False, conversion_tasks=conversion_tasks
             )
-            yield from chunk_named_params_by_size(vanilla_named_weights, chunk_size=self.args.update_weight_buffer_size)
+            yield from chunk_named_params_by_size(
+                vanilla_named_weights, chunk_size=self.args.update_weight_buffer_size
+            )
 
 
 def _change_conversion_tasks_weights(vanilla_conversion_tasks, new_weight_dict):
