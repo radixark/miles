@@ -1,3 +1,6 @@
+import torch
+from typing import Iterable, Tuple, Any, Callable
+
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
@@ -12,4 +15,17 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
         vanilla_named_weights = self._bridge.export_hf_weights(self.model, cpu=False)
-        yield from _chunk(vanilla_named_weights)
+        yield from chunk_named_params_by_size(vanilla_named_weights, chunk_size=self.args.update_weight_buffer_size)
+
+
+# TODO fsdp can also use this
+def chunk_named_params_by_size(named_params: Iterable[Tuple[str, torch.Tensor]], chunk_size: int):
+    return _chunk_by_size(
+        named_params,
+        compute_size=lambda named_weight: named_weight[1].nbytes,
+        chunk_size=chunk_size,
+    )
+
+
+def _chunk_by_size(objects: Iterable[Any], compute_size: Callable[[Any], int], chunk_size: int):
+    TODO
