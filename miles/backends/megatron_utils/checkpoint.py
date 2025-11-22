@@ -9,18 +9,19 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     # ref: how megatron `load_checkpoint` gets directory
     load_path = get_args().load
 
-    fn = (
-        _load_checkpoint_hf
-        if _is_hf_checkpoint(load_path)
-        else _load_checkpoint_megatron
-    )
-    return fn(
-        ddp_model=ddp_model,
-        optimizer=optimizer,
-        opt_param_scheduler=opt_param_scheduler,
-        checkpointing_context=checkpointing_context,
-        skip_load_to_model_and_opt=skip_load_to_model_and_opt,
-    )
+    if _is_hf_checkpoint(load_path):
+        return _load_checkpoint_hf(
+            ddp_model=ddp_model,
+            load_path=load_path,
+        )
+    else:
+        return _load_checkpoint_megatron(
+            ddp_model=ddp_model,
+            optimizer=optimizer,
+            opt_param_scheduler=opt_param_scheduler,
+            checkpointing_context=checkpointing_context,
+            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+        )
 
 
 def _is_hf_checkpoint(path: str):
@@ -31,5 +32,5 @@ def _is_hf_checkpoint(path: str):
         return False
 
 
-def _load_checkpoint_hf(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
+def _load_checkpoint_hf(ddp_model, load_path: str):
     return TODO
