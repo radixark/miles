@@ -1,3 +1,5 @@
+import dataclasses
+
 from miles.utils.iter_utils import chunk_named_params_by_size
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -25,6 +27,7 @@ def _change_conversion_tasks_weights(vanilla_conversion_tasks, new_weight_dict):
         if task.param_weight is None:
             return task
 
-        return TODO
+        new_param_weight = TODO
+        return dataclasses.replace(task, param_weight=new_param_weight)
 
     return [_handle_one(task) for task in vanilla_conversion_tasks]
