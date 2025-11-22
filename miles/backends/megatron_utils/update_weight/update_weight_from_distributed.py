@@ -14,8 +14,8 @@ from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
+from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, named_parameters
-from .megatron_to_hf import convert_to_hf  # noqa: F401
 
 
 class UpdateWeightFromDistributed:
