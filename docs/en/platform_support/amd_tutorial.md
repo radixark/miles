@@ -16,7 +16,7 @@ You can download the prebuilt image from DockerHub: [rlsys/miles](https://hub.do
 ```bash
 docker pull rlsys/miles:latest
 ```
-Or you can use the [Dockerfile.rocm](https://github.com/lm-sys/miles/blob/main/docker/Dockerfile.rocm) to build it on your side.
+Or you can use the [Dockerfile.rocm](https://github.com/radixark/miles/blob/main/docker/Dockerfile.rocm) to build it on your side.
 ```bash
 cd docker
 docker build -f Dockerfile.rocm -t rlsys/miles:latest .
@@ -52,7 +52,7 @@ docker run --rm -it \
 
 Then, download and install miles.
 ```bash
-git clone https://github.com/lm-sys/miles.git
+git clone https://github.com/radixark/miles.git
 cd miles
 pip install -e .
 ```
