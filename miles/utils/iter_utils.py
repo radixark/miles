@@ -1,6 +1,7 @@
-import torch
 from collections import defaultdict
-from typing import Iterable, Tuple, Any, Callable, List
+from typing import Any, Callable, Iterable, List, Tuple
+
+import torch
 
 
 # details: https://stackoverflow.com/questions/773/how-do-i-use-itertools-groupby
