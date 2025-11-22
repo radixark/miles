@@ -464,7 +464,11 @@ def train_one_step(
 
     valid_step = True
     if not getattr(args, "check_for_nan_in_loss_and_grad", True):
+        print(f"hi [{torch.distributed.get_rank()}] train_one_step x1 "
+              f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
         found_inf_flag = optimizer.prepare_grads()
+        print(f"hi [{torch.distributed.get_rank()}] train_one_step x2 "
+              f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
         if found_inf_flag:
             valid_step = False
         else:
@@ -473,10 +477,14 @@ def train_one_step(
                 valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
                 valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+        print(f"hi [{torch.distributed.get_rank()}] train_one_step x3 "
+              f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
 
     if valid_step:
         # Update parameters.
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        print(f"hi [{torch.distributed.get_rank()}] train_one_step x4 "
+              f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
 
         # Update learning rate.
         assert update_successful
