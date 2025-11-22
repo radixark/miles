@@ -208,8 +208,8 @@ eval:
             "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
         }
 
-    if args.enable_megatron_bridge:
-        misc_args += "--megatron-to-hf-mode bridge "
+    # if args.enable_megatron_bridge:
+    #     misc_args += "--megatron-to-hf-mode bridge "
 
     true_on_policy_args = ""
     true_on_policy_envs = {}
