@@ -10,5 +10,9 @@ def load_checkpoint():
         return _load_checkpoint_megatron()
 
 
+def _is_hf_checkpoint():
+    return TODO
+
+
 def _load_checkpoint_hf():
     return TODO
