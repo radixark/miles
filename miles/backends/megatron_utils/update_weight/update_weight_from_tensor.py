@@ -133,7 +133,6 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
     def _send_hf_params(self, hf_named_tensors) -> list[ObjectRef]:
-        print(f"hi [{torch.distributed.get_rank()}] send_hf_params {[(name, x.shape) for name, x in hf_named_tensors]=}")
         all_refs = []
 
         refs_colocated = _send_to_colocated_engine(
