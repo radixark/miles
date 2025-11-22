@@ -1,5 +1,6 @@
+from typing import Any, Callable, Iterable, List, Tuple
+
 import torch
-from typing import Iterable, Tuple, Any, Callable, List
 
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
