@@ -5,6 +5,7 @@ from miles.utils.iter_utils import chunk_named_params_by_size
 
 from ..megatron_to_hf import postprocess_hf_param
 from .hf_weight_iterator_base import HfWeightIteratorBase
+from ..misc_utils import strip_param_name_prefix
 
 
 class HfWeightIteratorBridge(HfWeightIteratorBase):
@@ -19,7 +20,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
-        renamed_megatron_local_weights = {_strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
+        renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
         conversion_tasks = _process_conversion_tasks(self._vanilla_conversion_tasks, renamed_megatron_local_weights)
         with megatron_bridge_utils.patch_megatron_model(self.model):
             named_weights = self._bridge.export_hf_weights(self.model, cpu=False, conversion_tasks=conversion_tasks)
@@ -53,12 +54,6 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
 
     return _MapWithLen(_handle_one, vanilla_conversion_tasks)
 
-
-def _strip_param_name_prefix(name: str):
-    prefix = "module."
-    while name.startswith(prefix):
-        name = name.removeprefix(prefix)
-    return name
 
 
 class _MapWithLen:
