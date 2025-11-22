@@ -30,7 +30,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
 from .common import all_gather_params_async, named_parameters
-from .megatron_to_hf import convert_to_hf  # noqa: F401
+from ..megatron_to_hf import convert_to_hf
 
 try:
     try:
