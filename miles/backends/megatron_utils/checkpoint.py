@@ -5,6 +5,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 from transformers import AutoConfig
+from miles.utils import megatron_bridge_utils
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,9 @@ def _load_checkpoint_hf(ddp_model, load_path: str):
 
     logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
     bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
-    bridge.load_hf_weights(ddp_model)
+
+    with megatron_bridge_utils.patch_megatron_model(ddp_model):
+        bridge.load_hf_weights(ddp_model)
 
     # We can see `successfully loaded checkpoint from ... [ t 1/2, p 1/1 ] at iteration 0`
     # when loading Megatron, thus it is 0
