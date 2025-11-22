@@ -13,7 +13,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint)
         with megatron_bridge_utils.patch_megatron_model(self.model):
-            self._vanilla_conversion_tasks = self._bridge.build_conversion_tasks(self._bridge.hf_pretrained, self.model)
+            self._vanilla_conversion_tasks = self._bridge.get_conversion_tasks(self.model)
 
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
