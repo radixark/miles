@@ -4,8 +4,8 @@ from miles.utils import megatron_bridge_utils
 from miles.utils.iter_utils import chunk_named_params_by_size
 
 from ..megatron_to_hf import postprocess_hf_param
-from .hf_weight_iterator_base import HfWeightIteratorBase
 from ..misc_utils import strip_param_name_prefix
+from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
 class HfWeightIteratorBridge(HfWeightIteratorBase):
@@ -53,7 +53,6 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
         return dataclasses.replace(task, param_weight=new_param_weight)
 
     return _MapWithLen(_handle_one, vanilla_conversion_tasks)
-
 
 
 class _MapWithLen:
