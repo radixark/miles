@@ -37,14 +37,14 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
             return task
 
         assert (
-            task.param_name in new_weight_dict
+                task.param_name in new_weight_dict
         ), f"{task.param_name=} not in new_weight_dict ({list(new_weight_dict)=})"
 
         new_param_weight = new_weight_dict[task.param_name]
         new_param_weight = new_param_weight.cuda()
         return dataclasses.replace(task, param_weight=new_param_weight)
 
-    return (_handle_one(task) for task in vanilla_conversion_tasks)
+    return _MapWithLen(_handle_one, vanilla_conversion_tasks)
 
 
 def _strip_param_name_prefix(name: str):
@@ -52,3 +52,16 @@ def _strip_param_name_prefix(name: str):
     while name.startswith(prefix):
         name = name.removeprefix(prefix)
     return name
+
+
+class _MapWithLen:
+    def __init__(self, fn, xs):
+        self.fn = fn
+        self.xs = xs
+
+    def __len__(self):
+        return len(self.xs)
+
+    def __iter__(self):
+        for x in self.xs:
+            yield self.fn(x)
