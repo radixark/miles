@@ -1,12 +1,17 @@
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
+from megatron.training.global_vars import get_args
+from transformers import AutoConfig
 
 
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
+    # ref: how megatron `load_checkpoint` gets directory
+    load_path = get_args().load
+
     fn = (
         _load_checkpoint_hf
-        if _is_hf_checkpoint(TODO)
+        if _is_hf_checkpoint(load_path)
         else _load_checkpoint_megatron
     )
     return fn(
@@ -18,7 +23,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     )
 
 
-def _is_hf_checkpoint():
+def _is_hf_checkpoint(path: str):
+    AutoConfig.from_pretrained(path)
     return TODO
 
 
