@@ -15,15 +15,16 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
         from megatron.bridge import AutoBridge
 
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint)
-        with megatron_bridge_utils.patch_megatron_model(self.model):
-            self._vanilla_conversion_tasks = self._bridge.get_conversion_tasks(self.model)
 
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
-        conversion_tasks = _process_conversion_tasks(self._vanilla_conversion_tasks, renamed_megatron_local_weights)
         with megatron_bridge_utils.patch_megatron_model(self.model):
+            conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+            conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+
             named_weights = self._bridge.export_hf_weights(self.model, cpu=False, conversion_tasks=conversion_tasks)
+
             named_weights = (
                 (
                     hf_param_name,
@@ -36,6 +37,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                 )
                 for hf_param_name, weight, megatron_param_name in named_weights
             )
+
             yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
 
 
