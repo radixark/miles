@@ -13,7 +13,6 @@ from sglang.srt.utils import MultiprocessingSerializer
 from miles.utils.distributed_utils import get_gloo_group
 
 from .hf_weight_iterator_direct import HfWeightIteratorDirect
-from .megatron_to_hf import convert_to_hf  # noqa: F401
 from .update_weight_from_distributed import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
