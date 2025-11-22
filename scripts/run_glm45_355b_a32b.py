@@ -89,11 +89,7 @@ def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
     prepare_cp(args)
 
-    hf_checkpoint = (
-        f"/root/models/{args.model_name}_FP8"
-        if args.rollout_fp8
-        else f"/root/models/{args.model_name}"
-    )
+    hf_checkpoint = f"/root/models/{args.model_name}_FP8" if args.rollout_fp8 else f"/root/models/{args.model_name}"
 
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
