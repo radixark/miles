@@ -25,6 +25,30 @@ def train(args):
     # create the actor and critic models
     actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
 
+    ##################################################################
+    ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+    actor_model.update_weights()
+    if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
+        ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_CUDA_GRAPH]))
+    ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
+
+    rollout_id = 0
+    ray.get(rollout_manager.generate.remote(rollout_id))
+
+    ray.get(rollout_manager.offload.remote())
+
+    ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+    actor_model.update_weights()
+    if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
+        ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_CUDA_GRAPH]))
+    ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
+
+    rollout_id = 1
+    ray.get(rollout_manager.generate.remote(rollout_id))
+
+    raise Exception("hi")
+    ##################################################################
+
     if args.offload_rollout:
         ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
 
