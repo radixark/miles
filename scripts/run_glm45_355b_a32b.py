@@ -77,6 +77,9 @@ def prepare_spmd(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def prepare_cp(args: ScriptArgs):
+    _prepare_cp(args)
+
+def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
         path_src=f"/root/models/{args.model_name}_torch_dist",
         path_dst=f"/root/local_data/{args.model_name}_torch_dist",
@@ -87,7 +90,7 @@ def prepare_cp(args: ScriptArgs):
 @U.dataclass_cli
 def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
-    prepare_cp(args)
+    _prepare_cp(args)
 
     hf_checkpoint = f"/root/models/{args.model_name}_FP8" if args.rollout_fp8 else f"/root/models/{args.model_name}"
 
