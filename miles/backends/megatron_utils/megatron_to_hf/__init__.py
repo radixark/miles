@@ -1,3 +1,4 @@
+import torch
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
@@ -12,6 +13,7 @@ from .qwen3moe import convert_qwen3moe_to_hf
 
 # TODO unify w/ `convert_to_hf`
 def postprocess_hf_param(args, megatron_param_name, hf_param_name, param):
+    print(f"hi [{torch.distributed.get_rank()}] postprocess_hf_param {megatron_param_name=} {hf_param_name=}")
     param = remove_padding(megatron_param_name, param, args.vocab_size)
     # TODO support quant
     return param
