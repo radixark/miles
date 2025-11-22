@@ -161,6 +161,11 @@ class MegatronTrainRayActor(TrainRayActor):
         reload_process_groups()
         print_memory("after wake_up model")
 
+        from sglang.srt.debug_utils.dumper import get_tensor_info
+        torch.cuda.synchronize()
+        print(f"hi [{torch.distributed.get_rank()}] wake_up end "
+              f"{[(name, get_tensor_info(param)) for name, param in named_parameters(self.args, self.model)]}")
+
     def _get_rollout_data(self, rollout_data_ref: Box) -> RolloutBatch:
         # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
         # Both first pp stage and the last pp stage will recieve the data.
@@ -315,6 +320,11 @@ class MegatronTrainRayActor(TrainRayActor):
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+
+        from sglang.srt.debug_utils.dumper import get_tensor_info
+        torch.cuda.synchronize()
+        print(f"hi [{torch.distributed.get_rank()}] train_actor START "
+              f"{[(name, get_tensor_info(param)) for name, param in named_parameters(self.args, self.model)]}")
 
         if self.args.use_rollout_routing_replay:
             self.fill_routing_replay(data_iterator, num_microbatches, rollout_data)

@@ -4,6 +4,7 @@ from typing import Callable, Dict, Iterable, Tuple
 
 import torch
 
+
 _SourceGetter = Callable[[], Iterable[Tuple[str, torch.Tensor]]]
 
 
@@ -54,6 +55,11 @@ class _TensorBackuperNormal(TensorBackuper):
             if name not in backup_dict:
                 backup_dict[name] = torch.empty_like(param, device=torch.device("cpu"), pin_memory=True)
             backup_dict[name].copy_(param.detach(), non_blocking=True)
+
+            from sglang.srt.debug_utils.dumper import get_tensor_info
+            torch.cuda.synchronize()
+            print(f"hi [{torch.distributed.get_rank()}] backup {name=} {get_tensor_info(backup_dict[name])=} {get_tensor_info(param)=}")
+
         torch.cuda.synchronize()
 
     @torch.no_grad()
