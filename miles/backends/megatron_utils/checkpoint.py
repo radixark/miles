@@ -33,4 +33,8 @@ def _is_hf_checkpoint(path: str):
 
 
 def _load_checkpoint_hf(ddp_model, load_path: str):
-    return TODO
+    TODO
+
+    iteration = TODO
+    num_floating_point_operations_so_far = 0
+    return iteration, num_floating_point_operations_so_far
