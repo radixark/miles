@@ -38,6 +38,8 @@ def _load_checkpoint_hf(ddp_model, load_path: str):
     bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
     bridge.load_hf_weights(ddp_model)
 
-    iteration = TODO
+    # We can see `successfully loaded checkpoint from ... [ t 1/2, p 1/1 ] at iteration 0`
+    # when loading Megatron, thus it is 0
+    iteration = 0
     num_floating_point_operations_so_far = 0
     return iteration, num_floating_point_operations_so_far
