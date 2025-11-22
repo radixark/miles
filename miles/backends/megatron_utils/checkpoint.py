@@ -1,8 +1,12 @@
+import logging
+
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 from transformers import AutoConfig
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["save_checkpoint"]
 
@@ -37,6 +41,7 @@ def _is_hf_checkpoint(path: str):
 def _load_checkpoint_hf(ddp_model, load_path: str):
     from megatron.bridge import AutoBridge
 
+    logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
     bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
     bridge.load_hf_weights(ddp_model)
 
