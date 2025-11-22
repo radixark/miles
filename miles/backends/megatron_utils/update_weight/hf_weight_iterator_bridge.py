@@ -1,5 +1,5 @@
 import torch
-from typing import Iterable, Tuple, Any, Callable
+from typing import Iterable, Tuple, Any, Callable, List
 
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -28,4 +28,19 @@ def chunk_named_params_by_size(named_params: Iterable[Tuple[str, torch.Tensor]],
 
 
 def _chunk_by_size(objects: Iterable[Any], compute_size: Callable[[Any], int], chunk_size: int):
-    TODO
+    bucket: List[Any] = []
+    bucket_size = 0
+
+    for obj in objects:
+        obj_size = compute_size(obj)
+
+        if bucket and (bucket_size + obj_size) >= chunk_size:
+            yield bucket
+            bucket = []
+            bucket_size = 0
+
+        bucket.append(obj)
+        bucket_size += obj_size
+
+    if bucket:
+        yield bucket
