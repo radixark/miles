@@ -10,13 +10,12 @@ import torch.distributed as dist
 from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
-
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
+from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, named_parameters, remove_padding
-from .megatron_to_hf import convert_to_hf  # noqa: F401
 
 
 class UpdateWeightFromDistributed:
