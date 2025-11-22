@@ -322,11 +322,6 @@ def train_one_step(
     """
     args = get_args()
 
-    from sglang.srt.debug_utils.dumper import get_tensor_info
-    torch.cuda.synchronize()
-    print(f"hi [{torch.distributed.get_rank()}] train_one_step START "
-          f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
-
     # Set grad to zero.
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
@@ -456,11 +451,6 @@ def train_one_step(
         forward_only=False,
     )
 
-    from sglang.srt.debug_utils.dumper import get_tensor_info
-    torch.cuda.synchronize()
-    print(f"hi [{torch.distributed.get_rank()}] train_one_step b "
-          f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
-
     valid_step = True
     if not getattr(args, "check_for_nan_in_loss_and_grad", True):
         found_inf_flag = optimizer.prepare_grads()
@@ -481,20 +471,10 @@ def train_one_step(
         assert update_successful
         opt_param_scheduler.step(increment=args.global_batch_size)
 
-    from sglang.srt.debug_utils.dumper import get_tensor_info
-    torch.cuda.synchronize()
-    print(f"hi [{torch.distributed.get_rank()}] train_one_step c "
-          f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
-
     # release grad
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
-
-    from sglang.srt.debug_utils.dumper import get_tensor_info
-    torch.cuda.synchronize()
-    print(f"hi [{torch.distributed.get_rank()}] train_one_step d "
-          f"{[(name, get_tensor_info(param)) for name, param in named_parameters(args, model)]}")
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         # Average loss across microbatches.

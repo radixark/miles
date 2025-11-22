@@ -383,10 +383,6 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.use_routing_replay:
                 os.environ["ROUTING_REPLAY_STAGE"] = "replay_backward"
             with timer("actor_train"):
-                from sglang.srt.debug_utils.dumper import get_tensor_info
-                torch.cuda.synchronize()
-                print(f"hi [{torch.distributed.get_rank()}] real train START "
-                      f"{[(name, get_tensor_info(param)) for name, param in named_parameters(self.args, self.model)]}")
                 train(
                     rollout_id,
                     self.model,
