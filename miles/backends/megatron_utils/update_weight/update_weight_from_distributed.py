@@ -16,8 +16,8 @@ from tqdm import tqdm
 from miles.backends.megatron_utils.megatron_to_hf.processors.padding_remover import remove_padding
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
-from .common import all_gather_param, named_parameters
 from ..megatron_to_hf import convert_to_hf
+from .common import all_gather_param, named_parameters
 
 
 class UpdateWeightFromDistributed:

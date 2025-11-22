@@ -29,8 +29,8 @@ from tqdm import tqdm
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
-from .common import all_gather_params_async, named_parameters
 from ..megatron_to_hf import convert_to_hf
+from .common import all_gather_params_async, named_parameters
 
 try:
     try:
