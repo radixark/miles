@@ -323,8 +323,6 @@ def train_one_step(
     """
     args = get_args()
 
-    print(f"hi {type(model)=} {type(optimizer)=} {model=} {optimizer=}")
-
     from sglang.srt.debug_utils.dumper import get_tensor_info
     torch.cuda.synchronize()
     print(f"hi [{torch.distributed.get_rank()}] train_one_step START "
