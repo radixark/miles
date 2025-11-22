@@ -50,7 +50,8 @@ def execute(args: ScriptArgs):
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
-        "--save-interval 20 "
+        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
+        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
     )
 
     rollout_args = (
