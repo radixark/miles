@@ -5,6 +5,8 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 
+from .hf_weight_iterator_base import HfWeightIteratorBase
+
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 except:
@@ -19,13 +21,9 @@ from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_params_async, named_parameters
 
 
-class HfWeightIteratorDirect:
-    def __init__(self, args, model, model_name, quantization_config):
-        self.args = args
-        self.model = model
-        self.model_name = model_name
-        self.quantization_config = quantization_config
-
+class HfWeightIteratorDirect(HfWeightIteratorBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model)
 
     def get_hf_weight_chunks(self, megatron_local_weights):
