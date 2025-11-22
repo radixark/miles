@@ -22,10 +22,11 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
         conversion_tasks = _change_conversion_tasks_weights(
             self._vanilla_conversion_tasks, renamed_megatron_local_weights
         )
-        vanilla_named_weights = self._bridge.export_hf_weights(
-            self.model, cpu=False, conversion_tasks=conversion_tasks
-        )
-        yield from chunk_named_params_by_size(vanilla_named_weights, chunk_size=self.args.update_weight_buffer_size)
+        with megatron_bridge_utils.patch_megatron_model(self.model):
+            vanilla_named_weights = self._bridge.export_hf_weights(
+                self.model, cpu=False, conversion_tasks=conversion_tasks
+            )
+            yield from chunk_named_params_by_size(vanilla_named_weights, chunk_size=self.args.update_weight_buffer_size)
 
 
 def _change_conversion_tasks_weights(vanilla_conversion_tasks, new_weight_dict):
