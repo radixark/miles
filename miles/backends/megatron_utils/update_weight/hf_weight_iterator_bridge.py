@@ -39,9 +39,9 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
         assert (
             task.param_name in new_weight_dict
         ), f"{task.param_name=} not in new_weight_dict ({list(new_weight_dict)=})"
+
         new_param_weight = new_weight_dict[task.param_name]
         new_param_weight = new_param_weight.cuda()
-
         return dataclasses.replace(task, param_weight=new_param_weight)
 
     return (_handle_one(task) for task in vanilla_conversion_tasks)
