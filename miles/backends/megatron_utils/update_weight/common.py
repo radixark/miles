@@ -123,16 +123,17 @@ def named_params_and_buffers(
 
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
     for vp_stage, model_module in enumerate(model):
-        TODO_vp_stage
+        def compute_fqn(name):
+            return f"vp_stages.{vp_stage}.{name}"
 
         for name, param in model_module.named_parameters():
-            yield name, param
+            yield compute_fqn(name), param
 
         for name, buffer in model_module.named_buffers():
             # TODO shall we handle (almost) all buffers like Megatron Bridge
             if "expert_bias" not in name:
                 continue
-            yield name, buffer
+            yield compute_fqn(name), buffer
 
 
 def _named_params_and_buffers_global(
