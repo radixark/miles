@@ -8,6 +8,7 @@ import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
+from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.utils.types import ParamInfo
 
 
@@ -127,7 +128,7 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
     for vp_stage, model_module in enumerate(model):
 
         def _compute_fqn(name):
-            return f"vp_stages.{vp_stage}.{name}"
+            return f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}"
 
         for name, param in model_module.named_parameters():
             yield _compute_fqn(name), param
