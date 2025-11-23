@@ -113,7 +113,8 @@ def all_gather_params_async(
 
 
 def named_params_and_buffers(
-    args: Namespace, model: Sequence[torch.nn.Module], convert_to_global_name: bool
+    args: Namespace, model: Sequence[torch.nn.Module],
+        convert_to_global_name: bool = True,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     if convert_to_global_name:
         return _named_params_and_buffers_global(args, model)
