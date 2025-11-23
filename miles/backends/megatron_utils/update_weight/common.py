@@ -122,7 +122,7 @@ def named_params_and_buffers(
 
 
 def _named_params_and_buffers_vanilla(
-    args: Namespace, model: Sequence[torch.nn.Module], convert_to_global_name: bool
+    args: Namespace, model: Sequence[torch.nn.Module]
 ) -> Iterator[tuple[str, torch.Tensor]]:
     for vp_stage, model_module in enumerate(model):
         for name, param in model_module.named_parameters():
