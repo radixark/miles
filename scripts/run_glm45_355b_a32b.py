@@ -79,6 +79,7 @@ def prepare_spmd(args: ScriptArgs):
 def prepare_cp(args: ScriptArgs):
     _prepare_cp(args)
 
+
 def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
         path_src=f"/root/models/{args.model_name}_torch_dist",
@@ -96,7 +97,9 @@ def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
     _prepare_cp(args)
 
-    hf_checkpoint = f"/root/models/{args.model_name}_FP8" if args.rollout_fp8 else f"/root/local_data/{args.model_name}"
+    hf_checkpoint = (
+        f"/root/models/{args.model_name}_FP8" if args.rollout_fp8 else f"/root/local_data/{args.model_name}"
+    )
 
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (

@@ -96,6 +96,7 @@ def prepare_spmd(args: ScriptArgs):
 def prepare_cp(args: ScriptArgs):
     _prepare_cp(args)
 
+
 def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
         path_src=f"/root/models/{args.model_name}_torch_dist",
