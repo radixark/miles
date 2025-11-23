@@ -118,12 +118,10 @@ def named_params_and_buffers(
     if convert_to_global_name:
         return _named_params_and_buffers_global(args, model)
     else:
-        return _named_params_and_buffers_vanilla(args, model)
+        return _named_params_and_buffers_vanilla(model)
 
 
-def _named_params_and_buffers_vanilla(
-    args: Namespace, model: Sequence[torch.nn.Module]
-) -> Iterator[tuple[str, torch.Tensor]]:
+def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
     for vp_stage, model_module in enumerate(model):
         TODO_vp_stage
 
