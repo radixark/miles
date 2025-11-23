@@ -173,6 +173,7 @@ def named_params_and_buffers(args: Namespace, model: Sequence[torch.nn.Module]) 
 
         # treat expert bias as normal parameters
         for name, buffer in model_module.named_buffers():
+            # TODO shall we handle (almost) all buffers like Megatron Bridge
             if "expert_bias" not in name:
                 continue
             # for model without ddp wrap
