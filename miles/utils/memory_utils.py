@@ -13,6 +13,12 @@ def clear_memory():
     torch.cuda.empty_cache()
 
 
+def clear_host_memory():
+    torch.cuda.synchronize()
+    gc.collect()
+    torch._C._host_emptyCache()
+
+
 def available_memory():
     device = torch.cuda.current_device()
     free, total = torch.cuda.mem_get_info(device)
