@@ -10,6 +10,7 @@ from transformers import AutoConfig
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from sglang_router.launch_router import RouterArgs
 
 logger = logging.getLogger(__name__)
 
@@ -815,6 +816,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
                 default="",
             )
+            RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
 
         # wandb
