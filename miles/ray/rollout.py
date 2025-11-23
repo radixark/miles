@@ -442,6 +442,8 @@ def _start_router(args):
         if hasattr(router_args, "request_timeout_secs"):
             router_args.request_timeout_secs = args.sglang_router_request_timeout_secs
 
+        logger.info(f"Launch router with args: {router_args}")
+
     process = multiprocessing.Process(
         target=run_router,
         args=(router_args,),
