@@ -5,12 +5,12 @@ import os
 from typing import Any, Dict
 
 import yaml
+from sglang_router.launch_router import RouterArgs
 from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
-from sglang_router.launch_router import RouterArgs
 
 logger = logging.getLogger(__name__)
 
