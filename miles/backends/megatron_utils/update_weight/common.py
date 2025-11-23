@@ -113,8 +113,9 @@ def all_gather_params_async(
 
 
 def named_params_and_buffers(
-    args: Namespace, model: Sequence[torch.nn.Module],
-        convert_to_global_name: bool = True,
+    args: Namespace,
+    model: Sequence[torch.nn.Module],
+    convert_to_global_name: bool = True,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     if convert_to_global_name:
         return _named_params_and_buffers_global(args, model)
@@ -124,6 +125,7 @@ def named_params_and_buffers(
 
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
     for vp_stage, model_module in enumerate(model):
+
         def _compute_fqn(name):
             return f"vp_stages.{vp_stage}.{name}"
 
