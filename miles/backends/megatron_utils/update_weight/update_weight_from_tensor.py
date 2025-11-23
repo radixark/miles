@@ -119,28 +119,20 @@ class UpdateWeightFromTensor:
         """
         self.weight_version += 1
 
-        try:
-            rank = dist.get_rank()
-            if rank == 0:
-                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            dist.barrier(group=get_gloo_group())
+        rank = dist.get_rank()
+        if rank == 0:
+            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+        dist.barrier(group=get_gloo_group())
 
-            megatron_local_weights = self.weights_getter()
+        megatron_local_weights = self.weights_getter()
 
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
-                refs = self._send_hf_params(hf_named_tensors)
-                ray.get(refs)
-                print(f"hi [{torch.distributed.get_rank()}] ray.get(refs) END")
+        for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
+            refs = self._send_hf_params(hf_named_tensors)
+            ray.get(refs)
 
-            dist.barrier(group=get_gloo_group())
-            print(f"hi [{torch.distributed.get_rank()}] update_weights END")
-        except Exception as e:
-            print(f"hi [{torch.distributed.get_rank()}] update_weights see error {e}")
-            raise
+        dist.barrier(group=get_gloo_group())
 
     def _send_hf_params(self, hf_named_tensors) -> list[ObjectRef]:
-        print(f"hi [{torch.distributed.get_rank()}] _send_hf_params START {len(hf_named_tensors)=}")
-
         all_refs = []
 
         refs_colocated = _send_to_colocated_engine(

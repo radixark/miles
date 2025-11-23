@@ -12,9 +12,6 @@ from .qwen3moe import convert_qwen3moe_to_hf
 
 # TODO unify w/ `convert_to_hf`
 def postprocess_hf_param(args, megatron_param_name, hf_param_name, param):
-    import torch
-    print(f"hi [{torch.distributed.get_rank()}] postprocess_hf_param START {megatron_param_name=} {hf_param_name=}")
-
     param = remove_padding(megatron_param_name, param, args.vocab_size)
     # TODO support quant
     return param
