@@ -95,12 +95,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--offload-train-mode",
-                choices=["tms", "move"],
-                default="tms",
-                help="Approach to offload training engine",
-            )
-            parser.add_argument(
                 "--offload-rollout",
                 action=argparse.BooleanOptionalAction,
                 help=(
@@ -755,6 +749,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--get-mismatch-metrics",
+                action="store_true",
+                default=False,
+                help="Whether to calculate the mismatch metrics.",
+            )
+            parser.add_argument(
                 "--use-rollout-logprobs",
                 action="store_true",
                 default=False,
@@ -786,7 +786,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--custom-tis-function-path",
                 type=str,
                 default=None,
-                help="Path to the custom TIS function.",
+                help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
             )
 
             parser.add_argument(
@@ -815,6 +815,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 nargs="+",
                 default="",
+            )
+            parser.add_argument(
+                "--miles-router-timeout",
+                type=float,
+                default=None,
+                help="Timeout for MilesRouter HTTP requests in seconds.",
+            )
+            parser.add_argument(
+                "--miles-router-max-connections",
+                type=int,
+                default=None,
+                help="Max connections for MilesRouter HTTP client.",
             )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
@@ -1074,6 +1086,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["qwen", "qwen3", "distill_qwen"],
                 help="Loss mask type",
             )
+            parser.add_argument(
+                "--data-pad-size-multiplier",
+                type=int,
+                default=128,
+                help="Multiplier for data padding size in data processing.",
+            )
             return parser
 
         def add_custom_megatron_plugins_arguments(parser):
@@ -1326,6 +1344,16 @@ def miles_validate_args(args):
 
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
+
+    if args.get_mismatch_metrics:
+        assert (
+            args.custom_tis_function_path is not None
+        ), "custom_tis_function_path must be set when get_mismatch_metrics is set"
+
+        if args.use_rollout_logprobs:
+            print(
+                "get_mismatch_metrics is set; For metrics calculation, the log probs will still be recomputed by training engine. One more forward pass will be applied."
+            )
 
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"

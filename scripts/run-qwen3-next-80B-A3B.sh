@@ -12,6 +12,17 @@ pkill -9 python
 
 set -ex
 
+# if base folder not set raise error
+if [ -z "${BASE_FOLDER}" ]; then
+  echo "BASE_FOLDER is not set. Please set it to the base directory of your checkpoints."
+  exit 1
+fi
+
+if [ -z "${MASTER_ADDR}" ]; then
+  echo "MASTER_ADDR is not set. Please set it to the master node address."
+  exit 1
+fi
+
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
@@ -24,56 +35,56 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/glm4.5-355B-A32B.sh"
+source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/GLM-4.5-355B-A32B
-   --ref-load $BASE_DIR/GLM-4.5-355B-A32B_torch_dist/
+   --hf-checkpoint ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking
+   --ref-load ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_torch_dist
+   --load ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_miles/
+   --save ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_miles/
+   --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data ${BASE_FOLDER}/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
    --num-rollout 3000
-   --rollout-batch-size 128
+   --rollout-batch-size 32
    --n-samples-per-prompt 8
-   --rollout-max-response-len 32768
+   --rollout-max-response-len 8192
    --rollout-temperature 0.8
 
-   --over-sampling-batch-size 256
-   --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
-
-   --num-steps-per-rollout 4
+   --global-batch-size 256
    --balance-data
-   --rollout-stop-token-ids 151329 151336 151338
 )
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl
-   --n-samples-per-eval-prompt 8
-   --eval-max-response-len 32768
+   --eval-prompt-data aime ${BASE_FOLDER}/aime-2024/aime-2024.jsonl
+   --n-samples-per-eval-prompt 16
+   --eval-max-response-len 16384
    --eval-top-p 0.7
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 8
+   --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 4
    --context-parallel-size 2
-   --expert-model-parallel-size 16
+   --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
 
+   # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 16384
+   --max-tokens-per-gpu 8192
 )
 
 GRPO_ARGS=(
@@ -83,10 +94,7 @@ GRPO_ARGS=(
    --kl-loss-type low_var_kl
    --kl-coef 0.00
    --entropy-coef 0.00
-   --eps-clip 1e-4
-   --eps-clip-high 2e-4
-
-   --use-tis
+   --eps-clip 4e-4
 )
 
 OPTIMIZER_ARGS=(
@@ -103,16 +111,26 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   # --use-wandb
+   #--use-wandb
    # --wandb-project miles-dev
-   # --wandb-group qwen3-235B-sft
+   # --wandb-group qwen3-next-80B-A3B-test
+   # --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 32
-   --sglang-mem-fraction-static 0.7
-   --sglang-enable-dp-attention
-   --sglang-dp-size 4
+   --rollout-num-gpus-per-engine 8
+   --sglang-mem-fraction-static 0.8
+   --sglang-ep-size 8
+   
+   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
+
+   # mtp
+   --sglang-speculative-algorithm EAGLE
+   --sglang-speculative-num-steps 2
+   --sglang-speculative-eagle-topk 1
+   --sglang-speculative-num-draft-tokens 3
+
+   --sglang-max-running-requests 512
 )
 
 MISC_ARGS=(
@@ -124,10 +142,12 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+
+   --moe-token-dispatcher-type flex
+   --moe-enable-deepep
 )
 
 # launch the master node of ray in container
-export MASTER_ADDR=${MLP_WORKER_0_HOST}
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 for WORKER_IP in $(awk '{print $1}' /root/mpi_rack_hostfile); do
@@ -140,42 +160,23 @@ for WORKER_IP in $(awk '{print $1}' /root/mpi_rack_hostfile); do
 done
 wait
 
+# Build the runtime environment JSON with proper variable substitution
+RUNTIME_ENV_JSON="{
+  \"env_vars\": {
+    \"PYTHONPATH\": \"/root/Megatron-LM/\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"no_proxy\": \"${no_proxy}\",
+    \"MASTER_ADDR\": \"${MASTER_ADDR}\"
+  }
+}"
+
 ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{
-     "env_vars": {
-        "no_proxy": "localhost,127.0.0.1,0.0.0.0,${MASTER_ADDR}",
-        "GLOO_SOCKET_IFNAME": "${MLP_SOCKET_IFNAME}",
-        "TP_SOCKET_IFNAME": "${MLP_SOCKET_IFNAME}",
-        "MASTER_ADDR": "${MLP_WORKER_0_HOST}",
-        "PYTHONPATH": "/root/Megatron-LM/",
-        "NCCL_CUMEM_ENABLE": "0",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-        "NVTE_BWD_LAYERNORM_SM_MARGIN": "20",
-        "NCCL_IB_TC": "160",
-        "NCCL_PXN_DISABLE": "0",
-        "NCCL_IB_GID_INDEX": "3",
-        "NCCL_NET_GDR_LEVEL": "4",
-        "NCCL_IB_RETRY_CNT": "7",
-        "NCCL_IB_TIMEOUT": "32",
-        "NCCL_IB_QPS_PER_CONNECTION": "8",
-        "NCCL_P2P_LEVEL": "NVL",
-        "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
-        "NCCL_NVLS_ENABLE": "0",
-        "NCCL_MIN_CTAS": "4",
-        "OMPI_MCA_pml": "ob1",
-        "OMPI_MCA_btl": "^openib",
-        "OMPI_MCA_routed": "direct",
-        "OMPI_MCA_routed_radix": "1024",
-        "OMPI_MCA_plm_rsh_no_tree_spawn": "1",
-        "OMPI_MCA_oob_tcp_if_include": "${MLP_SOCKET_IFNAME}",
-        "OMPI_MCA_btl_tcp_if_include": "${MLP_SOCKET_IFNAME}"
-     }
-   }' \
+   --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 8 \
+   --actor-num-nodes 4 \
    --actor-num-gpus-per-node 8 \
    --colocate \
-   --save-debug-rollout-data /mnt/zhuzilin/github-miles/data.pt \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \

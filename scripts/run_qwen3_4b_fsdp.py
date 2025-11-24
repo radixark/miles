@@ -141,7 +141,7 @@ eval:
 
     optimizer_args = (
         "--optimizer adam "
-        # "--optimizer deepspeed_cpu_adam "
+        # "--fsdp-cpu-offload "
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.1 "
@@ -158,7 +158,6 @@ eval:
                 "--attn-implementation flash_attention_2 "
                 "--gradient-checkpointing "
                 f"--update-weight-buffer-size {512 * 1024 * 1024} "  # 512MB
-                "--offload-train-mode move "
                 """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
             )
             sglang_args += f"--sglang-mem-fraction-static 0.75 "

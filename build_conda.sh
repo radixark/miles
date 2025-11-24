@@ -58,7 +58,7 @@ pip install git+https://github.com/ISEEKYAN/mbridge.git --no-deps
 # if miles does not exist locally, clone it
 if [ ! -d "$BASE_DIR/miles" ]; then
   cd $BASE_DIR
-  git clone  https://github.com/lm-sys/miles.git
+  git clone  https://github.com/radixark/miles.git
   cd miles/
   export MILES_DIR=$BASE_DIR/miles
   pip install -e .

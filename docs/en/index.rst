@@ -1,4 +1,4 @@
-miles Documentation
+Miles Documentation
 ====================
 
 miles is an LLM post-training framework for RL scaling, providing two core capabilities:

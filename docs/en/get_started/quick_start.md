@@ -20,7 +20,7 @@ Since miles may contain temporary patches for sglang/megatron, to avoid potentia
 - B-series basic functionality is stable and suitable for development/testing, but currently lacks CI protection
 - Both hardware platforms use identical installation and startup procedures
 
-- For scenarios where Docker is not convenient, please refer to [build_conda.sh](https://github.com/lm-sys/miles/blob/main/build_conda.sh);
+- For scenarios where Docker is not convenient, please refer to [build_conda.sh](https://github.com/radixark/miles/blob/main/build_conda.sh);
 - For AMD support, please refer to [AMD Usage Tutorial](../platform_support/amd_tutorial.md).
 
 ### Pull and Start Docker Container
@@ -44,7 +44,7 @@ After entering the Docker container, please follow these steps to clone the mile
 ```bash
 # Path can be adjusted according to actual situation
 cd /root/
-git clone https://github.com/lm-sys/miles.git
+git clone https://github.com/radixark/miles.git
 cd miles
 pip install -e .
 ```
