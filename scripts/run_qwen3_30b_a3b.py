@@ -135,7 +135,7 @@ def execute(args: ScriptArgs):
     match (args.hardware, args.num_nodes):
         case ("H100", 1):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
+                f"--tensor-model-parallel-size {2 if args.rollout_fp8 else 4} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
@@ -153,7 +153,7 @@ def execute(args: ScriptArgs):
             misc_args += "--actor-num-gpus-per-node 8 " "--actor-num-nodes 1 "
         case ("GB300", 1):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
+                f"--tensor-model-parallel-size {2 if args.rollout_fp8 else 4} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
@@ -170,7 +170,7 @@ def execute(args: ScriptArgs):
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 1 " "--num-gpus-per-node 4"
         case ("GB300", 2):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
+                f"--tensor-model-parallel-size {2 if args.rollout_fp8 else 4} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
@@ -187,7 +187,7 @@ def execute(args: ScriptArgs):
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 2 " "--num-gpus-per-node 4"
         case ("GB300", 4):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
+                f"--tensor-model-parallel-size {2 if args.rollout_fp8 else 4} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
