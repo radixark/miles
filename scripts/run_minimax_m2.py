@@ -71,6 +71,10 @@ def _prepare_cp(args: ScriptArgs):
         path_src=f"/root/models/{args.model_name}",
         path_dst=f"/root/local_data/{args.model_name}",
     )
+    U.rsync_simple(
+        path_src=f"/root/models/{args.model_name}-bf16",
+        path_dst=f"/root/local_data/{args.model_name}-bf16",
+    )
 
 
 @app.command()
