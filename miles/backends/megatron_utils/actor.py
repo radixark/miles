@@ -35,7 +35,9 @@ from .data import DataIterator, get_data_iterator, log_perf_data, log_rollout_da
 from .initialize import init, is_megatron_main_rank
 from .loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from .model import forward_only, initialize_model_and_optimizer, save, train
-from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor, named_parameters
+from .update_weight.common import named_params_and_buffers
+from .update_weight.update_weight_from_distributed import UpdateWeightFromDistributed
+from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -89,7 +91,9 @@ class MegatronTrainRayActor(TrainRayActor):
         start_rollout_id = loaded_rollout_id + 1
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=lambda: named_parameters(self.args, self.model),
+            source_getter=lambda: named_params_and_buffers(
+                self.args, self.model, convert_to_global_name=args.megatron_to_hf_mode == "raw"
+            ),
             single_tag=None if args.enable_weights_backuper else "actor",
         )
         self.weights_backuper.backup("actor")
@@ -104,6 +108,9 @@ class MegatronTrainRayActor(TrainRayActor):
             if args.update_weights_interval == 1:
                 self.weights_backuper.backup("rollout_actor")
 
+        if self.args.vocab_size is None:
+            self.args.vocab_size = self.tokenizer.vocab_size
+
         update_weight_cls = UpdateWeightFromTensor if self.args.colocate else UpdateWeightFromDistributed
         self.weight_updater = update_weight_cls(
             self.args,
@@ -111,7 +118,6 @@ class MegatronTrainRayActor(TrainRayActor):
             weights_getter=lambda: self.weights_backuper.get("actor"),
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
-            vocab_size=self.tokenizer.vocab_size if self.args.vocab_size is None else self.args.vocab_size,
         )
 
         # empty cache after initialization
@@ -138,7 +144,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def sleep(self) -> None:
         assert self.args.offload_train
 
-        clear_memory()
+        clear_memory(clear_host_memory=True)
         print_memory("before offload model")
         destroy_process_groups()
 
@@ -401,6 +407,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         log_perf_data(rollout_id, self.args)
 
+    @timer
     def save_model(self, iteration: int) -> None:
         if self.args.debug_rollout_only:
             return

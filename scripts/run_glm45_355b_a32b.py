@@ -2,7 +2,6 @@
 This file is in preview, and will be further refined and optimized.
 """
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -18,18 +17,16 @@ app = typer.Typer()
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
-    model_org: str = "deepseek-ai"
-    model_name: str = "DeepSeek-V3"
-    megatron_model_type: str = "deepseek-v3"
+    model_org: str = "zai-org"
+    model_name: str = "GLM-4.5"
+    megatron_model_type: str = "glm4.5-355B-A32B"
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
-    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-
-    def __post_init__(self):
-        if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
-            self.model_org = "fzyzcjy"
-            self.megatron_model_type = f"deepseek-v3-{m.group(1)}layer"
+    rollout_fp8: bool = False
+    dynamic_sampling: bool = False
+    # TODO use more complex task
+    task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
 
 
 @app.command()
@@ -46,47 +43,33 @@ def prepare_single(args: ScriptArgs):
             U.hf_download_dataset("zhuzilin/aime-2024")
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k")
-    _fp8_cast_bf16(args)
+
+    if args.rollout_fp8:
+        _convert_hf_to_fp8(args)
 
 
-def _fp8_cast_bf16(args: ScriptArgs):
-    path_bf16_hf = f"/root/models/{args.model_name}-bf16/"
-    if Path(path_bf16_hf).exists():
+def _convert_hf_to_fp8(args: ScriptArgs):
+    path_output = f"/root/models/{args.model_name}-FP8/"
+    if Path(path_output).exists():
         return
 
     U.exec_command(
-        "python tools/fp8_cast_bf16.py "
-        f"--input-fp8-hf-path /root/models/{args.model_name} "
-        f"--output-bf16-hf-path {path_bf16_hf} "
+        "python tools/convert_hf_to_fp8.py "
+        f"--model-dir /root/models/{args.model_name} "
+        f"--save-dir {path_output} "
+        "--strategy block --block-size 128 128 "
+        "--max-workers 4"
     )
 
 
 @app.command()
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
-    # TODO unify 5layer w/ 20layer, also maybe unify the whole script
-    extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
-    if args.num_nodes == 1 and args.model_name == "DeepSeek-V3-0324-5layer":
-        extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
-    elif args.model_name == "DeepSeek-V3-0324-20layer":
-        extra_args += (
-            "--expert-model-parallel-size 4 "
-            # PP info will be auto determined by converter script
-        )
-    else:
-        extra_args += (
-            "--pipeline-model-parallel-size 8 "
-            "--expert-model-parallel-size 4 "
-            "--decoder-first-pipeline-num-layers 7 "
-            "--decoder-last-pipeline-num-layers 6 "
-        )
-
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         multinode=True,
-        extra_args=extra_args,
         dir_dst="/root/models",
     )
 
@@ -114,14 +97,18 @@ def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
     _prepare_cp(args)
 
+    hf_checkpoint = (
+        f"/root/models/{args.model_name}_FP8" if args.rollout_fp8 else f"/root/local_data/{args.model_name}"
+    )
+
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint /root/local_data/{args.model_name} "
+        f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load /root/local_data/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
-        "--save-interval 20 "
-        "--save-retain-interval 20 "
+        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
+        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
     )
 
     rollout_args = (
@@ -130,15 +117,18 @@ def train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 128 "
+        # TODO enlarge
+        "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         # ------------
-        "--num-steps-per-rollout 4 "
+        # TODO enlarge
+        "--num-steps-per-rollout 1 "
         "--balance-data "
+        "--rollout-stop-token-ids 151329 151336 151338 "
     )
 
-    if args.mode != "debug_minimal":
+    if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
         rollout_args += (
             "--over-sampling-batch-size 256 "
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
@@ -154,12 +144,12 @@ def train(args: ScriptArgs):
             rollout_args += (
                 "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
+                f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
             )
             eval_args += (
                 "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 32768 "
+                "--eval-max-response-len 8192 "
             )
         case "gsm8k":
             rollout_args += (
@@ -174,58 +164,47 @@ def train(args: ScriptArgs):
                 "--eval-max-response-len 256 "
             )
 
-    if args.num_nodes <= 2:
-        perf_args = (
-            "--tensor-model-parallel-size 1 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 4 "
-            "--expert-model-parallel-size 4 "
-            "--expert-tensor-parallel-size 1 "
-        )
-    elif args.num_nodes <= 4:
-        # TODO remove this temp cfg
+    if args.num_nodes <= 4:
+        # Not really runnable, useful for --debug-rollout-only
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
-            "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 4 "
-            "--expert-model-parallel-size 4 "
+            f"--pipeline-model-parallel-size 1 "
+            "--context-parallel-size 2 "
+            "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
     else:
-        # TODO choose a good config (currently randomly change to suit 64gpu)
         perf_args = (
+            # TODO choose a good config
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
-            f"--pipeline-model-parallel-size {1 if args.model_name == 'DeepSeek-V3-0324-5layer' else 4} "
-            "--context-parallel-size 4 "
-            "--expert-model-parallel-size 16 "
+            f"--pipeline-model-parallel-size {8 if args.num_nodes == 8 else 4} "
+            "--context-parallel-size 2 "
+            "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
-        if re.search(r"(\d+)layer", args.model_name) is None:
-            perf_args += "--decoder-last-pipeline-num-layers 13 "
     perf_args += (
-        # ------------
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         # ------------
         "--use-dynamic-batch-size "
-        # TODO temp use tiny value
-        "--max-tokens-per-gpu 2048 "
-        # "--max-tokens-per-gpu 16384 "
+        "--max-tokens-per-gpu 16384 "
     )
 
     grpo_args = (
         "--advantage-estimator grpo "
-        # TODO run-deepseek-r1.sh enables use-kl-loss but w/ coef 0. can we just disable it like this?
+        # TODO enables use-kl-loss but w/ coef 0. can we just disable it like this?
         # "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
+        "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
+        # TODO wrong?
+        "--eps-clip 1e-4 "
+        "--eps-clip-high 2e-4 "
+        "--use-tis "
     )
 
     optimizer_args = (
@@ -241,35 +220,40 @@ def train(args: ScriptArgs):
         # "--use-precision-aware-optimizer "
     )
 
-    sglang_decode_max_bs = 256
-    sglang_world_size = 4 if args.num_nodes <= 4 else 64
-    sglang_attn_dp_size = 1 if args.num_nodes <= 4 else 8
-    sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
+    # TODO optimize parameters, especially for FP8
+    # TODO pure tp attention is very inefficient
+    # sglang_decode_max_bs = 256
+    sglang_world_size = min(32, args.num_gpus_per_node * args.num_nodes)
+    # sglang_attn_dp_size = 4
+    # sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.7 "
+        "--sglang-mem-fraction-static 0.85 "
         f"--sglang-tp-size {sglang_world_size} "
-        f"--sglang-ep-size {sglang_world_size} "
+        # f"--sglang-ep-size {sglang_world_size} "
         # dp attention
-        "--sglang-enable-dp-attention "
-        f"--sglang-dp-size {sglang_attn_dp_size} "
-        "--sglang-moe-dense-tp-size 1 "
-        "--sglang-enable-dp-lm-head "
-        "--sglang-disable-radix-cache "
+        # "--sglang-enable-dp-attention "
+        # f"--sglang-dp-size {sglang_attn_dp_size} "
+        # "--sglang-moe-dense-tp-size 1 "
+        # "--sglang-enable-dp-lm-head "
+        # TODO why disable?
+        # "--sglang-disable-radix-cache "
         # enable deepep for sglang
-        "--sglang-moe-a2a-backend deepep "
-        "--sglang-deepep-mode low_latency "
+        # "--sglang-moe-a2a-backend deepep "
+        # "--sglang-deepep-mode low_latency "
         # make every dp rank has 128 concurrency
-        "--sglang-server-concurrency 1024 "
-        f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
-        f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        # "--sglang-server-concurrency 1024 "
+        # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+        # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+        # f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
+        f"--sglang-chunked-prefill-size {sglang_world_size * 2048} "
     )
-    sglang_extra_env_vars = {
-        "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
-    }
+    sglang_extra_env_vars = {}
+    # sglang_extra_env_vars = {
+    #     "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
+    # }
 
     misc_args = (
         # default dropout in megatron is 0.1
@@ -279,8 +263,9 @@ def train(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
-        # "--attention-backend flash "
-        f"--update-weight-buffer-size {4 * 1024 ** 3} "
+        "--attention-backend flash "
+        # 4GB will lead to oom, not checked yet
+        f"--update-weight-buffer-size {2 * 1024 ** 3} "
         # TODO maybe enable it
         # use deepep for megatron
         # "--moe-enable-deepep "
@@ -293,6 +278,9 @@ def train(args: ScriptArgs):
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
         "--disable-weights-backuper "
+        # TODO if good, also configure to other scripts
+        "--router-health-success-threshold 1 "
+        "--router-health-check-interval-secs 15 "
     )
 
     train_args = (
@@ -311,10 +299,33 @@ def train(args: ScriptArgs):
     U.execute_train(
         train_args=train_args,
         config=args,
-        # TODO may get it from `config`
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        extra_env_vars={**sglang_extra_env_vars},
+        extra_env_vars={
+            **sglang_extra_env_vars,
+            # TODO handle these
+            # "GLOO_SOCKET_IFNAME": "${MLP_SOCKET_IFNAME}",
+            # "TP_SOCKET_IFNAME": "${MLP_SOCKET_IFNAME}",
+            # "NVTE_BWD_LAYERNORM_SM_MARGIN": "20",
+            # "NCCL_IB_TC": "160",
+            # "NCCL_PXN_DISABLE": "0",
+            # "NCCL_IB_GID_INDEX": "3",
+            # "NCCL_NET_GDR_LEVEL": "4",
+            # "NCCL_IB_RETRY_CNT": "7",
+            # "NCCL_IB_TIMEOUT": "32",
+            # "NCCL_IB_QPS_PER_CONNECTION": "8",
+            # "NCCL_P2P_LEVEL": "NVL",
+            # "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",  # TODO should this be used
+            # "NCCL_NVLS_ENABLE": "0",
+            # "NCCL_MIN_CTAS": "4",
+            # "OMPI_MCA_pml": "ob1",
+            # "OMPI_MCA_btl": "^openib",
+            # "OMPI_MCA_routed": "direct",
+            # "OMPI_MCA_routed_radix": "1024",
+            # "OMPI_MCA_plm_rsh_no_tree_spawn": "1",
+            # "OMPI_MCA_oob_tcp_if_include": "${MLP_SOCKET_IFNAME}",
+            # "OMPI_MCA_btl_tcp_if_include": "${MLP_SOCKET_IFNAME}",
+        },
     )
 
 

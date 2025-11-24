@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict
 
 import yaml
+from sglang_router.launch_router import RouterArgs
 from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
@@ -144,6 +145,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_false",
                 dest="enable_weights_backuper",
                 help="Whether to disable weights backuper to save host memory.",
+            )
+            parser.add_argument(
+                "--megatron-to-hf-mode",
+                choices=["raw", "bridge"],
+                default="raw",
+                help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
 
             return parser
@@ -809,6 +816,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
                 default="",
             )
+            RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
 
         # wandb
