@@ -51,7 +51,7 @@ def execute(args: ScriptArgs):
     )
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name}/ "
+        f"--hf-checkpoint /root/models/{args.model_name}{'-FP8' if args.rollout_fp8 else ''}/ "
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
