@@ -48,7 +48,6 @@ def prepare(args: ScriptArgs):
             model_name=args.model_name,
             megatron_model_type=args.megatron_model_type,
             num_gpus_per_node=args.num_gpus_per_node,
-            # TODO unify
             dir_dst="/root/models",
         )
 
