@@ -16,6 +16,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hardware: Literal["H100", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
+    rollout_fp8: bool = False
     enable_megatron_bridge: bool = False
 
     def __post_init__(self):
@@ -27,6 +28,10 @@ def prepare(args: ScriptArgs):
     U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir /root/models/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
+
+    if args.rollout_fp8:
+        U.exec_command(f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8")
+
     if not args.enable_megatron_bridge:
         U.convert_checkpoint(
             model_name=args.model_name,

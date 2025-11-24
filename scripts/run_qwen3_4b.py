@@ -20,6 +20,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     dynamic_sampling: bool = False
     enable_eval: bool = True
     train_backend: Literal["fsdp", "megatron"] = "megatron"
+    rollout_fp8: bool = False
     enable_megatron_bridge: bool = False
 
     def __post_init__(self):
@@ -42,6 +43,9 @@ def prepare(args: ScriptArgs):
     if args.multi_eval:
         U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
         U.hf_download_dataset("zyzshishui0627/IFBench")
+
+    if args.rollout_fp8:
+        U.exec_command(f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8")
 
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
