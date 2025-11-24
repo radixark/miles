@@ -85,8 +85,9 @@ def train(args: ScriptArgs):
 
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name} "
-        f"--ref-load /root/local_data/{args.model_name}_torch_dist "
+        # TODO support fp8 rollout
+        f"--hf-checkpoint /root/models/{args.model_name}-bf16 "
+        f"--ref-load /root/local_data/{args.model_name}-bf16 "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
