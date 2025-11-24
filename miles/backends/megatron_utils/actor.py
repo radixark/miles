@@ -201,7 +201,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # In normal miles training, these fields come from GPU forward passes and don't need moving
         if self.args.move_rl_fields_to_gpu:
             for field in ["log_probs", "ref_log_probs", "advantages", "returns", "values"]:
-                if field in rollout_data and rollout_data[field]:
+                if (value := rollout_data.get(field)):
                     # Check if first tensor is already on GPU to avoid unnecessary transfers
                     first_tensor = value[0]
                     if isinstance(first_tensor, torch.Tensor) and not first_tensor.is_cuda:
