@@ -75,6 +75,7 @@ def prepare_spmd(args: ScriptArgs):
 
     U.convert_checkpoint(
         model_name=args.model_name,
+        hf_checkpoint=f"/root/models/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         multinode=True,

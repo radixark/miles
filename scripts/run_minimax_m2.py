@@ -40,6 +40,11 @@ def prepare_single(args: ScriptArgs):
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k")
 
+    U.fp8_cast_bf16(
+        path_src=f"/root/models/{args.model_name}",
+        path_dst=f"/root/models/{args.model_name}-bf16/",
+    )
+
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
