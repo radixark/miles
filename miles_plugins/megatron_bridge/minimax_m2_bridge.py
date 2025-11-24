@@ -1,16 +1,8 @@
 import logging
 
-import torch
-from megatron.core.models.gpt.gpt_model import GPTModel
-
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
-from megatron.bridge.models.conversion.param_mapping import (
-    AutoMapping,
-    GatedMLPMapping,
-    QKVMapping,
-)
-from megatron.bridge.models.hf_pretrained.causal_lm import PreTrainedCausalLM
+from megatron.core.models.gpt.gpt_model import GPTModel
 
 logger = logging.getLogger(__name__)
 
