@@ -85,6 +85,10 @@ class RolloutManager:
     def get_rollout_engines_and_lock(self):
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
+    def get_router_address(self):
+        """Get SGLang router address"""
+        return self.args.sglang_router_ip, self.args.sglang_router_port
+
     def get_num_rollout_per_epoch(self):
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
