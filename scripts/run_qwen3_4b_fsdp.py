@@ -83,25 +83,24 @@ def execute(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 64 "
-        "--n-samples-per-prompt 16 "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
+        "--rollout-batch-size 32 "
+        "--n-samples-per-prompt 8 "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 0.8 "
-        "--global-batch-size 1024 "
+        "--global-batch-size 256 "
         "--balance-data "
     )
 
     if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
         rollout_args += (
-            # Shall we increase this since we have to do 2 rounds now
-            "--over-sampling-batch-size 128 "
+            "--over-sampling-batch-size 64 "
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
     if (args.mode != "debug_minimal") and args.enable_eval:
-        eval_max_response_len = 32768
+        eval_max_response_len = 16384
         eval_args += "--eval-interval 20 "
         if args.multi_eval:
             eval_config_text = f"""
