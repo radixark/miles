@@ -56,22 +56,22 @@ class MinimaxM2Bridge(MegatronModelBridge):
                 # Expert mappings for TEGroupedMLP
                 GatedMLPMapping(
                     megatron_param="decoder.layers.*.block_sparse_moe.experts.linear_fc1.weight*",
-                    gate="model.layers.*.block_sparse_moe.experts.*.gate_proj.weight",
-                    up="model.layers.*.block_sparse_moe.experts.*.up_proj.weight",
+                    gate="model.layers.*.block_sparse_moe.experts.*.w1.weight",
+                    up="model.layers.*.block_sparse_moe.experts.*.w3.weight",
                 ),
                 AutoMapping(
                     megatron_param="decoder.layers.*.block_sparse_moe.experts.linear_fc2.weight*",
-                    hf_param="model.layers.*.block_sparse_moe.experts.*.down_proj.weight",
+                    hf_param="model.layers.*.block_sparse_moe.experts.*.w2.weight",
                 ),
                 # Expert mappings for SequentialMLP (used by quantization)
                 GatedMLPMapping(
                     megatron_param="decoder.layers.*.block_sparse_moe.experts.local_experts.*.linear_fc1.weight",
-                    gate="model.layers.*.block_sparse_moe.experts.*.gate_proj.weight",
-                    up="model.layers.*.block_sparse_moe.experts.*.up_proj.weight",
+                    gate="model.layers.*.block_sparse_moe.experts.*.w1.weight",
+                    up="model.layers.*.block_sparse_moe.experts.*.w3.weight",
                 ),
                 AutoMapping(
                     megatron_param="decoder.layers.*.block_sparse_moe.experts.local_experts.*.linear_fc2.weight",
-                    hf_param="model.layers.*.block_sparse_moe.experts.*.down_proj.weight",
+                    hf_param="model.layers.*.block_sparse_moe.experts.*.w2.weight",
                 ),
             ]
         )
