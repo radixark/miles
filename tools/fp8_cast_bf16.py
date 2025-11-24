@@ -67,7 +67,7 @@ def main(fp8_path, bf16_path):
         loaded_files[file_name] = current_state_dict
 
         new_state_dict = {}
-        for weight_name, weight in current_state_dict.items():
+        for weight_name, weight in tqdm(current_state_dict.items()):
             if weight_name.endswith("_scale_inv"):
                 continue
             elif weight.element_size() == 1:  # FP8 weight
