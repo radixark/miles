@@ -1,7 +1,6 @@
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
-from .minimax_m2 import convert_minimax_m2_to_hf
 from .llama import convert_llama_to_hf
 from .mimo import convert_mimo_to_hf
 from .processors.padding_remover import remove_padding
@@ -40,8 +39,6 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_glm4moe_to_hf(args, name, param)
     elif "glm4" in model_name:
         converted_named_tensors = convert_glm4_to_hf(args, name, param)
-    elif "minimax_m2" in model_name:
-        converted_named_tensors = convert_minimax_m2_to_hf(args, name, param)
     elif "qwen3moe" in model_name:
         converted_named_tensors = convert_qwen3moe_to_hf(args, name, param)
     elif "qwen3next" in model_name:
