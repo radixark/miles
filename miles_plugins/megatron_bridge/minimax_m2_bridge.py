@@ -24,7 +24,7 @@ class MinimaxM2Bridge(MegatronModelBridge):
             "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "model.layers.*.input_layernorm.weight",
             # Input layernorm - separate (quantization layer spec)
             "decoder.layers.*.input_layernorm.weight": "model.layers.*.input_layernorm.weight",
-            "decoder.layers.*.mlp.router.weight": "model.layers.*.mlp.gate.weight",
+            "decoder.layers.*.mlp.router.weight": "model.layers.*.block_sparse_moe.gate.weight",
             "decoder.layers.*.pre_mlp_layernorm.weight": "model.layers.*.post_attention_layernorm.weight",
             "decoder.layers.*.self_attention.q_layernorm.weight": "model.layers.*.self_attn.q_norm.weight",
             "decoder.layers.*.self_attention.k_layernorm.weight": "model.layers.*.self_attn.k_norm.weight",
@@ -49,23 +49,23 @@ class MinimaxM2Bridge(MegatronModelBridge):
                 ),
                 # Expert mappings for TEGroupedMLP
                 GatedMLPMapping(
-                    megatron_param="decoder.layers.*.mlp.experts.linear_fc1.weight*",
-                    gate="model.layers.*.mlp.experts.*.gate_proj.weight",
-                    up="model.layers.*.mlp.experts.*.up_proj.weight",
+                    megatron_param="decoder.layers.*.block_sparse_moe.experts.linear_fc1.weight*",
+                    gate="model.layers.*.block_sparse_moe.experts.*.gate_proj.weight",
+                    up="model.layers.*.block_sparse_moe.experts.*.up_proj.weight",
                 ),
                 AutoMapping(
-                    megatron_param="decoder.layers.*.mlp.experts.linear_fc2.weight*",
-                    hf_param="model.layers.*.mlp.experts.*.down_proj.weight",
+                    megatron_param="decoder.layers.*.block_sparse_moe.experts.linear_fc2.weight*",
+                    hf_param="model.layers.*.block_sparse_moe.experts.*.down_proj.weight",
                 ),
                 # Expert mappings for SequentialMLP (used by quantization)
                 GatedMLPMapping(
-                    megatron_param="decoder.layers.*.mlp.experts.local_experts.*.linear_fc1.weight",
-                    gate="model.layers.*.mlp.experts.*.gate_proj.weight",
-                    up="model.layers.*.mlp.experts.*.up_proj.weight",
+                    megatron_param="decoder.layers.*.block_sparse_moe.experts.local_experts.*.linear_fc1.weight",
+                    gate="model.layers.*.block_sparse_moe.experts.*.gate_proj.weight",
+                    up="model.layers.*.block_sparse_moe.experts.*.up_proj.weight",
                 ),
                 AutoMapping(
-                    megatron_param="decoder.layers.*.mlp.experts.local_experts.*.linear_fc2.weight",
-                    hf_param="model.layers.*.mlp.experts.*.down_proj.weight",
+                    megatron_param="decoder.layers.*.block_sparse_moe.experts.local_experts.*.linear_fc2.weight",
+                    hf_param="model.layers.*.block_sparse_moe.experts.*.down_proj.weight",
                 ),
             ]
         )
