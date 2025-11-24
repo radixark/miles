@@ -2,11 +2,7 @@ import logging
 
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
-from megatron.bridge.models.conversion.param_mapping import (
-    AutoMapping,
-    GatedMLPMapping,
-    QKVMapping,
-)
+from megatron.bridge.models.conversion.param_mapping import AutoMapping, GatedMLPMapping, QKVMapping
 from megatron.core.models.gpt.gpt_model import GPTModel
 
 logger = logging.getLogger(__name__)
@@ -15,6 +11,9 @@ logger = logging.getLogger(__name__)
 # ref: Qwen3MoEBridge
 @MegatronModelBridge.register_bridge(source="MinimaxM2ForCausalLM", target=GPTModel)
 class MinimaxM2Bridge(MegatronModelBridge):
+    def provider_bridge(self, hf_pretrained):
+        raise NotImplementedError
+
     def mapping_registry(self) -> MegatronMappingRegistry:
         # Return MegatronMappingRegistry containing parameter mappings from Megatron to HF format
         # First create simple 1:1 parameter mappings using a dictionary for readability
