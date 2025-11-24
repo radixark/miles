@@ -61,13 +61,13 @@ def main(fp8_path, bf16_path):
 
     safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
     safetensor_files.sort()
-    for safetensor_file in tqdm(safetensor_files, desc="Safetensor Files"):
+    for safetensor_file in tqdm(safetensor_files):
         file_name = os.path.basename(safetensor_file)
         current_state_dict = load_file(safetensor_file, device="cuda")
         loaded_files[file_name] = current_state_dict
 
         new_state_dict = {}
-        for weight_name, weight in tqdm(current_state_dict.items(), desc="Tensors in file"):
+        for weight_name, weight in current_state_dict.items():
             if weight_name.endswith("_scale_inv"):
                 continue
             elif weight.element_size() == 1:  # FP8 weight
