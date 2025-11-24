@@ -46,6 +46,7 @@ MODEL_ARGS=(
 
     # Components :: RMSNorm
     --normalization RMSNorm
+    --norm-epsilon 1e-06
 
     # Components :: RoPE
     --position-embedding-type rope
