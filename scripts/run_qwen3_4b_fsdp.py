@@ -19,7 +19,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     true_on_policy: bool = False
     dynamic_sampling: bool = False
     enable_eval: bool = True
-    train_backend: Literal["fsdp", "megatron"] = "fsdp"
+    train_backend: Literal["fsdp", "megatron"] = "megatron"
     enable_megatron_bridge: bool = False
 
     def __post_init__(self):
