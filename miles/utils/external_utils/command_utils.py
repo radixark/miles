@@ -70,6 +70,18 @@ def hf_download_dataset(full_name: str):
     exec_command(f"hf download --repo-type dataset {full_name} --local-dir /root/datasets/{partial_name}")
 
 
+def fp8_cast_bf16(path_src, path_dst):
+    if Path(path_dst).exists():
+        print(f"fp8_cast_bf16 skip {path_dst} since exists")
+        return
+
+    exec_command(
+        "python tools/fp8_cast_bf16.py "
+        f"--input-fp8-hf-path {path_src} "
+        f"--output-bf16-hf-path {path_dst} "
+    )
+
+
 # This class can be extended by concrete scripts
 @dataclass
 class ExecuteTrainConfig:
