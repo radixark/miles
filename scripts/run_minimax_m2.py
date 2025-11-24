@@ -45,13 +45,14 @@ def prepare_single(args: ScriptArgs):
         path_dst=f"/root/models/{args.model_name}-bf16/",
     )
 
-    U.convert_checkpoint(
-        model_name=args.model_name,
-        hf_checkpoint=f"/root/models/{args.model_name}-bf16",
-        megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.num_gpus_per_node,
-        dir_dst="/root/models",
-    )
+    # TODO try to use the directly-load-megatron-from-hf feature, thus do not need this
+    # U.convert_checkpoint(
+    #     model_name=args.model_name,
+    #     hf_checkpoint=f"/root/models/{args.model_name}-bf16",
+    #     megatron_model_type=args.megatron_model_type,
+    #     num_gpus_per_node=args.num_gpus_per_node,
+    #     dir_dst="/root/models",
+    # )
 
 
 @app.command()
@@ -61,10 +62,11 @@ def prepare_cp(args: ScriptArgs):
 
 
 def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"/root/models/{args.model_name}_torch_dist",
-        path_dst=f"/root/local_data/{args.model_name}_torch_dist",
-    )
+    # TODO try to use the directly-load-megatron-from-hf feature, thus do not need this
+    # U.rsync_simple(
+    #     path_src=f"/root/models/{args.model_name}_torch_dist",
+    #     path_dst=f"/root/local_data/{args.model_name}_torch_dist",
+    # )
     U.rsync_simple(
         path_src=f"/root/models/{args.model_name}",
         path_dst=f"/root/local_data/{args.model_name}",
