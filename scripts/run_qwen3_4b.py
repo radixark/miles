@@ -45,7 +45,9 @@ def prepare(args: ScriptArgs):
         U.hf_download_dataset("zyzshishui0627/IFBench")
 
     if args.rollout_fp8:
-        U.exec_command(f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8")
+        U.exec_command(
+            f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8"
+        )
 
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(

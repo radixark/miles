@@ -30,7 +30,9 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/aime-2024")
 
     if args.rollout_fp8:
-        U.exec_command(f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8")
+        U.exec_command(
+            f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8"
+        )
 
     if not args.enable_megatron_bridge:
         U.convert_checkpoint(
