@@ -95,7 +95,6 @@ def train(args: ScriptArgs):
         # TODO enlarge
         "--num-steps-per-rollout 1 "
         "--balance-data "
-        "--rollout-stop-token-ids 151329 151336 151338 "
     )
 
     if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
