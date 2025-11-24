@@ -5,10 +5,36 @@
 docker network create swe-net
 
 # 2. create environment docker
-docker run -itd   --name swe_env   --shm-size 16g   -v /var/run/docker.sock:/var/run/docker.sock   -v /mnt/data:/data   -v /home/sglang-rl/<your_name>:/workspace   --ipc=host   --ulimit nofile=65536:65536   --ulimit memlock=-1   --ulimit stack=67108864   --network swe-net   ubuntu:latest   /bin/bash
+docker run -itd \
+  --name swe_env \
+  --shm-size 16g \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /mnt/data:/data \
+  -v /home/sglang-rl/<your_name>:/workspace \
+  --ipc=host \
+  --ulimit nofile=65536:65536 \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  --network swe-net \
+  ubuntu:latest \
+  /bin/bash
 
 # 3. create miles docker
-docker run -itd --shm-size 32g --gpus all -v /mnt/data/cache/huggingface:/root/.cache/huggingface -v /mnt/data:/data -v /home/sglang-rl/<your_name>:/workspace --ipc=host --ulimit nofile=65536:65536 --ulimit memlock=-1 --ulimit stack=67108864 --privileged --network swe-net --name miles_<your_name> slimerl/slime:latest /bin/zsh
+docker run -itd \
+  --shm-size 32g \
+  --gpus all \
+  -v /mnt/data/cache/huggingface:/root/.cache/huggingface \
+  -v /mnt/data:/data \
+  -v /home/sglang-rl/<your_name>:/workspace \
+  --ipc=host \
+  --ulimit nofile=65536:65536 \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  --privileged \
+  --network swe-net \
+  --name miles_<your_name> \
+  slimerl/slime:latest \
+  /bin/zsh
 ```
 note: `-v /var/run/docker.sock:/var/run/docker.sock` is required for Docker-in-Docker SWE environment execution; use `--network swe-net` to enable communication between training & environment.
 
