@@ -228,7 +228,7 @@ def train(args: ScriptArgs):
     # sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.85 "
+        "--sglang-mem-fraction-static 0.8 "
         f"--sglang-tp-size {sglang_world_size} "
         # f"--sglang-ep-size {sglang_world_size} "
         # dp attention
