@@ -23,7 +23,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     dynamic_sampling: bool = False
-    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
 
 
 @app.command()
