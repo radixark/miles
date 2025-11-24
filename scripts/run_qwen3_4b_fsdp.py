@@ -38,9 +38,11 @@ def prepare(args: ScriptArgs):
     U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir /root/models/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
+
     if args.multi_eval:
         U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
         U.hf_download_dataset("zyzshishui0627/IFBench")
+
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
             model_name=args.model_name,
