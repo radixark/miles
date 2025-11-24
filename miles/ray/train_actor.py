@@ -55,7 +55,7 @@ class TrainRayActor(RayActor):
 
         if (x := args.train_memory_margin_bytes) > 0:
             logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
-            assert args.offload_train
+            assert args.offload_train or args.debug_rollout_only
             torch_memory_saver.memory_margin_bytes = x
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
