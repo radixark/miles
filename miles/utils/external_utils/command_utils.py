@@ -79,9 +79,7 @@ def fp8_cast_bf16(path_src, path_dst):
         return
 
     exec_command(
-        "python tools/fp8_cast_bf16.py "
-        f"--input-fp8-hf-path {path_src} "
-        f"--output-bf16-hf-path {path_dst} "
+        "python tools/fp8_cast_bf16.py " f"--input-fp8-hf-path {path_src} " f"--output-bf16-hf-path {path_dst} "
     )
 
 
