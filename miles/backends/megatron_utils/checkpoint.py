@@ -44,6 +44,7 @@ def _is_hf_checkpoint(path: str):
 
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
     from megatron.bridge import AutoBridge
+    import miles_plugins.megatron_bridge  # noqa: F401
 
     logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
     bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
