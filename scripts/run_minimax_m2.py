@@ -90,8 +90,8 @@ def train(args: ScriptArgs):
         f"--ref-load /root/local_data/{args.model_name}-bf16 "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
-        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
-        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
+        f"--save-interval {2 if args.mode == 'debug_minimal' else 10} "
+        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 10} "
     )
 
     rollout_args = (
