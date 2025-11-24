@@ -9,9 +9,5 @@ logger = logging.getLogger(__name__)
 
 @MegatronModelBridge.register_bridge(source="MinimaxM2ForCausalLM", target=GPTModel)
 class MinimaxM2Bridge(MegatronModelBridge):
-    def build_conversion_tasks(self, hf_pretrained, megatron_model):
-        self._hf_config = hf_pretrained.config
-        return super().build_conversion_tasks(hf_pretrained, megatron_model)
-
     def mapping_registry(self) -> MegatronMappingRegistry:
         return TODO
