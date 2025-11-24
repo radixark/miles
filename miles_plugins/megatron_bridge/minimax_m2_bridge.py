@@ -7,6 +7,7 @@ from megatron.core.models.gpt.gpt_model import GPTModel
 logger = logging.getLogger(__name__)
 
 
+# ref: Qwen3MoEBridge
 @MegatronModelBridge.register_bridge(source="MinimaxM2ForCausalLM", target=GPTModel)
 class MinimaxM2Bridge(MegatronModelBridge):
     def mapping_registry(self) -> MegatronMappingRegistry:
