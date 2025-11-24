@@ -16,6 +16,7 @@ MODEL_ARGS=(
     # Numbers :: MoE
     --num-experts 256
     --moe-router-topk 8
+    --ffn-hidden-size 1536
     --moe-ffn-hidden-size 1536
     --moe-layer-freq [1]*62
 
