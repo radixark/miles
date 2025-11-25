@@ -35,6 +35,10 @@ docker run -itd \
   --name miles_<your_name> \
   slimerl/slime:latest \
   /bin/zsh
+
+docker exec -it miles_<your_name> /bin/bash
+
+apt update && apt install -y zsh curl git python3 python3-pip docker.io
 ```
 note: `-v /var/run/docker.sock:/var/run/docker.sock` is required for Docker-in-Docker SWE environment execution; use `--network swe-net` to enable communication between training & environment.
 
