@@ -47,6 +47,7 @@ class RolloutManager:
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         init_http_client(args)
+        self._eval_delegate = EvalDelegateClient.maybe_create(args)
 
         self.data_source = RolloutDataSourceWithBuffer(args)
 
@@ -109,6 +110,15 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
+
+        if self._eval_delegate is not None:
+            metrics, raw_response = self._eval_delegate.evaluate(self.args, rollout_id)
+            log_dict = _log_external_eval_metrics(rollout_id, self.args, metrics)
+            logger.info(f"External eval raw response for rollout {rollout_id}: {raw_response}")
+            if self._metric_checker is not None:
+                self._metric_checker.on_eval(log_dict)
+            return
+
         # TODO: add fault tolerance to eval
         data = call_rollout_fn(
             self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
@@ -486,6 +496,31 @@ def _log_eval_rollout_data(rollout_id, args, data):
     tracking_utils.log(args, log_dict, step_key="eval/step")
 
     return log_dict
+
+
+def _log_external_eval_metrics(rollout_id, args, metrics: dict | None):
+    flattened_metrics = {}
+    metric_source = metrics if isinstance(metrics, dict) else {}
+    for key, value in _iter_metric_items(metric_source):
+        if not isinstance(value, (int, float)):
+            continue
+        metric_key = key if key.startswith("eval/") else f"eval/{key}"
+        flattened_metrics[metric_key] = value
+
+    logger.info(f"eval {rollout_id} (external): {flattened_metrics}")
+    step = compute_rollout_step(args, rollout_id)
+    log_payload = flattened_metrics | {"eval/step": step}
+    tracking_utils.log(args, log_payload, step_key="eval/step")
+    return log_payload
+
+
+def _iter_metric_items(metrics: dict, prefix: str = ""):
+    for key, value in metrics.items():
+        metric_key = f"{prefix}{key}" if not prefix else f"{prefix}/{key}"
+        if isinstance(value, dict):
+            yield from _iter_metric_items(value, metric_key)
+        else:
+            yield metric_key, value
 
 
 def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
