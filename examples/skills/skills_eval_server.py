@@ -63,31 +63,21 @@ class EvalRequestPayload:
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "EvalRequestPayload":
+        if not isinstance(data, Mapping):
+            raise PayloadError("JSON body must be an object.")
         try:
             rollout_id = int(data["rollout_id"])
             router_url = str(data["router_url"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise PayloadError("`rollout_id` and `router_url` are required") from exc
+            raise PayloadError("`rollout_id` and `router_url` are required.") from exc
 
-        datasets = []
-        for item in data.get("eval_datasets", []) or []:
-            if not isinstance(item, Mapping):
-                raise PayloadError("Each eval_datasets entry must be a JSON object")
-            if "name" not in item:
-                raise PayloadError("Each eval_datasets entry must include a `name`")
-            datasets.append(EvalDataset(name=str(item["name"]), path=item.get("path")))
-
-        defaults = dict(data.get("defaults", {}) or {})
-        generation = dict(data.get("generation", {}) or {})
-        extra = dict(data.get("extra", {}) or {})
-        return cls(
-            rollout_id=rollout_id,
-            router_url=router_url,
-            eval_datasets=datasets,
-            defaults=defaults,
-            generation=generation,
-            extra=extra,
-        )
+        datasets = [
+            EvalDataset(name=str(item["name"]), path=item.get("path")) for item in data.get("eval_datasets", []) or []
+        ]
+        defaults = dict(data.get("defaults") or {})
+        generation = dict(data.get("generation") or {})
+        extra = dict(data.get("extra") or {})
+        return cls(rollout_id, router_url, datasets, defaults, generation, extra)
 
 
 # ---------------------------------------------------------------------------
@@ -105,13 +95,11 @@ HYDRA_OVERRIDE_MAP = {
 
 
 def _ensure_list(value: Any) -> List[str]:
-    if value is None:
+    if not value:
         return []
     if isinstance(value, str):
         return shlex.split(value)
-    if isinstance(value, Iterable):
-        return [str(item) for item in value]
-    raise PayloadError("Expected list or string for CLI arguments")
+    return [str(item) for item in value]
 
 
 def _flatten_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, float]:
@@ -185,8 +173,6 @@ class SkillsEvaluator:
 
     def evaluate(self, payload: EvalRequestPayload) -> Dict[str, Any]:
         benchmarks = _benchmarks_from_payload(payload)
-        benchmark_str = ",".join(benchmarks)
-
         job_id = payload.extra.get("job_id") or uuid.uuid4().hex
         exp_name = payload.extra.get("expname") or f"rollout-{payload.rollout_id}"
         run_dir = self._config.output_root / f"{int(time.time())}-{exp_name}"
@@ -194,54 +180,9 @@ class SkillsEvaluator:
         log_path = run_dir / "skills_eval.log"
         router_api_url = payload.router_url.rstrip("/") + "/v1"
         server_type = payload.extra.get("server_type", self._config.server_type)
-        server_address_for_cli = router_api_url if server_type == "openai" else payload.router_url
 
-        cmd = [
-            "ns",
-            "eval",
-            "--output_dir",
-            str(run_dir),
-            "--benchmarks",
-            benchmark_str,
-            "--server_type",
-            server_type,
-            "--server_address",
-            server_address_for_cli,
-            "--expname",
-            exp_name,
-        ]
-
-        if self._config.cluster:
-            cmd.extend(["--cluster", self._config.cluster])
-        if self._config.config_dir:
-            cmd.extend(["--config_dir", self._config.config_dir])
-
-        if payload.extra.get("server_args"):
-            cmd.extend(["--server_args", payload.extra["server_args"]])
-
-        for flag_name in ("num_jobs", "num_chunks", "chunk_ids"):
-            if payload.extra.get(flag_name) is not None:
-                cmd.extend([f"--{flag_name.replace('_', '-')}", str(payload.extra[flag_name])])
-
-        cli_args = self._config.default_cli_args + _ensure_list(payload.extra.get("cli_args"))
-        hydra_overrides = _hydra_overrides_from_generation(payload.generation)
-        hydra_overrides.extend(_ensure_list(payload.extra.get("hydra_overrides")))
-        openai_model_name = (
-            payload.extra.get("openai_model_name") or self._config.openai_model_name or "slime-openai-model"
-        )
-        router_overrides = [
-            "++server.server_type=openai",
-            f"++server.base_url={router_api_url}",
-            f"++server.model={openai_model_name}",
-            "++server.api_key=EMPTY",
-        ]
-        hydra_overrides.extend(router_overrides)
-
-        env = os.environ.copy()
-        env.update(self._config.default_env)
-        env.update(payload.extra.get("env") or {})
-
-        command = cmd + cli_args + hydra_overrides
+        command = self._build_command(payload, benchmarks, exp_name, router_api_url, server_type, run_dir)
+        env = self._build_env(payload)
         logger.info("Starting NeMo Skills eval: %s", " ".join(shlex.quote(part) for part in command))
 
         with self._lock:
@@ -258,6 +199,60 @@ class SkillsEvaluator:
             "metrics": flat_metrics,
             "raw_metrics": raw_metrics,
         }
+
+    def _build_command(
+        self,
+        payload: EvalRequestPayload,
+        benchmarks: List[str],
+        exp_name: str,
+        router_api_url: str,
+        server_type: str,
+        run_dir: Path,
+    ) -> List[str]:
+        base_cmd = [
+            "ns",
+            "eval",
+            "--output_dir",
+            str(run_dir),
+            "--benchmarks",
+            ",".join(benchmarks),
+            "--server_type",
+            server_type,
+            "--server_address",
+            router_api_url if server_type == "openai" else payload.router_url,
+            "--expname",
+            exp_name,
+        ]
+        if self._config.cluster:
+            base_cmd.extend(["--cluster", self._config.cluster])
+        if self._config.config_dir:
+            base_cmd.extend(["--config_dir", self._config.config_dir])
+
+        cli_args = self._config.default_cli_args + _ensure_list(payload.extra.get("cli_args"))
+        hydra_overrides = self._build_hydra_overrides(payload, router_api_url)
+        hydra_overrides.extend(_ensure_list(payload.extra.get("hydra_overrides")))
+        return base_cmd + cli_args + hydra_overrides
+
+    def _build_hydra_overrides(self, payload: EvalRequestPayload, router_api_url: str) -> List[str]:
+        overrides = _hydra_overrides_from_generation(payload.generation)
+        openai_model_name = (
+            payload.extra.get("openai_model_name") or self._config.openai_model_name or "slime-openai-model"
+        )
+        overrides.extend(
+            [
+                "++server.server_type=openai",
+                f"++server.base_url={router_api_url}",
+                f"++server.model={openai_model_name}",
+                "++server.api_key=EMPTY",
+            ]
+        )
+        return overrides
+
+    def _build_env(self, payload: EvalRequestPayload) -> Dict[str, str]:
+        env = os.environ.copy()
+        env.update(self._config.default_env)
+        env.update(payload.extra.get("env") or {})
+        return env
 
     @staticmethod
     def _run_command(cmd: List[str], *, env: Dict[str, str], log_path: Path):

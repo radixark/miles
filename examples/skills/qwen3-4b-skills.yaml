@@ -7,12 +7,12 @@ eval:
     - name: aime
       path: /root/aime-2024/aime-2024.jsonl
       rm_type: deepscaler
-delegate:
-  url: http://127.0.0.1:9050/evaluate
-  timeout_secs: 7200
-  max_retries: 5
-  headers: {}
-  extra:
-    benchmarks:
-      - aime24:0
-      - arena-hard:0
+  delegate:
+    url: http://127.0.0.1:9050/evaluate
+    timeout_secs: 7200
+    max_retries: 5
+    headers: {}
+    extra:
+      benchmarks:
+        - aime24:0
+        - arena-hard:0

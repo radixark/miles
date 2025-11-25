@@ -1,4 +1,3 @@
-import copy
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -15,12 +14,10 @@ class EvalDelegateError(RuntimeError):
 def _serialize_dataset(cfg: Any) -> Dict[str, Any]:
     """Convert EvalDatasetConfig (or a mapping) into a plain dict."""
     if hasattr(cfg, "model_dump"):
-        data = cfg.model_dump()
-    elif isinstance(cfg, dict):
-        data = dict(cfg)
-    else:
-        raise TypeError(f"Unsupported dataset config type: {type(cfg)}")
-    return copy.deepcopy(data)
+        return dict(cfg.model_dump())
+    if isinstance(cfg, dict):
+        return dict(cfg)
+    raise TypeError(f"Unsupported dataset config type: {type(cfg)}")
 
 
 def _flatten(result: Dict[str, Any], prefix: Optional[str] = None) -> Dict[str, Any]:
@@ -46,27 +43,34 @@ class EvalDelegateClient:
         max_retries: int,
         headers: Optional[Dict[str, str]],
         router_url: str,
+        base_extra: Optional[Dict[str, Any]] = None,
     ):
         self._endpoint = endpoint
         self._timeout_secs = timeout_secs
         self._max_retries = max(1, max_retries)
-        self._router_url = router_url
+        self._router_url = router_url.rstrip("/")
         self._headers = headers or {}
+        self._base_extra = dict(base_extra or {})
         self._session = requests.Session()
 
     @classmethod
     def maybe_create(cls, args):
-        url = getattr(args, "eval_delegate_url", None)
+        delegate_cfg = getattr(args, "eval_delegate_config", None)
+        if not delegate_cfg:
+            return None
+
+        url = delegate_cfg.get("url")
         if not url:
             return None
 
         router_addr = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
         return cls(
             url,
-            timeout_secs=getattr(args, "eval_delegate_timeout_secs", 3600),
-            max_retries=getattr(args, "eval_delegate_max_retries", 1),
-            headers=getattr(args, "eval_delegate_headers", None),
+            timeout_secs=float(delegate_cfg.get("timeout_secs", 3600)),
+            max_retries=int(delegate_cfg.get("max_retries", 1)),
+            headers=delegate_cfg.get("headers"),
             router_url=router_addr,
+            base_extra=delegate_cfg.get("extra"),
         )
 
     def evaluate(self, args, rollout_id: int) -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -105,7 +109,7 @@ class EvalDelegateClient:
             "eval_datasets": datasets,
             "defaults": defaults,
             "generation": generation,
-            "extra": copy.deepcopy(getattr(args, "eval_delegate_extra", {})) or {},
+            "extra": dict(self._base_extra),
         }
         return payload
 
@@ -135,7 +139,7 @@ class EvalDelegateClient:
             return {}
 
         if "metrics" in response and isinstance(response["metrics"], dict):
-            return copy.deepcopy(response["metrics"])
+            return dict(response["metrics"])
         if "results" in response and isinstance(response["results"], dict):
             return _flatten(response["results"])
         return {}
