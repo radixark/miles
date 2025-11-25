@@ -89,6 +89,11 @@ def _prepare_cp(args: ScriptArgs):
         path_src=f"/root/models/{args.model_name}",
         path_dst=f"/root/local_data/{args.model_name}",
     )
+    if args.rollout_fp8:
+        U.rsync_simple(
+            path_src=f"/root/models/{args.model_name}_FP8",
+            path_dst=f"/root/local_data/{args.model_name}_FP8",
+        )
 
 
 @app.command()
