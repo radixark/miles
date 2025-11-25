@@ -1,0 +1,18 @@
+eval:
+  defaults:
+    n_samples_per_eval_prompt: 1
+    max_response_len: 8192
+    top_p: 0.7
+  datasets:
+    - name: aime
+      path: /root/aime-2024/aime-2024.jsonl
+      rm_type: deepscaler
+delegate:
+  url: http://127.0.0.1:9050/evaluate
+  timeout_secs: 7200
+  max_retries: 5
+  headers: {}
+  extra:
+    benchmarks:
+      - aime24:0
+      - arena-hard:0

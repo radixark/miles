@@ -40,17 +40,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3-4B.sh"
 
-# ---------------------------------------------------------------------------
-# Skills delegate configuration. Override through environment variables, e.g.
-#   SKILLS_EVAL_URL=http://skills-host:9000/evaluate \
-#   SKILLS_EVAL_HEADERS_JSON='{"Authorization":"Bearer ..."}' \
-#   SKILLS_EVAL_EXTRA_JSON='{"tasks":["aime_2024","amc_2024"],"priority":"low"}'
-# ---------------------------------------------------------------------------
-SKILLS_EVAL_URL=${SKILLS_EVAL_URL:-"http://127.0.0.1:9050/evaluate"}
-SKILLS_EVAL_TIMEOUT_SECS=${SKILLS_EVAL_TIMEOUT_SECS:-7200}
-SKILLS_EVAL_MAX_RETRIES=${SKILLS_EVAL_MAX_RETRIES:-5}
-SKILLS_EVAL_HEADERS_JSON=${SKILLS_EVAL_HEADERS_JSON:-'{}'}
-SKILLS_EVAL_EXTRA_JSON=${SKILLS_EVAL_EXTRA_JSON:-'{"benchmarks":["aime24:0"]}'}
+# Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/skills/qwen3-4b-skills.yaml"}
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-4B
@@ -79,18 +70,7 @@ ROLLOUT_ARGS=(
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 1
-   --eval-max-response-len 8192
-   --eval-top-p 0.7
-)
-
-SKILLS_EVAL_ARGS=(
-   --eval-delegate-url "${SKILLS_EVAL_URL}"
-   --eval-delegate-timeout-secs "${SKILLS_EVAL_TIMEOUT_SECS}"
-   --eval-delegate-max-retries "${SKILLS_EVAL_MAX_RETRIES}"
-   --eval-delegate-extra "${SKILLS_EVAL_EXTRA_JSON}"
-   --eval-delegate-headers "${SKILLS_EVAL_HEADERS_JSON}"
+   --eval-config "${EVAL_CONFIG_PATH}"
 )
 
 PERF_ARGS=(
@@ -174,6 +154,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
-   ${SKILLS_EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}

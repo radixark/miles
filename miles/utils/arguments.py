@@ -1291,6 +1291,41 @@ def parse_args_train_backend():
     return args_partial.train_backend
 
 
+def _coerce_mapping(value: Any, field_name: str) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_name} must be valid JSON when provided as a string.") from exc
+    if not isinstance(value, dict):
+        raise TypeError(f"{field_name} must be a mapping.")
+    return dict(value)
+
+
+def _apply_eval_delegate_config(args, delegate_cfg: Any) -> None:
+    if not delegate_cfg:
+        return
+    if not isinstance(delegate_cfg, dict):
+        raise TypeError("--eval-config `delegate` must be a mapping.")
+
+    mapping = {
+        "url": "eval_delegate_url",
+        "timeout_secs": "eval_delegate_timeout_secs",
+        "max_retries": "eval_delegate_max_retries",
+        "extra": "eval_delegate_extra",
+        "headers": "eval_delegate_headers",
+    }
+    for key, attr_name in mapping.items():
+        if key not in delegate_cfg:
+            continue
+        value = delegate_cfg[key]
+        if key in ("extra", "headers"):
+            value = _coerce_mapping(value, f"delegate.{key}")
+        setattr(args, attr_name, value)
+
+
 def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     """
     Build evaluation dataset configurations from either --eval-config or --eval-prompt-data.
@@ -1311,6 +1346,10 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
             raise ValueError("--eval-config must define an `eval` mapping or be a mapping itself.")
 
         defaults = dict(eval_cfg.get("defaults") or {})
+        delegate_cfg = cfg_dict.get("delegate")
+        if delegate_cfg is None:
+            delegate_cfg = eval_cfg.get("delegate")
+        _apply_eval_delegate_config(args, delegate_cfg)
         datasets_config = ensure_dataset_list(eval_cfg.get("datasets"))
         if not datasets_config:
             raise ValueError("--eval-config does not define any datasets under `eval.datasets`.")
