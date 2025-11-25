@@ -13,7 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-4B"
     megatron_model_type: Optional[str] = None
     num_gpus_per_node: Optional[int] = None
-    hardware: Literal["H100", "GB300"] = "H100"
+    hardware: Literal["H100", "GB200", "GB300"] = "H100"
     extra_args: str = ""
     multi_eval: bool = False
     true_on_policy: bool = False
