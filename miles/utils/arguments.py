@@ -609,39 +609,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eval-top-k", type=int, default=None)
             parser.add_argument("--eval-max-response-len", type=int, default=None)
             parser.add_argument("--eval-min-new-tokens", type=int, default=None)
-            parser.add_argument(
-                "--eval-delegate-url",
-                type=str,
-                default=None,
-                help=(
-                    "HTTP endpoint for an external evaluation service (e.g., Nemo Skills). "
-                    "When set, Miles will delegate evaluation via HTTP instead of running local datasets."
-                ),
-            )
-            parser.add_argument(
-                "--eval-delegate-timeout-secs",
-                type=float,
-                default=7200,
-                help="Timeout for requests sent to the external evaluation delegate.",
-            )
-            parser.add_argument(
-                "--eval-delegate-max-retries",
-                type=int,
-                default=3,
-                help="Number of HTTP retries when contacting the evaluation delegate.",
-            )
-            parser.add_argument(
-                "--eval-delegate-extra",
-                type=json.loads,
-                default="{}",
-                help="JSON blob forwarded verbatim inside the external evaluation request body.",
-            )
-            parser.add_argument(
-                "--eval-delegate-headers",
-                type=json.loads,
-                default="{}",
-                help="Optional JSON encoded HTTP headers appended to eval delegate requests.",
-            )
 
             return parser
 
