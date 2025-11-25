@@ -1,6 +1,9 @@
 release-primary:
     ARG_TAG_POSTFIX="" ARG_BUILD_EXTRA_ARGS="" just _release-raw
 
+release-gb200:
+    ARG_TAG_POSTFIX="-gb200" ARG_BUILD_EXTRA_ARGS='--build-arg SGLANG_IMAGE_TAG=v0.5.5.post3-cu129-arm64 --build-arg ENABLE_BLACKWELL_BUILD=1' just _release-raw
+
 release-gb300:
     ARG_TAG_POSTFIX="-gb300" ARG_BUILD_EXTRA_ARGS='--build-arg SGLANG_IMAGE_TAG=dev-arm64-cu13-20251116 --build-arg ENABLE_BLACKWELL_BUILD=1 --build-arg ENABLE_CUDA_13=1' just _release-raw
 
