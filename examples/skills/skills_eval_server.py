@@ -162,6 +162,7 @@ class ServerConfig:
     server_type: str
     default_cli_args: List[str] = field(default_factory=list)
     default_env: Dict[str, str] = field(default_factory=dict)
+    openai_model_name: str | None = None
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "ServerConfig":
@@ -172,6 +173,7 @@ class ServerConfig:
             server_type=args.server_type,
             default_cli_args=_ensure_list(args.default_cli_args),
             default_env=dict(args.env or {}),
+            openai_model_name=args.openai_model_name,
         )
 
 
@@ -190,6 +192,9 @@ class SkillsEvaluator:
         run_dir = self._config.output_root / f"{int(time.time())}-{exp_name}"
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "skills_eval.log"
+        router_api_url = payload.router_url.rstrip("/") + "/v1"
+        server_type = payload.extra.get("server_type", self._config.server_type)
+        server_address_for_cli = router_api_url if server_type == "openai" else payload.router_url
 
         cmd = [
             "ns",
@@ -199,9 +204,9 @@ class SkillsEvaluator:
             "--benchmarks",
             benchmark_str,
             "--server_type",
-            payload.extra.get("server_type", self._config.server_type),
+            server_type,
             "--server_address",
-            payload.router_url,
+            server_address_for_cli,
             "--expname",
             exp_name,
         ]
@@ -221,6 +226,16 @@ class SkillsEvaluator:
         cli_args = self._config.default_cli_args + _ensure_list(payload.extra.get("cli_args"))
         hydra_overrides = _hydra_overrides_from_generation(payload.generation)
         hydra_overrides.extend(_ensure_list(payload.extra.get("hydra_overrides")))
+        openai_model_name = (
+            payload.extra.get("openai_model_name") or self._config.openai_model_name or "slime-openai-model"
+        )
+        router_overrides = [
+            "++server.server_type=openai",
+            f"++server.base_url={router_api_url}",
+            f"++server.model={openai_model_name}",
+            "++server.api_key=EMPTY",
+        ]
+        hydra_overrides.extend(router_overrides)
 
         env = os.environ.copy()
         env.update(self._config.default_env)
@@ -330,8 +345,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--server-type",
         type=str,
-        default=os.environ.get("SKILLS_SERVER_TYPE", "sglang"),
-        help="Server type forwarded to ns eval (default: sglang).",
+        default=os.environ.get("SKILLS_SERVER_TYPE", "openai"),
+        help="Server type forwarded to ns eval (default: openai).",
+    )
+    parser.add_argument(
+        "--openai-model-name",
+        type=str,
+        default=os.environ.get("SKILLS_OPENAI_MODEL"),
+        help="Model identifier to pass when using the OpenAI-compatible endpoint.",
     )
     parser.add_argument(
         "--default-cli-args",
