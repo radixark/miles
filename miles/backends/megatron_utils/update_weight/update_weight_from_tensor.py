@@ -1,6 +1,6 @@
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
-from typing import Callable, Tuple, Any
+from typing import Any, Callable, Tuple
 
 import ray
 import torch
