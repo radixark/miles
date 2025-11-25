@@ -17,6 +17,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    train_fp8: bool = False
     enable_megatron_bridge: bool = False
 
     def __post_init__(self):
@@ -128,6 +129,19 @@ def execute(args: ScriptArgs):
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
     )
+    misc_env_vars = {}
+
+    if args.train_fp8:
+        misc_args += (
+            "--transformer-impl transformer_engine "
+            "--bf16 "
+            "--fp8-format e4m3 "
+            "--fp8-recipe blockwise "
+            "--fp8-param-gather "
+        )
+        misc_env_vars |= {
+            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+        }
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
@@ -222,6 +236,7 @@ def execute(args: ScriptArgs):
         train_args=train_args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
+        extra_env_vars={**misc_env_vars},
     )
 
 
