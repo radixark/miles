@@ -1327,6 +1327,9 @@ def miles_validate_args(args):
         if args.ref_ckpt_step is not None:
             args.ckpt_step = args.ref_ckpt_step
         args.start_rollout_id = 0
+    elif args.start_rollout_id is None:
+        with open(os.path.join(args.load, "latest_checkpointed_iteration.txt"), "r") as f:
+            args.start_rollout_id = int(f.read().strip()) + 1
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
