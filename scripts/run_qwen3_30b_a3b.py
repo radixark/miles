@@ -137,7 +137,7 @@ def execute(args: ScriptArgs):
             "--bf16 "
             "--fp8-format e4m3 "
             "--fp8-recipe blockwise "
-            "--fp8-param-gather "
+            # "--fp8-param-gather "
         )
         misc_env_vars |= {
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",

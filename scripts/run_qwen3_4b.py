@@ -21,6 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     train_backend: Literal["fsdp", "megatron"] = "megatron"
     rollout_fp8: bool = False
+    train_fp8: bool = False
     enable_megatron_bridge: bool = False
 
     def __post_init__(self):
@@ -206,13 +207,24 @@ eval:
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
     )
-
     misc_env_vars = {}
 
     if args.model_name == "Qwen3-4B-Base":
         misc_args += "--sglang-context-length 36000 "
         misc_env_vars |= {
             "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
+        }
+
+    if args.train_fp8:
+        misc_args += (
+            "--transformer-impl transformer_engine "
+            "--bf16 "
+            "--fp8-format e4m3 "
+            "--fp8-recipe blockwise "
+            "--fp8-param-gather "
+        )
+        misc_env_vars |= {
+            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
         }
 
     if args.enable_megatron_bridge:
