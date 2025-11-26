@@ -176,7 +176,7 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                # "--sglang-ep-size 4 "
+                f"--sglang-ep-size {2 if args.rollout_fp8 else 1} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
                 "--sglang-attention-backend trtllm_mha "
@@ -193,7 +193,7 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                # "--sglang-ep-size 4 "
+                f"--sglang-ep-size {2 if args.rollout_fp8 else 1} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
                 "--sglang-attention-backend trtllm_mha "
@@ -210,7 +210,7 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                # "--sglang-ep-size 4 "
+                f"--sglang-ep-size {2 if args.rollout_fp8 else 1} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
                 "--sglang-attention-backend trtllm_mha "
