@@ -1319,7 +1319,6 @@ def miles_validate_args(args):
                 "please make sure it is a valid megatron checkpoint directory."
             )
 
-    # TODO: During loading, we need to set the start_rollout_id here.
     if (
         args.load is None
         or not os.path.exists(args.load)
