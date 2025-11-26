@@ -175,8 +175,8 @@ def train(args: ScriptArgs):
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
             f"--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 2 "
-            "--expert-model-parallel-size 8 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 4 "
             "--expert-tensor-parallel-size 1 "
         )
     else:
