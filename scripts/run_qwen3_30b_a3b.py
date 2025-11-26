@@ -176,11 +176,16 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                f"--sglang-ep-size {2 if args.rollout_fp8 else 1} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
                 "--sglang-attention-backend trtllm_mha "
             )
+            if args.rollout_fp8:
+                sglang_args += (
+                    "--sglang-ep-size 2 "
+                    "--moe-runner-backend deep_gemm "
+                    "--moe-a2a-backend deepep "
+                )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 1 " "--num-gpus-per-node 4"
         case ("GB200", 2) | ("GB300", 2):
             perf_args += (
@@ -193,11 +198,16 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                f"--sglang-ep-size {2 if args.rollout_fp8 else 1} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
                 "--sglang-attention-backend trtllm_mha "
             )
+            if args.rollout_fp8:
+                sglang_args += (
+                    "--sglang-ep-size 2 "
+                    "--moe-runner-backend deep_gemm "
+                    "--moe-a2a-backend deepep "
+                )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 2 " "--num-gpus-per-node 4"
         case ("GB200", 4) | ("GB300", 4):
             perf_args += (
@@ -210,11 +220,16 @@ def execute(args: ScriptArgs):
             )
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                f"--sglang-ep-size {2 if args.rollout_fp8 else 1} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
                 "--sglang-attention-backend trtllm_mha "
             )
+            if args.rollout_fp8:
+                sglang_args += (
+                    "--sglang-ep-size 2 "
+                    "--moe-runner-backend deep_gemm "
+                    "--moe-a2a-backend deepep "
+                )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 8 " "--num-gpus-per-node 4"
         case _:
             raise NotImplementedError
