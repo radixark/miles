@@ -20,6 +20,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     dynamic_sampling: bool = False
     enable_eval: bool = True
     train_backend: Literal["fsdp", "megatron"] = "megatron"
+    rollout_fp8: bool = False
+    train_fp8: bool = False
     enable_megatron_bridge: bool = False
 
     def __post_init__(self):
@@ -43,6 +45,11 @@ def prepare(args: ScriptArgs):
         U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
         U.hf_download_dataset("zyzshishui0627/IFBench")
 
+    if args.rollout_fp8:
+        U.exec_command(
+            f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8"
+        )
+
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
             model_name=args.model_name,
@@ -55,7 +62,7 @@ def prepare(args: ScriptArgs):
 def execute(args: ScriptArgs):
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name} "
+        f"--hf-checkpoint /root/models/{args.model_name}{'-FP8' if args.rollout_fp8 else ''} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
@@ -132,7 +139,7 @@ eval:
 
     grpo_args = (
         "--advantage-estimator grpo "
-        # "--use-kl-loss "
+        "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--entropy-coef 0.00 "
@@ -200,13 +207,24 @@ eval:
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
     )
-
     misc_env_vars = {}
 
     if args.model_name == "Qwen3-4B-Base":
         misc_args += "--sglang-context-length 36000 "
         misc_env_vars |= {
             "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
+        }
+
+    if args.train_fp8:
+        misc_args += (
+            "--transformer-impl transformer_engine "
+            "--bf16 "
+            "--fp8-format e4m3 "
+            "--fp8-recipe blockwise "
+            "--fp8-param-gather "
+        )
+        misc_env_vars |= {
+            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
         }
 
     if args.enable_megatron_bridge:
