@@ -24,7 +24,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_fp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
-    # TODO improve
+    # TODO improve, should be able to override more easily
     tis_use_rs: bool = True
 
     def __post_init__(self):
