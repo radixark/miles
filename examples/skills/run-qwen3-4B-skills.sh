@@ -41,7 +41,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3-4B.sh"
 
 # Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/skills/qwen3-4b-skills.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/skills/config.yaml"}
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-4B
@@ -58,13 +58,13 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 3000
-   --rollout-batch-size 32
-   --n-samples-per-prompt 8
+   --num-rollout 1
+   --rollout-batch-size 8
+   --n-samples-per-prompt 2
    --rollout-max-response-len 8192
    --rollout-temperature 0.8
 
-   --global-batch-size 256
+   --global-batch-size 16
    --balance-data
 )
 
