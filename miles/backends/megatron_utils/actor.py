@@ -1,15 +1,19 @@
 import logging
+import math
 import os
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
-from typing import Dict, Optional
+from functools import partial
+from typing import Callable, Dict, Optional
 
 import ray
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from megatron.core import mpu
+from megatron.core.models.gpt import GPTModel
+from megatron.core.pipeline_parallel import get_forward_backward_func
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoTokenizer
@@ -31,13 +35,14 @@ from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from .checkpoint import load_checkpoint
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
-from .data import DataIterator, get_data_iterator, log_perf_data, log_rollout_data, sync_actor_critic_data
+from .data import DataIterator, get_batch, get_data_iterator, log_perf_data, log_rollout_data, sync_actor_critic_data
 from .initialize import init, is_megatron_main_rank
-from .loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
+from .loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values, loss_function
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from megatron.training.global_vars import get_args
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -432,6 +437,252 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.weights_backuper.backup("ref")
 
         log_perf_data(rollout_id, self.args)
+
+    def forward_backward_step_only(
+        self,
+        rollout_id: int,
+        rollout_data_ref: Box,
+        zero_grads: bool = False,
+    ) -> Dict[str, float]:
+        """
+        Run forward/backward pass without optimizer step to enable gradient accumulation.
+        """
+        Timer().end("train_wait")
+
+        if self.args.offload_train:
+            self.wake_up()
+
+        with timer("data_preprocess"):
+            rollout_data = self._get_rollout_data(rollout_data_ref)
+
+        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+
+        with timer("forward_backward_only"):
+            args = get_args()
+
+            if zero_grads:
+                for model_chunk in self.model:
+                    model_chunk.zero_grad_buffer()
+                self.optimizer.zero_grad()
+
+            if args.custom_megatron_before_train_step_hook_path:
+                from miles.utils.misc import load_function
+
+                custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
+                custom_before_train_step_hook(args, rollout_id, 0, self.model, self.optimizer, self.opt_param_scheduler)
+
+            def forward_step(
+                iterator: DataIterator,
+                model: GPTModel,
+                return_schedule_plan: bool = False,
+            ) -> tuple[torch.Tensor, Callable[[torch.Tensor], tuple]]:
+                batch = get_batch(
+                    iterator,
+                    [
+                        "tokens",
+                        "packed_seq_params",
+                        "total_lengths",
+                        "response_lengths",
+                        "loss_masks",
+                        "log_probs",
+                        "ref_log_probs",
+                        "values",
+                        "advantages",
+                        "returns",
+                        "rollout_log_probs",
+                    ],
+                )
+
+                if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":
+                    old_stage = os.environ["ROUTING_REPLAY_STAGE"]
+                    os.environ["ROUTING_REPLAY_STAGE"] = "replay_forward"
+                else:
+                    old_stage = None
+
+                def build_loss_mask_for_mtp(batch_data: dict[str, object]) -> torch.Tensor | None:
+                    tokens_tensor: torch.Tensor = batch_data["tokens"]
+
+                    mask_chunks: list[torch.Tensor] = []
+                    for total_len, response_len, resp_mask in zip(
+                        batch_data["total_lengths"],
+                        batch_data["response_lengths"],
+                        batch_data["loss_masks"],
+                    ):
+                        assert (
+                            resp_mask.numel() == response_len
+                        ), f"Unexpected loss mask size {resp_mask.numel()} (expected {response_len})."
+                        prompt_len = total_len - response_len
+                        full_mask = resp_mask.new_zeros(total_len)
+                        full_mask[prompt_len:] = resp_mask
+
+                        mask_chunks.append(slice_with_cp(full_mask, 0.0))
+
+                    flattened_mask = torch.cat(mask_chunks, dim=0)
+                    seq_len = tokens_tensor.size(-1)
+                    assert flattened_mask.numel() <= seq_len, (
+                        f"MTP loss mask ({flattened_mask.numel()}) exceeds token length ({seq_len})."
+                    )
+
+                    loss_mask_tensor = flattened_mask.new_zeros(seq_len)
+                    loss_mask_tensor[: flattened_mask.numel()] = flattened_mask
+                    return loss_mask_tensor.unsqueeze(0)
+
+                loss_mask = None
+                mtp_kwargs = None
+
+                if return_schedule_plan:
+                    assert not args.enable_mtp_training, "MTP training should be disabled with 1f1b scheduling"
+                    output_tensor = model.build_schedule_plan(
+                        input_ids=batch["tokens"],
+                        position_ids=None,
+                        attention_mask=None,
+                        labels=None,
+                        packed_seq_params=batch["packed_seq_params"],
+                    )
+                else:
+                    if args.enable_mtp_training:
+                        loss_mask = build_loss_mask_for_mtp(batch)
+                        assert loss_mask.shape == batch["tokens"].shape, (
+                            f"loss_mask shape {loss_mask.shape} mismatches token shape {batch['tokens'].shape}"
+                        )
+                        mtp_kwargs = {
+                            "mtp_labels": batch["tokens"],
+                        }
+
+                    output_tensor = model(
+                        input_ids=batch["tokens"],
+                        position_ids=None,
+                        attention_mask=None,
+                        labels=None,
+                        packed_seq_params=batch["packed_seq_params"],
+                        loss_mask=loss_mask,
+                        **(dict(mtp_kwargs=mtp_kwargs) if mtp_kwargs is not None else {}),
+                    )
+
+                if old_stage is not None:
+                    os.environ["ROUTING_REPLAY_STAGE"] = old_stage
+
+                return output_tensor, partial(loss_function, args, batch, num_microbatches[0])
+
+            forward_backward_func = get_forward_backward_func()
+            losses_reduced = forward_backward_func(
+                forward_step_func=forward_step,
+                data_iterator=data_iterator,
+                model=self.model,
+                num_microbatches=num_microbatches[0],
+                seq_length=args.seq_length,
+                micro_batch_size=args.micro_batch_size,
+                decoder_seq_length=args.decoder_seq_length,
+                forward_only=False,
+            )
+
+            valid_step = True
+            grad_norm = None
+            if not getattr(args, "check_for_nan_in_loss_and_grad", True):
+                found_inf_flag = self.optimizer.prepare_grads()
+                if found_inf_flag:
+                    valid_step = False
+                else:
+                    grad_norm = self.optimizer.get_grad_norm()
+                    if isinstance(grad_norm, torch.Tensor):
+                        valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
+                    else:
+                        valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+
+            loss_dict: Dict[str, float | list[torch.Tensor]] = {}
+            if mpu.is_pipeline_last_stage(ignore_virtual=True):
+                keys = losses_reduced[0]["keys"]
+                values = None
+                for item in losses_reduced:
+                    if values is None:
+                        values = item["values"]
+                    else:
+                        values += item["values"]
+                assert len(keys) + 1 == values.numel()
+                torch.distributed.all_reduce(values, group=mpu.get_data_parallel_group(with_context_parallel=True))
+
+                values = values.tolist()
+                num_samples_or_tokens = values[0]
+                for key, value in zip(keys, values[1:]):
+                    loss_dict[key] = value * mpu.get_context_parallel_world_size() / num_samples_or_tokens
+
+                if "log_probs" in losses_reduced[0]:
+                    all_log_probs = []
+                    for entry in losses_reduced:
+                        if "log_probs" in entry and entry["log_probs"]:
+                            all_log_probs.extend(entry["log_probs"])
+                    if all_log_probs:
+                        loss_dict["log_probs"] = all_log_probs
+
+        Timer().start("train_wait")
+
+        return {
+            "loss": loss_dict,
+            "grad_norm": grad_norm if grad_norm is not None else 0.0,
+            "valid_step": valid_step,
+        }
+
+    def forward_only_step(self, rollout_id: int, rollout_data_ref: Box) -> Dict[str, Dict[str, list[torch.Tensor]]]:
+        """
+        Run forward-only inference to fetch per-sample log probabilities (used by DPO/DPM adapters).
+        """
+        Timer().end("train_wait")
+
+        if self.args.offload_train:
+            self.wake_up()
+
+        with timer("data_preprocess"):
+            rollout_data = self._get_rollout_data(rollout_data_ref)
+
+        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+
+        loss_dict: Dict[str, list[torch.Tensor]] = {}
+        with timer("forward_only"):
+            rollout_data_result = forward_only(
+                get_log_probs_and_entropy,
+                self.args,
+                self.model,
+                data_iterator,
+                num_microbatches,
+                store_prefix="",
+            )
+
+            if mpu.is_pipeline_last_stage():
+                if "log_probs" in rollout_data_result:
+                    loss_dict["log_probs"] = rollout_data_result["log_probs"]
+                if "entropy" in rollout_data_result:
+                    loss_dict["entropy"] = rollout_data_result["entropy"]
+
+        Timer().start("train_wait")
+
+        return {
+            "loss": loss_dict,
+            "grad_norm": 0.0,
+            "valid_step": True,
+        }
+
+    def apply_optimizer_step(self) -> Dict[str, float]:
+        """
+        Apply optimizer step after one or more gradient accumulation passes.
+        """
+        args = get_args()
+
+        with timer("apply_optimizer_step"):
+            update_successful, grad_norm, _ = self.optimizer.step()
+
+            if update_successful:
+                self.opt_param_scheduler.step(increment=args.global_batch_size)
+
+            for model_chunk in self.model:
+                model_chunk.zero_grad_buffer()
+            self.optimizer.zero_grad()
+
+            self.weights_backuper.backup("actor")
+
+        return {
+            "success": bool(update_successful),
+            "grad_norm": grad_norm if grad_norm is not None else 0.0,
+        }
 
     @timer
     def save_model(self, iteration: int) -> None:

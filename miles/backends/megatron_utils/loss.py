@@ -401,6 +401,7 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    per_sample_log_probs = [lp.clone().detach() for lp in log_probs]
 
     if args.advantage_estimator == "gspo":
         full_log_probs = [
@@ -517,6 +518,7 @@ def policy_loss_function(
         "entropy_loss": entropy_loss.clone().detach(),
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
+        "log_probs": per_sample_log_probs,
     }
 
     if train_rollout_logprob_abs_diff is not None:
@@ -587,6 +589,7 @@ def value_loss_function(
     reported_loss = {
         "value_loss": loss.clone().detach(),
         "value_clipfrac": values_clipfrac.clone().detach(),
+        "log_probs": [],
     }
 
     return loss, reported_loss
@@ -627,6 +630,7 @@ def sft_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    per_sample_log_probs = [lp.clone().detach() for lp in log_probs]
     log_probs = torch.cat(log_probs, dim=0)
     loss = -sum_of_sample_mean(log_probs)
 
@@ -638,6 +642,7 @@ def sft_loss_function(
         loss,
         {
             "loss": loss.clone().detach(),
+            "log_probs": per_sample_log_probs,
         },
     )
 
@@ -702,21 +707,29 @@ def loss_function(
             raise ValueError(f"Unknown loss type: {args.loss_type}")
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
+    actual_global_batch_size = batch.get("_actual_global_batch_size", args.global_batch_size)
     loss = (
-        loss * num_microbatches / args.global_batch_size * mpu.get_data_parallel_world_size(with_context_parallel=True)
+        loss
+        * num_microbatches
+        / actual_global_batch_size
+        * mpu.get_data_parallel_world_size(with_context_parallel=True)
     )
+    log_probs = log.pop("log_probs", None)
+    result_dict = {
+        "keys": list(log.keys()),
+        "values": torch.tensor(
+            [
+                num_samples if not args.calculate_per_token_loss else num_tokens,
+            ]
+            + list(log.values()),
+            device=logits.device,
+        ),
+    }
+    if log_probs is not None:
+        result_dict["log_probs"] = log_probs
 
     return (
         loss,
         num_tokens if args.calculate_per_token_loss else 1,
-        {
-            "keys": list(log.keys()),
-            "values": torch.tensor(
-                [
-                    num_samples if not args.calculate_per_token_loss else num_tokens,
-                ]
-                + list(log.values()),
-                device=logits.device,
-            ),
-        },
+        result_dict,
     )

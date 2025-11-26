@@ -90,6 +90,11 @@ def get_batch(
     tokens = tokens.unsqueeze(0)
     batch["tokens"] = tokens
     batch["packed_seq_params"] = packed_seq_params
+
+    # Always propagate actual batch size if it exists on the rollout data (needed for variable batch sizes)
+    rollout_metadata = getattr(data_iterator, "rollout_data", None)
+    if rollout_metadata and "_actual_global_batch_size" in rollout_metadata:
+        batch["_actual_global_batch_size"] = rollout_metadata["_actual_global_batch_size"]
     return batch
 
 
@@ -236,8 +241,18 @@ def get_data_iterator(
     cp_size = mpu.get_context_parallel_world_size()
 
     num_local_samples = len(rollout_data["total_lengths"])
-    num_local_gbs = args.global_batch_size // dp_size
-    num_steps_per_rollout = num_local_samples // num_local_gbs
+
+    # FLEXIBLE BATCH SIZE: support variable batch sizes (e.g., when driven by external APIs like Tinker)
+    target_local_batch_size = args.global_batch_size // dp_size
+    if num_local_samples <= target_local_batch_size:
+        num_local_gbs = num_local_samples
+        num_steps_per_rollout = 1
+    else:
+        num_local_gbs = target_local_batch_size
+        num_steps_per_rollout = (num_local_samples + num_local_gbs - 1) // num_local_gbs
+
+    # Track the effective batch size (used later for loss scaling)
+    rollout_data["_actual_global_batch_size"] = num_local_samples * dp_size
 
     def _generate_data_iterator(rollout_data, micro_batch_size, micro_batch_indices=None):
         data_iterator = []
@@ -255,7 +270,8 @@ def get_data_iterator(
         assert len(samples) == num_local_samples
         num_microbatches = []
         for i in range(num_steps_per_rollout):
-            start, end = i * num_local_gbs, (i + 1) * num_local_gbs
+            start = i * num_local_gbs
+            end = min(start + num_local_gbs, num_local_samples)
             num_microbatches.append(
                 get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
             )
@@ -277,7 +293,8 @@ def get_data_iterator(
         # balance the number of mirobatches across steps
         micro_batch_indices = []
         for i, num_mbs in enumerate(num_microbatches):
-            start, end = i * num_local_gbs, (i + 1) * num_local_gbs
+            start = i * num_local_gbs
+            end = min(start + num_local_gbs, num_local_samples)
             samples = rollout_data["total_lengths"][start:end]
             partitions = get_seqlen_balanced_partitions(samples, num_mbs, equal_size=False)
             for j in range(num_mbs):
