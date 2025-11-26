@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 
 import httpx
@@ -28,6 +29,7 @@ class MilesRouter:
         self.verbose = verbose
 
         self.app = FastAPI()
+        self.app.add_event_handler("startup", self._start_background_health_check)
 
         # Worker information
         self.worker_urls: dict[str, int] = {}
@@ -63,9 +65,22 @@ class MilesRouter:
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
-    async def health_check(self, request: Request):
-        # TODO: do health check in background
-        pass
+    async def _start_background_health_check(self):
+        asyncio.create_task(self._health_check_loop())
+
+    async def _health_check_loop(self):
+        interval = getattr(self.args, "rollout_health_check_interval", 30)
+
+        while True:
+            await asyncio.sleep(interval)
+
+            for url in list(self.worker_urls.keys()):
+                try:
+                    response = await self.client.get(f"{url}/health", timeout=5.0)
+                    if response.status_code != 200:
+                        self.worker_urls.pop(url, None)
+                except Exception:
+                    self.worker_urls.pop(url, None)
 
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
