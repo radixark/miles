@@ -23,6 +23,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_fp8: bool = False
     train_fp8: bool = False
     enable_megatron_bridge: bool = False
+    enable_mis: bool = False
 
     def __post_init__(self):
         if self.train_backend == "megatron":
@@ -229,6 +230,25 @@ eval:
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
+
+    if args.enable_mis:
+        config_text = f"""
+use_tis: true
+use_rs: true
+tis_level: "token"
+rs_level: "token"
+tis_mode: "truncate"
+tis_lower_bound: 0.5
+tis_upper_bound: 2.0
+rs_lower_bound: null
+rs_upper_bound: null
+rs_veto_threshold: 1.0e-4
+tis_batch_normalize: true
+""".strip()
+        misc_args += (
+            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+        )
 
     true_on_policy_args = ""
     true_on_policy_envs = {}
