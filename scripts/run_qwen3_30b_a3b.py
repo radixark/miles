@@ -183,8 +183,8 @@ def execute(args: ScriptArgs):
             if args.rollout_fp8:
                 sglang_args += (
                     "--sglang-ep-size 2 "
-                    "--moe-runner-backend deep_gemm "
-                    "--moe-a2a-backend deepep "
+                    "--sglang-moe-runner-backend deep_gemm "
+                    "--sglang-moe-a2a-backend deepep "
                 )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 1 " "--num-gpus-per-node 4"
         case ("GB200", 2) | ("GB300", 2):
@@ -205,8 +205,8 @@ def execute(args: ScriptArgs):
             if args.rollout_fp8:
                 sglang_args += (
                     "--sglang-ep-size 2 "
-                    "--moe-runner-backend deep_gemm "
-                    "--moe-a2a-backend deepep "
+                    "--sglang-moe-runner-backend deep_gemm "
+                    "--sglang-moe-a2a-backend deepep "
                 )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 2 " "--num-gpus-per-node 4"
         case ("GB200", 4) | ("GB300", 4):
@@ -227,8 +227,8 @@ def execute(args: ScriptArgs):
             if args.rollout_fp8:
                 sglang_args += (
                     "--sglang-ep-size 2 "
-                    "--moe-runner-backend deep_gemm "
-                    "--moe-a2a-backend deepep "
+                    "--sglang-moe-runner-backend deep_gemm "
+                    "--sglang-moe-a2a-backend deepep "
                 )
             misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 8 " "--num-gpus-per-node 4"
         case _:
