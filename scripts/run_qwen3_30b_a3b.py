@@ -13,7 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: Optional[int] = None
-    hardware: Literal["H100", "GB300"] = "H100"
+    hardware: Literal["H100", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
@@ -167,7 +167,7 @@ def execute(args: ScriptArgs):
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
-        case ("GB300", 1) | ("GB300", 2) | ("GB300", 4):
+        case ("GB200", 1) | ("GB300", 1) | ("GB200", 2) | ("GB300", 2) | ("GB200", 4) | ("GB300", 4):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
