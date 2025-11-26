@@ -14,6 +14,7 @@ from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.ray.rollout_data_source import RolloutDataSourceWithBuffer
 from miles.rollout.base_types import call_rollout_fn
 from miles.utils import tracking_utils
+from miles.utils.eval_delegate import EvalDelegateClient
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
 from miles.utils.iter_utils import group_by
