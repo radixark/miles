@@ -125,6 +125,9 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
+        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
@@ -164,8 +167,7 @@ def execute(args: ScriptArgs):
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
-            misc_args += "--actor-num-gpus-per-node 8 " "--actor-num-nodes 1 "
-        case ("GB200", 1) | ("GB300", 1):
+        case ("GB200", 1) | ("GB300", 1) | ("GB200", 2) | ("GB300", 2) | ("GB200", 4) | ("GB300", 4):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -186,51 +188,6 @@ def execute(args: ScriptArgs):
                     "--sglang-moe-runner-backend deep_gemm "
                     "--sglang-moe-a2a-backend deepep "
                 )
-            misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 1 " "--num-gpus-per-node 4"
-        case ("GB200", 2) | ("GB300", 2):
-            perf_args += (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
-            sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                "--sglang-mem-fraction-static 0.7 "
-                "--sglang-cuda-graph-max-bs 512 "
-                "--sglang-attention-backend trtllm_mha "
-            )
-            if args.rollout_fp8:
-                sglang_args += (
-                    "--sglang-ep-size 2 "
-                    "--sglang-moe-runner-backend deep_gemm "
-                    "--sglang-moe-a2a-backend deepep "
-                )
-            misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 2 " "--num-gpus-per-node 4"
-        case ("GB200", 4) | ("GB300", 4):
-            perf_args += (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
-            sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                "--sglang-mem-fraction-static 0.7 "
-                "--sglang-cuda-graph-max-bs 512 "
-                "--sglang-attention-backend trtllm_mha "
-            )
-            if args.rollout_fp8:
-                sglang_args += (
-                    "--sglang-ep-size 2 "
-                    "--sglang-moe-runner-backend deep_gemm "
-                    "--sglang-moe-a2a-backend deepep "
-                )
-            misc_args += "--actor-num-gpus-per-node 4 " "--actor-num-nodes 8 " "--num-gpus-per-node 4"
         case _:
             raise NotImplementedError
 
