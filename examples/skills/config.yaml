@@ -14,5 +14,6 @@ eval:
     headers: {}
     extra:
       benchmarks:
-        - aime24:0
+        # - aime24:0
         - arena-hard:0
+        # - hle:0
