@@ -179,14 +179,23 @@ def execute(args: ScriptArgs):
             sglang_args = (
                 f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
                 "--sglang-mem-fraction-static 0.7 "
-                "--sglang-cuda-graph-max-bs 512 "
                 "--sglang-attention-backend trtllm_mha "
             )
             if args.rollout_fp8:
+                sglang_world_size = 2
+                sglang_attn_tp_size = 2
+                sglang_decode_max_bs = 256
                 sglang_args += (
-                    "--sglang-ep-size 2 "
+                    f"--sglang-ep-size {sglang_world_size} "
                     "--sglang-moe-runner-backend deep_gemm "
                     "--sglang-moe-a2a-backend deepep "
+                    f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+                    f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                )
+            else:
+                sglang_args += (
+                    "--sglang-cuda-graph-max-bs 512 "
                 )
         case _:
             raise NotImplementedError
