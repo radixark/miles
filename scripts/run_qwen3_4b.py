@@ -24,6 +24,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_fp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
+    # TODO improve
+    tis_use_rs: bool = True
 
     def __post_init__(self):
         if self.train_backend == "megatron":
@@ -234,7 +236,7 @@ eval:
     if args.enable_mis:
         config_text = f"""
 use_tis: true
-use_rs: true
+use_rs: {"true" if args.tis_use_rs else "false"}
 tis_level: "token"
 rs_level: "token"
 tis_mode: "truncate"
