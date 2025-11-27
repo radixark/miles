@@ -21,6 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "GLM-4.5"
     megatron_model_type: str = "glm4.5-355B-A32B"
     num_gpus_per_node: int = 4
+    hardware: Literal["GB200", "GB300"] = "GB300"  # TODO unify
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
@@ -230,7 +231,8 @@ def train(args: ScriptArgs):
     sglang_world_size = min(32, args.num_gpus_per_node * args.num_nodes)
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.8 "
+        # TODO improve
+        f"--sglang-mem-fraction-static {0.8 if args.hardware == 'GB300' else 0.7} "
         f"--sglang-tp-size {sglang_world_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * 2048} "
         # make every dp rank has 128 concurrency
