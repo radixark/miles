@@ -21,7 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "GLM-4.5"
     megatron_model_type: str = "glm4.5-355B-A32B"
     num_gpus_per_node: int = 4
-    hardware: Literal["GB200", "GB300"] = "GB300"  # TODO unify
+    hardware: Literal["H100", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
@@ -104,6 +104,8 @@ def _prepare_cp(args: ScriptArgs):
 def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
     _prepare_cp(args)
+
+    assert args.hardware != "H100", "H100 is not yet supported in this script"
 
     hf_checkpoint = (
         f"/root/local_data/{args.model_name}-FP8" if args.rollout_fp8 else f"/root/local_data/{args.model_name}"
