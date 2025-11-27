@@ -135,16 +135,30 @@ def execute(args: ScriptArgs):
     misc_env_vars = {}
 
     if args.train_fp8:
-        misc_args += (
-            "--transformer-impl transformer_engine "
-            "--bf16 "
-            "--fp8-format e4m3 "
-            "--fp8-recipe blockwise "
-            # "--fp8-param-gather "
-        )
-        misc_env_vars |= {
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        }
+        match args.hardware:
+            case "GB200" | "GB300":
+                # ref: Megatron-MoE-ModelZoo
+                misc_args += (
+                    "--transformer-impl transformer_engine "
+                    "--bf16 "
+                    "--fp8-format e4m3 "
+                    "--fp8-recipe mxfp8 "
+                    "--fp8-param-gather "
+                    "--reuse-grad-buf-for-mxfp8-param-ag "
+                    # --moe-router-padding-for-quantization
+                )
+            case "H100" | "H200":
+                # ref: fp8 blog
+                misc_args += (
+                    "--transformer-impl transformer_engine "
+                    "--bf16 "
+                    "--fp8-format e4m3 "
+                    "--fp8-recipe blockwise "
+                    # "--fp8-param-gather "
+                )
+                misc_env_vars |= {
+                    "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+                }
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
