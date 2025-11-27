@@ -711,7 +711,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--use-kl-loss", action="store_true", default=False, help="whether to use KL loss from GRPO"
+                "--use-kl-loss",
+                action=argparse.BooleanOptionalAction,
+                default=False,
+                help="whether to use KL loss from GRPO",
             )
             parser.add_argument(
                 "--kl-loss-coef",
