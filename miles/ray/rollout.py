@@ -371,7 +371,8 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
 
         def get_addr_and_ports():
             # use small ports to prevent ephemeral port between 32768 and 65536.
-            start_port = 10000
+            # start_port = 10000
+            start_port = 15000
 
             def port(consecutive=1):
                 nonlocal start_port
