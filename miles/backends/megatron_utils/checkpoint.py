@@ -1,11 +1,11 @@
 import logging
+import os
 from pathlib import Path
 
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
-from transformers import AutoConfig
 from miles.utils import megatron_bridge_utils
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     args = get_args()
     load_path = args.load
 
-    assert _is_dir_nonempty(load_path), f"{args.load=} is an empty directory. Did you specify the wrong folder?"
+    assert Path(load_path).exists() and _is_dir_nonempty(load_path), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if _is_megatron_checkpoint(load_path):
         return _load_checkpoint_megatron(
