@@ -17,6 +17,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     args = get_args()
     load_path = args.load
 
+    assert _is_dir_nonempty(load_path), f"{args.load=} is an empty directory. Did you specify the wrong folder?"
+
     if _is_hf_checkpoint(load_path):
         return _load_checkpoint_hf(
             ddp_model=ddp_model,
@@ -62,3 +64,8 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
     iteration = 0
     num_floating_point_operations_so_far = 0
     return iteration, num_floating_point_operations_so_far
+
+
+def _is_dir_nonempty(path):
+    with os.scandir(path) as it:
+        return any(it)
