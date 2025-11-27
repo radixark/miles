@@ -18,7 +18,9 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     args = get_args()
     load_path = args.load
 
-    assert Path(load_path).exists() and _is_dir_nonempty(load_path), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
+    assert Path(load_path).exists() and _is_dir_nonempty(
+        load_path
+    ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if _is_megatron_checkpoint(load_path):
         return _load_checkpoint_megatron(
