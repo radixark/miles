@@ -259,8 +259,6 @@ def train(args: ScriptArgs):
         sglang_extra_env_vars |= {
             "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
         }
-    else:
-        TODO
 
     misc_args = (
         # default dropout in megatron is 0.1
