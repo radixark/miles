@@ -24,6 +24,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    enable_mtp: bool = False
     dynamic_sampling: bool = False
     # TODO use more complex task
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
@@ -257,6 +258,13 @@ def train(args: ScriptArgs):
         sglang_extra_env_vars |= {
             "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
         }
+    if args.enable_mtp:
+        sglang_args += (
+            "--speculative-algorithm EAGLE "
+            "--speculative-num-steps 1 "
+            "--speculative-eagle-topk 1 "
+            "--speculative-num-draft-tokens 2 "
+        )
 
     misc_args = (
         # default dropout in megatron is 0.1
