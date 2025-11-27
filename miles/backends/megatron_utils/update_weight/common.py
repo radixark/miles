@@ -133,12 +133,9 @@ def named_params_and_buffers(
 def _maybe_get_cpu_backup(x: torch.Tensor):
     from torch_memory_saver import torch_memory_saver
 
-    print(f"[{torch.distributed.get_rank()}] hi _maybe_get_cpu_backup a", flush=True)
     if (cpu_tensor := torch_memory_saver.get_cpu_backup(x)) is not None:
-        print(f"[{torch.distributed.get_rank()}] hi _maybe_get_cpu_backup b", flush=True)
         return cpu_tensor
 
-    print(f"[{torch.distributed.get_rank()}] hi _maybe_get_cpu_backup c", flush=True)
     return x
 
 
