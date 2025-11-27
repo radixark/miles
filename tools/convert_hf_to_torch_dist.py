@@ -15,6 +15,7 @@ from miles.backends.megatron_utils import set_default_megatron_args
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.memory_utils import print_memory
+from miles.utils.logging_utils import configure_logger
 
 
 def add_convertion_args(parser):
@@ -70,7 +71,9 @@ def get_args():
 
 
 def main():
-    """Initialize distributed environment"""
+    configure_logger()
+
+    # Initialize distributed environment
     world_size = int(os.getenv("WORLD_SIZE") or os.getenv("SLURM_NTASKS") or 1)
     local_rank = int(os.getenv("LOCAL_RANK") or os.getenv("SLURM_LOCALID") or 0)
     global_rank = int(os.getenv("RANK") or os.getenv("SLURM_PROCID") or 0)
