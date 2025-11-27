@@ -28,6 +28,7 @@ def find_available_port(base_port: int):
 
 def is_port_available(port):
     """Return whether a port is available."""
+    print("hi use new is_port_available")
     for conn in psutil.net_connections():
         if conn.laddr.port == port:
             return False
