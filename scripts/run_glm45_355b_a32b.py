@@ -231,8 +231,6 @@ def train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.8 "
         f"--sglang-tp-size {sglang_world_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * 2048} "
-        # TODO why disable?
-        # "--sglang-disable-radix-cache "
         # make every dp rank has 128 concurrency
         # "--sglang-server-concurrency 1024 "
         # For quick experiments
