@@ -265,6 +265,7 @@ def train(args: ScriptArgs):
             "--sglang-speculative-num-steps 1 "
             "--sglang-speculative-eagle-topk 1 "
             "--sglang-speculative-num-draft-tokens 2 "
+            "--sglang-enable-draft-weights-cpu-backup "
         )
 
     misc_args = (
