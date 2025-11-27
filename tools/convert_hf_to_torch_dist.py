@@ -95,6 +95,10 @@ def main():
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
 
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
     save_checkpoint(1, model, None, None, 0)
 
     if dist.get_rank() == 0:
