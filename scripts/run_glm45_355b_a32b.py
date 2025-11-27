@@ -260,10 +260,10 @@ def train(args: ScriptArgs):
         }
     if args.enable_mtp:
         sglang_args += (
-            "--speculative-algorithm EAGLE "
-            "--speculative-num-steps 1 "
-            "--speculative-eagle-topk 1 "
-            "--speculative-num-draft-tokens 2 "
+            "--sglang-speculative-algorithm EAGLE "
+            "--sglang-speculative-num-steps 1 "
+            "--sglang-speculative-eagle-topk 1 "
+            "--sglang-speculative-num-draft-tokens 2 "
         )
 
     misc_args = (
