@@ -24,7 +24,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
-    enable_mtp: bool = False
+    enable_mtp: bool = False  # TODO enable by default
     dynamic_sampling: bool = False
     # TODO use more complex task
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
