@@ -194,9 +194,7 @@ def execute(args: ScriptArgs):
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
                 )
             else:
-                sglang_args += (
-                    "--sglang-cuda-graph-max-bs 512 "
-                )
+                sglang_args += "--sglang-cuda-graph-max-bs 512 "
         case _:
             raise NotImplementedError
 
