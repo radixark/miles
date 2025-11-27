@@ -225,40 +225,42 @@ def train(args: ScriptArgs):
         # "--use-precision-aware-optimizer "
     )
 
-    # TODO optimize parameters, especially for FP8
-    # TODO pure tp attention is very inefficient
-    # sglang_decode_max_bs = 256
     sglang_world_size = min(32, args.num_gpus_per_node * args.num_nodes)
-    # sglang_attn_dp_size = 4
-    # sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         "--sglang-mem-fraction-static 0.8 "
         f"--sglang-tp-size {sglang_world_size} "
-        # f"--sglang-ep-size {sglang_world_size} "
-        # dp attention
-        # "--sglang-enable-dp-attention "
-        # f"--sglang-dp-size {sglang_attn_dp_size} "
-        # "--sglang-moe-dense-tp-size 1 "
-        # "--sglang-enable-dp-lm-head "
+        f"--sglang-chunked-prefill-size {sglang_world_size * 2048} "
         # TODO why disable?
         # "--sglang-disable-radix-cache "
-        # enable deepep for sglang
-        # "--sglang-moe-a2a-backend deepep "
-        # "--sglang-deepep-mode low_latency "
         # make every dp rank has 128 concurrency
         # "--sglang-server-concurrency 1024 "
-        # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
-        # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-        # f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
-        f"--sglang-chunked-prefill-size {sglang_world_size * 2048} "
     )
     sglang_extra_env_vars = {}
-    # sglang_extra_env_vars = {
-    #     "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
-    # }
+    if args.rollout_fp8:
+        sglang_decode_max_bs = 256
+        sglang_attn_dp_size = 4
+        sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
+        sglang_args += (
+            f"--sglang-ep-size {sglang_world_size} "
+            "--sglang-enable-dp-attention "
+            f"--sglang-dp-size {sglang_attn_dp_size} "
+            "--sglang-moe-dense-tp-size 1 "
+            "--sglang-enable-dp-lm-head "
+            "--sglang-moe-runner-backend deep_gemm "
+            "--sglang-moe-a2a-backend deepep "
+            "--sglang-deepep-mode low_latency "
+            f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+            f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+            f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        )
+        sglang_extra_env_vars |= {
+            "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
+        }
+    else:
+        TODO
 
     misc_args = (
         # default dropout in megatron is 0.1
