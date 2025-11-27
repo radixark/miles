@@ -127,7 +127,7 @@ def named_params_and_buffers(
     if translate_gpu_to_cpu:
         from torch_memory_saver import torch_memory_saver
 
-        ans = ((name, torch_memory_saver.get_cpu_backup(tensor)) for name, tensor in ans)
+        ans = ((name, torch_memory_saver.get_cpu_backup(tensor) or tensor) for name, tensor in ans)
 
     return ans
 
