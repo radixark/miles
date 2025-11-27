@@ -8,6 +8,7 @@ import socket
 from typing import Optional
 
 import httpx
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +28,10 @@ def find_available_port(base_port: int):
 
 def is_port_available(port):
     """Return whether a port is available."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("", port))
-            s.listen(1)
-            return True
-        except socket.error:
+    for conn in psutil.net_connections():
+        if conn.laddr.port == port:
             return False
-        except OverflowError:
-            return False
+    return True
 
 
 def get_host_info():

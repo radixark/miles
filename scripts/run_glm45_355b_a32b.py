@@ -42,6 +42,7 @@ def prepare_single(args: ScriptArgs):
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k")
             U.hf_download_dataset("zhuzilin/aime-2024")
+            U.hf_download_dataset("zhuzilin/aime-2025")
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k")
 
