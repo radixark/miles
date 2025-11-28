@@ -27,6 +27,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_fp8: bool = False
     enable_mtp: bool = False  # TODO enable by default
     dynamic_sampling: bool = False
+    enable_benchmark: bool = False
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
 
@@ -301,6 +302,11 @@ def train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
     )
+
+    if args.enable_benchmark:
+        misc_args += (
+            "--custom-generate-function-path miles.rollout.generate_hub.benchmarkers.generate_with_random_osl "
+        )
 
     train_args = (
         f"{ckpt_args} "
