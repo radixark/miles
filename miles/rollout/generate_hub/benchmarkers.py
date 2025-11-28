@@ -3,9 +3,8 @@ from argparse import Namespace
 from copy import deepcopy
 from typing import Any
 
-from miles.utils.types import Sample
-
 from miles.rollout.sglang_rollout import generate as _generate_base
+from miles.utils.types import Sample
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
