@@ -25,6 +25,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    rollout_attn_fp8: bool = False
     enable_mtp: bool = False  # TODO enable by default
     dynamic_sampling: bool = False
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
@@ -262,6 +263,8 @@ def train(args: ScriptArgs):
         sglang_extra_env_vars |= {
             "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
         }
+    if args.rollout_attn_fp8:
+        sglang_args += "--kv-cache-dtype fp8_e4m3 "
     if args.enable_mtp:
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
