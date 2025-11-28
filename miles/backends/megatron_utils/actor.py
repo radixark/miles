@@ -10,6 +10,8 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from megatron.core import mpu
+from megatron.core.models.gpt import GPTModel
+from megatron.core.pipeline_parallel import get_forward_backward_func
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoTokenizer
@@ -31,13 +33,15 @@ from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from .checkpoint import load_checkpoint
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
-from .data import DataIterator, get_data_iterator, log_perf_data, log_rollout_data, sync_actor_critic_data
+from .data import DataIterator, get_batch, get_data_iterator, log_perf_data, log_rollout_data, sync_actor_critic_data
 from .initialize import init, is_megatron_main_rank
 from .loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from .model import forward_only, initialize_model_and_optimizer, save, train
+from .ray_step import run_forward_backward_only, run_forward_only
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from megatron.training.global_vars import get_args
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -195,6 +199,20 @@ class MegatronTrainRayActor(TrainRayActor):
             rollout_data["rollout_routed_experts"] = [
                 torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]
             ]
+
+        # Move RL fields to GPU for external APIs that send CPU tensors (e.g., Tinker).
+        for field in ["log_probs", "ref_log_probs", "advantages", "returns", "values"]:
+            values = rollout_data.get(field)
+            if not values:
+                continue
+
+            def _ensure_cuda(x):
+                if isinstance(x, torch.Tensor):
+                    return x if x.is_cuda else x.to(device=torch.cuda.current_device())
+                return torch.tensor(x, dtype=torch.float32, device=torch.cuda.current_device())
+
+            rollout_data[field] = [_ensure_cuda(v) for v in values]
+
         return rollout_data
 
     def fill_routing_replay(self, data_iterator, num_microbatches, rollout_data):
@@ -415,6 +433,89 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.weights_backuper.backup("ref")
 
         log_perf_data(rollout_id, self.args)
+
+    def forward_backward_step_only(
+        self,
+        rollout_id: int,
+        rollout_data_ref: Box,
+        zero_grads: bool = False,
+    ) -> Dict[str, float]:
+        """
+        Run forward/backward pass without optimizer step to enable gradient accumulation.
+        """
+        Timer().end("train_wait")
+
+        if self.args.offload_train:
+            self.wake_up()
+
+        with timer("data_preprocess"):
+            rollout_data = self._get_rollout_data(rollout_data_ref)
+
+        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+
+        with timer("forward_backward_only"):
+            loss_dict, grad_norm, valid_step = run_forward_backward_only(
+                actor=self,
+                rollout_id=rollout_id,
+                data_iterator=data_iterator,
+                num_microbatches=num_microbatches,
+                zero_grads=zero_grads,
+            )
+        Timer().start("train_wait")
+
+        return {
+            "loss": loss_dict,
+            "grad_norm": grad_norm if grad_norm is not None else 0.0,
+            "valid_step": valid_step,
+        }
+
+    def forward_only_step(self, rollout_id: int, rollout_data_ref: Box) -> Dict[str, Dict[str, list[torch.Tensor]]]:
+        """
+        Run forward-only inference to fetch per-sample log probabilities (used by DPO/DPM adapters).
+        """
+        Timer().end("train_wait")
+
+        if self.args.offload_train:
+            self.wake_up()
+
+        with timer("data_preprocess"):
+            rollout_data = self._get_rollout_data(rollout_data_ref)
+
+        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+
+        with timer("forward_only"):
+            loss_dict = run_forward_only(self, data_iterator, num_microbatches)
+
+        Timer().start("train_wait")
+
+        return {
+            "loss": loss_dict,
+            "grad_norm": 0.0,
+            "valid_step": True,
+        }
+
+    def apply_optimizer_step(self) -> Dict[str, float]:
+        """
+        Apply optimizer step after one or more gradient accumulation passes.
+        """
+        args = get_args()
+
+        with timer("apply_optimizer_step"):
+            update_successful, grad_norm, _ = self.optimizer.step()
+
+            if update_successful:
+                self.opt_param_scheduler.step(increment=args.global_batch_size)
+
+            for model_chunk in self.model:
+                model_chunk.zero_grad_buffer()
+            self.optimizer.zero_grad()
+
+            self.weights_backuper.backup("actor")
+
+        return {
+            "success": bool(update_successful),
+            "grad_norm": grad_norm if grad_norm is not None else 0.0,
+        }
 
     @timer
     def save_model(self, iteration: int) -> None:

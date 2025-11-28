@@ -401,6 +401,7 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    per_sample_log_probs = [lp.clone().detach() for lp in log_probs]
 
     if args.advantage_estimator == "gspo":
         full_log_probs = [
@@ -429,55 +430,71 @@ def policy_loss_function(
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
 
     # Apply off-policy correction using importance sampling if enabled
+    # Needed for Tinker SFT support (tinker sft may omit rollout log-probs)
+    rollout_log_probs_list = None  
+    if "rollout_log_probs" in batch and batch["rollout_log_probs"]:
+        filtered = [lp for lp in batch["rollout_log_probs"] if lp is not None]
+        if filtered:
+            rollout_log_probs_list = filtered
+
     if args.get_mismatch_metrics or args.use_tis:
-
-        def vanilla_tis_function(
-            args,
-            *,
-            pg_loss: torch.Tensor,
-            train_log_probs: list[torch.Tensor],
-            rollout_log_probs: list[torch.Tensor],
-            loss_masks: list[torch.Tensor],
-            **kwargs: Any,
-        ) -> Tuple[torch.Tensor, list[torch.Tensor], Dict[str, torch.Tensor]]:
-            rollout_log_probs = torch.cat(rollout_log_probs, dim=0)
-            old_log_probs = torch.cat(train_log_probs, dim=0)
-            tis = torch.exp(old_log_probs - rollout_log_probs)
-            tis_abs = torch.exp((old_log_probs - rollout_log_probs).abs())
-            tis_weights = torch.clamp(tis, min=args.tis_clip_low, max=args.tis_clip)
-            tis_clipfrac = (tis_weights != tis).float()
-            metrics = {
-                "tis": tis.clone().detach(),
-                "tis_clipfrac": tis_clipfrac.clone().detach(),
-                "tis_abs": tis_abs.clone().detach(),
-            }
-            pg_loss = pg_loss * tis_weights
-            return pg_loss, loss_masks, metrics
-
-        assert "rollout_log_probs" in batch, "rollout_log_probs must be provided for TIS"
-
-        ois = (-ppo_kl).exp()
-        tis_kwargs = {
-            "args": args,
-            "pg_loss": pg_loss,
-            "train_log_probs": batch["log_probs"],
-            "rollout_log_probs": batch["rollout_log_probs"],
-            "loss_masks": batch["loss_masks"],
-            "total_lengths": total_lengths,
-            "response_lengths": response_lengths,
-        }
-
-        if args.custom_tis_function_path is not None:
-            tis_func = load_function(args.custom_tis_function_path)
+        if rollout_log_probs_list is None:
+            if args.use_tis:
+                raise ValueError("rollout_log_probs must be provided when use_tis=True")
+            # Nothing to compare against; skip mismatch metrics.
+            rollout_metrics_available = False
         else:
-            tis_func = vanilla_tis_function
-        pg_loss, modified_response_masks, tis_metrics = tis_func(**tis_kwargs)
+            rollout_metrics_available = True
 
-        # [decouple IS and rejection] Rebuild sum_of_sample_mean with modified_response_masks for denominator correction
-        # modified_response_masks will be sliced with cp in get_sum_of_sample_mean
-        sum_of_sample_mean = get_sum_of_sample_mean(
-            total_lengths, response_lengths, modified_response_masks, args.calculate_per_token_loss
-        )
+        if rollout_metrics_available:
+            def vanilla_tis_function(
+                args,
+                *,
+                pg_loss: torch.Tensor,
+                train_log_probs: list[torch.Tensor],
+                rollout_log_probs: list[torch.Tensor],
+                loss_masks: list[torch.Tensor],
+                **kwargs: Any,
+            ) -> Tuple[torch.Tensor, list[torch.Tensor], Dict[str, torch.Tensor]]:
+                rollout_log_probs = torch.cat(rollout_log_probs, dim=0)
+                old_log_probs = torch.cat(train_log_probs, dim=0)
+                tis = torch.exp(old_log_probs - rollout_log_probs)
+                tis_abs = torch.exp((old_log_probs - rollout_log_probs).abs())
+                tis_weights = torch.clamp(tis, min=args.tis_clip_low, max=args.tis_clip)
+                tis_clipfrac = (tis_weights != tis).float()
+                metrics = {
+                    "tis": tis.clone().detach(),
+                    "tis_clipfrac": tis_clipfrac.clone().detach(),
+                    "tis_abs": tis_abs.clone().detach(),
+                }
+                pg_loss = pg_loss * tis_weights
+                return pg_loss, loss_masks, metrics
+
+            ois = (-ppo_kl).exp()
+            tis_kwargs = {
+                "args": args,
+                "pg_loss": pg_loss,
+                "train_log_probs": batch["log_probs"],
+                "rollout_log_probs": rollout_log_probs_list,
+                "loss_masks": batch["loss_masks"],
+                "total_lengths": total_lengths,
+                "response_lengths": response_lengths,
+            }
+
+            if args.custom_tis_function_path is not None:
+                tis_func = load_function(args.custom_tis_function_path)
+            else:
+                tis_func = vanilla_tis_function
+            pg_loss, modified_response_masks, tis_metrics = tis_func(**tis_kwargs)
+
+            # [decouple IS and rejection] Rebuild sum_of_sample_mean with modified_response_masks for denominator correction
+            # modified_response_masks will be sliced with cp in get_sum_of_sample_mean
+            sum_of_sample_mean = get_sum_of_sample_mean(
+                total_lengths, response_lengths, modified_response_masks, args.calculate_per_token_loss
+            )
+        else:
+            tis_metrics = {}
+            ois = torch.tensor(0.0, device=log_probs.device)
 
     pg_loss = sum_of_sample_mean(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
@@ -507,8 +524,8 @@ def policy_loss_function(
         loss += 0 * logits.sum()
 
     train_rollout_logprob_abs_diff = None
-    if "rollout_log_probs" in batch:
-        rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
+    if rollout_log_probs_list:
+        rollout_log_probs = torch.cat(rollout_log_probs_list, dim=0)
         train_rollout_logprob_abs_diff = sum_of_sample_mean((old_log_probs - rollout_log_probs).abs())
 
     reported_loss = {
@@ -517,6 +534,7 @@ def policy_loss_function(
         "entropy_loss": entropy_loss.clone().detach(),
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
+        "log_probs": per_sample_log_probs,
     }
 
     if train_rollout_logprob_abs_diff is not None:
@@ -526,11 +544,12 @@ def policy_loss_function(
         reported_loss["kl_loss"] = kl_loss.clone().detach()
 
     if args.get_mismatch_metrics or args.use_tis:
-        reported_loss["ois"] = sum_of_sample_mean(ois).clone().detach()
-        # Assume all metrics are already cloned and detached
-        for metric_key, metric_value in tis_metrics.items():
-            key_name = f"{metric_key}"
-            reported_loss[key_name] = sum_of_sample_mean(metric_value)
+        if rollout_log_probs_list:
+            reported_loss["ois"] = sum_of_sample_mean(ois).clone().detach()
+            # Assume all metrics are already cloned and detached
+            for metric_key, metric_value in tis_metrics.items():
+                key_name = f"{metric_key}"
+                reported_loss[key_name] = sum_of_sample_mean(metric_value)
 
     return loss, reported_loss
 
@@ -587,6 +606,7 @@ def value_loss_function(
     reported_loss = {
         "value_loss": loss.clone().detach(),
         "value_clipfrac": values_clipfrac.clone().detach(),
+        "log_probs": [],
     }
 
     return loss, reported_loss
@@ -627,6 +647,7 @@ def sft_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    per_sample_log_probs = [lp.clone().detach() for lp in log_probs]
     log_probs = torch.cat(log_probs, dim=0)
     loss = -sum_of_sample_mean(log_probs)
 
@@ -638,6 +659,7 @@ def sft_loss_function(
         loss,
         {
             "loss": loss.clone().detach(),
+            "log_probs": per_sample_log_probs,
         },
     )
 
@@ -702,21 +724,29 @@ def loss_function(
             raise ValueError(f"Unknown loss type: {args.loss_type}")
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
+    actual_global_batch_size = batch.get("_actual_global_batch_size", args.global_batch_size)
     loss = (
-        loss * num_microbatches / args.global_batch_size * mpu.get_data_parallel_world_size(with_context_parallel=True)
+        loss
+        * num_microbatches
+        / actual_global_batch_size
+        * mpu.get_data_parallel_world_size(with_context_parallel=True)
     )
+    log_probs = log.pop("log_probs", None)
+    result_dict = {
+        "keys": list(log.keys()),
+        "values": torch.tensor(
+            [
+                num_samples if not args.calculate_per_token_loss else num_tokens,
+            ]
+            + list(log.values()),
+            device=logits.device,
+        ),
+    }
+    if log_probs is not None:
+        result_dict["log_probs"] = log_probs
 
     return (
         loss,
         num_tokens if args.calculate_per_token_loss else 1,
-        {
-            "keys": list(log.keys()),
-            "values": torch.tensor(
-                [
-                    num_samples if not args.calculate_per_token_loss else num_tokens,
-                ]
-                + list(log.values()),
-                device=logits.device,
-            ),
-        },
+        result_dict,
     )

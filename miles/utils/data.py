@@ -217,6 +217,12 @@ def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
         "rollout_routed_experts",
         "prompt",
         "teacher_log_probs",
+        # Additional RL training fields for Tinker API support
+        "advantages",
+        "returns",
+        "log_probs",
+        "ref_log_probs",
+        "values",
     ]:
         if key not in data:
             continue

@@ -142,3 +142,28 @@ class RayTrainGroup:
 
     def set_rollout_manager(self, rollout_manager):
         return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handlers])
+
+    def forward_backward_only(self, rollout_id, rollout_data_ref, zero_grads=False):
+        """
+        Run forward/backward without optimizer step to accumulate gradients (Tinker API support).
+        """
+        return ray.get(
+            [
+                actor.forward_backward_step_only.remote(rollout_id, rollout_data_ref, zero_grads)
+                for actor in self._actor_handlers
+            ]
+        )
+
+    def forward_only(self, rollout_id, rollout_data_ref):
+        """
+        Forward-only inference to fetch per-sample log probabilities (used by DPO reference runs).
+        """
+        return ray.get(
+            [actor.forward_only_step.remote(rollout_id, rollout_data_ref) for actor in self._actor_handlers]
+        )
+
+    def apply_optimizer_step(self):
+        """
+        Apply optimizer step after manual gradient accumulation.
+        """
+        return ray.get([actor.apply_optimizer_step.remote() for actor in self._actor_handlers])
