@@ -217,7 +217,7 @@ def execute(args: ScriptArgs):
             raise NotImplementedError
 
     if args.rollout_attn_fp8:
-        sglang_args += "--kv-cache-dtype fp8_e4m3 "
+        sglang_args += "--sglang-kv-cache-dtype fp8_e4m3 "
 
     if args.enable_mis:
         config_text = f"""
