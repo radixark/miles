@@ -4,7 +4,7 @@ Simple HTTP server that proxies Miles evaluation requests to the `ns eval`
 command shipped with NeMo Skills.
 
 Usage:
-    python examples/skills/skills_eval_server.py \
+    python examples/eval/skills/skills_server.py \
         --host 0.0.0.0 --port 9050 \
         --output-root /tmp/skills-eval \
         --cluster test-local \
@@ -89,7 +89,6 @@ HYDRA_OVERRIDE_MAP = {
     "top_p": "inference.top_p",
     "top_k": "inference.top_k",
     "max_response_len": "inference.tokens_to_generate",
-    "min_new_tokens": "inference.min_new_tokens",
 }
 
 
@@ -149,6 +148,7 @@ def _hydra_overrides_from_benchmark(
             f"++server.base_url={router_api_url}",
             f"++server.model={openai_model_name}",
             "++server.api_key=EMPTY",
+            "++max_concurrent_requests=512",
         ]
     )
     return overrides
@@ -266,7 +266,9 @@ class SkillsEvaluator:
             benchmark_cfg,
         )
         env = self._build_env()
-        logger.info("Starting NeMo Skills eval for %s: %s", benchmark_name, " ".join(shlex.quote(part) for part in command))
+        logger.info(
+            "Starting NeMo Skills eval for %s: %s", benchmark_name, " ".join(shlex.quote(part) for part in command)
+        )
         self._run_command(command, env=env, log_path=log_path)
 
         metrics = self._collect_metrics(benchmark_run_dir, [benchmark_name])

@@ -1280,12 +1280,13 @@ def _resolve_eval_config(args) -> list[EvalDatasetConfig]:
 
         defaults = dict(eval_cfg.get("defaults") or {})
         datasets_config = ensure_dataset_list(eval_cfg.get("datasets"))
-        if not datasets_config:
-            raise ValueError("--eval-config does not define any datasets under `eval.datasets`.")
-        
+
         raw_delegate_config = eval_cfg.get("delegate", None)
         if raw_delegate_config is not None and isinstance(raw_delegate_config, list):
             args.eval_delegate_config = _rebuild_delegate_config(args, raw_delegate_config, defaults)
+
+        if not datasets_config and not args.eval_delegate_config:
+            raise ValueError("--eval-config does not define any datasets under `eval.datasets` or `eval.delegate`.")
     elif args.eval_prompt_data:
         values = list(args.eval_prompt_data)
         if len(values) == 1:
@@ -1334,7 +1335,9 @@ def miles_validate_args(args):
         args.start_rollout_id = 0
 
     if args.eval_interval is not None:
-        assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
+        assert (
+            args.eval_datasets or args.eval_delegate_config
+        ), "Evaluation datasets must be configured when eval_interval is set."
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."

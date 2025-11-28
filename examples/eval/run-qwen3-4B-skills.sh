@@ -17,11 +17,11 @@ set -ex
 
 SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"slime-openai-model"}
 
-python examples/skills/skills_eval_server.py \
+python examples/eval/skills/skills_server.py \
   --host 0.0.0.0 \
   --port 9050 \
   --output-root /root/shared/skills-eval \
-  --config-dir examples/skills \
+  --config-dir examples/eval/skills \
   --cluster local_cluster \
   --server-type openai \
   --openai-model-name "${SKILLS_OPENAI_MODEL_NAME}" &
@@ -41,7 +41,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3-4B.sh"
 
 # Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/skills/config.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/skills/config.yaml"}
 
 CKPT_ARGS=(
    --hf-checkpoint /root/shared/Qwen3-4B
@@ -110,14 +110,14 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project slime-skills
-   --wandb-group qwen3-4b-skills
+   --wandb-project slime-eval
+   --wandb-group qwen3-4b-eval
    --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.8
+   --sglang-mem-fraction-static 0.7
 )
 
 MISC_ARGS=(
@@ -129,8 +129,7 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=4,5,6,7
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -143,7 +142,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 4 \
+   --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

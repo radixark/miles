@@ -14,7 +14,6 @@ class SkillsEvalEnvDatasetConfig(EvalEnvDatasetConfig):
 
     def __init__(self, args, dataset_cfg: Mapping[str, Any], defaults: Mapping[str, Any]):
         super().__init__(args, dataset_cfg, defaults)
-        self.runtime_name = dataset_cfg.get("runtime_name")
 
 
 class SkillsEvalEnvConfig(EvalEnvConfig):
@@ -72,11 +71,15 @@ class SkillsEvalClient:
 
     @staticmethod
     def _serialize_benchmark(dataset_cfg: SkillsEvalEnvDatasetConfig) -> Dict[str, Any]:
-        runtime_name = dataset_cfg.runtime_name or dataset_cfg.name
-        if not runtime_name:
-            return {}
+        # assert there is no colon in the name
+        assert (
+            ":" not in dataset_cfg.name
+        ), "Colon in dataset name is not allowed, please use `n_samples_per_prompt` to specify the number of samples per prompt."
+        runtime_name = dataset_cfg.name
+        if dataset_cfg.n_samples_per_prompt is not None:
+            runtime_name = f"{runtime_name}:{dataset_cfg.n_samples_per_prompt}"
         payload: Dict[str, Any] = {"name": runtime_name}
-        for field in ("n_samples_per_prompt", "temperature", "top_p", "top_k", "max_response_len"):
+        for field in ("temperature", "top_p", "top_k", "max_response_len"):
             value = getattr(dataset_cfg, field, None)
             if value is not None:
                 payload[field] = value
