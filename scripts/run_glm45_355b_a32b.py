@@ -306,10 +306,6 @@ def train(args: ScriptArgs):
     if args.enable_benchmark:
         misc_args += (
             "--custom-generate-function-path miles.rollout.generate_hub.benchmarkers.generate_with_random_osl "
-            "--rollout-batch-size 512 "
-            "--n-samples-per-prompt 8 "
-            "--over-sampling-batch-size 1024 "
-            # "--dynamic-sampling-filter-path not-specify-here "
         )
 
     train_args = (
