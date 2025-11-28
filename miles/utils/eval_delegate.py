@@ -1,23 +1,105 @@
 import logging
-import time
-from typing import Any, Dict, Optional
-
-import requests
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _pick_from_mapping(data: Optional[Mapping[str, Any]], keys: Iterable[str]) -> Any:
+    if not data:
+        return None
+    for key in keys:
+        if key in data and data[key] is not None:
+            return data[key]
+    return None
+
+
+class EvalEnvDatasetConfig:
+    """Dataset-level generation parameters shared across delegate clients."""
+
+    FIELD_SPECS = {
+        "n_samples_per_prompt": {
+            "dataset_keys": ("n_samples_per_prompt", "n_samples_per_eval_prompt"),
+            "default_keys": ("n_samples_per_prompt", "n_samples_per_eval_prompt"),
+            "arg_attrs": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
+        },
+        "temperature": {
+            "dataset_keys": ("temperature",),
+            "default_keys": ("temperature",),
+            "arg_attrs": ("eval_temperature", "rollout_temperature"),
+        },
+        "top_p": {
+            "dataset_keys": ("top_p",),
+            "default_keys": ("top_p",),
+            "arg_attrs": ("eval_top_p", "rollout_top_p"),
+        },
+        "top_k": {
+            "dataset_keys": ("top_k",),
+            "default_keys": ("top_k",),
+            "arg_attrs": ("eval_top_k", "rollout_top_k"),
+        },
+        "max_response_len": {
+            "dataset_keys": ("max_response_len",),
+            "default_keys": ("max_response_len",),
+            "arg_attrs": ("eval_max_response_len", "rollout_max_response_len"),
+        },
+    }
+
+    def __init__(self, args, dataset_cfg: Mapping[str, Any], defaults: Mapping[str, Any]):
+        self.name = str(dataset_cfg["name"])
+        defaults = defaults or {}
+        for field, spec in self.FIELD_SPECS.items():
+            dataset_value = _pick_from_mapping(dataset_cfg, spec["dataset_keys"])
+            default_value = _pick_from_mapping(defaults, spec["default_keys"])
+            arg_values = [getattr(args, attr, None) for attr in spec["arg_attrs"]]
+            setattr(self, field, _first_not_none(dataset_value, default_value, *arg_values))
+
+
+class EvalEnvConfig:
+    """Environment definition shared across delegate implementations."""
+
+    def __init__(self, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]):
+        self.name = str(raw_env_config.get("name", "")).strip().lower()
+        self.url = raw_env_config.get("url")
+        self.timeout_secs = raw_env_config.get("timeout_secs", 3600)
+        self.max_retries = raw_env_config.get("max_retries", 1)
+        self.headers = dict(raw_env_config.get("headers", {}))
+        self.defaults = dict(defaults or {})
+
+
+def _rebuild_delegate_config(
+    args, raw_delegate_config: Sequence[Mapping[str, Any]], defaults: Mapping[str, Any]
+) -> List[EvalEnvConfig]:
+    envs: List[EvalEnvConfig] = []
+    defaults = defaults or {}
+    for env in raw_delegate_config or []:
+        env_name = str(env.get("name", "")).strip().lower()
+        if not env_name:
+            continue
+        if env_name == "skills":
+            from examples.eval.skills.skills_client import build_skills_eval_env_config
+
+            env_cfg = build_skills_eval_env_config(args, env, defaults)
+            if env_cfg is not None:
+                envs.append(env_cfg)
+        else:
+            logger.warning("Unknown delegate environment: %s", env_name)
+    return envs
 
 
 class EvalDelegateError(RuntimeError):
     """Raised when the external evaluation server returns an error."""
 
-
-def _serialize_dataset(cfg: Any) -> Dict[str, Any]:
-    """Convert EvalDatasetConfig (or a mapping) into a plain dict."""
-    if hasattr(cfg, "model_dump"):
-        return dict(cfg.model_dump())
-    if isinstance(cfg, dict):
-        return dict(cfg)
-    raise TypeError(f"Unsupported dataset config type: {type(cfg)}")
+class EvalClient:
+    # TODO: move some logic from SkillsEvalClient to this class
+    # Not sure what will future client to be like, so keep it as an empty base class for now.
+    pass
 
 
 def _flatten(result: Dict[str, Any], prefix: Optional[str] = None) -> Dict[str, Any]:
@@ -33,113 +115,43 @@ def _flatten(result: Dict[str, Any], prefix: Optional[str] = None) -> Dict[str, 
 
 
 class EvalDelegateClient:
-    """Simple HTTP client that asks an external service to run evaluation."""
+    """Aggregate multiple environment-specific delegate clients."""
 
-    def __init__(
-        self,
-        endpoint: str,
-        *,
-        timeout_secs: float,
-        max_retries: int,
-        headers: Optional[Dict[str, str]],
-        router_url: str,
-        base_extra: Optional[Dict[str, Any]] = None,
-    ):
-        self._endpoint = endpoint
-        self._timeout_secs = timeout_secs
-        self._max_retries = max(1, max_retries)
-        self._router_url = router_url.rstrip("/")
-        self._headers = headers or {}
-        self._base_extra = dict(base_extra or {})
-        self._session = requests.Session()
+    def __init__(self, delegates: Sequence[Any]):
+        self._delegates = list(delegates)
 
     @classmethod
     def maybe_create(cls, args):
-        delegate_cfg = getattr(args, "eval_delegate_config", None)
-        if not delegate_cfg:
-            return None
-
-        url = delegate_cfg.get("url")
-        if not url:
+        env_configs = getattr(args, "eval_delegate_config", None)
+        if not env_configs:
             return None
 
         router_addr = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-        return cls(
-            url,
-            timeout_secs=float(delegate_cfg.get("timeout_secs", 3600)),
-            max_retries=int(delegate_cfg.get("max_retries", 1)),
-            headers=delegate_cfg.get("headers"),
-            router_url=router_addr,
-            base_extra=delegate_cfg.get("extra"),
-        )
+        delegates = []
+        for env_cfg in env_configs:
+            delegate = cls._create_delegate(env_cfg, router_addr)
+            if delegate is not None:
+                delegates.append(delegate)
+        if not delegates:
+            return None
+        return cls(delegates)
+
+    @staticmethod
+    def _create_delegate(env_cfg: EvalEnvConfig, router_addr: str):
+        env_name = getattr(env_cfg, "name", "")
+        if env_name == "skills":
+            from examples.eval.skills.skills_client import SkillsEvalClient
+
+            return SkillsEvalClient.from_config(env_cfg, router_addr)
+        logger.warning("No delegate client registered for environment: %s", env_name)
+        return None
 
     def evaluate(self, args, rollout_id: int) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        """Trigger evaluation and return (metrics, raw_response)."""
-        payload = self._build_payload(args, rollout_id)
-        response = self._request(payload)
-        metrics = self._extract_metrics(response)
-        return metrics, response
-
-    def _build_payload(self, args, rollout_id: int) -> Dict[str, Any]:
-        datasets = [_serialize_dataset(cfg) for cfg in getattr(args, "eval_datasets", []) or []]
-        defaults = {
-            "n_samples_per_eval_prompt": args.n_samples_per_eval_prompt,
-            "reward_key": args.eval_reward_key,
-            "input_key": args.eval_input_key or getattr(args, "input_key", None),
-            "label_key": args.eval_label_key or getattr(args, "label_key", None),
-            "tool_key": args.eval_tool_key or getattr(args, "tool_key", None),
-            "metadata_key": getattr(args, "metadata_key", None),
-        }
-
-        generation = {
-            "temperature": args.eval_temperature if args.eval_temperature is not None else args.rollout_temperature,
-            "top_p": args.eval_top_p if args.eval_top_p is not None else args.rollout_top_p,
-            "top_k": args.eval_top_k if args.eval_top_k is not None else args.rollout_top_k,
-            "max_response_len": (
-                args.eval_max_response_len if args.eval_max_response_len is not None else args.rollout_max_response_len
-            ),
-            "min_new_tokens": getattr(args, "eval_min_new_tokens", None),
-            "stop": args.rollout_stop,
-            "stop_token_ids": args.rollout_stop_token_ids,
-        }
-
-        payload = {
-            "rollout_id": rollout_id,
-            "router_url": self._router_url,
-            "eval_datasets": datasets,
-            "defaults": defaults,
-            "generation": generation,
-            "extra": dict(self._base_extra),
-        }
-        return payload
-
-    def _request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        last_error: Optional[Exception] = None
-        for attempt in range(1, self._max_retries + 1):
-            try:
-                response = self._session.post(
-                    self._endpoint,
-                    json=payload,
-                    timeout=self._timeout_secs,
-                    headers=self._headers,
-                )
-                response.raise_for_status()
-                if not response.content:
-                    return {}
-                return response.json()
-            except requests.RequestException as exc:
-                last_error = exc
-                logger.warning("Eval delegate request failed (attempt %s/%s): %s", attempt, self._max_retries, exc)
-                if attempt < self._max_retries:
-                    time.sleep(min(2**attempt, 30))
-        raise EvalDelegateError("External evaluation request failed") from last_error
-
-    def _extract_metrics(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(response, dict):
-            return {}
-
-        if "metrics" in response and isinstance(response["metrics"], dict):
-            return dict(response["metrics"])
-        if "results" in response and isinstance(response["results"], dict):
-            return _flatten(response["results"])
-        return {}
+        aggregated_metrics: Dict[str, Any] = {}
+        raw_responses: Dict[str, Any] = {}
+        for delegate in self._delegates:
+            metrics, response = delegate.evaluate(args, rollout_id)
+            if metrics:
+                aggregated_metrics.update(metrics)
+            raw_responses[getattr(delegate, "name", "delegate")] = response
+        return aggregated_metrics, raw_responses

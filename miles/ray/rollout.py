@@ -1,3 +1,4 @@
+import json
 import logging
 import multiprocessing
 import random
@@ -115,10 +116,10 @@ class RolloutManager:
         if self._eval_delegate is not None:
             metrics, raw_response = self._eval_delegate.evaluate(self.args, rollout_id)
             log_dict = _log_external_eval_metrics(rollout_id, self.args, metrics)
-            logger.info(f"External eval raw response for rollout {rollout_id}: {raw_response}")
+            logger.info("External eval raw response for rollout %s: %s", rollout_id, raw_response)
+            logger.info("External eval metrics for rollout %s: %s", rollout_id, log_dict)
             if self._metric_checker is not None:
-                self._metric_checker.on_eval(log_dict)
-            return
+                self._metric_checker.on_eval(metrics)
 
         # TODO: add fault tolerance to eval
         data = call_rollout_fn(
@@ -517,7 +518,7 @@ def _log_external_eval_metrics(rollout_id, args, metrics: dict | None):
 
 def _iter_metric_items(metrics: dict, prefix: str = ""):
     for key, value in metrics.items():
-        metric_key = f"{prefix}{key}" if not prefix else f"{prefix}/{key}"
+        metric_key = f"{key}" if not prefix else f"{prefix}/{key}"
         if isinstance(value, dict):
             yield from _iter_metric_items(value, metric_key)
         else:

@@ -1,0 +1,25 @@
+eval:
+  defaults:
+    n_samples_per_eval_prompt: 1
+    max_response_len: 8192
+    top_p: 0.7
+  delegate:
+    - name: skills 
+      url: http://127.0.0.1:9050/evaluate
+      timeout_secs: 7200
+      max_retries: 5
+      headers: {}
+      datasets:
+        - name: aime24
+          runtime_name: aime24:0
+        - name: arena-hard
+          runtime_name: arena-hard:0
+          temperature: 0.8
+          top_p: 0.7
+          max_response_len: 8192
+        - name: hle:0
+          runtime_name: hle:0
+          temperature: 0.8
+          top_p: 0.7
+          max_response_len: 8192
+

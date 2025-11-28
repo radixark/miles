@@ -2,7 +2,7 @@ import argparse
 import json
 import logging
 import os
-from typing import Any, Dict, Mapping
+from typing import Any, Dict
 
 import yaml
 from sglang_router.launch_router import RouterArgs
@@ -11,6 +11,7 @@ from transformers import AutoConfig
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.eval_delegate import _rebuild_delegate_config
 
 logger = logging.getLogger(__name__)
 
@@ -1258,28 +1259,12 @@ def parse_args_train_backend():
     return args_partial.train_backend
 
 
-def _load_eval_delegate_config(cfg_dict: Any, eval_cfg: Mapping[str, Any]) -> Dict[str, Any] | None:
-    if not isinstance(cfg_dict, Mapping):
-        return None
-    candidate = None
-    if isinstance(eval_cfg, Mapping):
-        candidate = eval_cfg.get("delegate")
-    if candidate is None:
-        candidate = cfg_dict.get("delegate")
-    if candidate is None:
-        return None
-    if not isinstance(candidate, Mapping):
-        raise ValueError("--eval-config `delegate` must be a mapping.")
-    return dict(candidate)
-
-
-def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
+def _resolve_eval_config(args) -> list[EvalDatasetConfig]:
     """
     Build evaluation dataset configurations from either --eval-config or --eval-prompt-data.
     """
     datasets_config = []
     defaults: Dict[str, Any] = {}
-    args.eval_delegate_config = None
 
     if args.eval_config:
         from omegaconf import OmegaConf
@@ -1294,10 +1279,13 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
             raise ValueError("--eval-config must define an `eval` mapping or be a mapping itself.")
 
         defaults = dict(eval_cfg.get("defaults") or {})
-        args.eval_delegate_config = _load_eval_delegate_config(cfg_dict, eval_cfg)
         datasets_config = ensure_dataset_list(eval_cfg.get("datasets"))
         if not datasets_config:
             raise ValueError("--eval-config does not define any datasets under `eval.datasets`.")
+        
+        raw_delegate_config = eval_cfg.get("delegate", None)
+        if raw_delegate_config is not None and isinstance(raw_delegate_config, list):
+            args.eval_delegate_config = _rebuild_delegate_config(args, raw_delegate_config, defaults)
     elif args.eval_prompt_data:
         values = list(args.eval_prompt_data)
         if len(values) == 1:
@@ -1315,11 +1303,11 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     else:
         args.eval_prompt_data = None
 
-    return eval_datasets
+    args.eval_datasets = eval_datasets
 
 
 def miles_validate_args(args):
-    args.eval_datasets = _resolve_eval_datasets(args)
+    _resolve_eval_config(args)
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):

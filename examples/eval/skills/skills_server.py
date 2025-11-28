@@ -47,19 +47,11 @@ class PayloadError(RuntimeError):
 
 
 @dataclass
-class EvalDataset:
-    name: str
-    path: str | None = None
-
-
-@dataclass
 class EvalRequestPayload:
     rollout_id: int
     router_url: str
-    eval_datasets: List[EvalDataset] = field(default_factory=list)
     defaults: Dict[str, Any] = field(default_factory=dict)
-    generation: Dict[str, Any] = field(default_factory=dict)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    benchmarks: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "EvalRequestPayload":
@@ -71,13 +63,20 @@ class EvalRequestPayload:
         except (KeyError, TypeError, ValueError) as exc:
             raise PayloadError("`rollout_id` and `router_url` are required.") from exc
 
-        datasets = [
-            EvalDataset(name=str(item["name"]), path=item.get("path")) for item in data.get("eval_datasets", []) or []
-        ]
         defaults = dict(data.get("defaults") or {})
-        generation = dict(data.get("generation") or {})
-        extra = dict(data.get("extra") or {})
-        return cls(rollout_id, router_url, datasets, defaults, generation, extra)
+        raw_benchmarks = data.get("benchmarks") or []
+        if not isinstance(raw_benchmarks, list):
+            raise PayloadError("`benchmarks` must be provided as a list.")
+        benchmarks: List[Dict[str, Any]] = []
+        for entry in raw_benchmarks:
+            if not isinstance(entry, Mapping):
+                raise PayloadError("Each benchmark entry must be an object.")
+            benchmark = dict(entry)
+            if "name" not in benchmark:
+                raise PayloadError("Each benchmark entry must include a `name` field.")
+            benchmarks.append(benchmark)
+
+        return cls(rollout_id, router_url, defaults, benchmarks)
 
 
 # ---------------------------------------------------------------------------
@@ -119,26 +118,39 @@ def _flatten_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, float]:
     return flattened
 
 
-def _benchmarks_from_payload(payload: EvalRequestPayload) -> List[str]:
-    extra = payload.extra or {}
-    if benchmarks := extra.get("benchmarks"):
-        if isinstance(benchmarks, str):
-            return [part.strip() for part in benchmarks.split(",") if part.strip()]
-        if isinstance(benchmarks, list):
-            return [str(item) for item in benchmarks if item]
-        raise PayloadError("`extra.benchmarks` must be a string or list of strings")
-
-    if payload.eval_datasets:
-        return [f"{dataset.name}:0" for dataset in payload.eval_datasets]
-
-    raise PayloadError("No benchmarks specified. Provide extra.benchmarks or eval_datasets.")
+def _sanitize_benchmark_name(name: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name)
+    return safe or "benchmark"
 
 
-def _hydra_overrides_from_generation(generation: Mapping[str, Any]) -> List[str]:
-    overrides = []
+def _resolve_generation_settings(defaults: Mapping[str, Any], benchmark_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    resolved: Dict[str, Any] = {}
+    for key in HYDRA_OVERRIDE_MAP.keys():
+        value = benchmark_cfg.get(key)
+        if value is None:
+            value = defaults.get(key)
+        if value is not None:
+            resolved[key] = value
+    return resolved
+
+
+def _hydra_overrides_from_benchmark(
+    defaults: Mapping[str, Any], benchmark_cfg: Mapping[str, Any], router_api_url: str, openai_model_name: str
+) -> List[str]:
+    generation = _resolve_generation_settings(defaults, benchmark_cfg)
+    overrides: List[str] = []
     for key, hydra_key in HYDRA_OVERRIDE_MAP.items():
-        if key in generation and generation[key] is not None:
+        if key in generation:
             overrides.append(f"++{hydra_key}={generation[key]}")
+
+    overrides.extend(
+        [
+            "++server.server_type=openai",
+            f"++server.base_url={router_api_url}",
+            f"++server.model={openai_model_name}",
+            "++server.api_key=EMPTY",
+        ]
+    )
     return overrides
 
 
@@ -172,42 +184,112 @@ class SkillsEvaluator:
         self._config.output_root.mkdir(parents=True, exist_ok=True)
 
     def evaluate(self, payload: EvalRequestPayload) -> Dict[str, Any]:
-        benchmarks = _benchmarks_from_payload(payload)
-        job_id = payload.extra.get("job_id") or uuid.uuid4().hex
-        exp_name = payload.extra.get("expname") or f"rollout-{payload.rollout_id}"
+        if not payload.benchmarks:
+            warning_msg = "No benchmarks specified in delegate config; skipping NeMo Skills evaluation."
+            logger.warning(warning_msg)
+            return {
+                "job_id": uuid.uuid4().hex,
+                "command": None,
+                "output_dir": None,
+                "log_path": None,
+                "warning": warning_msg,
+                "metrics": {},
+                "raw_metrics": {},
+            }
+
+        job_id = uuid.uuid4().hex
+        exp_name = f"rollout-{payload.rollout_id}"
+        router_api_url = payload.router_url.rstrip("/") + "/v1"
+        server_type = self._config.server_type
         run_dir = self._config.output_root / f"{int(time.time())}-{exp_name}"
         run_dir.mkdir(parents=True, exist_ok=True)
-        log_path = run_dir / "skills_eval.log"
-        router_api_url = payload.router_url.rstrip("/") + "/v1"
-        server_type = payload.extra.get("server_type", self._config.server_type)
 
-        command = self._build_command(payload, benchmarks, exp_name, router_api_url, server_type, run_dir)
-        env = self._build_env(payload)
-        logger.info("Starting NeMo Skills eval: %s", " ".join(shlex.quote(part) for part in command))
-
+        runs: List[Dict[str, Any]] = []
+        raw_metrics: Dict[str, Any] = {}
         with self._lock:
-            self._run_command(command, env=env, log_path=log_path)
+            for benchmark_cfg in payload.benchmarks:
+                result = self._run_single_benchmark(
+                    payload,
+                    benchmark_cfg,
+                    exp_name,
+                    router_api_url,
+                    server_type,
+                    run_dir,
+                )
+                if result is None:
+                    continue
+                runs.append(result["run_info"])
+                raw_metrics.update(result["metrics"])
 
-        raw_metrics = self._collect_metrics(run_dir, benchmarks)
         flat_metrics = _flatten_metrics(raw_metrics)
+        command_summary = "\n".join(run["command"] for run in runs) if runs else None
+        log_path = runs[-1]["log_path"] if runs else None
 
         return {
             "job_id": job_id,
-            "command": " ".join(shlex.quote(part) for part in command),
+            "command": command_summary,
             "output_dir": str(run_dir),
-            "log_path": str(log_path),
+            "log_path": log_path,
             "metrics": flat_metrics,
             "raw_metrics": raw_metrics,
+            "runs": runs,
         }
 
-    def _build_command(
+    def _run_single_benchmark(
         self,
         payload: EvalRequestPayload,
-        benchmarks: List[str],
+        benchmark_cfg: Mapping[str, Any],
         exp_name: str,
         router_api_url: str,
         server_type: str,
         run_dir: Path,
+    ) -> Dict[str, Any] | None:
+        benchmark_name = str(benchmark_cfg.get("name", "")).strip()
+        if not benchmark_name:
+            logger.warning("Benchmark entry missing `name`: %s", benchmark_cfg)
+            return None
+
+        safe_name = _sanitize_benchmark_name(benchmark_name)
+        benchmark_run_dir = run_dir / safe_name
+        benchmark_run_dir.mkdir(parents=True, exist_ok=True)
+        bench_exp_name = f"{exp_name}-{safe_name}"
+        log_path = benchmark_run_dir / "skills_eval.log"
+
+        command = self._build_command(
+            benchmark_name,
+            bench_exp_name,
+            router_api_url,
+            payload.router_url,
+            server_type,
+            benchmark_run_dir,
+            payload.defaults,
+            benchmark_cfg,
+        )
+        env = self._build_env()
+        logger.info("Starting NeMo Skills eval for %s: %s", benchmark_name, " ".join(shlex.quote(part) for part in command))
+        self._run_command(command, env=env, log_path=log_path)
+
+        metrics = self._collect_metrics(benchmark_run_dir, [benchmark_name])
+        return {
+            "run_info": {
+                "benchmark": benchmark_name,
+                "command": " ".join(shlex.quote(part) for part in command),
+                "output_dir": str(benchmark_run_dir),
+                "log_path": str(log_path),
+            },
+            "metrics": metrics,
+        }
+
+    def _build_command(
+        self,
+        benchmark: str,
+        exp_name: str,
+        router_api_url: str,
+        original_router_url: str,
+        server_type: str,
+        run_dir: Path,
+        defaults: Mapping[str, Any],
+        benchmark_cfg: Mapping[str, Any],
     ) -> List[str]:
         base_cmd = [
             "ns",
@@ -215,11 +297,11 @@ class SkillsEvaluator:
             "--output_dir",
             str(run_dir),
             "--benchmarks",
-            ",".join(benchmarks),
+            benchmark,
             "--server_type",
             server_type,
             "--server_address",
-            router_api_url if server_type == "openai" else payload.router_url,
+            router_api_url if server_type == "openai" else original_router_url,
             "--expname",
             exp_name,
         ]
@@ -228,30 +310,14 @@ class SkillsEvaluator:
         if self._config.config_dir:
             base_cmd.extend(["--config_dir", self._config.config_dir])
 
-        cli_args = self._config.default_cli_args + _ensure_list(payload.extra.get("cli_args"))
-        hydra_overrides = self._build_hydra_overrides(payload, router_api_url)
-        hydra_overrides.extend(_ensure_list(payload.extra.get("hydra_overrides")))
+        cli_args = list(self._config.default_cli_args)
+        openai_model_name = self._config.openai_model_name or "slime-openai-model"
+        hydra_overrides = _hydra_overrides_from_benchmark(defaults, benchmark_cfg, router_api_url, openai_model_name)
         return base_cmd + cli_args + hydra_overrides
 
-    def _build_hydra_overrides(self, payload: EvalRequestPayload, router_api_url: str) -> List[str]:
-        overrides = _hydra_overrides_from_generation(payload.generation)
-        openai_model_name = (
-            payload.extra.get("openai_model_name") or self._config.openai_model_name or "slime-openai-model"
-        )
-        overrides.extend(
-            [
-                "++server.server_type=openai",
-                f"++server.base_url={router_api_url}",
-                f"++server.model={openai_model_name}",
-                "++server.api_key=EMPTY",
-            ]
-        )
-        return overrides
-
-    def _build_env(self, payload: EvalRequestPayload) -> Dict[str, str]:
+    def _build_env(self) -> Dict[str, str]:
         env = os.environ.copy()
         env.update(self._config.default_env)
-        env.update(payload.extra.get("env") or {})
         return env
 
     @staticmethod
