@@ -271,6 +271,9 @@ def train(args: ScriptArgs):
             "--sglang-speculative-num-draft-tokens 2 "
             "--sglang-enable-draft-weights-cpu-backup "
         )
+        sglang_extra_env_vars |= {
+            "SGLANG_ENABLE_SPEC_V2": "1",
+        }
 
     misc_args = (
         # default dropout in megatron is 0.1
