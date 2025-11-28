@@ -27,7 +27,9 @@ def dataclass_cli(func, env_var_prefix: str = "MILES_SCRIPT_"):
         new_parameters.append(param.replace(annotation=new_annotation))
 
     def wrapped(**kwargs):
-        return func(dataclass_cls(**kwargs))
+        data = dataclass_cls(**kwargs)
+        print(f"Execute command with args {data}")
+        return func(data)
 
     wrapped.__signature__ = signature.replace(parameters=new_parameters)
     wrapped.__doc__ = func.__doc__
