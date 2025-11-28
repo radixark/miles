@@ -20,6 +20,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_attn_fp8: bool = False
     train_fp8: bool = False
     enable_megatron_bridge: bool = False
+    enable_mis: bool = False
+    # TODO improve, should be able to override more easily
+    tis_use_rs: bool = True
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
@@ -215,6 +218,25 @@ def execute(args: ScriptArgs):
 
     if args.rollout_attn_fp8:
         sglang_args += "--kv-cache-dtype fp8_e4m3 "
+
+    if args.enable_mis:
+        config_text = f"""
+use_tis: true
+use_rs: {"true" if args.tis_use_rs else "false"}
+tis_level: "token"
+rs_level: "token"
+tis_mode: "truncate"
+tis_lower_bound: 0.5
+tis_upper_bound: 2.0
+rs_lower_bound: null
+rs_upper_bound: null
+rs_veto_threshold: 1.0e-4
+tis_batch_normalize: true
+""".strip()
+        misc_args += (
+            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+        )
 
     train_args = (
         f"{ckpt_args} "
