@@ -38,4 +38,28 @@ def dataclass_cli(func, env_var_prefix: str = "MILES_SCRIPT_"):
 
 # unit test
 if __name__ == '__main__':
-    TODO
+    from typer.testing import CliRunner
+
+    @dataclasses.dataclass
+    class DemoArgs:
+        name: str
+        count: int = 1
+
+    app = typer.Typer()
+
+    @app.command()
+    @dataclass_cli
+    def main(args: DemoArgs):
+        print(f"{args.name}|{args.count}")
+
+    runner = CliRunner()
+
+    res1 = runner.invoke(app, [], env={"MILES_SCRIPT_NAME": "EnvName", "MILES_SCRIPT_COUNT": "10"})
+    assert res1.exit_code == 0
+    assert "EnvName|10" in res1.stdout.strip()
+
+    res2 = runner.invoke(app, ["--count", "999"], env={"MILES_SCRIPT_NAME": "EnvName"})
+    assert res2.exit_code == 0
+    assert "EnvName|999" in res2.stdout.strip()
+
+    print("✅ All Tests Passed!")
