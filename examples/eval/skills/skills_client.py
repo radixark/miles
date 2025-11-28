@@ -75,11 +75,8 @@ class SkillsEvalClient:
         assert (
             ":" not in dataset_cfg.name
         ), "Colon in dataset name is not allowed, please use `n_samples_per_prompt` to specify the number of samples per prompt."
-        runtime_name = dataset_cfg.name
-        if dataset_cfg.n_samples_per_prompt is not None:
-            runtime_name = f"{runtime_name}:{dataset_cfg.n_samples_per_prompt}"
-        payload: Dict[str, Any] = {"name": runtime_name}
-        for field in ("temperature", "top_p", "top_k", "max_response_len"):
+        payload: Dict[str, Any] = {"name": dataset_cfg.name}
+        for field in ("n_samples_per_prompt", "temperature", "top_p", "top_k", "max_response_len"):
             value = getattr(dataset_cfg, field, None)
             if value is not None:
                 payload[field] = value

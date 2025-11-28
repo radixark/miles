@@ -117,11 +117,6 @@ def _flatten_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, float]:
     return flattened
 
 
-def _sanitize_benchmark_name(name: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name)
-    return safe or "benchmark"
-
-
 def _resolve_generation_settings(defaults: Mapping[str, Any], benchmark_cfg: Mapping[str, Any]) -> Dict[str, Any]:
     resolved: Dict[str, Any] = {}
     for key in HYDRA_OVERRIDE_MAP.keys():
@@ -244,37 +239,39 @@ class SkillsEvaluator:
         server_type: str,
         run_dir: Path,
     ) -> Dict[str, Any] | None:
-        benchmark_name = str(benchmark_cfg.get("name", "")).strip()
-        if not benchmark_name:
+        name = str(benchmark_cfg.get("name", "")).strip()
+        if not name:
             logger.warning("Benchmark entry missing `name`: %s", benchmark_cfg)
             return None
 
-        safe_name = _sanitize_benchmark_name(benchmark_name)
-        benchmark_run_dir = run_dir / safe_name
+        benchmark_run_dir = run_dir / name
         benchmark_run_dir.mkdir(parents=True, exist_ok=True)
-        bench_exp_name = f"{exp_name}-{safe_name}"
+        bench_exp_name = f"{exp_name}-{name}"
         log_path = benchmark_run_dir / "skills_eval.log"
 
+        runtime_name = name
+        if "n_samples_per_prompt" in benchmark_cfg:
+            runtime_name = f"{name}:{benchmark_cfg['n_samples_per_prompt']}"
+            benchmark_cfg.pop("n_samples_per_prompt")
+
         command = self._build_command(
-            benchmark_name,
-            bench_exp_name,
-            router_api_url,
-            payload.router_url,
-            server_type,
-            benchmark_run_dir,
-            payload.defaults,
-            benchmark_cfg,
+            benchmark=runtime_name,
+            exp_name=bench_exp_name,
+            router_api_url=router_api_url,
+            original_router_url=payload.router_url,
+            server_type=server_type,
+            run_dir=benchmark_run_dir,
+            defaults=payload.defaults,
+            benchmark_cfg=benchmark_cfg,
         )
         env = self._build_env()
-        logger.info(
-            "Starting NeMo Skills eval for %s: %s", benchmark_name, " ".join(shlex.quote(part) for part in command)
-        )
+        logger.info("Starting NeMo Skills eval for %s: %s", name, " ".join(shlex.quote(part) for part in command))
         self._run_command(command, env=env, log_path=log_path)
 
-        metrics = self._collect_metrics(benchmark_run_dir, [benchmark_name])
+        metrics = self._collect_metrics(benchmark_run_dir, [name])
         return {
             "run_info": {
-                "benchmark": benchmark_name,
+                "benchmark": name,
                 "command": " ".join(shlex.quote(part) for part in command),
                 "output_dir": str(benchmark_run_dir),
                 "log_path": str(log_path),

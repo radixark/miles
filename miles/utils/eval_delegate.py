@@ -25,8 +25,8 @@ class EvalEnvDatasetConfig:
 
     FIELD_SPECS = {
         "n_samples_per_prompt": {
-            "dataset_keys": ("n_samples_per_prompt", "n_samples_per_eval_prompt"),
-            "default_keys": ("n_samples_per_prompt", "n_samples_per_eval_prompt"),
+            "dataset_keys": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
+            "default_keys": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
             "arg_attrs": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
         },
         "temperature": {
@@ -95,6 +95,7 @@ def _rebuild_delegate_config(
 
 class EvalDelegateError(RuntimeError):
     """Raised when the external evaluation server returns an error."""
+
 
 class EvalClient:
     # TODO: move some logic from SkillsEvalClient to this class
