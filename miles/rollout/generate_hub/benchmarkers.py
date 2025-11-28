@@ -8,7 +8,7 @@ from miles.utils.types import Sample
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
-    # TODO: make it configurable after we have better arg parser
+    # TODO: make it configurable after we have an enhanced arg parser
     min_osl = 40 * 1024
     max_osl = 64 * 1024
 
