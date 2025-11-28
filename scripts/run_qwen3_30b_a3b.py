@@ -17,6 +17,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    rollout_attn_fp8: bool = False
     train_fp8: bool = False
     enable_megatron_bridge: bool = False
 
@@ -211,6 +212,9 @@ def execute(args: ScriptArgs):
                 sglang_args += "--sglang-cuda-graph-max-bs 512 "
         case _:
             raise NotImplementedError
+
+    if args.rollout_attn_fp8:
+        sglang_args += "--kv-cache-dtype fp8_e4m3 "
 
     train_args = (
         f"{ckpt_args} "
