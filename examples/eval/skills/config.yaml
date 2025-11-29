@@ -7,7 +7,7 @@ eval:
     max_response_len: 24576
   delegate:
     - name: skills 
-      url: http://127.0.0.1:9050/evaluate
+      url: http://skills_server:9050/evaluate
       timeout_secs: 7200
       max_retries: 5
       headers: {}
