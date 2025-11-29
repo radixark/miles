@@ -26,12 +26,17 @@ import logging
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from examples.eval.skills.skills_config import SkillsEvalEnvDatasetConfig
 from flask import Flask, jsonify, request
