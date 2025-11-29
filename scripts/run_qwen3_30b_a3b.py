@@ -141,6 +141,8 @@ def execute(args: ScriptArgs):
     if args.train_fp8:
         match args.hardware:
             case "GB200" | "GB300":
+                # It can run but accuracy is incorrect currently
+                raise NotImplementedError
                 # ref: Megatron-MoE-ModelZoo
                 misc_args += (
                     "--transformer-impl transformer_engine "
