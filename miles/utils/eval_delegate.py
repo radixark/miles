@@ -1,5 +1,8 @@
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+
+from omegaconf import OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +23,18 @@ def _pick_from_mapping(data: Optional[Mapping[str, Any]], keys: Iterable[str]) -
     return None
 
 
+@dataclass
 class EvalEnvDatasetConfig:
     """Dataset-level generation parameters shared across delegate clients."""
 
+    name: str = ""
+    n_samples_per_prompt: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    max_response_len: Optional[int] = None
+
+    # TODO: temporarily leave this, merge this with eval in the future.
     FIELD_SPECS = {
         "n_samples_per_prompt": {
             "dataset_keys": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
@@ -51,26 +63,47 @@ class EvalEnvDatasetConfig:
         },
     }
 
-    def __init__(self, args, dataset_cfg: Mapping[str, Any], defaults: Mapping[str, Any]):
-        self.name = str(dataset_cfg["name"])
+    @classmethod
+    def parse(cls, args, dataset_cfg: Mapping[str, Any], defaults: Mapping[str, Any]) -> "EvalEnvDatasetConfig":
+        """Merge dataset overrides with defaults/CLI settings and coerce types via OmegaConf."""
         defaults = defaults or {}
-        for field, spec in self.FIELD_SPECS.items():
+        name = str(dataset_cfg.get("name", "")).strip()
+        if not name:
+            raise ValueError("Each delegate dataset entry must include a non-empty `name`.")
+
+        values: Dict[str, Any] = {"name": name}
+        for field_name, spec in cls.FIELD_SPECS.items():
             dataset_value = _pick_from_mapping(dataset_cfg, spec["dataset_keys"])
             default_value = _pick_from_mapping(defaults, spec["default_keys"])
             arg_values = [getattr(args, attr, None) for attr in spec["arg_attrs"]]
-            setattr(self, field, _first_not_none(dataset_value, default_value, *arg_values))
+            values[field_name] = _first_not_none(dataset_value, default_value, *arg_values)
+
+        cfg = OmegaConf.merge(OmegaConf.structured(cls), OmegaConf.create(values))
+        obj = OmegaConf.to_object(cfg)
+        if not isinstance(obj, cls):
+            obj = cls(**obj)
+        return obj
 
 
+@dataclass
 class EvalEnvConfig:
     """Environment definition shared across delegate implementations."""
 
-    def __init__(self, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]):
-        self.name = str(raw_env_config.get("name", "")).strip().lower()
-        self.url = raw_env_config.get("url")
-        self.timeout_secs = raw_env_config.get("timeout_secs", 3600)
-        self.max_retries = raw_env_config.get("max_retries", 1)
-        self.headers = dict(raw_env_config.get("headers", {}))
-        self.defaults = dict(defaults or {})
+    name: str = ""
+    url: Optional[str] = None
+    timeout_secs: int = 3600
+    max_retries: int = 1
+    headers: Dict[str, Any] = field(default_factory=dict)
+    defaults: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def parse(cls, raw: Mapping[str, Any], defaults: Mapping[str, Any]) -> "EvalEnvConfig":
+        cfg = OmegaConf.merge(OmegaConf.structured(cls), OmegaConf.create(raw or {}))
+        obj = OmegaConf.to_object(cfg)
+        if not isinstance(obj, cls):
+            obj = cls(**obj)
+
+        return obj
 
 
 def _rebuild_delegate_config(

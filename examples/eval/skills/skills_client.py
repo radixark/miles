@@ -1,5 +1,6 @@
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
 import requests
@@ -12,23 +13,29 @@ logger = logging.getLogger(__name__)
 class SkillsEvalEnvDatasetConfig(EvalEnvDatasetConfig):
     """Configuration for a single Skills evaluation dataset."""
 
-    def __init__(self, args, dataset_cfg: Mapping[str, Any], defaults: Mapping[str, Any]):
-        super().__init__(args, dataset_cfg, defaults)
+    @classmethod
+    def parse(cls, args, dataset_cfg: Mapping[str, Any], defaults: Mapping[str, Any]):
+        return super().parse(args, dataset_cfg, defaults)
 
 
+@dataclass
 class SkillsEvalEnvConfig(EvalEnvConfig):
     """Configuration for NeMo Skills evaluation."""
 
-    def __init__(self, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]):
-        super().__init__(args, raw_env_config, defaults)
+    datasets: List[SkillsEvalEnvDatasetConfig] = field(default_factory=list)
+
+    @classmethod
+    def parse(cls, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]) -> "SkillsEvalEnvConfig":
+        base_cfg: SkillsEvalEnvConfig = super().parse(raw_env_config, defaults)  # type: ignore[assignment]
         datasets = raw_env_config.get("datasets") or []
-        self.datasets: List[SkillsEvalEnvDatasetConfig] = [
-            SkillsEvalEnvDatasetConfig(args, dataset_cfg, self.defaults) for dataset_cfg in datasets
+        base_cfg.datasets = [
+            SkillsEvalEnvDatasetConfig.parse(args, dataset_cfg, base_cfg.defaults) for dataset_cfg in datasets
         ]
+        return base_cfg
 
 
 def build_skills_eval_env_config(args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]):
-    return SkillsEvalEnvConfig(args, raw_env_config, defaults)
+    return SkillsEvalEnvConfig.parse(args, raw_env_config, defaults)
 
 
 class SkillsEvalClient:
