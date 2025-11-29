@@ -34,7 +34,7 @@ class EvalEnvDatasetConfig:
     top_k: Optional[int] = None
     max_response_len: Optional[int] = None
 
-    # TODO: temporarily leave this, merge this with eval in the future.
+    # TODO: This is ugly, temporarily leave this. We should unify all the config name for dataset, default, and args. (advice from Tom.)
     FIELD_SPECS = {
         "n_samples_per_eval_prompt": {
             "dataset_keys": ("n_samples_per_eval_prompt",),

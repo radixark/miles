@@ -26,7 +26,7 @@ class SkillsEvalEnvConfig(EvalEnvConfig):
 
     @classmethod
     def parse(cls, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]) -> "SkillsEvalEnvConfig":
-        base_cfg: SkillsEvalEnvConfig = super().parse(raw_env_config, defaults)  # type: ignore[assignment]
+        base_cfg: SkillsEvalEnvConfig = super().parse(raw_env_config, defaults)
         datasets = raw_env_config.get("datasets") or []
         base_cfg.datasets = [
             SkillsEvalEnvDatasetConfig.parse(args, dataset_cfg, base_cfg.defaults) for dataset_cfg in datasets

@@ -7,6 +7,7 @@ eval:
     max_response_len: 24576
   delegate:
     - name: skills 
+      # this url should align with env docker network alias
       url: http://skills_server:9050/evaluate
       timeout_secs: 7200
       max_retries: 5
