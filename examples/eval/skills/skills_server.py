@@ -29,9 +29,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, List, Mapping
 
+from examples.eval.skills.skills_config import SkillsEvalEnvDatasetConfig
 from flask import Flask, jsonify, request
+from omegaconf import OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 
 logger = logging.getLogger("skills_eval_server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -42,41 +45,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ---------------------------------------------------------------------------
 
 
-class PayloadError(RuntimeError):
-    """Raised when the incoming payload is invalid."""
-
-
 @dataclass
 class EvalRequestPayload:
     rollout_id: int
     router_url: str
     defaults: Dict[str, Any] = field(default_factory=dict)
-    benchmarks: List[Dict[str, Any]] = field(default_factory=list)
-
-    @classmethod
-    def from_json(cls, data: Mapping[str, Any]) -> "EvalRequestPayload":
-        if not isinstance(data, Mapping):
-            raise PayloadError("JSON body must be an object.")
-        try:
-            rollout_id = int(data["rollout_id"])
-            router_url = str(data["router_url"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise PayloadError("`rollout_id` and `router_url` are required.") from exc
-
-        defaults = dict(data.get("defaults") or {})
-        raw_benchmarks = data.get("benchmarks") or []
-        if not isinstance(raw_benchmarks, list):
-            raise PayloadError("`benchmarks` must be provided as a list.")
-        benchmarks: List[Dict[str, Any]] = []
-        for entry in raw_benchmarks:
-            if not isinstance(entry, Mapping):
-                raise PayloadError("Each benchmark entry must be an object.")
-            benchmark = dict(entry)
-            if "name" not in benchmark:
-                raise PayloadError("Each benchmark entry must include a `name` field.")
-            benchmarks.append(benchmark)
-
-        return cls(rollout_id, router_url, defaults, benchmarks)
+    benchmarks: List[SkillsEvalEnvDatasetConfig] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -117,25 +91,19 @@ def _flatten_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, float]:
     return flattened
 
 
-def _resolve_generation_settings(defaults: Mapping[str, Any], benchmark_cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    resolved: Dict[str, Any] = {}
-    for key in HYDRA_OVERRIDE_MAP.keys():
-        value = benchmark_cfg.get(key)
+def _hydra_overrides_from_benchmark(
+    defaults: Mapping[str, Any],
+    benchmark_cfg: SkillsEvalEnvDatasetConfig,
+    router_api_url: str,
+    openai_model_name: str,
+) -> List[str]:
+    overrides: List[str] = []
+    for key, hydra_key in HYDRA_OVERRIDE_MAP.items():
+        value = getattr(benchmark_cfg, key, None)
         if value is None:
             value = defaults.get(key)
         if value is not None:
-            resolved[key] = value
-    return resolved
-
-
-def _hydra_overrides_from_benchmark(
-    defaults: Mapping[str, Any], benchmark_cfg: Mapping[str, Any], router_api_url: str, openai_model_name: str
-) -> List[str]:
-    generation = _resolve_generation_settings(defaults, benchmark_cfg)
-    overrides: List[str] = []
-    for key, hydra_key in HYDRA_OVERRIDE_MAP.items():
-        if key in generation:
-            overrides.append(f"++{hydra_key}={generation[key]}")
+            overrides.append(f"++{hydra_key}={value}")
 
     overrides.extend(
         [
@@ -202,17 +170,15 @@ class SkillsEvaluator:
         runs: List[Dict[str, Any]] = []
         raw_metrics: Dict[str, Any] = {}
         with self._lock:
-            for benchmark_cfg in payload.benchmarks:
+            for benchmark in payload.benchmarks:
                 result = self._run_single_benchmark(
                     payload,
-                    benchmark_cfg,
+                    benchmark,
                     exp_name,
                     router_api_url,
                     server_type,
                     run_dir,
                 )
-                if result is None:
-                    continue
                 runs.append(result["run_info"])
                 raw_metrics.update(result["metrics"])
 
@@ -233,42 +199,33 @@ class SkillsEvaluator:
     def _run_single_benchmark(
         self,
         payload: EvalRequestPayload,
-        benchmark_cfg: Mapping[str, Any],
+        benchmark: SkillsEvalEnvDatasetConfig,
         exp_name: str,
         router_api_url: str,
         server_type: str,
         run_dir: Path,
-    ) -> Dict[str, Any] | None:
-        name = str(benchmark_cfg.get("name", "")).strip()
-        if not name:
-            logger.warning("Benchmark entry missing `name`: %s", benchmark_cfg)
-            return None
-
+    ) -> Dict[str, Any]:
+        name = benchmark.name
         benchmark_run_dir = run_dir / name
         benchmark_run_dir.mkdir(parents=True, exist_ok=True)
         bench_exp_name = f"{exp_name}-{name}"
         log_path = benchmark_run_dir / "skills_eval.log"
 
-        runtime_name = name
-        if "n_samples_per_eval_prompt" in benchmark_cfg:
-            runtime_name = f"{name}:{benchmark_cfg['n_samples_per_eval_prompt']}"
-            benchmark_cfg.pop("n_samples_per_eval_prompt")
-
         command = self._build_command(
-            benchmark=runtime_name,
+            benchmark=benchmark.runtime_name,
             exp_name=bench_exp_name,
             router_api_url=router_api_url,
             original_router_url=payload.router_url,
             server_type=server_type,
             run_dir=benchmark_run_dir,
             defaults=payload.defaults,
-            benchmark_cfg=benchmark_cfg,
+            benchmark_cfg=benchmark,
         )
         env = self._build_env()
         logger.info("Starting NeMo Skills eval for %s: %s", name, " ".join(shlex.quote(part) for part in command))
         self._run_command(command, env=env, log_path=log_path)
 
-        metrics = self._collect_metrics(benchmark_run_dir, [name])
+        metrics = self._collect_metrics(benchmark_run_dir, benchmark.runtime_name)
         return {
             "run_info": {
                 "benchmark": name,
@@ -288,7 +245,7 @@ class SkillsEvaluator:
         server_type: str,
         run_dir: Path,
         defaults: Mapping[str, Any],
-        benchmark_cfg: Mapping[str, Any],
+        benchmark_cfg: SkillsEvalEnvDatasetConfig,
     ) -> List[str]:
         base_cmd = [
             "ns",
@@ -330,21 +287,19 @@ class SkillsEvaluator:
             raise RuntimeError(f"`ns eval` failed with exit code {retcode}. See {log_path}\n{tail}")
 
     @staticmethod
-    def _collect_metrics(run_dir: Path, benchmarks: Iterable[str]) -> Dict[str, Any]:
-        metrics: Dict[str, Any] = {}
-        for benchmark in benchmarks:
-            benchmark_name = benchmark.split(":")[0]
-            metrics_path = run_dir / "eval-results" / benchmark_name / "metrics.json"
-            if not metrics_path.exists():
-                logger.warning("Metrics file missing for %s at %s", benchmark_name, metrics_path)
-                continue
-            try:
-                with open(metrics_path, "r", encoding="utf-8") as fp:
-                    metrics_data = json.load(fp)
-                metrics[benchmark_name] = metrics_data.get(benchmark_name, metrics_data)
-            except json.JSONDecodeError as exc:
-                logger.warning("Failed to parse %s: %s", metrics_path, exc)
-        return metrics
+    def _collect_metrics(run_dir: Path, benchmark: str) -> Dict[str, Any]:
+        benchmark_name = benchmark.split(":")[0]
+        metrics_path = run_dir / "eval-results" / benchmark_name / "metrics.json"
+        if not metrics_path.exists():
+            logger.warning("Metrics file missing for %s at %s", benchmark_name, metrics_path)
+            return {}
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as fp:
+                metrics_data = json.load(fp)
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse %s: %s", metrics_path, exc)
+            return {}
+        return {benchmark_name: metrics_data.get(benchmark_name, metrics_data)}
 
 
 # ---------------------------------------------------------------------------
@@ -362,10 +317,15 @@ def build_app(evaluator: SkillsEvaluator) -> Flask:
     @app.post("/evaluate")
     def evaluate_endpoint():
         try:
-            payload = EvalRequestPayload.from_json(request.get_json(force=True, silent=False))
+            raw_payload = request.get_json(force=True, silent=False)
+            cfg = OmegaConf.merge(
+                OmegaConf.structured(EvalRequestPayload),
+                OmegaConf.create(raw_payload or {}),
+            )
+            payload = OmegaConf.to_object(cfg)
             result = evaluator.evaluate(payload)
             return jsonify(result)
-        except PayloadError as exc:
+        except OmegaConfBaseException as exc:
             logger.exception("Invalid request payload")
             return jsonify({"error": str(exc)}), 400
         except Exception as exc:  # noqa: BLE001

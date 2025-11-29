@@ -1,41 +1,13 @@
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Optional
 
 import requests
+from examples.eval.skills.skills_config import SkillsEvalEnvConfig
 
-from miles.utils.eval_delegate import EvalDelegateError, EvalEnvConfig, EvalEnvDatasetConfig, _flatten
+from miles.utils.eval_delegate import EvalDelegateError, _flatten
 
 logger = logging.getLogger(__name__)
-
-
-class SkillsEvalEnvDatasetConfig(EvalEnvDatasetConfig):
-    """Configuration for a single Skills evaluation dataset."""
-
-    @classmethod
-    def parse(cls, args, dataset_cfg: Mapping[str, Any], defaults: Mapping[str, Any]):
-        return super().parse(args, dataset_cfg, defaults)
-
-
-@dataclass
-class SkillsEvalEnvConfig(EvalEnvConfig):
-    """Configuration for NeMo Skills evaluation."""
-
-    datasets: List[SkillsEvalEnvDatasetConfig] = field(default_factory=list)
-
-    @classmethod
-    def parse(cls, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]) -> "SkillsEvalEnvConfig":
-        base_cfg: SkillsEvalEnvConfig = super().parse(raw_env_config, defaults)
-        datasets = raw_env_config.get("datasets") or []
-        base_cfg.datasets = [
-            SkillsEvalEnvDatasetConfig.parse(args, dataset_cfg, base_cfg.defaults) for dataset_cfg in datasets
-        ]
-        return base_cfg
-
-
-def build_skills_eval_env_config(args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]):
-    return SkillsEvalEnvConfig.parse(args, raw_env_config, defaults)
 
 
 class SkillsEvalClient:
@@ -68,26 +40,13 @@ class SkillsEvalClient:
         return metrics, response
 
     def _build_payload(self, args, rollout_id: int) -> Dict[str, Any]:
-        benchmarks = [self._serialize_benchmark(cfg) for cfg in self._config.datasets]
+        benchmarks = [cfg.to_payload() for cfg in self._config.datasets]
         benchmarks = [cfg for cfg in benchmarks if cfg]
         return {
             "rollout_id": rollout_id,
             "router_url": self._router_url,
             "benchmarks": benchmarks,
         }
-
-    @staticmethod
-    def _serialize_benchmark(dataset_cfg: SkillsEvalEnvDatasetConfig) -> Dict[str, Any]:
-        # assert there is no colon in the name
-        assert (
-            ":" not in dataset_cfg.name
-        ), "Colon in dataset name is not allowed, please use `n_samples_per_eval_prompt` to specify the number of samples per prompt."
-        payload: Dict[str, Any] = {"name": dataset_cfg.name}
-        for field in ("n_samples_per_eval_prompt", "temperature", "top_p", "top_k", "max_response_len"):
-            value = getattr(dataset_cfg, field, None)
-            if value is not None:
-                payload[field] = value
-        return payload
 
     def _request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         last_error: Optional[Exception] = None

@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from omegaconf import OmegaConf
@@ -70,6 +70,10 @@ class EvalEnvDatasetConfig:
         name = str(dataset_cfg.get("name", "")).strip()
         if not name:
             raise ValueError("Each delegate dataset entry must include a non-empty `name`.")
+        if ":" in name:
+            raise ValueError(
+                "Colon in dataset name is not allowed; use `n_samples_per_eval_prompt` to configure samples per prompt."
+            )
 
         values: Dict[str, Any] = {"name": name}
         for field_name, spec in cls.FIELD_SPECS.items():
@@ -83,6 +87,16 @@ class EvalEnvDatasetConfig:
         if not isinstance(obj, cls):
             obj = cls(**obj)
         return obj
+
+    def to_payload(self) -> Dict[str, Any]:
+        """Return a JSON-serializable payload for this dataset configuration."""
+        payload: Dict[str, Any] = {}
+        for field_info in fields(self):
+            value = getattr(self, field_info.name)
+            if value is None:
+                continue
+            payload[field_info.name] = value
+        return payload
 
 
 @dataclass
@@ -116,7 +130,7 @@ def _rebuild_delegate_config(
         if not env_name:
             continue
         if env_name == "skills":
-            from examples.eval.skills.skills_client import build_skills_eval_env_config
+            from examples.eval.skills.skills_config import build_skills_eval_env_config
 
             env_cfg = build_skills_eval_env_config(args, env, defaults)
             if env_cfg is not None:
