@@ -28,7 +28,7 @@ class EvalEnvDatasetConfig:
     """Dataset-level generation parameters shared across delegate clients."""
 
     name: str = ""
-    n_samples_per_prompt: Optional[int] = None
+    n_samples_per_eval_prompt: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
@@ -36,9 +36,9 @@ class EvalEnvDatasetConfig:
 
     # TODO: temporarily leave this, merge this with eval in the future.
     FIELD_SPECS = {
-        "n_samples_per_prompt": {
-            "dataset_keys": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
-            "default_keys": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
+        "n_samples_per_eval_prompt": {
+            "dataset_keys": ("n_samples_per_eval_prompt",),
+            "default_keys": ("n_samples_per_eval_prompt",),
             "arg_attrs": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
         },
         "temperature": {

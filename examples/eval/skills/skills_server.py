@@ -250,9 +250,9 @@ class SkillsEvaluator:
         log_path = benchmark_run_dir / "skills_eval.log"
 
         runtime_name = name
-        if "n_samples_per_prompt" in benchmark_cfg:
-            runtime_name = f"{name}:{benchmark_cfg['n_samples_per_prompt']}"
-            benchmark_cfg.pop("n_samples_per_prompt")
+        if "n_samples_per_eval_prompt" in benchmark_cfg:
+            runtime_name = f"{name}:{benchmark_cfg['n_samples_per_eval_prompt']}"
+            benchmark_cfg.pop("n_samples_per_eval_prompt")
 
         command = self._build_command(
             benchmark=runtime_name,
