@@ -13,6 +13,8 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.eval_delegate import _rebuild_delegate_config
 
+from miles.utils.logging_utils import configure_logger
+
 logger = logging.getLogger(__name__)
 
 
@@ -1201,6 +1203,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
 
 def parse_args(add_custom_arguments=None):
+    # Users may call `parse_args` very early, thus we ensure logger is configured here
+    configure_logger()
+
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
 
     backend = parse_args_train_backend()
@@ -1320,7 +1325,6 @@ def miles_validate_args(args):
                 "please make sure it is a valid megatron checkpoint directory."
             )
 
-    # TODO: During loading, we need to set the start_rollout_id here.
     if (
         args.load is None
         or not os.path.exists(args.load)
@@ -1490,10 +1494,9 @@ def miles_validate_args(args):
         with open(args.custom_config_path, "r") as f:
             data = yaml.safe_load(f) or {}
         for k, v in data.items():
-            if not hasattr(args, k):
-                setattr(args, k, v)
-            else:
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will not override with {v}.")
+            if hasattr(args, k):
+                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
+            setattr(args, k, v)
 
 
 def hf_validate_args(args, hf_config):
