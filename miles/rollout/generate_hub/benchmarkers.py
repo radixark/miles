@@ -9,6 +9,7 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
+
 async def generate_with_random_osl(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
     # TODO: make it configurable after we have an enhanced arg parser
     min_osl = 32 * 1024

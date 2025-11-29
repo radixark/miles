@@ -1,7 +1,8 @@
-import typer
 import dataclasses
 import inspect
 from typing import Annotated
+
+import typer
 
 
 def dataclass_cli(func, env_var_prefix: str = "MILES_SCRIPT_"):
@@ -38,8 +39,9 @@ def dataclass_cli(func, env_var_prefix: str = "MILES_SCRIPT_"):
 
     return wrapped
 
+
 # unit test
-if __name__ == '__main__':
+if __name__ == "__main__":
     from typer.testing import CliRunner
 
     @dataclasses.dataclass
