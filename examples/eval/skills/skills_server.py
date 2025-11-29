@@ -6,9 +6,11 @@ command shipped with NeMo Skills.
 Usage:
     python examples/eval/skills/skills_server.py \
         --host 0.0.0.0 --port 9050 \
-        --output-root /tmp/skills-eval \
-        --cluster test-local \
-        --config-dir /root/Skills/tests/gpu-tests
+        --output-root /opt/skills-eval \
+        --config-dir examples/eval/skills \
+        --cluster local_cluster \
+        --max-concurrent-requests 512 \
+        --openai-model-name slime-openai-model
 
 Miles (or Miles-compatible runners) should POST the payload described in
 `EvalRequestPayload` to http://<host>:<port>/evaluate. The server blocks until

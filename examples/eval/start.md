@@ -54,7 +54,7 @@ pip install -e .
 
 Download/prepare datasets:
 ```bash
-cd nemo_skills/dataset
+cd /opt/Skills/nemo_skills/dataset
 python3 aime25/prepare.py
 python3 hle/prepare.py
 python3 arena-hard/prepare.py
@@ -66,11 +66,11 @@ cd /opt/miles
 python examples/eval/skills/skills_server.py \
   --host 0.0.0.0 \
   --port 9050 \
-  --output-root /root/shared/skills-eval \
+  --output-root /opt/skills-eval \
   --config-dir examples/eval/skills \
   --cluster local_cluster \
   --max-concurrent-requests 512 \
   --openai-model-name slime-openai-model
 ```
 
-You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network. The server always proxies evaluation traffic to an OpenAI-compatible sglang router (Miles manages the router), so adjust `--openai-model-name` and `--max-concurrent-requests` as needed for your deployment.
+You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network. The server always proxies evaluation traffic to an OpenAI-compatible sglang router (Miles starts and manage the router), so adjust `--openai-model-name` and `--max-concurrent-requests` as needed for your deployment.
