@@ -1,0 +1,75 @@
+# Docs
+
+## Prerequisites
+- A writable host directory for cached data (`/data/.cache`)
+- Choose descriptive container names to replace the placeholders (`<slime container name>`, `<env container name>`).
+
+## 1) Prepare host network
+```bash
+docker network create skills-net
+```
+
+## 2) Launch the miles container
+```bash
+docker run \
+  -itd \
+  --shm-size 32g \
+  --gpus all \
+  -v /data/.cache:/root/.cache \
+  -v /dev/shm:/shm \
+  --ipc=host \
+  --privileged \
+  --network skills-net \
+  --name <slime container name> \
+  slimerl/slime:latest \
+  /bin/bash
+```
+
+## 3) Launch the Skills container
+```bash
+docker run \
+  -itd \
+  --shm-size 32g \
+  --gpus all \
+  -v /data/.cache:/root/.cache \
+  -v /dev/shm:/shm \
+  --ipc=host \
+  --privileged \
+  --network skills-net \
+  --name <env container name> \
+  --network-alias skills_server \
+  guapisolo/nemoskills:0.7.1 \
+  /bin/bash
+```
+
+## 4) Inside the Skills container
+Clone repos and install the Skills package:
+```bash
+git clone -b miles_skills https://github.com/guapisolo/miles.git /opt/miles
+git clone -b miles https://github.com/guapisolo/Skills.git /opt/Skills
+
+cd /opt/Skills
+pip install -e .
+```
+
+Download/prepare datasets:
+```bash
+cd nemo_skills/dataset
+python3 aime25/prepare.py
+python3 hle/prepare.py
+python3 arena-hard/prepare.py
+```
+
+Start the skills server:
+```bash
+cd /opt/miles
+python examples/eval/skills/skills_server.py \
+  --host 0.0.0.0 \
+  --port 9050 \
+  --output-root /root/shared/skills-eval \
+  --config-dir examples/eval/skills \
+  --cluster local_cluster \
+  --server-type openai
+```
+
+You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network.
