@@ -122,7 +122,7 @@ def _rebuild_delegate_config(
             if env_cfg is not None:
                 envs.append(env_cfg)
         else:
-            logger.warning("Unknown delegate environment: %s", env_name)
+            raise ValueError(f"Unknown delegate environment: {env_name}")
     return envs
 
 
