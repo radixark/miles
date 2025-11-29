@@ -130,6 +130,7 @@ def setup_model_and_optimizer(
     for optimizer in optimizer.chained_optimizers:
         if not getattr(optimizer, "init_state_fn", None):
             continue
+        # may remove it to reduce peak memory (not change now b/c it makes ckpt incompatible)
         optimizer.init_state_fn(optimizer.optimizer, optimizer.config)
 
     return model, optimizer, opt_param_scheduler
