@@ -69,7 +69,8 @@ python examples/eval/skills/skills_server.py \
   --output-root /root/shared/skills-eval \
   --config-dir examples/eval/skills \
   --cluster local_cluster \
-  --server-type openai
+  --max-concurrent-requests 512 \
+  --openai-model-name slime-openai-model
 ```
 
-You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network.
+You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network. The server always proxies evaluation traffic to an OpenAI-compatible sglang router (Miles manages the router), so adjust `--openai-model-name` and `--max-concurrent-requests` as needed for your deployment.

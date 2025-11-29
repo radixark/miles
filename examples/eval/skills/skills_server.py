@@ -66,14 +66,6 @@ HYDRA_OVERRIDE_MAP = {
 }
 
 
-def _ensure_list(value: Any) -> List[str]:
-    if not value:
-        return []
-    if isinstance(value, str):
-        return shlex.split(value)
-    return [str(item) for item in value]
-
-
 def _flatten_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, float]:
     flattened: Dict[str, float] = {}
 
@@ -91,11 +83,16 @@ def _flatten_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, float]:
     return flattened
 
 
+def _openai_api_base(router_url: str) -> str:
+    return router_url.rstrip("/") + "/v1"
+
+
 def _hydra_overrides_from_benchmark(
     defaults: Mapping[str, Any],
     benchmark_cfg: SkillsEvalEnvDatasetConfig,
-    router_api_url: str,
+    router_url: str,
     openai_model_name: str,
+    max_concurrent_requests: int,
 ) -> List[str]:
     overrides: List[str] = []
     for key, hydra_key in HYDRA_OVERRIDE_MAP.items():
@@ -105,13 +102,14 @@ def _hydra_overrides_from_benchmark(
         if value is not None:
             overrides.append(f"++{hydra_key}={value}")
 
+    api_base = _openai_api_base(router_url)
     overrides.extend(
         [
             "++server.server_type=openai",
-            f"++server.base_url={router_api_url}",
+            f"++server.base_url={api_base}",
             f"++server.model={openai_model_name}",
             "++server.api_key=EMPTY",
-            "++max_concurrent_requests=512",
+            f"++max_concurrent_requests={max_concurrent_requests}",
         ]
     )
     return overrides
@@ -122,10 +120,8 @@ class ServerConfig:
     output_root: Path
     cluster: str | None
     config_dir: str | None
-    server_type: str
-    default_cli_args: List[str] = field(default_factory=list)
-    default_env: Dict[str, str] = field(default_factory=dict)
     openai_model_name: str | None = None
+    max_concurrent_requests: int = 512
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "ServerConfig":
@@ -133,10 +129,8 @@ class ServerConfig:
             output_root=Path(args.output_root).expanduser().resolve(),
             cluster=args.cluster,
             config_dir=args.config_dir,
-            server_type=args.server_type,
-            default_cli_args=_ensure_list(args.default_cli_args),
-            default_env=dict(args.env or {}),
             openai_model_name=args.openai_model_name,
+            max_concurrent_requests=args.max_concurrent_requests,
         )
 
 
@@ -162,8 +156,7 @@ class SkillsEvaluator:
 
         job_id = uuid.uuid4().hex
         exp_name = f"rollout-{payload.rollout_id}"
-        router_api_url = payload.router_url.rstrip("/") + "/v1"
-        server_type = self._config.server_type
+        router_url = payload.router_url.rstrip("/")
         run_dir = self._config.output_root / f"{int(time.time())}-{exp_name}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -175,8 +168,7 @@ class SkillsEvaluator:
                     payload,
                     benchmark,
                     exp_name,
-                    router_api_url,
-                    server_type,
+                    router_url,
                     run_dir,
                 )
                 runs.append(result["run_info"])
@@ -201,8 +193,7 @@ class SkillsEvaluator:
         payload: EvalRequestPayload,
         benchmark: SkillsEvalEnvDatasetConfig,
         exp_name: str,
-        router_api_url: str,
-        server_type: str,
+        router_url: str,
         run_dir: Path,
     ) -> Dict[str, Any]:
         name = benchmark.name
@@ -214,9 +205,7 @@ class SkillsEvaluator:
         command = self._build_command(
             benchmark=benchmark.runtime_name,
             exp_name=bench_exp_name,
-            router_api_url=router_api_url,
-            original_router_url=payload.router_url,
-            server_type=server_type,
+            router_url=router_url,
             run_dir=benchmark_run_dir,
             defaults=payload.defaults,
             benchmark_cfg=benchmark,
@@ -240,9 +229,7 @@ class SkillsEvaluator:
         self,
         benchmark: str,
         exp_name: str,
-        router_api_url: str,
-        original_router_url: str,
-        server_type: str,
+        router_url: str,
         run_dir: Path,
         defaults: Mapping[str, Any],
         benchmark_cfg: SkillsEvalEnvDatasetConfig,
@@ -255,9 +242,9 @@ class SkillsEvaluator:
             "--benchmarks",
             benchmark,
             "--server_type",
-            server_type,
+            "openai",
             "--server_address",
-            router_api_url if server_type == "openai" else original_router_url,
+            _openai_api_base(router_url),
             "--expname",
             exp_name,
         ]
@@ -266,14 +253,18 @@ class SkillsEvaluator:
         if self._config.config_dir:
             base_cmd.extend(["--config_dir", self._config.config_dir])
 
-        cli_args = list(self._config.default_cli_args)
         openai_model_name = self._config.openai_model_name or "slime-openai-model"
-        hydra_overrides = _hydra_overrides_from_benchmark(defaults, benchmark_cfg, router_api_url, openai_model_name)
-        return base_cmd + cli_args + hydra_overrides
+        hydra_overrides = _hydra_overrides_from_benchmark(
+            defaults,
+            benchmark_cfg,
+            router_url,
+            openai_model_name,
+            self._config.max_concurrent_requests,
+        )
+        return base_cmd + hydra_overrides
 
     def _build_env(self) -> Dict[str, str]:
         env = os.environ.copy()
-        env.update(self._config.default_env)
         return env
 
     @staticmethod
@@ -341,50 +332,38 @@ def build_app(evaluator: SkillsEvaluator) -> Flask:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Nemo Skills evaluation HTTP server.")
-    parser.add_argument("--host", type=str, default=os.environ.get("SKILLS_SERVER_HOST", "0.0.0.0"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("SKILLS_SERVER_PORT", "9050")))
+    parser = argparse.ArgumentParser(description="Run the NeMo Skills evaluation HTTP server.")
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=9050)
     parser.add_argument(
         "--output-root",
         type=str,
-        default=os.environ.get("SKILLS_OUTPUT_ROOT", "./skills-eval-output"),
+        default="./skills-eval-output",
         help="Directory to store `ns eval` outputs.",
     )
     parser.add_argument(
         "--cluster",
         type=str,
-        default=os.environ.get("SKILLS_CLUSTER"),
+        default=None,
         help="Cluster profile passed to `ns eval --cluster`.",
     )
     parser.add_argument(
         "--config-dir",
         type=str,
-        default=os.environ.get("SKILLS_CONFIG_DIR"),
+        default=None,
         help="Config directory passed to `ns eval --config_dir`.",
-    )
-    parser.add_argument(
-        "--server-type",
-        type=str,
-        default=os.environ.get("SKILLS_SERVER_TYPE", "openai"),
-        help="Server type forwarded to ns eval (default: openai).",
     )
     parser.add_argument(
         "--openai-model-name",
         type=str,
-        default=os.environ.get("SKILLS_OPENAI_MODEL"),
+        default=None,
         help="Model identifier to pass when using the OpenAI-compatible endpoint.",
     )
     parser.add_argument(
-        "--default-cli-args",
-        nargs="*",
-        default=os.environ.get("SKILLS_CLI_ARGS"),
-        help="Optional list of flags always appended to `ns eval` (e.g. --num_jobs 1).",
-    )
-    parser.add_argument(
-        "--env",
-        type=json.loads,
-        default=os.environ.get("SKILLS_EXTRA_ENV"),
-        help="JSON blob of environment variables to add to each ns eval invocation.",
+        "--max-concurrent-requests",
+        type=int,
+        default=512,
+        help="Maximum concurrent requests per benchmark run forwarded to NeMo Skills.",
     )
     return parser.parse_args()
 
