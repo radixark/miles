@@ -134,7 +134,13 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in ReloadableProcessGroup.GROUPS.get(pid, []):
             if reloadable_group.group is None:
                 continue
-            dist.destroy_process_group(reloadable_group.group)
+            try:
+                dist.destroy_process_group(reloadable_group.group)
+            except ValueError as e:
+                logger.warning(
+                    f"Process group already invalid/destroyed; skipping cleanup. Exception: {e}",
+                    exc_info=True,
+                )
 
             del reloadable_group.group
             reloadable_group.group = None
