@@ -10,6 +10,8 @@ from omegaconf import OmegaConf
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.sglang_rollout import generate_rollout as base_generate_rollout
+from miles.utils import tracking_utils
+from miles.utils.metric_utils import compute_rollout_step
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +28,12 @@ def generate_rollout(
         delegate_client = _get_delegate_client(args)
         if delegate_client is not None:
             delegate_metrics, delegate_raw_response = delegate_client.evaluate(args, rollout_id)
+            _log_delegate_metrics(args, rollout_id, delegate_metrics, delegate_raw_response)
 
     result = base_generate_rollout(args, rollout_id, data_buffer, evaluation=evaluation)
 
     if evaluation and delegate_metrics:
-        setattr(result, "delegate_metrics", delegate_metrics)
-        setattr(result, "delegate_raw_response", delegate_raw_response)
+        setattr(result, "metrics", delegate_metrics)
 
     return result
 
@@ -79,3 +81,36 @@ def _safe_mtime(path: str) -> Optional[float]:
         return os.path.getmtime(path)
     except OSError:
         return None
+
+
+def _log_delegate_metrics(args, rollout_id: int, metrics: dict | None, raw_response: Optional[dict]):
+    flattened = _flatten_metrics(metrics)
+    if not flattened:
+        return
+    if raw_response is not None:
+        logger.info("External eval raw response for rollout %s: %s", rollout_id, raw_response)
+    logger.info("eval %s (external): %s", rollout_id, flattened)
+    step = compute_rollout_step(args, rollout_id)
+    payload = flattened | {"eval/step": step}
+    tracking_utils.log(args, payload, step_key="eval/step")
+
+
+def _flatten_metrics(metric_source: Optional[dict]) -> dict:
+    flattened_metrics: dict[str, float] = {}
+    if not isinstance(metric_source, dict):
+        return flattened_metrics
+    for key, value in _iter_metric_items(metric_source):
+        if not isinstance(value, (int, float)):
+            continue
+        metric_key = key if key.startswith("eval/") else f"eval/{key}"
+        flattened_metrics[metric_key] = float(value)
+    return flattened_metrics
+
+
+def _iter_metric_items(metrics: dict, prefix: str = ""):
+    for key, value in metrics.items():
+        metric_key = f"{key}" if not prefix else f"{prefix}/{key}"
+        if isinstance(value, dict):
+            yield from _iter_metric_items(value, metric_key)
+        else:
+            yield metric_key, value

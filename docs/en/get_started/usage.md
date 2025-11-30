@@ -226,7 +226,7 @@ miles supports customizing data generation (rollout) to various degrees.
 
 ### External Eval Delegates
 
-If you want to keep Miles' built-in evaluation flow but also fan out to an external evaluation service (for example the NeMo Skills delegate), point `--eval-function-path` to the wrapper at `examples.eval.nemo_skills.eval_delegate_rollout.generate_rollout`. The wrapper executes the configured delegate(s) before calling the default `miles.rollout.sglang_rollout.generate_rollout`, and the rollout manager automatically logs any metrics it attaches to the returned `RolloutFnEvalOutput`.
+If you want to keep Miles' built-in evaluation flow but also fan out to an external evaluation service (for example the NeMo Skills delegate), point `--eval-function-path` to the wrapper at `examples.eval.eval_delegate_rollout.generate_rollout`. The wrapper executes the configured delegate(s) before calling the default `miles.rollout.sglang_rollout.generate_rollout`, and the rollout manager automatically logs any metrics it attaches to the returned `RolloutFnEvalOutput`.
 
 The delegate endpoints are described in your existing `--eval-config`. Alongside `eval.datasets`, add a `delegate` list mirroring the structure in `examples/eval/nemo_skills/config.yaml`:
 

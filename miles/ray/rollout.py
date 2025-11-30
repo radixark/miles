@@ -112,15 +112,10 @@ class RolloutManager:
 
         # TODO: add fault tolerance to eval
         result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
-        delegate_metrics = getattr(result, "delegate_metrics", None)
-        if delegate_metrics:
-            log_dict = _log_external_eval_metrics(rollout_id, self.args, delegate_metrics)
-            raw_response = getattr(result, "delegate_raw_response", None)
-            logger.info("External eval raw response for rollout %s: %s", rollout_id, raw_response)
-            logger.info("External eval metrics for rollout %s: %s", rollout_id, log_dict)
-            if self._metric_checker is not None:
-                self._metric_checker.on_eval(delegate_metrics)
-
+        custom_metrics = getattr(result, "metrics", None)
+        # TODO: this is a small hack to share the global MetricChecker with delegate metrics.
+        if custom_metrics and self._metric_checker is not None:
+            self._metric_checker.on_eval(custom_metrics)
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data)
@@ -495,31 +490,6 @@ def _log_eval_rollout_data(rollout_id, args, data):
     tracking_utils.log(args, log_dict, step_key="eval/step")
 
     return log_dict
-
-
-def _log_external_eval_metrics(rollout_id, args, metrics: dict | None):
-    flattened_metrics = {}
-    metric_source = metrics if isinstance(metrics, dict) else {}
-    for key, value in _iter_metric_items(metric_source):
-        if not isinstance(value, (int, float)):
-            continue
-        metric_key = key if key.startswith("eval/") else f"eval/{key}"
-        flattened_metrics[metric_key] = value
-
-    logger.info(f"eval {rollout_id} (external): {flattened_metrics}")
-    step = compute_rollout_step(args, rollout_id)
-    log_payload = flattened_metrics | {"eval/step": step}
-    tracking_utils.log(args, log_payload, step_key="eval/step")
-    return log_payload
-
-
-def _iter_metric_items(metrics: dict, prefix: str = ""):
-    for key, value in metrics.items():
-        metric_key = f"{key}" if not prefix else f"{prefix}/{key}"
-        if isinstance(value, dict):
-            yield from _iter_metric_items(value, metric_key)
-        else:
-            yield metric_key, value
 
 
 def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):

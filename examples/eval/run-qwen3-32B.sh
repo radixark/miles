@@ -71,7 +71,7 @@ ROLLOUT_ARGS=(
 EVAL_ARGS=(
    --eval-interval 5
    --eval-config "${EVAL_CONFIG_PATH}"
-   --eval-function-path examples.eval.nemo_skills.eval_delegate_rollout.generate_rollout
+   --eval-function-path examples.eval.eval_delegate_rollout.generate_rollout
 )
 
 PERF_ARGS=(
