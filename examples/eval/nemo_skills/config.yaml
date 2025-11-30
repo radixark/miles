@@ -5,6 +5,15 @@ eval:
     top_p: 0.95
     top_k: -1
     max_response_len: 24576
+  datasets:
+    - name: gpqa    # huggingface-cli download --repo-type dataset zyzshishui0627/gpqa_diamond --local-dir /root/gpqa
+      path: /root/gpqa/gpqa_eval.jsonl
+      rm_type: gpqa
+      n_samples_per_eval_prompt: 2
+    - name: ifbench   # huggingface-cli download --repo-type dataset zyzshishui0627/IFBench --local-dir /root/ifbench
+      path: /root/ifbench/IFBench_eval.jsonl
+      rm_type: ifbench
+      n_samples_per_eval_prompt: 1
   delegate:
     - name: skills 
       # this url should align with env docker network alias

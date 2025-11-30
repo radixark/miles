@@ -58,18 +58,18 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 1
-   --rollout-batch-size 8
-   --n-samples-per-prompt 2
+   --num-rollout 3000
+   --rollout-batch-size 32
+   --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 0.8
 
-   --global-batch-size 16
+   --global-batch-size 256
    --balance-data
 )
 
 EVAL_ARGS=(
-   --eval-interval 20
+   --eval-interval 5
    --eval-config "${EVAL_CONFIG_PATH}"
 )
 
