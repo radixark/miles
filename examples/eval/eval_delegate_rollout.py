@@ -21,20 +21,17 @@ _DELEGATE_CACHE: dict[str, tuple[Optional[float], Optional[EvalDelegateClient]]]
 def generate_rollout(
     args, rollout_id: int, data_buffer: Any, evaluation: bool = False
 ) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
-    delegate_metrics = None
-    delegate_raw_response = None
+    assert evaluation, "Delegate rollout is only supported for evaluation"
+    metrics = {}
+    raw_response = {}
 
-    if evaluation:
-        delegate_client = _get_delegate_client(args)
-        if delegate_client is not None:
-            delegate_metrics, delegate_raw_response = delegate_client.evaluate(args, rollout_id)
-            _log_delegate_metrics(args, rollout_id, delegate_metrics, delegate_raw_response)
+    client = _get_delegate_client(args)
+    if client is not None:
+        metrics, raw_response = client.evaluate(args, rollout_id)
+        _log_delegate_metrics(args, rollout_id, metrics, raw_response)
 
     result = base_generate_rollout(args, rollout_id, data_buffer, evaluation=evaluation)
-
-    if evaluation and delegate_metrics:
-        setattr(result, "metrics", delegate_metrics)
-
+    result.metrics = metrics
     return result
 
 

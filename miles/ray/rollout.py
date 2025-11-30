@@ -112,13 +112,11 @@ class RolloutManager:
 
         # TODO: add fault tolerance to eval
         result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
-        custom_metrics = getattr(result, "metrics", None)
-        # TODO: this is a small hack to share the global MetricChecker with delegate metrics.
-        if custom_metrics and self._metric_checker is not None:
-            self._metric_checker.on_eval(custom_metrics)
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data)
+        if result.metrics is not None:
+            metrics.update(**result.metrics)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
