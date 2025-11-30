@@ -173,7 +173,7 @@ class Dataset:
         self._file_type = self._get_file_type()
         self._build_index()
 
-        self._shuffled_indices = list(range(len(self.valid_indices)))
+        self._shuffled_indices = list(range(len(self._valid_locations)))
         logger.info(f"Created a dataset with {len(self)} samples.")
 
     def _get_file_type(self):
@@ -228,10 +228,9 @@ class Dataset:
 
     def _build_index(self):
         logger.info(f"Building index for {self.path_with_slice}...")
-        self.valid_indices = [] # Stores original_idx of valid samples
+        self._valid_locations = [] # Stores file offsets for JSONL, or row indices for Parquet
         
         if self._file_type == "jsonl":
-            self.jsonl_offset_map = {} # Maps original_idx -> file_offset
             current_original_line_idx = 0
             with open(self.raw_file_path, "r", encoding="utf-8") as f:
                 while True:
@@ -249,28 +248,39 @@ class Dataset:
                     
                     data = json.loads(line)
                     if self._should_include(data):
-                        self.valid_indices.append(current_original_line_idx)
-                        self.jsonl_offset_map[current_original_line_idx] = current_offset
+                        self._valid_locations.append(current_offset)
                     current_original_line_idx += 1
 
         elif self._file_type == "parquet":
             self._pq_file = pq.ParquetFile(self.raw_file_path)
             
-            all_raw_parquet_indices = range(self._pq_file.metadata.num_rows) 
+            current_idx = 0
+            # Determine slice bounds
+            start = 0
+            stop = self._pq_file.metadata.num_rows
+            if self.row_slice:
+                if self.row_slice.start is not None:
+                    start = self.row_slice.start
+                if self.row_slice.stop is not None:
+                    stop = self.row_slice.stop
 
-            if self.row_slice is not None:
-                start = self.row_slice.start if self.row_slice.start is not None else 0
-                stop = self.row_slice.stop if self.row_slice.stop is not None else self._pq_file.metadata.num_rows
-                row_indices_for_pass = [i for i in all_raw_parquet_indices if start <= i < stop]
-            else:
-                row_indices_for_pass = list(all_raw_parquet_indices)
-
-            for i in row_indices_for_pass:
-                data = self._read_parquet_row(i)
-                if self._should_include(data):
-                    self.valid_indices.append(i)
+            # Efficiently iterate through batches
+            for batch in self._pq_file.iter_batches():
+                batch_list = batch.to_pylist()
+                for data in batch_list:
+                    if current_idx >= stop:
+                        break 
+                    
+                    if current_idx >= start:
+                        if self._should_include(data):
+                            self._valid_locations.append(current_idx)
+                    
+                    current_idx += 1
+                
+                if current_idx >= stop:
+                    break
         
-        logger.info(f"Found {len(self.valid_indices)} valid samples in {self.path_with_slice}")
+        logger.info(f"Found {len(self._valid_locations)} valid samples in {self.path_with_slice}")
 
     def _read_parquet_row(self, idx):
         if self._pq_file is None: # Should be initialized in _build_index
@@ -287,25 +297,24 @@ class Dataset:
         raise IndexError(f"Index {idx} out of range for parquet file {self.raw_file_path}")
 
     def __len__(self):
-        return len(self.valid_indices)
+        return len(self._valid_locations)
 
     def __getitem__(self, idx):
-        # idx is an index into the shuffled self.samples list (0 to len(valid_indices)-1)
+        # idx is an index into the shuffled self._shuffled_indices list
         shuffled_idx = self._shuffled_indices[idx] 
-        # original_idx is the index of the sample in the full raw file 
-        original_idx = self.valid_indices[shuffled_idx]
+        # location is either the file offset (JSONL) or original row index (Parquet)
+        location = self._valid_locations[shuffled_idx]
 
-        if original_idx in self._cache:
-            return self._cache[original_idx]
+        if location in self._cache:
+            return self._cache[location]
 
         data = None
         if self._file_type == "jsonl":
-            offset = self.jsonl_offset_map[original_idx]
             with open(self.raw_file_path, "r", encoding="utf-8") as f:
-                f.seek(offset)
+                f.seek(location)
                 data = json.loads(f.readline())
         elif self._file_type == "parquet":
-            data = self._read_parquet_row(original_idx)
+            data = self._read_parquet_row(location)
         else:
             raise ValueError(f"Unsupported file type: {self._file_type}")
 
@@ -316,11 +325,10 @@ class Dataset:
             metadata=data.get(self.metadata_key) or {},
         )
 
-        # Basic cache management 
+        # Basic cache management (simple LRU by always adding to end, but limited size)
         if len(self._cache) >= 10000: # Limit cache size
-            # Remove oldest item 
             del self._cache[next(iter(self._cache))]
-        self._cache[original_idx] = sample
+        self._cache[location] = sample
         
         return sample
 
