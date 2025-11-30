@@ -73,23 +73,6 @@ HYDRA_OVERRIDE_MAP = {
 }
 
 
-def _flatten_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, float]:
-    flattened: Dict[str, float] = {}
-
-    def _walk(prefix: str, value: Any):
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                new_prefix = key if not prefix else f"{prefix}/{key}"
-                _walk(new_prefix, item)
-        elif isinstance(value, (int, float)):
-            metric_key = prefix if prefix.startswith("eval/") else f"eval/{prefix}"
-            flattened[metric_key] = float(value)
-
-    for dataset, metrics in raw_metrics.items():
-        _walk(dataset, metrics)
-    return flattened
-
-
 def _openai_api_base(router_url: str) -> str:
     return router_url.rstrip("/") + "/v1"
 
@@ -157,7 +140,6 @@ class SkillsEvaluator:
                 "output_dir": None,
                 "log_path": None,
                 "warning": warning_msg,
-                "metrics": {},
                 "raw_metrics": {},
             }
 
@@ -181,7 +163,6 @@ class SkillsEvaluator:
                 runs.append(result["run_info"])
                 raw_metrics.update(result["metrics"])
 
-        flat_metrics = _flatten_metrics(raw_metrics)
         command_summary = "\n".join(run["command"] for run in runs) if runs else None
         log_path = runs[-1]["log_path"] if runs else None
 
@@ -190,7 +171,6 @@ class SkillsEvaluator:
             "command": command_summary,
             "output_dir": str(run_dir),
             "log_path": log_path,
-            "metrics": flat_metrics,
             "raw_metrics": raw_metrics,
             "runs": runs,
         }

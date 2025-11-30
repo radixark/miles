@@ -3,7 +3,7 @@ import time
 from typing import Any, Dict, Optional
 
 import requests
-from examples.eval.eval_delegate import EvalDelegateError, _flatten
+from examples.eval.eval_delegate import EvalDelegateError
 from examples.eval.nemo_skills.skills_config import SkillsEvalEnvConfig
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class SkillsEvalClient:
 
         payload = self._build_payload(args, rollout_id)
         response = self._request(payload)
-        metrics = self._extract_metrics(response)
+        metrics = response["raw_metrics"]
         return metrics, response
 
     def _build_payload(self, args, rollout_id: int) -> Dict[str, Any]:
@@ -69,14 +69,3 @@ class SkillsEvalClient:
                 if attempt < self._max_retries:
                     time.sleep(min(2**attempt, 30))
         raise EvalDelegateError("Skills evaluation request failed") from last_error
-
-    @staticmethod
-    def _extract_metrics(response: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(response, dict):
-            return {}
-
-        if "metrics" in response and isinstance(response["metrics"], dict):
-            return dict(response["metrics"])
-        if "results" in response and isinstance(response["results"], dict):
-            return _flatten(response["results"])
-        return {}

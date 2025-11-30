@@ -10,7 +10,6 @@ from omegaconf import OmegaConf
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.sglang_rollout import generate_rollout as base_generate_rollout
-from miles.utils import tracking_utils
 from miles.utils.metric_utils import compute_rollout_step
 
 logger = logging.getLogger(__name__)
@@ -22,16 +21,15 @@ def generate_rollout(
     args, rollout_id: int, data_buffer: Any, evaluation: bool = False
 ) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     assert evaluation, "Delegate rollout is only supported for evaluation"
-    metrics = {}
-    raw_response = {}
+    flattened_metrics: dict[str, float] = {}
 
     client = _get_delegate_client(args)
     if client is not None:
         metrics, raw_response = client.evaluate(args, rollout_id)
-        _log_delegate_metrics(args, rollout_id, metrics, raw_response)
+        flattened_metrics = _log_delegate_metrics(args, rollout_id, metrics, raw_response)
 
     result = base_generate_rollout(args, rollout_id, data_buffer, evaluation=evaluation)
-    result.metrics = metrics
+    result.metrics = flattened_metrics
     return result
 
 
@@ -80,16 +78,13 @@ def _safe_mtime(path: str) -> Optional[float]:
         return None
 
 
-def _log_delegate_metrics(args, rollout_id: int, metrics: dict | None, raw_response: Optional[dict]):
+def _log_delegate_metrics(args, rollout_id: int, metrics: dict | None, raw_response: Optional[dict]) -> dict:
     flattened = _flatten_metrics(metrics)
-    if not flattened:
-        return
     if raw_response is not None:
         logger.info("External eval raw response for rollout %s: %s", rollout_id, raw_response)
     logger.info("eval %s (external): %s", rollout_id, flattened)
     step = compute_rollout_step(args, rollout_id)
-    payload = flattened | {"eval/step": step}
-    tracking_utils.log(args, payload, step_key="eval/step")
+    return flattened
 
 
 def _flatten_metrics(metric_source: Optional[dict]) -> dict:
