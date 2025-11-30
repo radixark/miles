@@ -228,24 +228,25 @@ class Dataset:
 
     def _build_index(self):
         logger.info(f"Building index for {self.path_with_slice}...")
-        self._valid_locations = [] # Stores file offsets for JSONL, or row indices for Parquet
-        
+        self._valid_locations = []  # Stores file offsets for JSONL, or row indices for Parquet
+
         if self._file_type == "jsonl":
             current_original_line_idx = 0
             with open(self.raw_file_path, "r", encoding="utf-8") as f:
                 while True:
                     current_offset = f.tell()
                     line = f.readline()
-                    if not line: break # EOF
+                    if not line:
+                        break  # EOF
 
                     # Apply row_slice filtering during index building
                     if self.row_slice is not None:
                         start = self.row_slice.start if self.row_slice.start is not None else 0
-                        stop = self.row_slice.stop if self.row_slice.stop is not None else float('inf')
+                        stop = self.row_slice.stop if self.row_slice.stop is not None else float("inf")
                         if not (start <= current_original_line_idx < stop):
                             current_original_line_idx += 1
-                            continue # Skip this line if it's outside the slice
-                    
+                            continue  # Skip this line if it's outside the slice
+
                     data = json.loads(line)
                     if self._should_include(data):
                         self._valid_locations.append(current_offset)
@@ -253,7 +254,7 @@ class Dataset:
 
         elif self._file_type == "parquet":
             self._pq_file = pq.ParquetFile(self.raw_file_path)
-            
+
             current_idx = 0
             # Determine slice bounds
             start = 0
@@ -269,21 +270,21 @@ class Dataset:
                 batch_list = batch.to_pylist()
                 for data in batch_list:
                     if current_idx >= stop:
-                        break 
-                    
+                        break
+
                     if current_idx >= start:
                         if self._should_include(data):
                             self._valid_locations.append(current_idx)
-                    
+
                     current_idx += 1
-                
+
                 if current_idx >= stop:
                     break
-        
+
         logger.info(f"Found {len(self._valid_locations)} valid samples in {self.path_with_slice}")
 
     def _read_parquet_row(self, idx):
-        if self._pq_file is None: # Should be initialized in _build_index
+        if self._pq_file is None:  # Should be initialized in _build_index
             self._pq_file = pq.ParquetFile(self.raw_file_path)
 
         row_offset = 0
@@ -301,7 +302,7 @@ class Dataset:
 
     def __getitem__(self, idx):
         # idx is an index into the shuffled self._shuffled_indices list
-        shuffled_idx = self._shuffled_indices[idx] 
+        shuffled_idx = self._shuffled_indices[idx]
         # location is either the file offset (JSONL) or original row index (Parquet)
         location = self._valid_locations[shuffled_idx]
 
@@ -326,10 +327,10 @@ class Dataset:
         )
 
         # Basic cache management (simple LRU by always adding to end, but limited size)
-        if len(self._cache) >= 10000: # Limit cache size
+        if len(self._cache) >= 10000:  # Limit cache size
             del self._cache[next(iter(self._cache))]
         self._cache[location] = sample
-        
+
         return sample
 
     def shuffle(self, new_epoch_id):
@@ -339,7 +340,7 @@ class Dataset:
         random.seed(self.seed + new_epoch_id)
         random.shuffle(self._shuffled_indices)
         self.epoch_id = new_epoch_id
-        self._cache.clear() # Clear cache on shuffle to avoid stale data
+        self._cache.clear()  # Clear cache on shuffle to avoid stale data
 
 
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
