@@ -3,16 +3,17 @@ import time
 from typing import Any, Dict, Optional
 
 import requests
-from examples.eval.eval_delegate import EvalDelegateError
+from examples.eval.eval_delegate import EvalClient, EvalDelegateError
 from examples.eval.nemo_skills.skills_config import SkillsEvalEnvConfig
 
 logger = logging.getLogger(__name__)
 
 
-class SkillsEvalClient:
+class SkillsEvalClient(EvalClient):
     """HTTP client that proxies evaluation requests to the NeMo Skills server."""
 
     def __init__(self, config: SkillsEvalEnvConfig, router_url: str):
+        super().__init__(config.name or "skills")
         self._config = config
         self._router_url = router_url.rstrip("/")
         self._endpoint = (config.url or "").rstrip("/")
@@ -20,7 +21,6 @@ class SkillsEvalClient:
         self._max_retries = max(1, int(config.max_retries))
         self._headers = dict(config.headers or {})
         self._session = requests.Session()
-        self.name = config.name or "skills"
 
     @classmethod
     def from_config(cls, config: SkillsEvalEnvConfig, router_url: str):

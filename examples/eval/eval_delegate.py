@@ -121,13 +121,14 @@ class EvalEnvConfig:
 
 
 def _rebuild_delegate_config(
-    args, raw_delegate_config: Sequence[Mapping[str, Any]], defaults: Mapping[str, Any]
+    args, raw_delegate_config: Optional[Sequence[Mapping[str, Any]]], defaults: Optional[Mapping[str, Any]]
 ) -> List[EvalEnvConfig]:
     envs: List[EvalEnvConfig] = []
     defaults = defaults or {}
     for env in raw_delegate_config or []:
         env_name = str(env.get("name", "")).strip().lower()
         if not env_name:
+            logger.warning("Each delegate entry must include a non-empty `name`.")
             continue
         if env_name == "skills":
             from examples.eval.nemo_skills.skills_config import build_skills_eval_env_config
@@ -145,9 +146,13 @@ class EvalDelegateError(RuntimeError):
 
 
 class EvalClient:
-    # TODO: move some logic from SkillsEvalClient to this class
-    # Not sure what will future client to be like, so keep it as an empty base class for now.
-    pass
+    name: str = ""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def evaluate(self, args, rollout_id: int) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        raise NotImplementedError("Subclasses must implement this method")
 
 
 def _flatten(result: Dict[str, Any], prefix: Optional[str] = None) -> Dict[str, Any]:
@@ -165,17 +170,19 @@ def _flatten(result: Dict[str, Any], prefix: Optional[str] = None) -> Dict[str, 
 class EvalDelegateClient:
     """Aggregate multiple environment-specific delegate clients."""
 
-    def __init__(self, delegates: Sequence[Any]):
+    def __init__(self, delegates: Sequence[EvalClient]):
         self._delegates = list(delegates)
 
     @classmethod
-    def maybe_create(cls, args, env_configs: Optional[Sequence[EvalEnvConfig]] = None):
+    def maybe_create(
+        cls, args, env_configs: Optional[Sequence[EvalEnvConfig]] = None
+    ) -> Optional["EvalDelegateClient"]:
         env_configs = list(env_configs) if env_configs is not None else getattr(args, "eval_delegate_config", None)
         if not env_configs:
             return None
 
         router_addr = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-        delegates = []
+        delegates: List[EvalClient] = []
         for env_cfg in env_configs:
             delegate = cls._create_delegate(env_cfg, router_addr)
             if delegate is not None:
@@ -186,7 +193,7 @@ class EvalDelegateClient:
 
     @staticmethod
     def _create_delegate(env_cfg: EvalEnvConfig, router_addr: str):
-        env_name = getattr(env_cfg, "name", "")
+        env_name = env_cfg.name
         if env_name == "skills":
             from examples.eval.nemo_skills.skills_client import SkillsEvalClient
 
@@ -201,5 +208,5 @@ class EvalDelegateClient:
             metrics, response = delegate.evaluate(args, rollout_id)
             if metrics:
                 aggregated_metrics.update(metrics)
-            raw_responses[getattr(delegate, "name", "delegate")] = response
+            raw_responses[delegate.name] = response
         return aggregated_metrics, raw_responses

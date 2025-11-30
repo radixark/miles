@@ -62,7 +62,7 @@ def _build_delegate_client(args, config_path: str) -> Optional[EvalDelegateClien
         return None
 
     defaults = dict(eval_cfg.get("defaults") or {})
-    delegate_entries = eval_cfg.get("delegate") or []
+    delegate_entries = list(eval_cfg.get("delegate") or [])
     env_configs = _rebuild_delegate_config(args, delegate_entries, defaults)
     if not env_configs:
         logger.info("No delegate environments configured under `eval.delegate`; skipping external eval.")
