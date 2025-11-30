@@ -25,9 +25,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    rollout_attn_fp8: bool = False
     enable_mtp: bool = False  # TODO enable by default
     dynamic_sampling: bool = False
     enable_benchmark: bool = False
+    enable_mis: bool = False
+    # TODO improve, should be able to override more easily
+    tis_use_rs: bool = True
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
 
@@ -306,6 +310,28 @@ def train(args: ScriptArgs):
     if args.enable_benchmark:
         misc_args += (
             "--custom-generate-function-path miles.rollout.generate_hub.benchmarkers.generate_with_random_osl "
+        )
+
+    if args.rollout_attn_fp8:
+        sglang_args += "--sglang-kv-cache-dtype fp8_e4m3 "
+
+    if args.enable_mis:
+        config_text = f"""
+use_tis: true
+use_rs: {"true" if args.tis_use_rs else "false"}
+tis_level: "token"
+rs_level: "token"
+tis_mode: "truncate"
+tis_lower_bound: 0.5
+tis_upper_bound: 2.0
+rs_lower_bound: null
+rs_upper_bound: null
+rs_veto_threshold: 1.0e-4
+tis_batch_normalize: true
+""".strip()
+        misc_args += (
+            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
     train_args = (
