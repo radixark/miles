@@ -1,4 +1,3 @@
-import json
 import logging
 import multiprocessing
 import random
@@ -15,7 +14,6 @@ from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.ray.rollout_data_source import RolloutDataSourceWithBuffer
 from miles.rollout.base_types import call_rollout_fn
 from miles.utils import tracking_utils
-from miles.utils.eval_delegate import EvalDelegateClient
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
 from miles.utils.iter_utils import group_by
@@ -49,7 +47,6 @@ class RolloutManager:
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         init_http_client(args)
-        self._eval_delegate = EvalDelegateClient.maybe_create(args)
 
         self.data_source = RolloutDataSourceWithBuffer(args)
 
@@ -113,18 +110,18 @@ class RolloutManager:
             # if debug train only, we don't generate evaluation data
             return
 
-        if self._eval_delegate is not None:
-            metrics, raw_response = self._eval_delegate.evaluate(self.args, rollout_id)
-            log_dict = _log_external_eval_metrics(rollout_id, self.args, metrics)
+        # TODO: add fault tolerance to eval
+        result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
+        delegate_metrics = getattr(result, "delegate_metrics", None)
+        if delegate_metrics:
+            log_dict = _log_external_eval_metrics(rollout_id, self.args, delegate_metrics)
+            raw_response = getattr(result, "delegate_raw_response", None)
             logger.info("External eval raw response for rollout %s: %s", rollout_id, raw_response)
             logger.info("External eval metrics for rollout %s: %s", rollout_id, log_dict)
             if self._metric_checker is not None:
-                self._metric_checker.on_eval(metrics)
+                self._metric_checker.on_eval(delegate_metrics)
 
-        # TODO: add fault tolerance to eval
-        data = call_rollout_fn(
-            self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
-        ).data
+        data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data)
         if self._metric_checker is not None:

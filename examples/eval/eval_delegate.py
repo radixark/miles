@@ -130,7 +130,7 @@ def _rebuild_delegate_config(
         if not env_name:
             continue
         if env_name == "skills":
-            from examples.eval.skills.skills_config import build_skills_eval_env_config
+            from examples.eval.nemo_skills.skills_config import build_skills_eval_env_config
 
             env_cfg = build_skills_eval_env_config(args, env, defaults)
             if env_cfg is not None:
@@ -169,8 +169,8 @@ class EvalDelegateClient:
         self._delegates = list(delegates)
 
     @classmethod
-    def maybe_create(cls, args):
-        env_configs = getattr(args, "eval_delegate_config", None)
+    def maybe_create(cls, args, env_configs: Optional[Sequence[EvalEnvConfig]] = None):
+        env_configs = list(env_configs) if env_configs is not None else getattr(args, "eval_delegate_config", None)
         if not env_configs:
             return None
 
@@ -188,7 +188,7 @@ class EvalDelegateClient:
     def _create_delegate(env_cfg: EvalEnvConfig, router_addr: str):
         env_name = getattr(env_cfg, "name", "")
         if env_name == "skills":
-            from examples.eval.skills.skills_client import SkillsEvalClient
+            from examples.eval.nemo_skills.skills_client import SkillsEvalClient
 
             return SkillsEvalClient.from_config(env_cfg, router_addr)
         logger.warning("No delegate client registered for environment: %s", env_name)

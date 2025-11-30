@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Example launcher that reuses the Qwen3-4B recipe but delegates evaluation to an
-# external Nemo Skills server via the --eval-delegate-* knobs.
+# external Nemo Skills server via the eval_delegate_rollout wrapper.
 
 # Clean up any stale processes from a previous run.
 pkill -9 sglang
@@ -17,11 +17,11 @@ set -ex
 
 SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"slime-openai-model"}
 
-python examples/eval/skills/skills_server.py \
+python examples/eval/nemo_skills/skills_server.py \
   --host 0.0.0.0 \
   --port 9050 \
   --output-root /root/shared/skills-eval \
-  --config-dir examples/eval/skills \
+  --config-dir examples/eval/nemo_skills \
   --cluster local_cluster \
   --server-type openai \
   --openai-model-name "${SKILLS_OPENAI_MODEL_NAME}" &
@@ -41,7 +41,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3-32B.sh"
 
 # Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/skills/config.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/nemo_skills/config.yaml"}
 
 CKPT_ARGS=(
    --hf-checkpoint /root/shared/Qwen3-32B
@@ -71,6 +71,7 @@ ROLLOUT_ARGS=(
 EVAL_ARGS=(
    --eval-interval 5
    --eval-config "${EVAL_CONFIG_PATH}"
+   --eval-function-path examples.eval.nemo_skills.eval_delegate_rollout.generate_rollout
 )
 
 PERF_ARGS=(

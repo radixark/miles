@@ -3,9 +3,8 @@ import time
 from typing import Any, Dict, Optional
 
 import requests
-from examples.eval.skills.skills_config import SkillsEvalEnvConfig
-
-from miles.utils.eval_delegate import EvalDelegateError, _flatten
+from examples.eval.eval_delegate import EvalDelegateError, _flatten
+from examples.eval.nemo_skills.skills_config import SkillsEvalEnvConfig
 
 logger = logging.getLogger(__name__)
 

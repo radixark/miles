@@ -63,11 +63,11 @@ python3 arena-hard/prepare.py
 Start the skills server:
 ```bash
 cd /opt/miles
-python examples/eval/skills/skills_server.py \
+python examples/eval/nemo_skills/skills_server.py \
   --host 0.0.0.0 \
   --port 9050 \
   --output-root /opt/skills-eval \
-  --config-dir examples/eval/skills \
+  --config-dir examples/eval/nemo_skills \
   --cluster local_cluster \
   --max-concurrent-requests 512 \
   --openai-model-name slime-openai-model

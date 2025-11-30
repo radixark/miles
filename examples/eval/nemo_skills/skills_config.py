@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Mapping
 
-from miles.utils.eval_delegate import EvalEnvConfig, EvalEnvDatasetConfig
+from examples.eval.eval_delegate import EvalEnvConfig, EvalEnvDatasetConfig
 
 
 @dataclass

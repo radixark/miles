@@ -224,6 +224,32 @@ miles supports customizing data generation (rollout) to various degrees.
 
           - `loss_mask` should be the same length as `response_length`, with `1` for tokens that should be included in the loss calculation and `0` for those that should be masked out.
 
+### External Eval Delegates
+
+If you want to keep Miles' built-in evaluation flow but also fan out to an external evaluation service (for example the NeMo Skills delegate), point `--eval-function-path` to the wrapper at `examples.eval.nemo_skills.eval_delegate_rollout.generate_rollout`. The wrapper executes the configured delegate(s) before calling the default `miles.rollout.sglang_rollout.generate_rollout`, and the rollout manager automatically logs any metrics it attaches to the returned `RolloutFnEvalOutput`.
+
+The delegate endpoints are described in your existing `--eval-config`. Alongside `eval.datasets`, add a `delegate` list mirroring the structure in `examples/eval/nemo_skills/config.yaml`:
+
+```yaml
+eval:
+  defaults:
+    temperature: 0.6
+    top_p: 0.95
+  datasets:
+    - name: aime
+      path: /data/aime.jsonl
+  delegate:
+    - name: skills
+      url: http://skills_server:9050/evaluate
+      timeout_secs: 7200
+      headers: {}
+      datasets:
+        - name: aime25
+          n_samples_per_eval_prompt: 4
+```
+
+The wrapper caches the parsed delegate definitions per `eval_config` path, so the default evaluation behavior remains unchanged unless you explicitly opt into it with `--eval-function-path`.
+
   - In some cases, you may only need to replace the data generation logic. You can do this using `--custom-generate-function-path`. A simplified implementation of this function is as follows:
 
     ```python

@@ -4,10 +4,10 @@ Simple HTTP server that proxies Miles evaluation requests to the `ns eval`
 command shipped with NeMo Skills.
 
 Usage:
-    python examples/eval/skills/skills_server.py \
+    python examples/eval/nemo_skills/skills_server.py \
         --host 0.0.0.0 --port 9050 \
         --output-root /opt/skills-eval \
-        --config-dir examples/eval/skills \
+        --config-dir examples/eval/nemo_skills \
         --cluster local_cluster \
         --max-concurrent-requests 512 \
         --openai-model-name slime-openai-model
@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.eval.skills.skills_config import SkillsEvalEnvDatasetConfig
+from examples.eval.nemo_skills.skills_config import SkillsEvalEnvDatasetConfig
 from flask import Flask, jsonify, request
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
