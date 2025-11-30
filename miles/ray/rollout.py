@@ -5,7 +5,7 @@ import random
 import time
 from glob import glob
 from pathlib import Path
-from typing import List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import ray
@@ -111,12 +111,12 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
+
         # TODO: add fault tolerance to eval
-        data = call_rollout_fn(
-            self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
-        ).data
+        result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
+        data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
-        metrics = _log_eval_rollout_data(rollout_id, self.args, data)
+        metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
@@ -483,8 +483,8 @@ def _start_router(args):
     logger.info(f"Router launched at {args.sglang_router_ip}:{args.sglang_router_port}")
 
 
-def _log_eval_rollout_data(rollout_id, args, data):
-    log_dict = {}
+def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: Optional[Dict[str, Any]] = None):
+    log_dict = extra_metrics or {}
     for key in data.keys():
         rewards = data[key]["rewards"]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards)
