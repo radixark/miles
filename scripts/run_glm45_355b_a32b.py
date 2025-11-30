@@ -320,6 +320,8 @@ def train(args: ScriptArgs):
             "--use-distributed-post "
             "--router-policy round_robin "
             "--sglang-server-concurrency 10000 "
+            # GB200 w/ mem-frac 0.8 will lead to oom in long jobs currently, but here we use 0.8 to make baseline more fair
+            f"--sglang-mem-fraction-static 0.8 "
         )
 
     if args.rollout_attn_fp8:
