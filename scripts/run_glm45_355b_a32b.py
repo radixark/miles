@@ -314,6 +314,12 @@ def train(args: ScriptArgs):
     if args.enable_benchmark:
         misc_args += (
             "--custom-generate-function-path miles.rollout.generate_hub.benchmarkers.generate_with_random_osl "
+            "--rollout-batch-size 64 "
+            "--n-samples-per-prompt 8 "
+            "--over-sampling-batch-size 128 "
+            "--use-distributed-post "
+            "--router-policy round_robin "
+            "--sglang-server-concurrency 10000 "
         )
 
     if args.rollout_attn_fp8:
