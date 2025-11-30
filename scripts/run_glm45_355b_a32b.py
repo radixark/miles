@@ -253,7 +253,7 @@ def train(args: ScriptArgs):
         )
     if args.rollout_fp8:
         sglang_decode_max_bs = 256
-        sglang_attn_tp_size = 8
+        sglang_attn_tp_size = min(8, sglang_world_size)
         sglang_attn_dp_size = sglang_world_size // sglang_attn_tp_size
         sglang_args += (
             f"--sglang-ep-size {sglang_world_size} "
