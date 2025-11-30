@@ -17,14 +17,6 @@ set -ex
 
 SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"slime-openai-model"}
 
-python examples/eval/nemo_skills/skills_server.py \
-  --host 0.0.0.0 \
-  --port 9050 \
-  --output-root /root/shared/skills-eval \
-  --config-dir examples/eval/nemo_skills \
-  --cluster local_cluster \
-  --server-type openai \
-  --openai-model-name "${SKILLS_OPENAI_MODEL_NAME}" &
 
 export PYTHONBUFFERED=16
 
