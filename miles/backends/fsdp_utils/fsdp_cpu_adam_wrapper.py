@@ -79,7 +79,7 @@ class FSDPCPUAdamWrapper:
         Uses the same .to() pattern as update_weight_utils.py for proper memory layout.
         """
         # Copy gradients from GPU to CPU - handle DTensor and ensure FP32 for DeepSpeed AVX
-        for gpu_param, cpu_param in zip(self.gpu_params, self.cpu_params):
+        for gpu_param, cpu_param in zip(self.gpu_params, self.cpu_params, strict=False):
             if gpu_param.grad is not None:
 
                 grad_data = gpu_param.grad.detach()
@@ -102,7 +102,7 @@ class FSDPCPUAdamWrapper:
         # Run optimizer step on CPU
         self.cpu_optimizer.step()
 
-        for gpu_param, cpu_param in zip(self.gpu_params, self.cpu_params):
+        for gpu_param, cpu_param in zip(self.gpu_params, self.cpu_params, strict=False):
             updated_param = cpu_param.data.to(
                 device=torch.cuda.current_device(), dtype=gpu_param.dtype, non_blocking=True
             )
