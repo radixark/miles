@@ -694,7 +694,7 @@ def initialize_model_and_optimizer(
             DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
     """
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
-    setattr(model[0], "role", role)
+    model[0].role = role
     clear_memory()
     iteration, _ = load_checkpoint(
         model,
