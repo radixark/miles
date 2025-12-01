@@ -24,7 +24,7 @@ def _ensure_ifbench_repo() -> Path:
     if not repo_path.exists():
         clone_cmd = ["git", "clone", "https://github.com/allenai/IFBench.git", str(repo_path)]
         try:
-            subprocess.run(clone_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(clone_cmd, check=True, capture_output=True)
         except Exception as exc:
             raise ImportError(
                 "Unable to automatically clone IFBench. Please clone "
