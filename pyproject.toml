@@ -23,7 +23,7 @@ src_paths = ["miles", "miles_plugins"]
 line_length = 119
 
 [tool.ruff]
-line-length = 1000  # TODO
+line-length = 320  # TODO
 select = [
     "E",      # Pycodestyle Errors (Structural/Fundamental Errors like bad indentation)
     "F",      # Pyflakes (Core Errors: Unused imports, undefined names)
