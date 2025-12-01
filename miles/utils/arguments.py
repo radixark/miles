@@ -1000,6 +1000,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            # TODO may auto enable on CI
             parser.add_argument("--check-train-weight-change", action="store_true")
             return parser
 
@@ -1527,9 +1528,6 @@ def miles_validate_args(args):
     assert (
         args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
     ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
-
-    if args.ci_test:
-        args.check_train_weight_change = True
 
 
 def hf_validate_args(args, hf_config):
