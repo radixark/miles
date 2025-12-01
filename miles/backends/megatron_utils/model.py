@@ -128,6 +128,7 @@ def setup_model_and_optimizer(
         use_gloo_process_groups=args.enable_gloo_process_groups,
     )
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
+    print("hi the optimizer-var-shadowing code is removed!!!")
     return model, optimizer, opt_param_scheduler
 
 
