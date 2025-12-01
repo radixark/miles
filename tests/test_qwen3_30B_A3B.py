@@ -42,7 +42,6 @@ def execute():
         "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
         "--balance-data "
-
         # If all samples are all-success/all-fail, there will be no gradient, and check-train-weight-change will fail
         "--over-sampling-batch-size 16 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
