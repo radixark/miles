@@ -15,7 +15,7 @@ pkill -9 python
 
 set -ex
 
-SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"slime-openai-model"}
+SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"miles-openai-model"}
 
 
 export PYTHONBUFFERED=16
@@ -38,8 +38,8 @@ EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/
 CKPT_ARGS=(
    --hf-checkpoint /root/shared/Qwen3-4B
    --ref-load /root/shared/Qwen3-4B_torch_dist
-   --load /root/shared/Qwen3-4B_slime/
-   --save /root/shared/Qwen3-4B_slime/
+   --load /root/shared/Qwen3-4B_miles/
+   --save /root/shared/Qwen3-4B_miles/
    --save-interval 20
 )
 
@@ -103,7 +103,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project slime-eval
+   --wandb-project miles-eval
    --wandb-group qwen3-4b-eval
    --wandb-key ${WANDB_KEY}
 )

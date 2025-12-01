@@ -10,7 +10,7 @@ Usage:
         --config-dir examples/eval/nemo_skills/config \
         --cluster local_cluster \
         --max-concurrent-requests 512 \
-        --openai-model-name slime-openai-model
+        --openai-model-name miles-openai-model
 
 Miles (or Miles-compatible runners) should POST the payload described in
 `EvalRequestPayload` to http://<host>:<port>/evaluate. The server blocks until
@@ -240,7 +240,7 @@ class SkillsEvaluator:
         if self._config.config_dir:
             base_cmd.extend(["--config_dir", self._config.config_dir])
 
-        openai_model_name = self._config.openai_model_name or "slime-openai-model"
+        openai_model_name = self._config.openai_model_name or "miles-openai-model"
         hydra_overrides = _hydra_overrides_from_benchmark(
             defaults,
             benchmark_cfg,

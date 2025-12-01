@@ -2,7 +2,7 @@
 
 ## Prerequisites
 - A writable host directory for cached data (`/data/.cache`)
-- Choose descriptive container names to replace the placeholders (`<slime container name>`, `<env container name>`).
+- Choose descriptive container names to replace the placeholders (`<miles container name>`, `<env container name>`).
 
 ## 1) Prepare host network
 ```bash
@@ -20,8 +20,8 @@ docker run \
   --ipc=host \
   --privileged \
   --network skills-net \
-  --name <slime container name> \
-  slimerl/slime:latest \
+  --name <miles container name> \
+  radixark/miles:latest \
   /bin/bash
 ```
 
@@ -70,7 +70,7 @@ python examples/eval/nemo_skills/skills_server.py \
   --config-dir examples/eval/nemo_skills/config \
   --cluster local_cluster \
   --max-concurrent-requests 512 \
-  --openai-model-name slime-openai-model
+  --openai-model-name miles-openai-model
 ```
 
 You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network. The server always proxies evaluation traffic to an OpenAI-compatible sglang router (Miles starts and manage the router), so adjust `--openai-model-name` and `--max-concurrent-requests` as needed for your deployment.
