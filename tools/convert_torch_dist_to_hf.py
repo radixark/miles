@@ -5,6 +5,7 @@ import pickle
 import re
 import shutil
 import time
+
 from typing import Optional
 
 import safetensors.torch
@@ -43,6 +44,10 @@ class WrappedStorageReader(dist_cp.FileSystemReader):
         if metadata.planner_data is None:
             metadata.planner_data = {}
         return metadata
+
+
+class StorageMeta:
+    pass
 
 
 class EmptyStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):

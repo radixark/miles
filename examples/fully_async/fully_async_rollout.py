@@ -3,6 +3,7 @@ import queue
 import threading
 import time
 from typing import List
+import atexit
 
 # Import core functions from sglang_rollout directly to avoid code duplication
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group
@@ -259,6 +260,5 @@ def generate_rollout_fully_async(args, rollout_id, data_buffer, evaluation=False
 
 
 # Register exit cleanup function
-import atexit
 
 atexit.register(stop_global_worker)

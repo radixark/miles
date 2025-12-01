@@ -34,14 +34,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
 from examples.eval.nemo_skills.skills_config import SkillsEvalEnvDatasetConfig
 from flask import Flask, jsonify, request
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
 
 logger = logging.getLogger("skills_eval_server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

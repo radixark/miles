@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-"""
-String-based Radix Trie for efficient prefix matching and token caching.
-Optimized for string prefixes with corresponding token IDs.
-"""
-
 import threading
 import time
 from dataclasses import dataclass
