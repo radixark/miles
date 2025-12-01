@@ -325,6 +325,9 @@ def train_one_step(
     """
     args = get_args()
 
+    if args.check_train_weight_change:
+        TODO
+
     # Set grad to zero.
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
@@ -479,6 +482,9 @@ def train_one_step(
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
+
+    if args.check_train_weight_change:
+        TODO
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         # Average loss across microbatches.
