@@ -18,12 +18,10 @@ class WeightChangeChecker:
         final_state = self._snapshot(self._args, self._model)
         assert set(initial_state.keys()) == set(final_state.keys())
 
-        all_names = list(initial_state)
-        bad_names = [name for name in all_names if initial_state[name] == final_state[name]]
-        good_names = sorted(list(set(all_names) - set(bad_names)))
-        assert (
-            len(bad_names) == 0
-        ), f"These tensors are not changed after training: {bad_names}. (Changed tensors: {good_names})"
+        all_tensor_names = list(initial_state)
+        unchanged_tensor_names = [name for name in all_tensor_names if initial_state[name] == final_state[name]]
+        changed_tensor_names = sorted(list(set(all_tensor_names) - set(unchanged_tensor_names)))
+        assert len(unchanged_tensor_names) == 0, f"{unchanged_tensor_names=} {changed_tensor_names=}"
 
         logger.info(f"WeightChangeChecker passed (total num tensors: {len(final_state)})")
 
