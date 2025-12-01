@@ -1,5 +1,6 @@
-import torch
 from miles.backends.megatron_utils.update_weight.common import named_params_and_buffers
+
+from miles.utils.tensor_backper import compute_hash_tensor
 
 
 class WeightChangeChecker:
@@ -19,10 +20,6 @@ class WeightChangeChecker:
     @staticmethod
     def _snapshot(args, model):
         return {
-            name: _compute_hash(param)
+            name: compute_hash_tensor(param)
             for name, param in named_params_and_buffers(args, model, convert_to_global_name=False)
         }
-
-
-def _compute_hash(x: torch.Tensor):
-    return TODO
