@@ -385,7 +385,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
     addr_and_ports = [{} for _ in range(num_engines)]
 
     visited_nodes = set()
-    for rank, current_engine in rollout_engines:
+    for rank, engine in rollout_engines:
         if rank // num_engines_per_node in visited_nodes:
             continue
         visited_nodes.add(rank // num_engines_per_node)
@@ -393,7 +393,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
         # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
         num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
 
-        def get_addr_and_ports(engine_actor):
+        def get_addr_and_ports():
             # use small ports to prevent ephemeral port between 32768 and 65536.
             # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
             start_port = 15000
@@ -401,7 +401,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
             def port(consecutive=1):
                 nonlocal start_port
                 _, port = ray.get(
-                    engine_actor._get_current_node_ip_and_free_port.remote(
+                    engine._get_current_node_ip_and_free_port.remote(
                         start_port=start_port,
                         consecutive=consecutive,
                     )
@@ -410,12 +410,12 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
                 return port
 
             def addr():
-                addr, _ = ray.get(engine_actor._get_current_node_ip_and_free_port.remote())
+                addr, _ = ray.get(engine._get_current_node_ip_and_free_port.remote())
                 return addr
 
             return addr, port
 
-        get_addr, get_port = get_addr_and_ports(current_engine)
+        get_addr, get_port = get_addr_and_ports()
 
         for i in range(num_engines_on_this_node):
             addr_and_ports[rank + i]["port"] = get_port()
