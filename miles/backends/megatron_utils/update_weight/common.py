@@ -142,17 +142,17 @@ def _maybe_get_cpu_backup(x: torch.Tensor):
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
     for vp_stage, model_module in enumerate(model):
 
-        def _compute_fqn(name):
+        def _compute_fqn(name, vp_stage):
             return f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}"
 
         for name, param in model_module.named_parameters():
-            yield _compute_fqn(name), param
+            yield _compute_fqn(name, vp_stage), param
 
         for name, buffer in model_module.named_buffers():
             # TODO shall we handle (almost) all buffers like Megatron Bridge
             if "expert_bias" not in name:
                 continue
-            yield _compute_fqn(name), buffer
+            yield _compute_fqn(name, vp_stage), buffer
 
 
 def _named_params_and_buffers_global(
