@@ -197,7 +197,7 @@ def _is_float(num: str) -> bool:
     try:
         float(num)
         return True
-    except ValueError:
+    except Exception:
         return False
 
 
@@ -217,7 +217,7 @@ def _str_is_int(x: str) -> bool:
         x = _strip_properly_formatted_commas(x)
         x = float(x)
         return abs(x - int(round(x))) <= 1e-7
-    except ValueError:
+    except Exception:
         return False
 
 
@@ -411,7 +411,7 @@ def remove_boxed(s):
         assert s[: len(left)] == left
         assert s[-1] == "}"
         return s[len(left) : -1]
-    except AssertionError:
+    except Exception:
         return None
 
 
