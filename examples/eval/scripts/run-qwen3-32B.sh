@@ -29,17 +29,17 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
-source "${REPO_ROOT}/scripts/models/qwen3-4B.sh"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
+source "${REPO_ROOT}/scripts/models/qwen3-32B.sh"
 
 # Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/nemo_skills/config.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/examples/multi_tasks.yaml"}
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/shared/Qwen3-4B
-   --ref-load /root/shared/Qwen3-4B_torch_dist
-   # --load /root/shared/Qwen3-4B_slime/
-   --save /root/shared/Qwen3-4B_slime/
+   --hf-checkpoint /root/shared/Qwen3-32B
+   --ref-load /root/shared/Qwen3-32B_torch_dist
+   --load /root/shared/Qwen3-32B_slime/
+   --save /root/shared/Qwen3-32B_slime/
    --save-interval 20
 )
 
@@ -67,7 +67,7 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 8
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -90,6 +90,10 @@ GRPO_ARGS=(
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
+
+   --optimizer-cpu-offload
+   --overlap-cpu-optimizer-d2h-h2d
+   --use-precision-aware-optimizer
 )
 
 OPTIMIZER_ARGS=(
@@ -104,13 +108,14 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    --use-wandb
    --wandb-project slime-eval
-   --wandb-group qwen3-4b-eval
+   --wandb-group qwen3-32b-eval
    --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
+   --rollout-num-gpus-per-engine 8
    --sglang-mem-fraction-static 0.7
+   # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
 )
 
 MISC_ARGS=(
