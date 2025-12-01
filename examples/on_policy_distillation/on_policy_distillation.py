@@ -30,7 +30,8 @@ def post_process_rewards(args, samples: list[Sample], **kwargs):
         for reward in rewards
     ]
     teacher_log_probs = [
-        t_log_prob[-response_length:] for t_log_prob, response_length in zip(teacher_log_probs, response_lengths, strict=False)
+        t_log_prob[-response_length:]
+        for t_log_prob, response_length in zip(teacher_log_probs, response_lengths, strict=False)
     ]
 
     for sample, t_log_probs in zip(samples, teacher_log_probs, strict=False):

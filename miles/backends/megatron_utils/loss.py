@@ -287,7 +287,8 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         device = student_log_probs[0].device
         teacher_log_probs = [t_log_prob.to(device=device) for t_log_prob in teacher_log_probs]
         teacher_log_probs = [
-            t_log_prob[-response_length:] for t_log_prob, response_length in zip(teacher_log_probs, response_lengths, strict=False)
+            t_log_prob[-response_length:]
+            for t_log_prob, response_length in zip(teacher_log_probs, response_lengths, strict=False)
         ]
         advantages = [
             teacher_log_prob - student_log_prob
@@ -405,11 +406,15 @@ def policy_loss_function(
     if args.advantage_estimator == "gspo":
         full_log_probs = [
             all_gather_with_cp(log_prob, total_length, response_length)
-            for log_prob, total_length, response_length in zip(log_probs, total_lengths, response_lengths, strict=False)
+            for log_prob, total_length, response_length in zip(
+                log_probs, total_lengths, response_lengths, strict=False
+            )
         ]
         full_old_log_probs = [
             all_gather_with_cp(old_log_prob, total_length, response_length)
-            for old_log_prob, total_length, response_length in zip(old_log_probs, total_lengths, response_lengths, strict=False)
+            for old_log_prob, total_length, response_length in zip(
+                old_log_probs, total_lengths, response_lengths, strict=False
+            )
         ]
 
         loss_masks = batch["loss_masks"]

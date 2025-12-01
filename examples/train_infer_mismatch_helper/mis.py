@@ -164,7 +164,9 @@ def compute_mis_weights(
         else:
             raise ValueError(f"Invalid level: {level}")
 
-    for train_log_prob, rollout_log_prob, loss_mask in zip(train_log_probs, rollout_log_probs, loss_masks, strict=False):
+    for train_log_prob, rollout_log_prob, loss_mask in zip(
+        train_log_probs, rollout_log_probs, loss_masks, strict=False
+    ):
         add_ppl_metrics(train_log_prob, rollout_log_prob, loss_mask, metrics)
 
     # only calculate mismatch metrics if TIS is not used
@@ -172,7 +174,9 @@ def compute_mis_weights(
         return None, loss_masks, metrics
 
     # handle each sequence independently
-    for train_log_prob, rollout_log_prob, loss_mask in zip(train_log_probs, rollout_log_probs, loss_masks, strict=False):
+    for train_log_prob, rollout_log_prob, loss_mask in zip(
+        train_log_probs, rollout_log_probs, loss_masks, strict=False
+    ):
         loss_mask = loss_mask.float()
         raw_log_ratio_diff = train_log_prob - rollout_log_prob
         modified_mask = loss_mask.clone().float()
@@ -279,11 +283,15 @@ def compute_mis_weights_with_cp(
     # Gather cp slice from other cp ranks
     full_rollout_log_probs = [
         all_gather_with_cp(log_prob, total_length, response_length)
-        for log_prob, total_length, response_length in zip(rollout_log_probs, total_lengths, response_lengths, strict=False)
+        for log_prob, total_length, response_length in zip(
+            rollout_log_probs, total_lengths, response_lengths, strict=False
+        )
     ]
     full_old_log_probs = [
         all_gather_with_cp(old_log_prob, total_length, response_length)
-        for old_log_prob, total_length, response_length in zip(train_log_probs, total_lengths, response_lengths, strict=False)
+        for old_log_prob, total_length, response_length in zip(
+            train_log_probs, total_lengths, response_lengths, strict=False
+        )
     ]
 
     # Main logic for is (decoupled)

@@ -66,7 +66,10 @@ def get_sum_of_sample_mean(
 
         def sum_of_token(x: torch.Tensor) -> torch.Tensor:
             return sum(
-                [(x_i * loss_mask_i).sum() for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)]
+                [
+                    (x_i * loss_mask_i).sum()
+                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
+                ]
             )
 
     else:
@@ -96,7 +99,9 @@ def get_sum_of_sample_mean(
             return sum(
                 [
                     (x_i * chunked_loss_mask).sum()
-                    for x_i, chunked_loss_mask in zip(x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, strict=False)
+                    for x_i, chunked_loss_mask in zip(
+                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, strict=False
+                    )
                 ]
             )
 
