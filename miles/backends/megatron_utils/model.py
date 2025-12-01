@@ -24,12 +24,12 @@ from megatron.training.training import get_model
 from miles.utils import tracking_utils
 from miles.utils.memory_utils import clear_memory
 
+from ...utils.sanity_check_utils import WeightChangeChecker
 from .checkpoint import load_checkpoint, save_checkpoint
 from .cp_utils import slice_with_cp
 from .data import DataIterator, get_batch
 from .loss import loss_function
 from .model_provider import get_model_provider_func
-from ...utils.sanity_check_utils import WeightChangeChecker
 
 logger = logging.getLogger(__name__)
 
