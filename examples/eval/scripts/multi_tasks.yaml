@@ -27,6 +27,6 @@ eval:
           n_samples_per_eval_prompt: 8
         - name: arena-hard
           n_samples_per_eval_prompt: 2
-        - name: hle:0
+        - name: hle
           max_response_len: 32768
 
