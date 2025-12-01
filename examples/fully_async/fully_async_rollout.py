@@ -1,9 +1,9 @@
 import asyncio
+import atexit
 import queue
 import threading
 import time
 from typing import List
-import atexit
 
 # Import core functions from sglang_rollout directly to avoid code duplication
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group

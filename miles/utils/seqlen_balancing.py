@@ -53,8 +53,6 @@ def karmarkar_karp(seqlen_list: List[int], k_partitions: int, equal_size: bool):
                 self.sets[i].add(idx=idx, val=seqlen)
             self.sets = sorted(self.sets, reverse=True)
 
-
-
         def get_partitions(self):
             partitions = []
             for i in range(len(self.sets)):
