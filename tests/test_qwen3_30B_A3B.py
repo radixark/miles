@@ -120,6 +120,10 @@ def execute():
         "--actor-num-gpus-per-node 8 "
         "--colocate "
         f"--dump-details /root/shared_data/{time.time()}/dump_details "
+        
+        # TODO temp
+        "--load-debug-rollout-data /root/shared_data/TODO/dump_details/rollout_data/{rollout_id}.pt "
+        "--debug-train-only "
     )
 
     train_args = (
