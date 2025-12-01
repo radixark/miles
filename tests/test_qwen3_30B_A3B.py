@@ -1,4 +1,5 @@
 import os
+import time
 
 import miles.utils.external_utils.command_utils as U
 
@@ -112,6 +113,7 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
+        f"--dump-details /root/shared_data/{time.time()}/dump_details "
     )
 
     train_args = (
