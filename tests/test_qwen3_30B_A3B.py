@@ -122,8 +122,8 @@ def execute():
         f"--dump-details /root/shared_data/{time.time()}/dump_details "
         
         # TODO temp
-        # "--load-debug-rollout-data /root/shared_data/1764575692.1238577/dump_details/rollout_data/0.pt "
-        # "--debug-train-only "
+        "--load-debug-rollout-data /root/shared_data/1764581538.768492/dump_details/rollout_data/0.pt "
+        "--debug-train-only "
     )
 
     train_args = (
