@@ -368,7 +368,6 @@ def train_one_step(
             ],
             args.data_pad_size_multiplier,
         )
-        print(f"hi forward_step {batch=}")
 
         if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":
             old_stage = os.environ["ROUTING_REPLAY_STAGE"]
