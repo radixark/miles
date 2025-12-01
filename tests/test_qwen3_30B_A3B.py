@@ -122,7 +122,7 @@ def execute():
         f"--dump-details /root/shared_data/{time.time()}/dump_details "
         
         # TODO temp
-        "--load-debug-rollout-data /root/shared_data/TODO/dump_details/rollout_data/{rollout_id}.pt "
+        "--load-debug-rollout-data /root/shared_data/1764575692.1238577/dump_details/rollout_data/{rollout_id}.pt "
         "--debug-train-only "
     )
 
