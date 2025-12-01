@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -18,13 +18,13 @@ class FSDPCPUAdamWrapper:
     Following the parameter copy pattern from update_weight_utils.py
     """
 
-    def __init__(self, optimizer_config: Dict[str, Any], model: nn.Module) -> None:
+    def __init__(self, optimizer_config: dict[str, Any], model: nn.Module) -> None:
         from deepspeed.ops.adam import DeepSpeedCPUAdam
 
         self.model: nn.Module = model
-        self.gpu_params: List[nn.Parameter] = list(model.parameters())
-        self.optimizer_config: Dict[str, Any] = optimizer_config
-        self.cpu_params: List[torch.Tensor] = []
+        self.gpu_params: list[nn.Parameter] = list(model.parameters())
+        self.optimizer_config: dict[str, Any] = optimizer_config
+        self.cpu_params: list[torch.Tensor] = []
         self.cpu_optimizer: DeepSpeedCPUAdam
 
         # Create CPU shadow copies of parameters using the pattern from update_weight_utils.py
