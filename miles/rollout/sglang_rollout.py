@@ -156,6 +156,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             sample.tokens = prompt_token_ids
 
     output = await post(url, payload)
+    print(f"hi sglang_rollout generete call post {url=} {payload=} {output=}")
 
     # Extract new response tokens
 
