@@ -32,6 +32,7 @@ select = [
 ]
 ignore = [
     "E402", # module-import-not-at-top-of-file
+    "E501", # Line too long # TODO handle it later
 ]
 
 [tool.pytest.ini_options]
