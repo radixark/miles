@@ -39,6 +39,9 @@ def execute():
         "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
         "--balance-data "
+
+        "--over-sampling-batch-size 16 "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
     )
 
     eval_args = (
