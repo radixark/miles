@@ -480,9 +480,8 @@ def train_one_step(
     optimizer.zero_grad()
 
     if args.check_train_weight_change:
-        weight_change_checker.finalize(
-            expect_change=valid_step,
-        )
+        assert valid_step
+        weight_change_checker.finalize()
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         # Average loss across microbatches.
