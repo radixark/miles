@@ -90,10 +90,9 @@ class AsyncRolloutWorker:
 
                         # Add completion callback
                         def make_callback(gid):
-                            def task_done_callback(task):
-                                result = task.result()
+                            def task_done_callback(done_task):
+                                result = done_task.result()
                                 self.output_queue.put((gid, result))
-
                             return task_done_callback
 
                         task.add_done_callback(make_callback(group_id))

@@ -128,7 +128,7 @@ class UpdateWeightFromTensor(UpdateWeight):
 
         # Create flattened bucket for each dtype group
         serialized_tensors = []
-        for dtype, named_tensors in named_tensors_by_dtypes.items():
+        for _dtype, named_tensors in named_tensors_by_dtypes.items():
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
             metadata = flattened_tensor_bucket.get_metadata()
             flattened_tensor_data = {

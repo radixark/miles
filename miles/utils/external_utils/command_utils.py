@@ -98,10 +98,12 @@ def execute_train(
     train_script: str = "train.py",
     before_ray_job_submit=None,
     extra_env_vars=None,
-    config: ExecuteTrainConfig = ExecuteTrainConfig(),
+    config: Optional[ExecuteTrainConfig] = None,
 ):
     if extra_env_vars is None:
         extra_env_vars = {}
+    if config is None:
+        config = ExecuteTrainConfig()
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 

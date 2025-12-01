@@ -4,8 +4,8 @@ from typing import Any, Dict, List
 
 try:
     from jinja2 import Template
-except ImportError:
-    raise ImportError("Jinja2 is required. Please install it with: pip install jinja2")
+except ImportError as e:
+    raise ImportError("Jinja2 is required. Please install it with: pip install jinja2") from e
 
 from miles.rollout.sglang_rollout import GenerateState
 from miles.utils.http_utils import post
@@ -14,8 +14,8 @@ from miles.utils.types import Sample
 # Import reward models
 try:
     from miles.rollout.rm_hub.math_dapo_utils import compute_score as math_dapo_compute_score
-except ImportError:
-    raise ImportError("MathDapo is not installed")
+except ImportError as e:
+    raise ImportError("MathDapo is not installed") from e
 
 # Import tool sandbox functionality
 from tool_sandbox import SEMAPHORE, TOOL_CONFIGS, tool_registry
