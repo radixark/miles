@@ -29,6 +29,7 @@ from .cp_utils import slice_with_cp
 from .data import DataIterator, get_batch
 from .loss import loss_function
 from .model_provider import get_model_provider_func
+from ...utils.sanity_check_utils import WeightChangeChecker
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +327,7 @@ def train_one_step(
     args = get_args()
 
     if args.check_train_weight_change:
-        TODO
+        weight_change_checker = WeightChangeChecker()
 
     # Set grad to zero.
     for model_chunk in model:
@@ -484,7 +485,7 @@ def train_one_step(
     optimizer.zero_grad()
 
     if args.check_train_weight_change:
-        TODO
+        weight_change_checker.finalize()
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         # Average loss across microbatches.
