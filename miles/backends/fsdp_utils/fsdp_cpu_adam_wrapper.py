@@ -37,8 +37,8 @@ class FSDPCPUAdamWrapper:
             cpu_param = param_data.contiguous().to(device="cpu", dtype=torch.float32, non_blocking=True)
             cpu_param.requires_grad_(True)
 
-            assert cpu_param.is_contiguous(), f"CPU param must be contiguous for AVX"
-            assert cpu_param.dtype == torch.float32, f"CPU param must be FP32 for DeepSpeed"
+            assert cpu_param.is_contiguous(), "CPU param must be contiguous for AVX"
+            assert cpu_param.dtype == torch.float32, "CPU param must be FP32 for DeepSpeed"
 
             self.cpu_params.append(cpu_param)
 
