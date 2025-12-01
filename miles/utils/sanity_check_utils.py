@@ -17,13 +17,14 @@ class WeightChangeChecker:
         initial_state = self._initial_state
         final_state = self._snapshot(self._args, self._model)
         assert set(initial_state.keys()) == set(final_state.keys())
-        print(f"{final_state=}")
 
         all_tensor_names = list(initial_state)
         unchanged_tensor_names = [name for name in all_tensor_names if initial_state[name] == final_state[name]]
         changed_tensor_names = sorted(list(set(all_tensor_names) - set(unchanged_tensor_names)))
 
-        assert len(unchanged_tensor_names) == 0, f"{unchanged_tensor_names=} {changed_tensor_names=}"
+        assert (
+            len(unchanged_tensor_names) == 0
+        ), f"{unchanged_tensor_names=} {changed_tensor_names=} {initial_state=} {final_state=}"
 
         logger.info(f"WeightChangeChecker passed ({len(unchanged_tensor_names)=}, {len(changed_tensor_names)=})")
 
