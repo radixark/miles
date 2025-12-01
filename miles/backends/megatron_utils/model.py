@@ -327,7 +327,7 @@ def train_one_step(
     args = get_args()
 
     if args.check_train_weight_change:
-        weight_change_checker = WeightChangeChecker(model)
+        weight_change_checker = WeightChangeChecker(args, model)
 
     # Set grad to zero.
     for model_chunk in model:
