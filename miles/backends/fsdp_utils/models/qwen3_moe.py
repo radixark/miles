@@ -1,5 +1,3 @@
-from typing import List, Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,8 +17,8 @@ def fused_experts_impl(
     w2: torch.Tensor,
     topk_weights: torch.Tensor,
     topk_ids: torch.Tensor,
-    b1: Optional[torch.Tensor] = None,
-    b2: Optional[torch.Tensor] = None,
+    b1: torch.Tensor | None = None,
+    b2: torch.Tensor | None = None,
     inplace: bool = True,
     activation: str = "silu",
     apply_router_weight_on_input: bool = False,
@@ -29,22 +27,22 @@ def fused_experts_impl(
     use_int8_w8a16: bool = False,
     use_int4_w4a16: bool = False,
     per_channel_quant: bool = False,
-    w1_scale: Optional[torch.Tensor] = None,
-    w2_scale: Optional[torch.Tensor] = None,
-    w1_zp: Optional[torch.Tensor] = None,
-    w2_zp: Optional[torch.Tensor] = None,
-    a1_scale: Optional[torch.Tensor] = None,
-    a2_scale: Optional[torch.Tensor] = None,
-    block_shape: Optional[List[int]] = None,
+    w1_scale: torch.Tensor | None = None,
+    w2_scale: torch.Tensor | None = None,
+    w1_zp: torch.Tensor | None = None,
+    w2_zp: torch.Tensor | None = None,
+    a1_scale: torch.Tensor | None = None,
+    a2_scale: torch.Tensor | None = None,
+    block_shape: list[int] | None = None,
     no_combine: bool = False,
-    routed_scaling_factor: Optional[float] = None,
-    gemm1_alpha: Optional[float] = None,
-    gemm1_limit: Optional[float] = None,
+    routed_scaling_factor: float | None = None,
+    gemm1_alpha: float | None = None,
+    gemm1_limit: float | None = None,
     filter_expert: bool = True,
 ):
     padded_size = 0
 
-    assert hidden_states.shape[1] == w1.shape[2] - padded_size, f"Hidden size mismatch"
+    assert hidden_states.shape[1] == w1.shape[2] - padded_size, "Hidden size mismatch"
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
     assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
     assert w1.is_contiguous(), "Expert weights1 must be contiguous"

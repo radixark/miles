@@ -3,7 +3,6 @@ import os
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
-from typing import Dict, Optional
 
 import ray
 import torch
@@ -50,7 +49,7 @@ class MegatronTrainRayActor(TrainRayActor):
         args: Namespace,
         role: str,
         with_ref: bool = False,
-    ) -> Optional[int]:
+    ) -> int | None:
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref)
@@ -190,7 +189,10 @@ class MegatronTrainRayActor(TrainRayActor):
                     dtype=torch.float32,
                 )
                 for log_prob, total_length, response_length in zip(
-                    rollout_data["rollout_log_probs"], rollout_data["total_lengths"], rollout_data["response_lengths"]
+                    rollout_data["rollout_log_probs"],
+                    rollout_data["total_lengths"],
+                    rollout_data["response_lengths"],
+                    strict=False,
                 )
             ]
         if "rollout_routed_experts" in rollout_data:
@@ -233,7 +235,7 @@ class MegatronTrainRayActor(TrainRayActor):
             rollout_routed_experts = batch["rollout_routed_experts"]
             tokens = batch["tokens"]
             assert len(rollout_routed_experts) == len(tokens)
-            for a, b in zip(rollout_routed_experts, tokens):
+            for a, b in zip(rollout_routed_experts, tokens, strict=False):
                 assert a.shape[0] == b.shape[0], f"{a.shape}, {b.shape}"
 
             # TODO: maybe extract a common process function for here and get_batch?
@@ -280,7 +282,7 @@ class MegatronTrainRayActor(TrainRayActor):
         data_iterator: list[DataIterator],
         num_microbatches: list[int],
         store_prefix: str = "",
-    ) -> Dict[str, list[torch.Tensor]]:
+    ) -> dict[str, list[torch.Tensor]]:
         self.weights_backuper.restore(model_tag)
 
         with timer(f"{store_prefix}log_probs"):
@@ -498,9 +500,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def connect_actor_critic(
         self,
-        actor_handle: Optional[ActorHandle] = None,
-        master_address: Optional[str] = None,
-        master_port: Optional[int] = None,
+        actor_handle: ActorHandle | None = None,
+        master_address: str | None = None,
+        master_port: int | None = None,
     ) -> None:
         if self.role == "actor":
             master_address = ray.util.get_node_ip_address()
