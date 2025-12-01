@@ -19,7 +19,9 @@ class WeightChangeChecker:
         assert set(initial_state.keys()) == set(final_state.keys())
 
         bad_names = [name for name in initial_state if initial_state[name] == final_state[name]]
-        assert len(bad_names) == 0, f"These tensors are not changed after training: {bad_names}. (All tensors: {list(final_state.keys())})"
+        assert (
+            len(bad_names) == 0
+        ), f"These tensors are not changed after training: {bad_names}. (All tensors: {list(final_state.keys())})"
 
         logger.info(f"WeightChangeChecker passed (total num tensors: {len(final_state)})")
 
