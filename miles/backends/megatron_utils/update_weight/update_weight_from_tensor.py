@@ -130,7 +130,7 @@ class UpdateWeightFromTensor:
         for name, param in megatron_local_weights.items():
             if ("experts" in name) and ("weight100" not in name):
                 continue
-            if ("layers20" not in name) and ("layers30" not in name):
+            if ("layers.20" not in name) and ("layers.30" not in name):
                 continue
             print(f"hi [{torch.distributed.get_rank()}] update_weights::megatron_local_weights {name=} {get_tensor_info(param)=}")
 
