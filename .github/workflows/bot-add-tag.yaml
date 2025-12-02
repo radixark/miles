@@ -24,12 +24,6 @@ jobs:
         contains(github.event.comment.body, '/tag-and-rerun-ci')
       )
     runs-on: ubuntu-latest
-    # steps:
-    # - name: Add lint wanted label
-    #   uses: actions-ecosystem/action-add-labels@v1
-    #   with:
-    #     github_token: ${{ secrets.GITHUB_TOKEN }}
-    #     labels: lint wanted
     steps:
       - name: Add label(s) before lint
         if: always()
@@ -40,8 +34,8 @@ jobs:
       - name: Check out Git repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.repository }}
+          ref: refs/pull/${{ github.event.issue.number }}/head    
           
       - name: Set up Python
         uses: actions/setup-python@v5
