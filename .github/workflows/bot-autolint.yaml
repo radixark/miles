@@ -1,7 +1,18 @@
 ---
 name: Auto Lint (triggered by "auto lint" label)
 on:
-    pull_request
+    pull_request:
+        types:
+            - opened
+            - edited
+            - closed
+            - reopened
+            - synchronize
+            - labeled
+            - unlabeled
+    issue_comment:
+        types:
+            - created
 
 # run only one unit test for a branch / tag.
 concurrency:
