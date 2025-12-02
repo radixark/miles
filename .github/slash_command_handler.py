@@ -71,8 +71,8 @@ def handle_tag_run_ci(gh_repo, pr, comment, user_perms, react_on_success=True):
     Handles the /tag-run-ci-label command.
     Returns True if action was taken, False otherwise.
     """
-    if not user_perms.get("can_tag_run_ci_label"lint_label False):
-        print("Permission denied: can_tag_run_ci_label lint_label false.")
+    if not user_perms.get("can_tag_run_ci_label", False):
+        print("Permission denied: can_tag_run_ci_label is false.")
         return False
 
     print("Permission granted. Adding 'run-ci' label.")
