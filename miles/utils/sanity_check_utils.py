@@ -1,8 +1,7 @@
-import torch
 import logging
-from typing import Mapping, Callable
+from collections.abc import Callable, Mapping
 
-from miles.backends.megatron_utils.update_weight.common import named_params_and_buffers
+import torch
 
 from miles.utils.tensor_backper import compute_hash_tensor
 
