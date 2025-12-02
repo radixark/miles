@@ -103,10 +103,10 @@ class _TensorBackuperNoop(TensorBackuper):
 
 
 def _compute_hash_dict(tensors: dict[str, torch.Tensor]):
-    return {k: compute_hash_tensor(v) for k, v in tensors.items()}
+    return {k: _compute_hash_tensor(v) for k, v in tensors.items()}
 
 
-def compute_hash_tensor(x: torch.Tensor):
+def _compute_hash_tensor(x: torch.Tensor):
     # Not a real/good hash, but pretty fast
     # TODO may improve
     x = x.contiguous()

@@ -1,9 +1,8 @@
+import hashlib
 import logging
 from collections.abc import Callable, Mapping
 
 import torch
-
-from miles.utils.tensor_backper import compute_hash_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ class WeightChangeChecker:
 
 
 def _snapshot(weights_dict: Mapping[str, torch.Tensor]):
-    return {name: compute_hash_tensor(param) for name, param in weights_dict.items()}
+    return {name: _compute_hash_tensor_slow(param) for name, param in weights_dict.items()}
 
 
 def _check(state_a: dict[str, int], state_b: dict[str, int]):
@@ -39,3 +38,10 @@ def _check(state_a: dict[str, int], state_b: dict[str, int]):
     # ), f"{unchanged_tensor_names=} {changed_tensor_names=} {state_a=} {state_b=}"
     # logger.info(f"WeightChangeChecker passed ({len(unchanged_tensor_names)=}, {len(changed_tensor_names)=})")
     print(f"hi {unchanged_tensor_names=} {changed_tensor_names=} {state_a=} {state_b=}")
+
+
+def _compute_hash_tensor_slow(x: torch.Tensor):
+    np_array = x.cpu().numpy()
+    byte_string = np_array.tobytes()
+    hash_object = hashlib.md5(byte_string)
+    return hash_object.hexdigest()
