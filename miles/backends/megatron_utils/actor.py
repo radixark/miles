@@ -26,6 +26,7 @@ from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
+from ...utils.sanity_check_utils import WeightChangeChecker
 from ...utils.tensor_backper import TensorBackuper
 from .checkpoint import load_checkpoint
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
@@ -138,6 +139,9 @@ class MegatronTrainRayActor(TrainRayActor):
             self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
 
         self.prof.on_init_end()
+
+        if args.check_train_weight_change:
+            self.weight_change_checker = WeightChangeChecker(args, model)
 
         return start_rollout_id
 
@@ -455,6 +459,9 @@ class MegatronTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
+            if args.check_train_weight_change:
+                self.weight_change_checker.step()
+
             print_memory("before update_weights")
             self.weight_updater.update_weights()
             print_memory("after update_weights")
