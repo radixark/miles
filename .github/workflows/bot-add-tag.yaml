@@ -36,7 +36,7 @@ jobs:
         with:
           repository: ${{ github.repository }}
           ref: refs/pull/${{ github.event.issue.number }}/head    
-          
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -58,7 +58,7 @@ jobs:
             git config --local user.name "GitHub Action"
             git add .
             git commit -m "[CI-Lint] Fix code style issues with pre-commit ${{ github.sha }}" -a
-            git push
+            git push origin HEAD:${{ github.event.issue.number }}
       
       - name: Remove label(s) after lint
         if: always()
