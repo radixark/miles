@@ -41,6 +41,9 @@ def _check(state_a: dict[str, int], state_b: dict[str, int]):
 
 
 def _compute_hash_tensor_slow(x: torch.Tensor):
+    x = x.contiguous()
+    x = x.view(-1)
+    x = x.view(torch.uint8)
     np_array = x.cpu().numpy()
     byte_string = np_array.tobytes()
     hash_object = hashlib.md5(byte_string)
