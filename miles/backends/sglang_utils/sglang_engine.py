@@ -6,7 +6,6 @@ import time
 import requests
 import sglang_router
 from packaging.version import parse
-from sglang.srt.entrypoints.http_server import launch_server
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
@@ -31,6 +30,8 @@ def get_base_gpu_id(args, rank):
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
+    from sglang.srt.entrypoints.http_server import launch_server
+
     server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
