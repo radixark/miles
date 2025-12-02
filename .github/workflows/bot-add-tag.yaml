@@ -1,5 +1,6 @@
 ---
-name: Auto Tag
+name: Slash Command Handler
+
 on:
   issue_comment:
     types: [created, edited]
@@ -10,24 +11,19 @@ permissions:
   actions: write       # Required to rerun workflows
   issues: write        # Required for comment reactions in some contexts
 
-# run only one unit test for a branch / tag.
-concurrency:
-    group: bot-add-tag-${{ github.ref }}
-    cancel-in-progress: true
-
 jobs:
-    add-label-by-comment:
-        # if: contains(github.event.comment.body, '/tag-run-lint')
-        if: >
-          github.event.issue.pull_request &&
-          (contains(github.event.comment.body, '/tag-run-lint') ||
-           contains(github.event.comment.body, '/tag-and-rerun-ci'))
-        runs-on: ubuntu-latest
-        permissions:
-            pull-requests: write
-        steps:
-            - name: Add lint wanted label
-              uses: actions-ecosystem/action-add-labels@v1
-              with:
-                  github_token: ${{ secrets.GITHUB_TOKEN }}
-                  labels: lint wanted
+  slash_command:
+    # Only run if it is a PR and the comment starts with a recognized command
+    if: >
+      github.event.issue.pull_request &&
+      (contains(github.event.comment.body, '/tag-run-ci-label') ||
+       contains(github.event.comment.body, '/tag-run-lint') ||
+       contains(github.event.comment.body, '/rerun-failed-ci') ||
+       contains(github.event.comment.body, '/tag-and-rerun-ci'))
+    runs-on: ubuntu-latest
+    steps:
+    - name: Add lint wanted label
+      uses: actions-ecosystem/action-add-labels@v1
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        labels: lint wanted
