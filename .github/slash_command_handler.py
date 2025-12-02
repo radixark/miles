@@ -1,10 +1,14 @@
-# reference from SGLang 
+# reference from SGLang
 #   https://github.com/sgl-project/sglang/blob/main/scripts/ci/slash_command_handler.py
 import json
 import os
 import sys
 
 from github import Auth, Github
+
+DEFAULT_PERMISSIONS = {
+    "can_tag_run_lint_label": True,
+}
 
 # Configuration
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
@@ -27,16 +31,16 @@ def load_permissions(user_login):
         print(f"Loading permissions from {PERMISSIONS_FILE_PATH}...")
         if not os.path.exists(PERMISSIONS_FILE_PATH):
             print(f"Error: Permissions file not found at {PERMISSIONS_FILE_PATH}")
-            return None
+            return DEFAULT_PERMISSIONS
 
-        with open(PERMISSIONS_FILE_PATH, "r") as f:
+        with open(PERMISSIONS_FILE_PATH) as f:
             data = json.load(f)
 
         user_perms = data.get(user_login)
 
         if not user_perms:
             print(f"User '{user_login}' not found in permissions file.")
-            return None
+            return DEFAULT_PERMISSIONS
 
         return user_perms
 
@@ -67,8 +71,8 @@ def handle_tag_run_ci(gh_repo, pr, comment, user_perms, react_on_success=True):
     Handles the /tag-run-ci-label command.
     Returns True if action was taken, False otherwise.
     """
-    if not user_perms.get("can_tag_run_ci_label", False):
-        print("Permission denied: can_tag_run_ci_label is false.")
+    if not user_perms.get("can_tag_run_ci_label"lint_label False):
+        print("Permission denied: can_tag_run_ci_label lint_label false.")
         return False
 
     print("Permission granted. Adding 'run-ci' label.")
@@ -159,8 +163,8 @@ def main():
     repo = g.get_repo(repo_name)
     pr = repo.get_pull(pr_number)
     comment = repo.get_issue(pr_number).get_comment(comment_id)
-    
-    if "/tag-run-lint"  in comment.body.strip().lower():
+
+    if "/tag-run-lint" in comment.body.strip().lower():
         handle_tag_run_lint(repo, pr, comment, user_perms)
 
     # 4. Parse Command and Execute
@@ -176,12 +180,8 @@ def main():
         # Perform both actions, but suppress individual reactions
         print("Processing combined command: /tag-and-rerun-ci")
 
-        tagged = handle_tag_run_ci(
-            repo, pr, comment, user_perms, react_on_success=False
-        )
-        rerun = handle_rerun_failed_ci(
-            repo, pr, comment, user_perms, react_on_success=False
-        )
+        tagged = handle_tag_run_ci(repo, pr, comment, user_perms, react_on_success=False)
+        rerun = handle_rerun_failed_ci(repo, pr, comment, user_perms, react_on_success=False)
 
         # If at least one action was successful, add the reaction here
         if tagged or rerun:
