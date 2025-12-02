@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
     lint-by-label:
-        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'lint wanted')
+        if: contains(github.event.pull_request.labels.*.name, 'lint wanted')
         runs-on: ubuntu-latest
         permissions:
             contents: write
