@@ -4,6 +4,12 @@ on:
   issue_comment:
     types: [created, edited]
 
+permissions:
+  contents: read
+  pull-requests: write # Required to add labels and reactions
+  actions: write       # Required to rerun workflows
+  issues: write        # Required for comment reactions in some contexts
+
 # run only one unit test for a branch / tag.
 concurrency:
     group: bot-add-tag-${{ github.ref }}
