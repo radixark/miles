@@ -1,4 +1,6 @@
+import torch
 import logging
+from typing import Mapping, Callable
 
 from miles.backends.megatron_utils.update_weight.common import named_params_and_buffers
 
@@ -8,14 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 class WeightChangeChecker:
-    def __init__(self, args, model):
-        self._args = args
-        self._model = model
-        self._initial_state = self._snapshot(self._args, self._model)
+    def __init__(self, weights_getter: Callable[[], Mapping[str, torch.Tensor]]):
+        self.weights_getter = weights_getter
+        self.last_state = None
 
-    def finalize(self):
-        initial_state = self._initial_state
-        final_state = self._snapshot(self._args, self._model)
+    def step(self):
+        curr_state = _snapshot(self.weights_getter())
         assert set(initial_state.keys()) == set(final_state.keys())
 
         all_tensor_names = list(initial_state)
@@ -31,9 +31,6 @@ class WeightChangeChecker:
         # logger.info(f"WeightChangeChecker passed ({len(unchanged_tensor_names)=}, {len(changed_tensor_names)=})")
         print(f"hi {unchanged_tensor_names=} {changed_tensor_names=} {initial_state=} {final_state=}")
 
-    @staticmethod
-    def _snapshot(args, model):
-        return {
-            name: compute_hash_tensor(param)
-            for name, param in named_params_and_buffers(args, model, convert_to_global_name=False)
-        }
+
+def _snapshot(weights_dict: dict[str, torch.Tensor]):
+    return {name: compute_hash_tensor(param) for name, param in weights_dict.items()}

@@ -141,7 +141,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self.prof.on_init_end()
 
         if args.check_train_weight_change:
-            self.weight_change_checker = WeightChangeChecker(args, model)
+            self.weight_change_checker = WeightChangeChecker(weights_getter=self.weight_updater.weights_getter)
 
         return start_rollout_id
 
@@ -459,7 +459,7 @@ class MegatronTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
-            if args.check_train_weight_change:
+            if self.args.check_train_weight_change:
                 self.weight_change_checker.step()
 
             print_memory("before update_weights")
