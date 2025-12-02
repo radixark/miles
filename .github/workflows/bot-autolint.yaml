@@ -1,5 +1,5 @@
 ---
-name: Auto Lint
+name: Auto Lint (triggered by "auto lint" label)
 on:
     pull_request:
         types:
