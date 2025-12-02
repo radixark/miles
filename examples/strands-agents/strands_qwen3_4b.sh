@@ -1,9 +1,6 @@
 #!/bin/bash
 
-# Example launcher that reuses the Qwen3-4B recipe but delegates evaluation to an
-# external Nemo Skills server via the eval_delegate_rollout wrapper.
-
-# Clean up any stale processes from a previous run.
+# for rerun the task
 pkill -9 sglang
 sleep 3
 ray stop --force
@@ -15,9 +12,7 @@ pkill -9 python
 
 set -ex
 
-SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"miles-openai-model"}
-
-
+# will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -28,28 +23,26 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
-source "${REPO_ROOT}/scripts/models/qwen3-32B.sh"
+source "/root/miles/scripts/models/qwen3-4B.sh"
 
-# Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/multi_tasks.yaml"}
+# Generate timestamp suffix for save path
+TIMESTAMP_SUFFIX=$(date +%Y%m%d_%H%M%S)
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/shared/Qwen3-32B
-   --ref-load /root/shared/Qwen3-32B_torch_dist
-   --load /root/shared/Qwen3-32B_miles/
-   --save /root/shared/Qwen3-32B_miles/
+   --hf-checkpoint /root/models/Qwen/Qwen3-4B-Instruct-2507
+   --ref-load /root/models/Qwen/Qwen3-4B-Instruct-2507_torch_dist
+   # --load Qwen3-4B-Instruct-2507_strands_dapo_1129
+   --save /root/models/Qwen/Qwen3-4B-Instruct-2507_strands_dapo_${TIMESTAMP_SUFFIX}
    --save-interval 20
+   --rotary-base 5000000
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/data/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
-   --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
+   --reward-key score
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
@@ -61,13 +54,15 @@ ROLLOUT_ARGS=(
 )
 
 EVAL_ARGS=(
-   --eval-interval 5
-   --eval-config "${EVAL_CONFIG_PATH}"
-   --eval-function-path examples.eval.eval_delegate_rollout.generate_rollout
+   --eval-interval 20
+   --eval-prompt-data aime  /root/data/aime-2024/aime-2024.jsonl
+   --n-samples-per-eval-prompt 16
+   --eval-max-response-len 16384
+   --eval-top-p 0.7
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 8
+   --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -78,6 +73,7 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
 
+   # --micro-batch-size 1
    --use-dynamic-batch-size
    --max-tokens-per-gpu 9216
 )
@@ -90,10 +86,6 @@ GRPO_ARGS=(
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
-
-   --optimizer-cpu-offload
-   --overlap-cpu-optimizer-d2h-h2d
-   --use-precision-aware-optimizer
 )
 
 OPTIMIZER_ARGS=(
@@ -107,32 +99,43 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-eval
-   --wandb-group qwen3-32b-eval
+   --wandb-project strands-miles
+   --wandb-group Qwen3-4B-Instruct-2507-strands-dapo
    --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
+   --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
-   # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
+   --sglang-tool-call-parser qwen  # Enable tool call parsing for Strands Agent
 )
 
 MISC_ARGS=(
+   # default dropout in megatron is 0.1
    --attention-dropout 0.0
    --hidden-dropout 0.0
+   # should be good for model performance
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
+   # need to comment this when using model with MLA
    --attention-backend flash
 )
 
+CUSTOM_ARGS=(
+   --custom-generate-function-path examples.strands-agents.generate_with_strands.generate
+   --custom-rm-path examples.strands-agents.generate_with_strands.reward_func
+)
+
+# launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
+# Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
 }"
 
@@ -151,4 +154,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   ${CUSTOM_ARGS[@]}

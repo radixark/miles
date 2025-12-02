@@ -2,7 +2,7 @@ import argparse
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any
 
 import yaml
 from sglang_router.launch_router import RouterArgs
@@ -444,6 +444,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
+            parser.add_argument(
+                "--data-source-path",
+                type=str,
+                default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+                help="The data source class for rollout data.",
+            )
             parser.add_argument(
                 "--prompt-data",
                 type=str,
@@ -1167,6 +1173,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=None,
             )
+            parser.add_argument(
+                "--ci-save-grad-norm",
+                type=str,
+                default=None,
+            )
+            parser.add_argument(
+                "--ci-load-grad-norm",
+                type=str,
+                default=None,
+            )
             return parser
 
         def add_sglang_tp_size():
@@ -1209,7 +1225,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Path to the YAML config for custom function arguments.",
             )
             parser.add_argument("--padded-vocab-size", type=int, default=None)
-        except:
+        except argparse.ArgumentError:
             pass
 
         return parser
@@ -1284,7 +1300,7 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     Build evaluation dataset configurations from either --eval-config or --eval-prompt-data.
     """
     datasets_config = []
-    defaults: Dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
 
     if args.eval_config:
         from omegaconf import OmegaConf
@@ -1500,7 +1516,7 @@ def miles_validate_args(args):
         args.use_routing_replay = True
 
     if args.custom_config_path:
-        with open(args.custom_config_path, "r") as f:
+        with open(args.custom_config_path) as f:
             data = yaml.safe_load(f) or {}
         for k, v in data.items():
             if hasattr(args, k):
@@ -1531,7 +1547,8 @@ def miles_validate_args(args):
 
 
 def hf_validate_args(args, hf_config):
-    equal = lambda x, y: x == y
+    def equal(x, y):
+        return x == y
 
     errors = []
 
@@ -1552,10 +1569,10 @@ def hf_validate_args(args, hf_config):
                 )
 
     if len(errors) > 0:
-        raise AssertionError(f"hf_validate_args failed: " + "; ".join(errors))
+        raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
 
 
-def _validate_and_update_megatron_args_from_hf(args, args_from_hf_config: Dict[str, Any]):
+def _validate_and_update_megatron_args_from_hf(args, args_from_hf_config: dict[str, Any]):
     for key, value in args_from_hf_config.items():
         if hasattr(args, key) and getattr(args, key) != value:
             raise ValueError(

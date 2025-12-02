@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 import typer
 
@@ -11,8 +11,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
     model_name: str = "Qwen3-4B"
-    megatron_model_type: Optional[str] = None
-    num_gpus_per_node: Optional[int] = None
+    megatron_model_type: str | None = None
+    num_gpus_per_node: int | None = None
     hardware: Literal["H100", "GB200", "GB300"] = "H100"
     extra_args: str = ""
     multi_eval: bool = False
@@ -160,7 +160,7 @@ eval:
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = f"--rollout-num-gpus-per-engine 1 " "--sglang-chunked-prefill-size 4096 "
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-chunked-prefill-size 4096 "
 
     match args.train_backend:
         case "fsdp":
@@ -171,7 +171,7 @@ eval:
                 f"--update-weight-buffer-size {512 * 1024 * 1024} "  # 512MB
                 """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
             )
-            sglang_args += f"--sglang-mem-fraction-static 0.75 "
+            sglang_args += "--sglang-mem-fraction-static 0.75 "
             perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 32768 "
 
         case "megatron":
@@ -196,7 +196,7 @@ eval:
                 "--train-memory-margin-bytes 3221225472 "
             )
             # TODO improve
-            sglang_args += f"--sglang-mem-fraction-static 0.7 "
+            sglang_args += "--sglang-mem-fraction-static 0.7 "
             perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
 
         case _:

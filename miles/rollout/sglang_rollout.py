@@ -5,7 +5,8 @@ import io
 import logging
 from argparse import Namespace
 from collections import defaultdict
-from typing import Any, Callable, Optional, Union
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import sglang_router
@@ -214,10 +215,10 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
 async def generate_and_rm(
     args: Namespace,
-    sample: Union[Sample, list[Sample]],
+    sample: Sample | list[Sample],
     sampling_params: dict[str, Any],
     evaluation: bool = False,
-) -> Union[Sample, list[Sample]]:
+) -> Sample | list[Sample]:
     # For samples with existing response, check if they're complete
     if sample.status == Sample.Status.COMPLETED or sample.status == Sample.Status.TRUNCATED:
         assert sample.response is not None
@@ -252,7 +253,7 @@ async def generate_and_rm(
         # for multi agent system, the reward of some sample is calculated during generation.
         samples_need_reward = [sample for sample in samples if sample.reward is None]
         rewards = await batched_async_rm(args, samples_need_reward)
-        for sample, reward in zip(samples_need_reward, rewards):
+        for sample, reward in zip(samples_need_reward, rewards, strict=False):
             sample.reward = reward
         return samples
     else:
@@ -286,7 +287,7 @@ async def generate_and_rm_group(
     # for the rm that need the whole group, we will not do the rm here
     if not state.aborted and args.group_rm:
         rewards = await batched_async_rm(args, group)
-        for sample, reward in zip(group, rewards):
+        for sample, reward in zip(group, rewards, strict=False):
             sample.reward = reward
 
     return group
@@ -434,7 +435,7 @@ class _MetricGatherer:
     def __init__(self):
         self._dynamic_filter_drop_reason_count = defaultdict(lambda: 0)
 
-    def on_dynamic_filter_drop(self, reason: Optional[str]):
+    def on_dynamic_filter_drop(self, reason: str | None):
         if not reason:
             return
         self._dynamic_filter_drop_reason_count[reason] += 1
@@ -561,7 +562,7 @@ async def eval_rollout_single_dataset(
     tasks = []
     # do multiple samples for eval prompts
     sample_index = 0
-    for i, prompt_sample in enumerate(dataset.samples):
+    for _i, prompt_sample in enumerate(dataset.samples):
         for j in range(n_samples_per_prompt):
             # use the same prompt for multiple samples
             sample = copy.deepcopy(prompt_sample)
@@ -615,7 +616,7 @@ async def eval_rollout_single_dataset(
 # TODO remove this temp function
 def generate_rollout(
     args: Namespace, rollout_id: int, data_buffer: Any, evaluation: bool = False
-) -> Union[RolloutFnTrainOutput, RolloutFnEvalOutput]:
+) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
     Args:

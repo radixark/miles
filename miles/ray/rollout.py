@@ -5,7 +5,7 @@ import random
 import time
 from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import numpy as np
 import ray
@@ -13,7 +13,6 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from miles.ray.rollout_data_source import RolloutDataSourceWithBuffer
 from miles.rollout.base_types import call_rollout_fn
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
@@ -50,7 +49,8 @@ class RolloutManager:
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         init_http_client(args)
 
-        self.data_source = RolloutDataSourceWithBuffer(args)
+        data_source_cls = load_function(self.args.data_source_path)
+        self.data_source = data_source_cls(args)
 
         self.generate_rollout = load_function(self.args.rollout_function_path)
         self.eval_generate_rollout = load_function(self.args.eval_function_path)
@@ -129,7 +129,7 @@ class RolloutManager:
     def offload(self):
         return ray.get([engine.release_memory_occupation.remote() for engine in self.rollout_engines])
 
-    def onload(self, tags: List[str] = None):
+    def onload(self, tags: list[str] = None):
         return ray.get([engine.resume_memory_occupation.remote(tags=tags) for engine in self.rollout_engines])
 
     def check_weights(self, action: str):
@@ -184,7 +184,7 @@ class RolloutManager:
 
             torch.save(dict(rollout_id=rollout_id, **dump_data), path)
 
-    def _post_process_rewards(self, samples: Union[list[Sample], list[list[Sample]]]):
+    def _post_process_rewards(self, samples: list[Sample] | list[list[Sample]]):
         if self.custom_reward_post_process_func is not None:
             return self.custom_reward_post_process_func(self.args, samples)
 
@@ -211,7 +211,7 @@ class RolloutManager:
 
         return raw_rewards, raw_rewards
 
-    def _convert_samples_to_train_data(self, samples: Union[list[Sample], list[list[Sample]]]):
+    def _convert_samples_to_train_data(self, samples: list[Sample] | list[list[Sample]]):
         """
         Convert inference generated samples to training data.
         """
@@ -393,7 +393,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
         # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
         num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
 
-        def get_addr_and_ports():
+        def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
             # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
             start_port = 15000
@@ -415,7 +415,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
 
             return addr, port
 
-        get_addr, get_port = get_addr_and_ports()
+        get_addr, get_port = get_addr_and_ports(engine)
 
         for i in range(num_engines_on_this_node):
             addr_and_ports[rank + i]["port"] = get_port()
@@ -484,7 +484,7 @@ def _start_router(args):
     logger.info(f"Router launched at {args.sglang_router_ip}:{args.sglang_router_port}")
 
 
-def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: Optional[Dict[str, Any]] = None):
+def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):
     log_dict = extra_metrics or {}
     for key in data.keys():
         rewards = data[key]["rewards"]
@@ -522,7 +522,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     if args.rollout_num_gpus:
         log_dict["perf/tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
     log_dict["perf/longest_sample_tokens_per_sec"] = max(response_lengths) / rollout_time
-    log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"rollout/")
+    log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
     logger.info(f"perf {rollout_id}: {log_dict}")
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
@@ -533,7 +533,7 @@ def _compute_metrics_from_samples(args, samples):
     response_lengths = [sample.effective_response_length for sample in samples]
 
     log_dict = {}
-    log_dict |= dict_add_prefix(compute_statistics(response_lengths), f"response_len/")
+    log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
@@ -542,12 +542,12 @@ def _compute_metrics_from_samples(args, samples):
     return log_dict
 
 
-def _compute_zero_std_metrics(args, all_samples: List[Sample]):
+def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     # only compute in GRPO-like algorithms where one prompt has multiple responses
     if args.advantage_estimator == "ppo":
         return {}
 
-    def _is_zero_std(samples: List[Sample]):
+    def _is_zero_std(samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
 
@@ -559,7 +559,7 @@ def _compute_zero_std_metrics(args, all_samples: List[Sample]):
     return {f"zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
 
 
-def _compute_spec_metrics(args, all_samples: List[Sample]):
+def _compute_spec_metrics(args, all_samples: list[Sample]):
     if args.sglang_speculative_algorithm is None:
         return {}
     num_samples = len(all_samples)
@@ -573,7 +573,7 @@ def _compute_spec_metrics(args, all_samples: List[Sample]):
     return metrics
 
 
-def _compute_reward_cat_metrics(args, all_samples: List[Sample]):
+def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
     reward_cat_key = args.log_reward_category
     if reward_cat_key is None:
         return {}

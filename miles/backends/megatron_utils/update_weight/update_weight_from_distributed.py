@@ -1,8 +1,7 @@
 import socket
 import time
 from argparse import Namespace
-from collections.abc import Mapping, Sequence
-from typing import Callable
+from collections.abc import Callable, Mapping, Sequence
 
 import ray
 import torch
@@ -180,7 +179,7 @@ class UpdateWeightFromDistributed:
 
         all_gathered_params = [[] for _ in range(mpu.get_expert_model_parallel_world_size())]
         handles = []
-        for i, (name, param) in enumerate(named_tensors):
+        for i, (_name, param) in enumerate(named_tensors):
             params = [
                 torch.empty_like(param.data, device=torch.cuda.current_device())
                 for _ in range(mpu.get_expert_model_parallel_world_size())
