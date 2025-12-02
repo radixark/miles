@@ -248,9 +248,7 @@ def train(args: ScriptArgs):
     )
     sglang_extra_env_vars = {}
     if U.GENERATION_HARDWARE[args.hardware] == "Blackwell":
-        sglang_args += (
-            "--sglang-attention-backend trtllm_mha "
-        )
+        sglang_args += "--sglang-attention-backend trtllm_mha "
     if args.rollout_fp8:
         sglang_decode_max_bs = 256
         sglang_attn_tp_size = min(8, sglang_world_size)
