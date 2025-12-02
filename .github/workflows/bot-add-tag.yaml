@@ -24,8 +24,7 @@ jobs:
         if: |
             github.event_name == 'issue_comment' && 
             github.event.issue.pull_request && 
-            startsWith(github.event.comment.body, '/tag-run-lint') &&
-            (github.actor == github.event.issue.user.login || contains(fromJson('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+            startsWith(github.event.comment.body, '/tag-run-lint')
         runs-on: ubuntu-latest
         permissions:
             pull-requests: write
