@@ -16,9 +16,12 @@ class WeightChangeChecker:
 
     def step(self):
         curr_state = _snapshot(self.weights_getter())
+        if self.last_state is not None:
+            _check(self.last_state, curr_state)
+        self.last_state = curr_state
 
 
-def _snapshot(weights_dict: dict[str, torch.Tensor]):
+def _snapshot(weights_dict: Mapping[str, torch.Tensor]):
     return {name: compute_hash_tensor(param) for name, param in weights_dict.items()}
 
 
