@@ -307,9 +307,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
         urls = [worker["url"] for worker in response["workers"]]
 
-    for url in urls:
-        logger.info(f"Abort request for {url}")
-        await post(f"{url}/abort_request", {"abort_all": True})
+    logger.info(f"Abort request for {urls}")
+    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
 
     # make sure all the pending tasks are finished
     count = 0
