@@ -4,6 +4,8 @@ from collections.abc import Callable, Mapping
 
 import torch
 
+from sglang.srt.debug_utils.dumper import get_tensor_info
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,10 +43,15 @@ def _check(state_a: dict[str, int], state_b: dict[str, int]):
 
 
 def _compute_hash_tensor_slow(x: torch.Tensor):
+    # TODO
+    info = get_tensor_info(x)
     x = x.contiguous()
     x = x.view(-1)
     x = x.view(torch.uint8)
     np_array = x.cpu().numpy()
     byte_string = np_array.tobytes()
     hash_object = hashlib.md5(byte_string)
-    return hash_object.hexdigest()
+    # TODO
+    # TODO
+    # TODO
+    return hash_object.hexdigest() + ";" + info
