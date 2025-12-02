@@ -445,6 +445,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             parser.add_argument(
+                "--data-source-path",
+                type=str,
+                default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+                help="The data source class for rollout data.",
+            )
+            parser.add_argument(
                 "--prompt-data",
                 type=str,
                 default=None,
@@ -1163,6 +1169,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ci-metric-checker-threshold",
                 type=float,
+                default=None,
+            )
+            parser.add_argument(
+                "--ci-save-grad-norm",
+                type=str,
+                default=None,
+            )
+            parser.add_argument(
+                "--ci-load-grad-norm",
+                type=str,
                 default=None,
             )
             return parser
