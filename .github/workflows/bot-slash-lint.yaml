@@ -84,12 +84,18 @@ jobs:
             const { data: reactions } = await github.request('GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: commentId
+              comment_id: commentId,
+              headers: { accept: 'application/vnd.github.squirrel-girl-preview+json' }
             });
             // Find the 'eyes' reaction added by this workflow bot
             const target = reactions.find(r => r.content === 'eyes' && r.user && r.user.login === 'github-actions[bot]');
             if (target) {
-              await github.request('DELETE /reactions/{reaction_id}', {
-                reaction_id: target.id
-              });
+              try {
+                await github.request('DELETE /reactions/{reaction_id}', {
+                  reaction_id: target.id,
+                  headers: { accept: 'application/vnd.github.squirrel-girl-preview+json' }
+                });
+              } catch (err) {
+                core.warning(`Failed to delete reaction ${target.id}: ${err.message}`);
+              }
             }
