@@ -425,62 +425,6 @@ def policy_loss_function(
     else:
         old_log_probs = torch.cat(old_log_probs, dim=0)
         log_probs = torch.cat(log_probs, dim=0)
-
-        if old_log_probs.shape != log_probs.shape:
-            # Align per-sample lengths using response lengths or loss masks before subtraction.
-            aligned_old: list[torch.Tensor] = []
-            aligned_new: list[torch.Tensor] = []
-            offset = 0
-            loss_masks = batch.get("loss_masks", None)
-
-            for idx, response_length in enumerate(response_lengths):
-                length = int(response_length)
-
-                if loss_masks and idx < len(loss_masks) and loss_masks[idx] is not None:
-                    # loss_mask already accounts for variable-length responses
-                    length = int(loss_masks[idx].sum().item())
-
-                if length <= 0:
-                    continue
-
-                old_slice = old_log_probs[offset : offset + length]
-                new_slice = log_probs[offset : offset + length]
-
-                # Trim/pad slices to the target length
-                if new_slice.shape[0] < length:
-                    pad = torch.zeros(
-                        length - new_slice.shape[0],
-                        dtype=new_slice.dtype,
-                        device=new_slice.device,
-                    )
-                    new_slice = torch.cat([pad, new_slice], dim=0)
-                elif new_slice.shape[0] > length:
-                    new_slice = new_slice[-length:]
-
-                if old_slice.shape[0] < length:
-                    pad = torch.zeros(
-                        length - old_slice.shape[0],
-                        dtype=old_slice.dtype,
-                        device=old_slice.device,
-                    )
-                    old_slice = torch.cat([pad, old_slice], dim=0)
-                elif old_slice.shape[0] > length:
-                    old_slice = old_slice[-length:]
-
-                aligned_old.append(old_slice)
-                aligned_new.append(new_slice)
-                offset += length
-
-            if aligned_old and aligned_new:
-                old_log_probs = torch.cat(aligned_old, dim=0)
-                log_probs = torch.cat(aligned_new, dim=0)
-            else:
-                logger.warning(
-                    "Failed to align log_probs shapes (old=%s, new=%s); proceeding with original tensors",
-                    old_log_probs.shape,
-                    log_probs.shape,
-                )
-
         ppo_kl = old_log_probs - log_probs
 
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
