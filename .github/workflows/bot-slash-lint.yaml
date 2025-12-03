@@ -1,4 +1,3 @@
----
 name: Slash Command Handler
 
 on:
@@ -23,11 +22,19 @@ jobs:
       )
     runs-on: ubuntu-latest
     steps:
-      - name: Add label(s) before lint
+      - name: React to command comment (ack)
         if: always()
-        uses: actions-ecosystem/action-add-labels@v1
+        uses: actions/github-script@v7
         with:
-            labels: lint wanted
+          script: |
+            const commentId = context.payload.comment.id;
+            // Add an eyes reaction to acknowledge the command
+            await github.request('POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              content: 'eyes'
+            });
 
       - name: Check out Git repository
         uses: actions/checkout@v4
@@ -66,9 +73,23 @@ jobs:
             git add .
             git commit -m "[CI-Lint] Fix code style issues with pre-commit ${{ github.sha }}" -a
             git push origin HEAD:refs/heads/${{ steps.get_branch.outputs.branch_name }}
-      
-      - name: Remove label(s) after lint
+
+      - name: Remove initial ack reaction
         if: always()
-        uses: actions-ecosystem/action-remove-labels@v1
+        uses: actions/github-script@v7
         with:
-            labels: lint wanted
+          script: |
+            const commentId = context.payload.comment.id;
+            // List reactions on the comment
+            const { data: reactions } = await github.request('GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId
+            });
+            // Find the 'eyes' reaction added by this workflow bot
+            const target = reactions.find(r => r.content === 'eyes' && r.user && r.user.login === 'github-actions[bot]');
+            if (target) {
+              await github.request('DELETE /reactions/{reaction_id}', {
+                reaction_id: target.id
+              });
+            }
