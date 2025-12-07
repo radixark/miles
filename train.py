@@ -70,6 +70,7 @@ def train(args):
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())
 
+        # Train step: internally handles debug_rollout_only mode
         if args.use_critic:
             critic_train_handle = critic_model.async_train(rollout_id, rollout_data_ref)
             if rollout_id >= args.num_critic_only_steps:
@@ -77,6 +78,7 @@ def train(args):
             ray.get(critic_train_handle)
         else:
             ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
+
 
         if args.save_interval is not None and (
             (rollout_id + 1) % args.save_interval == 0
@@ -88,6 +90,10 @@ def train(args):
                 critic_model.save_model(rollout_id)
             if args.rollout_global_dataset:
                 ray.get(rollout_manager.save.remote(rollout_id))
+            elif args.evolving_gym:
+                ray.get(rollout_manager.save.remote(rollout_id))
+            else :
+                assert False, "None of args.rollout_global_dataset, args.evolving_gym is set."
 
         offload_train()
         onload_rollout()

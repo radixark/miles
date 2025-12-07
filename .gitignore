@@ -177,6 +177,7 @@ settings.json
 .pypirc
 
 wandb/
+wandb_gpu_stats*
 outputs/
 local/
 **/rollout_data/
@@ -192,3 +193,8 @@ glm/
 _examples_synced/
 .env
 .DS_Store
+
+*gym_records*
+train_log.txt
+
+*@anthropic-ai*
