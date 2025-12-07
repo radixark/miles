@@ -312,6 +312,27 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
 
+        # Add length statistics for better monitoring
+        if response_lengths:
+            response_lengths_tensor = torch.tensor(response_lengths, dtype=torch.float32)
+            log_dict["rollout/response_lengths_mean"] = response_lengths_tensor.mean().item()
+            log_dict["rollout/response_lengths_max"] = response_lengths_tensor.max().item()
+            log_dict["rollout/response_lengths_min"] = response_lengths_tensor.min().item()
+
+        if total_lengths:
+            total_lengths_tensor = torch.tensor(total_lengths, dtype=torch.float32)
+            log_dict["rollout/total_lengths_mean"] = total_lengths_tensor.mean().item()
+            log_dict["rollout/total_lengths_max"] = total_lengths_tensor.max().item()
+            log_dict["rollout/total_lengths_min"] = total_lengths_tensor.min().item()
+
+            # Calculate prompt lengths (total - response)
+            if response_lengths and len(response_lengths) == len(total_lengths):
+                prompt_lengths = [total - response for total, response in zip(total_lengths, response_lengths)]
+                prompt_lengths_tensor = torch.tensor(prompt_lengths, dtype=torch.float32)
+                log_dict["rollout/prompt_lengths_mean"] = prompt_lengths_tensor.mean().item()
+                log_dict["rollout/prompt_lengths_max"] = prompt_lengths_tensor.max().item()
+                log_dict["rollout/prompt_lengths_min"] = prompt_lengths_tensor.min().item()
+
         for key, val in rollout_data.items():
             if key in [
                 "tokens",

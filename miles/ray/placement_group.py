@@ -155,6 +155,14 @@ def create_training_models(args, pgs, rollout_manager):
     actor_model.set_rollout_manager(rollout_manager)
     if args.rollout_global_dataset:
         ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
+    elif getattr(args, "evolving_gym", False):
+        detected_rollout_id = ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
+        # Update start_rollout_id for debug-rollout-only mode to continue from checkpoint
+        if detected_rollout_id is not None and getattr(args, "debug_rollout_only", False):
+            args.start_rollout_id = detected_rollout_id + 1
+            print(f"[DEBUG-ROLLOUT-ONLY] Resuming from rollout_id={args.start_rollout_id}")
+    else :
+        assert False, "None of args.rollout_global_dataset, args.evolving_gym is set."
 
     return actor_model, critic_model
 

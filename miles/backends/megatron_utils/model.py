@@ -450,6 +450,8 @@ def train_one_step(
     )
 
     valid_step = True
+    grad_clipfrac = 0.0  # Initialize grad_clipfrac
+
     if not getattr(args, "check_for_nan_in_loss_and_grad", True):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
@@ -464,6 +466,13 @@ def train_one_step(
     if valid_step:
         # Update parameters.
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+
+        # Calculate grad_clipfrac
+        if hasattr(args, 'clip_grad') and args.clip_grad > 0:
+            if isinstance(grad_norm, torch.Tensor):
+                grad_clipfrac = float(grad_norm.item() >= args.clip_grad)
+            else:
+                grad_clipfrac = float(grad_norm >= args.clip_grad)
 
         # Update learning rate.
         assert update_successful
@@ -491,6 +500,12 @@ def train_one_step(
         num_samples_or_tokens = values[0]
         for key, value in zip(keys, values[1:], strict=False):
             loss_reduced[key] = value * mpu.get_context_parallel_world_size() / num_samples_or_tokens
+
+        # Add grad_clipfrac to the loss_reduced dict
+        loss_reduced['grad_clipfrac'] = grad_clipfrac
+        print(f"loss: {loss_reduced}, grad_norm: {grad_norm}, grad_clipfrac: {grad_clipfrac}")
+        
+
         return loss_reduced, grad_norm
     return {}, grad_norm
 

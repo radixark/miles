@@ -87,7 +87,7 @@ ROLLOUT_ARGS=(
   --evolving-gym-initial-program "${INITIAL_PROGRAM}"
   --evolving-gym-evaluator-file "${EVALUATOR_FILE}"
   --evolving-gym-config-path "${CONFIG_YAML}"
-  --evolving-gym-max-concurrent-evals 16
+  --evolving-gym-max-concurrent-evals 128
   --evolving-gym-log-prompts
   --evolving-gym-record
   --evolving-gym-record-dir "${RECORD_PATH}"
@@ -120,7 +120,7 @@ PERF_ARGS=(
   --tensor-model-parallel-size 2
   --sequence-parallel
   --pipeline-model-parallel-size 1
-  --context-parallel-size 2
+  --context-parallel-size 1
   --expert-model-parallel-size 1
   --expert-tensor-parallel-size 1
 
@@ -129,7 +129,7 @@ PERF_ARGS=(
   --recompute-num-layers 1
 
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 2048
+  --max-tokens-per-gpu 9216
 )
 
 GRPO_ARGS=(
@@ -160,8 +160,7 @@ WANDB_ARGS=(
 
 SGLANG_ARGS=(
   --rollout-num-gpus-per-engine 1
-  --sglang-mem-fraction-static 0.8
-  --sglang-server-concurrency 256
+  --sglang-mem-fraction-static 0.7
 )
 
 MISC_ARGS=(
@@ -223,9 +222,10 @@ echo "RUNTIME_ENV_JSON = $RUNTIME_ENV_JSON"
 ray job submit --address="http://127.0.0.1:8265" \
   --runtime-env-json="${RUNTIME_ENV_JSON}" \
   -- python3 train.py \
+  --colocate \
   --actor-num-nodes 1 \
-  --actor-num-gpus-per-node 4 \
-  --rollout-num-gpus 4 \
+  --actor-num-gpus-per-node 8 \
+  --rollout-num-gpus 8 \
   ${MODEL_ARGS[@]} \
   ${CKPT_ARGS[@]} \
   ${ROLLOUT_ARGS[@]} \

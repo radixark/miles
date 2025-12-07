@@ -1189,6 +1189,101 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             temp_args, _ = temp_parser.parse_known_args()
             sglang_tp_size = temp_args.rollout_num_gpus_per_engine
             return sglang_tp_size
+        def add_custom_arguments(parser):
+            parser.add_argument(
+                "--evolving-gym",
+                action="store_true",
+                default=False,
+                help="Use  SingleTaskEvolvingGym as the rollout environment (mutually exclusive with global dataset).",
+            )
+            parser.add_argument(
+                "--evolving-gym-initial-program",
+                type=str,
+                default=None,
+                help="Path to initial program file for EvolvingGym.",
+            )
+            parser.add_argument(
+                "--evolving-gym-evaluator-file",
+                type=str,
+                default=None,
+                help="Path to evaluator file for EvolvingGym.",
+            )
+            parser.add_argument(
+                "--evolving-gym-config-path",
+                type=str,
+                default=None,
+                help="Path to config yaml for the gym.",
+            )
+            parser.add_argument(
+                "--evolving-gym-max-concurrent-evals",
+                type=int,
+                default=8,
+                help="Max concurrent evaluations inside EvolvingGym.",
+            )
+            parser.add_argument(
+                "--evolving-gym-log-prompts",
+                action="store_true",
+                default=True,
+                help="Whether to log prompts in EvolvingGym.",
+            )
+            parser.add_argument(
+                "--evolving-gym-record", action="store_true", default=False,
+                help="Enable EvolvingGym recorder and save per-rollout snapshots."
+            )
+            parser.add_argument(
+                "--evolving-gym-record-dir", type=str, default="./gym_output",
+                help="Directory to store EvolvingGym recorder outputs."
+            )
+            parser.add_argument(
+                "--evolving-gym-lazy-output-penalty-level", type=int, default=2,
+                help="Lazy output penalty level: 0=no penalty, 1=check parent only, 2=check parent+database."
+            )
+            parser.add_argument(
+                "--evolving-gym-seed",
+                type=int,
+                default=1234,
+                help="Random seed for evolving gym (database sampling, prompt selection). Default: 1234."
+            )
+            parser.add_argument(
+                "--evolving-gym-database-reinit-ratio",
+                type=float,
+                default=0.0,
+                help="Database reinitialization ratio: when (max_score - min_score) / abs(max_score) < ratio, clear database and reinitialize. 0.0 disables reinitialization."
+            )
+            parser.add_argument(
+                "--evolving-gym-smallest-restart-step",
+                type=int,
+                default=10000000,
+                help="Minimum steps between database reinitializations"
+            )
+            parser.add_argument(
+                "--evolving-gym-largest-restart-step",
+                type=int,
+                default=10000000,
+                help="Maximum steps between database reinitializations (force restart)"
+            )
+            parser.add_argument(
+                "--evolving-gym-add-historical-programs",
+                type=int,
+                default=0,
+                help="Number of historical best programs to reload after reinitialization"
+            )
+            parser.add_argument(
+                "--evolving-gym-reward-process-type",
+                type=str,
+                default="original_reward",
+                choices=["original_reward", "rl_normalized_reward", "format_reward", "validation_reward", "improve_reward"],
+                help=(
+                    "Reward processing type:\n"
+                    "  - original_reward: Use raw combined_score without normalization (default)\n"
+                    "  - rl_normalized_reward: Use RL-normalized reward from metrics\n"
+                    "  - format_reward: Keep format errors negative, others get 1.0\n"
+                    "  - validation_reward: Keep all errors negative, only success gets 1.0\n"
+                    "  - improve_reward: Binary reward (1.0 if child > parent, else 0.0)"
+                )
+            )
+
+            return parser
 
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
@@ -1358,7 +1453,18 @@ def miles_validate_args(args):
         args.no_load_optim = True
         args.no_load_rng = True
         args.finetune = True
-        args.load = args.ref_load
+        # For evolving_gym with debug_rollout_only (inference-only mode),
+        # preserve the original load directory for database checkpoint detection
+        is_evolving_gym = getattr(args, "evolving_gym", False)
+        is_inference_only = getattr(args, "debug_rollout_only", False)
+        should_preserve_load = is_evolving_gym and is_inference_only
+
+        if not should_preserve_load:
+            print(f"[ARGS] No valid training checkpoint, using ref_load for model initialization (evolving_gym={is_evolving_gym}, debug_rollout_only={is_inference_only})")
+            args.load = args.ref_load
+        else:
+            print(f"[ARGS] Preserving args.load={args.load} for evolving_gym database checkpoint detection (inference-only mode)")
+
         if args.ref_ckpt_step is not None:
             args.ckpt_step = args.ref_ckpt_step
         args.start_rollout_id = 0

@@ -124,7 +124,7 @@ class RolloutManager:
         self.data_source.save(rollout_id)
 
     def load(self, rollout_id=None):
-        self.data_source.load(rollout_id)
+        return self.data_source.load(rollout_id)
 
     def offload(self):
         return ray.get([engine.release_memory_occupation.remote() for engine in self.rollout_engines])
