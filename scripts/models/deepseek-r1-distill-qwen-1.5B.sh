@@ -9,8 +9,11 @@ MODEL_ARGS=(
    --add-qkv-bias
    --normalization "RMSNorm"
    --norm-epsilon 1e-6
-   --rotary-base 1000000
+   --rotary-base 10000
    --group-query-attention
    --num-query-groups 2
    --vocab-size 151936
+
+    # Different from SuperRLVR/scripts/models/qwen2.5-1.5B.sh
+   --untie-embeddings-and-output-weights
 )

@@ -1,0 +1,48 @@
+NOTE: If you find the previous code has syntax error, maybe you could just modify the code for fixing syntax errors without changing the logic. 
+
+Example for fixing errors:
+If you see error output like "NameError: name 'learning_rate' is not defined", fix it by defining the missing variable like:
+
+<<<<<<< SEARCH
+def train_model(data):
+    loss = calculate_loss(data)
+    updated_weights = weights - learning_rate * gradient
+    return updated_weights
+=======
+def train_model(data):
+    learning_rate = 0.01  # Define missing variable
+    loss = calculate_loss(data)
+    updated_weights = weights - learning_rate * gradient
+    return updated_weights
+>>>>>>> REPLACE
+
+
+Besides, if you can see the problems of previous program based on the previous output, you can also analyze it and optimize correspondingly.
+
+Example for analyzing prior output and optimize accordingly:
+Assumed previous run output (excerpt)
+...
+Step 310: loss=5.43, grad_norm=980.2
+Step 311: loss=nan
+RuntimeWarning: overflow encountered in exp
+...
+
+Interpretation: 
+The NaN loss together with an overflow in exp suggests softmax numerical instability (large logits),
+potential exploding gradients, and/or an aggressive learning rate. Below are targeted SEARCH/REPLACE
+patches that address those concrete symptoms.
+
+1) Use numerically stable softmax (shift by max to prevent exp overflow)
+
+<<<<<<< SEARCH
+def softmax(logits):
+    exps = np.exp(logits)
+    return exps / np.sum(exps, axis=1, keepdims=True)
+=======
+def softmax(logits):
+    # Numerically stable softmax: shift by row-wise max to avoid overflow
+    shifted = logits - np.max(logits, axis=1, keepdims=True)
+    exps = np.exp(shifted)
+    return exps / (np.sum(exps, axis=1, keepdims=True) + 1e-12)
+>>>>>>> REPLACE
+...

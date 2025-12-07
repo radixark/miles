@@ -1,0 +1,207 @@
+# OpenEvolve Configuration for Hadamard Matrix (Modular Framework)
+variables:
+  # Core problem parameters (REQUIRED)
+  core_parameters:
+    matrix_size: 29
+    theoretical_max: 1270698346568170340352  # (2^28) * (7^12) * 342 for N=29
+  
+  # Problem identifier (REQUIRED)
+  PROBLEM_TYPE: "HadamardMatrix_OptimalConstruction"
+  
+  # Optional: Known bounds database for different matrix sizes (ratios)
+  KNOWN_BOUNDS:
+    "HadamardMatrix_N29": 0.935673  # Current SOTA ratio for N=29
+  
+  # Optional: Runtime constraints  
+  MAX_RUNTIME: 300
+
+  
+  # Score transformation configuration for RL training
+  score_transform:
+    score_range_min: 0.0      
+    score_range_max: 1.0      
+    alpha: 1.0                
+    optimize_mode: "maximize"
+    positive_multiplier: 5.0
+
+# Standard OpenEvolve configuration
+checkpoint_interval: 10
+max_code_length: 50000
+log_level: "INFO"
+
+# LLM configuration
+llm:
+  models:
+    - name: "google/gemini-2.5-flash-lite"
+      weight: 0.8
+    - name: "google/gemini-2.5-pro"
+      weight: 0.2
+  api_base: "https://openrouter.ai/api/v1"
+  api_key: "EMPTY"  # No auth for local vllm server
+
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 16384
+  timeout: 600
+  retries: 3
+  retry_delay: 5
+
+# Prompt configuration
+prompt:
+  use_alphaevolve_style: true
+  use_system_prompt: false
+  use_system_message_sampling: true
+  system_message_list:
+    - message: |
+        You are an expert Python programmer and mathematician working on constructing optimal Hadamard matrices.
+        Your goal is to improve the Python code in the EVOLVE-BLOCK to find better Hadamard matrices.
+        
+        Problem parameters:
+        - Matrix size: {core_parameters.matrix_size}
+        - Theoretical maximum determinant: {core_parameters.theoretical_max}
+        - Target: Maximize |det(H)| / theoretical_max ratio
+        
+        Your program is allowed to run for a maximum of {MAX_RUNTIME} seconds. You should use this time wisely, both for construction and optimization.
+        
+        A Hadamard matrix is an n×n matrix H with entries +1 or -1 such that H·H^T = n·I, where I is the identity matrix.
+        The determinant of a Hadamard matrix H satisfies |det(H)| ≤ n^(n/2), with equality achieved by "perfect" Hadamard matrices.
+        For N={core_parameters.matrix_size}, theoretical max is {core_parameters.theoretical_max}.
+        
+        Known SOTA ratios: {KNOWN_BOUNDS}
+        
+        Your program should output the matrix in a parseable format (in +/- format, one row per line). Mainly follow the current output format.
+        Keep all the current functions about verbose and saving files, and don't need to change other unrelated functions.
+        If the results can be regularly update (like at least every 2 minutes), you may also try more aggressive and long_lasting search.
+        Include diagnostic information to help understand the optimization process.
+        
+        NOTE: If you find the previous code can not pass compilation, maybe you could just modify the code for fixing syntax errors without changing the logic.
+        You can also see the problems of previous program based on the previous output, and then optimize correspondingly.
+
+        Focus on finetuning parameters or minor adjustments to get the local best programs.
+      weight: 0.3
+
+    - message: |
+        You are an expert Python programmer and mathematician working on constructing optimal Hadamard matrices.
+        Your goal is to improve the Python code in the EVOLVE-BLOCK to find better Hadamard matrices.
+        
+        Problem parameters:
+        - Matrix size: {core_parameters.matrix_size}
+        - Theoretical maximum determinant: {core_parameters.theoretical_max}
+        - Target: Maximize |det(H)| / theoretical_max ratio
+        
+        Your program is allowed to run for a maximum of {MAX_RUNTIME} seconds. You should use this time wisely, both for construction and optimization.
+        
+        A Hadamard matrix is an n×n matrix H with entries +1 or -1 such that H·H^T = n·I, where I is the identity matrix.
+        The determinant of a Hadamard matrix H satisfies |det(H)| ≤ n^(n/2), with equality achieved by "perfect" Hadamard matrices.
+        For N={core_parameters.matrix_size}, theoretical max is {core_parameters.theoretical_max}.
+        
+        Known SOTA ratios: {KNOWN_BOUNDS}
+        
+        Key optimization strategies (inspired by Orrick et al.'s breakthrough methods https://arxiv.org/abs/math/0304410):
+        1. Advanced hill-climbing algorithms: Implement sophisticated gradient-ascent with multiple temperature schedules and adaptive cooling rates for simulated annealing
+        2. Conference matrix techniques: For cases where n ≡ 15 (mod 16), construct using antisymmetric (k+1)×(k+1) conference matrices, normalize appropriately, and tensor with Hadamard matrices
+        3. Finite field methods: Utilize Jacobsthal matrices from finite fields GF(k) when k is prime power, providing matrices with optimal orthogonality properties
+        4. Multi-scale optimization: Combine local search with global perturbations, using different step sizes and mutation rates at different stages
+        5. Structural exploitation: Use the row-independence property in cofactor expansion to parallelize row-wise optimizations across multiple workers
+        6. Memory-guided search: Implement tabu search or other memory-based techniques to avoid revisiting poor local optima
+        7. Hybrid construction approaches: Combine algebraic methods (Paley, Sylvester) with numerical optimization for superior starting points
+        8. Parallel processing: Use multiple workers to explore different regions of the search space simultaneously
+        
+        Evaluation criteria:
+        - Primary: Ratio of |det(H)| to theoretical maximum n^(n/2)
+        - Secondary: Orthogonality constraint satisfaction (how close H·H^T is to n·I)
+        
+        Your program should output the matrix in +/- format (+ for 1, - for -1, one row per line). Mainly follow the current output format.
+        Keep all the current functions about verbose and saving files, and don't need to change other unrelated functions.
+        If the results can be regularly update (like at least every 2 minutes), you may also try more aggressive and long_lasting search.
+        Include diagnostic information to help understand the optimization process.
+
+        NOTE: If you find the previous code can not pass compilation, maybe you could just modify the code for fixing syntax errors without changing the logic. 
+        You can also see the problems of previous program based on the previous output, and then optimize correspondingly.
+
+        Focus on algorithmic improvements and mathematical insights rather than just parameter tuning.
+      weight: 0.4
+      
+    - message: |
+        You are an expert in computational optimization and matrix theory working on the Hadamard matrix construction problem.
+        Your goal is to evolve Python code that generates high-quality Hadamard matrices.
+        
+        Problem parameters:
+        - Matrix size: {core_parameters.matrix_size}
+        - Theoretical maximum determinant: {core_parameters.theoretical_max}
+        - Target: Maximize |det(H)| / theoretical_max ratio
+        
+        Your program is allowed to run for a maximum of {MAX_RUNTIME} seconds. You should use this time wisely, both for construction and optimization.
+        
+        Mathematical background:
+        - Hadamard matrices H satisfy H·H^T = n·I with entries ±1
+        - The Hadamard bound: |det(H)| ≤ n^(n/2) (for N={core_parameters.matrix_size}, theoretical max is {core_parameters.theoretical_max})
+        - For N={core_parameters.matrix_size}: No perfect Hadamard matrices exist, so we seek the best approximations
+        - Known SOTA ratios: {KNOWN_BOUNDS}
+        
+        Advanced techniques to explore (building on Orrick et al. https://arxiv.org/abs/math/0304410):
+        1. Conference matrix constructions: Implement the explicit construction for n ≡ 15 (mod 16) using antisymmetric conference matrices, proper normalization, and 4×4 Hadamard tensor products
+        2. Finite field algebraic methods: Use Jacobsthal matrices from GF(k) when k is prime power, providing structured starting points with proven determinant properties
+        3. Multi-stage optimization: Combine the proven hill-climbing approach with adaptive simulated annealing, using cofactor expansion for O(n²) determinant updates instead of O(n³)
+        4. Advanced search techniques: Implement sophisticated escape mechanisms from local maxima using strategic perturbations informed by matrix structure
+        5. Evolutionary and swarm approaches: Design population-based methods that maintain diversity while exploiting the best-known constructions
+        6. Machine learning integration: Use neural networks or reinforcement learning to guide the search process based on patterns in successful matrices
+        7. Spectral and eigenvalue optimization: Leverage spectral properties and eigenvalue distributions for matrix quality assessment beyond determinant maximization
+        8. Hybrid parallel architectures: Design algorithms that effectively utilize multiple computational threads while maintaining search coherence
+        
+        Implementation considerations:
+        - Efficient matrix operations using NumPy/SciPy with careful attention to numerical stability
+        - Memory-efficient algorithms for larger matrices and population-based methods
+        - Robust error handling and graceful degradation for edge cases
+        - Comprehensive logging and diagnostic output for algorithm analysis
+        
+        The program must be robust and handle edge cases gracefully.
+        Output format: Matrix in +/- format (+ for 1, - for -1), diagnostic info for debugging. Mainly follow the current output format.
+        Keep all the current functions about verbose and saving files, and don't need to change other unrelated functions.
+        If the results can be regularly update (like at least every 2 minutes), you may also try more aggressive and long_lasting search.
+
+        NOTE: If you find the previous code can not pass compilation, maybe you could just modify the code for fixing syntax errors without changing the logic.
+        You can also see the problems of previous program based on the previous output, and then optimize correspondingly.
+
+        Prioritize novel algorithmic approaches that could breakthrough current best-known results.
+      weight: 0.3
+  
+  num_top_programs: 0
+  num_diverse_programs: 0
+  num_inspiration_programs: 0
+  use_template_stochasticity: true
+  include_artifacts: true
+  max_artifact_bytes: 16384
+  artifact_security_filter: true
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 10000
+  archive_size: 1000
+  num_islands: 10
+  feature_dimensions:
+    - "score"
+    - "complexity"
+  elite_selection_ratio: 0.3
+  exploitation_ratio: 0.6
+  log_prompts: true
+
+# Evaluation settings
+evaluator:
+  timeout: 350
+  max_retries: 3
+  cascade_evaluation: false
+  parallel_evaluations: 4
+  use_llm_feedback: false
+  enable_artifacts: true
+  collect_runtime_environments: true
+  preserve_temp_directories: false
+  runtime_environment_patterns:
+    - "*"
+  
+  # copy_folders:
+  #   - "hadamard_matrix_data"
+
+# Evolution settings
+diff_based_evolution: true
+allow_full_rewrites: false

@@ -1,0 +1,171 @@
+# ============ OpenEvolve Modular Framework Config (Objective-Based) ============
+# Task: sum_diff_finite_set
+# This config works with the modular initial_program_modular.py
+
+# Problem Configuration Variables (will be substituted in prompts)
+variables:
+  core_parameters:
+    target_value: 0.96
+    domain: "[-1/4, 1/4]"
+
+  PROBLEM_TYPE: "second_autocorrelation_inequality"
+
+  MAX_RUNTIME: 300          # Max runtime for each program evaluation (seconds)
+
+  # Score transformation configuration for RL training (MAXIMIZATION problem)
+  score_transform:
+    score_range_min: 0.91      # Baseline R(f) value
+    score_range_max: 0.96      # Target R(f) value (SOTA goal)
+    alpha: 1.0                # Power scaling factor
+    optimize_mode: "maximize" # MAXIMIZATION: higher R(f) is better
+    positive_multiplier: 3.0  # Scale to [0, 3] reward range for RL
+
+
+# General evolution 
+checkpoint_interval: 10
+max_code_length: 50000
+log_level: "INFO"
+
+# LLM configuration
+llm:
+  models:
+    - name: "google/gemini-2.5-flash-lite"
+      weight: 0.8
+    - name: "google/gemini-2.5-pro"
+      weight: 0.2
+  api_base: "https://openrouter.ai/api/v1"
+  api_key: "EMPTY"  # No auth for local vllm server
+
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 16384
+  timeout: 600
+  retries: 3
+  retry_delay: 5
+
+# Prompt configuration
+prompt:
+  use_system_prompt: false
+  use_alphaevolve_style: true
+  use_system_message_sampling: true
+
+  system_message_list:
+    # ========================
+    # 1) Direct constructive ansatz (fast, no search loop)
+    # ========================
+    - message: |
+        You are an expert in functional optimization and harmonic analysis on autoconvolution inequalities.
+        Your task is to **explicitly construct** a single non-negative function f on {core_parameters.domain} to maximize
+
+        R(f) = ‖f * f‖₂² / (‖f * f‖₁ · ‖f * f‖∞),  with C₂ ≥ R(f) and target R(f) > {core_parameters.target_value}.
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds.
+
+        **High-impact constructive insights (no iterative search here):**
+        - Use a **two-/multi-scale piecewise-constant scaffold**: an **off-center tall narrow spike** riding on a **broad, low-amplitude envelope**.
+          The goal is to **inflate the L² mass of f*f** while **flattening its global peak**.
+        - Add a **phase-locked micro-comb** with spacing aligned to the **dominant offsets of the current envelope autocorrelation**; keep teeth weak
+          but well-phased to **cancel incipient maxima** in f*f and broaden the central plateau.
+        - Allow **asymmetry** deliberately; biasing mass away from the center often **widens the plateau** without raising ‖f*f‖∞.
+        - Parameterize **nonnegativity by construction** (e.g., nonnegative coefficients of bumps/steps) and keep a **small number of tunable knobs**
+          (spike location/width/height, envelope level, comb spacing/phase, local refinement windows) so the ansatz evaluates **instantly**.
+        - Output a **pure constructor** that returns the heights array; do **not** implement any search/loop in this prompt.
+
+        **IMPORTANT — Summary:** Provide a **fast, high-resolution ansatz** (off-center spike + envelope + phase-locked weak comb)
+        that **raises ‖f*f‖₂** and **suppresses ‖f*f‖∞** by design, serving as a strong warm start for downstream optimizers.
+      weight: 0.30
+
+    # ========================
+    # 2) Differentiable optimizer with peak-aware preconditioning (algorithmic leap)
+    # ========================
+    - message: |
+        You are an expert in differentiable optimization for autoconvolution objectives.
+        We need a **peak-aware, curvature-sensitive optimizer** to push
+
+        R(f) = ‖f * f‖₂² / (‖f * f‖₁ · ‖f * f‖∞)  beyond {core_parameters.target_value}.
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds.
+
+        **Optimization insights (concise, no step-by-step plan):**
+        - Replace the hard max by a **temperature-annealed Top-k smooth max** (softmax over the top few entries of f*f). This focuses gradients on
+          **the peak set**, not on noise; validate with the true max when reporting.
+        - Use **Toeplitz-aware preconditioning**: precondition updates by **local convolutional smoothing** (e.g., with a short triangular kernel)
+          to approximate the inverse curvature of the f ↦ f*f map; this damps oscillatory directions that spuriously raise ‖f*f‖∞.
+        - Adopt a **mirror-descent / multiplicative** parameterization (e.g., optimize a base field then apply softplus/exponential),
+          enforcing f ≥ 0 and naturally emphasizing **relative** (scale-aware) updates in high-impact regions.
+        - Run **multi-resolution refinement in-place**: briefly expose **local high-resolution windows** only near indices that control the
+          Top-k of f*f, then fold improvements back to the global grid. Prefer **short decisive bursts** over long loops.
+        - Inject **structured, peak-targeted perturbations** (small, phase-coherent comb nudges around the current argmax offsets)
+          to prevent **peak lock-in** while preserving the plateau that boosts ‖f*f‖₂.
+
+        **Diagnostics to log (lightweight):** current R(f) with hard/smooth max, Top-k peak values and gap, estimated plateau width.
+
+        **IMPORTANT — Summary:** Use **Top-k smooth max, Toeplitz-aware preconditioning, mirror descent, and local multi-resolution**
+        to **lower the peak without shrinking the plateau**, enabling rapid gains within the short time budget.
+      weight: 0.4
+
+    # ========================
+    # 3) Bold exploration & parameter heuristics (diversity under tight budget)
+    # ========================
+    - message: |
+        You are an expert in structural search for autoconvolution bounds under tight compute budgets.
+        Goal: reveal **diverse, high-payoff families** of nonnegative f on {core_parameters.domain} that lift
+
+        R(f) = ‖f * f‖₂² / (‖f * f‖₁ · ‖f * f‖∞)  above {core_parameters.target_value}.
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds.
+
+        **High-signal exploration heuristics (keep them lightweight):**
+        - **Frequency shaping:** design envelopes that suppress Fourier modes responsible for the **argmax of f*f**; add **notch filters**
+          via weak combs whose spacing is **locked to the argmax offsets**.
+        - **Asymmetric dual-spike with beat control:** two offset spikes with height/spacing tuned to create a **broad, nearly flat plateau** in f*f
+          through controlled **interference**; keep the secondary spike weaker to avoid a new global maximum.
+        - **Adaptive resolution windows:** vary total segment counts aggressively but allocate **fine resolution only near sensitivity hot zones**
+          (indices impacting Top-k peaks of f*f); prefer fast trials over long runs.
+        - **Budget-aware gating:** use **quick proxy signals** (Top-k peak gap, plateau width estimate) to **promote** only the most promising
+          shapes for any expensive refinement, avoiding uniform spend.
+
+        **Rank/Report:** R(f) (hard max), Top-k peak gap, plateau width proxy, and whether the best peak index **stabilizes** under small perturbations.
+
+        **IMPORTANT — Summary:** This prompt prioritizes **frequency-domain flattening, beat-pattern plateaus, and targeted resolution**
+        to uncover novel high performers quickly, maximizing diversity per minute.
+      weight: 0.3
+
+
+  num_top_programs: 0
+  num_diverse_programs: 0
+  num_inspiration_programs: 0
+  use_template_stochasticity: true
+  include_artifacts: true
+  max_artifact_bytes: 16384
+  artifact_security_filter: true
+# Population/archive defaults (harmless for small tests)
+database:
+  population_size: 10000
+  archive_size: 1000
+  num_islands: 10
+  feature_dimensions:
+    - "score"
+    - "complexity"
+  elite_selection_ratio: 0.3
+  exploitation_ratio: 0.6
+  log_prompts: true
+
+# Evaluation settings
+evaluator:
+  timeout: 350  # Keep evaluator timeout slightly longer than program runtime
+  max_retries: 3
+  cascade_evaluation: false
+  parallel_evaluations: 4
+  use_llm_feedback: false
+  enable_artifacts: true
+  
+  # Runtime environment collection
+  collect_runtime_environments: true
+  preserve_temp_directories: false
+  runtime_environment_patterns:
+    - "*"
+  
+  # copy_folders:
+  #   - "circlepacking_search_data"
+
+# Evolution settings
+diff_based_evolution: true
+allow_full_rewrites: false

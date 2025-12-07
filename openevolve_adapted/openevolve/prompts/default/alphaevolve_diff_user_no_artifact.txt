@@ -1,0 +1,47 @@
+{context}
+
+{evolution_history}
+
+- Current program -
+Here is the current program we are trying to improve (you will need to propose a modification to it below).
+
+{current_program_content}
+
+- SEARCH/REPLACE block rules -
+
+You MUST use the exact SEARCH/REPLACE diff format shown below to indicate changes:
+
+<<<<<<< SEARCH
+# Original code to find and replace (must match exactly)
+=======
+# New replacement code
+>>>>>>> REPLACE
+
+Example of valid diff format:
+<<<<<<< SEARCH
+for i in range(m):
+    for j in range(p):
+        for k in range(n):
+            C[i, j] += A[i, k] * B[k, j]
+=======
+# Reorder loops for better memory access pattern
+for i in range(m):
+    for k in range(n):
+        for j in range(p):
+            C[i, j] += A[i, k] * B[k, j]
+>>>>>>> REPLACE
+
+
+Make sure that the changes you propose are consistent with each other. 
+For example, if you refer to a new config variable somewhere, you should also propose a change to add that variable.
+
+
+- Task -
+Suggest a new idea to improve the code that is inspired by your expert knowledge of optimization and machine learning.
+
+Describe each change with a SEARCH/REPLACE block.
+
+You can suggest multiple changes. Each SEARCH section must exactly match code in the current program. Focus on changing the code in EVOLVE-BLOCK.
+Be thoughtful about your changes and explain your reasoning thoroughly.
+
+IMPORTANT: Do not rewrite the entire program - focus on targeted improvements.

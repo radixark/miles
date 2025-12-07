@@ -1,0 +1,122 @@
+
+# This config works with the modular initial_program_modular.py
+
+# Problem Configuration Variables (will be substituted in prompts)
+variables:
+  core_parameters:
+    target_value: 1.5
+    domain: "[-1/4, 1/4]"
+
+  PROBLEM_TYPE: "first_autocorrelation_inequality"
+
+  MAX_RUNTIME: 1000          # Max runtime for each program evaluation (seconds)
+
+  # Score transformation configuration for RL training (MINIMIZATION problem)
+  score_transform:
+    score_range_min: 1.5      # Best achievable C1 value (SOTA target)
+    score_range_max: 1.506      # Worst baseline C1 value (initial ~1.5032)
+    alpha: 1.0                # Linear scaling (reciprocal already provides non-linearity)
+    optimize_mode: "minimize" # MINIMIZATION: uses reciprocal transformation (-C1)
+    positive_multiplier: 3.0  # Scale to [0, 3] reward range for RL
+
+
+# General evolution 
+checkpoint_interval: 10
+max_code_length: 50000
+log_level: "INFO"
+
+# LLM configuration
+llm:
+  models:
+    - name: "google/gemini-2.5-flash-lite"
+      weight: 0.8
+    - name: "google/gemini-2.5-pro"
+      weight: 0.2
+  api_base: "https://openrouter.ai/api/v1"
+  api_key: "EMPTY"  # No auth for local vllm server
+
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 16384
+  timeout: 600
+  retries: 3
+  retry_delay: 5
+
+# Prompt configuration
+prompt:
+  use_alphaevolve_style: true
+  use_system_prompt: false
+  use_system_message_sampling: true
+
+  system_message_list:
+    - message: |
+        You are an expert mathematician and computational scientist specializing in harmonic analysis and extremal problems, specifically the first autocorrelation inequality.
+
+        Your task is to generate the sequence of non-negative heights of a step functions on the domain {core_parameters.domain}, that minimizes the following evaluation function:
+
+        ```python
+        def evaluate_sequence_1(sequence: list[float]) -> float:
+          """Evaluates a sequence of coefficients."""
+
+          # Protect against negative numbers
+          sequence = [max(0.0, x) for x in sequence]
+          n = len(sequence)
+          b_sequence = np.convolve(sequence, sequence)
+          max_b = max(b_sequence)
+          sum_a = np.sum(sequence)
+          return float(2 * n * max_b / (sum_a**2))
+        ```
+
+        You don't have to change the evaluation function in the program, it would be provided in the evaluation environment that you cannot modify.
+
+        Your task is to write a search function that searches for the best sequence of coefficients. 
+        Your function will have {MAX_RUNTIME} seconds to run, and after that it has to have returned the best sequence it found. 
+        If after {MAX_RUNTIME} seconds it has not returned anything, it will be terminated with negative infinity points. 
+        All numbers in your sequence have to be positive or zero. You may code up any search method you want.
+
+        Feel free to change parameters like the length of the sequence, or any other parameters you deem necessary to improve performance.
+
+        You may want to start your search from the best construction we have found so far, which you can access through the 'height_sequence_1' variable.
+      weight: 1.0
+
+
+  num_top_programs: 0
+  num_diverse_programs: 0
+  num_inspiration_programs: 0
+  use_template_stochasticity: true
+  include_artifacts: true
+  max_artifact_bytes: 16384
+  artifact_security_filter: true
+# Population/archive defaults (harmless for small tests)
+database:
+  population_size: 10000
+  archive_size: 1000
+  num_islands: 10
+  feature_dimensions:
+    - "score"
+    - "complexity"
+  elite_selection_ratio: 0.3
+  exploitation_ratio: 0.6
+  log_prompts: true
+
+# Evaluation settings
+evaluator:
+  timeout: 1150  # Keep evaluator timeout slightly longer than program runtime
+  max_retries: 3
+  cascade_evaluation: false
+  parallel_evaluations: 4
+  use_llm_feedback: false
+  enable_artifacts: true
+  
+  # Runtime environment collection
+  collect_runtime_environments: true
+  preserve_temp_directories: false
+  runtime_environment_patterns:
+    - "*"
+  
+  copy_folders:
+    - "initial_programs/ref"
+
+# Evolution settings
+diff_based_evolution: true
+allow_full_rewrites: false

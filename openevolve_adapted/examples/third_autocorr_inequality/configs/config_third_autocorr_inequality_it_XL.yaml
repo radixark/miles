@@ -1,0 +1,152 @@
+# ============ OpenEvolve Modular Framework Config (Objective-Based) ============
+# Task: sum_diff_finite_set
+# This config works with the modular initial_program_modular.py
+
+# Problem Configuration Variables (will be substituted in prompts)
+variables:
+  core_parameters:
+    target_value: 1.4557
+    domain: "[-1/4, 1/4]"
+
+  PROBLEM_TYPE: "third_autocorrelation_inequality"
+
+  MAX_RUNTIME: 60          # Max runtime for each program evaluation (seconds)
+
+  # Score transformation configuration for RL training (MINIMIZATION problem)
+  score_transform:
+    score_range_min: 1.4557   # Best achievable C3 value (SOTA target)
+    score_range_max: 3.2      # Worst baseline C3 value (initial ~3.159)
+    alpha: 3.0                # Power scaling to increase reward variance near optimum
+    optimize_mode: "minimize" # MINIMIZATION: lower C3 is better
+    positive_multiplier: 3.0  # Scale to [0, 3] reward range for RL
+
+
+# General evolution 
+checkpoint_interval: 10
+max_code_length: 50000
+log_level: "INFO"
+
+# LLM configuration
+llm:
+  models:
+    - name: "google/gemini-2.5-flash-lite"
+      weight: 0.8
+    - name: "google/gemini-2.5-pro"
+      weight: 0.2
+  api_base: "https://openrouter.ai/api/v1"
+  api_key: "EMPTY"  # No auth for local vllm server
+
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 16384
+  timeout: 600
+  retries: 3
+  retry_delay: 5
+
+# Prompt configuration
+prompt:
+  use_alphaevolve_style: true
+  use_system_prompt: false
+  use_system_message_sampling: true
+
+  system_message_list:
+    - message: |
+        You are an expert mathematician and computational scientist specializing in harmonic analysis and extremal problems, specifically the third autocorrelation inequality.
+
+        Your task is to design a Python program that constructs a discrete function `f` on the domain {core_parameters.domain} to minimize C3, aiming to beat the SOTA of {core_parameters.target_value}.
+
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds.
+
+        **Key Insight from Mathematical Literature (Host, Vinuesa):**
+        The best-known constructions are often based on the product of a smooth, oscillating function and a window function with compact support. A highly successful continuous analog is `f(x) = (1 + cos(2*pi*x))` for `x` in `[-1/4, 1/4]` and `0` otherwise.
+
+        **Your primary goal is to create a discrete version of this construction.**
+
+        **Construction Guidelines:**
+        1.  **Window Function:** Define a "window" or "support" for your function. This window should be centered and occupy a fraction of the total domain (e.g., the middle 50%, like `n_steps//4` to `3*n_steps//4`). The function should be zero outside this window.
+        2.  **Oscillatory Component:** Inside the window, define the function using a smooth, symmetric, oscillating pattern. A cosine-based function is an excellent starting point. `A * (1 + B * cos(C * x))` is a powerful template.
+        3.  **Parameterization:** Your code should explore different parameters for this construction:
+            -   `support_width`: The width of the non-zero window.
+            -   `amplitude (A)` and `modulation (B)`: Controls the scale and contrast of the function.
+            -   `frequency (C)`: Controls the oscillatory behavior.
+        4.  **Discretization:** Carefully map the continuous functional form onto the discrete domain `{core_parameters.domain}`. Pay attention to boundary conditions at the edge of the window.
+
+        Focus on building a function generator based on this theoretically-grounded `window * oscillation` structure. Explore the parameter space of this structure to find the optimal discrete function.
+      weight: 0.4
+
+    - message: |
+        You are an expert in computational optimization and harmonic analysis, tasked with refining a candidate function to minimize the C3 autocorrelation constant.
+
+        Your goal is to take a given function `f` on the domain {core_parameters.domain} and meticulously improve it to push past the SOTA benchmark of C3 = {core_parameters.target_value}.
+
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds. Use this time for intensive, focused local search.
+
+        **Refinement Strategy:**
+        1.  **Iterative Improvement:** Perform a high number of iterations (e.g., 5,000-20,000) on the input candidate.
+        2.  **Adaptive Perturbations:** Employ a multi-stage adaptive step size. Start with larger changes (e.g., +/- 0.05) to explore the local landscape, then gradually decrease the step size (e.g., to +/- 0.01, then +/- 0.001) to fine-tune the solution.
+        3.  **Targeted Search:** Identify the indices where the convolution `conv(f,f)` has the highest absolute values. Focus your perturbations on and around these critical indices, as they have the most impact on the C3 score.
+        4.  **Escape Local Minima:** Implement a simulated annealing schedule or a similar mechanism. If the search stagnates for hundreds of iterations, introduce a larger, random perturbation to jump to a new region.
+        5.  **Sign Flipping:** Systematically test flipping the signs of small segments of the function, as phase cancellation is a key mechanism for reducing convolution peaks.
+
+        Focus on making small, intelligent adjustments to an existing strong candidate. Your task is not to invent a new function, but to perfect the one you are given.
+
+      weight: 0.3
+        
+    - message: |
+        You are an expert in signal processing and creative algorithm design, tasked with finding novel functions that minimize the C3 autocorrelation constant. The goal is to break the SOTA of {core_parameters.target_value}.
+
+        Current approaches have converged on certain types of smooth, symmetric functions. Your task is to explore fundamentally different, potentially superior, structural paradigms.
+
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds.
+
+
+        **Radical Exploration Strategies:**
+        1.  **Wavelet-inspired Structures:** Instead of a simple cosine, construct the function from a mother wavelet (like Mexican Hat or Morlet) that is scaled and translated. This combines oscillation with compact support naturally.
+        2.  **Fractal and Self-Similar Functions:** Design a function using a recursive or fractal construction (e.g., a modified Cantor set distribution or a Weierstrass-like function). These have unique spectral properties.
+        3.  **Chirp Signals (Frequency Sweeps):** Construct a function where the frequency of oscillation changes across the domain (e.g., `sin(a*x**2)`). This can spread the energy of the autoconvolution in novel ways.
+        4.  **Optimized Piecewise Polynomials:** Define the function as a series of connected polynomial segments (splines). Use an optimization routine to find the optimal coefficients for a small number of segments (e.g., 3-7).
+        5.  **Algebraic Constructions:** Use number-theoretic sequences (e.g., based on quadratic residues or finite fields) to generate the function's values. These can have surprisingly good autocorrelation properties.
+
+        **IMPORTANT:** Your goal is to generate diverse and unconventional candidates. Do not simply replicate previous solutions. If prior programs look similar, make a deliberate and drastic shift in the underlying mathematical structure.
+      weight: 0.3
+
+  num_top_programs: 0
+  num_diverse_programs: 0
+  num_inspiration_programs: 0
+  use_template_stochasticity: true
+  include_artifacts: true
+  max_artifact_bytes: 16384
+  artifact_security_filter: true
+# Population/archive defaults (harmless for small tests)
+database:
+  population_size: 10000
+  archive_size: 1000
+  num_islands: 10
+  feature_dimensions:
+    - "score"
+    - "complexity"
+  elite_selection_ratio: 0.3
+  exploitation_ratio: 0.6
+  log_prompts: true
+
+# Evaluation settings
+evaluator:
+  timeout: 70  # Keep evaluator timeout slightly longer than program runtime
+  max_retries: 3
+  cascade_evaluation: false
+  parallel_evaluations: 4
+  use_llm_feedback: false
+  enable_artifacts: true
+  
+  # Runtime environment collection
+  collect_runtime_environments: true
+  preserve_temp_directories: false
+  runtime_environment_patterns:
+    - "*"
+  
+  # copy_folders:
+  #   - "circlepacking_search_data"
+
+# Evolution settings
+diff_based_evolution: true
+allow_full_rewrites: false

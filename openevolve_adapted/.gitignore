@@ -1,0 +1,61 @@
+results/
+examples/lm_eval/prompts/system_message.txt
+examples/lm_eval/prompts/evaluator_system_message.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+**/.ipynb_checkpoints/
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Output files
+examples/*/output/
+openevolve_output*/
+*.log
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Misc
+.DS_Store
+.venv
+
+# For SR
+secrets.yaml
+problems
+
+# Artifacts from running the evaluation
+artifacts/
+
+# all dir like stress_test_output_xxx/
+stress_test_output_*/

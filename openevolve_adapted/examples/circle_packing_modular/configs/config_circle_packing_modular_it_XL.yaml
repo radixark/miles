@@ -1,0 +1,132 @@
+# OpenEvolve Configuration for Modular Circle Packing n=26 Search
+# This config works with the modular initial_program_modular.py
+
+# Problem Configuration Variables (will be substituted in prompts)
+variables:
+  # Core problem parameters  
+  core_parameters:
+    n_circles: 26                  # Number of circles to pack
+    target_value: 2.635            # AlphaEvolve target sum of radii
+  
+  PROBLEM_TYPE: "CirclePacking_n=26"
+
+  MAX_RUNTIME: 60          # Max runtime for each program evaluation (seconds)
+  
+  # Score transformation configuration for RL training
+  score_transform:
+    score_range_min: 0.0      
+    score_range_max: 2.635      
+    alpha: 3.0                
+    optimize_mode: "maximize" 
+    positive_multiplier: 5.0
+
+# max_iterations: 10000000
+# random_seed: 42
+checkpoint_interval: 128
+max_code_length: 50000
+log_level: "INFO"
+
+# LLM configuration
+llm:
+  models:
+    - name: "google/gemini-2.5-flash-lite"
+      weight: 0.8
+    - name: "google/gemini-2.5-pro"
+      weight: 0.2
+  api_base: "https://openrouter.ai/api/v1"
+  api_key: "EMPTY"  # No auth for local vllm server
+
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 16384 #32768 #65536
+  timeout: 600
+  retries: 3
+  retry_delay: 5
+
+# Prompt configuration - adapted for circle packing
+prompt:
+  # Enable AlphaEvolve-style prompts
+  use_alphaevolve_style: true
+  # Move system prompt context to user message (like AlphaEvolve paper)  
+  use_system_prompt: false
+  # artifact_examples_type: 0
+  
+  use_system_message_sampling: true
+  system_message_list:
+    - message: |
+        You are an expert mathematician specializing in circle packing problems and computational geometry. Your task is to improve a constructor function that directly produces a specific arrangement of {core_parameters.n_circles} circles in a unit square, maximizing the sum of their radii. The AlphaEvolve paper achieved a sum of {target_value} for n={core_parameters.n_circles}.
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds.
+
+        Key geometric insights:
+        - Circle packings often follow hexagonal patterns in the densest regions
+        - Maximum density for infinite circle packing is pi/(2*sqrt(3)) ≈ 0.9069
+        - Edge effects make square container packing harder than infinite packing
+        - Circles can be placed in layers or shells when confined to a square
+        - Similar radius circles often form regular patterns, while varied radii allow better space utilization
+        - Perfect symmetry may not yield the optimal packing due to edge effects
+
+        Focus on designing an explicit constructor that places each circle in a specific position, rather than an iterative search algorithm.
+
+      weight: 0.3
+    
+    - message: |
+        You are an expert mathematician specializing in circle packing problems and computational geometry. We're trying to reach the AlphaEvolve target of {target_value} for the sum of radii when packing {core_parameters.n_circles} circles in a unit square. The current implementation has plateaued at some values, so we need significant improvements.
+        The time limit for each program evaluation is {MAX_RUNTIME} seconds.
+
+        Key insights to explore:
+        1. The optimal arrangement likely involves variable-sized circles
+        2. A pure hexagonal arrangement may not be optimal due to edge effects
+        3. The densest known circle packings often use a hybrid approach
+        4. The optimization routine is critically important - simple physics-based models with carefully tuned parameters
+        5. Consider strategic placement of circles at square corners and edges
+        6. Adjusting the pattern to place larger circles at the center and smaller at the edges
+        7. The math literature suggests special arrangements for specific values of n
+        8. scipy has some useful functions for optimization.
+
+        Focus on breaking through the plateau by trying fundamentally different approaches - don't just tweak parameters.
+
+        IMPORTANT: If you find the previous programs produce similar results, try as creative and evolutionary strategies as possible to explore different approaches.
+        
+      weight: 0.7
+
+  num_top_programs: 0
+  num_diverse_programs: 0
+  num_inspiration_programs: 0
+  use_template_stochasticity: true
+  include_artifacts: true
+  max_artifact_bytes: 16384
+  artifact_security_filter: true
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 10000
+  archive_size: 1000
+  num_islands: 10
+  feature_dimensions: # not used, only for inspiration programs.
+    - "score"
+    - "complexity"
+  elite_selection_ratio: 0.3 # not used, only for inspiration programs.
+  exploitation_ratio: 0.6
+  log_prompts: true
+
+# Evaluation settings
+evaluator:
+  timeout: 70  # Keep evaluator timeout slightly longer than program runtime
+  max_retries: 3
+  cascade_evaluation: false
+  parallel_evaluations: 4
+  use_llm_feedback: false
+  enable_artifacts: true
+  
+  # Runtime environment collection
+  collect_runtime_environments: true
+  preserve_temp_directories: false
+  runtime_environment_patterns:
+    - "*"
+  
+  # copy_folders:
+  #   - "circlepacking_search_data"
+
+# Evolution settings
+diff_based_evolution: true
+allow_full_rewrites: false

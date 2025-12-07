@@ -1,0 +1,153 @@
+# OpenEvolve Default Configuration
+# This file contains all available configuration options with sensible defaults
+# You can use this as a template for your own configuration
+
+# General settings
+max_iterations: 100                  # Maximum number of evolution iterations
+checkpoint_interval: 10               # Save checkpoints every N iterations
+log_level: "INFO"                     # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+log_dir: null                         # Custom directory for logs (default: output_dir/logs)
+random_seed: 42                       # Random seed for reproducibility (null = random, 42 = default)
+
+# Output settings
+output_postfix: null                  # Postfix to add to output directory (e.g., "g2_0.8_c3.7_0.2")
+
+# Checkpoint preservation settings  
+codes_interval_ratio: 5               # Preserve full checkpoint data every N * checkpoint_interval iterations
+
+# Evolution settings
+diff_based_evolution: true            # Use diff-based evolution (true) or full rewrites (false)
+max_code_length: 10000                # Maximum allowed code length in characters
+
+# LLM configuration
+llm:
+  # Models for evolution
+  models:
+    # List of available models with their weights
+    - name: "gemini-2.0-flash-lite"
+      weight: 0.8
+    - name: "gemini-2.0-flash"
+      weight: 0.2
+
+  # Models for LLM feedback
+  evaluator_models:
+    # List of available models with their weights
+    - name: "gemini-2.0-flash-lite"
+      weight: 0.8
+    - name: "gemini-2.0-flash"
+      weight: 0.2
+
+  # API configuration
+  api_base: "https://generativelanguage.googleapis.com/v1beta/openai/"  # Base URL for API (change for non-OpenAI models)
+  api_key: null                       # API key (defaults to OPENAI_API_KEY env variable)
+
+  # Generation parameters
+  temperature: 0.7                    # Temperature for generation (higher = more creative)
+  top_p: 0.95                         # Top-p sampling parameter
+  max_tokens: 4096                    # Maximum tokens to generate
+
+  # Request parameters
+  timeout: 60                         # Timeout for API requests in seconds
+  retries: 3                          # Number of retries for failed requests
+  retry_delay: 5                      # Delay between retries in seconds
+
+# Prompt configuration
+prompt:
+  template_dir: null                  # Custom directory for prompt templates
+  system_message: "You are an expert coder helping to improve programs through evolution."
+  evaluator_system_message: "You are an expert code reviewer."
+
+  # Number of examples to include in the prompt
+  num_top_programs: 3                 # Number of top-performing programs to include
+  num_diverse_programs: 2             # Number of diverse programs to include
+  num_inspiration_programs: 5         # Number of inspiration programs to include
+
+  # Template stochasticity
+  use_template_stochasticity: true    # Use random variations in templates for diversity
+  template_variations:                # Different phrasings for parts of the template
+    improvement_suggestion:
+      - "Here's how we could improve this code:"
+      - "I suggest the following improvements:"
+      - "We can enhance this code by:"
+
+  # Artifact rendering
+  include_artifacts: true             # Include execution outputs/errors in prompt
+  max_artifact_bytes: 20480           # Maximum artifact size in bytes (20KB default)
+  artifact_security_filter: true      # Apply security filtering to artifacts
+
+  # Note: meta-prompting features are not yet implemented
+
+# Database configuration
+database:
+  # General settings
+  db_path: null                       # Path to persist database (null = in-memory only)
+  in_memory: true                     # Keep database in memory for faster access
+  log_prompts: true                  # If true, log all prompts and responses into the database
+
+  # Evolutionary parameters
+  population_size: 1000               # Maximum number of programs to keep in memory
+  archive_size: 100                   # Size of elite archive
+  num_islands: 5                      # Number of islands for island model (separate populations)
+
+  # Island-based evolution parameters
+  # Islands provide diversity by maintaining separate populations that evolve independently.
+  # Migration periodically shares the best solutions between adjacent islands.
+  migration_interval: 50              # Migrate between islands every N generations
+  migration_rate: 0.1                 # Fraction of top programs to migrate (0.1 = 10%)
+
+  # Selection parameters
+  elite_selection_ratio: 0.1          # Ratio of elite programs to select
+  exploration_ratio: 0.2              # Ratio of exploration vs exploitation
+  exploitation_ratio: 0.7             # Ratio of exploitation vs random selection
+  # Note: diversity_metric is fixed to "edit_distance" (feature_based not implemented)
+
+  # Feature map dimensions for MAP-Elites
+  # Default if not specified: ["complexity", "diversity"]
+  # 
+  # Built-in features (always available, computed by OpenEvolve):
+  #   - "complexity": Code length
+  #   - "diversity": Code structure diversity
+  #
+  # You can mix built-in features with custom metrics from your evaluator:
+  feature_dimensions:                 # Dimensions for MAP-Elites feature map
+    - "complexity"                    # Code length (built-in)
+    - "diversity"                     # Code diversity (built-in)
+  # Example with custom features:
+  # feature_dimensions:
+  #   - "performance"                 # Must be returned by your evaluator
+  #   - "correctness"                 # Must be returned by your evaluator
+  #   - "memory_efficiency"           # Must be returned by your evaluator
+  
+  # Number of bins per dimension
+  # Can be a single integer (same for all dimensions) or a dict
+  feature_bins: 10                    # Number of bins per dimension
+  # Example of per-dimension configuration:
+  # feature_bins:
+  #   complexity: 10                  # 10 bins for complexity
+  #   diversity: 15                   # 15 bins for diversity
+  #   performance: 20                 # 20 bins for custom metric
+  
+  diversity_reference_size: 20        # Size of reference set for diversity calculation
+
+# Evaluator configuration
+evaluator:
+  # General settings
+  timeout: 300                        # Maximum evaluation time in seconds
+  max_retries: 3                      # Maximum number of retries for evaluation
+
+  # Note: resource limits (memory_limit_mb, cpu_limit) are not yet implemented
+
+  # Evaluation strategies
+  cascade_evaluation: true            # Use cascade evaluation to filter bad solutions early
+  cascade_thresholds:                 # Thresholds for advancing to next evaluation stage
+    - 0.5                             # First stage threshold
+    - 0.75                            # Second stage threshold
+    - 0.9                             # Third stage threshold
+
+  # Parallel evaluation
+  parallel_evaluations: 4             # Number of parallel evaluations
+  # Note: distributed evaluation is not yet implemented
+
+  # LLM-based feedback (experimental)
+  use_llm_feedback: false             # Use LLM to evaluate code quality
+  llm_feedback_weight: 0.1            # Weight for LLM feedback in final score
