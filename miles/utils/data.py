@@ -86,13 +86,19 @@ class Dataset:
                 else:
                     tools = None
                 template_input = [{"role": "user", "content": prompt_content}] if multimodal_keys else prompt_content
-                prompt = tokenizer.apply_chat_template(
-                    template_input,
-                    tools,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    **apply_chat_template_kwargs,
+                # hacking for DeepSeek V3.2
+                try:
+                    prompt = tokenizer.apply_chat_template(
+                        template_input,
+                        tools,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        **apply_chat_template_kwargs,
                 )
+                except Exception as e:
+                    from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+                    encode_config = dict(thinking_mode="thinking", drop_thinking=True, add_default_bos_token=True)
+                    prompt = encode_messages(template_input, **encode_config)
 
             else:
                 prompt = prompt_content

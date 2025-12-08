@@ -1,0 +1,122 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from miles.utils.deepseek_v32_patch import apply_deepseek_v32_patch
+apply_deepseek_v32_patch()
+
+from turtle import mode
+import ray
+from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
+from typing import Optional
+
+try:
+    from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH
+except ImportError:
+    GPU_MEMORY_TYPE_CUDA_GRAPH = None
+
+from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.utils.arguments import parse_args
+from miles.utils.logging_utils import configure_logger
+from miles.utils.tracking_utils import init_tracking
+
+
+def train(args):
+    configure_logger()
+    # allocate the GPUs
+    pgs = create_placement_groups(args)
+    init_tracking(args)
+
+    # create the rollout manager, with sglang engines inside.
+    # need to initialize rollout manager first to calculate num_rollout
+    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+
+    # create the actor and critic models
+    actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
+
+    if args.offload_rollout:
+        ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+
+    # always update weight first so that sglang has the loaded weights from training.
+    print("[DEBUG] train.py first update weights")
+    actor_model.update_weights()
+
+    if args.check_weight_update_equal:
+        ray.get(rollout_manager.check_weights.remote(action="compare"))
+
+    if args.offload_rollout:
+        if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
+            ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_CUDA_GRAPH]))
+        ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
+
+    # special case for eval-only
+    if args.num_rollout == 0 and args.eval_interval is not None:
+        ray.get(rollout_manager.eval.remote(rollout_id=0))
+
+    def offload_train():
+        if args.offload_train:
+            if args.use_critic:
+                critic_model.offload()
+                if rollout_id >= args.num_critic_only_steps:
+                    actor_model.offload()
+            else:
+                actor_model.offload()
+        else:
+            actor_model.clear_memory()
+
+    def onload_rollout():
+        if args.offload_rollout:
+            ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+
+    # train loop.
+    # note that for async training, one can change the position of the sync operation(ray.get).
+    for rollout_id in range(args.start_rollout_id, args.num_rollout):
+        # TODO extract the duplicated eval logic
+        if args.eval_interval is not None and rollout_id == 0:
+            ray.get(rollout_manager.eval.remote(rollout_id))
+
+        rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
+
+        if args.offload_rollout:
+            ray.get(rollout_manager.offload.remote())
+
+        if args.use_critic:
+            critic_train_handle = critic_model.async_train(rollout_id, rollout_data_ref)
+            if rollout_id >= args.num_critic_only_steps:
+                ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
+            ray.get(critic_train_handle)
+        else:
+            ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
+
+        if args.save_interval is not None and (
+            (rollout_id + 1) % args.save_interval == 0
+            or (num_rollout_per_epoch is not None and (rollout_id + 1) % num_rollout_per_epoch == 0)
+        ):
+            if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
+                actor_model.save_model(rollout_id)
+            if args.use_critic:
+                critic_model.save_model(rollout_id)
+            if args.rollout_global_dataset:
+                ray.get(rollout_manager.save.remote(rollout_id))
+
+        offload_train()
+        onload_rollout()
+        actor_model.update_weights()
+
+        if args.offload_rollout:
+            if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
+                ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_CUDA_GRAPH]))
+            ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
+
+        if args.eval_interval is not None and (
+            (rollout_id + 1) % args.eval_interval == 0
+            or (num_rollout_per_epoch is not None and (rollout_id + 1) % num_rollout_per_epoch == 0)
+        ):
+            ray.get(rollout_manager.eval.remote(rollout_id))
+
+    ray.get(rollout_manager.dispose.remote())
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    train(args)
