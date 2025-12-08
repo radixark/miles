@@ -447,8 +447,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--data-source-path",
                 type=str,
-                default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
-                help="The data source class for rollout data.",
+                default="miles.ray.rollout_data_source.RolloutDataSourceWithBuffer",
+                help="The data source class for rollout data (supports global dataset and evolving gym).",
             )
             parser.add_argument(
                 "--prompt-data",

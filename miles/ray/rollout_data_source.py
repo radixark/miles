@@ -98,8 +98,8 @@ class EvolvingGymManager:
 
         # Optional length check (consistent with global, no filtering by default)
         if max_length is not None:
-            assert False, "For now, we don't discard overlong prompts"
-            if len(tokenizer(prompt_dict)["input_ids"]) > max_length:
+            tokenized_len = len(tokenizer(prompt_str, add_special_tokens=False)["input_ids"])
+            if tokenized_len > max_length:
                 return None
         
         return Sample(
