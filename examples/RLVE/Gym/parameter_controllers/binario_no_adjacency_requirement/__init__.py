@@ -1,0 +1,1 @@
+from .parameter_controller import Binario_NoAdjacencyRequirement_ParameterController
