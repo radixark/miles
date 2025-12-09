@@ -1,0 +1,1 @@
+from .parameter_controller import MaxPermutation_ParameterController

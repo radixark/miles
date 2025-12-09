@@ -1,0 +1,1 @@
+from .environment import MaxMultiplicationFixedSum_Environment
