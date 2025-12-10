@@ -22,7 +22,7 @@ ENV AMDGPU_TARGET=gfx950
 ###########################################
 ##############1. Install AITER#############
 ###########################################
-WORKDIR /sgl-workspace
+WORKDIR /app
 
 RUN pip uninstall -y aiter || true
 RUN rm -rf aiter
@@ -39,7 +39,7 @@ RUN git clone https://github.com/ROCm/aiter.git \
 ###########################################
 ####2. Install TransformerEngine for gfx950
 ###########################################
-WORKDIR /sgl-workspace
+WORKDIR /app
 
 RUN rm -rf TransformerEngine
 RUN git clone https://github.com/ROCm/TransformerEngine.git \
@@ -62,7 +62,7 @@ RUN cd TransformerEngine && pip install . -v
 #########################################
 ####3. Install Megatron-LM (NVIDIA version)
 #########################################
-WORKDIR /sgl-workspace
+WORKDIR /app
 
 RUN pip install "numpy>=1.21.0,<2.0" --force-reinstall
 
@@ -99,7 +99,7 @@ RUN pip install "ray[data,train,tune,serve]==2.47.1"
 #########################################
 ###6. Install torch_memory_saver#########
 #########################################
-RUN pip install "git+https://github.com/yushengsu-thu/torch_memory_saver.git"
+RUN pip install torch_memory_saver
 #########################################
 #########################################
 
@@ -107,7 +107,7 @@ RUN pip install "git+https://github.com/yushengsu-thu/torch_memory_saver.git"
 #######################################
 ####7. Install Apex for ROCm###########
 #######################################
-WORKDIR /sgl-workspace
+WORKDIR /app
 
 RUN pip uninstall -y apex || true
 RUN rm -rf apex
@@ -157,7 +157,7 @@ ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
 ###########################################
 ##############Install SGLang###############
 ###########################################
-WORKDIR /sgl-workspace
+WORKDIR /app
 
 # Install prerequisites
 RUN pip install IPython orjson python-multipart torchao==0.9.0 pybind11
@@ -195,12 +195,12 @@ RUN python -m pip cache purge
 ###########################################
 
 # Copy patches from slime repo
-COPY amd_patch/latest /sgl-workspace/patch
+COPY amd_patch/latest /app/patch
 
 # Apply Megatron patches
-RUN cd /sgl-workspace/Megatron-LM \
-    && git apply /sgl-workspace/patch/amd_megatron_fused_kernels_init.patch \
-    && git apply /sgl-workspace/patch/megatron.patch --3way \
+RUN cd /app/Megatron-LM \
+    && git apply /app/patch/amd_megatron_fused_kernels_init.patch \
+    && git apply /app/patch/megatron.patch --3way \
     && if grep -R -n '^<<<<<<< ' .; then \
         echo "Patch failed to apply cleanly. Please resolve conflicts." && \
         exit 1; \
@@ -208,16 +208,16 @@ RUN cd /sgl-workspace/Megatron-LM \
     && pip install -e . -v
 
 # Apply SGLang patch
-RUN cd /sgl-workspace/sglang \
-    && git apply /sgl-workspace/patch/sglang.patch || echo "Check patch compatibility with v0.5.6" \
+RUN cd /app/sglang \
+    && git apply /app/patch/sglang.patch || echo "Check patch compatibility with v0.5.6" \
     && if grep -R -n '^<<<<<<< ' .; then \
         echo "Patch failed to apply cleanly. Please resolve conflicts." && \
         exit 1; \
     fi
 
 # Copy MOE configs for gfx950/MI355
-RUN find /sgl-workspace/sglang/python/sglang/srt/layers/quantization/configs/ \
-         /sgl-workspace/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/ \
+RUN find /app/sglang/python/sglang/srt/layers/quantization/configs/ \
+         /app/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/ \
          -type f -name '*MI300X*' 2>/dev/null | while read f; do \
     cp "$f" "$(echo $f | sed 's/MI300X/MI300X_VF/')" 2>/dev/null || true; \
     cp "$f" "$(echo $f | sed 's/MI300X/MI355/')" 2>/dev/null || true; \
@@ -246,6 +246,7 @@ RUN pip install click==8.2.1
 ########################################
 
 
-WORKDIR /sgl-workspace
+WORKDIR /app
 
 CMD ["/usr/bin/bash"]
+
