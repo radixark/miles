@@ -29,6 +29,12 @@ from miles.utils.types import Sample
 
 from .rm_hub import async_rm, batched_async_rm
 
+# Optional wandb import for RLVE metrics logging
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 __all__ = ["generate_rollout"]
 
 logger = logging.getLogger(__name__)
@@ -566,6 +572,34 @@ def generate_rollout(
         args, rollout_id, data_buffer.get_samples, evaluation=evaluation
     )
     data_buffer.add_samples(aborted_samples)
+
+    # RLVE difficulty tracking and wandb logging
+    if getattr(args, 'rlve', False) and not evaluation:
+        if hasattr(data_buffer, 'rlve_manager') and data_buffer.rlve_manager is not None:
+            # Flatten samples for RLVE update
+            all_samples = []
+            for group in output.samples:
+                if isinstance(group[0], list):
+                    for subgroup in group:
+                        all_samples.extend(subgroup)
+                else:
+                    all_samples.extend(group)
+
+            # Update RLVE manager (tracks accuracy, may increase difficulty)
+            log_dict = data_buffer.rlve_manager.update(samples=all_samples)
+
+            # Log to wandb if enabled
+            if getattr(args, 'use_wandb', False) and wandb is not None:
+                # Define RLVE metrics to use rollout/step as x-axis
+                for k in list(log_dict.keys()):
+                    if k.startswith("RLVE/"):
+                        try:
+                            wandb.define_metric(k, step_metric="rollout/step")
+                        except Exception:
+                            pass  # Metric may already be defined
+                log_dict["rollout/step"] = rollout_id
+                wandb.log(log_dict)
+
     return output
 
 
