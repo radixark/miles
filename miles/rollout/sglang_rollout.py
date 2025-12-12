@@ -581,6 +581,7 @@ def generate_rollout(
     # RLVE difficulty tracking and wandb logging
     # Use all_data (including filtered samples) for accurate accuracy tracking
     if getattr(args, 'rlve', False) and not evaluation:
+        assert getattr(args, "rm_type", None) == "rlve", f"Expected rm_type to be 'rlve' when --rlve is set, got {args.rm_type}"
         if hasattr(data_buffer, 'rlve_manager') and data_buffer.rlve_manager is not None:
             # Flatten all_data (all samples including filtered) for RLVE update
             all_samples = []
