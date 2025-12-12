@@ -1,1 +1,0 @@
-from .environment import InversionPairK_Counting_Environment

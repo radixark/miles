@@ -1,1 +1,0 @@
-from .environment import SumTriangleArea_Environment

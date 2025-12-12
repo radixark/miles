@@ -1,1 +1,0 @@
-from .environment import MaxTreeXorPath_Environment

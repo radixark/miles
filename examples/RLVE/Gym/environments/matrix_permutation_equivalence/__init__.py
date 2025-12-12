@@ -1,1 +1,0 @@
-from .environment import MatrixPermutationEquivalence_Environment

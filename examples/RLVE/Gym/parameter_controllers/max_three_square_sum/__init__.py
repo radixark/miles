@@ -1,1 +1,0 @@
-from .parameter_controller import MaxThreeSquareSum_ParameterController

@@ -1,1 +1,0 @@
-from .environment import PanSolarPanels_Environment

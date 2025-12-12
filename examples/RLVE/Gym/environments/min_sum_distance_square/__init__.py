@@ -1,1 +1,0 @@
-from .environment import MinSumDistanceSquare_Environment
