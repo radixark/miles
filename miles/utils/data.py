@@ -144,7 +144,15 @@ class Dataset:
         logger.info(f"Loading dataset from {self.raw_file_path} using Hugging Face datasets.")
 
         # Determine file type and load using datasets library for memory-mapped access
-        file_type = "json" if self.raw_file_path.endswith(".jsonl") else "parquet"
+        if self.raw_file_path.endswith(".jsonl"):
+            file_type = "json"
+        elif self.raw_file_path.endswith(".parquet"):
+            file_type = "parquet"
+        else:
+            raise ValueError(
+                f"Unsupported file format: {self.raw_file_path}. Supported formats are .jsonl and .parquet."
+            )
+
         self.hf_dataset = datasets.load_dataset(file_type, data_files=self.raw_file_path, split="train")
 
         # Apply row slicing if specified
