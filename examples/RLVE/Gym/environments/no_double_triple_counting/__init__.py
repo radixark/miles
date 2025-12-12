@@ -1,1 +1,0 @@
-from .environment import NoDoubleTripleCounting_Environment

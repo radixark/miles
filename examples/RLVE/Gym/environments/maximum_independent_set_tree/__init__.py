@@ -1,1 +1,0 @@
-from .environment import Maximum_IndependentSet_Tree_Environment

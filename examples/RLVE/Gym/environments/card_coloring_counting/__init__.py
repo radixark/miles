@@ -1,1 +1,0 @@
-from .environment import CardColoringCounting_Environment

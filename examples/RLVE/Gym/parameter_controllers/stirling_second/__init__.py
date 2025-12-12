@@ -1,1 +1,0 @@
-from .parameter_controller import StirlingSecond_ParameterController

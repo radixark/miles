@@ -1,1 +1,0 @@
-from .environment import MostNumEdge_NonSelfIsomorphism_Environment
