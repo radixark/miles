@@ -83,7 +83,8 @@ def train(args):
                 actor_model.save_model(rollout_id)
             if args.use_critic:
                 critic_model.save_model(rollout_id)
-            if args.rollout_global_dataset:
+            if args.rollout_global_dataset or args.rlve:
+                # Persist rollout data source state (global dataset offset or RLVE manager state)
                 ray.get(rollout_manager.save.remote(rollout_id))
 
         offload_train()

@@ -216,6 +216,11 @@ class RolloutDataSource:
                 "args.rollout_global_dataset and args.rlve are mutually exclusive. "
                 "Set only one of them."
             )
+        if not has_global_dataset and not has_rlve:
+            raise ValueError(
+                "No rollout data source configured. "
+                "Enable either --rollout-global-dataset or --rlve."
+            )
 
         if has_global_dataset:
             tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
@@ -239,12 +244,12 @@ class RolloutDataSource:
             if self.args.rollout_shuffle:
                 self.dataset.shuffle(self.epoch_id)
         elif has_rlve:
+            if not getattr(args, "custom_prompt_preprocessor", None):
+                raise ValueError("RLVE requires --custom-prompt-preprocessor to be set (TinyZero or ChatTemplate_NoSystemPrompt).")
+
             self.dataset = None
             tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
             self.rlve_manager = RLVEManager(args, tokenizer)
-        else:
-            # No data source - will generate empty samples
-            self.dataset = None
 
     def get_samples(self, num_samples):
         samples = []
