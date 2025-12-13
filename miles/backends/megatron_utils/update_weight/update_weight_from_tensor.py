@@ -116,6 +116,14 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
+        from sglang.srt.debug_utils.dumper import get_tensor_info
+        for name, param in megatron_local_weights.items():
+            if ("experts" in name) and ("weight100" not in name):
+                continue
+            if ("layers.20" not in name) and ("layers.30" not in name):
+                continue
+            print(f"hi [{torch.distributed.get_rank()}] update_weights::megatron_local_weights {name=} {get_tensor_info(param)=}")
+
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
