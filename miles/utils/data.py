@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import re
+from typing import Dict, List, Union
 
 import numpy as np
 import pandas as pd
@@ -12,9 +13,55 @@ from miles.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
 
-__all__ = ["Dataset"]
+__all__ = ["Dataset", "custom_prompt_preprocessor"]
 
 logger = logging.getLogger(__name__)
+
+
+# RLVE TinyZero prompt template
+TINYZERO_TEMPLATE = """A conversation between User and Assistant. The user asks a question, and the assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. Show your work in <think> </think> tags, and return the final answer in <answer> </answer> tags.
+User: {prompt}
+Assistant: Let me solve this step by step.
+<think>"""
+
+
+def custom_prompt_preprocessor(
+    args, user_prompt: str, apply_chat_template: bool
+) -> Union[str, List[Dict[str, str]]]:
+    """
+    Preprocess user prompts for RLVE training.
+
+    Args:
+        args: Training arguments with custom_prompt_preprocessor setting
+        user_prompt: The raw user prompt string
+        apply_chat_template: Whether chat template will be applied
+
+    Returns:
+        Processed prompt (string for TinyZero, list of dicts for ChatTemplate)
+    """
+    preprocessor = getattr(args, 'custom_prompt_preprocessor', None)
+
+    if preprocessor is None:
+        # No preprocessing - return as-is or wrap in chat format if needed
+        if apply_chat_template:
+            if isinstance(user_prompt, list) and len(user_prompt) > 0 and isinstance(user_prompt[0], dict):
+                return user_prompt
+            return [{"role": "user", "content": user_prompt}]
+        return user_prompt
+
+    if preprocessor == "TinyZero":
+        assert not apply_chat_template, "TinyZero preprocessor should not use chat template"
+        return TINYZERO_TEMPLATE.format(prompt=user_prompt)
+
+    elif preprocessor == "ChatTemplate_NoSystemPrompt":
+        assert apply_chat_template, "ChatTemplate_NoSystemPrompt requires apply_chat_template=True"
+        # Check if user_prompt is already in chat format (list of dicts)
+        if isinstance(user_prompt, list) and len(user_prompt) > 0 and isinstance(user_prompt[0], dict) and "role" in user_prompt[0]:
+            return user_prompt
+        return [{"role": "user", "content": user_prompt}]
+
+    else:
+        raise NotImplementedError(f"User prompt processor {preprocessor} not implemented.")
 
 
 # TODO: don't read the whole file into memory.

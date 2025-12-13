@@ -8,6 +8,7 @@ except ImportError:
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.arguments import parse_args
+from examples.RLVE.rlve_arguments import add_rlve_arguments
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils import init_tracking
@@ -83,7 +84,8 @@ def train(args):
                 actor_model.save_model(rollout_id)
             if args.use_critic:
                 critic_model.save_model(rollout_id)
-            if args.rollout_global_dataset:
+            if args.rollout_global_dataset or args.rlve:
+                # Persist rollout data source state (global dataset offset or RLVE manager state)
                 ray.get(rollout_manager.save.remote(rollout_id))
 
         offload_train()
@@ -102,5 +104,5 @@ def train(args):
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = parse_args(add_custom_arguments=add_rlve_arguments)
     train(args)
