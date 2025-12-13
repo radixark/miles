@@ -3,6 +3,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGH
 
 from miles.ray.placement_group import create_actor_group, create_placement_groups, create_rollout_manager
 from miles.utils.arguments import parse_args
+from examples.RLVE.rlve_arguments import add_rlve_arguments
 from miles.utils.wandb_utils import init_wandb_primary
 
 
@@ -93,5 +94,5 @@ def train(args):
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = parse_args(add_custom_arguments=add_rlve_arguments)
     train(args)
