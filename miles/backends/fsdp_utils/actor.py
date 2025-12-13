@@ -363,7 +363,11 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_data = {f"{store_prefix}log_probs": []}
             with timer(f"{store_prefix}log_probs"), torch.no_grad():
                 for batch in self.prof.iterate_train_log_probs(
-                    tqdm(packed_batches, desc=f"{store_prefix}log_probs", disable=dist.get_rank() != 0)
+                    tqdm(
+                        packed_batches,
+                        desc=f"{store_prefix}log_probs",
+                        disable=dist.get_rank() != 0,
+                    )
                 ):
                     model_args = self._get_model_inputs_args(batch)
                     logits = active_model(**model_args).logits.squeeze(0).float()
@@ -480,6 +484,31 @@ class FSDPTrainRayActor(TrainRayActor):
 
         with inverse_timer("train_wait"), timer("train"):
             rollout_data = process_rollout_data(self.args, rollout_data_ref, self.dp_rank, self.dp_size)
+
+            if getattr(self.args, "pipeline_rl", False) and "weight_version_last" in rollout_data:
+                last_versions_raw = rollout_data["weight_version_last"]
+                current_version = self.weight_updater.weight_version
+                last_versions = []
+                for v in last_versions_raw:
+                    if v is None:
+                        last_versions.append(current_version)
+                        continue
+                    try:
+                        last_versions.append(int(v))
+                    except (TypeError, ValueError):
+                        last_versions.append(current_version)
+
+                lags = [current_version - v for v in last_versions]
+                rollout_data["weight_lag"] = lags
+
+                max_lag = getattr(self.args, "pipeline_max_weight_lag", None)
+                if max_lag is not None:
+                    keep_idx = [i for i, lag in enumerate(lags) if lag <= max_lag]
+                    if len(keep_idx) < len(lags):
+                        num_samples = len(lags)
+                        for key, val in list(rollout_data.items()):
+                            if isinstance(val, list) and len(val) == num_samples:
+                                rollout_data[key] = [val[i] for i in keep_idx]
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
@@ -498,7 +527,13 @@ class FSDPTrainRayActor(TrainRayActor):
             if raw_reward_list:
                 log_dict["rollout/raw_reward"] = sum(raw_reward_list) / len(raw_reward_list)
 
-        for metric_key in ["log_probs", "rollout_log_probs", "ref_log_probs", "advantages", "returns"]:
+        for metric_key in [
+            "log_probs",
+            "rollout_log_probs",
+            "ref_log_probs",
+            "advantages",
+            "returns",
+        ]:
             if metric_key not in packed_batches[0]:
                 continue
             val = torch.tensor([0.0], device=torch.cuda.current_device())
@@ -663,7 +698,9 @@ class FSDPTrainRayActor(TrainRayActor):
             tis = torch.exp(old_log_probs - rollout_log_probs)
             ois = (-ppo_kl).exp()
             tis_clip = torch.clamp(
-                tis, min=getattr(self.args, "tis_clip_low", 0.1), max=getattr(self.args, "tis_clip", 2.0)
+                tis,
+                min=getattr(self.args, "tis_clip_low", 0.1),
+                max=getattr(self.args, "tis_clip", 2.0),
             )
             tis_clipfrac = tis_clip != tis
 
@@ -837,7 +874,6 @@ class FSDPTrainRayActor(TrainRayActor):
         input_ids = packed_sequence["tokens"].unsqueeze(0)
         position_ids = packed_sequence["position_ids"].unsqueeze(0)
         if self.cp_size > 1:
-
             packed_sequence = pad_packed_sequence_with_cp(packed_sequence, self.cp_size)
 
             if not packed_sequence["cu_seqlens"].is_cuda:

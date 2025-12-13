@@ -1,3 +1,4 @@
+import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -22,6 +23,8 @@ from miles.utils.ppo_utils import (
 from miles.utils.types import RolloutBatch
 
 from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
+
+logger = logging.getLogger(__name__)
 
 
 def get_responses(
@@ -73,7 +76,10 @@ def get_responses(
                 total_length, response_length
             )
 
-            logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
+            logits_0, logits_1 = (
+                logits[end : end + chunk_size],
+                logits[end + chunk_size : end + 2 * chunk_size],
+            )
             end += 2 * chunk_size
 
             logits_0 = logits_0[logits_offset[0][0] - chunks_offset[0][0] : logits_offset[0][1] - chunks_offset[0][0]]
@@ -134,7 +140,10 @@ def get_log_probs_and_entropy(
         response_lengths=response_lengths,
     ):
         log_prob, entropy = calculate_log_probs_and_entropy(
-            logits_chunk, tokens_chunk, mpu.get_tensor_model_parallel_group(), with_entropy=with_entropy
+            logits_chunk,
+            tokens_chunk,
+            mpu.get_tensor_model_parallel_group(),
+            with_entropy=with_entropy,
         )
 
         log_probs_list.append(log_prob.squeeze(-1))
@@ -370,14 +379,27 @@ def vanilla_tis_function(
 ) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, torch.Tensor]]:
     rollout_log_probs = torch.cat(rollout_log_probs, dim=0)
     old_log_probs = torch.cat(train_log_probs, dim=0)
+    loss_mask = torch.cat(loss_masks, dim=0).bool()
+    assert (
+        rollout_log_probs.numel() == old_log_probs.numel() == loss_mask.numel()
+    ), f"Shape mismatch for TIS: {rollout_log_probs.shape}, {old_log_probs.shape}, {loss_mask.shape}"
     tis = torch.exp(old_log_probs - rollout_log_probs)
     tis_abs = (torch.exp(old_log_probs - rollout_log_probs) - 1).abs()
     tis_weights = torch.clamp(tis, min=args.tis_clip_low, max=args.tis_clip)
     tis_clipfrac = (tis_weights != tis).float()
+
+    masked_weights = tis_weights[loss_mask]
+    if masked_weights.numel() == 0:
+        ess_ratio = tis_weights.new_tensor(1.0)
+    else:
+        ess_ratio = (masked_weights.sum() ** 2) / (
+            masked_weights.numel() * torch.clamp_min((masked_weights**2).sum(), 1e-12)
+        )
     metrics = {
         "tis": tis.clone().detach(),
         "tis_clipfrac": tis_clipfrac.clone().detach(),
         "tis_abs": tis_abs.clone().detach(),
+        "ess_ratio": ess_ratio.clone().detach(),
     }
     pg_loss = pg_loss * tis_weights
     return pg_loss, loss_masks, metrics
@@ -394,16 +416,31 @@ def icepop_function(
 ) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, torch.Tensor]]:
     rollout_log_probs = torch.cat(rollout_log_probs, dim=0)
     old_log_probs = torch.cat(train_log_probs, dim=0)
+    loss_mask = torch.cat(loss_masks, dim=0).bool()
+    assert (
+        rollout_log_probs.numel() == old_log_probs.numel() == loss_mask.numel()
+    ), f"Shape mismatch for TIS: {rollout_log_probs.shape}, {old_log_probs.shape}, {loss_mask.shape}"
     ice_ratio = torch.exp(old_log_probs - rollout_log_probs)
     ice_abs = (torch.exp(old_log_probs - rollout_log_probs) - 1).abs()
     ice_weight = torch.where(
-        (ice_ratio >= args.tis_clip_low) & (ice_ratio <= args.tis_clip), ice_ratio, torch.zeros_like(ice_ratio)
+        (ice_ratio >= args.tis_clip_low) & (ice_ratio <= args.tis_clip),
+        ice_ratio,
+        torch.zeros_like(ice_ratio),
     )
     ice_clipfrac = (ice_weight != ice_ratio).float()
+
+    masked_weights = ice_weight[loss_mask]
+    if masked_weights.numel() == 0:
+        ess_ratio = ice_weight.new_tensor(1.0)
+    else:
+        ess_ratio = (masked_weights.sum() ** 2) / (
+            masked_weights.numel() * torch.clamp_min((masked_weights**2).sum(), 1e-12)
+        )
     metrics = {
         "tis": ice_ratio.clone().detach(),
         "tis_clipfrac": ice_clipfrac.clone().detach(),
         "tis_abs": ice_abs.clone().detach(),
+        "ess_ratio": ess_ratio.clone().detach(),
     }
     pg_loss = pg_loss * ice_weight
     return pg_loss, loss_masks, metrics
@@ -587,7 +624,22 @@ def policy_loss_function(
         # Assume all metrics are already cloned and detached
         for metric_key, metric_value in tis_metrics.items():
             key_name = f"{metric_key}"
-            reported_loss[key_name] = sum_of_sample_mean(metric_value)
+            if metric_value.dim() == 0:
+                reported_loss[key_name] = metric_value
+            else:
+                reported_loss[key_name] = sum_of_sample_mean(metric_value)
+
+        if getattr(args, "pipeline_rl", False) and "ess_ratio" in tis_metrics:
+            min_ess = getattr(args, "pipeline_min_ess_ratio", None)
+            if (
+                min_ess is not None
+                and mpu.get_data_parallel_rank(with_context_parallel=True) == 0
+                and mpu.get_tensor_model_parallel_rank() == 0
+                and mpu.is_pipeline_last_stage()
+            ):
+                ess_ratio_value = tis_metrics["ess_ratio"].item()
+                if ess_ratio_value < min_ess:
+                    logger.warning(f"PipelineRL ess_ratio below threshold: {ess_ratio_value:.4f} < {min_ess}")
 
     if args.use_opsm:
         reported_loss["opsm_clipfrac"] = opsm_clipfrac

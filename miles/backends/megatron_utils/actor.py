@@ -178,6 +178,31 @@ class MegatronTrainRayActor(TrainRayActor):
             mpu.get_data_parallel_rank(with_context_parallel=False),
             mpu.get_data_parallel_world_size(with_context_parallel=False),
         )
+
+        if getattr(self.args, "pipeline_rl", False) and "weight_version_last" in rollout_data:
+            last_versions_raw = rollout_data["weight_version_last"]
+            current_version = self.weight_updater.weight_version
+            last_versions = []
+            for v in last_versions_raw:
+                if v is None:
+                    last_versions.append(current_version)
+                    continue
+                try:
+                    last_versions.append(int(v))
+                except (TypeError, ValueError):
+                    last_versions.append(current_version)
+
+            lags = [current_version - v for v in last_versions]
+            rollout_data["weight_lag"] = lags
+
+            max_lag = getattr(self.args, "pipeline_max_weight_lag", None)
+            if max_lag is not None:
+                keep_idx = [i for i, lag in enumerate(lags) if lag <= max_lag]
+                if len(keep_idx) < len(lags):
+                    num_samples = len(lags)
+                    for key, val in list(rollout_data.items()):
+                        if isinstance(val, list) and len(val) == num_samples:
+                            rollout_data[key] = [val[i] for i in keep_idx]
         # TODO: this is ugly, move to somewhere else?
         # move tokens to GPU in advance
         rollout_data["tokens"] = [
@@ -296,7 +321,6 @@ class MegatronTrainRayActor(TrainRayActor):
         num_microbatches: list[int],
         store_prefix: str = "",
     ) -> dict[str, list[torch.Tensor]]:
-
         with timer(f"{store_prefix}log_probs"):
             return forward_only(
                 get_log_probs_and_entropy,
@@ -483,7 +507,12 @@ class MegatronTrainRayActor(TrainRayActor):
             destroy_process_groups()
 
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
-        old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
+        old_args = (
+            self.args.load,
+            self.args.no_load_optim,
+            self.args.no_load_rng,
+            self.args.finetune,
+        )
         self.args.load = path
         self.args.no_load_optim = True
         self.args.no_load_rng = True

@@ -14,6 +14,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.rollout.base_types import call_rollout_fn
+from miles.rollout.inflight_actor import InflightRolloutGenerator
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
@@ -47,11 +48,19 @@ class RolloutManager:
         self.pg = pg
         _start_router(args)
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        init_tracking(
+            args,
+            primary=False,
+            router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
+        )
         init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
+
+        self._pipeline_inflight = None
+        if getattr(self.args, "pipeline_rl", False) and not self.args.debug_train_only:
+            self._pipeline_inflight = InflightRolloutGenerator(self.args, self.data_source.get_samples)
 
         self.generate_rollout = load_function(self.args.rollout_function_path)
         self.eval_generate_rollout = load_function(self.args.eval_function_path)
@@ -71,11 +80,16 @@ class RolloutManager:
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
 
+        if self._pipeline_inflight is not None:
+            self._pipeline_inflight.start()
+
         self._metric_checker = MetricChecker.maybe_create(args)
         if self.args.use_fault_tolerance:
             self._health_monitor = RolloutHealthMonitor(self, args)
 
     def dispose(self):
+        if self._pipeline_inflight is not None:
+            self._pipeline_inflight.stop()
         if self._metric_checker is not None:
             self._metric_checker.dispose()
 
@@ -136,7 +150,21 @@ class RolloutManager:
     def check_weights(self, action: str):
         return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
 
+    def get_rollout_weight_versions(self):
+        return ray.get([engine.get_weight_version.remote() for engine in self.rollout_engines])
+
     def _get_rollout_data(self, rollout_id):
+        if getattr(self.args, "pipeline_rl", False) and self._pipeline_inflight is not None:
+            groups, metrics = self._pipeline_inflight.get_next_groups(self.args.rollout_batch_size)
+            samples = []
+            for group in groups:
+                if isinstance(group[0], list):
+                    samples += sum(group, [])
+                else:
+                    samples += group
+            samples = sorted(samples, key=lambda sample: sample.index)
+            return samples, metrics
+
         if self.args.load_debug_rollout_data:
             data = torch.load(
                 open(self.args.load_debug_rollout_data.format(rollout_id=rollout_id), "rb"),
@@ -234,6 +262,22 @@ class RolloutManager:
             "sample_indices": [sample.index for sample in samples],
         }
 
+        train_data["weight_version_last"] = [
+            sample.weight_versions[-1] if sample.weight_versions else None for sample in samples
+        ]
+        train_data["weight_version_first"] = [
+            sample.weight_versions[0] if sample.weight_versions else None for sample in samples
+        ]
+
+        if (
+            getattr(self.args, "pipeline_rl", False)
+            and samples[0].metadata
+            and "weight_version_segments" in samples[0].metadata
+        ):
+            train_data["weight_version_segments"] = [
+                sample.metadata.get("weight_version_segments") for sample in samples
+            ]
+
         # loss mask
         # TODO: compress the loss mask
         loss_masks = []
@@ -311,6 +355,9 @@ class RolloutManager:
                 "sample_indices",
                 "rollout_log_probs",
                 "rollout_routed_experts",
+                "weight_version_first",
+                "weight_version_last",
+                "weight_version_segments",
                 "prompt",
                 "teacher_log_probs",
             ]:

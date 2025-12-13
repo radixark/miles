@@ -116,7 +116,10 @@ class SGLangEngine(RayActor):
         self.server_port = server_args_dict["port"]
 
         if self.args.rollout_external:
-            self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
+            self._init_external(
+                server_args_dict,
+                external_engine_need_check_fields=external_engine_need_check_fields,
+            )
         else:
             self._init_normal(server_args_dict)
 
@@ -320,7 +323,14 @@ class SGLangEngine(RayActor):
             pass
 
     def update_weights_from_distributed(
-        self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        flush_cache: bool = False,
+        weight_version: str | None = None,
+        load_format: str | None = None,
     ):
         payload = {
             "names": names,
@@ -329,6 +339,8 @@ class SGLangEngine(RayActor):
             "group_name": group_name,
             "flush_cache": flush_cache,
         }
+        if load_format is not None:
+            payload["load_format"] = load_format
         if weight_version is not None:
             payload["weight_version"] = weight_version
         return self._make_request(
@@ -336,15 +348,22 @@ class SGLangEngine(RayActor):
             payload,
         )
 
-    def pause_generation(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/pause_generation", json={})
+    def pause_generation(self, mode: str | None = None):
+        if self.node_rank != 0:
+            return
+        payload = {}
+        if mode is not None:
+            payload["mode"] = mode
+        response = requests.post(f"http://{self.server_host}:{self.server_port}/pause_generation", json=payload)
         response.raise_for_status()
-        return response
+        return response.json()
 
     def continue_generation(self):
+        if self.node_rank != 0:
+            return
         response = requests.post(f"http://{self.server_host}:{self.server_port}/continue_generation", json={})
         response.raise_for_status()
-        return response
+        return response.json()
 
     def start_profile(
         self,

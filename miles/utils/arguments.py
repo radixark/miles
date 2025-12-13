@@ -11,7 +11,6 @@ from transformers import AutoConfig
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
-
 from miles.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)
@@ -39,13 +38,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         def add_cluster_arguments(parser):
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
             parser.add_argument(
-                "--actor-num-gpus-per-node", type=int, default=8, help="Number of gpus per node for training actor"
+                "--actor-num-gpus-per-node",
+                type=int,
+                default=8,
+                help="Number of gpus per node for training actor",
             )
             parser.add_argument(
-                "--critic-num-nodes", type=int, default=None, help="Number of nodes for training actor"
+                "--critic-num-nodes",
+                type=int,
+                default=None,
+                help="Number of nodes for training actor",
             )
             parser.add_argument(
-                "--critic-num-gpus-per-node", type=int, default=None, help="Number of gpus per node for training actor"
+                "--critic-num-gpus-per-node",
+                type=int,
+                default=None,
+                help="Number of gpus per node for training actor",
             )
 
             parser.add_argument(
@@ -206,10 +214,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="the temperature for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
+                "--rollout-top-p",
+                type=float,
+                default=1.0,
+                help="the top-p for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
+                "--rollout-top-k",
+                type=int,
+                default=-1,
+                help="the top-k for the inference engine during rollout.",
             )
             parser.add_argument(
                 "--rollout-max-context-len",
@@ -511,7 +525,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--n-samples-per-prompt", type=int, default=1, help="Number of responses for each prompt in generation"
+                "--n-samples-per-prompt",
+                type=int,
+                default=1,
+                help="Number of responses for each prompt in generation",
             )
 
             # gbs of the training, note that the gbs is of sample, not of prompts,
@@ -638,7 +655,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for reference model. "
+                "--ref-ckpt-step",
+                type=int,
+                default=None,
+                help="The checkpoint step for reference model. ",
             )
             reset_arg(parser, "--load", type=str, default=None)
             reset_arg(parser, "--save", type=str, default=None)
@@ -708,6 +728,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "gspo",
                     "reinforce_plus_plus",
                     "reinforce_plus_plus_baseline",
+                    "policy_gradient_is",
                     "ppo",
                     "on_policy_distillation",
                 ],
@@ -724,7 +745,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--use-kl-loss", action="store_true", default=False, help="whether to use KL loss from GRPO"
+                "--use-kl-loss",
+                action="store_true",
+                default=False,
+                help="whether to use KL loss from GRPO",
             )
             parser.add_argument(
                 "--kl-loss-coef",
@@ -808,6 +832,64 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
+            )
+
+            parser.add_argument(
+                "--pipeline-rl",
+                action="store_true",
+                default=False,
+                help="Enable PipelineRL-style in-flight weight update and staleness-aware async RL.",
+            )
+            parser.add_argument(
+                "--pipeline-weight-update-interval",
+                type=int,
+                default=1,
+                help="Trainer steps between weight update pushes to inference servers.",
+            )
+            parser.add_argument(
+                "--pipeline-max-weight-lag",
+                type=int,
+                default=4,
+                help="Max allowed weight_version lag between trainer and samples; staler samples are dropped.",
+            )
+            parser.add_argument(
+                "--pipeline-min-ess-ratio",
+                type=float,
+                default=0.5,
+                help="Min effective sample size ratio for a batch; warns when below this threshold.",
+            )
+            parser.add_argument(
+                "--pipeline-kv-recompute-on-update",
+                action="store_true",
+                default=False,
+                help="Pause generation using retract mode (KV recompute). Evaluation-only; may not match paper KV-recompute baseline.",
+            )
+            parser.add_argument(
+                "--pipeline-version-segmentation",
+                type=str,
+                choices=["engine", "host"],
+                default="host",
+                help="Token-level policy version segmentation source; engine prefers exact boundaries when available.",
+            )
+            parser.add_argument(
+                "--pipeline-update-load-format",
+                type=str,
+                choices=["flattened_bucket", "direct"],
+                default="flattened_bucket",
+                help="Select the broadcast/update format for PipelineRL weight sync.",
+            )
+            parser.add_argument(
+                "--pipeline-use-checkpoint-engine",
+                action="store_true",
+                default=False,
+                help="Use SGLang checkpoint-engine IPC endpoint for weight updates (semantics unchanged).",
+            )
+            parser.add_argument(
+                "--disable-pipeline-pause-wait-safe",
+                action="store_false",
+                dest="pipeline_pause_wait_safe",
+                default=True,
+                help="Disable requiring a blocking pause safe-point before in-place weight mutation.",
             )
 
             parser.add_argument(
@@ -1059,7 +1141,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The eval variant for --reward-key",
             )
             parser.add_argument(
-                "--group-rm", action="store_true", default=False, help="Whether to do rm on a whole group."
+                "--group-rm",
+                action="store_true",
+                default=False,
+                help="Whether to do rm on a whole group.",
             )
             parser.add_argument(
                 "--rm-url",
@@ -1418,6 +1503,17 @@ def miles_validate_args(args):
 
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
+
+    if getattr(args, "pipeline_rl", False):
+        if args.pipeline_weight_update_interval <= 0:
+            raise ValueError("pipeline_weight_update_interval must be > 0 when pipeline_rl is enabled")
+        if args.pipeline_max_weight_lag < 0:
+            args.pipeline_max_weight_lag = 0
+
+        if not args.use_tis and not args.use_rollout_logprobs and not args.get_mismatch_metrics:
+            args.use_tis = True
+            if args.tis_clip == 2.0:
+                args.tis_clip = 5.0
 
     if args.get_mismatch_metrics:
         assert (

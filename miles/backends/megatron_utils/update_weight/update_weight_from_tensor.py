@@ -1,3 +1,5 @@
+import logging
+import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -18,6 +20,8 @@ from .update_weight_from_distributed import (
     disconnect_rollout_engines_from_distributed,
     update_weights_from_distributed,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class UpdateWeightFromTensor:
@@ -87,7 +91,10 @@ class UpdateWeightFromTensor:
             if self._is_distributed_src_rank:
                 if self._model_update_groups is not None:
                     disconnect_rollout_engines_from_distributed(
-                        self.args, self._group_name, self._model_update_groups, self.distributed_rollout_engines
+                        self.args,
+                        self._group_name,
+                        self._model_update_groups,
+                        self.distributed_rollout_engines,
                     )
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
@@ -111,7 +118,12 @@ class UpdateWeightFromTensor:
 
         rank = dist.get_rank()
         if rank == 0:
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            if getattr(self.args, "pipeline_rl", False):
+                pause_mode = "retract" if self.args.pipeline_kv_recompute_on_update else "in_place"
+                ray.get([engine.pause_generation.remote(mode=pause_mode) for engine in self.rollout_engines])
+                self._wait_pause_safe()
+            else:
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
@@ -122,6 +134,36 @@ class UpdateWeightFromTensor:
             del long_lived_tensors
 
         dist.barrier(group=get_gloo_group())
+
+        if rank == 0 and getattr(self.args, "pipeline_rl", False):
+            self._verify_weight_versions(expected_version=self.weight_version)
+            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+        dist.barrier(group=get_gloo_group())
+
+    def _wait_pause_safe(self) -> None:
+        if not getattr(self.args, "pipeline_pause_wait_safe", True):
+            return
+
+        start_time = time.time()
+        sleep_s = 0.01
+        while True:
+            try:
+                ray.get([engine.get_weight_version.remote() for engine in self.rollout_engines])
+                return
+            except Exception as e:
+                if time.time() - start_time > 5.0:
+                    logger.warning(f"PipelineRL pause safe wait timed out: {e}")
+                    return
+                time.sleep(sleep_s)
+                sleep_s = min(sleep_s * 2, 0.5)
+
+    def _verify_weight_versions(self, expected_version: int) -> None:
+        expected = str(expected_version)
+        versions = ray.get([engine.get_weight_version.remote() for engine in self.rollout_engines])
+        normalized = [str(v) for v in versions if v is not None]
+        mismatched = [v for v in normalized if v != expected]
+        if mismatched:
+            raise RuntimeError(f"PipelineRL engine weight_version mismatch: expected={expected}, got={normalized}")
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         all_refs = []
@@ -142,6 +184,9 @@ class UpdateWeightFromTensor:
                 self.weight_version,
                 self.distributed_rollout_engines,
                 hf_named_tensors,
+                load_format=(
+                    self.args.pipeline_update_load_format if getattr(self.args, "pipeline_rl", False) else None
+                ),
             )
             if refs_distributed:
                 all_refs.extend(refs_distributed)

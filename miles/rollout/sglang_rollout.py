@@ -144,6 +144,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     output = await post(url, payload)
 
+    response_length_before_generate = sample.response_length
+
     # Extract new response tokens
 
     if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
@@ -159,11 +161,22 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.rollout_log_probs = retrieve_output["rollout_logp"][-sample.response_length :]
         # Notice: currently cannot get the spec info from radix router output.
     else:
-        if "output_token_logprobs" in output["meta_info"]:
+        need_rollout_log_probs = (
+            args.use_tis
+            or args.use_rollout_logprobs
+            or args.get_mismatch_metrics
+            or getattr(args, "pipeline_rl", False)
+        )
+        if "output_token_logprobs" not in output["meta_info"]:
+            if need_rollout_log_probs:
+                raise RuntimeError(
+                    "SGLang rollout did not return output_token_logprobs, but off-policy correction is enabled"
+                )
+            new_response_tokens, new_response_log_probs = [], []
+        else:
             new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
             new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-        else:
-            new_response_tokens, new_response_log_probs = [], []
+            assert len(new_response_tokens) == len(new_response_log_probs)
 
         # Update sample with tokens directly - avoiding re-tokenization
         sample.tokens = sample.tokens + new_response_tokens
@@ -182,7 +195,19 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             )
 
     if "weight_version" in output["meta_info"]:
-        sample.weight_versions.append(output["meta_info"]["weight_version"])
+        weight_version = output["meta_info"]["weight_version"]
+        sample.weight_versions.append(weight_version)
+        if getattr(args, "pipeline_rl", False) and args.pipeline_version_segmentation == "host":
+            segments = sample.metadata.get("weight_version_segments")
+            if segments is None:
+                segments = []
+                sample.metadata["weight_version_segments"] = segments
+            if not segments or segments[-1][0] != weight_version:
+                segments.append((weight_version, response_length_before_generate))
+
+    if "weight_version_segments" in output["meta_info"] and getattr(args, "pipeline_rl", False):
+        if args.pipeline_version_segmentation == "engine":
+            sample.metadata["weight_version_segments"] = output["meta_info"]["weight_version_segments"]
 
     if "routed_experts" in output["meta_info"]:
         assert len(output["meta_info"]["routed_experts"]) == len(sample.tokens) - 1

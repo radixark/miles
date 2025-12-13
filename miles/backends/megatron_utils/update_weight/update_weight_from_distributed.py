@@ -1,3 +1,4 @@
+import logging
 import socket
 import time
 from argparse import Namespace
@@ -15,6 +16,13 @@ from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, named_params_and_buffers
+
+try:
+    from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
+except ImportError:
+    from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
+
+logger = logging.getLogger(__name__)
 
 
 class UpdateWeightFromDistributed:
@@ -73,13 +81,18 @@ class UpdateWeightFromDistributed:
     @torch.no_grad()
     def update_weights(self) -> None:
         """
-        Pause → flush → non-expert (TP) → expert (EP) → continue. Progress on PP source.
+        Pause → (optional flush) → non-expert (TP) → expert (EP) → continue. Progress on PP source.
         """
         self.weight_version += 1
 
         if dist.get_rank() == 0:
-            ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            if getattr(self.args, "pipeline_rl", False):
+                pause_mode = "retract" if self.args.pipeline_kv_recompute_on_update else "in_place"
+                ray.get([engine.pause_generation.remote(mode=pause_mode) for engine in self.rollout_engines])
+                self._wait_pause_safe()
+            else:
+                ray.get([engine.pause_generation.remote(mode="abort") for engine in self.rollout_engines])
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
         buffer_size = 0
@@ -112,9 +125,38 @@ class UpdateWeightFromDistributed:
             self._update_expert_bucket_weights_from_distributed(named_tensors, pbar=pbar)
 
         dist.barrier(group=get_gloo_group())
+
+        if dist.get_rank() == 0 and getattr(self.args, "pipeline_rl", False):
+            self._verify_weight_versions(expected_version=self.weight_version)
+
         if dist.get_rank() == 0:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
+
+    def _wait_pause_safe(self) -> None:
+        if not getattr(self.args, "pipeline_pause_wait_safe", True):
+            return
+
+        start_time = time.time()
+        sleep_s = 0.01
+        while True:
+            try:
+                ray.get([engine.get_weight_version.remote() for engine in self.rollout_engines])
+                return
+            except Exception as e:
+                if time.time() - start_time > 5.0:
+                    logger.warning(f"PipelineRL pause safe wait timed out: {e}")
+                    return
+                time.sleep(sleep_s)
+                sleep_s = min(sleep_s * 2, 0.5)
+
+    def _verify_weight_versions(self, expected_version: int) -> None:
+        expected = str(expected_version)
+        versions = ray.get([engine.get_weight_version.remote() for engine in self.rollout_engines])
+        normalized = [str(v) for v in versions if v is not None]
+        mismatched = [v for v in normalized if v != expected]
+        if mismatched:
+            raise RuntimeError(f"PipelineRL engine weight_version mismatch: expected={expected}, got={normalized}")
 
     def _update_weight_from_distributed(
         self,
@@ -218,6 +260,7 @@ class UpdateWeightFromDistributed:
             self.weight_version,
             self.rollout_engines,
             converted_named_tensors,
+            load_format=(self.args.pipeline_update_load_format if getattr(self.args, "pipeline_rl", False) else None),
         )
 
         ray.get(refs)
@@ -275,10 +318,35 @@ def update_weights_from_distributed(
     weight_version: int,
     rollout_engines: Sequence[ActorHandle],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
+    load_format: str | None = None,
 ) -> list[ObjectRef]:
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
     """
+    if load_format == "flattened_bucket":
+        named_tensors_by_dtype: dict[torch.dtype, list[tuple[str, torch.Tensor]]] = {}
+        for name, param in converted_named_tensors:
+            named_tensors_by_dtype.setdefault(param.dtype, []).append((name, param))
+
+        all_refs = []
+        for _, named_tensors in named_tensors_by_dtype.items():
+            refs = [
+                engine.update_weights_from_distributed.remote(
+                    names=[name for name, _ in named_tensors],
+                    dtypes=[param.dtype for _, param in named_tensors],
+                    shapes=[param.shape for _, param in named_tensors],
+                    group_name=group_name,
+                    weight_version=str(weight_version),
+                    load_format=load_format,
+                )
+                for engine in rollout_engines
+            ]
+            bucket = FlattenedTensorBucket(named_tensors=named_tensors)
+            flattened_tensor = bucket.get_flattened_tensor()
+            dist.broadcast(flattened_tensor, 0, group=group)
+            all_refs.extend(refs)
+        return all_refs
+
     refs = [
         engine.update_weights_from_distributed.remote(
             names=[name for name, _ in converted_named_tensors],
@@ -286,6 +354,7 @@ def update_weights_from_distributed(
             shapes=[param.shape for _, param in converted_named_tensors],
             group_name=group_name,
             weight_version=str(weight_version),
+            load_format=load_format,
         )
         for engine in rollout_engines
     ]
