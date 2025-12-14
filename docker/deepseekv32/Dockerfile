@@ -38,12 +38,18 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 
 RUN pip install flash-linear-attention==0.4.0
 
+RUN git clone https://github.com/Dao-AILab/fast-hadamard-transform.git fast-hadamard-transform && \
+    cd fast-hadamard-transform && \
+    pip install -v . --no-build-isolation && \
+    cd /root && \
+    rm -rf fast-hadamard-transform
+
 # TE does not have wheel on cuda 13 yet, thus need to install from source
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install nvidia-mathdx==25.6.0 && \
       pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.8; \
     else \
-      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.8.0"; \
+      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
     fi
 
 RUN NVCC_APPEND_FLAGS="--threads 4" \
