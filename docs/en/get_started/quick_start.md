@@ -569,6 +569,14 @@ ray job submit --address="http://127.0.0.1:8265" \
    --... # Other Megatron/SGLang/miles arguments
 ```
 
+Optionally, the following environment variables may be needed based on your environment. For example, when there are multiple IPs and the wrong one is chosen in a Docker or SLURM envionment. We provide an example that are tested in a SLURM + enroot multi-node system as follows:
+
+```
+export MILES_HOST_IP=$(hostname -I | awk '{{print $1}}')
+export GLOO_SOCKET_IFNAME=$(ip -o -4 addr show | awk '$4 ~ /^10\\./ {{print $2}}')
+export NCCL_SOCKET_IFNAME=$(ip -o -4 addr show | awk '$4 ~ /^10\\./ {{print $2}}')
+```
+
 miles has been deeply optimized for distributed training of large-scale Mixture of Experts (MoE) models. We provide some end-to-end training cases for reference:
 
 - [Example: 64xH100 Training GLM-4.5](../examples/glm4.5-355B-A32B.md)
