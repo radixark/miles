@@ -68,6 +68,16 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
+        self.train_parallel_config = {
+            "dp_size": mpu.get_data_parallel_world_size(with_context_parallel=False),
+        }
+        dist.barrier(group=get_gloo_group())
+
+        if args.offload_train:
+            if (x := args.train_memory_margin_bytes) > 0:
+                logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
+                torch_memory_saver.memory_margin_bytes = x
+
         if self.args.debug_rollout_only:
             return 0
 
@@ -97,6 +107,7 @@ class MegatronTrainRayActor(TrainRayActor):
             ),
             single_tag=None if args.enable_weights_backuper else "actor",
         )
+        self._active_model_tag: str | None = "actor"
         self.weights_backuper.backup("actor")
 
         if with_ref:
@@ -126,7 +137,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             # recover to actor in the end.
-            self.weights_backuper.restore("actor")
+            self._switch_model("actor")
             self.sleep()
 
         self.rollout_engines = None
@@ -166,7 +177,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _get_rollout_data(self, rollout_data_ref: Box) -> RolloutBatch:
         # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
-        # Both first pp stage and the last pp stage will recieve the data.
+        # Both first pp stage and the last pp stage will receive the data.
         rollout_data = process_rollout_data(
             self.args,
             rollout_data_ref,
@@ -200,6 +211,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]
             ]
         return rollout_data
+
+    def _switch_model(self, target_tag: str) -> None:
+        if target_tag not in self.weights_backuper.backup_tags:
+            raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
+        self.weights_backuper.restore(target_tag)
+        self._active_model_tag = target_tag
 
     def fill_routing_replay(self, data_iterator, num_microbatches, rollout_data):
         if "rollout_routed_experts" not in rollout_data:
@@ -236,12 +253,15 @@ class MegatronTrainRayActor(TrainRayActor):
             tokens = batch["tokens"]
             assert len(rollout_routed_experts) == len(tokens)
             for a, b in zip(rollout_routed_experts, tokens, strict=False):
-                assert a.shape[0] == b.shape[0], f"{a.shape}, {b.shape}"
+                assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
 
+            # We need to pad the experts to the last token. We won't calculate loss on this token so this should be fine.
+            # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
+            rollout_routed_experts = [pad_func(r, 1) for r in rollout_routed_experts]
             # TODO: maybe extract a common process function for here and get_batch?
             rollout_routed_experts = [slice_with_cp(r, pad_func) for r in rollout_routed_experts]
             rollout_routed_experts = torch.cat(rollout_routed_experts, dim=0)
-            pad_size = mpu.get_tensor_model_parallel_world_size() * 128
+            pad_size = mpu.get_tensor_model_parallel_world_size() * self.args.data_pad_size_multiplier
             pad = (pad_size - rollout_routed_experts.size(0) % pad_size) % pad_size
             if pad != 0:
                 rollout_routed_experts = pad_func(rollout_routed_experts, pad)
@@ -278,12 +298,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def compute_log_prob(
         self,
-        model_tag: str,
         data_iterator: list[DataIterator],
         num_microbatches: list[int],
         store_prefix: str = "",
     ) -> dict[str, list[torch.Tensor]]:
-        self.weights_backuper.restore(model_tag)
 
         with timer(f"{store_prefix}log_probs"):
             return forward_only(
@@ -350,15 +368,15 @@ class MegatronTrainRayActor(TrainRayActor):
                 if "ref" in self.weights_backuper.backup_tags:
                     if self.args.use_routing_replay:
                         os.environ["ROUTING_REPLAY_STAGE"] = "fallthrough"
+                    self._switch_model("ref")
                     rollout_data.update(
                         self.compute_log_prob(
-                            "ref",
                             data_iterator,
                             num_microbatches,
                             store_prefix="ref_",
                         )
                     )
-
+                self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
                 if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
                     if self.args.use_routing_replay:
                         if self.args.use_rollout_routing_replay:
@@ -367,7 +385,6 @@ class MegatronTrainRayActor(TrainRayActor):
                             os.environ["ROUTING_REPLAY_STAGE"] = "record"
                     rollout_data.update(
                         self.compute_log_prob(
-                            "old_actor" if self.args.keep_old_actor else "actor",
                             data_iterator,
                             num_microbatches,
                             store_prefix="",
@@ -382,10 +399,8 @@ class MegatronTrainRayActor(TrainRayActor):
                         rollout_data,
                         self._actor_critic_groups,
                     )
-
-                # when there is old actor, we need to update the model params to actor manually
-                if "old_actor" in self.weights_backuper.backup_tags:
-                    self.weights_backuper.restore("actor")
+                if self._active_model_tag != "actor":
+                    self._switch_model("actor")
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
                 # because we may need normalize the whole rollout.
@@ -497,6 +512,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.ckpt_step = old_ckpt_step
 
         self.weights_backuper.backup(model_tag)
+        self._active_model_tag = model_tag
 
     def connect_actor_critic(
         self,

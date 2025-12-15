@@ -47,8 +47,6 @@ def get_memory_usage() -> float:
 def cleanup_memory():
     """Force garbage collection to free memory"""
     gc.collect()
-    if hasattr(gc, "collect"):
-        gc.collect()
 
 
 def aggressive_cleanup_memory():
@@ -218,7 +216,7 @@ import resource
 # Set memory limit (4GB)
 try:
     resource.setrlimit(resource.RLIMIT_AS, (4 * 1024 * 1024 * 1024, -1))
-except:
+except Exception:
     pass
 
 # Redirect stdout and stderr
@@ -282,11 +280,11 @@ except Exception as e:
                     if process.returncode == 0:
                         result = stdout.strip()
                     else:
-                        result = f"Error: Process exited with code " f"{process.returncode}\n{stderr}"
+                        result = f"Error: Process exited with code {process.returncode}\n{stderr}"
 
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    result = f"Error: Code execution timed out after " f"{self.timeout} seconds"
+                    result = f"Error: Code execution timed out after {self.timeout} seconds"
 
             except Exception as e:
                 result = f"Error: Failed to execute code: {str(e)}"

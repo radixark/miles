@@ -1,4 +1,5 @@
 import logging
+import os
 from argparse import Namespace
 from itertools import accumulate
 
@@ -8,7 +9,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
@@ -17,7 +18,8 @@ from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_d
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.ppo_utils import compute_approx_kl, compute_policy_loss
+from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
+from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
@@ -26,6 +28,7 @@ from ...utils import tracking_utils
 from ...utils.profile_utils import TrainProfiler
 from . import checkpoint
 from .data_packing import pack_sequences, pad_packed_sequence_with_cp, unpack_sequences
+from .lr_scheduler import get_lr_scheduler
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
 
 logger = logging.getLogger(__name__)
@@ -52,6 +55,10 @@ class FSDPTrainRayActor(TrainRayActor):
         self._setup_device_mesh()
         torch.manual_seed(args.seed)
 
+        self.train_parallel_config = {
+            "dp_size": self.dp_size,
+        }
+
         if self.args.debug_rollout_only:
             return 0
 
@@ -72,16 +79,16 @@ class FSDPTrainRayActor(TrainRayActor):
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
                 self.hf_config = AutoConfig.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
-                self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+                self.tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
+                # Vision models have `vision_config` in the config
+                if hasattr(self.hf_config, "vision_config"):
+                    self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
-
-        if self.args.multimodal_keys:
-            self.vlm_processor = AutoProcessor.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
         init_context = self._get_init_weight_context_manager()
 
         with init_context():
-            model = AutoModelForCausalLM.from_pretrained(
+            model = self.get_model_cls().from_pretrained(
                 self.args.hf_checkpoint,
                 trust_remote_code=True,
                 attn_implementation=self.args.attn_implementation,
@@ -91,7 +98,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         full_state = model.state_dict()
 
-        model = apply_fsdp2(model, mesh=self.dp_mesh, cpu_offload=self.fsdp_cpu_offload)
+        model = apply_fsdp2(model, mesh=self.dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args)
 
         model = self._fsdp2_load_full_state_dict(
             model, full_state, self.dp_mesh, cpu_offload=True if self.fsdp_cpu_offload else None
@@ -112,6 +119,9 @@ class FSDPTrainRayActor(TrainRayActor):
             )
         else:
             raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam'")
+
+        # Initialize LR scheduler
+        self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
 
         self.global_step = 0
         self.micro_step = 0
@@ -141,9 +151,21 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
+    def get_model_cls(self):
+        # Vision models have `vision_config` in the config
+        if hasattr(self.hf_config, "vision_config"):
+            from transformers import AutoModelForImageTextToText
+
+            return AutoModelForImageTextToText
+        else:
+            from transformers import AutoModelForCausalLM
+
+            return AutoModelForCausalLM
+
     def _enable_true_on_policy_optimizations(self, args):
         if args.true_on_policy_mode:
             from sglang.srt.batch_invariant_ops import enable_batch_invariant_mode
+
             from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
 
             logger.info("FSDPTrainRayActor call enable_batch_invariant_mode for true-on-policy")
@@ -154,6 +176,10 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
             apply_true_on_policy_patch_for_qwen3_moe()
+        else:
+            from .models.qwen3_moe_hf import apply_fsdp_moe_patch
+
+            apply_fsdp_moe_patch()
 
     def _setup_device_mesh(self) -> None:
         """Setup device mesh for parallelism (always called, handles both CP and non-CP cases).
@@ -341,8 +367,6 @@ class FSDPTrainRayActor(TrainRayActor):
                     tqdm(packed_batches, desc=f"{store_prefix}log_probs", disable=dist.get_rank() != 0)
                 ):
                     model_args = self._get_model_inputs_args(batch)
-                    if "pixel_values" in batch:
-                        model_args["pixel_values"] = batch["pixel_values"]
                     logits = active_model(**model_args).logits.squeeze(0).float()
                     log_probs_result, entropy_result = get_logprob_and_entropy_with_cp(
                         logits=logits,
@@ -429,6 +453,9 @@ class FSDPTrainRayActor(TrainRayActor):
                     rollout_data["returns"][start:end],
                     rollout_log_probs=(
                         rollout_data["rollout_log_probs"][start:end] if "rollout_log_probs" in rollout_data else None
+                    ),
+                    multimodal_inputs=(
+                        rollout_data["multimodal_inputs"][start:end] if "multimodal_inputs" in rollout_data else None
                     ),
                     num_packs=mbs_size,
                 )
@@ -591,23 +618,30 @@ class FSDPTrainRayActor(TrainRayActor):
         response_lengths = [batch["response_lengths"] for batch in unpacked_batches]
 
         advantages = advantages.to(device=log_probs.device)
-        ppo_kl = old_log_probs.to(device=log_probs.device) - log_probs
+        old_log_probs = old_log_probs.to(device=log_probs.device)
+        ppo_kl = old_log_probs - log_probs
+
+        if self.args.use_opsm:
+            opsm_mask, opsm_clipfrac = compute_opsm_mask(
+                args=self.args,
+                full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
+                full_old_log_probs=[batch[old_log_prob_key] for batch in unpacked_batches],
+                advantages=[batch["advantages"] for batch in unpacked_batches],
+                loss_masks=loss_masks,
+            )
 
         if self.args.advantage_estimator == "gspo":
-            log_ratio_splits = torch.split(ppo_kl, response_lengths, dim=0)
-
-            seq_kls = [
-                ((log_ratio_i * mask_i).sum() / mask_i.sum().clamp_min(1))
-                for log_ratio_i, mask_i in zip(log_ratio_splits, loss_masks, strict=False)
-            ]
-
-            ppo_kl_list = []
-            for seq_kl, length in zip(seq_kls, response_lengths, strict=False):
-                ppo_kl_list.append(seq_kl.expand(length))
-
-            ppo_kl = torch.cat(ppo_kl_list)
+            ppo_kl = compute_gspo_kl(
+                full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
+                full_old_log_probs=[batch[old_log_prob_key] for batch in unpacked_batches],
+                local_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
+                loss_masks=loss_masks,
+            )
 
         pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
+
+        if self.args.use_opsm:
+            pg_loss = pg_loss * opsm_mask
 
         def _has_rollout_log_probs(batch) -> bool:
             rollout_tensor = batch.get("rollout_log_probs")
@@ -656,10 +690,14 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.args.use_kl_loss:
             ref_log_probs = torch.cat([batch["ref_log_probs"] for batch in unpacked_batches], dim=0)
+            importance_ratio = None
+            if self.args.use_unbiased_kl:
+                importance_ratio = torch.exp(log_probs - old_log_probs)
             kl = compute_approx_kl(
                 log_probs,
                 ref_log_probs,
                 kl_loss_type=self.args.kl_loss_type,
+                importance_ratio=importance_ratio,
             )
             kl_loss = sum_of_sample_mean(kl, response_lengths, loss_masks)
 
@@ -678,6 +716,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.args.use_kl_loss:
             reported["kl_loss"] = kl_loss.detach()
+
+        if self.args.use_opsm:
+            reported["opsm_clipfrac"] = opsm_clipfrac
 
         if self.args.use_tis and tis is not None:
             reported["tis"] = sum_of_sample_mean(tis, response_lengths, loss_masks).detach()
@@ -699,6 +740,8 @@ class FSDPTrainRayActor(TrainRayActor):
             grad_norm = float(grad_norm)
 
             self.optimizer.step()
+            # Update learning rate
+            self.lr_scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
             # Aggregate logs
             aggregated = {k: torch.stack(v).sum().item() for k, v in reported_accum.items()}
@@ -715,9 +758,10 @@ class FSDPTrainRayActor(TrainRayActor):
                 }
                 log_dict["train/grad_norm"] = grad_norm
 
-                for gid, group in enumerate(self.optimizer.param_groups):
-                    if "lr" in group:
-                        log_dict[f"train/lr-pg_{gid}"] = group["lr"]
+                # Log learning rate per parameter group; use scheduler's last computed LRs
+                lr_values = self.lr_scheduler.get_last_lr()
+                for gid, _group in enumerate(self.optimizer.param_groups):
+                    log_dict[f"train/lr-pg_{gid}"] = lr_values[gid]
 
                 kl_info = ""
                 if self.args.use_kl_loss and "kl_loss" in aggregated:
@@ -767,15 +811,13 @@ class FSDPTrainRayActor(TrainRayActor):
         if ref_load_path is None:
             raise ValueError("ref_load_path must be provided when loading reference model")
 
-        import os
-
         if os.path.isdir(ref_load_path):
             logger.info(f"[Rank {dist.get_rank()}] Creating separate ref model from {ref_load_path}")
 
             init_context = self._get_init_weight_context_manager()
 
             with init_context():
-                ref_model = AutoModelForCausalLM.from_pretrained(
+                ref_model = self.get_model_cls().from_pretrained(
                     ref_load_path,
                     trust_remote_code=True,
                     attn_implementation=self.args.attn_implementation,
@@ -784,7 +826,7 @@ class FSDPTrainRayActor(TrainRayActor):
             full_state = ref_model.state_dict()
 
             # Always use CPUOffloadPolicy for reference, let FSDP2 handle the offload. It is faster than model.cpu().
-            ref_model = apply_fsdp2(ref_model, mesh=self.dp_mesh, cpu_offload=True)
+            ref_model = apply_fsdp2(ref_model, mesh=self.dp_mesh, cpu_offload=True, args=self.args)
             ref_model = self._fsdp2_load_full_state_dict(ref_model, full_state, self.dp_mesh, cpu_offload=True)
 
             logger.info(f"[Rank {dist.get_rank()}] Reference model created with FSDP2 CPUOffloadPolicy")
@@ -812,6 +854,8 @@ class FSDPTrainRayActor(TrainRayActor):
             "position_ids": position_ids,
             "attention_mask": None,
         }
+        if packed_sequence.get("multimodal_inputs"):
+            model_args.update(packed_sequence["multimodal_inputs"])
         return model_args
 
 
@@ -997,7 +1041,7 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False):
+def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
     """Apply FSDP v2 to the model.
 
     Args:
@@ -1005,6 +1049,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False):
         mesh: Optional DeviceMesh for FSDP. If None, uses all ranks.
         cpu_offload: If True, offload parameters, gradients, and optimizer states
             to CPU. The optimizer step will run on CPU. (Default: False)
+        args: Arguments containing precision settings (fp16/bf16)
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -1022,10 +1067,19 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False):
         or (isinstance(module, torch.nn.Embedding) and not model.config.tie_word_embeddings)
     ]
 
+    # Determine precision policy based on args
+    param_dtype = torch.bfloat16  # Default to bf16 as before
+    reduce_dtype = torch.float32
+
+    if args.fp16:
+        param_dtype = torch.float16
+
+    logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
+
     fsdp_kwargs = {
         "mp_policy": MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,
+            param_dtype=param_dtype,
+            reduce_dtype=reduce_dtype,
         ),
         "offload_policy": offload_policy,
         "mesh": mesh,

@@ -92,12 +92,12 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     --save /root/GLM-Z1-9B-0414_torch_dist
 ```
 
-For larger models, you can use `torchrun` to start the covnersion script to convert with multi-gpus or even multi-nodes.
+For larger models, you can use `torchrun` to start the conversion script to convert with multi-gpus or even multi-nodes.
 Note: When converting the kimi-k2 model weights, you need to open config.json in the model path and change "model_type": "kimi_k2" to "model_type": "deepseek_v3".
 
 ### Convert from Megatron Format to Hugging Face Format
 
-You can use the following script to convert the saved Megatron chekcpoints back to Hugging Face format:
+You can use the following script to convert the saved Megatron checkpoints back to Hugging Face format:
 
 ```bash
 PYTHONPATH=/root/Megatron-LM python tools/convert_torch_dist_to_hf.py \
@@ -456,7 +456,7 @@ ROLLOUT_ARGS=(
    --prompt-data /root/nq_search/train_processed.json
 
    # 2. Map "question" column to input prompt
-   --prompt-key question
+   --input-key question
 
    # 3. Map "final_answer" column to evaluation label
    --label-key final_answer
@@ -569,7 +569,17 @@ ray job submit --address="http://127.0.0.1:8265" \
    --... # Other Megatron/SGLang/miles arguments
 ```
 
+Optionally, the following environment variables may be needed based on your environment. For example, when there are multiple IPs and the wrong one is chosen in a Docker or SLURM envionment. We provide an example used in a SLURM + enroot multi-node system as follows:
+
+```
+export MILES_HOST_IP=$(hostname -I | awk '{print $1}')
+export GLOO_SOCKET_IFNAME=$(ip -o -4 addr show | awk '$4 ~ /^10\\./ {print $2}')
+export NCCL_SOCKET_IFNAME=$(ip -o -4 addr show | awk '$4 ~ /^10\\./ {print $2}')
+export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=$(ip -o -4 addr show | awk '$4 ~ /^10\./ {print $2}')
+```
+
 miles has been deeply optimized for distributed training of large-scale Mixture of Experts (MoE) models. We provide some end-to-end training cases for reference:
 
-- [Example: 64xH100 Training GLM-4.5](models/glm4.5-355B-A32B.md)
-- [Example: 128xH100 Training DeepSeek-R1](models/deepseek-r1.md)
+- [Example: 64xH100 Training GLM-4.5](../examples/glm4.5-355B-A32B.md)
+- [Example: 128xH100 Training DeepSeek-R1](../examples/deepseek-r1.md)
+- The scripts such as `scripts/run_qwen3_30b_a3b.py`, `scripts/run_glm45_355b_a32b.py` also support multi-node training, though there are little documentations about it currently.
