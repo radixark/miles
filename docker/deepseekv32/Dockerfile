@@ -6,7 +6,7 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=436065a86b749ca3b50eebca68f55c9e690a9f63
 
-ARG ENABLE_CUDA_13=0
+ARG ENABLE_CUDA_13=1
 
 ARG ENABLE_SGLANG_PATCH=0
 
@@ -47,7 +47,8 @@ RUN git clone https://github.com/Dao-AILab/fast-hadamard-transform.git fast-hada
 # TE does not have wheel on cuda 13 yet, thus need to install from source
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install nvidia-mathdx==25.6.0 && \
-      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.8; \
+      pip install pybind11 && \
+      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.10; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
     fi
@@ -81,11 +82,6 @@ RUN pip install -r /tmp/requirements.txt
 RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
     SGL_KERNEL_VERSION=0.3.17.post2 && \
     python3 -m pip install https://github.com/sgl-project/whl/releases/download/v${SGL_KERNEL_VERSION}/sgl_kernel-${SGL_KERNEL_VERSION}+cu130-cp310-abi3-manylinux2014_$(uname -m).whl --force-reinstall --no-deps; \
-  fi
-
-# This patch is merged into main, but we are using stable version, thus still need it
-RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
-    curl -L https://github.com/NVIDIA/TransformerEngine/pull/2286.patch -o /root/te2286.patch && (cd /usr/local/lib/python3.12/dist-packages/transformer_engine && (patch -p2 < /root/te2286.patch)); \
   fi
 
 # AMEM
