@@ -174,6 +174,8 @@ class Dataset:
         new_size = len(self.hf_dataset)
         logger.info(f"Filtered dataset from {original_size} to {new_size} samples.")
 
+        self.origin_hf_dataset = self.hf_dataset
+
     def __len__(self):
         return len(self.hf_dataset)
 
@@ -207,7 +209,7 @@ class Dataset:
             return
 
         logger.info(f"Shuffling dataset for epoch {new_epoch_id} with seed {self.seed + new_epoch_id}")
-        self.hf_dataset = self.hf_dataset.shuffle(seed=self.seed + new_epoch_id)
+        self.hf_dataset = self.origin_hf_dataset.shuffle(seed=self.seed + new_epoch_id)
         self.epoch_id = new_epoch_id
 
 
