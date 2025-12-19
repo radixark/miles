@@ -210,7 +210,7 @@ def forward_only(
 
         # Get the batch.
         batch = get_batch(
-            data_iterator, ["tokens", "total_lengths", "response_lengths"], args.data_pad_size_multiplier
+            data_iterator, ["tokens", "total_lengths", "response_lengths"], args.data_pad_size_multiplier, args.qkv_format
         )
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
@@ -363,6 +363,7 @@ def train_one_step(
                 "rollout_log_probs",
             ],
             args.data_pad_size_multiplier,
+            args.qkv_format,
         )
 
         if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":

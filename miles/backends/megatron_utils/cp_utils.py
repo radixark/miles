@@ -160,16 +160,21 @@ def all_gather_with_cp(tensor: torch.Tensor, total_length: int, response_length:
     return full_tensor
 
 
-def slice_with_cp(tokens: torch.Tensor, pad_value: tuple[int, float, Callable]) -> torch.Tensor:
+def slice_with_cp(tokens: torch.Tensor, pad_value: tuple[int, float, Callable], qkv_format: str, max_token_len: int | None) -> torch.Tensor:
     cp_rank = mpu.get_context_parallel_rank()
     cp_size = mpu.get_context_parallel_world_size()
 
     if cp_size == 1:
         return tokens
-
+    
+    if qkv_format == "bshd":
+        assert max_token_len is not None
+    
+    token_len = max_token_len if qkv_format == "bshd" else len(tokens)
+        
     # pad
-    chunk_size = (len(tokens) + 2 * cp_size - 1) // (2 * cp_size)
-    pad = 2 * cp_size * chunk_size - len(tokens)
+    chunk_size = (token_len + 2 * cp_size - 1) // (2 * cp_size)
+    pad = 2 * cp_size * chunk_size - token_len
     if isinstance(pad_value, Callable):
         pad_func = pad_value
         tokens = pad_func(tokens, pad)

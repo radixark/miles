@@ -26,6 +26,7 @@ def get_batch(
     data_iterator: "DataIterator",
     keys: Sequence[str],
     pad_multiplier: int = 128,
+    qkv_format: str = "thd"
 ) -> dict[str, torch.Tensor | PackedSeqParams | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -55,39 +56,52 @@ def get_batch(
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
+    pad_size = mpu.get_tensor_model_parallel_world_size() * pad_multiplier
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
 
     cp_size = mpu.get_context_parallel_world_size()
-    tokens = [slice_with_cp(t, pad_token_id) for t in tokens]
+    
+    if qkv_format == "bshd":
+        max_seqlen = max([t.size(0) for t in tokens])
+        tokens = [slice_with_cp(t, pad_token_id, format, max_seqlen) for t in tokens]
+        tokens = torch.stack(tokens) 
+        pad = (pad_size - tokens.size(1) % pad_size) % pad_size
+        if pad != 0:
+            tokens = F.pad(tokens, (0, 0, 0, pad), value=pad_token_id)
 
-    cu_seqlens = [0]
-    for t in tokens:
-        cu_seqlens.append(cu_seqlens[-1] + t.size(0))
+    elif qkv_format == "thd":
+        tokens = [slice_with_cp(t, pad_token_id, format) for t in tokens]
 
-    tokens = torch.cat(tokens)
+        cu_seqlens = [0]
+        for t in tokens:
+            cu_seqlens.append(cu_seqlens[-1] + t.size(0))
 
-    # Always pad to reduce memory fragmentation and maybe make the computation faster
-    pad_size = mpu.get_tensor_model_parallel_world_size() * pad_multiplier
-    pad = (pad_size - tokens.size(0) % pad_size) % pad_size
-    if pad != 0:
-        tokens = F.pad(tokens, (0, pad), value=pad_token_id)
-        cu_seqlens.append(cu_seqlens[-1] + pad)
+        tokens = torch.cat(tokens)
 
-    # thd requires the cu_seqlens to be of the origin length
-    cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
-    max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        # Always pad to reduce memory fragmentation and maybe make the computation faster
+        pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+        if pad != 0:
+            tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+            cu_seqlens.append(cu_seqlens[-1] + pad)
 
-    packed_seq_params = PackedSeqParams(
-        cu_seqlens_q=cu_seqlens,
-        cu_seqlens_kv=cu_seqlens,
-        max_seqlen_q=max_seqlen,
-        max_seqlen_kv=max_seqlen,
-        qkv_format="thd",
-    )
+        # thd requires the cu_seqlens to be of the origin length
+        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
 
-    tokens = tokens.unsqueeze(0)
+        packed_seq_params = PackedSeqParams(
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_kv=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_kv=max_seqlen,
+            qkv_format="thd",
+        )
+
+        tokens = tokens.unsqueeze(0)
+    else:
+        raise ValueError(f"Unsupported format: {format}")
+
     batch["tokens"] = tokens
     batch["packed_seq_params"] = packed_seq_params
     return batch
