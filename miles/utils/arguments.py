@@ -710,8 +710,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "reinforce_plus_plus_baseline",
                     "ppo",
                     "on_policy_distillation",
+                    "sapo",
                 ],
                 default="grpo",
+            )
+            parser.add_argument(
+                "--sapo-tau-pos",
+                type=float,
+                default=1.0,
+                help="Temperature for positive advantages in SAPO (default: 1.0)",
+            )
+            parser.add_argument(
+                "--sapo-tau-neg",
+                type=float,
+                default=1.05,
+                help="Temperature for negative advantages in SAPO (default: 1.05)",
             )
             parser.add_argument(
                 "--disable-compute-advantages-and-returns",

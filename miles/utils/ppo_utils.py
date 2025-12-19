@@ -122,6 +122,64 @@ def compute_gspo_kl(
 
 
 @torch.compile(dynamic=True)
+def compute_sapo_loss(
+    ppo_kl: torch.Tensor,
+    advantages: torch.Tensor,
+    tau_pos: float,
+    tau_neg: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Computes the Soft Adaptive Policy Optimization (SAPO) loss.
+
+    SAPO replaces hard clipping with a smooth, temperature-controlled gate:
+    f(r) = (4/τ) * σ(τ(r-1))
+
+    where r = π_θ(y|x) / π_θ_old(y|x) is the importance ratio.
+
+    Args:
+        ppo_kl: KL divergence approximation (old_log_probs - new_log_probs).
+                Shape: [batch_size * seq_len] or [total_tokens]
+                Note: ratio = exp(-ppo_kl)
+        advantages: Advantage values, shape matches ppo_kl.
+        tau_pos: Temperature for positive advantages (typically ~1.0).
+        tau_neg: Temperature for negative advantages (typically ~1.05, higher to
+                 dampen unstable negative gradients).
+
+    Returns:
+        pg_loss: Element-wise SAPO loss tensor (negative objective for minimization).
+                 Shape matches input. NO reduction applied (caller handles masking).
+        clipfrac: Element-wise indicator of off-policy behavior (weight < 0.9).
+                 Shape matches input.
+    """
+    # Calculate importance ratio: r(θ) = π_new / π_old = exp(-KL)
+    ratios = torch.exp(-ppo_kl)
+
+    # Select temperature based on advantage sign
+    # Asymmetric: higher tau_neg dampens negative token gradients more aggressively
+    # This is critical for training stability
+    tau = torch.where(advantages > 0, tau_pos, tau_neg)
+
+    # Compute Soft Gate: f(r) = (4/τ) * σ(τ(r - 1))
+    # This implements a smooth trust region centered at r=1 (on-policy)
+    # - At r=1: f(1) = (4/τ) * σ(0) = (4/τ) * 0.5 = 2/τ
+    # - As r deviates: sigmoid saturates, f(r) → 0 or 4/τ smoothly
+    scaled_diff = tau * (ratios - 1.0)
+    sigmoid_val = torch.sigmoid(scaled_diff)
+    soft_gate_val = (4.0 / tau) * sigmoid_val
+
+    # Compute SAPO Objective: J(θ) = f(r) * A
+    # Paper maximizes this, but we return negative for PyTorch minimization
+    pg_loss = -(soft_gate_val * advantages)
+
+    # Compute clipfrac proxy, as SAPO doesn't have a hardclip (for monitoring off-policy behavior)
+    # Gradient weight: w(r) = 4p(1-p) where p = σ(τ(r-1))
+    weight = 4.0 * sigmoid_val * (1.0 - sigmoid_val)
+    clipfrac = (weight < 0.9).float()
+
+    return pg_loss, clipfrac
+
+
+@torch.compile(dynamic=True)
 def compute_policy_loss(
     ppo_kl: torch.Tensor,
     advantages: torch.Tensor,
