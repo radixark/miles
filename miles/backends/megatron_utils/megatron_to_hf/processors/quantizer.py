@@ -44,7 +44,8 @@ def quantize_params(args, megatron_name, converted_named_params, quantization_co
                 # TODO: find a clearer way.
                 if converted_name.endswith("_scale"):
                     continue
-                quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size))
+                if_use_ue8m0_in_moe = True if args.sglang_moe_a2a_backend == "deepep" else False
+                quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size, if_use_ue8m0_in_moe=if_use_ue8m0_in_moe))
 
             return quantize_named_params
 
@@ -85,14 +86,14 @@ def quantize_params(args, megatron_name, converted_named_params, quantization_co
     return converted_named_params
 
 
-def _quantize_param(name, weight, weight_block_size):
+def _quantize_param(name, weight, weight_block_size, if_use_ue8m0_in_moe=True):
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
     if weight_block_size is not None:
         if should_deepgemm_weight_requant_ue8m0 and should_deepgemm_weight_requant_ue8m0(
             weight_block_size=weight_block_size
-        ):
+        ) and if_use_ue8m0_in_moe:
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
