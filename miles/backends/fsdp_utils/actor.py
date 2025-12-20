@@ -2,6 +2,7 @@ import logging
 import os
 from argparse import Namespace
 from itertools import accumulate
+from typing import Any
 
 import ray
 import torch
@@ -25,6 +26,7 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 
 from ...utils import tracking_utils
+from ...utils.metric_processor import MetricProcessor
 from ...utils.profile_utils import TrainProfiler
 from . import checkpoint
 from .data_packing import pack_sequences, pad_packed_sequence_with_cp, unpack_sequences
@@ -148,6 +150,9 @@ class FSDPTrainRayActor(TrainRayActor):
             self.sleep()
 
         self.prof.on_init_end()
+
+
+        self.metric_processor = MetricProcessor(args)
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
@@ -502,25 +507,29 @@ class FSDPTrainRayActor(TrainRayActor):
         for metric_key in ["log_probs", "rollout_log_probs", "ref_log_probs", "advantages", "returns"]:
             if metric_key not in packed_batches[0]:
                 continue
-            val = torch.tensor([0.0], device=torch.cuda.current_device())
+
+            val = []
             for _mbs_id, batches in enumerate(packed_batches):
                 unpacked_batches = unpack_sequences(batches)
                 for unpacked_batch in unpacked_batches:
                     if isinstance(unpacked_batch[metric_key], torch.Tensor):
                         loss_masks_tensor = unpacked_batch["loss_masks"].to(device=torch.cuda.current_device())
                         metric_tensor = unpacked_batch[metric_key].to(device=torch.cuda.current_device())
-                        val += (metric_tensor * loss_masks_tensor).sum() / loss_masks_tensor.sum().clamp_min(1)
+                        val.append((metric_tensor * loss_masks_tensor).sum() / loss_masks_tensor.sum().clamp_min(1))
                     else:
-                        val += unpacked_batch[metric_key]
-            dist.all_reduce(val, op=dist.ReduceOp.SUM, group=self.dp_group)
-            log_dict[f"rollout/{metric_key}"] = (
-                val / (self.args.n_samples_per_prompt * self.args.rollout_batch_size)
-            ).item()
+                        val.append(unpacked_batch[metric_key])
+            local_vals = torch.stack(val)
+            # dist.all_reduce(val, op=dist.ReduceOp.SUM, group=self.dp_group)
+            # log_dict[f"rollout/{metric_key}"] = (
+            #         val / (self.args.n_samples_per_prompt * self.args.rollout_batch_size)
+            # ).item()
+            self.metric_processor.process_metric(log_dict, f"rollout/{metric_key}", local_vals, self.dp_group)
+
         if dist.get_rank() == 0:
             logger.info(f"rollout {rollout_id}: {log_dict}")
             log_dict["rollout/step"] = compute_rollout_step(self.args, rollout_id)
-            tracking_utils.log(self.args, log_dict, step_key="rollout/step")
-
+            # tracking_utils.log(self.args, log_dict, step_key="rollout/step")
+            self.metric_processor.log_metrics("roolout/step", log_dict)
         if self.args.ci_test and self.args.true_on_policy_mode:
             assert log_dict["rollout/log_probs"] == log_dict["rollout/rollout_log_probs"], (
                 f"CI check failed: true_on_policy_mode is enabled, but log_probs "
@@ -671,7 +680,7 @@ class FSDPTrainRayActor(TrainRayActor):
             pg_loss = pg_loss * tis_clip
 
         assert not self.args.calculate_per_token_loss, "calculate_per_token_loss not yet implemented"
-        pg_loss = sum_of_sample_mean(pg_loss, response_lengths, loss_masks)
+        pg_loss, pg_loss_vec = get_sample_mean_info(pg_loss, response_lengths, loss_masks)
         pg_clipfrac = sum_of_sample_mean(pg_clipfrac, response_lengths, loss_masks)
         ppo_kl = sum_of_sample_mean(ppo_kl.abs(), response_lengths, loss_masks)
 
@@ -705,7 +714,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         reported = {
             "loss": loss.detach(),
-            "pg_loss": pg_loss.detach(),
+            "pg_loss": pg_loss_vec.detach(),
             "pg_clipfrac": pg_clipfrac.detach(),
             "ppo_kl": ppo_kl.detach(),
             "entropy_loss": entropy_loss.detach(),
@@ -743,19 +752,23 @@ class FSDPTrainRayActor(TrainRayActor):
             # Update learning rate
             self.lr_scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
-            # Aggregate logs
-            aggregated = {k: torch.stack(v).sum().item() for k, v in reported_accum.items()}
-            # TODO: change this, this is slow.
-            reduced_aggregated = [None] * self.dp_size
-            dist.all_gather_object(reduced_aggregated, aggregated, group=self.dp_group)
-            aggregated = {}
-            for k in reported_accum.keys():
-                aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (self.args.global_batch_size)
+            log_dict = {}
+            for k, v_list in reported_accum.items():
+                # 将多个 micro-batch 的结果合并为一个tensor，匹配processor的输入
+                # 如果是 scalar list -> 变成 1D tensor
+                # 如果是 vector list -> 变成更长的 1D tensor
+                combined_tensor = torch.cat([v.view(-1) for v in v_list])
+
+                # 调用你的分布式处理器
+                # 这里的 process_metric 会内部处理 all_reduce
+                self.metric_processor.process_metric(
+                    log_dict=log_dict,
+                    key=f"train/{k}",
+                    metric=combined_tensor,
+                    group=self.dp_group
+                )
             reported_accum.clear()
             if dist.get_rank() == 0:
-                log_dict = {
-                    f"train/{k}": (val.item() if torch.is_tensor(val) else val) for k, val in aggregated.items()
-                }
                 log_dict["train/grad_norm"] = grad_norm
 
                 # Log learning rate per parameter group; use scheduler's last computed LRs
@@ -770,7 +783,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 logger.info(f"step {self.global_step}: {log_dict}")
 
                 log_dict["train/step"] = self.global_step
-                tracking_utils.log(self.args, log_dict, step_key="train/step")
+                self.metric_processor.log_metrics(log_dict, "train/")
             self.global_step += 1
 
     @timer
@@ -857,7 +870,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if packed_sequence.get("multimodal_inputs"):
             model_args.update(packed_sequence["multimodal_inputs"])
         return model_args
-
 
 def selective_log_softmax_raw(logits: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
     """Fused version of the common `log_softmax -> gather` operation.
@@ -1024,6 +1036,56 @@ def sum_of_sample_mean(x: torch.Tensor, response_lengths: list[int], loss_masks:
         ]
     )
 
+def get_sample_mean_info(x: torch.Tensor, response_lengths: list[int], loss_masks: list[torch.Tensor]) -> torch.Tensor:
+    sample_mean_list = [
+            (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
+            for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
+        ]
+    return sum(sample_mean_list), torch.stack(sample_mean_list)
+
+def sum_of_sample_extend_metrics(x: torch.Tensor, response_lengths: list[int], loss_masks: list[torch.Tensor]):
+    """
+    """
+    # 1. 验证数据对齐 (可选，但建议)
+    # 确保 loss_masks 的总长度和 x 的长度一致，才能直接对齐
+    # 如果 mask 也是变长的 list[Tensor]，这里拼接成一个扁平的 mask
+    flat_mask = torch.cat(loss_masks)
+
+    # 注意：原本的 x.split(response_lengths) 意味着 x 是紧密排列的。
+    # 只要 cat(loss_masks) 的长度等于 x.numel()，我们就可以直接用 mask 索引。
+    # 如果不确定 mask 长度是否对齐，稳妥的做法是先 split 再用 bool index，如下：
+
+    valid_values = []
+    # 遍历切分，只提取有效值
+    for x_i, mask_i in zip(x.split(response_lengths, dim=0), loss_masks):
+        # mask_i > 0.5 确保处理浮点 mask
+        valid_values.append(x_i[mask_i > 0.5])
+
+    # 2. 拼接所有有效值到一个大 Tensor
+    if valid_values:
+        all_valid_tokens = torch.cat(valid_values)
+    else:
+        # 兜底：如果完全没有有效数据
+        all_valid_tokens = torch.tensor([], device=x.device)
+
+    # 3. 计算统计量
+    if all_valid_tokens.numel() > 0:
+        # 转换为 float 以防溢出或精度不足 (特别是方差计算)
+        t = all_valid_tokens.float()
+
+        mean_val = t.mean()
+        min_val = t.min()
+        max_val = t.max()
+        var_val = t.var(unbiased=True)  # 样本方差
+    else:
+        # 处理空数据情况
+        device = x.device
+        mean_val = torch.tensor(0.0, device=device)
+        min_val = torch.tensor(float('inf'), device=device)
+        max_val = torch.tensor(float('-inf'), device=device)
+        var_val = torch.tensor(0.0, device=device)
+
+    return mean_val, min_val, max_val, var_val
 
 @torch.no_grad()
 def move_torch_optimizer(optimizer, device):
@@ -1064,7 +1126,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         module
         for name, module in model.named_modules()
         if module.__class__.__name__ in layer_cls_to_wrap
-        or (isinstance(module, torch.nn.Embedding) and not model.config.tie_word_embeddings)
+           or (isinstance(module, torch.nn.Embedding) and not model.config.tie_word_embeddings)
     ]
 
     # Determine precision policy based on args
