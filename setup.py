@@ -32,7 +32,7 @@ class bdist_wheel(_bdist_wheel):
 setup(
     author="miles Team",
     name="miles",
-    version="0.2.0.post1",
+    version="0.2.1",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
     install_requires=_fetch_requirements("requirements.txt"),
