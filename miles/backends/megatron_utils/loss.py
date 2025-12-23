@@ -73,18 +73,19 @@ def get_responses(
     for i, (tokens, total_length, response_length) in enumerate(
         zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
     ):
+
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
         if cp_size == 1:
             if qkv_format == "bshd":
-                logits_chunk = logits[total_length - response_length - 1 : total_length - 1]
-                tokens_chunk = tokens[-response_length:]
+                end = max_seq_len * i + total_length
+                start = end - response_length
             else:
                 end += total_length
                 start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
-                tokens_chunk = tokens[-response_length:]
+            logits_chunk = logits[start - 1 : end - 1]
+            tokens_chunk = tokens[-response_length:]
         else:
             # TODO: this is super ugly... do better abstraction.
-            max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
             chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
                 total_length, response_length, qkv_format, max_seq_len
             )
