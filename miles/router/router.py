@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import logging
 
 import httpx
 import uvicorn
@@ -9,6 +10,8 @@ from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from miles.utils.misc import load_function
+
+logger = logging.getLogger(__name__)
 
 
 def run_router(args):
@@ -69,18 +72,39 @@ class MilesRouter:
         asyncio.create_task(self._health_check_loop())
 
     async def _health_check_loop(self):
-        interval = getattr(self.args, "rollout_health_check_interval", 30)
+        interval = self.args.rollout_health_check_interval
 
         while True:
             await asyncio.sleep(interval)
 
-            for url in list(self.worker_urls.keys()):
+            urls = list(self.worker_urls.keys())
+            if not urls:
+                continue
+
+            async def check(url):
                 try:
                     response = await self.client.get(f"{url}/health", timeout=5.0)
-                    if response.status_code != 200:
-                        self.worker_urls.pop(url, None)
-                except Exception:
+                    if response.status_code == 200:
+                        return url, True
+                    logger.warning(f"[miles-router] Worker {url} is unhealthy (Status: {response.status_code})")
+                except Exception as e:
+                    logger.warning(f"[miles-router] Worker {url} health check failed: {e}")
+                return url, False
+
+            # Create a list of tasks for all workers to run in parallel
+            tasks = []
+            for url in urls:
+                tasks.append(check(url))
+
+            # Run all checks concurrently
+            results = await asyncio.gather(*tasks)
+
+            for url, is_healthy in results:
+                if not is_healthy:
+                    logger.warning(f"[miles-router] Removing unhealthy worker from pool: {url}")
                     self.worker_urls.pop(url, None)
+
+            logger.info(f"[miles-router] Health check complete. {len(self.worker_urls)} workers active.")
 
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
