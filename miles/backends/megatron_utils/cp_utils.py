@@ -175,32 +175,40 @@ def slice_with_cp(
     tokens: torch.Tensor,
     pad_value: tuple[int, float, Callable],
     qkv_format: str = "thd",
-    max_token_len: int | None = None,
+    max_seq_len: int | None = None,
 ) -> torch.Tensor:
     cp_rank = mpu.get_context_parallel_rank()
     cp_size = mpu.get_context_parallel_world_size()
 
-    if cp_size == 1:
+    if qkv_format == "bshd":
+        assert max_seq_len is not None
+
+    def pad_tokens(tokens, pad):
+        if isinstance(pad_value, Callable):
+            pad_func = pad_value
+            tokens = pad_func(tokens, pad)
+        else:
+            # pad on the first dimension
+            pad_tuple = (0, 0) * (tokens.dim() - 1) + (0, pad)
+            tokens = F.pad(tokens, pad_tuple, value=pad_value)
         return tokens
 
-    if qkv_format == "bshd":
-        assert max_token_len is not None
+    if cp_size == 1:
+        if qkv_format == "bshd":
+            pad = max_seq_len - tokens.size(0)
+            tokens = pad_tokens(tokens, pad)
+        return tokens
 
     token_len = len(tokens)
     if qkv_format == "thd":
         chunk_size = (token_len + 2 * cp_size - 1) // (2 * cp_size)
     else:
-        chunk_size = (max_token_len + 2 * cp_size - 1) // (2 * cp_size)
+        chunk_size = (max_seq_len + 2 * cp_size - 1) // (2 * cp_size)
 
     # pad
     pad = 2 * cp_size * chunk_size - token_len
-    if isinstance(pad_value, Callable):
-        pad_func = pad_value
-        tokens = pad_func(tokens, pad)
-    else:
-        # pad on the first dimension
-        pad_tuple = (0, 0) * (tokens.dim() - 1) + (0, pad)
-        tokens = F.pad(tokens, pad_tuple, value=pad_value)
+    tokens = pad_tokens(tokens, pad)
+
     # get 2 chunk for thd cp
     start_1, end_1 = chunk_size * cp_rank, chunk_size * (cp_rank + 1)
     start_2, end_2 = chunk_size * (2 * cp_size - cp_rank - 1), chunk_size * (2 * cp_size - cp_rank)

@@ -73,8 +73,8 @@ def get_responses(
     for i, (tokens, total_length, response_length) in enumerate(
         zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
     ):
-
         max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+
         if cp_size == 1:
             if qkv_format == "bshd":
                 end = max_seq_len * i + total_length
