@@ -134,6 +134,13 @@ def get_batch(
         tokens = [slice_with_cp(t, pad_token_id, parallel_state, qkv_format, max_seqlen) for t in tokens]
         tokens = torch.stack(tokens)
 
+    if qkv_format == "bshd":
+        max_seqlen = batch["max_seq_len"][0]
+        assert max([t.size(0) for t in tokens]) <= max_seqlen
+        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        tokens = torch.stack(tokens) 
+        # TODO: padding to multiples?
+        
     elif qkv_format == "thd":
         tokens = [slice_with_cp(t, pad_token_id, parallel_state, qkv_format) for t in tokens]
 

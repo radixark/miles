@@ -87,6 +87,7 @@ def get_responses(
             tokens_chunk = tokens[-response_length:]
         else:
             # TODO: this is super ugly... do better abstraction.
+            _max_seq_len = max_seq_len[i] if max_seq_len is not None else None
             chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
                 total_length, response_length, parallel_state, qkv_format, max_seq_len
             )
@@ -101,7 +102,9 @@ def get_responses(
             tokens_1 = tokens[tokens_offset[1][0] : tokens_offset[1][1]]
 
             assert logits_0.size(0) == tokens_0.size(0), f"{logits_0.size(0)} vs {tokens_0.size(0)}"
-            assert logits_1.size(0) == tokens_1.size(0), f"{logits_1.size(0)} vs {tokens_1.size(0)}"
+            assert logits_1.size(0) == tokens_1.size(0), f"{logits_1.size(0)} vs {tokens_1.size(0)}, chunks_offset {chunks_offset}, logits_offset {logits_offset}, \
+                tokens_offset {tokens_offset}, logits_1 range {(end + chunk_size, end + 2 * chunk_size)}, chunk_size {chunk_size}, max_seq_len {_max_seq_len}, \
+                logits.shape {logits.shape}"
 
             logits_chunk = torch.cat([logits_0, logits_1], dim=0)
             tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
