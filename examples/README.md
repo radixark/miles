@@ -1,0 +1,22 @@
+# Examples
+
+Welcome to the `examples` directory. Here you can find various usage examples and demonstrations of `miles` capabilities.
+
+## Directory Structure
+
+- **[eval](./eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
+- **[eval_multi_task](./eval_multi_task)**: Example for supporting OOD evaluation tasks e.g., GPQA, IFBench.
+- **[formal_math](./formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
+- **[fully_async](./fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
+- **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP on single-turn reasoning task using GRPO on the GEO3K dataset.
+- **[low_precision](./low_precision)**: Examples of FP8 training and inference for improved throughput and stability.
+- **[multi_agent](./multi_agent)**: Example of running multi-agent reinforcement learning (RL) with `miles`.
+- **[on_policy_distillation](./on_policy_distillation)**: Example implementation for on-policy distillation, extending the reinforcement learning pipeline to support teacher–student distillation directly within on-policy training.
+- **[reproducibility](./reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.
+- **[retool](./retool)**: Demonstrates the retool functionality for tool-enabled language model generation.
+- **[search-r1](./search-r1)**: A minimal reproduction of Search-R1, featuring multi-turn conversation and tool-calling.
+~~- **[strands-agents](./strands-agents)**: Integration example with the Strands-Agents scaffolding framework.~~
+~~- **[tau-bench](./tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).~~
+- **[train_infer_mismatch_helper](./train_infer_mismatch_helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).
+- **[true_on_policy](./true_on_policy)**: Ensures strictly equal log probabilities between inference (SGLang) and training engines.
+- **[true_on_policy_vlm](./true_on_policy_vlm)**: "True On-Policy" training demonstration for VLM (Qwen3-VL).
