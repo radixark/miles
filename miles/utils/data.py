@@ -129,35 +129,6 @@ class Dataset:
         for data in read_file(path):
             prompt = _build_messages(data, prompt_key, multimodal_keys)
 
-<<<<<<< HEAD
-            if apply_chat_template:
-                if tool_key is not None:
-                    tools = data[tool_key]
-                    if isinstance(tools, str):
-                        tools = json.loads(tools)
-                    elif isinstance(tools, np.ndarray):
-                        tools = tools.tolist()
-                    assert isinstance(tools, list), f"tools must be a list, got {type(tools)} instead"
-                else:
-                    tools = None
-                template_input = [{"role": "user", "content": prompt_content}] if multimodal_keys else prompt_content
-                # hacking for DeepSeek V3.2
-                try:
-                    prompt = tokenizer.apply_chat_template(
-                        template_input,
-                        tools,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                        **apply_chat_template_kwargs,
-                )
-                except Exception as e:
-                    from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
-                    encode_config = dict(thinking_mode="thinking", drop_thinking=True, add_default_bos_token=True)
-                    prompt = encode_messages(template_input, **encode_config)
-
-            else:
-                prompt = prompt_content
-=======
             metadata = data.get(metadata_key) or {}
             if tool_key is not None and tool_key in data:
                 tools = data[tool_key]
@@ -167,7 +138,6 @@ class Dataset:
                     tools = tools.tolist()
                 assert isinstance(tools, list), f"tools must be a list, got {type(tools)} instead"
                 metadata["tools"] = tools
->>>>>>> origin/bsnh-support
 
             # TODO: this is slow.
             if _should_skip_prompt(prompt, tokenizer, processor, max_length, apply_chat_template_kwargs):
