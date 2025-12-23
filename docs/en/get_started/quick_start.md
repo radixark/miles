@@ -188,6 +188,8 @@ ROLLOUT_ARGS=(
    --label-key label
    # If the `input_key` of Prompt is in OpenAI message format, apply Chat Template
    --apply-chat-template
+   #Control if the model is thinking mode.
+   --apply-chat-template-kwargs '{"enable_thinking":false}'
    # Whether to shuffle data in Rollout phase
    --rollout-shuffle
 
@@ -202,8 +204,8 @@ ROLLOUT_ARGS=(
    --global-batch-size 128
 
    # Rollout sampling parameters
-   --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-max-response-len 16384
+   --rollout-temperature 1.0
 
    # Load balancing for data collected in rollout phase. It ensures that the computational workload allocated to each training process (DP rank) is roughly equal, which may be beneficial for training speed
    --balance-data
