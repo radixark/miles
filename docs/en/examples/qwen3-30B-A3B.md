@@ -27,6 +27,9 @@ cd /root/miles
 bash scripts/run-qwen3-30B-A3B.sh
 ```
 
+*Note* that we disabled think mode to in example script to speed up the experiment.  
+If you want to enable think, need to set `--rollout-max-response-len` to 32768
+
 ### Parameter Introduction
 
 Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.sh](../../../scripts/run-qwen3-30B-A3B.sh) script.
