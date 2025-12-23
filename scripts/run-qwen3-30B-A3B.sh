@@ -41,8 +41,11 @@ ROLLOUT_ARGS=(
    --input-key prompt
    --label-key label
    --apply-chat-template
+   # we disabled think in example to avoid high truncation ratio and speed up the experiment
+   # if you want to enable think, need to set --rollout-max-response-len to 32768
+   --apply-chat-template-kwargs '{"enable_thinking":false}'
    --rollout-shuffle
-   --rm-type deepscaler
+   --rm-type math
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
