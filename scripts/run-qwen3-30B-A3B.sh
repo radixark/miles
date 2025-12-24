@@ -41,7 +41,7 @@ ROLLOUT_ARGS=(
    --input-key prompt
    --label-key label
    --apply-chat-template
-   # we disabled think mode in example script to speed up the experiment
+   # we disabled think mode in example script
    # if you want to enable think mode, need to set --rollout-max-response-len to 32768
    --apply-chat-template-kwargs '{"enable_thinking":false}'
    --rollout-shuffle

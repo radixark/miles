@@ -27,8 +27,10 @@ cd /root/miles
 bash scripts/run-qwen3-30B-A3B.sh
 ```
 
-*Note* that we disabled think mode to in example script to speed up the experiment.  
-If you want to enable think, need to set `--rollout-max-response-len` to 32768
+Note that: Enabling think mode requires high `rollout-max-response-len` (16k+) and 
+small batch sizes to avoid reward hacking, where the model learns to shorten 
+responses due to truncation, but does not improve on AIME scores. Disabling think 
+mode stabilizes training and VRAM but typically collapses performance on AIME.
 
 ### Parameter Introduction
 
