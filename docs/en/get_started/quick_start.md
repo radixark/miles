@@ -120,6 +120,8 @@ bash scripts/run-qwen3-4B.sh
 
 We still use the run-qwen3-4B.sh script as an example to briefly analyze the main parameters.
 
+> This defalut configuration assumes GPUs with ≈100 GB or more of available VRAM (e.g., H200 or H100-120GB). Running on 80 GB GPUs (A100 / H100) may require reducing batch size or adjusting memory-related settings accordingly.
+
 ### MODEL_ARGS: Model Configuration Parameters
 
 ```bash
