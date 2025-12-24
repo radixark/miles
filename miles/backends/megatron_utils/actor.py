@@ -195,7 +195,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.qkv_format == "bshd":
             # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
-            max_seq_len = max(rollout_data["total_lengths"]) 
+            max_seq_len = max(rollout_data["total_lengths"])
 
             # pad to reduce memory fragmentation and maybe make the computation faster
             pad_size = mpu.get_tensor_model_parallel_world_size() * self.args.data_pad_size_multiplier
