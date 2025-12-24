@@ -40,13 +40,16 @@ ROLLOUT_ARGS=(
    --input-key prompt
    --label-key label
    --apply-chat-template
+   # Control if the model is thinking mode. we disabled think in example to avoid high truncation ratio and avoid reward hacking.
+   # if you want to enable thinking, need to set --rollout-max-response-len to 16384
+   --apply-chat-template-kwargs '{"enable_thinking":false}'
    --rollout-shuffle
    --rm-type deepscaler
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    --global-batch-size 256
    --balance-data
