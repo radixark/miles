@@ -13,11 +13,12 @@ from miles.utils import train_metric_utils
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from miles.utils.postprocessing import compute_detailed_stats, log_stats
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils
-from .cp_utils import get_sum_of_sample_mean, slice_with_cp
+from .cp_utils import get_sample_means, get_sum_of_sample_mean, slice_with_cp
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +348,24 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
                         )
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                        # Add detailed stats for advantages to help understand the scale
+                        if key in ["advantages", "returns", "log_probs", "rollout_log_probs"]:
+                            sample_means_func = get_sample_means(
+                                total_lengths,
+                                response_lengths,
+                                loss_masks,
+                                qkv_format=args.qkv_format,
+                                max_seq_lens=max_seq_lens,
+                            )
+                            stats = compute_detailed_stats(
+                                val, sample_means_func, cp_size, mpu.get_data_parallel_group()
+                            )
+                            log_stats(log_dict, key, stats)
+                            # set log_dict[key] for backward compatibility,
+                            # but it will be overwritten by the mean in the reduced_log_dict eventually.
+                            val = stats["mean"]
+                        else:
+                            val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
                     else:
                         val = val.mean() * cp_size
                 else:
@@ -356,7 +374,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 val = val.float().mean()
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
-            log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
+            if key not in log_dict:
+                log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and reduced_log_dict is not None:

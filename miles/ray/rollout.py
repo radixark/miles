@@ -22,6 +22,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
+from miles.utils.postprocessing import RolloutPostprocessor
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.tracking_utils import init_tracking
@@ -55,6 +56,7 @@ class RolloutManager:
 
         self.generate_rollout = load_function(self.args.rollout_function_path)
         self.eval_generate_rollout = load_function(self.args.eval_function_path)
+        self.postprocessor = RolloutPostprocessor(args)
         self.custom_reward_post_process_func = None
         if self.args.custom_reward_post_process_path is not None:
             self.custom_reward_post_process_func = load_function(self.args.custom_reward_post_process_path)
@@ -100,6 +102,7 @@ class RolloutManager:
             self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
             _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
             data = self._convert_samples_to_train_data(data)
+            data = self.postprocessor.process(data)
             return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
         finally:
             if monitor_started:
