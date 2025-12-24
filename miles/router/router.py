@@ -71,6 +71,17 @@ class MilesRouter:
     async def _start_background_health_check(self):
         asyncio.create_task(self._health_check_loop())
 
+    async def _check_worker_health(self, url):
+        """Encapsulated health check logic for better maintainability."""
+        try:
+            response = await self.client.get(f"{url}/health", timeout=5.0)
+            if response.status_code == 200:
+                return url, True
+            logger.warning(f"[miles-router] Worker {url} is unhealthy (Status: {response.status_code})")
+        except Exception as e:
+            logger.warning(f"[miles-router] Worker {url} health check failed: {e}")
+        return url, False
+
     async def _health_check_loop(self):
         interval = self.args.rollout_health_check_interval
 
@@ -81,23 +92,8 @@ class MilesRouter:
             if not urls:
                 continue
 
-            async def check(url):
-                try:
-                    response = await self.client.get(f"{url}/health", timeout=5.0)
-                    if response.status_code == 200:
-                        return url, True
-                    logger.warning(f"[miles-router] Worker {url} is unhealthy (Status: {response.status_code})")
-                except Exception as e:
-                    logger.warning(f"[miles-router] Worker {url} health check failed: {e}")
-                return url, False
-
-            # Create a list of tasks for all workers to run in parallel
-            tasks = []
-            for url in urls:
-                tasks.append(check(url))
-
-            # Run all checks concurrently
-            results = await asyncio.gather(*tasks)
+            # Concurrent execution using a generator expression
+            results = await asyncio.gather(*(self._check_worker_health(url) for url in urls))
 
             for url, is_healthy in results:
                 if not is_healthy:
