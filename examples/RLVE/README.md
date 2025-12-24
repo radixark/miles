@@ -2,6 +2,17 @@
 
 This example shows miles training with [RLVE](https://github.com/Zhiyuan-Zeng/RLVE) verifiable environments (math/logic problems with deterministic verification).
 
+## Summary
+
+This example adds RLVE Gym examples under `examples/RLVE` with helper scripts, using miles' existing custom hooks.
+The wiring is example-only: it uses `--custom-generate-function-path` and `--custom-rm-path` to inject RLVE prompt generation and verification without enabling core `--rlve` mode.
+It relies on a dummy `--prompt-data` JSONL to satisfy the rollout interface and trains on `--reward-key accuracy`.
+The RLVE Gym environments provide procedurally generated, verifiable tasks with optional adaptive difficulty driven by the example's prompt provider.
+
+Thanks chenyang for his help on this PR, without you, none of this can happen.
+Thanks Zhiyuan Zeng for the help in debugging - it really helped move things forward.
+Also hooray for miles, to infinity and beyond!
+
 ## Scope
 
 This integration uses 7 environments via the `rlve-gym` pip shim. The full RLVE repository contains 400+ environments.
@@ -50,6 +61,9 @@ bash examples/RLVE/run_qwen3_8B_instruct.sh
 ```
 
 The script generates a dummy JSONL at runtime to satisfy miles' `--prompt-data` requirement. Actual prompts are generated on-the-fly in `rlve_generate.py`.
+The example uses `--custom-generate-function-path` and `--custom-rm-path`, which are already supported by miles without touching core RLVE plumbing.
+It does not require `--rlve` mode, `RLVEManager`, or the `rm_hub/rlve` path.
+It only needs `--prompt-data` (dummy JSONL) and the custom function paths, plus `--reward-key`.
 
 ## Code Structure
 
