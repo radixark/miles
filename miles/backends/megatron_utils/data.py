@@ -352,8 +352,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         val = val.mean() * cp_size
                 else:
                     val = sum(val) / len(val)
-            elif isinstance(val, (int, float)):
-                val = val  # Scalar types (e.g., _actual_global_batch_size)
             elif isinstance(val, torch.Tensor):
                 val = val.float().mean()
             else:

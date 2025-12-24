@@ -153,8 +153,7 @@ def create_training_models(args, pgs, rollout_manager):
         actor_model.connect(critic_model)
 
     actor_model.set_rollout_manager(rollout_manager)
-    if getattr(args, "rollout_global_dataset", False) or getattr(args, "rlve", False):
-        # Restore data source state for either global dataset offsets or RLVE manager
+    if args.rollout_global_dataset:
         ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
 
     return actor_model, critic_model
