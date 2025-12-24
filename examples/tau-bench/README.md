@@ -3,7 +3,7 @@ This example shows miles training in an agentic multi-turn tool use environment.
 
 
 ## Environment Setup 
-Use the `radixark/miles:latest` image and initialize the environment required for Search-R1:
+Use the `zhuzilin/miles:latest` image and initialize the environment required for Search-R1:
 
 ```bash
 cd /root/
@@ -25,11 +25,11 @@ cd /root/miles/examples/tau-bench
 python tau1_mock.py --local_dir /root/tau-bench/
 ```
 
-Initialize the Qwen3-4B-Instruct model needed for tool use:
+Initialize the Qwen2.5-3B-Instruct model needed for tool use:
 
 ```bash
 # hf checkpoint
-hf download Qwen/Qwen3-4B-Instruct-2507 --local-dir /root/Qwen3-4B-Instruct-2507
+huggingface-cli download Qwen/Qwen3-4B-Instruct-2507 --local-dir /root/Qwen3-4B-Instruct-2507
 
 # mcore checkpoint
 cd /root/miles
