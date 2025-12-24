@@ -94,6 +94,11 @@ ROLLOUT_ARGS=(
    # If the `input_key` in the prompt contains an OpenAI message,
    # tokenizer.apply_chat_template(...) will be executed
    --apply-chat-template
+
+   # Control if the model is thinking mode. we disabled think in example to avoid high truncation ratio and avoid reward hacking.
+   # if you want to enable think, need to set --rollout-max-response-len to 16384
+   --apply-chat-template-kwargs '{"enable_thinking":false}'
+
    # Whether to shuffle the data
    --rollout-shuffle
 
@@ -110,7 +115,7 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    # Rollout sampling parameters
    --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    # Number of training steps corresponding to one rollout
    --num-steps-per-rollout 1
