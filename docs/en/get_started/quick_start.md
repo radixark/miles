@@ -164,6 +164,9 @@ The entire training process can be viewed as a closed loop of **"Data Sampling �
 
 > The product of the two determines the **total number of samples generated in a single round of sampling**.
 
+- `--apply-chat-template-kwargs '{"enable_thinking":false}'`: Control if the model is in thinking mode. The default enable_thinking is true. ⚠️ Note that enabling thinking mode requires setting `rollout-max-response-len` to 16384 to avoid reward hacking. If not, the model learns to shorten responses due to truncation, and does not improve on AIME scores. Disabling think mode stabilizes training and VRAM but typically collapses performance on AIME.
+
+
 **Phase Two: Model Training (Training)**
 - `--global-batch-size`: Defines the **sample size required to execute one parameter update (optimizer.step)**
 - `--num-steps-per-rollout`: Defines **how many parameter updates to execute** using the current sampled data (we default to 1, using on-policy training)
@@ -188,7 +191,7 @@ ROLLOUT_ARGS=(
    --label-key label
    # If the `input_key` of Prompt is in OpenAI message format, apply Chat Template
    --apply-chat-template
-   #Control if the model is thinking mode.
+   # Control if the model is thinking mode. 
    --apply-chat-template-kwargs '{"enable_thinking":false}'
    # Whether to shuffle data in Rollout phase
    --rollout-shuffle
@@ -204,8 +207,8 @@ ROLLOUT_ARGS=(
    --global-batch-size 128
 
    # Rollout sampling parameters
-   --rollout-max-response-len 16384
-   --rollout-temperature 1.0
+   --rollout-max-response-len 8192
+   --rollout-temperature 1
 
    # Load balancing for data collected in rollout phase. It ensures that the computational workload allocated to each training process (DP rank) is roughly equal, which may be beneficial for training speed
    --balance-data
@@ -246,7 +249,7 @@ PERF_ARGS=(
    --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 1
-   --context-parallel-size 2
+   --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
@@ -256,7 +259,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1 # This item is ignored when dynamic batching is enabled
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 4608
+   --max-tokens-per-gpu 9216
 )
 ```
 
