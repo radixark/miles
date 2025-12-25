@@ -63,6 +63,8 @@ jobs:
 
       - name: Execute
         shell: bash
+        env:
+          ENABLE_LORA: ${{ matrix.info.enable_lora || '0' }}
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-long:
@@ -84,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k_async.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_distributed.py"}]
+        info: [{"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k_async.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_distributed.py"}, {"enable_lora": "1", "num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}, {"enable_lora": "1", "num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_distributed.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -103,4 +105,6 @@ jobs:
 
       - name: Execute
         shell: bash
+        env:
+          ENABLE_LORA: ${{ matrix.info.enable_lora || '0' }}
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}

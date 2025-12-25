@@ -106,11 +106,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--offload-rollout-level",
-                type=int,
-                default=2,
+                type=str,
+                nargs="+",
+                default=["kv_cache", "weight"],
                 help=(
-                    "The offload level for rollout when offload-rollout is set. "
-                    "1 means only offload kv cache, 2 means offload kv cache and weights."
+                    "Specifies what to offload during rollout when offload-rollout is set. "
+                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
+                    "Example: --offload-rollout-level kv_cache weight"
                 ),
             )
 
@@ -850,6 +852,41 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=1e-4,
                 help="The threshold for Off-Policy Sequence Masking (OPSM).",
             )
+            parser.add_argument(
+                "--lora-rank",
+                type=int,
+                default=0,
+                help="LoRA rank. Set to 0 to disable LoRA (default: 0)",
+            )
+            parser.add_argument(
+                "--lora-alpha",
+                type=int,
+                default=16,
+                help="LoRA alpha parameter (default: 16)",
+            )
+            parser.add_argument(
+                "--target-modules",
+                type=str,
+                default=None,
+                help=(
+                    "Target modules for LoRA adaptation. "
+                    "Can be 'all-linear', a single module name, or comma-separated module names. "
+                    "Example: 'q_proj,k_proj,v_proj' (default: None)"
+                ),
+            )
+            parser.add_argument(
+                "--exclude-modules",
+                type=str,
+                default=None,
+                help="Comma-separated list of modules to exclude from LoRA adaptation (default: None)",
+            )
+            parser.add_argument(
+                "--lora-adapter-path",
+                type=str,
+                default=None,
+                help="Path to load pre-trained LoRA adapter weights (default: None)",
+            )
+
             return parser
 
         def add_router_arguments(parser):
@@ -1394,6 +1431,13 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
+    # Check if LoRA is enabled with Megatron backend (not yet implemented)
+    if args.lora_rank > 0 and args.train_backend == "megatron":
+        raise NotImplementedError(
+            "LoRA is not yet implemented for Megatron backend. "
+            "Please use FSDP backend (--train-backend fsdp) or disable LoRA (--lora-rank 0)."
+        )
+
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
             raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
@@ -1425,7 +1469,7 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when save_interval is set."
 
     if args.lora_rank > 0:
-        # assert args.save is not None, "'--save' is required when LoRA is enabled."
+        assert args.save is not None, "'--save' is required when LoRA is enabled."
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":

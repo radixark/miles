@@ -51,9 +51,7 @@ class UpdateWeight(abc.ABC):
         self.weight_version += 1
 
         # Update base model if needed
-        # Level 1: only sync base once for LoRA models, then just LoRA
-        # Level 2: always sync base + LoRA
-        if not (is_lora_model(self.model) and self._base_synced and self.args.offload_rollout_level == 1):
+        if not (is_lora_model(self.model) and self._base_synced and "weight" not in self.args.offload_rollout_level):
             bucket = []
             bucket_size = 0
             for name, param in self.model.state_dict().items():
