@@ -74,3 +74,29 @@ python examples/eval/nemo_skills/skills_server.py \
 ```
 
 You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network. The server always proxies evaluation traffic to an OpenAI-compatible sglang router (Miles starts and manage the router), so adjust `--openai-model-name` and `--max-concurrent-requests` as needed for your deployment.
+
+The example scripts are in `examples/eval/scripts`. To run them, you need to follow the following steps (take Qwen3-4B as an example):
+
+1. Inside the miles container, run the following command:
+
+```bash
+cd /root/miles
+git pull
+pip install -e .
+
+# Download model weights (Qwen3-4B)
+hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
+
+# Download training dataset (dapo-math-17k)
+hf download --repo-type dataset zhuzilin/dapo-math-17k \
+  --local-dir /root/dapo-math-17k
+
+# Convert Qwen3-4B model to torch dist
+PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/Qwen3-4B \
+    --save /root/Qwen3-4B_torch_dist
+
+# Run the script
+bash examples/eval/scripts/run-qwen3-4B.sh
+```
