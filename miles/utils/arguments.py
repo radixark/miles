@@ -106,11 +106,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--offload-rollout-level",
-                type=int,
-                default=2,
+                type=str,
+                nargs="+",
+                default=["kv_cache", "weight"],
                 help=(
-                    "The offload level for rollout when offload-rollout is set. "
-                    "1 means only offload kv cache, 2 means offload kv cache and weights."
+                    "Specifies what to offload during rollout when offload-rollout is set. "
+                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
+                    "Example: --offload-rollout-level kv_cache weight"
                 ),
             )
 
@@ -1425,7 +1427,7 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when save_interval is set."
 
     if args.lora_rank > 0:
-        # assert args.save is not None, "'--save' is required when LoRA is enabled."
+        assert args.save is not None, "'--save' is required when LoRA is enabled."
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":
