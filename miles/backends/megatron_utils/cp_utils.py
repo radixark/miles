@@ -119,6 +119,54 @@ def get_sum_of_sample_mean(
     return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
 
 
+def get_sample_means(
+    total_lengths: list[int],
+    response_lengths: list[int],
+    loss_masks: list[torch.Tensor],
+    qkv_format: str = "thd",
+    max_seq_lens: list[int] | None = None,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """
+    Calculate per-sample means for CP. Returns a tensor of means for each sample in the rank.
+    """
+    cp_size = mpu.get_context_parallel_world_size()
+    if cp_size == 1:
+
+        def sample_means(x: torch.Tensor) -> torch.Tensor:
+            means = [
+                (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
+                for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
+            ]
+            return torch.stack(means) if means else torch.tensor([], device=x.device)
+
+    else:
+        cp_chunk_lengths = []
+        chunked_loss_masks = []
+        for i, (total_length, response_length, loss_mask) in enumerate(
+            zip(total_lengths, response_lengths, loss_masks, strict=False)
+        ):
+            max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+            prompt_length = total_length - response_length
+            _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
+                total_length, response_length, qkv_format, max_seq_len
+            )
+            loss_mask_0 = loss_mask[tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length]
+            loss_mask_1 = loss_mask[tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length]
+            chunked_loss_masks.append(torch.cat([loss_mask_0, loss_mask_1], dim=0))
+            cp_chunk_lengths.append(chunked_loss_masks[i].size(0))
+
+        def sample_means(x: torch.Tensor) -> torch.Tensor:
+            means = [
+                (x_i * chunked_loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
+                for x_i, chunked_loss_mask, loss_mask in zip(
+                    x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, loss_masks, strict=False
+                )
+            ]
+            return torch.stack(means) if means else torch.tensor([], device=x.device)
+
+    return sample_means
+
+
 def all_gather_with_cp(tensor: torch.Tensor, total_length: int, response_length: int) -> torch.Tensor:
     """
     Gather tensors across all ranks in the context parallel group.

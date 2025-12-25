@@ -8,6 +8,7 @@ from torch.utils.checkpoint import checkpoint
 
 from miles.utils.distributed_utils import distributed_masked_whiten
 from miles.utils.misc import load_function
+from miles.utils.postprocessing import compute_detailed_stats, log_stats
 from miles.utils.ppo_utils import (
     calculate_log_probs_and_entropy,
     compute_approx_kl,
@@ -21,7 +22,12 @@ from miles.utils.ppo_utils import (
 )
 from miles.utils.types import RolloutBatch
 
-from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
+from .cp_utils import (
+    all_gather_with_cp,
+    get_logits_and_tokens_offset_with_cp,
+    get_sample_means,
+    get_sum_of_sample_mean,
+)
 
 
 def get_responses(
@@ -623,6 +629,26 @@ def policy_loss_function(
 
     if args.use_opsm:
         reported_loss["opsm_clipfrac"] = opsm_clipfrac
+
+    # Calculate detailed stats for pg_loss and advantages
+    sample_means_func = get_sample_means(
+        total_lengths,
+        response_lengths,
+        batch["loss_masks"],
+        args.qkv_format,
+        batch.get("max_seq_lens", None),
+    )
+    cp_size = mpu.get_context_parallel_world_size()
+    dp_group = mpu.get_data_parallel_group()
+
+    pg_loss_stats = compute_detailed_stats(pg_loss.detach(), sample_means_func, cp_size, dp_group)
+    log_stats(reported_loss, "pg_loss", pg_loss_stats)
+    # Update pg_loss to be the global mean
+    reported_loss["pg_loss"] = pg_loss_stats["mean"]
+
+    # Also for advantages
+    adv_stats = compute_detailed_stats(advantages.detach(), sample_means_func, cp_size, dp_group)
+    log_stats(reported_loss, "advantages", adv_stats)
 
     return loss, reported_loss
 

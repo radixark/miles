@@ -18,6 +18,7 @@ from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_d
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.postprocessing import compute_detailed_stats, log_stats
 from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
@@ -503,15 +504,32 @@ class FSDPTrainRayActor(TrainRayActor):
             if metric_key not in packed_batches[0]:
                 continue
             val = torch.tensor([0.0], device=torch.cuda.current_device())
+            all_sample_means = []
             for _mbs_id, batches in enumerate(packed_batches):
                 unpacked_batches = unpack_sequences(batches)
                 for unpacked_batch in unpacked_batches:
                     if isinstance(unpacked_batch[metric_key], torch.Tensor):
                         loss_masks_tensor = unpacked_batch["loss_masks"].to(device=torch.cuda.current_device())
                         metric_tensor = unpacked_batch[metric_key].to(device=torch.cuda.current_device())
+
+                        sample_means = get_sample_means(metric_tensor, [metric_tensor.size(0)], [loss_masks_tensor])
+                        all_sample_means.append(sample_means)
+
                         val += (metric_tensor * loss_masks_tensor).sum() / loss_masks_tensor.sum().clamp_min(1)
                     else:
                         val += unpacked_batch[metric_key]
+
+            # Aggregate stats across DP group
+            if all_sample_means:
+                local_means = torch.cat(all_sample_means)
+                stats = compute_detailed_stats(
+                    None,  # Not used since we provide custom sample_means_func
+                    lambda _, lm=local_means: lm,
+                    self.cp_size,
+                    self.dp_group,
+                )
+                log_stats(log_dict, metric_key, stats)
+
             dist.all_reduce(val, op=dist.ReduceOp.SUM, group=self.dp_group)
             log_dict[f"rollout/{metric_key}"] = (
                 val / (self.args.n_samples_per_prompt * self.args.rollout_batch_size)
@@ -711,6 +729,20 @@ class FSDPTrainRayActor(TrainRayActor):
             "entropy_loss": entropy_loss.detach(),
         }
 
+        # Calculate detailed stats for pg_loss and advantages
+        pg_loss_stats = compute_detailed_stats(
+            pg_loss.detach(), lambda x: get_sample_means(x, response_lengths, loss_masks), self.cp_size, self.dp_group
+        )
+        log_stats(reported, "pg_loss", pg_loss_stats)
+
+        adv_stats = compute_detailed_stats(
+            advantages.detach(),
+            lambda x: get_sample_means(x, response_lengths, loss_masks),
+            self.cp_size,
+            self.dp_group,
+        )
+        log_stats(reported, "advantages", adv_stats)
+
         if train_rollout_logprob_abs_diff is not None:
             reported["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff
 
@@ -750,7 +782,12 @@ class FSDPTrainRayActor(TrainRayActor):
             dist.all_gather_object(reduced_aggregated, aggregated, group=self.dp_group)
             aggregated = {}
             for k in reported_accum.keys():
-                aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (self.args.global_batch_size)
+                if any(k.endswith(suffix) for suffix in ["/max", "/min", "/std", "/mean"]):
+                    # These metrics are already globally reduced.
+                    # We take the average across ranks to get the global value (which is same on all ranks).
+                    aggregated[k] = sum([r[k] for r in reduced_aggregated]) / self.dp_size
+                else:
+                    aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (self.args.global_batch_size)
             reported_accum.clear()
             if dist.get_rank() == 0:
                 log_dict = {
@@ -1003,6 +1040,15 @@ def get_logprob_and_entropy_with_cp(
     entropy_result = entropy_result[: len(target_tokens) - 1]
 
     return log_probs, entropy_result
+
+
+def get_sample_means(x: torch.Tensor, response_lengths: list[int], loss_masks: list[torch.Tensor]) -> torch.Tensor:
+    """Compute per-sample means for FSDP. Returns a tensor of means for each sample."""
+    means = [
+        (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
+        for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
+    ]
+    return torch.stack(means) if means else torch.tensor([], device=x.device)
 
 
 def sum_of_sample_mean(x: torch.Tensor, response_lengths: list[int], loss_masks: list[torch.Tensor]) -> torch.Tensor:
