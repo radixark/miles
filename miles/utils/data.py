@@ -1,9 +1,9 @@
 import json
 import logging
 import os
-import random
 import re
 
+import datasets
 import numpy as np
 import pandas as pd
 import ray
@@ -125,51 +125,92 @@ class Dataset:
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
     ):
-        self.origin_samples = []
-        for data in read_file(path):
-            prompt = _build_messages(data, prompt_key, multimodal_keys)
+        self.raw_file_path, self.row_slice = _parse_generalized_path(path)
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.max_length = max_length
+        self.prompt_key = prompt_key
+        self.multimodal_keys = multimodal_keys
+        self.label_key = label_key
+        self.tool_key = tool_key
+        self.metadata_key = metadata_key
+        self.apply_chat_template_kwargs = apply_chat_template_kwargs or {}
+        self.seed = seed
+        self.epoch_id = -1
 
-            metadata = data.get(metadata_key) or {}
-            if tool_key is not None and tool_key in data:
-                tools = data[tool_key]
-                if isinstance(tools, str):
-                    tools = json.loads(tools)
-                elif isinstance(tools, np.ndarray):
-                    tools = tools.tolist()
-                assert isinstance(tools, list), f"tools must be a list, got {type(tools)} instead"
-                metadata["tools"] = tools
+        if not os.path.exists(self.raw_file_path):
+            raise FileNotFoundError(f"Prompt dataset path '{self.raw_file_path}' does not exist.")
 
-            # TODO: this is slow.
-            if _should_skip_prompt(prompt, tokenizer, processor, max_length, apply_chat_template_kwargs):
-                continue
+        logger.info(f"Loading dataset from {self.raw_file_path} using Hugging Face datasets.")
 
-            self.origin_samples.append(
-                Sample(
-                    prompt=prompt,
-                    label=data[label_key] if label_key is not None else None,
-                    metadata=metadata,
-                )
+        # Determine file type and load using datasets library for memory-mapped access
+        if self.raw_file_path.endswith(".jsonl"):
+            file_type = "json"
+        elif self.raw_file_path.endswith(".parquet"):
+            file_type = "parquet"
+        else:
+            raise ValueError(
+                f"Unsupported file format: {self.raw_file_path}. Supported formats are .jsonl and .parquet."
             )
 
-        self.epoch_id = -1
-        self.seed = seed
-        self.samples = self.origin_samples
+        self.hf_dataset = datasets.load_dataset(file_type, data_files=self.raw_file_path, split="train")
+
+        # Apply row slicing if specified
+        if self.row_slice:
+            num_rows = len(self.hf_dataset)
+            indices = range(num_rows)[self.row_slice]
+            self.hf_dataset = self.hf_dataset.select(indices)
+            logger.info(f"Applied slice {self.row_slice}, dataset size: {len(self.hf_dataset)}")
+
+        # Apply filtering using the existing helper functions
+        def filter_func(example):
+            prompt = _build_messages(example, self.prompt_key, self.multimodal_keys)
+            return not _should_skip_prompt(
+                prompt, self.tokenizer, self.processor, self.max_length, self.apply_chat_template_kwargs
+            )
+
+        original_size = len(self.hf_dataset)
+        self.hf_dataset = self.hf_dataset.filter(filter_func, num_proc=os.cpu_count())
+        new_size = len(self.hf_dataset)
+        logger.info(f"Filtered dataset from {original_size} to {new_size} samples.")
+
+        self.origin_hf_dataset = self.hf_dataset
+
+    def __len__(self):
+        return len(self.hf_dataset)
+
+    def __getitem__(self, idx):
+        # The underlying HF dataset handles lazy fetching
+        data = self.hf_dataset[idx]
+
+        # Process the data using existing logic
+        prompt = _build_messages(data, self.prompt_key, self.multimodal_keys)
+
+        metadata = data.get(self.metadata_key) or {}
+        if self.tool_key is not None and self.tool_key in data:
+            tools = data[self.tool_key]
+            if isinstance(tools, str):
+                tools = json.loads(tools)
+            elif isinstance(tools, np.ndarray):
+                tools = tools.tolist()
+            assert isinstance(tools, list), f"tools must be a list, got {type(tools)} instead"
+            metadata["tools"] = tools
+
+        sample = Sample(
+            prompt=prompt,
+            label=data.get(self.label_key) if self.label_key is not None else None,
+            metadata=metadata,
+        )
+
+        return sample
 
     def shuffle(self, new_epoch_id):
         if self.epoch_id == new_epoch_id:
             return
 
-        random.seed(self.seed + new_epoch_id)
-        permutation = list(range(len(self.samples)))
-        random.shuffle(permutation)
-        self.samples = [self.origin_samples[i] for i in permutation]
+        logger.info(f"Shuffling dataset for epoch {new_epoch_id} with seed {self.seed + new_epoch_id}")
+        self.hf_dataset = self.origin_hf_dataset.shuffle(seed=self.seed + new_epoch_id)
         self.epoch_id = new_epoch_id
-
-    def __getitem__(self, idx):
-        return self.samples[idx]
-
-    def __len__(self):
-        return len(self.samples)
 
 
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
