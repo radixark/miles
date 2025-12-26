@@ -119,13 +119,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The backend for training.",
             )
             parser.add_argument(
-                "--qkv-format",
-                type=str,
-                choices=["thd", "bshd"],
-                default="thd",
-                help="The qkv layout for Megatron backend.",
-            )
-            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,
@@ -336,6 +329,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Only substitue the `def generate(args, sample, sampling_params)` function within the example rollout function. "
                     "This should be useful if you need to implement some special rollout logic, e.g. multi-turn, function calling."
+                ),
+            )
+            parser.add_argument(
+                "--token-io-mode",
+                type=str,
+                choices=["token_out", "retokenize"],
+                default="retokenize",
+                help=(
+                    "Token I/O policy for rollout generation. "
+                    "'token_out': require engine token IDs (output_ids or output_token_logprobs), error if missing or mismatched. "
+                    "'retokenize': legacy behavior (token in, text out, then retokenize)."
                 ),
             )
 
@@ -715,6 +719,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "gspo",
                     "reinforce_plus_plus",
                     "reinforce_plus_plus_baseline",
+                    "policy_gradient_is",
                     "ppo",
                     "on_policy_distillation",
                 ],
@@ -817,6 +822,27 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
             )
 
+            parser.add_argument(
+                "--pipeline-rl",
+                action="store_true",
+                default=False,
+                help="Enable PipelineRL-style in-flight weight update and staleness-aware async RL.",
+            )
+            parser.add_argument(
+                "--pipeline-weight-update-interval",
+                type=int,
+                default=1,
+                help="Trainer steps between weight update pushes to inference servers.",
+            )
+            parser.add_argument(
+                "--pipeline-max-weight-lag",
+                type=int,
+                default=4,
+                help=(
+                    "Max allowed weight_version lag between trainer and samples; staler samples are ignored for "
+                    "gradient (loss mask set to 0) to preserve fixed batch/group structure."
+                ),
+            )
             parser.add_argument(
                 "--use-routing-replay",
                 action="store_true",
@@ -1426,6 +1452,12 @@ def miles_validate_args(args):
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
 
+    if getattr(args, "pipeline_rl", False):
+        if args.pipeline_weight_update_interval <= 0:
+            raise ValueError("pipeline_weight_update_interval must be > 0 when pipeline_rl is enabled")
+        if args.pipeline_max_weight_lag < 0:
+            args.pipeline_max_weight_lag = 0
+
     if args.get_mismatch_metrics:
         assert (
             args.custom_tis_function_path is not None
@@ -1512,6 +1544,14 @@ def miles_validate_args(args):
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
 
+    # PipelineRL rollout mode: by default, switch to the inflight rollout implementation.
+    if getattr(args, "pipeline_rl", False) and args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout":
+        args.rollout_function_path = "miles.rollout.pipelinerl_rollout.generate_rollout"
+        logger.info(
+            "pipeline_rl enabled; overriding rollout_function_path to "
+            f"{args.rollout_function_path}. (Set --rollout-function-path explicitly to override.)"
+        )
+
     if args.num_steps_per_rollout is not None:
         global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout
         if args.global_batch_size is not None:
@@ -1591,16 +1631,6 @@ def miles_validate_args(args):
 
     if args.prefill_num_servers is not None:
         assert not args.use_fault_tolerance, "fault tolerance is not supported when prefill_num_servers is set."
-
-    assert args.qkv_format in [
-        "thd",
-        "bshd",
-    ], f"qkv_format {args.qkv_format} is not supported. (only 'thd' and 'bshd' are supported)"
-    if args.qkv_format == "bshd":
-        assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
-        assert (
-            args.use_dynamic_batch_size is False
-        ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
 
 def hf_validate_args(args, hf_config):

@@ -178,6 +178,7 @@ Additionally, we provide a `metadata_key`, which defaults to `"metadata"`. When 
     - `ppo` ([https://arxiv.org/abs/1707.06347](https://arxiv.org/abs/1707.06347))
 - `--calculate-per-token-loss`: By default, Miles calculates loss on a per-sample basis, i.e., `mean(sum(sample_i) / len(sample_i))`. Enable this flag to calculate loss on a per-token basis, i.e., `sum(sum(sample_i)) / sum(len(sample_i))`.
 - `--use-tis`: Enable this setting to use TIS (Truncated Importance Sampling) (https://fengyao.notion.site/off-policy-rl).
+- `--token-io-mode`: Token I/O policy for rollout. `token_out` (token in, token out only), `retokenize` (token in, text out then retokenize).
 
 ## Custom Rollout Function
 
