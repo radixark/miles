@@ -82,6 +82,7 @@ Next, run the conversion script. Please note the following parameters:
 - `--hf-checkpoint`: Specify the path of the downloaded Hugging Face model weights.
 - `--save`: Specify the save path for the converted `torch_dist` format weights.
 
+Here's an example of conversion script on a single GPU:  
 ```bash
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
@@ -89,7 +90,8 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     --save /root/GLM-Z1-9B-0414_torch_dist
 ```
 
-For larger models, you can use `torchrun` to start the conversion script to convert with multi-gpus or even multi-nodes.
+For larger models, you can use `torchrun` to start the conversion script to convert with multi-gpus or even multi-nodes.  
+Here's an example of conversion script on a single node with 8 GPU:  
 ```bash
 PYTHONPATH=/root/Megatron-LM torchrun --nproc_per_node=8 tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
