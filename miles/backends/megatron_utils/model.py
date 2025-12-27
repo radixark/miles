@@ -29,6 +29,7 @@ from .cp_utils import slice_with_cp
 from .data import DataIterator, get_batch
 from .loss import loss_function
 from .model_provider import get_model_provider_func
+from ...utils.metric_processor import process_metric
 
 logger = logging.getLogger(__name__)
 
@@ -475,22 +476,22 @@ def train_one_step(
     optimizer.zero_grad()
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
-        # Average loss across microbatches.
         keys = losses_reduced[0]["keys"]
-        values = None
-        for x in losses_reduced:
-            if values is None:
-                values = x["values"]
-            else:
-                values += x["values"]
-        assert len(keys) + 1 == values.numel()
-        torch.distributed.all_reduce(values, group=mpu.get_data_parallel_group(with_context_parallel=True))
+        dp_group = mpu.get_data_parallel_group(with_context_parallel=True)
+        concat_vals = [
+            torch.cat([torch.atleast_1d(x["values"][i]) for x in losses_reduced])
+            for i in range(len(losses_reduced[0]["values"]))
+        ]
+
+        local_amount = concat_vals[0].sum()
+        torch.distributed.all_reduce(local_amount, group=dp_group)
+        amount = local_amount.item()
 
         loss_reduced = {}
-        values = values.tolist()
-        num_samples_or_tokens = values[0]
-        for key, value in zip(keys, values[1:], strict=False):
-            loss_reduced[key] = value * mpu.get_context_parallel_world_size() / num_samples_or_tokens
+        for i, key in enumerate(keys):
+            process_metric(loss_reduced, key, concat_vals[i+1], group=dp_group, amount=amount)
+            loss_reduced[key] *= mpu.get_context_parallel_world_size()
+
         return loss_reduced, grad_norm
     return {}, grad_norm
 

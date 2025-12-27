@@ -528,8 +528,7 @@ class FSDPTrainRayActor(TrainRayActor):
         if dist.get_rank() == 0:
             logger.info(f"rollout {rollout_id}: {log_dict}")
             log_dict["rollout/step"] = compute_rollout_step(self.args, rollout_id)
-            # tracking_utils.log(self.args, log_dict, step_key="rollout/step")
-            self.metric_processor.log_metrics("roolout/step", log_dict)
+            tracking_utils.log(self.args, log_dict, step_key="rollout/step")
         if self.args.ci_test and self.args.true_on_policy_mode:
             assert log_dict["rollout/log_probs"] == log_dict["rollout/rollout_log_probs"], (
                 f"CI check failed: true_on_policy_mode is enabled, but log_probs "
@@ -783,7 +782,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 logger.info(f"step {self.global_step}: {log_dict}")
 
                 log_dict["train/step"] = self.global_step
-                self.metric_processor.log_metrics(log_dict, "train/")
+            tracking_utils.log(self.args, log_dict, step_key="rollout/step")
             self.global_step += 1
 
     @timer

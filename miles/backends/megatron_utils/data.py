@@ -17,7 +17,8 @@ from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils
-from .cp_utils import get_sum_of_sample_mean, slice_with_cp
+from .cp_utils import get_sum_of_sample_mean, slice_with_cp, get_vector_of_sample_mean
+from ...utils.metric_processor import _EXTEND_METRICS, process_metric
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,56 @@ def gather_log_data(
             group=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
         )
         return None
+
+
+def reduce_log_data(
+        metric_name: str,
+        args: Namespace,
+        rollout_id: int,
+        log_dict: dict[str, torch.Tensor],
+) -> dict[str, float] | None:
+    """
+    使用 process_metric 协同规约所有 Rank 的指标，并由 DP Source Rank 记录。
+    """
+    dp_group = mpu.get_data_parallel_group(with_context_parallel=True)
+    dp_size = mpu.get_data_parallel_world_size(with_context_parallel=True)
+    # --- 1. 统一 Key 集合 (Unify Keys) ---
+    local_keys = list(log_dict.keys())
+    # 这一步是为了防止某些 Rank 这一步没产生某个 metric
+    all_keys_list = [None] * dist.get_world_size(group=dp_group)
+    dist.all_gather_object(all_keys_list, local_keys, group=dp_group)
+
+    # 取并集并排序，确保所有 Rank 的 global_keys 序列完全对齐
+    global_keys = sorted(list(set([k for keys in all_keys_list for k in keys])))
+
+    # --- 2. 统一执行规约 (Unified Reduction) ---
+    reduced_log_dict = {}
+    for key in global_keys:
+        # 如果当前 rank 缺失该 key，则提供一个空 Tensor
+        # 确保 process_metric 内部的 all_reduce 能够被触发
+        metric_tensor = log_dict.get(
+            key,
+            torch.tensor([], dtype=torch.float32, device=torch.cuda.current_device())
+        )
+
+        # 这里就是你要求的统一处理逻辑
+        process_metric(
+            log_dict=reduced_log_dict,
+            key=f"{metric_name}/{key}",
+            metric=metric_tensor,
+            group=dp_group,
+            amount=dp_size if metric_tensor.numel() <= 1 else -1
+        )
+
+    if mpu.get_data_parallel_rank(with_context_parallel=True) == 0:
+        step = compute_rollout_step(args, rollout_id)
+        reduced_log_dict["rollout/step"] = step
+
+        logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
+        tracking_utils.log(args, reduced_log_dict, step_key="rollout/step")
+
+        return reduced_log_dict
+    return None
 
 
 class DataIterator:
@@ -328,20 +379,23 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
-                    if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
-                        sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                    if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "advantages", "returns", "values"]:
+                        vector_of_sample_mean = get_vector_of_sample_mean(total_lengths, response_lengths, loss_masks)
+                        if key in _EXTEND_METRICS:
+                            val = vector_of_sample_mean(val)
+                        else:
+                            val = cp_size * sum(vector_of_sample_mean(val)) / len(loss_masks)
                     else:
-                        val = val.mean() * cp_size
+                        val = torch.Tensor(val.mean() * cp_size, device=torch.cuda.current_device())
                 else:
                     val = sum(val) / len(val)
             elif isinstance(val, torch.Tensor):
                 val = val.float().mean()
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
-            log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
+            log_dict[key] = val
 
-        reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
+        reduced_log_dict = reduce_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and reduced_log_dict is not None:
             if (
                 rollout_id == 0
