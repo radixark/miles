@@ -7,6 +7,7 @@ from megatron.core import mpu
 
 from miles.utils.distributed_utils import distributed_masked_whiten
 from miles.utils.misc import load_function
+from miles.utils.postprocessor import Postprocessor
 from miles.utils.ppo_utils import (
     calculate_log_probs_and_entropy,
     compute_approx_kl,
@@ -392,6 +393,14 @@ def policy_loss_function(
         are enabled.
     """
     advantages = torch.cat(batch["advantages"], dim=0)
+    # compute advantage-level global stats (masked by loss_masks)
+    try:
+        flat_adv_mask = torch.cat(batch["loss_masks"]).to(device=advantages.device)
+        adv_stats = Postprocessor.compute_masked_stats_safe(
+            advantages, flat_adv_mask, process_group=mpu.get_data_parallel_group()
+        )
+    except Exception:
+        adv_stats = None
     old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
 
     response_lengths = batch["response_lengths"]
@@ -479,11 +488,25 @@ def policy_loss_function(
             tis_func = vanilla_tis_function
         pg_loss, modified_response_masks, tis_metrics = tis_func(**tis_kwargs)
 
+        # if TIS modified masks, use them for metric computation
+        metric_masks = modified_response_masks
+
         # [decouple IS and rejection] Rebuild sum_of_sample_mean with modified_response_masks for denominator correction
         # modified_response_masks will be sliced with cp in get_sum_of_sample_mean
         sum_of_sample_mean = get_sum_of_sample_mean(
             total_lengths, response_lengths, modified_response_masks, args.calculate_per_token_loss
         )
+    else:
+        metric_masks = batch["loss_masks"]
+
+    # compute pg_loss token-level stats (masked)
+    try:
+        flat_pg_mask = torch.cat(metric_masks).to(device=pg_loss.device)
+        pg_stats = Postprocessor.compute_masked_stats_safe(
+            pg_loss, flat_pg_mask, process_group=mpu.get_data_parallel_group()
+        )
+    except Exception:
+        pg_stats = None
 
     pg_loss = sum_of_sample_mean(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
@@ -524,6 +547,19 @@ def policy_loss_function(
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
     }
+
+    # Add advantage stats if available
+    if adv_stats is not None:
+        reported_loss["advantage_mean"] = adv_stats["mean"].clone().detach()
+        reported_loss["advantage_std"] = adv_stats["std"].clone().detach()
+        reported_loss["advantage_max"] = adv_stats["max"].clone().detach()
+        reported_loss["advantage_min"] = adv_stats["min"].clone().detach()
+
+    # Add pg_loss distributional stats if available
+    if pg_stats is not None:
+        reported_loss["pg_loss_max"] = pg_stats["max"].clone().detach()
+        reported_loss["pg_loss_min"] = pg_stats["min"].clone().detach()
+        reported_loss["pg_loss_std"] = pg_stats["std"].clone().detach()
 
     if train_rollout_logprob_abs_diff is not None:
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()

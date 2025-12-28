@@ -21,6 +21,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
+from miles.utils.postprocessor import Postprocessor
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
@@ -505,6 +506,30 @@ def _compute_metrics_from_samples(args, samples):
 
     log_dict = {}
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), f"response_len/")
+    # Add distributed-safe global stats for response lengths and rewards when possible
+    try:
+        if len(response_lengths) > 0:
+            vals = torch.tensor(response_lengths, dtype=torch.float32)
+            mask = torch.ones_like(vals, dtype=torch.bool)
+            stats = Postprocessor.compute_masked_stats_safe(vals, mask, process_group=None)
+            log_dict["response_len/global_mean"] = stats["mean"].item()
+            log_dict["response_len/global_std"] = stats["std"].item()
+            log_dict["response_len/global_max"] = stats["max"].item()
+            log_dict["response_len/global_min"] = stats["min"].item()
+
+        # rewards
+        rewards = [sample.get_reward_value(args) for sample in samples]
+        if len(rewards) > 0:
+            rvals = torch.tensor(rewards, dtype=torch.float32)
+            rmask = torch.ones_like(rvals, dtype=torch.bool)
+            rstats = Postprocessor.compute_masked_stats_safe(rvals, rmask, process_group=None)
+            log_dict["reward/global_mean"] = rstats["mean"].item()
+            log_dict["reward/global_std"] = rstats["std"].item()
+            log_dict["reward/global_max"] = rstats["max"].item()
+            log_dict["reward/global_min"] = rstats["min"].item()
+    except Exception:
+        # Best-effort only; fall back to existing stats if anything goes wrong
+        pass
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)

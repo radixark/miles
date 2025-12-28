@@ -22,6 +22,7 @@ from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_d
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.postprocessor import Postprocessor
 from miles.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -455,7 +456,13 @@ class FSDPTrainRayActor(TrainRayActor):
         for metric_key in ["log_probs", "ref_log_probs", "advantages", "returns"]:
             if metric_key not in packed_batches[0]:
                 continue
+            # Keep existing per-sample mean aggregation for backwards compatibility
             val = torch.tensor([0.0], device=torch.cuda.current_device())
+
+            # Also collect flat tensors to compute global masked stats via Postprocessor
+            metric_tensors = []
+            mask_tensors = []
+
             for mbs_id, batches in enumerate(packed_batches):
                 unpacked_batches = unpack_sequences(batches)
                 for unpacked_batch in unpacked_batches:
@@ -463,12 +470,30 @@ class FSDPTrainRayActor(TrainRayActor):
                         loss_masks_tensor = unpacked_batch["loss_masks"].to(device=torch.cuda.current_device())
                         metric_tensor = unpacked_batch[metric_key].to(device=torch.cuda.current_device())
                         val += (metric_tensor * loss_masks_tensor).sum() / loss_masks_tensor.sum().clamp_min(1)
+                        metric_tensors.append(metric_tensor)
+                        mask_tensors.append(loss_masks_tensor)
                     else:
                         val += unpacked_batch[metric_key]
+
             dist.all_reduce(val, op=dist.ReduceOp.SUM, group=self.dp_group)
             log_dict[f"rollout/{metric_key}"] = (
                 val / (self.args.n_samples_per_prompt * self.args.rollout_batch_size)
             ).item()
+
+            # Compute and attach global masked statistics when possible
+            if metric_tensors and mask_tensors:
+                try:
+                    flat_metric = torch.cat(metric_tensors).to(device=torch.cuda.current_device())
+                    flat_mask = torch.cat(mask_tensors).to(device=torch.cuda.current_device())
+                    stats = Postprocessor.compute_masked_stats_safe(
+                        flat_metric, flat_mask, process_group=self.dp_group
+                    )
+                    log_dict[f"rollout/{metric_key}_global_mean"] = stats["mean"].item()
+                    log_dict[f"rollout/{metric_key}_global_std"] = stats["std"].item()
+                    log_dict[f"rollout/{metric_key}_global_max"] = stats["max"].item()
+                    log_dict[f"rollout/{metric_key}_global_min"] = stats["min"].item()
+                except Exception:
+                    pass
         if dist.get_rank() == 0:
             logger.info(f"rollout {rollout_id}: {log_dict}")
             log_dict["rollout/step"] = compute_rollout_step(self.args, rollout_id)
@@ -535,6 +560,12 @@ class FSDPTrainRayActor(TrainRayActor):
         response_lengths = [batch["response_lengths"] for batch in unpacked_batches]
 
         advantages = advantages.to(device=log_probs.device)
+        # compute global advantage stats (masked)
+        try:
+            flat_adv_mask = torch.cat(loss_masks).to(device=advantages.device)
+            adv_stats = Postprocessor.compute_masked_stats_safe(advantages, flat_adv_mask, process_group=self.dp_group)
+        except Exception:
+            adv_stats = None
         ppo_kl = old_log_probs.to(device=log_probs.device) - log_probs
 
         if self.args.advantage_estimator == "gspo":
@@ -579,6 +610,13 @@ class FSDPTrainRayActor(TrainRayActor):
 
             pg_loss = pg_loss * tis_clip
 
+        # compute pg_loss masked stats before reduction
+        try:
+            flat_pg_mask = torch.cat(loss_masks).to(device=pg_loss.device)
+            pg_stats = Postprocessor.compute_masked_stats_safe(pg_loss, flat_pg_mask, process_group=self.dp_group)
+        except Exception:
+            pg_stats = None
+
         assert not self.args.calculate_per_token_loss, "calculate_per_token_loss not yet implemented"
         pg_loss = sum_of_sample_mean(pg_loss, response_lengths, loss_masks)
         pg_clipfrac = sum_of_sample_mean(pg_clipfrac, response_lengths, loss_masks)
@@ -613,6 +651,17 @@ class FSDPTrainRayActor(TrainRayActor):
             "entropy_loss": entropy_loss.detach(),
             "train_rollout_logprob_abs_diff": train_rollout_logprob_abs_diff,
         }
+
+        if adv_stats is not None:
+            reported["advantage_mean"] = adv_stats["mean"].detach()
+            reported["advantage_std"] = adv_stats["std"].detach()
+            reported["advantage_max"] = adv_stats["max"].detach()
+            reported["advantage_min"] = adv_stats["min"].detach()
+
+        if pg_stats is not None:
+            reported["pg_loss_max"] = pg_stats["max"].detach()
+            reported["pg_loss_min"] = pg_stats["min"].detach()
+            reported["pg_loss_std"] = pg_stats["std"].detach()
 
         if self.args.use_kl_loss:
             reported["kl_loss"] = kl_loss.detach()

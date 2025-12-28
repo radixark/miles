@@ -13,6 +13,7 @@ from miles.utils import train_metric_utils
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from miles.utils.postprocessor import Postprocessor
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -324,8 +325,34 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
                     if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
+                        # Keep existing per-sample mean behavior
+                        concatenated = val.clone().detach()
                         sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                        val = cp_size * sum_of_sample_mean(concatenated) / len(loss_masks)
+                        # Also compute global masked stats and attach additional keys
+                        try:
+                            # Prepare flat mask tensor
+                            if isinstance(loss_masks[0], torch.Tensor):
+                                flat_mask = torch.cat(loss_masks).to(device=concatenated.device)
+                            else:
+                                flat_mask = torch.tensor(
+                                    [m for lm in loss_masks for m in lm], device=concatenated.device
+                                )
+
+                            stats = Postprocessor.compute_masked_stats_safe(
+                                concatenated, flat_mask, process_group=mpu.get_data_parallel_group()
+                            )
+                            # Attach extra keys with a rollout/ prefix; gather_log_data will prefix again
+                            val_stats = {
+                                f"{key}_global_mean": stats["mean"].item(),
+                                f"{key}_global_std": stats["std"].item(),
+                                f"{key}_global_max": stats["max"].item(),
+                                f"{key}_global_min": stats["min"].item(),
+                            }
+                            # Merge these into log_dict (they will be reduced/gathered later)
+                            log_dict.update(val_stats)
+                        except Exception:
+                            pass
                     else:
                         val = val.mean() * cp_size
                 else:
