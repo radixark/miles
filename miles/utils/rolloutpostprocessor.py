@@ -100,3 +100,151 @@ class RolloutPostprocessor:
 
         # Otherwise delegate to the distributed implementation
         return RolloutPostprocessor.compute_global_masked_stats(values, mask, process_group=process_group)
+
+    @staticmethod
+    def aggregate_and_log(
+        log_dict: dict,
+        args,
+        rollout_id: int,
+        process_group: Optional[dist.ProcessGroup] = None,
+        dp_src_rank: int = 0,
+        only_log_on_src: bool = True,
+    ) -> Optional[dict]:
+        """
+        Aggregate per-rank metrics into pooled/global metrics and log them.
+
+        Expected convention for pooled fields: callers should emit per-rank
+        aggregates with suffixes: `_agg_sum`, `_agg_sumsq`, `_agg_count`,
+        `_agg_min`, `_agg_max` for fields that require pooled mean/std/min/max.
+
+        Non-aggregate scalar keys (plain numeric) will be averaged across
+        ranks via all-reduce sum/mean.
+
+        Returns the reduced dict (with keys prefixed by `rollout/`) on all
+        ranks. Logging via `tracking_utils.log` happens on the DP source rank
+        when `only_log_on_src` is True.
+        """
+        # Fast path: non-distributed -> compute locally
+        if not dist.is_available() or not dist.is_initialized() or process_group is None:
+            reduced: dict = {}
+            # Handle aggregate bases
+            agg_bases = {k[: -len("_agg_sum")] for k in log_dict.keys() if k.endswith("_agg_sum")}
+            for base in agg_bases:
+                s = float(log_dict.get(f"{base}_agg_sum", 0.0))
+                ssq = float(log_dict.get(f"{base}_agg_sumsq", 0.0))
+                cnt = int(log_dict.get(f"{base}_agg_count", 0))
+                mn = float(log_dict.get(f"{base}_agg_min", float("inf")))
+                mx = float(log_dict.get(f"{base}_agg_max", float("-inf")))
+                if cnt > 0:
+                    mean = s / cnt
+                    var = ssq / cnt - mean * mean
+                    if cnt >= 2:
+                        var = var * (cnt / (cnt - 1))
+                    std = float(max(var, 0.0) ** 0.5)
+                else:
+                    mean = 0.0
+                    std = 0.0
+                    mn = 0.0
+                    mx = 0.0
+                reduced[f"rollout/{base}_global_mean"] = mean
+                reduced[f"rollout/{base}_global_std"] = std
+                reduced[f"rollout/{base}_global_min"] = mn
+                reduced[f"rollout/{base}_global_max"] = mx
+
+            # Average non-aggregate numeric keys
+            non_agg_keys = [k for k in log_dict.keys() if not any(k.startswith(b) for b in agg_bases)]
+            for key in non_agg_keys:
+                v = log_dict[key]
+                try:
+                    reduced[f"rollout/{key}"] = float(v)
+                except Exception:
+                    reduced[f"rollout/{key}"] = v
+
+            # Add step if available
+            reduced["rollout/step"] = compute_rollout_step(args, rollout_id)
+            if not only_log_on_src:
+                tracking_utils.log(args, reduced, step_key="rollout/step")
+            return reduced
+
+        # Distributed path: perform all-reduces per aggregate
+        dp_size = dist.get_world_size(group=process_group)
+
+        gathered_reduced: dict = {}
+
+        # Find aggregate bases
+        agg_bases = {k[: -len("_agg_sum")] for k in log_dict.keys() if k.endswith("_agg_sum")}
+
+        # For each aggregate base, all-reduce sum, sumsq, count and reduce min/max
+        for base in agg_bases:
+            local_sum = torch.tensor(float(log_dict.get(f"{base}_agg_sum", 0.0)), dtype=torch.float64, device="cpu")
+            local_sumsq = torch.tensor(
+                float(log_dict.get(f"{base}_agg_sumsq", 0.0)), dtype=torch.float64, device="cpu"
+            )
+            local_count = torch.tensor(int(log_dict.get(f"{base}_agg_count", 0)), dtype=torch.float64, device="cpu")
+            # Use CPU tensors for small reductions to avoid GPU sync
+            dist.all_reduce(local_sum, op=dist.ReduceOp.SUM, group=process_group)
+            dist.all_reduce(local_sumsq, op=dist.ReduceOp.SUM, group=process_group)
+            dist.all_reduce(local_count, op=dist.ReduceOp.SUM, group=process_group)
+
+            total_count = int(local_count.item())
+            total_sum = float(local_sum.item())
+            total_sumsq = float(local_sumsq.item())
+
+            # Reduce min/max
+            local_min = torch.tensor(
+                float(log_dict.get(f"{base}_agg_min", float("inf"))), dtype=torch.float64, device="cpu"
+            )
+            local_max = torch.tensor(
+                float(log_dict.get(f"{base}_agg_max", float("-inf"))), dtype=torch.float64, device="cpu"
+            )
+            dist.all_reduce(local_min, op=dist.ReduceOp.MIN, group=process_group)
+            dist.all_reduce(local_max, op=dist.ReduceOp.MAX, group=process_group)
+
+            if total_count > 0:
+                mean = total_sum / total_count
+                var = total_sumsq / total_count - mean * mean
+                if total_count >= 2:
+                    var = var * (total_count / (total_count - 1))
+                std = float(max(var, 0.0) ** 0.5)
+                mn = float(local_min.item())
+                mx = float(local_max.item())
+            else:
+                mean = 0.0
+                std = 0.0
+                mn = 0.0
+                mx = 0.0
+
+            gathered_reduced[f"rollout/{base}_global_mean"] = mean
+            gathered_reduced[f"rollout/{base}_global_std"] = std
+            gathered_reduced[f"rollout/{base}_global_min"] = mn
+            gathered_reduced[f"rollout/{base}_global_max"] = mx
+
+        # Handle non-aggregate numeric keys: all-reduce sum then divide by dp_size
+        non_agg_keys = [k for k in log_dict.keys() if not any(k.startswith(b) for b in agg_bases)]
+        for key in non_agg_keys:
+            v = log_dict[key]
+            try:
+                t = torch.tensor(float(v), dtype=torch.float64, device="cpu")
+                dist.all_reduce(t, op=dist.ReduceOp.SUM, group=process_group)
+                gathered_reduced[f"rollout/{key}"] = float(t.item()) / float(dp_size)
+            except Exception:
+                # Non-numeric -> pick first-rank's value via gather_object
+                vals = [None] * dp_size
+                dist.gather_object(
+                    log_dict[key],
+                    vals if dist.get_rank() == dp_src_rank else None,
+                    dst=dp_src_rank,
+                    group=process_group,
+                )
+                if dist.get_rank() == dp_src_rank:
+                    gathered_reduced[f"rollout/{key}"] = vals[0]
+
+        # Add rollout step
+        gathered_reduced["rollout/step"] = compute_rollout_step(args, rollout_id)
+
+        # Logging only on source rank by default
+        rank = dist.get_rank(group=process_group) if hasattr(dist, "get_rank") else dist.get_rank()
+        if not only_log_on_src or rank == dp_src_rank:
+            tracking_utils.log(args, gathered_reduced, step_key="rollout/step")
+
+        return gathered_reduced

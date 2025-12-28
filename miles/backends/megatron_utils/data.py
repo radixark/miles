@@ -387,20 +387,34 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                                     [m for lm in loss_masks for m in lm], device=concatenated.device
                                 )
 
-                            stats = RolloutPostprocessor.compute_masked_stats_safe(
-                                concatenated, flat_mask, process_group=mpu.get_data_parallel_group()
+                            # Compute local per-rank aggregates (sum, sumsq, count, min, max)
+                            mask_bool = flat_mask.bool()
+                            if mask_bool.numel() == 0 or mask_bool.sum().item() == 0:
+                                local_count = 0
+                                local_sum = 0.0
+                                local_sumsq = 0.0
+                                local_min = float("inf")
+                                local_max = float("-inf")
+                            else:
+                                masked_vals = concatenated[mask_bool]
+                                local_count = int(masked_vals.numel())
+                                local_sum = float(masked_vals.sum().item())
+                                local_sumsq = float((masked_vals * masked_vals).sum().item())
+                                local_min = float(masked_vals.min().item())
+                                local_max = float(masked_vals.max().item())
+
+                            # Emit per-rank aggregates for pooled reduction
+                            log_dict.update(
+                                {
+                                    f"{key}_agg_sum": local_sum,
+                                    f"{key}_agg_sumsq": local_sumsq,
+                                    f"{key}_agg_count": local_count,
+                                    f"{key}_agg_min": local_min,
+                                    f"{key}_agg_max": local_max,
+                                }
                             )
-                            # Attach extra keys with a rollout/ prefix, gather_log_data will prefix again
-                            val_stats = {
-                                f"{key}_global_mean": stats["mean"].item(),
-                                f"{key}_global_std": stats["std"].item(),
-                                f"{key}_global_max": stats["max"].item(),
-                                f"{key}_global_min": stats["min"].item(),
-                            }
-                            # Merge these into log_dict, they will be reduced/gathered later
-                            log_dict.update(val_stats)
                         except Exception as e:
-                            logger.error(f"error in computing global stats for {key}: {e}")
+                            logger.error(f"error in preparing aggregates for {key}: {e}")
                     else:
                         val = val.mean() * cp_size
                 else:
@@ -411,7 +425,15 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 raise ValueError(f"Unsupported type: {type(val)}")
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
-        reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
+        # Aggregate per-rank metrics using all-reduce and log on DP source rank
+        reduced_log_dict = RolloutPostprocessor.aggregate_and_log(
+            log_dict,
+            args,
+            rollout_id,
+            process_group=mpu.get_data_parallel_group(),
+            dp_src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
+            only_log_on_src=True,
+        )
         if args.ci_test and reduced_log_dict is not None:
             if (
                 rollout_id == 0
