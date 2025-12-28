@@ -12,21 +12,34 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from miles.backends.fsdp_utils.lora_utils import is_lora_model
+
 logger = logging.getLogger(__name__)
 
 
 class ModelState(Stateful):
     """Wrapper for model state only."""
 
-    def __init__(self, model):
+    def __init__(self, model, lora_only: bool = False):
         self.model = model
+        self.lora_only = lora_only
+        self._key = "adapter" if lora_only else "model"
 
     def state_dict(self):
         model_state_dict, _ = get_state_dict(self.model, optimizers=[])
-        return {"model": model_state_dict}
+        if self.lora_only:
+            model_state_dict = {k: v for k, v in model_state_dict.items() if "lora_" in k}
+        return {self._key: model_state_dict}
 
     def load_state_dict(self, state_dict):
-        set_state_dict(self.model, optimizers=[], model_state_dict=state_dict["model"], optim_state_dict=None)
+        data = state_dict[self._key]
+
+        if self.lora_only:
+            full_state_dict, _ = get_state_dict(self.model, optimizers=[])
+            full_state_dict.update(data)
+            set_state_dict(self.model, optimizers=[], model_state_dict=full_state_dict, optim_state_dict=None)
+        else:
+            set_state_dict(self.model, optimizers=[], model_state_dict=data, optim_state_dict=None)
 
 
 class OptimizerState(Stateful):
@@ -44,6 +57,19 @@ class OptimizerState(Stateful):
         set_state_dict(
             self.model, optimizers=self.optimizer, model_state_dict=None, optim_state_dict=state_dict["optim"]
         )
+
+
+class LRSchedulerState(Stateful):
+    """Wrapper for LR scheduler state only."""
+
+    def __init__(self, lr_scheduler):
+        self.lr_scheduler = lr_scheduler
+
+    def state_dict(self):
+        return {"lr_scheduler": self.lr_scheduler.state_dict()}
+
+    def load_state_dict(self, state_dict):
+        self.lr_scheduler.load_state_dict(state_dict["lr_scheduler"])
 
 
 def _read_checkpoint_metadata(path: Path) -> dict[str, Any]:
@@ -89,20 +115,23 @@ def load(actor: Any) -> dict[str, Any] | None:
     checkpoint_dir = root_path / f"iter_{target_step:07d}"
     model_dir = checkpoint_dir / "model"
     optimizer_dir = checkpoint_dir / "optimizer"
+    lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
+    lora_dir = checkpoint_dir / "adapter"
+
+    lora_only = lora_dir.exists() and is_lora_model(actor.model)
+    model_dir = lora_dir if lora_only else model_dir
 
     if not model_dir.exists():
-        logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
+        logger.info(f"[FSDP] No model checkpoint found at {model_dir} or {lora_dir}; skipping load.")
         return None
 
-    # Load model weights (always)
-    model_state = ModelState(actor.model)
+    model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
-
     try:
         dcp.load(state_dict=state_dict, checkpoint_id=str(model_dir))
-        logger.info(f"[FSDP] Loaded model from {model_dir}")
+        logger.info(f"[FSDP] Loaded {'LoRA adapter' if lora_only else 'model'} from {model_dir}")
     except Exception as e:
-        logger.error(f"[FSDP] Failed to load model from {model_dir}: {e}")
+        logger.error(f"[FSDP] Failed to load {'LoRA adapter' if lora_only else 'model'} from {model_dir}: {e}")
         return None
 
     # Load optimizer state (optional)
@@ -117,6 +146,19 @@ def load(actor: Any) -> dict[str, Any] | None:
             logger.warning(f"[FSDP] Failed to load optimizer from {optimizer_dir}: {e}")
     elif load_optimizer:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
+
+    # Load LR scheduler state (optional)
+    load_lr_scheduler = hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    if load_lr_scheduler:
+        lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
+        lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
+        try:
+            dcp.load(state_dict=lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
+            logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
+        except Exception as e:
+            logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
+    elif hasattr(actor, "lr_scheduler"):
+        logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None
     rng_path = checkpoint_dir / "rng.pt"
@@ -173,23 +215,41 @@ def save(actor: Any, iteration: int) -> None:
     checkpoint_dir = base_dir / f"iter_{step_id:07d}"
     model_dir = checkpoint_dir / "model"
     optimizer_dir = checkpoint_dir / "optimizer"
+    lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
 
     if dist.get_rank() == 0:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
         optimizer_dir.mkdir(parents=True, exist_ok=True)
+        lr_scheduler_dir.mkdir(parents=True, exist_ok=True)
     dist.barrier()
 
     # Save model weights
-    model_state = ModelState(actor.model)
+    lora_only = is_lora_model(actor.model)
+    if lora_only:
+        save_dir = checkpoint_dir / "adapter"
+        if dist.get_rank() == 0:
+            save_dir.mkdir(parents=True, exist_ok=True)
+        dist.barrier()
+    else:
+        save_dir = model_dir
+
+    model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
-    dcp.save(state_dict, checkpoint_id=str(model_dir))
+    dcp.save(state_dict, checkpoint_id=str(save_dir))
+    logger.info(f"[FSDP] Saved {'LoRA adapter' if lora_only else 'model'} to {save_dir}")
 
     # Save optimizer state
     if hasattr(actor, "optimizer") and actor.optimizer is not None:
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         dcp.save(optim_state_dict, checkpoint_id=str(optimizer_dir))
+
+    # Save LR scheduler state
+    if hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None:
+        lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
+        lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
+        dcp.save(lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}

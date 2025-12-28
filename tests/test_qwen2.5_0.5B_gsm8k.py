@@ -11,13 +11,12 @@ NUM_GPUS = 2 if FEW_GPU else 4
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
-    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist/ "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -30,7 +29,7 @@ def execute():
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         "--over-sampling-batch-size 64 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 256 "
@@ -100,6 +99,7 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {2 if FEW_GPU else 4} "
         "--colocate "
+        "--megatron-to-hf-mode bridge "
     )
 
     train_args = (

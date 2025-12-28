@@ -8,7 +8,7 @@ Use the `radixark/miles:latest` image and initialize the environment required fo
 
 ```bash
 cd /root/
-git clone https://github.com/lm-sys/miles.git
+git clone https://github.com/radixark/miles.git
 pip install -e .
 # for Search R1
 pip install chardet

@@ -13,6 +13,8 @@
         {'test_file': 'test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 2},
         {'test_file': 'test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 2},
         {'test_file': 'test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 2},
+        {'test_file': 'test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 2, 'enable_lora': '1'},
+        {'test_file': 'test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 2, 'enable_lora': '1'},
       ],
     },
 } %>
@@ -77,5 +79,7 @@ jobs:
 
       - name: Execute
         shell: bash
+        env:
+          ENABLE_LORA: ${{ matrix.info.enable_lora || '0' }}
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 <% endfor %>

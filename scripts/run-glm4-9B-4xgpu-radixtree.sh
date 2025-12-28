@@ -17,8 +17,6 @@ export PYTHONBUFFERED=16
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-WANDB_KEY=8920a59faeab83c97b55c3cbe78618f11d0a1821
-
 NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
     HAS_NVLINK=1
@@ -51,7 +49,7 @@ ROLLOUT_ARGS=(
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    --global-batch-size 256
    --balance-data
@@ -62,7 +60,7 @@ EVAL_ARGS=(
    --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
-   --eval-top-p 0.7
+   --eval-top-p 1
 )
 
 PERF_ARGS=(

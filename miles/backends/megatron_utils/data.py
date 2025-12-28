@@ -1,6 +1,6 @@
 import logging
 from argparse import Namespace
-from typing import Optional, Sequence, Union
+from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -24,17 +24,21 @@ logger = logging.getLogger(__name__)
 
 
 def get_batch(
-    data_iterator: "DataIterator",
-    keys: Sequence[str],
-) -> dict[str, Union[torch.Tensor, PackedSeqParams, list[torch.Tensor], None]]:
+    data_iterator: "DataIterator", keys: Sequence[str], pad_multiplier: int = 128, qkv_format: str = "thd"
+) -> dict[str, torch.Tensor | PackedSeqParams | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
 
     Steps:
     - Fetch raw fields via iterator.
     - Save original token tensors under "unconcat_tokens".
-    - Slice tokens into two chunks for Context Parallelism (CP), concatenate, and pad to a multiple of 128.
+    - Slice tokens into two chunks for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
     - Build cu_seqlens and `PackedSeqParams` with T-H-D layout (T: sequence length, H: attention heads, D: head dimension).
+
+    Args:
+        data_iterator: Iterator providing micro-batch data.
+        keys: List of keys to fetch from the iterator.
+        pad_multiplier: Multiplier for padding size calculation (default: 128).
 
     Returns a dict including:
     - "tokens": torch.LongTensor of shape [1, T_padded] on the current CUDA device
@@ -50,40 +54,50 @@ def get_batch(
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
+    pad_size = mpu.get_tensor_model_parallel_world_size() * pad_multiplier
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
 
     cp_size = mpu.get_context_parallel_world_size()
-    tokens = [slice_with_cp(t, pad_token_id) for t in tokens]
 
-    cu_seqlens = [0]
-    for t in tokens:
-        cu_seqlens.append(cu_seqlens[-1] + t.size(0))
+    if qkv_format == "bshd":
+        max_seqlen = batch["max_seq_lens"][0]
+        assert max([t.size(0) for t in tokens]) <= max_seqlen
+        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        tokens = torch.stack(tokens)
 
-    tokens = torch.cat(tokens)
+    elif qkv_format == "thd":
+        tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
 
-    # Always pad to 128 to reduce memory fragmentation and maybe make the computation faster
-    # TODO: make this configurable?
-    pad_size = mpu.get_tensor_model_parallel_world_size() * 128
-    pad = (pad_size - tokens.size(0) % pad_size) % pad_size
-    if pad != 0:
-        tokens = F.pad(tokens, (0, pad), value=pad_token_id)
-        cu_seqlens.append(cu_seqlens[-1] + pad)
+        cu_seqlens = [0]
+        for t in tokens:
+            cu_seqlens.append(cu_seqlens[-1] + t.size(0))
 
-    # thd requires the cu_seqlens to be of the origin length
-    cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
-    max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        tokens = torch.cat(tokens)
 
-    packed_seq_params = PackedSeqParams(
-        cu_seqlens_q=cu_seqlens,
-        cu_seqlens_kv=cu_seqlens,
-        max_seqlen_q=max_seqlen,
-        max_seqlen_kv=max_seqlen,
-        qkv_format="thd",
-    )
+        # Always pad to reduce memory fragmentation and maybe make the computation faster
+        pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+        if pad != 0:
+            tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+            cu_seqlens.append(cu_seqlens[-1] + pad)
 
-    tokens = tokens.unsqueeze(0)
+        # thd requires the cu_seqlens to be of the origin length
+        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+
+        packed_seq_params = PackedSeqParams(
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_kv=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_kv=max_seqlen,
+            qkv_format="thd",
+        )
+
+        tokens = tokens.unsqueeze(0)
+    else:
+        raise ValueError(f"Unsupported qkv_format: {qkv_format}")
+
     batch["tokens"] = tokens
     batch["packed_seq_params"] = packed_seq_params
     return batch
@@ -146,8 +160,8 @@ class DataIterator:
     def __init__(
         self,
         rollout_data: RolloutBatch,
-        micro_batch_size: Optional[int] = None,
-        micro_batch_indices: Optional[list[list[int]]] = None,
+        micro_batch_size: int | None = None,
+        micro_batch_indices: list[list[int]] | None = None,
     ) -> None:
         """Initialize an iterator over `rollout_data`.
 
@@ -163,7 +177,7 @@ class DataIterator:
         assert micro_batch_size is None or micro_batch_indices is None
         self.offset = 0
 
-    def get_next(self, keys: Sequence[str]) -> dict[str, Optional[list[object]]]:
+    def get_next(self, keys: Sequence[str]) -> dict[str, list[object] | None]:
         """Return the next micro-batch for the requested keys.
 
         - If `micro_batch_indices` is provided, selects rows according to the current
@@ -202,7 +216,7 @@ class DataIterator:
 
 def get_data_iterator(
     args: Namespace,
-    model: Union[torch.nn.Module, Sequence[torch.nn.Module]],
+    model: torch.nn.Module | Sequence[torch.nn.Module],
     rollout_data: RolloutBatch,
 ) -> tuple[list[DataIterator], list[int]]:
     """
@@ -307,6 +321,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
         response_lengths = rollout_data["response_lengths"]
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
+        max_seq_lens = rollout_data.get("max_seq_lens", None)
 
         for key, val in rollout_data.items():
             if key in [
@@ -314,6 +329,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "loss_masks",
                 "sample_indices",
                 "rollout_routed_experts",
+                "max_seq_lens",
             ]:
                 continue
             # Upload per sample mean for each rollout value
@@ -374,7 +390,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             elif isinstance(val, torch.Tensor):
                 val = val.float().mean()
             else:
-                raise ValueError(f"Unsupported type: {type(val)}")
+                raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
         # Aggregate per-rank metrics using all-reduce and log on DP source rank
@@ -482,8 +498,8 @@ def log_perf_data(rollout_id: int, args: Namespace) -> None:
 
 def sync_actor_critic_data(
     args: Namespace,
-    rollout_data: Optional[RolloutBatch] = None,
-    group: Optional[dist.ProcessGroup] = None,
+    rollout_data: RolloutBatch | None = None,
+    group: dist.ProcessGroup | None = None,
 ) -> None:
     """
     Broadcast `values` (from critic) and optionally `log_probs`/`ref_log_probs`
@@ -493,7 +509,8 @@ def sync_actor_critic_data(
     - Log-probs and ref-log-probs are broadcast from src=0 when KL is used.
     Updates `rollout_data` in place with the synchronized tensors.
     """
-    values, log_probs, ref_log_probs = map(rollout_data.get, ("values", "log_probs", "ref_log_probs"))
+    log_probs_key = "log_probs" if not args.use_rollout_logprobs else "rollout_log_probs"
+    values, log_probs, ref_log_probs = map(rollout_data.get, ("values", log_probs_key, "ref_log_probs"))
 
     # return when not the pp last stage
     if not values and not log_probs:
@@ -508,13 +525,24 @@ def sync_actor_critic_data(
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not log_probs:
-            ref_log_probs = [torch.empty_like(value) for value in values]
             log_probs = [torch.empty_like(value) for value in values]
-        for ref_log_prob, log_prob in zip(ref_log_probs, log_probs):
-            handles.append(dist.broadcast(ref_log_prob, src=0, group=group, async_op=True))
+        if not ref_log_probs:
+            ref_log_probs = [torch.empty_like(value) for value in values]
+        for ref_log_prob, log_prob in zip(ref_log_probs, log_probs, strict=False):
             handles.append(dist.broadcast(log_prob, src=0, group=group, async_op=True))
+            handles.append(dist.broadcast(ref_log_prob, src=0, group=group, async_op=True))
 
     for handle in handles:
         handle.wait()
 
-    rollout_data.update({"values": values, "log_probs": log_probs, "ref_log_probs": ref_log_probs})
+    rollout_data.update(
+        {
+            k: v
+            for k, v in {
+                "values": values,
+                log_probs_key: log_probs,
+                "ref_log_probs": ref_log_probs,
+            }.items()
+            if v is not None
+        }
+    )

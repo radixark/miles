@@ -57,7 +57,7 @@ def execute():
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         "--global-batch-size 256 "
         "--balance-data "
     )
@@ -77,7 +77,7 @@ def execute():
         "--eval-interval 20 "
         "--n-samples-per-eval-prompt 1 "
         f"--eval-max-response-len {eval_max_response_len or 16384} "
-        "--eval-top-p 0.7 "
+        "--eval-top-p 1 "
     )
 
     if mode == "eval_flc":
@@ -134,7 +134,7 @@ def execute():
 
     sglang_args = (
         # "--rollout-num-gpus-per-engine 2 "
-        f"--rollout-num-gpus-per-engine 8 "  # temp use 1 engine per node to avoid flashinfer err
+        "--rollout-num-gpus-per-engine 8 "  # temp use 1 engine per node to avoid flashinfer err
         "--sglang-mem-fraction-static 0.7 "
     )
 

@@ -172,7 +172,12 @@ def create_rollout_manager(args, pg):
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
 
+    if args.check_weight_update_equal:
+        ray.get(rollout_manager.check_weights.remote(action="snapshot"))
+        ray.get(rollout_manager.check_weights.remote(action="reset_tensors"))
+
     if args.offload_rollout:
+        # TODO: Optimization in the future: offload model weights to cpu to make more space for training?
         ray.get(rollout_manager.offload.remote())
 
     return rollout_manager, num_rollout_per_epoch

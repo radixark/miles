@@ -48,4 +48,4 @@ And to run training,
 bash examples/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
 ```
 
-For screen shots of the wandb, please refer to [pull#370](https://github.com/lm-sys/miles/pull/370).
+For screen shots of the wandb, please refer to [pull#370](https://github.com/radixark/miles/pull/370).
