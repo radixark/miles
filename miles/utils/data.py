@@ -17,26 +17,130 @@ __all__ = ["Dataset"]
 logger = logging.getLogger(__name__)
 
 
-# TODO: don't read the whole file into memory.
-def read_file(path):
+def read_file(path, chunk_size: int = 10000):
+    """Read a dataset file and yield rows as dictionaries.
+
+    This function supports memory-efficient streaming for large files by using
+    chunked reading for JSONL files and iterative row group reading for Parquet files.
+
+    Args:
+        path: Path to the dataset file. Supports .jsonl and .parquet formats.
+              Can include optional slice notation: "path.jsonl@[start:end]"
+        chunk_size: Number of rows to read at a time for JSONL files. Ignored for
+                   Parquet files which use row groups. Default: 10000.
+
+    Yields:
+        dict: Each row as a dictionary.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the file format is not supported.
+    """
     path, row_slice = _parse_generalized_path(path)
 
     if not os.path.exists(path):
         raise FileNotFoundError(f"Prompt dataset path '{path}' does not exist.")
 
     if path.endswith(".jsonl"):
-        df = pd.read_json(path, lines=True, dtype={"label": str})
+        yield from _read_jsonl_file(path, row_slice, chunk_size)
     elif path.endswith(".parquet"):
-        df = pd.read_parquet(path, dtype_backend="pyarrow")
+        yield from _read_parquet_file(path, row_slice)
     else:
         raise ValueError(f"Unsupported file format: {path}. Supported formats are .jsonl and .parquet.")
 
-    if row_slice is not None:
-        logger.info(f"read_file path={path} slice {len(df)=} rows into {row_slice=}")
-        df = df.iloc[row_slice]
 
-    for _, row in df.iterrows():
-        yield row.to_dict()
+def _read_jsonl_file(path: str, row_slice: slice | None, chunk_size: int):
+    """Read JSONL file with memory-efficient chunked reading.
+
+    Args:
+        path: Path to the JSONL file.
+        row_slice: Optional slice to select specific rows.
+        chunk_size: Number of rows to read per chunk.
+
+    Yields:
+        dict: Each row as a dictionary.
+    """
+    if row_slice is not None:
+        # For sliced reads, we need to track row indices
+        # Load only the required slice for efficiency
+        start = row_slice.start or 0
+        stop = row_slice.stop
+
+        current_idx = 0
+        for chunk in pd.read_json(path, lines=True, dtype={"label": str}, chunksize=chunk_size):
+            chunk_end = current_idx + len(chunk)
+
+            # Skip chunks entirely before the slice start
+            if stop is not None and current_idx >= stop:
+                break
+            if chunk_end <= start:
+                current_idx = chunk_end
+                continue
+
+            # Calculate which rows in this chunk to yield
+            chunk_start_offset = max(0, start - current_idx)
+            chunk_end_offset = len(chunk) if stop is None else min(len(chunk), stop - current_idx)
+
+            for idx in range(chunk_start_offset, chunk_end_offset):
+                yield chunk.iloc[idx].to_dict()
+
+            current_idx = chunk_end
+    else:
+        # No slice: stream through all chunks
+        for chunk in pd.read_json(path, lines=True, dtype={"label": str}, chunksize=chunk_size):
+            for _, row in chunk.iterrows():
+                yield row.to_dict()
+
+
+def _read_parquet_file(path: str, row_slice: slice | None):
+    """Read Parquet file with memory-efficient row group iteration.
+
+    Uses PyArrow to read row groups iteratively instead of loading the entire
+    file into memory at once.
+
+    Args:
+        path: Path to the Parquet file.
+        row_slice: Optional slice to select specific rows.
+
+    Yields:
+        dict: Each row as a dictionary.
+    """
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(path)
+
+    if row_slice is not None:
+        start = row_slice.start or 0
+        stop = row_slice.stop
+
+        current_idx = 0
+        for i in range(parquet_file.metadata.num_row_groups):
+            row_group = parquet_file.read_row_group(i)
+            chunk = row_group.to_pandas(types_mapper=pd.ArrowDtype)
+            chunk_end = current_idx + len(chunk)
+
+            # Skip row groups entirely before the slice start
+            if stop is not None and current_idx >= stop:
+                break
+            if chunk_end <= start:
+                current_idx = chunk_end
+                continue
+
+            # Calculate which rows in this row group to yield
+            chunk_start_offset = max(0, start - current_idx)
+            chunk_end_offset = len(chunk) if stop is None else min(len(chunk), stop - current_idx)
+
+            for idx in range(chunk_start_offset, chunk_end_offset):
+                yield chunk.iloc[idx].to_dict()
+
+            current_idx = chunk_end
+    else:
+        # No slice: stream through all row groups
+        for i in range(parquet_file.metadata.num_row_groups):
+            row_group = parquet_file.read_row_group(i)
+            chunk = row_group.to_pandas(types_mapper=pd.ArrowDtype)
+            for _, row in chunk.iterrows():
+                yield row.to_dict()
 
 
 def _parse_generalized_path(s: str):
