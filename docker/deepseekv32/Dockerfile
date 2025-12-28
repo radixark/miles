@@ -63,7 +63,7 @@ RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
     pip install -e .
 
 RUN git clone https://github.com/huggingface/transformers.git && \
-    cd transformers && git checkout 40dc11cd3eb4126652aa41ef8272525affd4a636 && \
+    cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc && \
     pip install -e .
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
