@@ -7,7 +7,6 @@ from megatron.core import mpu
 
 from miles.utils.distributed_utils import distributed_masked_whiten
 from miles.utils.misc import load_function
-from miles.utils.postprocessor import Postprocessor
 from miles.utils.ppo_utils import (
     calculate_log_probs_and_entropy,
     compute_approx_kl,
@@ -17,6 +16,7 @@ from miles.utils.ppo_utils import (
     get_reinforce_plus_plus_baseline_advantages,
     get_reinforce_plus_plus_returns,
 )
+from miles.utils.rolloutpostprocessor import RolloutPostprocessor
 from miles.utils.types import RolloutBatch
 
 from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
@@ -396,7 +396,7 @@ def policy_loss_function(
     # compute advantage-level global stats (masked by loss_masks)
     try:
         flat_adv_mask = torch.cat(batch["loss_masks"]).to(device=advantages.device)
-        adv_stats = Postprocessor.compute_masked_stats_safe(
+        adv_stats = RolloutPostprocessor.compute_masked_stats_safe(
             advantages, flat_adv_mask, process_group=mpu.get_data_parallel_group()
         )
     except Exception as e:
@@ -504,7 +504,7 @@ def policy_loss_function(
     # compute pg_loss token-level stats (masked)
     try:
         flat_pg_mask = torch.cat(metric_masks).to(device=pg_loss.device)
-        pg_stats = Postprocessor.compute_masked_stats_safe(
+        pg_stats = RolloutPostprocessor.compute_masked_stats_safe(
             pg_loss, flat_pg_mask, process_group=mpu.get_data_parallel_group()
         )
     except Exception as e:

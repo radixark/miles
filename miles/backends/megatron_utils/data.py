@@ -14,7 +14,7 @@ from miles.utils import train_metric_utils
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
-from miles.utils.postprocessor import Postprocessor
+from miles.utils.rolloutpostprocessor import RolloutPostprocessor
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -387,7 +387,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                                     [m for lm in loss_masks for m in lm], device=concatenated.device
                                 )
 
-                            stats = Postprocessor.compute_masked_stats_safe(
+                            stats = RolloutPostprocessor.compute_masked_stats_safe(
                                 concatenated, flat_mask, process_group=mpu.get_data_parallel_group()
                             )
                             # Attach extra keys with a rollout/ prefix, gather_log_data will prefix again

@@ -22,9 +22,9 @@ from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_d
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.postprocessor import Postprocessor
 from miles.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from miles.utils.ray_utils import Box
+from miles.utils.rolloutpostprocessor import RolloutPostprocessor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 
@@ -485,7 +485,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 try:
                     flat_metric = torch.cat(metric_tensors).to(device=torch.cuda.current_device())
                     flat_mask = torch.cat(mask_tensors).to(device=torch.cuda.current_device())
-                    stats = Postprocessor.compute_masked_stats_safe(
+                    stats = RolloutPostprocessor.compute_masked_stats_safe(
                         flat_metric, flat_mask, process_group=self.dp_group
                     )
                     log_dict[f"rollout/{metric_key}_global_mean"] = stats["mean"].item()
@@ -564,7 +564,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # compute global advantage stats (masked)
         try:
             flat_adv_mask = torch.cat(loss_masks).to(device=advantages.device)
-            adv_stats = Postprocessor.compute_masked_stats_safe(advantages, flat_adv_mask, process_group=self.dp_group)
+            adv_stats = RolloutPostprocessor.compute_masked_stats_safe(advantages, flat_adv_mask, process_group=self.dp_group)
         except Exception as e:
             logger.error(f"error in computing advantage stats: {e}")
             adv_stats = None
@@ -615,7 +615,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # compute pg_loss masked stats before reduction
         try:
             flat_pg_mask = torch.cat(loss_masks).to(device=pg_loss.device)
-            pg_stats = Postprocessor.compute_masked_stats_safe(pg_loss, flat_pg_mask, process_group=self.dp_group)
+            pg_stats = RolloutPostprocessor.compute_masked_stats_safe(pg_loss, flat_pg_mask, process_group=self.dp_group)
         except Exception as e:
             logger.error(f"error in computing pg_loss stats: {e}")
             pg_stats = None

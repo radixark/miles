@@ -4,7 +4,7 @@ import torch
 import torch.distributed as dist
 
 
-class Postprocessor:
+class RolloutPostprocessor:
     """Postprocessing helpers for rollout / loss metrics.
 
     This class centralizes distributed, masked statistics used when
@@ -99,4 +99,4 @@ class Postprocessor:
             return {"mean": mean, "std": std, "min": min_v, "max": max_v}
 
         # Otherwise delegate to the distributed implementation
-        return Postprocessor.compute_global_masked_stats(values, mask, process_group=process_group)
+        return RolloutPostprocessor.compute_global_masked_stats(values, mask, process_group=process_group)
