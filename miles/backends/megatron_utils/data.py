@@ -396,9 +396,10 @@ def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutB
                     log_dict["raw_response_length/response_length_mean"] = raw_response_lengths.mean().item()
                     log_dict["raw_response_length/response_length_max"] = raw_response_lengths.max().item()
                     log_dict["raw_response_length/response_length_min"] = raw_response_lengths.min().item()
-                    log_dict["raw_response_length/response_length_clip_ratio"] = (
-                        (raw_response_lengths >= args.rollout_max_response_len).float().mean().item()
-                    )
+                    if args.rollout_max_response_len is not None:
+                        log_dict["raw_response_length/response_length_clip_ratio"] = (
+                            (raw_response_lengths >= args.rollout_max_response_len).float().mean().item()
+                        )
 
                     # Vectorized sum calculation using torch - stay on GPU
                     wo_obs_response_lengths = torch.tensor(
