@@ -49,23 +49,47 @@ class RolloutDataSource:
         else:
             self.dataset = None
 
-    def get_samples(self, num_samples):
-        # TODO further improve code
-        if self.dataset is not None:
-            if self.sample_offset + num_samples <= len(self.dataset):
-                prompt_samples = self.dataset.samples[self.sample_offset : self.sample_offset + num_samples]
-                self.sample_offset += num_samples
-            else:
-                prompt_samples = self.dataset.samples[self.sample_offset :]
-                num_samples -= len(prompt_samples)
-                self.epoch_id += 1
-                if self.args.rollout_shuffle:
-                    self.dataset.shuffle(self.epoch_id)
-                prompt_samples += self.dataset.samples[:num_samples]
-                self.sample_offset = num_samples
-        else:
-            prompt_samples = [Sample() for _ in range(num_samples)]
+    def get_samples(self, num_samples: int) -> list[list[Sample]]:
+        """
+        Get samples for rollout generation.
 
+        Args:
+            num_samples: Number of prompt samples to retrieve.
+
+        Returns:
+            A list of sample groups, where each group contains n_samples_per_prompt
+            copies of the same prompt sample with unique indices.
+        """
+        prompt_samples = self._get_prompt_samples(num_samples)
+        return self._create_sample_groups(prompt_samples)
+
+    def _get_prompt_samples(self, num_samples: int) -> list[Sample]:
+        """Retrieve prompt samples from dataset, handling epoch boundaries."""
+        if self.dataset is None:
+            return [Sample() for _ in range(num_samples)]
+
+        remaining_in_epoch = len(self.dataset) - self.sample_offset
+
+        if num_samples <= remaining_in_epoch:
+            # All samples fit within current epoch
+            prompt_samples = self.dataset.samples[self.sample_offset : self.sample_offset + num_samples]
+            self.sample_offset += num_samples
+        else:
+            # Need to wrap to next epoch
+            prompt_samples = self.dataset.samples[self.sample_offset :]
+            samples_needed = num_samples - len(prompt_samples)
+
+            self.epoch_id += 1
+            if self.args.rollout_shuffle:
+                self.dataset.shuffle(self.epoch_id)
+
+            prompt_samples = prompt_samples + self.dataset.samples[:samples_needed]
+            self.sample_offset = samples_needed
+
+        return prompt_samples
+
+    def _create_sample_groups(self, prompt_samples: list[Sample]) -> list[list[Sample]]:
+        """Create sample groups with n_samples_per_prompt copies per prompt."""
         samples = []
         for prompt_sample in prompt_samples:
             group = []
