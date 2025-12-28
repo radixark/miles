@@ -1,5 +1,4 @@
 import logging
-import math
 from argparse import Namespace
 from typing import Optional, Sequence, Union
 
@@ -95,7 +94,7 @@ def gather_log_data(
     args: Namespace,
     rollout_id: int,
     log_dict: dict[str, float],
-) -> Optional[dict[str, float]]:
+) -> dict[str, float] | None:
     """
     Gather per-rank metrics, reduce by mean on the DP source rank, and log.
 
@@ -108,7 +107,7 @@ def gather_log_data(
         dp_size = mpu.get_data_parallel_world_size(with_context_parallel=True)
 
         gathered_log_dict = [None] * dp_size
-        # Gather per-rank dicts to the DP source rank
+        # Not sure if this will be a performance bottleneck.
         dist.gather_object(
             log_dict,
             gathered_log_dict,
@@ -116,56 +115,9 @@ def gather_log_data(
             group=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
         )
 
-        reduced_log_dict = {}
-
-        # For keys that already represent global values (contain "_global_"),
-        # avoid averaging them across ranks. Instead, take the first value and
-        # warn if ranks disagree (this is the minimal safe behavior per option 3).
-        for key in log_dict:
-            try:
-                vals = [d[key] for d in gathered_log_dict]
-            except Exception:
-                # Missing key in some ranks; skip
-                continue
-
-            if "_global_" in key:
-                # Numeric comparison: ensure values are (nearly) identical across ranks
-                first = vals[0]
-                consistent = True
-                for v in vals[1:]:
-                    try:
-                        if (
-                            isinstance(first, float)
-                            or isinstance(v, float)
-                            or isinstance(first, int)
-                            or isinstance(v, int)
-                        ):
-                            if not math.isclose(float(first), float(v), rel_tol=1e-6, abs_tol=1e-9):
-                                consistent = False
-                                break
-                        else:
-                            if first != v:
-                                consistent = False
-                                break
-                    except Exception:
-                        consistent = False
-                        break
-
-                if not consistent:
-                    logger.warning(
-                        f"Inconsistent per-rank values for global key '{key}' at rollout {rollout_id}; using first rank's value."
-                    )
-
-                reduced_log_dict[f"{metric_name}/{key}"] = first
-            else:
-                # Default behavior: arithmetic mean across ranks
-                try:
-                    numeric_vals = [float(v) for v in vals]
-                    reduced_log_dict[f"{metric_name}/{key}"] = sum(numeric_vals) / dp_size
-                except Exception:
-                    # Fallback: keep first
-                    reduced_log_dict[f"{metric_name}/{key}"] = vals[0]
-
+        reduced_log_dict = {
+            f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / dp_size for key in log_dict
+        }
         logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
         # Calculate step once to avoid duplication
