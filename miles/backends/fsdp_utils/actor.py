@@ -492,8 +492,9 @@ class FSDPTrainRayActor(TrainRayActor):
                     log_dict[f"rollout/{metric_key}_global_std"] = stats["std"].item()
                     log_dict[f"rollout/{metric_key}_global_max"] = stats["max"].item()
                     log_dict[f"rollout/{metric_key}_global_min"] = stats["min"].item()
-                except Exception:
-                    pass
+                except Exception e:
+                    logger.errors(f"error in computing global stats for {metric_key}: {e}")
+
         if dist.get_rank() == 0:
             logger.info(f"rollout {rollout_id}: {log_dict}")
             log_dict["rollout/step"] = compute_rollout_step(self.args, rollout_id)
@@ -564,7 +565,8 @@ class FSDPTrainRayActor(TrainRayActor):
         try:
             flat_adv_mask = torch.cat(loss_masks).to(device=advantages.device)
             adv_stats = Postprocessor.compute_masked_stats_safe(advantages, flat_adv_mask, process_group=self.dp_group)
-        except Exception:
+        except Exception as e:
+            logger.error(f"error in computing advantage stats: {e}")
             adv_stats = None
         ppo_kl = old_log_probs.to(device=log_probs.device) - log_probs
 
@@ -614,7 +616,8 @@ class FSDPTrainRayActor(TrainRayActor):
         try:
             flat_pg_mask = torch.cat(loss_masks).to(device=pg_loss.device)
             pg_stats = Postprocessor.compute_masked_stats_safe(pg_loss, flat_pg_mask, process_group=self.dp_group)
-        except Exception:
+        except Exception as e:
+            logger.error(f"error in computing pg_loss stats: {e}")
             pg_stats = None
 
         assert not self.args.calculate_per_token_loss, "calculate_per_token_loss not yet implemented"

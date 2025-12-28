@@ -399,8 +399,10 @@ def policy_loss_function(
         adv_stats = Postprocessor.compute_masked_stats_safe(
             advantages, flat_adv_mask, process_group=mpu.get_data_parallel_group()
         )
-    except Exception:
+    except Exception as e:
+        logger.error(f"error in computing advantage stats: {e}")
         adv_stats = None
+
     old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
 
     response_lengths = batch["response_lengths"]
@@ -505,7 +507,8 @@ def policy_loss_function(
         pg_stats = Postprocessor.compute_masked_stats_safe(
             pg_loss, flat_pg_mask, process_group=mpu.get_data_parallel_group()
         )
-    except Exception:
+    except Exception as e:
+        logger.error(f"error in computing pg_loss stats: {e}")
         pg_stats = None
 
     pg_loss = sum_of_sample_mean(pg_loss)
