@@ -1,11 +1,11 @@
 diff --git a/src/transformers/models/auto/configuration_auto.py b/src/transformers/models/auto/configuration_auto.py
-index 281bb0e773..6b8ae9f843 100644
+index f6a12e7cef..22129a86ee 100644
 --- a/src/transformers/models/auto/configuration_auto.py
 +++ b/src/transformers/models/auto/configuration_auto.py
-@@ -1330,6 +1330,16 @@ class AutoConfig:
+@@ -1355,6 +1355,15 @@ class AutoConfig:
+                     "Detected mistral model with layer_types, treating as ministral for alternating attention compatibility. "
                  )
                  config_dict["model_type"] = "ministral"
- 
 +            if config_dict["model_type"] == "deepseek_v32":
 +                logger.info(
 +                    "Detected deepseek_v32 model, treating as deepseek_v3 for compatibility."
@@ -15,7 +15,6 @@ index 281bb0e773..6b8ae9f843 100644
 +                    config_dict["architectures"] = [
 +                        arch.replace("DeepseekV32", "DeepseekV3") for arch in config_dict["architectures"]
 +                    ]
-+
+ 
              try:
                  config_class = CONFIG_MAPPING[config_dict["model_type"]]
-             except KeyError:
