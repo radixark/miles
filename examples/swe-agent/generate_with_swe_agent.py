@@ -113,9 +113,6 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         sample.status = Sample.Status.ABORTED
         sample.reward = 0.0
     
-    # TMP, for debugging
-    await save_sample_output(sample, messages)
-
     return sample
 
 
