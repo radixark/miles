@@ -1,4 +1,4 @@
-ARG SGLANG_IMAGE_TAG=dev
+ARG SGLANG_IMAGE_TAG=v0.5.6.post2
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -6,7 +6,7 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=436065a86b749ca3b50eebca68f55c9e690a9f63
 
-ARG ENABLE_CUDA_13=1
+ARG ENABLE_CUDA_13=0
 
 ARG ENABLE_SGLANG_PATCH=0
 
