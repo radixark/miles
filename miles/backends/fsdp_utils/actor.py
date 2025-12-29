@@ -26,7 +26,7 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 
 from ...utils import tracking_utils
-from ...utils.metric_processor import MetricProcessor
+from ...utils.metric_processor import process_metric
 from ...utils.profile_utils import TrainProfiler
 from . import checkpoint
 from .data_packing import pack_sequences, pad_packed_sequence_with_cp, unpack_sequences
@@ -150,9 +150,6 @@ class FSDPTrainRayActor(TrainRayActor):
             self.sleep()
 
         self.prof.on_init_end()
-
-
-        self.metric_processor = MetricProcessor(args)
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
@@ -515,15 +512,16 @@ class FSDPTrainRayActor(TrainRayActor):
                     if isinstance(unpacked_batch[metric_key], torch.Tensor):
                         loss_masks_tensor = unpacked_batch["loss_masks"].to(device=torch.cuda.current_device())
                         metric_tensor = unpacked_batch[metric_key].to(device=torch.cuda.current_device())
-                        val.append((metric_tensor * loss_masks_tensor).sum() / loss_masks_tensor.sum().clamp_min(1))
+                        result = (metric_tensor * loss_masks_tensor).sum() / loss_masks_tensor.sum().clamp_min(1)
+                        val.append(result.item())
                     else:
-                        val.append(unpacked_batch[metric_key])
-            local_vals = torch.stack(val)
-            # dist.all_reduce(val, op=dist.ReduceOp.SUM, group=self.dp_group)
-            # log_dict[f"rollout/{metric_key}"] = (
-            #         val / (self.args.n_samples_per_prompt * self.args.rollout_batch_size)
-            # ).item()
-            self.metric_processor.process_metric(log_dict, f"rollout/{metric_key}", local_vals, self.dp_group)
+                        val.append(float(unpacked_batch[metric_key]))
+            if len(val) > 0:
+                local_vals = torch.stack(val)
+            else:
+                # default value for empty list
+                local_vals = torch.tensor([],device=torch.cuda.current_device(),dtype=torch.float32)
+            process_metric(log_dict, f"rollout/{metric_key}", local_vals, self.dp_group)
 
         if dist.get_rank() == 0:
             logger.info(f"rollout {rollout_id}: {log_dict}")
@@ -753,14 +751,10 @@ class FSDPTrainRayActor(TrainRayActor):
             self.optimizer.zero_grad(set_to_none=True)
             log_dict = {}
             for k, v_list in reported_accum.items():
-                # 将多个 micro-batch 的结果合并为一个tensor，匹配processor的输入
-                # 如果是 scalar list -> 变成 1D tensor
-                # 如果是 vector list -> 变成更长的 1D tensor
+                # Format and pass to process_metric for metrics in reported_accum
                 combined_tensor = torch.cat([v.view(-1) for v in v_list])
 
-                # 调用你的分布式处理器
-                # 这里的 process_metric 会内部处理 all_reduce
-                self.metric_processor.process_metric(
+                process_metric(
                     log_dict=log_dict,
                     key=f"train/{k}",
                     metric=combined_tensor,
@@ -776,13 +770,13 @@ class FSDPTrainRayActor(TrainRayActor):
                     log_dict[f"train/lr-pg_{gid}"] = lr_values[gid]
 
                 kl_info = ""
-                if self.args.use_kl_loss and "kl_loss" in aggregated:
-                    kl_info = f", kl_loss: {aggregated['kl_loss']:.4f}, kl_penalty: {aggregated['kl_loss'] * self.args.kl_loss_coef:.4f}"
+                if self.args.use_kl_loss and "kl_loss" in log_dict:
+                    kl_info = f", kl_loss: {log_dict['kl_loss']:.4f}, kl_penalty: {log_dict['kl_loss'] * self.args.kl_loss_coef:.4f}"
                     logger.info(kl_info)
                 logger.info(f"step {self.global_step}: {log_dict}")
 
                 log_dict["train/step"] = self.global_step
-            tracking_utils.log(self.args, log_dict, step_key="rollout/step")
+                tracking_utils.log(self.args, log_dict, step_key="rollout/step")
             self.global_step += 1
 
     @timer
@@ -1036,55 +1030,24 @@ def sum_of_sample_mean(x: torch.Tensor, response_lengths: list[int], loss_masks:
     )
 
 def get_sample_mean_info(x: torch.Tensor, response_lengths: list[int], loss_masks: list[torch.Tensor]) -> torch.Tensor:
+    """Compute sum and vector of per-sample means for variable-length responses.
+
+    Parameters:
+        x: Flat tensor of concatenated per-token values.
+        response_lengths: Length of each sample in `x`.
+        loss_masks: Per-sample masks for `response_lengths`.
+
+    Returns:
+        A tuple of (sum_of_means, vector_of_means). The vector is used for reduction in `process_metric`.
+    """
     sample_mean_list = [
-            (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
-            for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
-        ]
+        (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
+        for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
+    ]
+    if len(sample_mean_list) == 0:
+        return torch.tensor(0.0, device=x.device), torch.tensor([], device=x.device)
     return sum(sample_mean_list), torch.stack(sample_mean_list)
 
-def sum_of_sample_extend_metrics(x: torch.Tensor, response_lengths: list[int], loss_masks: list[torch.Tensor]):
-    """
-    """
-    # 1. 验证数据对齐 (可选，但建议)
-    # 确保 loss_masks 的总长度和 x 的长度一致，才能直接对齐
-    # 如果 mask 也是变长的 list[Tensor]，这里拼接成一个扁平的 mask
-    flat_mask = torch.cat(loss_masks)
-
-    # 注意：原本的 x.split(response_lengths) 意味着 x 是紧密排列的。
-    # 只要 cat(loss_masks) 的长度等于 x.numel()，我们就可以直接用 mask 索引。
-    # 如果不确定 mask 长度是否对齐，稳妥的做法是先 split 再用 bool index，如下：
-
-    valid_values = []
-    # 遍历切分，只提取有效值
-    for x_i, mask_i in zip(x.split(response_lengths, dim=0), loss_masks):
-        # mask_i > 0.5 确保处理浮点 mask
-        valid_values.append(x_i[mask_i > 0.5])
-
-    # 2. 拼接所有有效值到一个大 Tensor
-    if valid_values:
-        all_valid_tokens = torch.cat(valid_values)
-    else:
-        # 兜底：如果完全没有有效数据
-        all_valid_tokens = torch.tensor([], device=x.device)
-
-    # 3. 计算统计量
-    if all_valid_tokens.numel() > 0:
-        # 转换为 float 以防溢出或精度不足 (特别是方差计算)
-        t = all_valid_tokens.float()
-
-        mean_val = t.mean()
-        min_val = t.min()
-        max_val = t.max()
-        var_val = t.var(unbiased=True)  # 样本方差
-    else:
-        # 处理空数据情况
-        device = x.device
-        mean_val = torch.tensor(0.0, device=device)
-        min_val = torch.tensor(float('inf'), device=device)
-        max_val = torch.tensor(float('-inf'), device=device)
-        var_val = torch.tensor(0.0, device=device)
-
-    return mean_val, min_val, max_val, var_val
 
 @torch.no_grad()
 def move_torch_optimizer(optimizer, device):
