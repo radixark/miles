@@ -61,10 +61,10 @@ def train(args):
                     ray.get(rollout_manager.mark_engines_updated.remote([0], policy_version))
 
             if weight_update_mode == "rolling_drain" and supports_subset_engine_updates:
-                engine_ids = ray.get(rollout_manager.get_update_candidates.remote())
-                if engine_ids:
-                    actor_model.update_rollout_engines(engine_ids, version=policy_version)
-                    ray.get(rollout_manager.mark_engines_updated.remote(engine_ids, policy_version))
+                engine_indices = ray.get(rollout_manager.get_update_candidates.remote())
+                if engine_indices:
+                    actor_model.update_rollout_engines(engine_indices, version=policy_version)
+                    ray.get(rollout_manager.mark_engines_updated.remote(engine_indices, policy_version))
 
             if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
                 ray.get(rollout_manager.eval.remote(rollout_id))

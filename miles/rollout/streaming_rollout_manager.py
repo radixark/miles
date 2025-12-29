@@ -1,8 +1,9 @@
+import abc
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from miles.utils.types import Sample
 
@@ -20,7 +21,7 @@ class EngineState:
     consecutive_failures: int = 0
 
 
-@dataclass
+@dataclass(frozen=True)
 class CompletedGroup:
     behavior_version: int
     finished_ts: float
@@ -136,15 +137,21 @@ class EnginePool:
         }
 
 
-class StreamingWeightUpdatePolicy(Protocol):
-    def on_new_version(self, version: int) -> None: ...
+class StreamingWeightUpdatePolicy(abc.ABC):
+    @abc.abstractmethod
+    def on_new_version(self, version: int) -> None:
+        pass
 
-    def get_update_candidates(self) -> list[int]: ...
+    @abc.abstractmethod
+    def get_update_candidates(self) -> list[int]:
+        pass
 
-    def mark_updated(self, engine_indices: list[int], version: int) -> None: ...
+    @abc.abstractmethod
+    def mark_updated(self, engine_indices: list[int], version: int) -> None:
+        pass
 
 
-class RollingDrainPolicy:
+class RollingDrainPolicy(StreamingWeightUpdatePolicy):
     """Rolling drain-only updates.
 
     - Multi-engine: keep at least `min_active_engines` routable; mark outdated engines as drain-only
@@ -276,6 +283,9 @@ class StreamingRolloutManager:
             min_active_engines=min_active_engines,
         )
         self.buffer = StreamingGroupBuffer(queue_cap)
+        self._supports_subset_engine_updates = (
+            weight_update_mode == "rolling_drain" and len(engine_urls) >= 2
+        )
 
         self._stop_event = asyncio.Event()
         self._producer_task: asyncio.Task | None = None
@@ -298,21 +308,30 @@ class StreamingRolloutManager:
             spaces_between_special_tokens=False,
         )
 
+    def supports_subset_engine_updates(self) -> bool:
+        """Whether this streaming manager's weight policy supports updating engine subsets."""
+        return self._supports_subset_engine_updates
+
     def notify_new_version(self, version: int) -> None:
+        """Notify the weight policy that the trainer published a new policy version."""
         self.weight_policy.on_new_version(version)
 
     def get_update_candidates(self) -> list[int]:
+        """Return engine indices eligible for update (policy-defined)."""
         return self.weight_policy.get_update_candidates()
 
     def mark_engines_updated(self, engine_indices: list[int], version: int) -> None:
+        """Notify the weight policy that engines were successfully updated to a new version."""
         self.weight_policy.mark_updated(engine_indices, version)
 
     def start(self) -> None:
+        """Start the async producer loop."""
         if self._producer_task is not None:
             return
         self._producer_task = asyncio.create_task(self._producer_loop())
 
     async def stop(self) -> None:
+        """Stop the producer loop and cancel pending generation tasks."""
         self._stop_event.set()
 
         if self._producer_task is not None:
@@ -333,6 +352,7 @@ class StreamingRolloutManager:
             await asyncio.gather(*pending, return_exceptions=True)
 
     def stats(self) -> dict[str, Any]:
+        """Return producer/consumer metrics and engine pool summary."""
         elapsed = max(1e-6, time.time() - self._start_ts)
         return {
             "queue_size_groups": self.buffer.qsize(),
@@ -350,6 +370,7 @@ class StreamingRolloutManager:
         target_version: int,
         max_staleness_versions: int,
     ) -> tuple[list[CompletedGroup], dict[str, Any]]:
+        """Dequeue num_groups completed groups, dropping stale ones. Returns groups + metrics."""
         groups: list[CompletedGroup] = []
         staleness_values: list[int] = []
         ages_s: list[float] = []

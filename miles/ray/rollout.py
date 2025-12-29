@@ -81,7 +81,6 @@ class RolloutManager:
         self._streaming: StreamingRolloutManager | None = None
         self._trainer_version: int = 0
         self._streaming_rollout_id: int | None = None
-        self._streaming_supports_subset_engine_updates: bool = False
 
     def dispose(self):
         if self._metric_checker is not None:
@@ -121,7 +120,7 @@ class RolloutManager:
             raise RuntimeError("--streaming-async is not supported in debug-only modes")
 
         if self._streaming is not None:
-            return self._streaming_supports_subset_engine_updates
+            return self._streaming.supports_subset_engine_updates()
 
         num_engines = len(self.rollout_engines)
         if num_engines == 0:
@@ -130,12 +129,11 @@ class RolloutManager:
         engine_urls = ray.get([engine.get_http_base_url.remote() for engine in self.rollout_engines])
 
         params = derive_streaming_start_params(self.args, num_engines=num_engines)
-        self._streaming_supports_subset_engine_updates = params.supports_subset_engine_updates
 
         # Capability hint to the trainer: if subset updates aren't supported, fall back to global update.
-        if not self._streaming_supports_subset_engine_updates:
+        if not params.supports_subset_engine_updates:
             logger.warning(
-                "Only one rollout engine detected; rolling weight updates are disabled and will fall back to global update."
+                "Only one rollout engine detected; subset engine updates are disabled and will fall back to global update."
             )
 
         self._trainer_version = 0
@@ -154,7 +152,7 @@ class RolloutManager:
         )
         self._streaming.start()
 
-        return self._streaming_supports_subset_engine_updates
+        return self._streaming.supports_subset_engine_updates()
 
     async def stop_streaming(self):
         if self._streaming is None:
