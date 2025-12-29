@@ -42,7 +42,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
                 # TODO: find a clearer way.
                 if converted_name.endswith("_scale"):
                     continue
-                if_use_ue8m0_in_moe = True if args.sglang_moe_a2a_backend == "deepep" else False
+                if_use_ue8m0_in_moe = True if args.sglang_moe_runner_backend == "deep_gemm" else False
                 quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size, if_use_ue8m0_in_moe=if_use_ue8m0_in_moe))
 
             return quantize_named_params
