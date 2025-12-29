@@ -104,6 +104,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "This will always be true when --colocate is set."
                 ),
             )
+            parser.add_argument(
+                "--offload-rollout-level",
+                type=str,
+                nargs="+",
+                default=["kv_cache", "weight"],
+                help=(
+                    "Specifies what to offload during rollout when offload-rollout is set. "
+                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
+                    "Example: --offload-rollout-level kv_cache weight"
+                ),
+            )
 
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
@@ -117,6 +128,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["megatron", "fsdp"],
                 default="megatron",
                 help="The backend for training.",
+            )
+            parser.add_argument(
+                "--qkv-format",
+                type=str,
+                choices=["thd", "bshd"],
+                default="thd",
+                help="The qkv layout for Megatron backend.",
             )
             parser.add_argument(
                 "--true-on-policy-mode",
@@ -1408,6 +1426,27 @@ def miles_validate_args(args):
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
 
+    if getattr(args, "lora_rank", 0) > 0:
+        assert args.save is not None, "'--save' is required when LoRA is enabled."
+        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
+
+        if args.target_modules == "all-linear":
+            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        elif "," in args.target_modules:
+            modules = [m.strip() for m in args.target_modules.split(",")]
+        else:
+            modules = [args.target_modules]
+
+        if args.exclude_modules:
+            exclude_set = (
+                set(m.strip() for m in args.exclude_modules.split(","))
+                if "," in args.exclude_modules
+                else {args.exclude_modules}
+            )
+            modules = [m for m in modules if m not in exclude_set]
+
+        args.target_modules = modules
+
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
     if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
@@ -1584,6 +1623,16 @@ def miles_validate_args(args):
 
     if args.prefill_num_servers is not None:
         assert not args.use_fault_tolerance, "fault tolerance is not supported when prefill_num_servers is set."
+
+    assert args.qkv_format in [
+        "thd",
+        "bshd",
+    ], f"qkv_format {args.qkv_format} is not supported. (only 'thd' and 'bshd' are supported)"
+    if args.qkv_format == "bshd":
+        assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
+        assert (
+            args.use_dynamic_batch_size is False
+        ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
 
 def hf_validate_args(args, hf_config):
