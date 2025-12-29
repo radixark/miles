@@ -181,7 +181,8 @@ Additionally, we provide a `metadata_key`, which defaults to `"metadata"`. When 
 
 ### Streaming Async (Experimental)
 
-- `--streaming-async`: Enable streaming rollout generation (group-as-atom) and rolling weight updates to SGLang engines.
+- `--streaming-async`: Enable streaming rollout generation (group-as-atom) with per-engine routing.
+- `--streaming-async-weight-update-mode`: Choose the rollout engine weight update policy in streaming mode (default: `rolling_drain`).
 - `--max-staleness-versions`: Drop rollout groups that are more than this many policy versions stale (default: 1).
 - `--use-tis` is recommended in streaming mode to tolerate mildly off-policy data.
 

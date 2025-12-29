@@ -135,13 +135,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--streaming-async",
                 action="store_true",
                 default=False,
-                help="Enable streaming async rollouts with rolling weight updates.",
+                help="Enable streaming async rollouts",
             )
             parser.add_argument(
                 "--max-staleness-versions",
                 type=int,
                 default=1,
                 help="Drop rollout groups older than this many policy versions in streaming async mode.",
+            )
+            parser.add_argument(
+                "--streaming-async-weight-update-mode",
+                type=str,
+                default="rolling_drain",
+                choices=["rolling_drain"],
+                help=(
+                    "Weight update policy for --streaming-async. "
+                    "rolling_drain updates one rollout engine at a time after it drains."
+                ),
             )
             parser.add_argument(
                 "--train-env-vars",
@@ -1441,6 +1451,11 @@ def miles_validate_args(args):
     if getattr(args, "streaming_async", False):
         if args.max_staleness_versions < 0:
             raise ValueError("--max-staleness-versions must be >= 0")
+
+        if args.streaming_async_weight_update_mode not in ["rolling_drain"]:
+            raise ValueError(
+                f"--streaming-async-weight-update-mode={args.streaming_async_weight_update_mode} is not supported"
+            )
 
         if args.balance_data and args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"]:
             raise ValueError(

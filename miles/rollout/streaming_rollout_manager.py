@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from miles.utils.types import Sample
 
@@ -28,14 +28,49 @@ class CompletedGroup:
     group: list[Sample]
 
 
+@dataclass(frozen=True)
+class StreamingStartParams:
+    groups_per_train_step: int
+    queue_target: int
+    queue_cap: int
+    inflight_target: int
+    min_active_engines: int
+    supports_subset_engine_updates: bool
+
+
+def derive_streaming_start_params(args, *, num_engines: int) -> StreamingStartParams:
+    groups_per_train_step = args.rollout_batch_size
+    queue_target = 2 * groups_per_train_step
+    queue_cap = min(4 * groups_per_train_step, num_engines * 16)
+    inflight_target = min(3 * groups_per_train_step, num_engines * 8)
+
+    weight_update_mode = getattr(args, "streaming_async_weight_update_mode", "rolling_drain")
+
+    # rolling_drain keeps most engines active while updating at most one drained engine at a time.
+    if weight_update_mode == "rolling_drain":
+        min_active_engines = max(num_engines - 1, 1)
+    else:
+        # Placeholder for future modes; keep everyone routable by default.
+        min_active_engines = max(num_engines, 1)
+
+    supports_subset_engine_updates = weight_update_mode == "rolling_drain" and num_engines >= 2
+
+    return StreamingStartParams(
+        groups_per_train_step=groups_per_train_step,
+        queue_target=queue_target,
+        queue_cap=queue_cap,
+        inflight_target=inflight_target,
+        min_active_engines=min_active_engines,
+        supports_subset_engine_updates=supports_subset_engine_updates,
+    )
+
+
 class EnginePool:
     def __init__(
         self,
         engine_urls: list[str],
         *,
         initial_version: int,
-        min_active_engines: int,
-        rolling_updates_enabled: bool,
         max_consecutive_failures: int = 3,
     ) -> None:
         if any(url is None for url in engine_urls):
@@ -45,11 +80,7 @@ class EnginePool:
             EngineState(engine_idx=i, url=url, current_version=initial_version)
             for i, url in enumerate(engine_urls)
         ]
-        self.min_active_engines = min_active_engines
-        self.rolling_updates_enabled = rolling_updates_enabled
         self.max_consecutive_failures = max_consecutive_failures
-
-        self._target_version = initial_version
         self._rr_cursor = 0
 
     def get_active_engines(self) -> list[EngineState]:
@@ -91,52 +122,6 @@ class EnginePool:
         engine.consecutive_failures = 0
         engine.healthy = True
 
-    def notify_new_version(self, target_version: int) -> None:
-        self._target_version = target_version
-        self._apply_drain_policy()
-
-    def get_update_candidates(self) -> list[int]:
-        if not self.rolling_updates_enabled:
-            return []
-
-        candidates = [
-            e
-            for e in self.engines
-            if e.healthy and e.drain_only and e.inflight_groups == 0 and e.current_version < self._target_version
-        ]
-        if not candidates:
-            return []
-
-        # Conservative: update at most one engine at a time.
-        candidates.sort(key=lambda e: (e.current_version, e.engine_idx))
-        return [candidates[0].engine_idx]
-
-    def mark_engines_updated(self, engine_indices: list[int], version: int) -> None:
-        for idx in engine_indices:
-            engine = self.engines[idx]
-            engine.current_version = version
-            engine.drain_only = False
-
-        self._apply_drain_policy()
-
-    def _apply_drain_policy(self) -> None:
-        if not self.rolling_updates_enabled:
-            return
-
-        # Keep at least `min_active_engines` active. Mark outdated engines as drain-only
-        # one-by-one as capacity allows.
-        while True:
-            active = self.get_active_engines()
-            if len(active) <= self.min_active_engines:
-                return
-
-            outdated = [e for e in active if e.current_version < self._target_version]
-            if not outdated:
-                return
-
-            outdated.sort(key=lambda e: (e.inflight_groups, e.current_version, e.engine_idx))
-            outdated[0].drain_only = True
-
     def summary(self) -> dict[str, Any]:
         versions: dict[int, int] = {}
         for e in self.engines:
@@ -149,6 +134,100 @@ class EnginePool:
             "inflight_groups": sum(e.inflight_groups for e in self.engines),
             "versions": versions,
         }
+
+
+class StreamingWeightUpdatePolicy(Protocol):
+    def on_new_version(self, version: int) -> None: ...
+
+    def get_update_candidates(self) -> list[int]: ...
+
+    def mark_updated(self, engine_indices: list[int], version: int) -> None: ...
+
+
+class RollingDrainPolicy:
+    """Rolling drain-only updates.
+
+    - Multi-engine: keep at least `min_active_engines` routable; mark outdated engines as drain-only
+      one-by-one as capacity allows and update at most one idle drained engine at a time.
+    - Single-engine: gate admissions by marking the engine drain-only on each new version; the trainer
+      performs a global update and then clears drain-only via `mark_updated`.
+    """
+
+    def __init__(self, engine_pool: EnginePool, *, min_active_engines: int) -> None:
+        self.engine_pool = engine_pool
+        self.min_active_engines = min_active_engines
+        self._target_version = self._infer_initial_target_version()
+
+    def _infer_initial_target_version(self) -> int:
+        if not self.engine_pool.engines:
+            return 0
+        return max(e.current_version for e in self.engine_pool.engines)
+
+    def on_new_version(self, version: int) -> None:
+        self._target_version = version
+
+        # With a single engine, we can't keep capacity while draining. Instead,
+        # stop routing new groups until the trainer finishes the global update.
+        if len(self.engine_pool.engines) <= 1:
+            for e in self.engine_pool.engines:
+                e.drain_only = True
+            return
+
+        self._apply_drain_policy()
+
+    def get_update_candidates(self) -> list[int]:
+        # Single-engine: trainer uses global update (no subset candidates).
+        if len(self.engine_pool.engines) <= 1:
+            return []
+
+        candidates = [
+            e
+            for e in self.engine_pool.engines
+            if e.healthy and e.drain_only and e.inflight_groups == 0 and e.current_version < self._target_version
+        ]
+        if not candidates:
+            return []
+
+        # Conservative: update at most one engine at a time.
+        candidates.sort(key=lambda e: (e.current_version, e.engine_idx))
+        return [candidates[0].engine_idx]
+
+    def mark_updated(self, engine_indices: list[int], version: int) -> None:
+        for idx in engine_indices:
+            engine = self.engine_pool.engines[idx]
+            engine.current_version = version
+            engine.drain_only = False
+
+        if len(self.engine_pool.engines) <= 1:
+            return
+
+        self._apply_drain_policy()
+
+    def _apply_drain_policy(self) -> None:
+        # Keep at least `min_active_engines` active. Mark outdated engines as drain-only
+        # one-by-one as capacity allows.
+        while True:
+            active = self.engine_pool.get_active_engines()
+            if len(active) <= self.min_active_engines:
+                return
+
+            outdated = [e for e in active if e.current_version < self._target_version]
+            if not outdated:
+                return
+
+            outdated.sort(key=lambda e: (e.inflight_groups, e.current_version, e.engine_idx))
+            outdated[0].drain_only = True
+
+
+def make_streaming_weight_policy(
+    weight_update_mode: str,
+    *,
+    engine_pool: EnginePool,
+    min_active_engines: int,
+) -> StreamingWeightUpdatePolicy:
+    if weight_update_mode == "rolling_drain":
+        return RollingDrainPolicy(engine_pool, min_active_engines=min_active_engines)
+    raise ValueError(f"Unknown streaming weight update mode: {weight_update_mode}")
 
 
 class StreamingGroupBuffer:
@@ -180,7 +259,7 @@ class StreamingRolloutManager:
         queue_cap: int,
         inflight_target: int,
         min_active_engines: int,
-        rolling_updates_enabled: bool,
+        weight_update_mode: str,
     ) -> None:
         self.args = args
         self.data_source = data_source
@@ -190,11 +269,11 @@ class StreamingRolloutManager:
         self.queue_cap = queue_cap
         self.inflight_target = inflight_target
 
-        self.engine_pool = EnginePool(
-            engine_urls,
-            initial_version=0,
+        self.engine_pool = EnginePool(engine_urls, initial_version=0)
+        self.weight_policy = make_streaming_weight_policy(
+            weight_update_mode,
+            engine_pool=self.engine_pool,
             min_active_engines=min_active_engines,
-            rolling_updates_enabled=rolling_updates_enabled,
         )
         self.buffer = StreamingGroupBuffer(queue_cap)
 
@@ -218,6 +297,15 @@ class StreamingRolloutManager:
             no_stop_trim=True,
             spaces_between_special_tokens=False,
         )
+
+    def notify_new_version(self, version: int) -> None:
+        self.weight_policy.on_new_version(version)
+
+    def get_update_candidates(self) -> list[int]:
+        return self.weight_policy.get_update_candidates()
+
+    def mark_engines_updated(self, engine_indices: list[int], version: int) -> None:
+        self.weight_policy.mark_updated(engine_indices, version)
 
     def start(self) -> None:
         if self._producer_task is not None:

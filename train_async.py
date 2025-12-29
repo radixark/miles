@@ -30,7 +30,8 @@ def train(args):
 
     # async train loop.
     if args.streaming_async:
-        rolling_updates_enabled = ray.get(rollout_manager.start_streaming.remote(args.start_rollout_id))
+        weight_update_mode = args.streaming_async_weight_update_mode
+        supports_subset_engine_updates = ray.get(rollout_manager.start_streaming.remote(args.start_rollout_id))
         policy_version = 0
 
         for rollout_id in range(args.start_rollout_id, args.num_rollout):
@@ -55,11 +56,11 @@ def train(args):
                 policy_version += 1
                 ray.get(rollout_manager.notify_new_version.remote(policy_version))
 
-                if not rolling_updates_enabled:
+                if weight_update_mode == "rolling_drain" and not supports_subset_engine_updates:
                     actor_model.update_weights()
                     ray.get(rollout_manager.mark_engines_updated.remote([0], policy_version))
 
-            if rolling_updates_enabled:
+            if weight_update_mode == "rolling_drain" and supports_subset_engine_updates:
                 engine_ids = ray.get(rollout_manager.get_update_candidates.remote())
                 if engine_ids:
                     actor_model.update_rollout_engines(engine_ids, version=policy_version)

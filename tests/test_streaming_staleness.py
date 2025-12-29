@@ -31,7 +31,7 @@ def test_staleness_drop_on_dequeue():
         queue_cap=16,
         inflight_target=1,
         min_active_engines=1,
-        rolling_updates_enabled=False,
+        weight_update_mode="rolling_drain",
     )
 
     async def _run():
