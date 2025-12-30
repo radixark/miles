@@ -119,6 +119,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The backend for training.",
             )
             parser.add_argument(
+                "--qkv-format",
+                type=str,
+                choices=["thd", "bshd"],
+                default="thd",
+                help="The qkv layout for Megatron backend.",
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,
@@ -133,8 +140,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--train-memory-margin-bytes",
                 type=int,
-                default=0,
-                help="Add margin for train memory allocation.",
+                default=1024**3,
+                help="Add margin for train memory allocation. By default we will reserve 1GB as margin.",
             )
             parser.add_argument(
                 "--disable-weights-backuper",
@@ -147,6 +154,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["raw", "bridge"],
                 default="raw",
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
+            )
+            parser.add_argument(
+                "--recompute-loss-function",
+                action="store_true",
+                help="Whether to disable recompute loss function to save memory during training.",
             )
 
             return parser
@@ -1579,6 +1591,16 @@ def miles_validate_args(args):
 
     if args.prefill_num_servers is not None:
         assert not args.use_fault_tolerance, "fault tolerance is not supported when prefill_num_servers is set."
+
+    assert args.qkv_format in [
+        "thd",
+        "bshd",
+    ], f"qkv_format {args.qkv_format} is not supported. (only 'thd' and 'bshd' are supported)"
+    if args.qkv_format == "bshd":
+        assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
+        assert (
+            args.use_dynamic_batch_size is False
+        ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
 
 def hf_validate_args(args, hf_config):

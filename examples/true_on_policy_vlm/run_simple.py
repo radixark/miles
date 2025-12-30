@@ -8,7 +8,6 @@ assert MODEL_NAME in {"Qwen2.5-VL-3B-Instruct", "Qwen3-VL-2B-Instruct", "Qwen3-V
 
 NUM_GPUS = int(os.environ.get("MILES_SCRIPT_NUM_GPUS", "1"))
 EXTERNAL_RAY = int(os.environ.get("MILES_SCRIPT_EXTERNAL_RAY", "0"))
-MASTER_ADDR = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
 
 def prepare():
@@ -34,12 +33,12 @@ def execute():
         "--rollout-batch-size 64 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 4096 "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         "--global-batch-size 512 "
     )
 
     eval_args = (
-        # "--eval-interval 20 "
+        "--eval-interval 20 "
         "--eval-prompt-data geo3k /root/datasets/geo3k_imgurl/test.parquet "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 4096 "
@@ -126,28 +125,6 @@ def execute():
         f"{get_default_wandb_args(__file__)} "
         f"{true_on_policy_args} "
     )
-
-    # Kill existing processes
-    U.exec_command(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if EXTERNAL_RAY else 'ray stop --force; '}"
-        f"{'' if EXTERNAL_RAY else 'pkill -9 ray; '}"
-        "pkill -9 miles; "
-        "sleep 3; "
-        f"{'' if EXTERNAL_RAY else 'pkill -9 ray; '}"
-        "pkill -9 miles; "
-        "pkill -9 redis; "
-        "true; "
-    )
-
-    if not EXTERNAL_RAY:
-        # Start Ray
-        U.exec_command(
-            f"export PYTHONBUFFERED=16 && "
-            f"ray start --head --node-ip-address {MASTER_ADDR} --num-gpus {NUM_GPUS} "
-            f"--disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
-        )
 
     # Submit Ray job
     execute_train(
