@@ -16,6 +16,11 @@ __all__ = ["Dataset"]
 
 logger = logging.getLogger(__name__)
 
+_FILE_TYPE_MAP = {
+    ".jsonl": "json",
+    ".parquet": "parquet",
+}
+
 
 # TODO: don't read the whole file into memory.
 def read_file(path):
@@ -124,8 +129,9 @@ class Dataset:
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
+        num_proc=8,
     ):
-        self.raw_file_path, self.row_slice = _parse_generalized_path(path)
+        # 1. Store basic config
         self.tokenizer = tokenizer
         self.processor = processor
         self.max_length = max_length
@@ -138,29 +144,37 @@ class Dataset:
         self.seed = seed
         self.epoch_id = -1
 
-        if not os.path.exists(self.raw_file_path):
-            raise FileNotFoundError(f"Prompt dataset path '{self.raw_file_path}' does not exist.")
+        # 2. Load and process dataset
+        self.hf_dataset = self._load_and_filter_dataset(path, num_proc)
+        self.origin_hf_dataset = self.hf_dataset
 
-        logger.info(f"Loading dataset from {self.raw_file_path} using Hugging Face datasets.")
+    def _get_file_type(self, path: str) -> str:
+        _, ext = os.path.splitext(path)
+
+        if ext not in _FILE_TYPE_MAP:
+            supported = list(_FILE_TYPE_MAP.keys())
+            raise ValueError(f"Unsupported file format: {ext}. Supported: {supported}")
+
+        return _FILE_TYPE_MAP[ext]
+
+    def _load_and_filter_dataset(self, path, num_proc):
+        raw_file_path, row_slice = _parse_generalized_path(path)
+
+        if not os.path.exists(raw_file_path):
+            raise FileNotFoundError(f"Prompt dataset path '{raw_file_path}' does not exist.")
+
+        logger.info(f"Loading dataset from {raw_file_path} using Hugging Face datasets.")
 
         # Determine file type and load using datasets library for memory-mapped access
-        if self.raw_file_path.endswith(".jsonl"):
-            file_type = "json"
-        elif self.raw_file_path.endswith(".parquet"):
-            file_type = "parquet"
-        else:
-            raise ValueError(
-                f"Unsupported file format: {self.raw_file_path}. Supported formats are .jsonl and .parquet."
-            )
-
-        self.hf_dataset = datasets.load_dataset(file_type, data_files=self.raw_file_path, split="train")
+        file_type = self._get_file_type(raw_file_path)
+        ds = datasets.load_dataset(file_type, data_files=raw_file_path, split="train")
 
         # Apply row slicing if specified
         if self.row_slice:
-            num_rows = len(self.hf_dataset)
+            num_rows = len(ds)
             indices = range(num_rows)[self.row_slice]
-            self.hf_dataset = self.hf_dataset.select(indices)
-            logger.info(f"Applied slice {self.row_slice}, dataset size: {len(self.hf_dataset)}")
+            ds = ds.select(indices)
+            logger.info(f"Applied slice {self.row_slice}, dataset size: {len(ds)}")
 
         # Apply filtering using the existing helper functions
         def filter_func(example):
@@ -169,12 +183,12 @@ class Dataset:
                 prompt, self.tokenizer, self.processor, self.max_length, self.apply_chat_template_kwargs
             )
 
-        original_size = len(self.hf_dataset)
-        self.hf_dataset = self.hf_dataset.filter(filter_func, num_proc=os.cpu_count())
-        new_size = len(self.hf_dataset)
+        original_size = len(ds)
+        ds = ds.filter(filter_func, num_proc=num_proc, desc="Filtering invalid samples during init")
+        new_size = len(ds)
         logger.info(f"Filtered dataset from {original_size} to {new_size} samples.")
 
-        self.origin_hf_dataset = self.hf_dataset
+        return ds
 
     def __len__(self):
         return len(self.hf_dataset)
