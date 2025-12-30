@@ -2,7 +2,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 
-from miles.rollout.streaming_rollout_manager import CompletedGroup, StreamingRolloutManager
+from miles.rollout.streaming_rollout_manager import CompletedGroup, StreamingGroupBuffer, StreamingRolloutManager
 from miles.utils.types import Sample
 
 
@@ -47,5 +47,21 @@ def test_staleness_drop_on_dequeue():
     asyncio.run(_run())
 
 
+def test_priority_queue_tie_does_not_crash():
+    async def _run():
+        buf = StreamingGroupBuffer(queue_cap=16)
+        now = 123.0
+
+        await buf.put(CompletedGroup(behavior_version=0, finished_ts=now, engine_idx=0, group=[Sample(reward=0)]))
+        await buf.put(CompletedGroup(behavior_version=0, finished_ts=now, engine_idx=1, group=[Sample(reward=0)]))
+
+        g1 = await buf.get()
+        g2 = await buf.get()
+        assert {g1.engine_idx, g2.engine_idx} == {0, 1}
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     test_staleness_drop_on_dequeue()
+    test_priority_queue_tie_does_not_crash()
