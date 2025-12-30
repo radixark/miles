@@ -580,3 +580,32 @@ miles has been deeply optimized for distributed training of large-scale Mixture 
 - [Example: 64xH100 Training GLM-4.5](../examples/glm4.5-355B-A32B.md)
 - [Example: 128xH100 Training DeepSeek-R1](../examples/deepseek-r1.md)
 - The scripts such as `scripts/run_qwen3_30b_a3b.py`, `scripts/run_glm45_355b_a32b.py` also support multi-node training, though there are little documentations about it currently.
+
+## Verification of Dataset Initialization
+
+Once your environment is set up and weights are converted, you can verify that the system is correctly using **Lazy Data Loading** to handle large datasets efficiently.
+
+Run the following command to start a short verification task:
+
+```bash
+python train.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/GLM-Z1-9B-0414 \
+    --load /root/GLM-Z1-9B-0414_torch_dist \
+    --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl \
+    --input-key prompt \
+    --label-key label \
+    --use-miles-router \
+    --rollout-batch-size 16 \
+    --n-samples-per-prompt 1 \
+    --num-proc 4 \
+    --num-rollout 1
+```
+
+### What to Observe
+
+1.  **Fast Startup**: Even with a large `.jsonl` file, the training process should start almost immediately. This confirms the data is being memory-mapped (Lazy Loading) instead of read entirely into RAM.
+2.  **Filtering Progress**: You will see a progress bar titled `Filtering invalid samples during init`. This confirms that the filtering logic is running and providing visual feedback.
+3.  **Configurable Parallelism**: By specifying `--num-proc 4`, we override the default value (8). You can verify that the system spawns exactly 4 worker processes for the data preparation phase.
+4.  **RAM Stability**: Monitor your system RAM during startup. It should remain stable because only the dataset indices are stored in memory, not the raw text.
+
