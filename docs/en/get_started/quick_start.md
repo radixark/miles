@@ -580,3 +580,30 @@ miles has been deeply optimized for distributed training of large-scale Mixture 
 - [Example: 64xH100 Training GLM-4.5](../examples/glm4.5-355B-A32B.md)
 - [Example: 128xH100 Training DeepSeek-R1](../examples/deepseek-r1.md)
 - The scripts such as `scripts/run_qwen3_30b_a3b.py`, `scripts/run_glm45_355b_a32b.py` also support multi-node training, though there are little documentations about it currently.
+
+
+## Verification of Router Health Check
+
+This verifies the **Background Health Check** and its "Strike System".
+
+```bash
+# Start training with the Miles Router and a 10-second health check interval
+python train.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/GLM-Z1-9B-0414 \
+    --load /root/GLM-Z1-9B-0414_torch_dist \
+    --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl \
+    --input-key prompt \
+    --label-key label \
+    --apply-chat-template \
+    --rm-type deepscaler \
+    --use-miles-router \
+    --rollout-health-check-interval 10 \
+    --rollout-batch-size 16 \
+    --global-batch-size 16 \
+    --num-rollout 10 \
+    --colocate
+```
+
+The router monitors worker health silently. On the 3rd consecutive failure, it logs a `WARNING` and stops routing traffic to that worker. It logs an `INFO` message only when a worker recovers.
+

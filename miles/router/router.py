@@ -36,6 +36,7 @@ class MilesRouter:
 
         # Worker information
         self.worker_urls: dict[str, int] = {}
+        self.worker_failure_counts: dict[str, int] = {}
         self.max_weight_version = None
 
         max_connections = getattr(args, "miles_router_max_connections", None)
@@ -77,30 +78,51 @@ class MilesRouter:
             response = await self.client.get(f"{url}/health", timeout=5.0)
             if response.status_code == 200:
                 return url, True
-            logger.warning(f"[miles-router] Worker {url} is unhealthy (Status: {response.status_code})")
+            logger.debug(f"[miles-router] Worker {url} is unhealthy (Status: {response.status_code})")
         except Exception as e:
-            logger.warning(f"[miles-router] Worker {url} health check failed: {e}")
+            logger.debug(f"[miles-router] Worker {url} health check failed: {e}")
         return url, False
 
     async def _health_check_loop(self):
         interval = self.args.rollout_health_check_interval
 
         while True:
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.sleep(interval)
 
-            urls = list(self.worker_urls.keys())
-            if not urls:
-                continue
+                urls = list(self.worker_urls.keys())
+                if not urls:
+                    continue
 
-            # Concurrent execution using a generator expression
-            results = await asyncio.gather(*(self._check_worker_health(url) for url in urls))
+                # Concurrent execution using a generator expression
+                results = await asyncio.gather(*(self._check_worker_health(url) for url in urls))
 
-            for url, is_healthy in results:
-                if not is_healthy:
-                    logger.warning(f"[miles-router] Removing unhealthy worker from pool: {url}")
-                    self.worker_urls.pop(url, None)
+                for url, is_healthy in results:
+                    prev_failures = self.worker_failure_counts.get(url, 0)
 
-            logger.info(f"[miles-router] Health check complete. {len(self.worker_urls)} workers active.")
+                    if is_healthy:
+                        if prev_failures >= 3:
+                            logger.info(f"[miles-router] Worker {url} has recovered and is now back in the pool.")
+                        self.worker_failure_counts[url] = 0
+                    else:
+                        new_failures = prev_failures + 1
+                        self.worker_failure_counts[url] = new_failures
+
+                        if new_failures == 3:
+                            logger.warning(
+                                f"[miles-router] Worker {url} failed 3 consecutive health checks. Stopping traffic."
+                            )
+
+                logger.debug("[miles-router] Health check complete.")
+
+            except asyncio.CancelledError:
+                # Normal shutdown
+                raise
+            except Exception as e:
+                # Prevent background task from dying silently
+                logger.error(f"[miles-router] Unexpected error in health check loop: {e}", exc_info=True)
+                # Brief backoff before restarting the loop
+                await asyncio.sleep(5)
 
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
@@ -161,6 +183,7 @@ class MilesRouter:
         # Add if new, keep a simple request count per worker
         if worker_url not in self.worker_urls:
             self.worker_urls[worker_url] = 0
+            self.worker_failure_counts[worker_url] = 0
             if self.verbose:
                 print(f"[miles-router] Added new worker: {worker_url}")
 
@@ -193,11 +216,16 @@ class MilesRouter:
         return result
 
     def _use_url(self):
-        """Select a worker URL using round-robin strategy"""
-        assert len(self.worker_urls) > 0, "No workers available"
+        """Select a worker URL using round-robin strategy, excluding unhealthy workers."""
+        # Filter for healthy workers (those with less than 3 consecutive failures)
+        healthy_urls = {
+            url: count for url, count in self.worker_urls.items() if self.worker_failure_counts.get(url, 0) < 3
+        }
 
-        # get the url with mininal count
-        url = min(self.worker_urls, key=self.worker_urls.get)
+        assert len(healthy_urls) > 0, "No healthy workers available in the pool"
+
+        # get the url with mininal count among healthy workers
+        url = min(healthy_urls, key=healthy_urls.get)
         self.worker_urls[url] += 1
         return url
 
