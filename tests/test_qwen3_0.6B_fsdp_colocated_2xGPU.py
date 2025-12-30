@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import miles.utils.external_utils.command_utils as U
 
@@ -6,6 +7,10 @@ ENABLE_LORA = U.get_bool_env_var("ENABLE_LORA", "0")
 
 
 def prepare():
+    if ENABLE_LORA:
+        if importlib.util.find_spec("peft") is None:
+            U.exec_command("pip install peft")
+
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
@@ -20,6 +25,7 @@ def execute():
             "--lora-alpha 32 "
             "--target-modules all-linear "
             f"--save /root/models/{MODEL_NAME}-lora-ckpt "
+            # "--lora-sync-from-tensor "
         )
         if ENABLE_LORA
         else ""

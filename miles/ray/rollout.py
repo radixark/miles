@@ -155,10 +155,14 @@ class RolloutManager:
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
 
-    def offload(self):
+    def offload(self, tags: list[str] | None = None):
         self.health_monitoring_pause()
         return ray.get(
-            [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
+            [
+                engine.release_memory_occupation.remote(tags=tags)
+                for engine in self.rollout_engines
+                if engine is not None
+            ]
         )
 
     def onload(self, tags: list[str] | None = None):

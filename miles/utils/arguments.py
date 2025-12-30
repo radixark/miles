@@ -965,6 +965,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Path to load pre-trained LoRA adapter weights (default: None)",
             )
+            parser.add_argument(
+                "--lora-sync-from-tensor",
+                action="store_true",
+                default=False,
+                help="Use tensor-based LoRA weight synchronization instead of file-based (default: False)",
+            )
 
             return parser
 

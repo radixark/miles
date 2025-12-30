@@ -74,3 +74,30 @@ def delete_lora_from_disk(save_dir: str) -> None:
     if save_path.exists():
         shutil.rmtree(save_path)
         logger.info(f"Deleted LoRA adapter from {save_path}")
+
+
+def get_lora_weights_and_config(module: nn.Module) -> tuple[dict[str, any], dict[str, any]]:
+    """Extract LoRA weights and config from PEFT model for tensor-based sync."""
+    # TODO: only gather lora weights, or gather lora weights in bucket logic i.e., layered summon
+    # options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+    options = StateDictOptions(full_state_dict=True, cpu_offload=False)
+    full_state_dict = get_model_state_dict(module, options=options)
+
+    state_dict = {name: param for name, param in full_state_dict.items() if "lora_" in name}
+    if dist.get_rank() == 0:
+        logger.info(f"Extracted {len(state_dict)} LoRA weight tensors")
+
+    for name in list(state_dict.keys()):
+        key = name.replace(".default.weight", ".weight")  # .replace("base_model.model.", "")
+        state_dict[key] = state_dict.pop(name)
+
+    peft_config = module.peft_config["default"]
+    config_dict = {
+        "peft_type": "LORA",
+        "r": peft_config.r,
+        "lora_alpha": peft_config.lora_alpha,
+        "target_modules": list(peft_config.target_modules),
+        "bias": peft_config.bias,
+    }
+
+    return state_dict, config_dict
