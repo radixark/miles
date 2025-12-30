@@ -595,6 +595,8 @@ python train.py \
     --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl \
     --input-key prompt \
     --label-key label \
+    --apply-chat-template \
+    --rm-type deepscaler \
     --use-miles-router \
     --num-proc 4 \
     --rollout-batch-size 16 \
@@ -606,8 +608,8 @@ python train.py \
 
 ### What to Observe
 
-1.  **Fast Startup**: Even with a large `.jsonl` file, the training process should start almost immediately. This confirms the data is being memory-mapped (Lazy Loading) instead of read entirely into RAM.
+1.  **Fast Startup**: Even with a large dataset, the training process should start almost immediately. This confirms the data is being memory-mapped (Lazy Loading) instead of read entirely into RAM.
 2.  **Filtering Progress**: You will see a progress bar titled `Filtering invalid samples during init`. This confirms that the filtering logic is running in parallel and providing visual feedback.
-3.  **Configurable Parallelism**: By specifying `--num-proc 4`, we override the default value (8). You can verify that the system spawns exactly 4 worker processes for the data preparation phase.
+3.  **Configurable Parallelism**: By specifying `--num-proc 4`, we override the default value. You can verify that the system spawns exactly 4 worker processes for the data preparation phase.
 4.  **RAM Stability**: Monitor your system RAM during startup. It should remain stable because only the dataset indices are stored in memory, not the raw text.
 
