@@ -20,6 +20,7 @@ def execute():
             "--lora-alpha 32 "
             "--target-modules all-linear "
             f"--save /root/models/{MODEL_NAME}-lora-ckpt "
+            "--lora-sync-from-tensor "
         )
         if ENABLE_LORA
         else ""

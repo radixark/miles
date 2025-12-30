@@ -26,7 +26,14 @@ try:
 except ImportError:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
 
-from .lora_utils import LORA_ADAPTER_NAME, LORA_SUBDIR, delete_lora_from_disk, is_lora_model, save_lora_to_disk
+from .lora_utils import (
+    LORA_ADAPTER_NAME,
+    LORA_SUBDIR,
+    delete_lora_from_disk,
+    get_lora_weights_and_config,
+    is_lora_model,
+    save_lora_to_disk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +90,10 @@ class UpdateWeight(abc.ABC):
 
         # Update lora weights if needed
         if is_lora_model(self.model):
-            self._update_lora_via_file()
+            if self.args.lora_sync_from_tensor:
+                self._update_lora_via_tensor()
+            else:
+                self._update_lora_via_file()
 
     def _update_lora_via_file(self) -> None:
         """Push LoRA weights to rollout engines using disk files."""
@@ -108,6 +118,31 @@ class UpdateWeight(abc.ABC):
 
             refs = [
                 engine.load_lora_adapter.remote(LORA_ADAPTER_NAME, self._lora_save_dir)
+                for engine in self.rollout_engines
+            ]
+            ray.get(refs)
+
+            refs = [engine.flush_cache.remote() for engine in self.rollout_engines]
+            ray.get(refs)
+
+            self._lora_loaded = True
+
+        dist.barrier()
+
+    def _update_lora_via_tensor(self) -> None:
+        """Push LoRA weights to rollout engines using tensors."""
+        lora_weights, config_dict = get_lora_weights_and_config(self.model)
+        dist.barrier()
+
+        if dist.get_rank() == 0:
+            serialized_tensors = MultiprocessingSerializer.serialize(lora_weights, output_str=True)
+
+            if self._lora_loaded:
+                refs = [engine.unload_lora_adapter.remote(LORA_ADAPTER_NAME) for engine in self.rollout_engines]
+                ray.get(refs)
+
+            refs = [
+                engine.load_lora_adapter_from_tensors.remote(LORA_ADAPTER_NAME, serialized_tensors, config_dict)
                 for engine in self.rollout_engines
             ]
             ray.get(refs)

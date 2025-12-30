@@ -348,6 +348,12 @@ class SGLangEngine(RayActor):
             {"lora_name": lora_name, "lora_path": lora_path},
         )
 
+    def load_lora_adapter_from_tensors(self, lora_name: str, serialized_tensors: str, config_dict: dict):
+        return self._make_request(
+            "load_lora_adapter_from_tensors",
+            {"lora_name": lora_name, "serialized_tensors": serialized_tensors, "config_dict": config_dict},
+        )
+
     def unload_lora_adapter(self, lora_name: str):
         return self._make_request(
             "unload_lora_adapter",
@@ -440,6 +446,7 @@ def _compute_server_args(args, rank, dist_init_addr, nccl_port, host, port, work
     if args.lora_rank > 0 or args.lora_adapter_path is not None:
         kwargs["enable_lora"] = True
         kwargs["max_lora_rank"] = args.lora_rank
+        kwargs["max_loras_per_batch"] = 1
         kwargs["lora_target_modules"] = args.target_modules
 
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
