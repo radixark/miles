@@ -170,11 +170,11 @@ class Dataset:
         ds = datasets.load_dataset(file_type, data_files=raw_file_path, split="train")
 
         # Apply row slicing if specified
-        if self.row_slice:
+        if row_slice:
             num_rows = len(ds)
-            indices = range(num_rows)[self.row_slice]
+            indices = range(num_rows)[row_slice]
             ds = ds.select(indices)
-            logger.info(f"Applied slice {self.row_slice}, dataset size: {len(ds)}")
+            logger.info(f"Applied slice {row_slice}, dataset size: {len(ds)}")
 
         # Apply filtering using the existing helper functions
         def filter_func(example):
