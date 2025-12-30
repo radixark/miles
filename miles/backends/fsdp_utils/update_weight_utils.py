@@ -128,7 +128,7 @@ class UpdateWeightFromTensor(UpdateWeight):
 
         # Create flattened bucket for each dtype group
         serialized_tensors = []
-        for dtype, named_tensors in named_tensors_by_dtypes.items():
+        for _dtype, named_tensors in named_tensors_by_dtypes.items():
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
             metadata = flattened_tensor_bucket.get_metadata()
             flattened_tensor_data = {
@@ -188,7 +188,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
         self.rollout_engine_lock = rollout_engine_lock
 
         # For TP:
-        #   1. AllGather paramters to rank 0
+        #   1. AllGather parameters to rank 0
         #   2. Broadcast parameters from rank 0 to all sglang engines
         self._is_src_rank = dist.get_rank() == 0
         if self._is_src_rank:
@@ -241,7 +241,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
 
         handles = []
         # Broadcast parameters one by one with memory management
-        for name, param in named_tensors:
+        for _name, param in named_tensors:
             torch.cuda.empty_cache()
             # Ensure tensor is contiguous and on the right device
             param_data = param.data.contiguous()

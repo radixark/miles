@@ -124,7 +124,7 @@ def train(args: ScriptArgs):
         "--num-rollout 3000 "
         "--rollout-batch-size 128 "
         "--n-samples-per-prompt 8 "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         # ------------
         "--num-steps-per-rollout 4 "
         "--balance-data "
@@ -139,7 +139,7 @@ def train(args: ScriptArgs):
     # sometimes disable eval to speed up debugging
     eval_args = ""
     if (args.mode != "debug_minimal") and args.enable_eval:
-        eval_args += "--eval-interval 20 " "--eval-top-p 0.7 "
+        eval_args += "--eval-interval 20 " "--eval-top-p 1 "
 
     match args.task:
         case "dapo_aime":
@@ -158,7 +158,7 @@ def train(args: ScriptArgs):
                 "--prompt-data /root/datasets/gsm8k/train.parquet "
                 "--input-key messages "
                 # Deliberately make it very short for this easy task
-                f"--rollout-max-response-len 256 "
+                "--rollout-max-response-len 256 "
             )
             eval_args += (
                 "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
@@ -247,7 +247,6 @@ def train(args: ScriptArgs):
         f"--sglang-dp-size {sglang_attn_dp_size} "
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
-        "--sglang-disable-radix-cache "
         # enable deepep for sglang
         "--sglang-moe-a2a-backend deepep "
         "--sglang-deepep-mode low_latency "

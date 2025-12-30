@@ -42,7 +42,7 @@ ROLLOUT_ARGS=(
    --rollout-batch-size 128
    --n-samples-per-prompt 8
    --rollout-max-response-len 32768
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    --over-sampling-batch-size 256
    --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
@@ -57,7 +57,7 @@ EVAL_ARGS=(
    --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl
    --n-samples-per-eval-prompt 8
    --eval-max-response-len 32768
-   --eval-top-p 0.7
+   --eval-top-p 1
 )
 
 PERF_ARGS=(
@@ -113,6 +113,17 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
    --sglang-enable-dp-attention
    --sglang-dp-size 4
+   --sglang-ep-size 32
+   --sglang-enable-dp-lm-head
+   --sglang-moe-dense-tp-size 1
+
+   # mtp
+   --sglang-speculative-algorithm EAGLE
+   --sglang-speculative-num-steps 1
+   --sglang-speculative-eagle-topk 1
+   --sglang-speculative-num-draft-tokens 2
+   --sglang-enable-draft-weights-cpu-backup
+
 )
 
 MISC_ARGS=(
@@ -124,6 +135,9 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+
+   --moe-token-dispatcher-type flex
+   --moe-enable-deepep
 )
 
 # launch the master node of ray in container

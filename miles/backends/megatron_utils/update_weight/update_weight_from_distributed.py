@@ -1,8 +1,7 @@
 import socket
 import time
 from argparse import Namespace
-from collections.abc import Mapping, Sequence
-from typing import Callable
+from collections.abc import Callable, Mapping, Sequence
 
 import ray
 import torch
@@ -53,7 +52,7 @@ class UpdateWeightFromDistributed:
         self.rollout_engine_lock = rollout_engine_lock
 
         # For TP:
-        #   1. AllGather paramters to rank 0
+        #   1. AllGather parameters to rank 0
         #   2. Broadcast parameters from rank 0 to all sglang engines
         self._is_pp_src_rank = (
             mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
@@ -180,7 +179,7 @@ class UpdateWeightFromDistributed:
 
         all_gathered_params = [[] for _ in range(mpu.get_expert_model_parallel_world_size())]
         handles = []
-        for i, (name, param) in enumerate(named_tensors):
+        for i, (_name, param) in enumerate(named_tensors):
             params = [
                 torch.empty_like(param.data, device=torch.cuda.current_device())
                 for _ in range(mpu.get_expert_model_parallel_world_size())

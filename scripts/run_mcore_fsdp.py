@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 import typer
 
@@ -12,7 +12,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     use_ref: bool = False
     colocate: bool = True
     model_name: str = "Qwen3-4B-Instruct-2507"
-    num_gpus_per_node: Optional[int] = None
+    num_gpus_per_node: int | None = None
     hardware: Literal["H100", "GB300"] = "H100"
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
@@ -20,7 +20,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     true_on_policy: bool = False
     dynamic_sampling: bool = False
     enable_eval: bool = True
-    megatron_model_type: Optional[str] = None
+    megatron_model_type: str | None = None
     extra_args: str = ""
 
     def __post_init__(self):
@@ -82,7 +82,7 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {8 if args.mode == 'debug_minimal' else 64} "
         f"--n-samples-per-prompt {8 if args.mode == 'debug_minimal' else 16} "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         f"--global-batch-size {64 if args.mode == 'debug_minimal' else 1024} "
     )
 
@@ -122,7 +122,7 @@ eval:
                 "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 16 "
                 f"--eval-max-response-len {eval_max_response_len} "
-                "--eval-top-p 0.7 "
+                "--eval-top-p 1 "
             )
 
     perf_args = (

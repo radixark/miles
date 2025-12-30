@@ -22,7 +22,7 @@ def monkey_patch_torch_dist():
 
     old_new_group = dist.new_group
     old_new_group_dict[pid] = old_new_group
-    setattr(dist, "old_new_group", old_new_group)
+    dist.old_new_group = old_new_group
 
     def new_group(*args, **kwargs):
         group = old_new_group(*args, **kwargs)
@@ -134,7 +134,13 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in ReloadableProcessGroup.GROUPS.get(pid, []):
             if reloadable_group.group is None:
                 continue
-            dist.destroy_process_group(reloadable_group.group)
+            try:
+                dist.destroy_process_group(reloadable_group.group)
+            except ValueError as e:
+                logger.warning(
+                    f"Process group already invalid/destroyed; skipping cleanup. Exception: {e}",
+                    exc_info=True,
+                )
 
             del reloadable_group.group
             reloadable_group.group = None

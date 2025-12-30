@@ -48,7 +48,7 @@ ROLLOUT_ARGS=(
    --rollout-batch-size 128
    --n-samples-per-prompt 8
    --rollout-max-response-len 32768
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    # --global-batch-size 1024
 
@@ -64,7 +64,7 @@ EVAL_ARGS=(
    --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl
    --n-samples-per-eval-prompt 8
    --eval-max-response-len 32768
-   --eval-top-p 0.7
+   --eval-top-p 1
 )
 
 PERF_ARGS=(
@@ -124,7 +124,6 @@ SGLANG_ARGS=(
    --sglang-dp-size 8
    --sglang-moe-dense-tp-size 1
    --sglang-enable-dp-lm-head
-   --sglang-disable-radix-cache
 
    --sglang-ep-size 16
 

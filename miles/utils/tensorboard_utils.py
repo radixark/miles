@@ -5,7 +5,7 @@ from miles.utils.misc import SingletonMeta
 
 try:
     from torch.utils.tensorboard import SummaryWriter
-except:
+except ImportError:
     SummaryWriter = None
 
 logger = logging.getLogger(__name__)

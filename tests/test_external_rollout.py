@@ -33,7 +33,7 @@ def execute():
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         "--over-sampling-batch-size 64 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 256 "
@@ -78,7 +78,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 " f"--sglang-mem-fraction-static 0.6 "
+    sglang_args = "--rollout-num-gpus-per-engine 2 " "--sglang-mem-fraction-static 0.6 "
 
     ci_args = (
         "--ci-test "

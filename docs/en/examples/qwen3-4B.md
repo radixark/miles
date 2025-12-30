@@ -15,14 +15,14 @@ Download the model and data:
 
 ```bash
 # hf checkpoint
-huggingface-cli download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
+hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
 
 # train data
-huggingface-cli download --repo-type dataset zhuzilin/dapo-math-17k \
+hf download --repo-type dataset zhuzilin/dapo-math-17k \
   --local-dir /root/dapo-math-17k
 
 # eval data
-huggingface-cli download --repo-type dataset zhuzilin/aime-2024 \
+hf download --repo-type dataset zhuzilin/aime-2024 \
   --local-dir /root/aime-2024
 ```
 
@@ -110,7 +110,7 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    # Rollout sampling parameters
    --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    # Number of training steps corresponding to one rollout
    --num-steps-per-rollout 1
@@ -129,7 +129,7 @@ EVAL_ARGS=(
    --eval-prompt-data /root/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
-   --eval-top-p 0.7
+   --eval-top-p 1
 )
 ```
 
@@ -249,25 +249,6 @@ def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) ->
 This means that each time, the data corresponding to the first `num_samples` prompts is retrieved, totaling `num_samples * n_samples_per_prompt` items.
 
 ⚠️ The `sample.metadata` of each partial rollout sample stores the rollout ID from its initial generation, which can be used for data filtering.
-
-### BF16 Training with FP8 Inference
-
-miles also supports BF16 training with FP8 inference. For the Qwen3-4B model, you just need to download the following model:
-
-```bash
-huggingface-cli download Qwen/Qwen3-4B-FP8 --local-dir /root/Qwen3-4B-FP8
-```
-
-And replace `--hf-checkpoint` with:
-
-```bash
-#--hf-checkpoint /root/Qwen3-4B
---hf-checkpoint /root/Qwen3-4B-FP8
-```
-
-This will trigger FP8 inference. Currently, we directly cast the BF16 weights to FP8. In the future, we will gradually add more sophisticated quantization schemes that have less impact on precision.
-
-⚠️ The Megatron checkpoint for training still needs to be the one that was originally converted from the BF16 Hugging Face model.
 
 ### Decoupled Training and Inference
 

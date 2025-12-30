@@ -21,11 +21,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "GLM-4.5"
     megatron_model_type: str = "glm4.5-355B-A32B"
     num_gpus_per_node: int = 4
+    hardware: Literal["H100", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    rollout_attn_fp8: bool = False
+    enable_mtp: bool = False  # TODO enable by default
     dynamic_sampling: bool = False
-    # TODO use more complex task
+    enable_benchmark: bool = False
+    enable_mis: bool = False
+    # TODO improve, should be able to override more easily
+    tis_use_rs: bool = True
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
 
@@ -41,6 +47,7 @@ def prepare_single(args: ScriptArgs):
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k")
             U.hf_download_dataset("zhuzilin/aime-2024")
+            U.hf_download_dataset("zhuzilin/aime-2025")
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k")
 
@@ -89,6 +96,11 @@ def _prepare_cp(args: ScriptArgs):
         path_src=f"/root/models/{args.model_name}",
         path_dst=f"/root/local_data/{args.model_name}",
     )
+    if args.rollout_fp8:
+        U.rsync_simple(
+            path_src=f"/root/models/{args.model_name}-FP8",
+            path_dst=f"/root/local_data/{args.model_name}-FP8",
+        )
 
 
 @app.command()
@@ -97,8 +109,10 @@ def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
     _prepare_cp(args)
 
+    assert args.hardware != "H100", "H100 is not yet supported in this script"
+
     hf_checkpoint = (
-        f"/root/models/{args.model_name}_FP8" if args.rollout_fp8 else f"/root/local_data/{args.model_name}"
+        f"/root/local_data/{args.model_name}-FP8" if args.rollout_fp8 else f"/root/local_data/{args.model_name}"
     )
 
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
@@ -120,7 +134,7 @@ def train(args: ScriptArgs):
         # TODO enlarge
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         # ------------
         # TODO enlarge
         "--num-steps-per-rollout 1 "
@@ -137,7 +151,7 @@ def train(args: ScriptArgs):
     # sometimes disable eval to speed up debugging
     eval_args = ""
     if (args.mode != "debug_minimal") and args.enable_eval:
-        eval_args += "--eval-interval 20 " "--eval-top-p 0.7 "
+        eval_args += "--eval-interval 20 " "--eval-top-p 1 "
 
     match args.task:
         case "dapo_aime":
@@ -156,7 +170,7 @@ def train(args: ScriptArgs):
                 "--prompt-data /root/datasets/gsm8k/train.parquet "
                 "--input-key messages "
                 # Deliberately make it very short for this easy task
-                f"--rollout-max-response-len 256 "
+                "--rollout-max-response-len 256 "
             )
             eval_args += (
                 "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
@@ -169,9 +183,9 @@ def train(args: ScriptArgs):
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
-            f"--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 2 "
-            "--expert-model-parallel-size 8 "
+            "--pipeline-model-parallel-size 1 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 4 "
             "--expert-tensor-parallel-size 1 "
         )
     else:
@@ -220,40 +234,52 @@ def train(args: ScriptArgs):
         # "--use-precision-aware-optimizer "
     )
 
-    # TODO optimize parameters, especially for FP8
-    # TODO pure tp attention is very inefficient
-    # sglang_decode_max_bs = 256
     sglang_world_size = min(32, args.num_gpus_per_node * args.num_nodes)
-    # sglang_attn_dp_size = 4
-    # sglang_attn_tp_size = sglang_world_size // sglang_attn_dp_size
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.8 "
+        # TODO improve
+        f"--sglang-mem-fraction-static {0.8 if args.hardware == 'GB300' else 0.7} "
         f"--sglang-tp-size {sglang_world_size} "
-        # f"--sglang-ep-size {sglang_world_size} "
-        # dp attention
-        # "--sglang-enable-dp-attention "
-        # f"--sglang-dp-size {sglang_attn_dp_size} "
-        # "--sglang-moe-dense-tp-size 1 "
-        # "--sglang-enable-dp-lm-head "
-        # TODO why disable?
-        # "--sglang-disable-radix-cache "
-        # enable deepep for sglang
-        # "--sglang-moe-a2a-backend deepep "
-        # "--sglang-deepep-mode low_latency "
+        f"--sglang-chunked-prefill-size {sglang_world_size * 2048} "
         # make every dp rank has 128 concurrency
         # "--sglang-server-concurrency 1024 "
-        # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
-        # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-        # f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
-        f"--sglang-chunked-prefill-size {sglang_world_size * 2048} "
     )
     sglang_extra_env_vars = {}
-    # sglang_extra_env_vars = {
-    #     "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
-    # }
+    if U.GENERATION_HARDWARE[args.hardware] == "Blackwell":
+        sglang_args += "--sglang-attention-backend trtllm_mha "
+    if args.rollout_fp8:
+        sglang_decode_max_bs = 256
+        sglang_attn_tp_size = min(8, sglang_world_size)
+        sglang_attn_dp_size = sglang_world_size // sglang_attn_tp_size
+        sglang_args += (
+            f"--sglang-ep-size {sglang_world_size} "
+            "--sglang-enable-dp-attention "
+            f"--sglang-dp-size {sglang_attn_dp_size} "
+            "--sglang-moe-dense-tp-size 1 "
+            "--sglang-enable-dp-lm-head "
+            "--sglang-moe-runner-backend deep_gemm "
+            "--sglang-moe-a2a-backend deepep "
+            "--sglang-deepep-mode low_latency "
+            f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+            f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+            f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        )
+        sglang_extra_env_vars |= {
+            "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
+        }
+    if args.enable_mtp:
+        sglang_args += (
+            "--sglang-speculative-algorithm EAGLE "
+            "--sglang-speculative-num-steps 1 "
+            "--sglang-speculative-eagle-topk 1 "
+            "--sglang-speculative-num-draft-tokens 2 "
+            "--sglang-enable-draft-weights-cpu-backup "
+        )
+        sglang_extra_env_vars |= {
+            "SGLANG_ENABLE_SPEC_V2": "1",
+        }
 
     misc_args = (
         # default dropout in megatron is 0.1
@@ -282,6 +308,40 @@ def train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
     )
+
+    if args.enable_benchmark:
+        misc_args += (
+            "--custom-generate-function-path miles.rollout.generate_hub.benchmarkers.generate_with_random_osl "
+            "--rollout-batch-size 128 "
+            "--n-samples-per-prompt 8 "
+            "--use-distributed-post "
+            "--router-policy round_robin "
+            "--sglang-server-concurrency 10000 "
+            # GB200 w/ mem-frac 0.8 will lead to oom in long jobs currently, but here we use large value to make baseline more fair
+            f"--sglang-mem-fraction-static {0.8 if args.hardware == 'GB300' else 0.75} "
+        )
+
+    if args.rollout_attn_fp8:
+        sglang_args += "--sglang-kv-cache-dtype fp8_e4m3 "
+
+    if args.enable_mis:
+        config_text = f"""
+use_tis: true
+use_rs: {"true" if args.tis_use_rs else "false"}
+tis_level: "token"
+rs_level: "token"
+tis_mode: "truncate"
+tis_lower_bound: 0.5
+tis_upper_bound: 2.0
+rs_lower_bound: null
+rs_upper_bound: null
+rs_veto_threshold: 1.0e-4
+tis_batch_normalize: true
+""".strip()
+        misc_args += (
+            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+        )
 
     train_args = (
         f"{ckpt_args} "
