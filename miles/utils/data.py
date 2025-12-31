@@ -22,6 +22,11 @@ _FILE_TYPE_MAP = {
 }
 
 
+def _filter_func(example, tokenizer, processor, max_length, prompt_key, multimodal_keys, apply_chat_template_kwargs):
+    prompt = _build_messages(example, prompt_key, multimodal_keys)
+    return not _should_skip_prompt(prompt, tokenizer, processor, max_length, apply_chat_template_kwargs)
+
+
 # TODO: don't read the whole file into memory.
 def read_file(path):
     path, row_slice = _parse_generalized_path(path)
@@ -151,11 +156,10 @@ class Dataset:
     def _get_file_type(self, path: str) -> str:
         _, ext = os.path.splitext(path)
 
-        if ext not in _FILE_TYPE_MAP:
-            supported = list(_FILE_TYPE_MAP.keys())
-            raise ValueError(f"Unsupported file format: {ext}. Supported: {supported}")
-
-        return _FILE_TYPE_MAP[ext]
+        try:
+            return _FILE_TYPE_MAP[ext]
+        except KeyError:
+            raise ValueError(f"Unsupported format: {ext}. Supported: {list(_FILE_TYPE_MAP.keys())}") from None
 
     def _load_and_filter_dataset(self, path, num_proc):
         raw_file_path, row_slice = _parse_generalized_path(path)
@@ -176,15 +180,20 @@ class Dataset:
             ds = ds.select(indices)
             logger.info(f"Applied slice {row_slice}, dataset size: {len(ds)}")
 
-        # Apply filtering using the existing helper functions
-        def filter_func(example):
-            prompt = _build_messages(example, self.prompt_key, self.multimodal_keys)
-            return not _should_skip_prompt(
-                prompt, self.tokenizer, self.processor, self.max_length, self.apply_chat_template_kwargs
-            )
+        filter_kwargs = {
+            "tokenizer": self.tokenizer,
+            "processor": self.processor,
+            "max_length": self.max_length,
+            "prompt_key": self.prompt_key,
+            "multimodal_keys": self.multimodal_keys,
+            "apply_chat_template_kwargs": self.apply_chat_template_kwargs,
+        }
 
         original_size = len(ds)
-        ds = ds.filter(filter_func, num_proc=num_proc, desc="Filtering invalid samples during init")
+        from functools import partial
+
+        ds = ds.filter(partial(_filter_func, **filter_kwargs), num_proc=num_proc, desc="Filtering invalid samples")
+
         new_size = len(ds)
         logger.info(f"Filtered dataset from {original_size} to {new_size} samples.")
 
@@ -205,6 +214,10 @@ class Dataset:
             tools = data[self.tool_key]
             if isinstance(tools, str):
                 tools = json.loads(tools)
+            # TODO (chenyang): If the JSON parsing is heavy, we might need
+            #  to use hf_dataset.map() during init to pre-process these
+            #  fields into a more efficient format (Arrow-native), rather
+            #  than parsing raw strings on the fly.
             elif isinstance(tools, np.ndarray):
                 tools = tools.tolist()
             assert isinstance(tools, list), f"tools must be a list, got {type(tools)} instead"
