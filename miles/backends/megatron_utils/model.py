@@ -495,8 +495,14 @@ def train_one_step(
         loss_reduced = {}
         values = values.tolist()
         num_samples_or_tokens = values[0]
+        dp_size = mpu.get_data_parallel_world_size(with_context_parallel=True)
         for key, value in zip(keys, values[1:], strict=False):
-            loss_reduced[key] = value * mpu.get_context_parallel_world_size() / num_samples_or_tokens
+            if any(key.endswith(suffix) for suffix in ["/max", "/min", "/std", "/mean"]):
+                # These metrics are already globally reduced via all_reduce in compute_detailed_stats.
+                # After all_reduce in train_one_step, they are multiplied by dp_size.
+                loss_reduced[key] = value / dp_size
+            else:
+                loss_reduced[key] = value * mpu.get_context_parallel_world_size() / num_samples_or_tokens
         return loss_reduced, grad_norm
     return {}, grad_norm
 
