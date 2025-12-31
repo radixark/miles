@@ -4,7 +4,7 @@
 
 ## Code Style Compliance
 
-**⚠️ IMPORTANT: Please ensure your code follows the [Code Style Guide](../../docs/en/developer_guide/code_style.md) before submitting this PR.**
+**⚠️ IMPORTANT: Please ensure your code follows the [Code Style Guide](docs/en/developer_guide/code_style.md) before submitting this PR.**
 
 Key points to check:
 
