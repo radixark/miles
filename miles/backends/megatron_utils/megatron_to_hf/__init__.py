@@ -1,4 +1,5 @@
 from .deepseekv3 import convert_deepseekv3_to_hf
+from .deepseekv32 import convert_deepseekv32_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
 from .llama import convert_llama_to_hf
@@ -45,6 +46,8 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_qwen3_next_to_hf(args, name, param)
     elif "qwen2" in model_name or "qwen3" in model_name:
         converted_named_tensors = convert_qwen2_to_hf(args, name, param)
+    elif "deepseekv32" in model_name:
+        converted_named_tensors = convert_deepseekv32_to_hf(args, name, param)
     elif "deepseekv3" in model_name:
         converted_named_tensors = convert_deepseekv3_to_hf(args, name, param)
 

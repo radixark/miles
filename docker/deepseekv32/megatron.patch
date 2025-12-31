@@ -1,0 +1,440 @@
+diff --git a/megatron/core/transformer/dot_product_attention_context_parallel.py b/megatron/core/transformer/dot_product_attention_context_parallel.py
+index 89659a1d7..38efa896c 100644
+--- a/megatron/core/transformer/dot_product_attention_context_parallel.py
++++ b/megatron/core/transformer/dot_product_attention_context_parallel.py
+@@ -132,10 +132,10 @@ class AllGatherComm:
+             self.handles = []
+ 
+ 
+-def to_zz_mask_attn_bias(attention_mask, cp_size, nheads, nheads_k, heads_k_stride, device, dtype):
++def to_zz_mask_attn_bias(attention_mask, cp_size, nheads, nheads_k, heads_k_stride, device, dtype, if_zz_mask=False):
+     '''Convert the attention mask to the attention bias'''
+ 
+-    if cp_size == 1:
++    if cp_size == 1 or if_zz_mask:
+         zz_mask = attention_mask
+     else:
+         chunked = attention_mask.chunk(dim=3, chunks=cp_size * 2)
+@@ -151,7 +151,7 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
+     """Native attention function with context parallelism."""
+ 
+     @staticmethod
+-    def forward(ctx, q, k, v, attention_mask, attention_dropout, softmax_scale, pg):
++    def forward(ctx, q, k, v, attention_mask, attention_dropout, softmax_scale, pg, if_zz_mask=False):
+         '''Forward pass for the native attention function with context parallelism'''
+ 
+         # Assert einops exists
+@@ -171,12 +171,17 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
+         probs = []
+ 
+         # Initialize KV buffers
+-        kv_buffer = torch.empty(
+-            (2, k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
++        # seperate KV buffer for MLA
++        kv_buffer = [torch.empty(
++            (k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
+             dtype=k.dtype,
+             device=k.device,
+-        )
+-        kv_buffer_copy = torch.empty_like(kv_buffer)
++        ), torch.empty(
++            (v.shape[0] * cp_size, v.shape[1], heads_k_stride, v.shape[3]),
++            dtype=v.dtype,
++            device=v.device,
++        )]
++        kv_buffer_copy = [torch.empty_like(kv_buffer[0]), torch.empty_like(kv_buffer[1])]
+ 
+         # All-gather first chunk of KV buffers
+         k_0 = k[:, :, :heads_k_stride].contiguous()
+@@ -186,7 +191,7 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
+ 
+         # Prepare attention bias
+         attn_bias = to_zz_mask_attn_bias(
+-            attention_mask, cp_size, nheads, nheads_k, heads_k_stride, q.device, q.dtype
++            attention_mask, cp_size, nheads, nheads_k, heads_k_stride, q.device, q.dtype, if_zz_mask
+         )
+ 
+         # Iterate over heads
+@@ -226,6 +231,7 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
+ 
+         # Save contexts for backward pass
+         ctx.save_for_backward(q, k, v, attention_mask, *outs, *probs)
++        ctx.if_zz_mask = if_zz_mask
+         ctx.dropout = attention_dropout
+         ctx.scale = softmax_scale
+         ctx.heads_k_stride = heads_k_stride  # TODO make it configurable
+@@ -252,12 +258,16 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
+         comm = AllGatherComm(group=pg)
+ 
+         # Initialize KV buffers
+-        kv_buffer = torch.empty(
+-            (2, k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
++        kv_buffer = [torch.empty(
++            (k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
+             dtype=k.dtype,
+             device=k.device,
+-        )
+-        kv_buffer_copy = torch.empty_like(kv_buffer)
++        ), torch.empty(
++            (v.shape[0] * cp_size, v.shape[1], heads_k_stride, v.shape[3]),
++            dtype=v.dtype,
++            device=v.device,
++        )]
++        kv_buffer_copy = [torch.empty_like(kv_buffer[0]), torch.empty_like(kv_buffer[1])]
+ 
+         # All-gather first chunk of KV buffers
+         dq = []
+@@ -270,7 +280,7 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
+ 
+         # Prepare attention bias
+         attn_bias = to_zz_mask_attn_bias(
+-            attention_mask, cp_size, nheads, nheads_k, heads_k_stride, q.device, q.dtype
++            attention_mask, cp_size, nheads, nheads_k, heads_k_stride, q.device, q.dtype, ctx.if_zz_mask
+         )
+ 
+         # Iterate over heads
+@@ -339,4 +349,4 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
+         dq = torch.cat(dq, dim=2)
+         dk = torch.cat(dk, dim=2)
+         dv = torch.cat(dv, dim=2)
+-        return dq, dk, dv, None, None, None, None
++        return dq, dk, dv, None, None, None, None, None
+diff --git a/megatron/core/transformer/experimental_attention_variant/dsa.py b/megatron/core/transformer/experimental_attention_variant/dsa.py
+index fc994490b..7bc9a485e 100644
+--- a/megatron/core/transformer/experimental_attention_variant/dsa.py
++++ b/megatron/core/transformer/experimental_attention_variant/dsa.py
+@@ -6,6 +6,7 @@ from dataclasses import dataclass
+ from typing import Optional, Tuple, Union
+ 
+ import torch
++import einops
+ 
+ from megatron.core import parallel_state
+ from megatron.core.models.common.embeddings import (
+@@ -21,6 +22,8 @@ from megatron.core.transformer.module import MegatronModule
+ from megatron.core.transformer.spec_utils import ModuleSpec, build_module
+ from megatron.core.transformer.transformer_config import TransformerConfig
+ 
++from megatron.core.transformer.dot_product_attention_context_parallel import AllGatherComm, AttentionFuncionWithContextParallel
++
+ try:
+     from fast_hadamard_transform import hadamard_transform
+ except ImportError:
+@@ -191,44 +194,72 @@ def compute_dsa_indexer_loss(
+     Returns:
+         index_loss: KL divergence loss (scalar).
+     """
+-    sq, b, np, hn = query.size()
+-    sk = key.size(0)
++    cp_size = parallel_state.get_context_parallel_world_size()
+ 
+-    # [sq, b, np, hn] -> [b, np, sq, hn] -> [b * np, sq, hn]
+-    query = query.permute(1, 2, 0, 3).reshape(b * np, sq, hn)
+-    # [sk, b, np, hn] -> [b, np, hn, sk] -> [b * np, hn, sk]
+-    key = key.permute(1, 2, 3, 0).reshape(b * np, hn, sk)
+-    # Compute attention scores [b * np, sq, sk]
+-    attention_scores = torch.bmm(query.float(), key.float()) * softmax_scale
+-    # Reshape to [b, np, sq, sk]
+-    attention_scores = attention_scores.reshape(b, np, sq, sk)
++    if cp_size > 1:
++        sq_local, b, np, hn = query.size()
++        sk_local = key.size(0)
++        sk_global = sk_local * cp_size
+ 
+-    # causal_mask [sq, sk]
+-    causal_mask = torch.triu(
+-        torch.full((sq, sk), float('-inf'), dtype=torch.float32, device=attention_scores.device),
+-        diagonal=1,
+-    )
+-    # index_mask [b, sq, sk]
+-    index_mask = torch.full(
+-        (b, sq, sk), float("-inf"), dtype=torch.float32, device=causal_mask.device
+-    ).scatter_(-1, topk_indices, 0)
+-
+-    # [b, np, sq, skv] + [1, 1, sq, skv] -> [b, np, sq, skv]
+-    attention_scores += causal_mask.view(1, 1, sq, sk)
+-    if sparse_loss:
+-        # [b, np, sq, sk] + [b, 1, sq, sk] -> [b, np, sq, sk]
+-        attention_scores += index_mask.view(b, 1, sq, sk)
+-        # [b, sq, sk] + [b, sq, sk] -> [b, sq, sk]
+-        index_scores += index_mask
+-
+-    # [b, np, sq, sk] -> [b, np, sq, sk]
+-    attention_scores = torch.nn.functional.softmax(attention_scores, dim=-1, dtype=torch.float32)
+-    # [b, sq, sk] -> [b, sq, sk]
+-    index_scores = torch.nn.functional.softmax(index_scores, dim=-1, dtype=torch.float32)
++        causal_mask = get_causal_mask(sq_local, sk_local, query.device)
++        float_mask = torch.zeros_like(causal_mask, dtype=torch.float32).masked_fill(
++            causal_mask, float('-inf')
++        )
+ 
+-    # Sum attention scores across heads.
+-    # [batch, heads, seqlen_q, seqlen_k] -> [batch, seqlen_q, seqlen_k]
+-    attention_scores = attention_scores.sum(dim=1)
++        index_mask = torch.full(
++            (b, sq_local, sk_global), float("-inf"), dtype=torch.float32, device=causal_mask.device
++        ).scatter_(-1, topk_indices, 0)
++
++        float_mask = float_mask.view(1, 1, sq_local, sk_global)
++        float_mask = index_mask.view(b, 1, sq_local, sk_global) + float_mask if sparse_loss else float_mask
++
++        # because the attention computation is more heavy in memory (has head dim),
++        # we apply cp (all-gather backend) on attention scores computation
++        attention_scores = compute_attention_scores_with_cp(query, key, float_mask, softmax_scale) # [b, sq_local, sk_global]
++
++        index_scores = torch.nn.functional.softmax(index_scores, dim=-1, dtype=torch.float32)
++
++    else:
++        sq, b, np, hn = query.size()
++        sk = key.size(0)
++
++        # [sq, b, np, hn] -> [b, np, sq, hn] -> [b * np, sq, hn]
++        query = query.permute(1, 2, 0, 3).reshape(b * np, sq, hn)
++        # [sk, b, np, hn] -> [b, np, hn, sk] -> [b * np, hn, sk]
++        key = key.permute(1, 2, 3, 0).reshape(b * np, hn, sk)
++        # Compute attention scores [b * np, sq, sk]
++        attention_scores = torch.bmm(query.float(), key.float()) * softmax_scale
++        # Reshape to [b, np, sq, sk]
++        attention_scores = attention_scores.reshape(b, np, sq, sk)
++
++        # causal_mask [sq, sk]
++        causal_mask = torch.triu(
++            torch.full((sq, sk), float('-inf'), dtype=torch.float32, device=attention_scores.device),
++            diagonal=1,
++        )
++        # index_mask [b, sq, sk]
++        index_mask = torch.full(
++            (b, sq, sk), float("-inf"), dtype=torch.float32, device=causal_mask.device
++        ).scatter_(-1, topk_indices, 0)
++
++        # [b, np, sq, skv] + [1, 1, sq, skv] -> [b, np, sq, skv]
++        attention_scores += causal_mask.view(1, 1, sq, sk)
++        if sparse_loss:
++            # [b, np, sq, sk] + [b, 1, sq, sk] -> [b, np, sq, sk]
++            attention_scores += index_mask.view(b, 1, sq, sk)
++            # [b, sq, sk] + [b, sq, sk] -> [b, sq, sk]
++            index_scores += index_mask
++
++        # [b, np, sq, sk] -> [b, np, sq, sk]
++        attention_scores = torch.nn.functional.softmax(attention_scores, dim=-1, dtype=torch.float32)
++        # [b, sq, sk] -> [b, sq, sk]
++        index_scores = torch.nn.functional.softmax(index_scores, dim=-1, dtype=torch.float32)
++
++        # Sum attention scores across heads.
++        # [batch, heads, seqlen_q, seqlen_k] -> [batch, seqlen_q, seqlen_k]
++        attention_scores = attention_scores.sum(dim=1)
++
++    # Common part
+     if pg_collection.tp.size() > 1:
+         # attention scores are scattered to TP ranks in head dimension.
+         torch.distributed.all_reduce(attention_scores.contiguous(), group=pg_collection.tp)
+@@ -252,6 +283,57 @@ def compute_dsa_indexer_loss(
+     return indexer_loss
+ 
+ 
++def compute_attention_scores_with_cp(q, k, attn_bias, scale, heads_k_stride = 1):
++    """ 
++    compute attention scores of q_local @ k_global with CP all-gather backend
++    parallel on n_heads dimension 
++    """
++    pg = parallel_state.get_context_parallel_group()
++    cp_size = parallel_state.get_context_parallel_world_size()
++
++    sq_local, b, nheads, hn_q = q.shape
++    sk_local, _, nheads_k, hn_k = k.shape
++    sk_global = sk_local * cp_size
++    
++    assert nheads % nheads_k == 0 and nheads_k % heads_k_stride == 0
++
++    comm = AllGatherComm(group=pg)
++    attns = torch.zeros(b, heads_k_stride, sq_local, sk_global, dtype=q.dtype, device=q.device)
++
++    k_buffer = torch.empty(
++        (sk_global, b, heads_k_stride, hn_k),
++        dtype=k.dtype,
++        device=k.device
++    )
++    k_buffer_copy = torch.empty_like(k_buffer)
++    k_0 = k[:, :, :heads_k_stride].contiguous()
++    comm.all_gather(k_buffer_copy, k_0)
++
++    attn_bias = attn_bias.expand(-1, heads_k_stride * (nheads // nheads_k), -1, -1)
++
++    for i in range(0, nheads_k, heads_k_stride):
++        comm.wait()
++        k_buffer, k_buffer_copy = k_buffer_copy, k_buffer
++        if i < nheads_k - heads_k_stride:
++            kvsl = i + heads_k_stride
++            kvsr = kvsl + heads_k_stride
++            send_k = k[:, :, kvsl:kvsr].contiguous()
++            comm.all_gather(k_buffer_copy, send_k)
++        q_i = q[:, :, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
++        k_i = k_buffer
++
++        _q_i = einops.rearrange(q_i, 's b h d -> b h s d')
++        _k_i = einops.rearrange(k_i, 's b h d -> b h d s')
++        attn_i = torch.matmul(_q_i.float(), _k_i.float()) * scale + attn_bias
++        attn_i = torch.nn.functional.softmax(attn_i, dim=-1, dtype=torch.float32)
++
++        attns = attns + attn_i
++    
++    attns = torch.sum(attns, dim=1)
++
++    return attns
++
++
+ class DSAIndexerLossAutoScaler(torch.autograd.Function):
+     """An AutoScaler that triggers the backward pass and scales the grad for indexer loss.
+ 
+@@ -496,7 +578,15 @@ class DSAIndexer(MegatronModule):
+         # Compute attention scores: q @ k^T
+         # [seqlen_q, batch, index_n_heads, index_head_dim] @ [seqlen_k, batch, index_head_dim]^T
+         #   -> [seqlen_q, batch, index_n_heads, seqlen_k]
+-        index_scores = torch.einsum('sbhd,tbd->sbht', q.float(), k.float())
++        cp_size = parallel_state.get_context_parallel_world_size()
++        if cp_size == 1:
++            index_scores = torch.einsum('sbhd,tbd->sbht', q.float(), k.float())
++        else:
++            # because k is small (only 1 head), do just one all_gather
++            k_buffer = torch.cat(torch.distributed.nn.functional.all_gather(k, group=self.pg_collection.cp), dim=0)  # k_buffer: [[chunk_0, chunk_3, chunk_1, chunk_2], batch, index_head_dim]
++            index_scores = torch.einsum('sbhd,tbd->sbht', q.float(), k_buffer.float()) # [s_q_local, batch, index_n_heads, s_k_global]
++            # rank 0: q [chunk_0, chunk_3], k[chunk_0, chunk_3, chunk_1, chunk_2]
++            # rank 1: q [chunk_1, chunk_2], k[chunk_0, chunk_3, chunk_1, chunk_2]
+ 
+         # Apply ReLU activation.
+         index_scores = torch.relu(index_scores)
+@@ -606,7 +696,10 @@ class DSAIndexer(MegatronModule):
+         # =========================================
+         # Select top-k indices
+         # =========================================
+-        topk_k = min(self.index_topk, seqlen)
++        cp_size = parallel_state.get_context_parallel_world_size()
++
++        seqlen_k_global = k.shape[0] * cp_size
++        topk_k = min(self.index_topk, seqlen_k_global)
+         # [batch, seqlen, index_topk]
+         topk_indices = index_scores.topk(topk_k, dim=-1)[1]
+ 
+@@ -687,6 +780,57 @@ def unfused_dsa_fn(query, key, value, topk_indices, softmax_scale):
+     output = output.reshape(sq, b, np * hnv)
+     return output
+ 
++def get_causal_mask(sq, skv, device):
++    cp_size = parallel_state.get_context_parallel_world_size()
++    cp_rank = parallel_state.get_context_parallel_rank()
++    skv_global = skv * cp_size
++
++    if cp_size == 1:
++        causal_mask = torch.triu(
++            torch.ones((sq, skv), dtype=torch.bool, device=device),
++            diagonal=1,
++        )
++    else:
++        sq_half = sq // 2
++        global_q_positions = torch.cat([
++            torch.arange(cp_rank * sq_half, (cp_rank + 1) * sq_half, device=device),
++            torch.arange(skv_global - (cp_rank + 1) * sq_half, skv_global - cp_rank * sq_half, device=device)
++        ])
++        
++        global_k_positions = torch.arange(skv_global, device=device)
++        # [sq, 1] < [1, skv_global] -> [sq, skv_global]
++        causal_mask = global_q_positions.unsqueeze(1) < global_k_positions.unsqueeze(0)
++        # convert to zz mask
++        chunked = causal_mask.chunk(dim=1, chunks=cp_size * 2)
++        causal_mask = [_x for _p in zip(chunked[:cp_size], reversed(chunked[cp_size:])) for _x in _p]
++        causal_mask = torch.cat(causal_mask, dim=1)
++
++    return causal_mask
++
++def unfused_dsa_fn_with_cp(query, key, value, topk_indices, softmax_scale):
++    pg = parallel_state.get_context_parallel_group()
++    cp_size = parallel_state.get_context_parallel_world_size()
++    cp_rank = parallel_state.get_context_parallel_rank()
++
++    sq, b, np, hn = query.size()
++    skv = key.size(0)
++    hnv = value.size(3)
++    
++    skv_global = skv * cp_size
++    
++    sparse_mask = torch.ones((b, sq, skv_global), dtype=torch.bool, device=query.device)
++    sparse_mask.scatter_(-1, topk_indices, False)
++    
++    causal_mask = get_causal_mask(sq, skv, query.device)
++   
++    combined_mask = sparse_mask | causal_mask.unsqueeze(0)
++
++    attention_mask_for_cp = combined_mask.unsqueeze(1)  # [b, 1, sq, skv_global]
++    output = AttentionFuncionWithContextParallel.apply(
++        query, key, value, attention_mask_for_cp, 0.0, softmax_scale, pg, True
++    )
++    return output.reshape(sq, b, np * hnv)
++
+ 
+ class DSAttention(MegatronModule):
+     """
+@@ -768,18 +912,17 @@ class DSAttention(MegatronModule):
+             # Generate upper triangular mask with -inf above diagonal, 0 elsewhere
+             # torch.triu with diagonal=1 creates upper triangular matrix (excluding main diagonal)
+             # float_mask [sq, skv]
+-            float_mask = torch.triu(
+-                torch.full((sq, skv), float('-inf'), dtype=torch.float32, device=x.device),
+-                diagonal=1,
+-            )
++            mask = get_causal_mask(sq, skv, x.device)
+         else:
+-            assert attention_mask.shape == (b, 1, sq, skv), 'attention_mask shape mismatch'
++            skv_global = skv * parallel_state.get_context_parallel_world_size()
++            assert attention_mask.shape == (b, 1, sq, skv_global), 'attention_mask shape mismatch'
+             # [b, 1, sq, skv] -> [b, sq, skv]
+             mask = attention_mask.squeeze()
+-            # float_mask [b, sq, skv]
+-            float_mask = torch.zeros_like(mask, dtype=torch.float32).masked_fill(
+-                mask, float('-inf')
+-            )
++
++        # float_mask [b, sq, skv]
++        float_mask = torch.zeros_like(mask, dtype=torch.float32).masked_fill(
++            mask, float('-inf')
++        )
+ 
+         # ===================================
+         # Get index scores and top-k indices
+@@ -791,7 +934,7 @@ class DSAttention(MegatronModule):
+         # ===================================
+         # Run sparse attention kernel
+         # ===================================
+-        output = unfused_dsa_fn(query, key, value, topk_indices, self.softmax_scale)
++        output = unfused_dsa_fn_with_cp(query, key, value, topk_indices, self.softmax_scale)
+ 
+         # ===================================
+         # Attach indexer loss
+diff --git a/megatron/core/transformer/multi_latent_attention.py b/megatron/core/transformer/multi_latent_attention.py
+index 3953d933b..84301ed54 100644
+--- a/megatron/core/transformer/multi_latent_attention.py
++++ b/megatron/core/transformer/multi_latent_attention.py
+@@ -6,6 +6,7 @@ from dataclasses import dataclass
+ from typing import NoReturn, Optional, Union
+ 
+ import torch
++import torch.nn.functional as F
+ 
+ try:
+     from einops import rearrange
+diff --git a/megatron/core/transformer/transformer_config.py b/megatron/core/transformer/transformer_config.py
+index a3a167549..98391fda6 100644
+--- a/megatron/core/transformer/transformer_config.py
++++ b/megatron/core/transformer/transformer_config.py
+@@ -918,9 +918,9 @@ class TransformerConfig(ModelParallelConfig):
+                     f" but got {self.context_parallel_size=}."
+                 )
+         elif self.experimental_attention_variant == "dsa":
+-            assert (
+-                self.context_parallel_size == 1
+-            ), "Currently context parallelism is not supported by DSAttention!"
++            # assert (
++            #     self.context_parallel_size == 1
++            # ), "Currently context parallelism is not supported by DSAttention!"
+             assert not self.apply_rope_fusion, "RoPE fusion is not supported for DSAttention"
+ 
+         if self.fp8:

@@ -484,6 +484,8 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
             self.rollout_manager.get_rollout_engines_and_lock.remote()
         )
+        if isinstance(num_new_engines, tuple):
+            num_new_engines = num_new_engines[0]
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
             dist.barrier(group=get_gloo_group())

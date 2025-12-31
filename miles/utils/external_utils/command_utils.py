@@ -26,6 +26,7 @@ def convert_checkpoint(
     extra_args: str = "",
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
+    megatron_path: str = "/host_home/primary_synced/Megatron-LM",
 ):
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
@@ -51,14 +52,15 @@ def convert_checkpoint(
 
     exec_command(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        f"PYTHONPATH=/root/Megatron-LM "
+        # Use installed Megatron instead of hardcoded path
+        f"PYTHONPATH={megatron_path} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
         f"tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
         f"--hf-checkpoint {hf_checkpoint} "
-        f"--save {path_dst}"
+        f"--save {path_dst} "
         f"{extra_args}"
     )
 
@@ -67,9 +69,9 @@ def rsync_simple(path_src: str, path_dst: str):
     exec_command(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
 
 
-def hf_download_dataset(full_name: str):
+def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
-    exec_command(f"hf download --repo-type dataset {full_name} --local-dir /root/datasets/{partial_name}")
+    exec_command(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
 def fp8_cast_bf16(path_src, path_dst):
@@ -98,6 +100,7 @@ def execute_train(
     before_ray_job_submit=None,
     extra_env_vars=None,
     config: ExecuteTrainConfig | None = None,
+    megatron_path: str = "/host_home/primary_synced/Megatron-LM",
 ):
     if extra_env_vars is None:
         extra_env_vars = {}
@@ -139,7 +142,8 @@ def execute_train(
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": "/root/Megatron-LM/",
+                # Use installed Megatron instead of hardcoded path
+                "PYTHONPATH": f"{megatron_path}",
                 # If setting this in FSDP, the computation communication overlapping may have issues
                 **(
                     {}
