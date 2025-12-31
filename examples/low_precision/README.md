@@ -1,6 +1,6 @@
 ## FP8 training examples
 
-This is an example of FP8 training and FP8 inference. Under FP8 training and inference, it can achieve more efficient inference throughput and lower training-inference mismatch, resulting in more stable training.
+This is an example of FP8 training and FP8 inference. Under FP8 training and inference, it can achieve more efficient inference throughput and lower training-inference mismatch, resulting in more stable training. More details can be found in [this blog](https://lmsys.org/blog/2025-11-25-fp8-rl/).
 
 ### Files
 
