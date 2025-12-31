@@ -18,7 +18,13 @@ from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_d
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
+from miles.utils.ppo_utils import (
+    compute_approx_kl,
+    compute_gspo_kl,
+    compute_opsm_mask,
+    compute_policy_loss,
+    compute_sapo_loss,
+)
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -638,7 +644,14 @@ class FSDPTrainRayActor(TrainRayActor):
                 loss_masks=loss_masks,
             )
 
-        pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
+        if self.args.advantage_estimator == "sapo":
+            tau_pos = getattr(self.args, "sapo_tau_pos", 1.0)
+            tau_neg = getattr(self.args, "sapo_tau_neg", 1.05)
+            pg_loss, pg_clipfrac = compute_sapo_loss(
+                ppo_kl=ppo_kl, advantages=advantages, tau_pos=tau_pos, tau_neg=tau_neg
+            )
+        else:
+            pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
 
         if self.args.use_opsm:
             pg_loss = pg_loss * opsm_mask
