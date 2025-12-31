@@ -21,7 +21,8 @@ from miles.utils.ppo_utils import (
 )
 from miles.utils.types import RolloutBatch
 
-from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
+from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean, \
+    get_vector_of_sample_mean
 
 
 def get_responses(
@@ -563,8 +564,10 @@ def policy_loss_function(
             args.qkv_format,
             batch.get("max_seq_lens", None),
         )
+        vector_of_sample_mean = get_vector_of_sample_mean(total_lengths, response_lengths, modified_response_masks)
 
-    pg_loss = sum_of_sample_mean(pg_loss)
+    pg_loss_vec = vector_of_sample_mean(pg_loss)
+    pg_loss = pg_loss_vec.sum()
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
     ppo_kl = sum_of_sample_mean(ppo_kl)
 
@@ -602,7 +605,7 @@ def policy_loss_function(
 
     reported_loss = {
         "loss": loss.clone().detach(),
-        "pg_loss": pg_loss.clone().detach(),
+        "pg_loss": pg_loss_vec.clone().detach(),
         "entropy_loss": entropy_loss.clone().detach(),
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
