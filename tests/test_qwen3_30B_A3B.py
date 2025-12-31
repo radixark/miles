@@ -1,9 +1,13 @@
 import os
+import time
 
 import miles.utils.external_utils.command_utils as U
 
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
+# TODO
+# TODO temp
+# TODO
+ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
@@ -38,6 +42,9 @@ def execute():
         "--rollout-temperature 1 "
         "--global-batch-size 32 "
         "--balance-data "
+        # If all samples are all-success/all-fail, there will be no gradient, and check-train-weight-change will fail
+        "--over-sampling-batch-size 16 "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
     )
 
     eval_args = (
@@ -96,7 +103,7 @@ def execute():
         "--sglang-enable-metrics "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test " "--check-train-weight-change "
 
     misc_args = (
         # default dropout in megatron is 0.1
@@ -112,6 +119,10 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
+        f"--dump-details /root/shared_data/{time.time()}/dump_details "
+        # TODO temp
+        # "--load-debug-rollout-data /root/shared_data/1764581538.768492/dump_details/rollout_data/0.pt "
+        # "--debug-train-only "
     )
 
     train_args = (
