@@ -34,9 +34,12 @@ class MilesRouter:
         self.app = FastAPI()
         self.app.add_event_handler("startup", self._start_background_health_check)
 
-        # Worker information
-        self.worker_urls: dict[str, int] = {}
+        # URL -> Active Request Count (load state)
+        self.worker_request_counts: dict[str, int] = {}
+        # URL -> Consecutive Failures
         self.worker_failure_counts: dict[str, int] = {}
+        # Quarantined workers excluded from routing pool
+        self.dead_workers: set[str] = set()
         self.max_weight_version = None
 
         max_connections = getattr(args, "miles_router_max_connections", None)
@@ -84,44 +87,44 @@ class MilesRouter:
         return url, False
 
     async def _health_check_loop(self):
+        """Background loop to monitor worker health and adjust routing pool."""
         interval = self.args.rollout_health_check_interval
+        threshold = self.args.miles_router_health_check_failure_threshold
 
         while True:
             try:
                 await asyncio.sleep(interval)
 
-                urls = list(self.worker_urls.keys())
+                urls = [u for u in self.worker_request_counts if u not in self.dead_workers]
                 if not urls:
                     continue
 
-                # Concurrent execution using a generator expression
                 results = await asyncio.gather(*(self._check_worker_health(url) for url in urls))
 
                 for url, is_healthy in results:
-                    prev_failures = self.worker_failure_counts.get(url, 0)
+                    if not is_healthy:
+                        failures = self.worker_failure_counts.get(url, 0) + 1
+                        self.worker_failure_counts[url] = failures
 
-                    if is_healthy:
-                        if prev_failures >= 3:
-                            logger.info(f"[miles-router] Worker {url} has recovered and is now back in the pool.")
-                        self.worker_failure_counts[url] = 0
-                    else:
-                        new_failures = prev_failures + 1
-                        self.worker_failure_counts[url] = new_failures
-
-                        if new_failures == 3:
+                        if failures >= threshold:
                             logger.warning(
-                                f"[miles-router] Worker {url} failed 3 consecutive health checks. Stopping traffic."
+                                f"[miles-router] Worker {url} failed {threshold} consecutive health checks. Marking as DEAD."
                             )
+                            self.dead_workers.add(url)
+                            # TODO: Re-enabling workers requires a mechanism to sync model versions
+                            # to avoid off-policy issues from stale weights.
+                    else:
+                        self.worker_failure_counts[url] = 0
 
-                logger.debug("[miles-router] Health check complete.")
+                logger.debug(
+                    f"[miles-router] Health check complete. {len(self.worker_request_counts) - len(self.dead_workers)} workers healthy."
+                )
 
             except asyncio.CancelledError:
-                # Normal shutdown
+                logger.warning("[miles-router] Background health check loop is being cancelled.")
                 raise
             except Exception as e:
-                # Prevent background task from dying silently
                 logger.error(f"[miles-router] Unexpected error in health check loop: {e}", exc_info=True)
-                # Brief backoff before restarting the loop
                 await asyncio.sleep(5)
 
     async def proxy(self, request: Request, path: str):
@@ -181,17 +184,17 @@ class MilesRouter:
             )
 
         # Add if new, keep a simple request count per worker
-        if worker_url not in self.worker_urls:
-            self.worker_urls[worker_url] = 0
+        if worker_url not in self.worker_request_counts:
+            self.worker_request_counts[worker_url] = 0
             self.worker_failure_counts[worker_url] = 0
             if self.verbose:
                 print(f"[miles-router] Added new worker: {worker_url}")
 
-        return {"status": "success", "worker_urls": self.worker_urls}
+        return {"status": "success", "worker_urls": self.worker_request_counts}
 
     async def list_workers(self, request: Request):
         """List all registered workers"""
-        return {"urls": list(self.worker_urls.keys())}
+        return {"urls": list(self.worker_request_counts.keys())}
 
     async def retrieve_from_text(self, request: Request):
         """Get token information from text input"""
@@ -216,24 +219,27 @@ class MilesRouter:
         return result
 
     def _use_url(self):
-        """Select a worker URL using round-robin strategy, excluding unhealthy workers."""
-        # Filter for healthy workers (those with less than 3 consecutive failures)
-        healthy_urls = {
-            url: count for url, count in self.worker_urls.items() if self.worker_failure_counts.get(url, 0) < 3
-        }
+        """Select worker URL with minimal active requests."""
 
-        assert len(healthy_urls) > 0, "No healthy workers available in the pool"
+        if not self.dead_workers:
+            # Healthy path: select from all workers
+            url = min(self.worker_request_counts, key=self.worker_request_counts.get)
+        else:
+            # Degraded path: select from workers not in dead_workers
+            valid_workers = (w for w in self.worker_request_counts if w not in self.dead_workers)
+            try:
+                url = min(valid_workers, key=self.worker_request_counts.get)
+            except ValueError:
+                raise RuntimeError("No healthy workers available in the pool") from None
 
-        # get the url with mininal count among healthy workers
-        url = min(healthy_urls, key=healthy_urls.get)
-        self.worker_urls[url] += 1
+        self.worker_request_counts[url] += 1
         return url
 
     def _finish_url(self, url):
         """Mark the request to the given URL as finished"""
-        assert url in self.worker_urls, f"URL {url} not recognized"
-        self.worker_urls[url] -= 1
-        assert self.worker_urls[url] >= 0, f"URL {url} count went negative"
+        assert url in self.worker_request_counts, f"URL {url} not recognized"
+        self.worker_request_counts[url] -= 1
+        assert self.worker_request_counts[url] >= 0, f"URL {url} count went negative"
 
 
 if __name__ == "__main__":

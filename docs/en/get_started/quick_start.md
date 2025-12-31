@@ -580,4 +580,3 @@ miles has been deeply optimized for distributed training of large-scale Mixture 
 - [Example: 64xH100 Training GLM-4.5](../examples/glm4.5-355B-A32B.md)
 - [Example: 128xH100 Training DeepSeek-R1](../examples/deepseek-r1.md)
 - The scripts such as `scripts/run_qwen3_30b_a3b.py`, `scripts/run_glm45_355b_a32b.py` also support multi-node training, though there are little documentations about it currently.
-
