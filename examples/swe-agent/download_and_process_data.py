@@ -64,16 +64,19 @@ def main():
         if args.limit:
             ds = ds.select(range(min(args.limit, len(ds))))
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tmp:
-            tmp_path = tmp.name
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tmp:
+                tmp_path = tmp.name
 
-        print(f"Downloading to temporary file: {tmp_path}")
-        ds.to_json(tmp_path)
+            print(f"Downloading to temporary file: {tmp_path}")
+            ds.to_json(tmp_path)
 
-        print(f"Converting to Miles format: {args.output}")
-        convert_to_miles_format(tmp_path, args.output, split=args.split)
-
-        Path(tmp_path).unlink()
+            print(f"Converting to Miles format: {args.output}")
+            convert_to_miles_format(tmp_path, args.output, split=args.split)
+        finally:
+            if tmp_path and Path(tmp_path).exists():
+                Path(tmp_path).unlink()
 
     print("Done.")
 
