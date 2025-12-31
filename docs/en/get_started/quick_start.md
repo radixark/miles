@@ -83,14 +83,22 @@ Next, run the conversion script. Please note the following parameters:
 - `--save`: Specify the save path for the converted `torch_dist` format weights.
 
 ```bash
-PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+# For multi-GPU conversion (recommended for speed)
+PYTHONPATH=/root/Megatron-LM torchrun --nproc_per_node=8 tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
     --hf-checkpoint /root/GLM-Z1-9B-0414 \
     --save /root/GLM-Z1-9B-0414_torch_dist
+
+# For single-GPU conversion (slower, may OOM on large models)
+# PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+#     ${MODEL_ARGS[@]} \
+#     --hf-checkpoint /root/GLM-Z1-9B-0414 \
+#     --save /root/GLM-Z1-9B-0414_torch_dist
 ```
 
-For larger models, you can use `torchrun` to start the conversion script to convert with multi-gpus or even multi-nodes.
-Note: When converting the kimi-k2 model weights, you need to open config.json in the model path and change "model_type": "kimi_k2" to "model_type": "deepseek_v3".
+> **Note**: Using `torchrun` with multiple GPUs significantly speeds up conversion and avoids OOM errors on large models like Qwen3-30B-A3B. Adjust `--nproc_per_node` based on your available GPUs.
+
+> **Note**: When converting the Kimi-K2 model weights, you need to open `config.json` in the model path and change `"model_type": "kimi_k2"` to `"model_type": "deepseek_v3"`.
 
 ### Convert from Megatron Format to Hugging Face Format
 
