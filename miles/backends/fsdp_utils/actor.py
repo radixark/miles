@@ -21,6 +21,7 @@ from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
+from miles.utils.rolloutpostprocessor import RolloutPostprocessor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 
@@ -502,20 +503,45 @@ class FSDPTrainRayActor(TrainRayActor):
         for metric_key in ["log_probs", "rollout_log_probs", "ref_log_probs", "advantages", "returns"]:
             if metric_key not in packed_batches[0]:
                 continue
+            # Keep existing per-sample mean aggregation for backwards compatibility
             val = torch.tensor([0.0], device=torch.cuda.current_device())
-            for _mbs_id, batches in enumerate(packed_batches):
+
+            # Also collect flat tensors to compute global masked stats via Postprocessor
+            metric_tensors = []
+            mask_tensors = []
+
+            for mbs_id, batches in enumerate(packed_batches):
                 unpacked_batches = unpack_sequences(batches)
                 for unpacked_batch in unpacked_batches:
                     if isinstance(unpacked_batch[metric_key], torch.Tensor):
                         loss_masks_tensor = unpacked_batch["loss_masks"].to(device=torch.cuda.current_device())
                         metric_tensor = unpacked_batch[metric_key].to(device=torch.cuda.current_device())
                         val += (metric_tensor * loss_masks_tensor).sum() / loss_masks_tensor.sum().clamp_min(1)
+                        metric_tensors.append(metric_tensor)
+                        mask_tensors.append(loss_masks_tensor)
                     else:
                         val += unpacked_batch[metric_key]
+
             dist.all_reduce(val, op=dist.ReduceOp.SUM, group=self.dp_group)
             log_dict[f"rollout/{metric_key}"] = (
                 val / (self.args.n_samples_per_prompt * self.args.rollout_batch_size)
             ).item()
+
+            # Compute and attach global masked statistics when possible
+            if metric_tensors and mask_tensors:
+                try:
+                    flat_metric = torch.cat(metric_tensors).to(device=torch.cuda.current_device())
+                    flat_mask = torch.cat(mask_tensors).to(device=torch.cuda.current_device())
+                    stats = RolloutPostprocessor.compute_masked_stats_safe(
+                        flat_metric, flat_mask, process_group=self.dp_group
+                    )
+                    log_dict[f"rollout/{metric_key}_global_mean"] = stats["mean"].item()
+                    log_dict[f"rollout/{metric_key}_global_std"] = stats["std"].item()
+                    log_dict[f"rollout/{metric_key}_global_max"] = stats["max"].item()
+                    log_dict[f"rollout/{metric_key}_global_min"] = stats["min"].item()
+                except Exception e:
+                    logger.errors(f"error in computing global stats for {metric_key}: {e}")
+
         if dist.get_rank() == 0:
             logger.info(f"rollout {rollout_id}: {log_dict}")
             log_dict["rollout/step"] = compute_rollout_step(self.args, rollout_id)
@@ -618,17 +644,14 @@ class FSDPTrainRayActor(TrainRayActor):
         response_lengths = [batch["response_lengths"] for batch in unpacked_batches]
 
         advantages = advantages.to(device=log_probs.device)
-        old_log_probs = old_log_probs.to(device=log_probs.device)
-        ppo_kl = old_log_probs - log_probs
-
-        if self.args.use_opsm:
-            opsm_mask, opsm_clipfrac = compute_opsm_mask(
-                args=self.args,
-                full_log_probs=[batch["cur_log_probs"] for batch in unpacked_batches],
-                full_old_log_probs=[batch[old_log_prob_key] for batch in unpacked_batches],
-                advantages=[batch["advantages"] for batch in unpacked_batches],
-                loss_masks=loss_masks,
-            )
+        # compute global advantage stats (masked)
+        try:
+            flat_adv_mask = torch.cat(loss_masks).to(device=advantages.device)
+            adv_stats = RolloutPostprocessor.compute_masked_stats_safe(advantages, flat_adv_mask, process_group=self.dp_group)
+        except Exception as e:
+            logger.error(f"error in computing advantage stats: {e}")
+            adv_stats = None
+        ppo_kl = old_log_probs.to(device=log_probs.device) - log_probs
 
         if self.args.advantage_estimator == "gspo":
             ppo_kl = compute_gspo_kl(
@@ -669,6 +692,14 @@ class FSDPTrainRayActor(TrainRayActor):
             tis_clipfrac = tis_clip != tis
 
             pg_loss = pg_loss * tis_clip
+
+        # compute pg_loss masked stats before reduction
+        try:
+            flat_pg_mask = torch.cat(loss_masks).to(device=pg_loss.device)
+            pg_stats = RolloutPostprocessor.compute_masked_stats_safe(pg_loss, flat_pg_mask, process_group=self.dp_group)
+        except Exception as e:
+            logger.error(f"error in computing pg_loss stats: {e}")
+            pg_stats = None
 
         assert not self.args.calculate_per_token_loss, "calculate_per_token_loss not yet implemented"
         pg_loss = sum_of_sample_mean(pg_loss, response_lengths, loss_masks)
@@ -711,6 +742,16 @@ class FSDPTrainRayActor(TrainRayActor):
             "entropy_loss": entropy_loss.detach(),
         }
 
+        if adv_stats is not None:
+            reported["advantage_mean"] = adv_stats["mean"].detach()
+            reported["advantage_std"] = adv_stats["std"].detach()
+            reported["advantage_max"] = adv_stats["max"].detach()
+            reported["advantage_min"] = adv_stats["min"].detach()
+
+        if pg_stats is not None:
+            reported["pg_loss_max"] = pg_stats["max"].detach()
+            reported["pg_loss_min"] = pg_stats["min"].detach()
+            reported["pg_loss_std"] = pg_stats["std"].detach()
         if train_rollout_logprob_abs_diff is not None:
             reported["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff
 

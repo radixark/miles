@@ -13,6 +13,7 @@ from miles.utils import train_metric_utils
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from miles.utils.rolloutpostprocessor import RolloutPostprocessor
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -340,14 +341,48 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
                     if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
-                        sum_of_sample_mean = get_sum_of_sample_mean(
-                            total_lengths,
-                            response_lengths,
-                            loss_masks,
-                            qkv_format=args.qkv_format,
-                            max_seq_lens=max_seq_lens,
-                        )
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                        # Keep existing per-sample mean behavior
+                        concatenated = val.clone().detach()
+                        sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
+                        val = cp_size * sum_of_sample_mean(concatenated) / len(loss_masks)
+                        # Also compute global masked stats and attach additional keys
+                        try:
+                            # Prepare flat mask tensor
+                            if isinstance(loss_masks[0], torch.Tensor):
+                                flat_mask = torch.cat(loss_masks).to(device=concatenated.device)
+                            else:
+                                flat_mask = torch.tensor(
+                                    [m for lm in loss_masks for m in lm], device=concatenated.device
+                                )
+
+                            # Compute local per-rank aggregates (sum, sumsq, count, min, max)
+                            mask_bool = flat_mask.bool()
+                            if mask_bool.numel() == 0 or mask_bool.sum().item() == 0:
+                                local_count = 0
+                                local_sum = 0.0
+                                local_sumsq = 0.0
+                                local_min = float("inf")
+                                local_max = float("-inf")
+                            else:
+                                masked_vals = concatenated[mask_bool]
+                                local_count = int(masked_vals.numel())
+                                local_sum = float(masked_vals.sum().item())
+                                local_sumsq = float((masked_vals * masked_vals).sum().item())
+                                local_min = float(masked_vals.min().item())
+                                local_max = float(masked_vals.max().item())
+
+                            # Emit per-rank aggregates for pooled reduction
+                            log_dict.update(
+                                {
+                                    f"{key}_agg_sum": local_sum,
+                                    f"{key}_agg_sumsq": local_sumsq,
+                                    f"{key}_agg_count": local_count,
+                                    f"{key}_agg_min": local_min,
+                                    f"{key}_agg_max": local_max,
+                                }
+                            )
+                        except Exception as e:
+                            logger.error(f"error in preparing aggregates for {key}: {e}")
                     else:
                         val = val.mean() * cp_size
                 else:
@@ -358,7 +393,15 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
-        reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
+        # Aggregate per-rank metrics using all-reduce and log on DP source rank
+        reduced_log_dict = RolloutPostprocessor.aggregate_and_log(
+            log_dict,
+            args,
+            rollout_id,
+            process_group=mpu.get_data_parallel_group(),
+            dp_src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
+            only_log_on_src=True,
+        )
         if args.ci_test and reduced_log_dict is not None:
             if (
                 rollout_id == 0
