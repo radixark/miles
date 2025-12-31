@@ -4,6 +4,10 @@ logger = logging.getLogger(__name__)
 
 
 def validate_streaming_async_args(args) -> None:
+    # In this fork, PipelineRL is the streaming-async semantics; keep them coupled.
+    if getattr(args, "pipeline_rl", False) and not getattr(args, "streaming_async", False):
+        raise ValueError("--pipeline-rl requires --streaming-async")
+
     if not getattr(args, "streaming_async", False):
         return
 
@@ -27,4 +31,3 @@ def validate_streaming_async_args(args) -> None:
 
     if not args.use_tis:
         logger.warning("--streaming-async is enabled; consider adding --use-tis for off-policy tolerance.")
-

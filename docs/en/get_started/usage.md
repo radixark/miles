@@ -182,7 +182,7 @@ Additionally, we provide a `metadata_key`, which defaults to `"metadata"`. When 
 ### Streaming Async (Experimental)
 
 - `--streaming-async`: Enable streaming rollout generation (group-as-atom) via the SGLang router.
-- `--pipeline-rl`: Required for `--streaming-async`. Enables PipelineRL in-flight weight updates and version-based lag masking.
+- `--pipeline-rl`: Required for `--streaming-async` (and only supported with it). Enables PipelineRL in-flight weight updates and version-based lag masking.
 - `--pipeline-weight-update-interval`: Trainer steps between rollout engine weight updates (default: 1).
 - `--pipeline-max-weight-lag`: If a sample's submit-version lags the current weights by more than this, its loss mask is zeroed (default: 4).
 - `--use-tis` is recommended in streaming mode to tolerate mildly off-policy data.

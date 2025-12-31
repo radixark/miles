@@ -54,6 +54,16 @@ def test_streaming_requires_pipeline_rl():
         raise AssertionError("expected ValueError for streaming_async without pipeline_rl")
 
 
+def test_pipeline_rl_requires_streaming():
+    args = _args(streaming_async=False, pipeline_rl=True)
+    try:
+        validate_streaming_async_args(args)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for pipeline_rl without streaming_async")
+
+
 def test_invalid_pipeline_weight_update_interval_rejected():
     args = _args(pipeline_weight_update_interval=0)
     try:
@@ -79,6 +89,6 @@ if __name__ == "__main__":
     test_streaming_forbids_miles_router()
     test_streaming_forbids_balance_data_for_group_estimators()
     test_streaming_requires_pipeline_rl()
+    test_pipeline_rl_requires_streaming()
     test_invalid_pipeline_weight_update_interval_rejected()
     test_negative_pipeline_max_weight_lag_rejected()
-
