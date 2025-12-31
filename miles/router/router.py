@@ -111,8 +111,9 @@ class MilesRouter:
                                 f"[miles-router] Worker {url} failed {threshold} consecutive health checks. Marking as DEAD."
                             )
                             self.dead_workers.add(url)
-                            # TODO: Re-enabling workers requires a mechanism to sync model versions
-                            # to avoid off-policy issues from stale weights.
+                            # TODO (chenyang): Connect back 'dead' workers requires a mechanism to sync
+                            # model versions to avoid off-policy issues from stale weights, since these
+                            # dead workers' parameters may not be refitted.
                     else:
                         self.worker_failure_counts[url] = 0
 
