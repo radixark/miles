@@ -73,13 +73,12 @@ class UpdateWeightFromDistributed:
     @torch.no_grad()
     def update_weights(self) -> None:
         """
-        Pause → flush → non-expert (TP) → expert (EP) → continue. Progress on PP source.
+        Pause (in_place) → non-expert (TP) → expert (EP) → continue. Progress on PP source.
         """
         self.weight_version += 1
 
         if dist.get_rank() == 0:
-            ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            ray.get([engine.pause_generation.remote(mode="in_place") for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
         buffer_size = 0

@@ -123,11 +123,6 @@ class RayTrainGroup:
         """Broadcast weights from rank 0 to all other ranks."""
         return ray.get([actor.update_weights.remote() for actor in self._actor_handlers])
 
-    def update_rollout_engines(self, engine_indices: list[int], version: int | None = None):
-        return ray.get(
-            [actor.update_rollout_engines.remote(engine_indices, version=version) for actor in self._actor_handlers]
-        )
-
     def onload(self):
         return ray.get([actor.wake_up.remote() for actor in self._actor_handlers])
 

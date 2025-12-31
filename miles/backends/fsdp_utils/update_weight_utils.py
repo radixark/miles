@@ -173,9 +173,6 @@ class UpdateWeightFromTensor(UpdateWeight):
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
 
-        if dist.get_rank() == self._ipc_gather_src:
-            ref = self._ipc_engine.flush_cache.remote()
-            ray.get(ref)
 
 
 class UpdateWeightFromDistributed(UpdateWeight):
@@ -263,49 +260,3 @@ class UpdateWeightFromDistributed(UpdateWeight):
         for handle in handles:
             handle.wait()
         ray.get(refs)
-
-
-def connect_rollout_engines_subset_from_distributed(args: Namespace, rollout_engines: Sequence[ActorHandle], group_name: str):
-    """Create a temporary NCCL group for a rollout engine subset.
-
-    This mirrors UpdateWeightFromDistributed.connect_rollout_engines but scopes the group
-    to `rollout_engines` only. Caller is responsible for destroying the group.
-    """
-    master_address = ray._private.services.get_node_ip_address()
-    with socket.socket() as sock:
-        sock.bind((master_address, 0))
-        master_port = sock.getsockname()[1]
-
-    world_size = len(rollout_engines) * args.rollout_num_gpus_per_engine + 1
-
-    refs = [
-        engine.init_weights_update_group.remote(
-            master_address,
-            master_port,
-            i * args.rollout_num_gpus_per_engine + 1,
-            world_size,
-            group_name,
-            backend="nccl",
-        )
-        for i, engine in enumerate(rollout_engines)
-    ]
-
-    model_update_group = init_process_group(
-        backend="nccl",
-        init_method=f"tcp://{master_address}:{master_port}",
-        world_size=world_size,
-        rank=0,
-        group_name=group_name,
-    )
-
-    ray.get(refs)
-    return model_update_group
-
-
-def destroy_rollout_engines_subset_group(rollout_engines: Sequence[ActorHandle], group_name: str, model_update_group):
-    """Destroy the temporary subset NCCL group on both training rank 0 and engines."""
-    if model_update_group is not None:
-        dist.destroy_process_group(model_update_group)
-
-    # Best-effort: engines might not have the group in some failure cases.
-    ray.get([engine.destroy_weights_update_group.remote(group_name) for engine in rollout_engines])

@@ -105,13 +105,16 @@ class UpdateWeightFromTensor:
     @torch.no_grad()
     def update_weights(self) -> None:
         """
-        version++, flush caches, process buckets. Progress on rank 0.
+        version++, pause (in_place), process buckets, continue. Progress on rank 0.
         """
         self.weight_version += 1
 
         rank = dist.get_rank()
         if rank == 0:
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            all_rollout_engines = list(self.rollout_engines)
+            if getattr(self, "use_distribute", False):
+                all_rollout_engines += list(getattr(self, "distributed_rollout_engines", []))
+            ray.get([engine.pause_generation.remote(mode="in_place") for engine in all_rollout_engines])
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
@@ -121,6 +124,13 @@ class UpdateWeightFromTensor:
             ray.get(refs)
             del long_lived_tensors
 
+        dist.barrier(group=get_gloo_group())
+
+        if rank == 0:
+            all_rollout_engines = list(self.rollout_engines)
+            if getattr(self, "use_distribute", False):
+                all_rollout_engines += list(getattr(self, "distributed_rollout_engines", []))
+            ray.get([engine.continue_generation.remote() for engine in all_rollout_engines])
         dist.barrier(group=get_gloo_group())
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:

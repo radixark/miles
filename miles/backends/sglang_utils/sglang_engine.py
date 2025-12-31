@@ -278,11 +278,6 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response.json()["weight_version"]
 
-    def get_http_base_url(self) -> str | None:
-        if self.node_rank != 0:
-            return None
-        return f"http://{self.server_host}:{self.server_port}"
-
     def release_memory_occupation(self):
         self.flush_cache()
         return self._make_request("release_memory_occupation")
@@ -341,8 +336,11 @@ class SGLangEngine(RayActor):
             payload,
         )
 
-    def pause_generation(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/pause_generation", json={})
+    def pause_generation(self, mode: str | None = None):
+        payload = {}
+        if mode is not None:
+            payload["mode"] = mode
+        response = requests.post(f"http://{self.server_host}:{self.server_port}/pause_generation", json=payload)
         response.raise_for_status()
         return response
 

@@ -11,7 +11,7 @@ class _DummyDataSource:
         return []
 
 
-def test_staleness_drop_on_dequeue():
+def test_queue_orders_by_behavior_version_without_dropping():
     args = SimpleNamespace(
         rollout_temperature=1.0,
         rollout_top_p=1.0,
@@ -25,24 +25,21 @@ def test_staleness_drop_on_dequeue():
     mgr = StreamingRolloutManager(
         args,
         _DummyDataSource(),
-        engine_urls=["http://e0"],
         groups_per_train_step=1,
         queue_target=2,
         queue_cap=16,
         inflight_target=1,
-        min_active_engines=1,
-        weight_update_mode="rolling_drain",
     )
 
     async def _run():
         now = time.time()
-        await mgr.buffer.put(CompletedGroup(behavior_version=0, finished_ts=now, engine_idx=0, group=[Sample(reward=0)]))
-        await mgr.buffer.put(CompletedGroup(behavior_version=3, finished_ts=now, engine_idx=0, group=[Sample(reward=0)]))
-        await mgr.buffer.put(CompletedGroup(behavior_version=4, finished_ts=now, engine_idx=0, group=[Sample(reward=0)]))
+        await mgr.buffer.put(CompletedGroup(behavior_version=0, finished_ts=now, group=[Sample(reward=0)]))
+        await mgr.buffer.put(CompletedGroup(behavior_version=3, finished_ts=now, group=[Sample(reward=0)]))
+        await mgr.buffer.put(CompletedGroup(behavior_version=4, finished_ts=now, group=[Sample(reward=0)]))
 
-        groups, _extra = await mgr.get_next_groups(num_groups=1, target_version=5, max_staleness_versions=1)
-        assert len(groups) == 1
-        assert groups[0].behavior_version == 4
+        groups, extra = await mgr.get_next_groups(num_groups=3, target_version=5)
+        assert [g.behavior_version for g in groups] == [0, 3, 4]
+        assert extra["staleness_values"] == [5, 2, 1]
 
     asyncio.run(_run())
 
@@ -52,16 +49,16 @@ def test_priority_queue_tie_does_not_crash():
         buf = StreamingGroupBuffer(queue_cap=16)
         now = 123.0
 
-        await buf.put(CompletedGroup(behavior_version=0, finished_ts=now, engine_idx=0, group=[Sample(reward=0)]))
-        await buf.put(CompletedGroup(behavior_version=0, finished_ts=now, engine_idx=1, group=[Sample(reward=0)]))
+        await buf.put(CompletedGroup(behavior_version=0, finished_ts=now, group=[Sample(reward=0)]))
+        await buf.put(CompletedGroup(behavior_version=0, finished_ts=now, group=[Sample(reward=1)]))
 
         g1 = await buf.get()
         g2 = await buf.get()
-        assert {g1.engine_idx, g2.engine_idx} == {0, 1}
+        assert sorted([g1.group[0].reward, g2.group[0].reward]) == [0, 1]
 
     asyncio.run(_run())
 
 
 if __name__ == "__main__":
-    test_staleness_drop_on_dequeue()
+    test_queue_orders_by_behavior_version_without_dropping()
     test_priority_queue_tie_does_not_crash()

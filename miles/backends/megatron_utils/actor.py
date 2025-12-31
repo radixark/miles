@@ -342,6 +342,34 @@ class MegatronTrainRayActor(TrainRayActor):
                 log_rollout_data(rollout_id, self.args, rollout_data)
                 return
 
+            if getattr(self.args, "pipeline_rl", False):
+                from miles.utils.pipeline_rl_utils import apply_pipeline_rl_lag_mask
+
+                current_version = getattr(self.weight_updater, "weight_version", 0)
+                try:
+                    current_version = int(current_version)
+                except (TypeError, ValueError):
+                    current_version = 0
+
+                exceeds_count, exceeds_frac = apply_pipeline_rl_lag_mask(
+                    rollout_data,
+                    current_version=current_version,
+                    max_weight_lag=self.args.pipeline_max_weight_lag,
+                )
+                if is_megatron_main_rank():
+                    from miles.utils.metric_utils import compute_rollout_step
+                    from miles.utils import tracking_utils
+
+                    tracking_utils.log(
+                        self.args,
+                        {
+                            "rollout/pipeline_rl/lag_exceeds_max_count": exceeds_count,
+                            "rollout/pipeline_rl/lag_exceeds_max_frac": exceeds_frac,
+                        },
+                        step_key="rollout/step",
+                        step=compute_rollout_step(self.args, rollout_id),
+                    )
+
         if self.role == "critic":
             return self.train_critic(rollout_id, rollout_data)
         else:
@@ -472,34 +500,6 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         save(iteration, self.model, self.optimizer, self.opt_param_scheduler)
-
-    @timer
-    def update_rollout_engines(self, engine_indices: list[int], version: int | None = None) -> None:
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
-
-        if not engine_indices:
-            return
-
-        if self.args.offload_train:
-            reload_process_groups()
-
-        rollout_engines, rollout_engine_lock, _num_new_engines = ray.get(
-            self.rollout_manager.get_rollout_engines_and_lock.remote()
-        )
-        subset = [rollout_engines[i] for i in engine_indices]
-
-        self.weight_updater.connect_rollout_engines(subset, rollout_engine_lock)
-        dist.barrier(group=get_gloo_group())
-
-        if version is not None:
-            self.weight_updater.weight_version = version - 1
-
-        with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
-            self.weight_updater.update_weights()
-
-        if self.args.offload_train:
-            destroy_process_groups()
 
     @timer
     def update_weights(self) -> None:

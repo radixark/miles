@@ -120,39 +120,28 @@ class RolloutManager:
             raise RuntimeError("--streaming-async is not supported in debug-only modes")
 
         if self._streaming is not None:
-            return self._streaming.supports_subset_engine_updates()
+            return
 
         num_engines = len(self.rollout_engines)
         if num_engines == 0:
             raise RuntimeError("No rollout engines available for --streaming-async")
 
-        engine_urls = ray.get([engine.get_http_base_url.remote() for engine in self.rollout_engines])
-
         params = derive_streaming_start_params(self.args, num_engines=num_engines)
 
-        # Capability hint to the trainer: if subset updates aren't supported, fall back to global update.
-        if not params.supports_subset_engine_updates:
-            logger.warning(
-                "Only one rollout engine detected; subset engine updates are disabled and will fall back to global update."
-            )
-
-        self._trainer_version = 0
         self._streaming_rollout_id = start_rollout_id
 
         self._streaming = StreamingRolloutManager(
             self.args,
             self.data_source,
-            engine_urls=engine_urls,
             groups_per_train_step=params.groups_per_train_step,
             queue_target=params.queue_target,
             queue_cap=params.queue_cap,
             inflight_target=params.inflight_target,
-            min_active_engines=params.min_active_engines,
-            weight_update_mode=self.args.streaming_async_weight_update_mode,
+            initial_published_version=self._trainer_version,
         )
         self._streaming.start()
 
-        return self._streaming.supports_subset_engine_updates()
+        return
 
     async def stop_streaming(self):
         if self._streaming is None:
@@ -171,7 +160,6 @@ class RolloutManager:
         groups, extra = await self._streaming.get_next_groups(
             num_groups=self.args.rollout_batch_size,
             target_version=self._trainer_version,
-            max_staleness_versions=self.args.max_staleness_versions,
         )
 
         samples: list[Sample] = []
@@ -191,15 +179,7 @@ class RolloutManager:
             "rollout/stream/groups_produced_per_s": stats["groups_produced_per_s"],
             "rollout/stream/groups_consumed_per_s": stats["groups_consumed_per_s"],
             "rollout/stream/empty_wait_s": extra.get("empty_wait_s", 0.0),
-            "rollout/stream/stale_groups_dropped": stats["stale_groups_dropped"],
         }
-
-        engine_pool = stats.get("engine_pool") or {}
-        log_dict["rollout/stream/drain_only_engines"] = engine_pool.get("num_drain_only", 0)
-        log_dict["rollout/stream/active_engines"] = engine_pool.get("num_active", 0)
-
-        for v, count in (engine_pool.get("versions") or {}).items():
-            log_dict[f"rollout/stream/engine_versions/v{v}"] = count
 
         if staleness_values:
             for s, items in group_by(staleness_values).items():
@@ -221,16 +201,6 @@ class RolloutManager:
         self._trainer_version = version
         if self._streaming is not None:
             self._streaming.notify_new_version(version)
-
-    async def get_update_candidates(self) -> list[int]:
-        if self._streaming is None:
-            return []
-        return self._streaming.get_update_candidates()
-
-    async def mark_engines_updated(self, engine_indices: list[int], version: int):
-        if self._streaming is None:
-            return
-        self._streaming.mark_engines_updated(engine_indices, version)
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:
@@ -370,6 +340,16 @@ class RolloutManager:
             loss_masks.append(sample.loss_mask)
         train_data["loss_masks"] = loss_masks
 
+        # PipelineRL version stamping (w_first) for lag masking.
+        train_data["weight_version_first"] = [
+            (sample.metadata.get("weight_version_first") if sample.metadata else None)
+            or (sample.weight_versions[0] if sample.weight_versions else None)
+            for sample in samples
+        ]
+        train_data["weight_version_last"] = [
+            (sample.weight_versions[-1] if sample.weight_versions else None) for sample in samples
+        ]
+
         # overwriting the raw reward
         if samples[0].metadata and "raw_reward" in samples[0].metadata:
             train_data["raw_reward"] = [sample.metadata["raw_reward"] for sample in samples]
@@ -429,6 +409,8 @@ class RolloutManager:
                 "loss_masks",
                 "round_number",
                 "sample_indices",
+                "weight_version_first",
+                "weight_version_last",
                 "rollout_log_probs",
                 "rollout_routed_experts",
                 "prompt",

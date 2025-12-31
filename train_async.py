@@ -30,9 +30,10 @@ def train(args):
 
     # async train loop.
     if args.streaming_async:
-        weight_update_mode = args.streaming_async_weight_update_mode
-        supports_subset_engine_updates = ray.get(rollout_manager.start_streaming.remote(args.start_rollout_id))
-        policy_version = 0
+        # Streaming async is PipelineRL-only in this fork.
+        policy_version = 1
+        ray.get(rollout_manager.notify_new_version.remote(policy_version))
+        ray.get(rollout_manager.start_streaming.remote(args.start_rollout_id))
 
         for rollout_id in range(args.start_rollout_id, args.num_rollout):
             rollout_data_curr_ref = ray.get(rollout_manager.get_next_train_batch.remote())
@@ -52,19 +53,10 @@ def train(args):
                 if args.rollout_global_dataset:
                     ray.get(rollout_manager.save.remote(rollout_id))
 
-            if (rollout_id + 1) % args.update_weights_interval == 0:
+            if (rollout_id + 1) % args.pipeline_weight_update_interval == 0:
+                actor_model.update_weights()
                 policy_version += 1
                 ray.get(rollout_manager.notify_new_version.remote(policy_version))
-
-                if weight_update_mode == "rolling_drain" and not supports_subset_engine_updates:
-                    actor_model.update_weights()
-                    ray.get(rollout_manager.mark_engines_updated.remote([0], policy_version))
-
-            if weight_update_mode == "rolling_drain" and supports_subset_engine_updates:
-                engine_indices = ray.get(rollout_manager.get_update_candidates.remote())
-                if engine_indices:
-                    actor_model.update_rollout_engines(engine_indices, version=policy_version)
-                    ray.get(rollout_manager.mark_engines_updated.remote(engine_indices, policy_version))
 
             if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
                 ray.get(rollout_manager.eval.remote(rollout_id))
