@@ -31,6 +31,6 @@ Prioritize writing **Pure Functions**. Avoid in-place modification of input argu
 
 ## Testing Efficiency
 
-PR merge speed depends on test speed. 
+PR merge speed depends on test speed.
 
 - Please provide a test script in your PR description that a reviewer can **copy & paste** to run immediately. [Example](https://github.com/radixark/miles/pull/246#issuecomment-3701278030)
