@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from functools import partial
 
 import datasets
 import numpy as np
@@ -190,7 +191,6 @@ class Dataset:
         }
 
         original_size = len(ds)
-        from functools import partial
 
         ds = ds.filter(partial(_filter_func, **filter_kwargs), num_proc=num_proc, desc="Filtering invalid samples")
 
