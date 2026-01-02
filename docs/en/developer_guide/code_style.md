@@ -10,7 +10,7 @@ Miles is a high-performance system where every millisecond matters.
 
 ## Architecture & Decoupling
 
-Maintain a clean codebase to facilitate collaboration and long-term maintenance. For features not yet widely accepted by the community, prioritize adding abstract base classes to `/miles` and implementing specific logic under `/examples`. [Example](https://github.com/THUDM/slime/pull/429)
+Maintain a clean codebase to facilitate collaboration and long-term maintenance. For features not yet widely accepted by the community, prioritize adding abstract base classes to `/miles` and implementing specific logic under `/examples`. [Example](https://github.com/THUDM/slime/pull/429) [Example 2](https://github.com/THUDM/slime/pull/1141)
 
 - **Don't Repeat Yourself (DRY)**: Duplicate code snippets exceeding 5 lines must be extracted into shared functions.
 - **Keep Files Concise**: If a single file exceeds 2,000 lines, it must be split into multiple smaller files (e.g., using Mixin patterns or sub-modules).
