@@ -260,7 +260,9 @@ class Dataset:
 
         original_size = len(ds)
 
-        ds = ds.filter(partial(_filter_func, **filter_kwargs), num_proc=dataset_num_proc, desc="Filtering invalid samples")
+        ds = ds.filter(
+            partial(_filter_func, **filter_kwargs), num_proc=dataset_num_proc, desc="Filtering invalid samples"
+        )
 
         new_size = len(ds)
         logger.info(f"Filtered dataset from {original_size} to {new_size} samples.")
