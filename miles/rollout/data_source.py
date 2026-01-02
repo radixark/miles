@@ -75,6 +75,7 @@ class RolloutDataSource(DataSource):
                 apply_chat_template=args.apply_chat_template,
                 apply_chat_template_kwargs=args.apply_chat_template_kwargs,
                 seed=args.rollout_seed,
+                dataset_num_proc=args.dataset_num_proc,
             )
             if self.args.rollout_shuffle:
                 self.dataset.shuffle(self.epoch_id)
@@ -85,15 +86,15 @@ class RolloutDataSource(DataSource):
         # TODO further improve code
         if self.dataset is not None:
             if self.sample_offset + num_samples <= len(self.dataset):
-                prompt_samples = self.dataset.samples[self.sample_offset : self.sample_offset + num_samples]
+                prompt_samples = [self.dataset[i] for i in range(self.sample_offset, self.sample_offset + num_samples)]
                 self.sample_offset += num_samples
             else:
-                prompt_samples = self.dataset.samples[self.sample_offset :]
+                prompt_samples = [self.dataset[i] for i in range(self.sample_offset, len(self.dataset))]
                 num_samples -= len(prompt_samples)
                 self.epoch_id += 1
                 if self.args.rollout_shuffle:
                     self.dataset.shuffle(self.epoch_id)
-                prompt_samples += self.dataset.samples[:num_samples]
+                prompt_samples += [self.dataset[i] for i in range(num_samples)]
                 self.sample_offset = num_samples
         else:
             prompt_samples = [Sample() for _ in range(num_samples)]
