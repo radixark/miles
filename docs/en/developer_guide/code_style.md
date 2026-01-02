@@ -24,11 +24,11 @@ Prioritize writing **Pure Functions**. Avoid in-place modification of input argu
 ## Pythonic & Clean
 
 - **Lean Constructors**: Keep `__init__` parameters concise. Avoid passing massive, complex configuration objects; instead, pass only the necessary parameters.
-- **Avoid Dynamic Attributes**: Minimize the use of `getattr` or `setattr`. Code should be explicit for better traceability. [Example](https://github.com/THUDM/slime/pull/1141#discussion_r2654651150)
+- **Avoid Dynamic Attributes**: Minimize the use of `getattr` or `setattr`. Code should be explicit for better traceability. [Example](https://github.com/THUDM/slime/pull/1141#discussion_r2654651150) [Example 2](https://github.com/THUDM/slime/pull/1141#discussion_r2658247124)
 - **Ternary Operator Limits**: Use `a if condition else b` only for very simple and clear cases. Complex logic must use standard `if-else` blocks.
 - **Extract Complex Logic**: In multi-branch conditionals, if a specific branch contains multiple lines of logic, encapsulate it into a standalone private function.
 - **Type Hints**: All public APIs and function signatures must include type hints.
-- **Access Permission Indicator**: Use `_private` style to indicate this is a function to this class or file only, otherwise, it's a public function which can be exposed outside.
+- **Access Permission Indicator**: Use `_private` style to indicate this is a function to this class or file only, otherwise, it's a public function that can be exposed outside.
 
 ## Testing Efficiency
 
