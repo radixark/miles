@@ -24,3 +24,14 @@ _release-raw:
         docker tag radixark/miles:$IMAGE_TAG radixark/miles:latest
         docker push radixark/miles:latest
     fi
+
+debug:
+    #!/bin/bash
+    set -euxo pipefail
+    cd ..
+
+    VERSION="$(cat docker/version.txt | tr -d '\n')"
+    IMAGE_TAG=${VERSION}
+
+    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" -t radixark/miles-test:$IMAGE_TAG
+    docker push radixark/miles-test:$IMAGE_TAG
