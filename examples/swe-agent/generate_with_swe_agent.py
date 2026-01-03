@@ -21,29 +21,36 @@ def build_tokens_and_mask_from_messages(
     if not messages or len(messages) < 2:
         return [], [], "", 0
 
-    all_tokens = []
-    loss_mask = []
-    response_text = ""
-    prompt_length = 0
+    prompt_msgs = messages[:2]
+    response_msgs = messages[2:]
 
-    for i, msg in enumerate(messages):
+    prompt_tokens = []
+    for msg in prompt_msgs:
+        content = msg.get("content", "")
+        if content:
+            prompt_tokens.extend(tokenizer(content, add_special_tokens=False)["input_ids"])
+
+    response_tokens = []
+    loss_mask = []
+    response_text_parts = []
+
+    for msg in response_msgs:
         content = msg.get("content", "")
         if not content:
             continue
 
-        msg_tokens = tokenizer(content, add_special_tokens=False)["input_ids"]
-        all_tokens.extend(msg_tokens)
+        tokens = tokenizer(content, add_special_tokens=False)["input_ids"]
+        token_len = len(tokens)
 
-        if i < 2:
-            prompt_length += len(msg_tokens)
-        else:
-            response_text += content
-            if msg["role"] == "assistant":
-                loss_mask.extend([1] * len(msg_tokens))
-            else:
-                loss_mask.extend([0] * len(msg_tokens))
+        response_tokens.extend(tokens)
+        response_text_parts.append(content)
 
-    response_length = len(all_tokens) - prompt_length
+        mask_val = 1 if msg.get("role") == "assistant" else 0
+        loss_mask.extend([mask_val] * token_len)
+
+    all_tokens = prompt_tokens + response_tokens
+    response_text = "".join(response_text_parts)
+    response_length = len(response_tokens)
 
     return all_tokens, loss_mask, response_text, response_length
 
