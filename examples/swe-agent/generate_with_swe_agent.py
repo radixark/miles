@@ -55,10 +55,16 @@ def build_tokens_and_mask_from_messages(
     return all_tokens, loss_mask, response_text, response_length
 
 
-async def generate(args, sample: Sample, sampling_params) -> Sample:
+async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
     """
     Custom generation function for SWE-Agent integration.
-    Calls Gym /run endpoint with external sglang_url.
+
+    Orchestrates the interaction with the external Gym environment:
+    1. Sends prompt/metadata to Gym.
+    2. Receives execution trace (messages) and rewards.
+    3. Formats data for Miles training format.
+
+    Note: Performs in-place modification of `sample` for memory efficiency.
     """
     # Prepare request for Gym /run endpoint
     request = {
