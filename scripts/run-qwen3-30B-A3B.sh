@@ -41,8 +41,11 @@ ROLLOUT_ARGS=(
    --input-key prompt
    --label-key label
    --apply-chat-template
+   # we disabled think mode in example script
+   # if you want to enable think mode, need to set --rollout-max-response-len to 32768
+   --apply-chat-template-kwargs '{"enable_thinking":false}'
    --rollout-shuffle
-   --rm-type deepscaler
+   --rm-type math
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
