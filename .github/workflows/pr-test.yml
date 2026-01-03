@@ -59,7 +59,7 @@ jobs:
 
       - name: Install
         shell: bash
-        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages && pip install huggingface_hub[cli]
 
       - name: Execute
         shell: bash
@@ -99,7 +99,7 @@ jobs:
 
       - name: Install
         shell: bash
-        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages && pip install huggingface_hub[cli]
 
       - name: Execute
         shell: bash
