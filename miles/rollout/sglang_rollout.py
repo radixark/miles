@@ -509,6 +509,7 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+            dataset_num_proc=args.dataset_num_proc,
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
 
@@ -527,7 +528,8 @@ async def eval_rollout_single_dataset(
     tasks = []
     # do multiple samples for eval prompts
     sample_index = 0
-    for _i, prompt_sample in enumerate(dataset.samples):
+    for i in range(len(dataset)):
+        prompt_sample = dataset[i]
         for j in range(dataset_cfg.n_samples_per_eval_prompt):
             # use the same prompt for multiple samples
             sample = copy.deepcopy(prompt_sample)
