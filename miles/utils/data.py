@@ -28,7 +28,17 @@ _FILE_TYPE_MAP = {
 }
 
 
-def _filter_func(example, tokenizer, processor, max_length, prompt_key, multimodal_keys, apply_chat_template, apply_chat_template_kwargs, tool_key):
+def _filter_func(
+    example,
+    tokenizer,
+    processor,
+    max_length,
+    prompt_key,
+    multimodal_keys,
+    apply_chat_template,
+    apply_chat_template_kwargs,
+    tool_key,
+):
     as_conversation = apply_chat_template
     prompt = _build_messages(example, prompt_key, as_conversation, multimodal_keys)
 
@@ -54,6 +64,7 @@ def _filter_func(example, tokenizer, processor, max_length, prompt_key, multimod
 
     if processor:
         from miles.utils.processing_utils import process_vision_info
+
         multimodal_inputs = process_vision_info(prompt, processor)
     else:
         multimodal_inputs = None
@@ -294,17 +305,18 @@ class Dataset:
                 tools = tools.tolist()
             assert isinstance(tools, list), f"tools must be a list, got {type(tools)} instead"
             metadata["tools"] = tools
-        
+
         if self.apply_chat_template:
             formatted_prompt = self.tokenizer.apply_chat_template(
                 prompt, tools=tools, tokenize=False, add_generation_prompt=True, **self.apply_chat_template_kwargs
-        )
+            )
         else:
             formatted_prompt = prompt
 
         multimodal_inputs = None
         if self.processor:
             from miles.utils.processing_utils import process_vision_info
+
             multimodal_inputs = process_vision_info(prompt, self.processor)
 
         sample = Sample(
