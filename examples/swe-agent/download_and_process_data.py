@@ -18,7 +18,7 @@ def convert_to_miles_format(input_path: str, output_path: str, limit: int = None
         split: Dataset split name (used in metadata)
     """
     count = 0
-    with open(input_path, "r") as fin, open(output_path, "w") as fout:
+    with open(input_path) as fin, open(output_path, "w") as fout:
         for line in fin:
             if limit and count >= limit:
                 break

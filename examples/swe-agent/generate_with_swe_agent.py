@@ -1,7 +1,8 @@
 import logging
 import os
 from argparse import Namespace
-from typing import Any, Callable, Union
+from collections.abc import Callable
+from typing import Any
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
@@ -210,7 +211,7 @@ async def generate_rollout_async(
 
 def generate_rollout(
     args: Namespace, rollout_id: int, data_buffer: Any, evaluation: bool = False
-) -> Union[RolloutFnTrainOutput, RolloutFnEvalOutput]:
+) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
     Args:
