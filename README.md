@@ -19,6 +19,10 @@ Miles keeps slime’s lightweight, modular design, but focuses on:
 
 
 ## News
+
+- [2025/12] Support FSDP2 as A Training Backend for Miles ([blog](https://lmsys.org/blog/2025-12-03-miles-fsdp/)).
+- [2025/11] Unified FP8: Moving Beyond Mixed Precision for Stable and Accelerated MoE RL ([blog](https://lmsys.org/blog/2025-11-25-fp8-rl/)).
+- [2025/11] Power Up Speculative Decoding In Reinforcement Learning ([blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/spec/readme-en.md)).
 - [2025/11] Introduce Miles - born after slime towards enterprise RL training ([blog](https://lmsys.org/blog/2025-11-19-miles/)).
 
 

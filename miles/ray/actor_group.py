@@ -59,7 +59,7 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
-        if self.args.offload_train and self.args.offload_train_mode == "tms":
+        if self.args.offload_train and self.args.train_backend == "megatron":
             import torch_memory_saver
 
             dynlib_path = os.path.join(
@@ -135,8 +135,8 @@ class RayTrainGroup:
     def connect(self, critic_group):
         return ray.get(
             [
-                actor.connect_actor_critic.remote((critic))
-                for actor, critic in zip(self._actor_handlers, critic_group._actor_handlers)
+                actor.connect_actor_critic.remote(critic)
+                for actor, critic in zip(self._actor_handlers, critic_group._actor_handlers, strict=False)
             ]
         )
 

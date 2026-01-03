@@ -106,7 +106,7 @@ html_copy_source = True
 html_last_updated_fmt = ""
 
 html_theme_options = {
-    "repository_url": "https://github.com/lm-sys/miles",
+    "repository_url": "https://github.com/radixark/miles",
     "repository_branch": "main",
     "show_navbar_depth": 3,
     "max_navbar_depth": 4,
@@ -207,16 +207,16 @@ htmlhelp_basename = "milesdoc"
 latex_elements = {}
 
 latex_documents = [
-    (master_doc, "miles.tex", "miles Documentation", "miles Team", "manual"),
+    (master_doc, "miles.tex", "Miles Documentation", "miles Team", "manual"),
 ]
 
-man_pages = [(master_doc, "miles", "miles Documentation", [author], 1)]
+man_pages = [(master_doc, "miles", "Miles Documentation", [author], 1)]
 
 texinfo_documents = [
     (
         master_doc,
         "miles",
-        "miles Documentation",
+        "Miles Documentation",
         author,
         "miles",
         "One line description of project.",

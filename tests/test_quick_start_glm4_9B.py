@@ -30,8 +30,8 @@ def execute():
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len 8192 "
-        "--rollout-temperature 0.8 "
+        "--rollout-max-response-len 8192 "
+        "--rollout-temperature 1 "
         "--global-batch-size 32 "
         "--balance-data "
     )

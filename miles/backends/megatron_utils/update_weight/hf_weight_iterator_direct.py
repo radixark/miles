@@ -5,21 +5,15 @@ from collections.abc import Sequence
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
-
-from .hf_weight_iterator_base import HfWeightIteratorBase
-
-try:
-    from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
-except:
-    from sglang.srt.patch_torch import monkey_patch_torch_reductions
-
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
 from ..megatron_to_hf import convert_to_hf
-from .common import all_gather_params_async, named_parameters
+from ..sglang import monkey_patch_torch_reductions
+from .common import all_gather_params_async, named_params_and_buffers
+from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
 class HfWeightIteratorDirect(HfWeightIteratorBase):
@@ -40,7 +34,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
 
     def _convert_to_hf_named_tensors(self, megatron_full_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
         hf_named_tensors = []
-        for info, param in zip(param_infos, megatron_full_params):
+        for info, param in zip(param_infos, megatron_full_params, strict=False):
             hf_named_tensors.extend(
                 convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
             )
@@ -72,7 +66,7 @@ def _get_megatron_full_params(
     # broadcast params across pp ranks
     if pp_size > 1:
         handles = []
-        for info, param in zip(megatron_local_param_infos, params):
+        for info, param in zip(megatron_local_param_infos, params, strict=False):
             if info.src_rank in dist.get_process_group_ranks(mpu.get_pipeline_model_parallel_group()):
                 handles.append(
                     torch.distributed.broadcast(
@@ -85,7 +79,7 @@ def _get_megatron_full_params(
     # broadcast params across ep ranks
     if ep_size > 1:
         handles = []
-        for info, param in zip(megatron_local_param_infos, params):
+        for info, param in zip(megatron_local_param_infos, params, strict=False):
             if ".experts." in info.name:
                 src_rank = (
                     info.src_rank
@@ -101,12 +95,12 @@ def _get_megatron_full_params(
             handle.wait()
 
     # Set tp attrs for all params
-    for info, param in zip(megatron_local_param_infos, params):
+    for info, param in zip(megatron_local_param_infos, params, strict=False):
         for key, value in info.attrs.items():
             setattr(param, key, value)
 
     # Batch async all_gather for all parameters
-    gathered_params = all_gather_params_async(list(zip(megatron_local_param_infos, params)))
+    gathered_params = all_gather_params_async(list(zip(megatron_local_param_infos, params, strict=False)))
 
     return gathered_params
 
@@ -151,7 +145,7 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
 
     param_infos = {}
     rank = dist.get_rank()
-    for name, param in named_parameters(args, model):
+    for name, param in named_params_and_buffers(args, model):
         param_infos[name] = ParamInfo(
             name=name,
             dtype=param.dtype,

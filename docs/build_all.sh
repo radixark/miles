@@ -33,7 +33,7 @@ cat > "$ROOT_INDEX" <<'EOF'
   </script>
 </head>
 <body>
-  <h1>miles Documentation</h1>
+  <h1>Miles Documentation</h1>
   <p>Select language:</p>
   <p class="lang-links"><a href="en/">English</a> <a href="zh/">中文</a></p>
   <p class="note">Auto-redirect uses your last choice if stored; else pick above.</p>

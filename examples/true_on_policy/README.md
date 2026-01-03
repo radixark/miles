@@ -45,7 +45,7 @@ Detailed reproduction refers to [this](https://gist.github.com/fzyzcjy/46f9fc096
 
 ## How it is Implemented
 
-The core idea is to make each and every operation in training and inference be bitwise equal. The main code is implemented in [#566](https://github.com/lm-sys/miles/pull/566) and [SGLang#12058](https://github.com/sgl-project/sglang/pull/12058).
+The core idea is to make each and every operation in training and inference be bitwise equal. The main code is implemented in [#566](https://github.com/radixark/miles/pull/566) and [SGLang#12058](https://github.com/sgl-project/sglang/pull/12058).
 
 Briefly speaking, we handled the following components to make them aligned:
 
@@ -53,7 +53,7 @@ Briefly speaking, we handled the following components to make them aligned:
 * GEMM: We use [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM) for fast matrix multiplication while preserving true-on-policy, thanks to its algorithm to pick things like tensor core instructions ([SGLang#12142](https://github.com/sgl-project/sglang/pull/12142)).
 * Batch invariant kernels: This is a prerequisite for true on-policy, and we use [the ones](https://github.com/thinking-machines-lab/batch_invariant_ops) from the Thinking Machines Lab.
 * Torch compile: We also utilize [`torch.compile`](https://docs.pytorch.org/docs/stable/generated/torch.compile.html) to speed up by avoiding many tiny kernels.
-* We align numeric operation details between the two systems for simplicity, such as op dtype, detailed kernels, etc. Some operations can also be compiled to speedup ([#603](https://github.com/lm-sys/miles/pull/603), [SGLang#12161](https://github.com/sgl-project/sglang/pull/12161)).
+* We align numeric operation details between the two systems for simplicity, such as op dtype, detailed kernels, etc. Some operations can also be compiled to speedup ([#603](https://github.com/radixark/miles/pull/603), [SGLang#12161](https://github.com/sgl-project/sglang/pull/12161)).
 
 In order to more easily align the two parts, we use SGLang's [dumper](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/debug_utils/dumper.py) tool for quick comparisons. (Need [#12622](https://github.com/sgl-project/sglang/pull/12622) and [#12623](https://github.com/sgl-project/sglang/pull/12623) for most convenience.)
 
