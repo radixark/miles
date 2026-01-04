@@ -1,17 +1,17 @@
-accelerate
-blobfile
-datasets
-httpx[http2]
-mcp[cli]
-memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
-omegaconf
-pillow
-pylatexenc
-pyyaml
-qwen_vl_utils # for VLM
-ray[default]
-ring_flash_attn
+accelerate==1.12.0
+blobfile==3.0.0
+datasets==4.4.1
+httpx[http2]==0.28.1
+mcp[cli]==1.25.0
+memray==1.19.1  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
+omegaconf==2.3.0
+pillow==12.0.0
+pylatexenc==2.10
+pyyaml==6.0.3
+qwen_vl_utils==0.0.14 # for VLM
+ray[default]==2.53.0
+ring_flash_attn==0.1.8
 sglang-router>=0.2.3
-tensorboard
-transformers
-wandb
+tensorboard==2.20.0
+transformers==4.57.1
+wandb==0.23.1
