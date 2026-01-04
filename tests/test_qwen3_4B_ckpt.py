@@ -1,33 +1,45 @@
 import os
+from argparse import ArgumentParser
 
 import miles.utils.external_utils.command_utils as U
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
-USE_FP8_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_FP8_ROLLOUT", "1")))
 
-MODEL_NAME = "Qwen3-30B-A3B"
-MODEL_TYPE = "qwen3-30B-A3B"
+MODEL_NAME = "Qwen3-4B"
+MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
+
+
+parser = ArgumentParser()
+parser.add_argument("--async-save", action="store_true", help="Whether to test async save/load.")
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command(f"rm -rf /root/models/{MODEL_NAME}_miles")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
+    U.convert_checkpoint(
+        model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS, dir_dst="/root/models"
+    )
 
 
-def execute():
-    if USE_FP8_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
-    else:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+def execute(mode: str = ""):
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    if mode == "save":
+        ckpt_args += f"--save /root/models/{MODEL_NAME}_miles "
+        ckpt_args += "--save-interval 2 "
+    elif mode == "async_save":
+        ckpt_args += f"--save /root/models/{MODEL_NAME}_miles "
+        ckpt_args += "--save-interval 2 "
+        ckpt_args += "--async-save "
+    elif mode == "load":
+        ckpt_args += f"--load /root/models/{MODEL_NAME}_miles "
+        ckpt_args += "--ckpt-step 1 "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -37,29 +49,19 @@ def execute():
         "--rollout-shuffle "
         "--rm-type deepscaler "
         "--num-rollout 3 "
-        "--rollout-batch-size 8 "
+        "--rollout-batch-size 4 "
         "--n-samples-per-prompt 8 "
-        "--rollout-max-response-len 8192 "
-        "--rollout-temperature 1 "
+        "--rollout-max-response-len 1024 "
+        "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
         "--balance-data "
     )
 
-    eval_args = (
-        f"{'--eval-interval 20 ' if ENABLE_EVAL else ''}"
-        "--eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl "
-        "--n-samples-per-eval-prompt 1 "
-        "--eval-max-response-len 16384 "
-        "--eval-top-k 1 "
-    )
-
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
-        "--expert-model-parallel-size 8 "
-        "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -67,16 +69,13 @@ def execute():
         f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
     )
 
-    grpo_args = (
-        "--advantage-estimator gspo "
-        f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
+    ppo_args = (
+        "--advantage-estimator grpo "
         "--kl-loss-coef 0.00 "
-        "--kl-loss-type low_var_kl "
+        "--kl-loss-type k1 "
         "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
-        "--eps-clip 4e-4 "
-        "--use-tis "
-        "--use-routing-replay "
+        "--eps-clip 0.2 "
     )
 
     optimizer_args = (
@@ -91,15 +90,7 @@ def execute():
         "--use-precision-aware-optimizer "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
-        "--sglang-mem-fraction-static 0.8 "
-        "--sglang-max-running-requests 512 "
-        "--sglang-enable-metrics "
-    )
-
-    if USE_DEEPEP:
-        sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.8 --sglang-cuda-graph-bs 1 2 4 8 16 "
 
     ci_args = "--ci-test "
 
@@ -117,19 +108,13 @@ def execute():
         "--colocate "
     )
 
-    if USE_DEEPEP:
-        misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
-    else:
-        misc_args += "--moe-token-dispatcher-type alltoall "
-
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
-        f"{grpo_args} "
+        f"{ppo_args} "
         f"{U.get_default_wandb_args(__file__)} "
         f"{perf_args} "
-        f"{eval_args} "
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
@@ -143,10 +128,12 @@ def execute():
 
 
 if __name__ == "__main__":
+    args = parser.parse_args()
     # TODO also use typer
     prepare()
     os.environ.pop("http_proxy")
     os.environ.pop("https_proxy")
     os.environ.pop("HTTP_PROXY")
     os.environ.pop("HTTPS_PROXY")
-    execute()
+    execute("save" if not args.async_save else "async_save")
+    execute("load")

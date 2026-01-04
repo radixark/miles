@@ -5,18 +5,15 @@ import miles.utils.external_utils.command_utils as U
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
-USE_FP8_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_FP8_ROLLOUT", "1")))
 
-MODEL_NAME = "Qwen3-30B-A3B"
-MODEL_TYPE = "qwen3-30B-A3B"
+MODEL_NAME = "Qwen3-4B"
+MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+    U.exec_command("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
@@ -24,10 +21,7 @@ def prepare():
 
 
 def execute():
-    if USE_FP8_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
-    else:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -40,7 +34,7 @@ def execute():
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
-        "--rollout-temperature 1 "
+        "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
         "--balance-data "
     )
@@ -54,12 +48,10 @@ def execute():
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
-        "--expert-model-parallel-size 8 "
-        "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -67,16 +59,17 @@ def execute():
         f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
     )
 
-    grpo_args = (
-        "--advantage-estimator gspo "
+    ppo_args = (
+        "--advantage-estimator ppo "
         f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
         "--kl-loss-coef 0.00 "
-        "--kl-loss-type low_var_kl "
+        "--kl-loss-type k1 "
         "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
         "--eps-clip 4e-4 "
-        "--use-tis "
-        "--use-routing-replay "
+        "--num-critic-only-steps 1 "
+        "--normalize-advantages "
+        "--critic-lr 1e-5 "
     )
 
     optimizer_args = (
@@ -86,20 +79,15 @@ def execute():
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        "--optimizer-cpu-offload "
-        "--overlap-cpu-optimizer-d2h-h2d "
-        "--use-precision-aware-optimizer "
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
+        "--rollout-num-gpus-per-engine 2 "
+        "--rollout-num-gpus 8 "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-max-running-requests 512 "
         "--sglang-enable-metrics "
     )
-
-    if USE_DEEPEP:
-        sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
 
     ci_args = "--ci-test "
 
@@ -113,20 +101,15 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        "--actor-num-gpus-per-node 4 "
         "--colocate "
     )
-
-    if USE_DEEPEP:
-        misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
-    else:
-        misc_args += "--moe-token-dispatcher-type alltoall "
 
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
-        f"{grpo_args} "
+        f"{ppo_args} "
         f"{U.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
