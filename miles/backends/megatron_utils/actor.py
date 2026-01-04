@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
@@ -192,18 +193,47 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_data["loss_masks"] = [
             torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
         ]
+        if "multimodal_train_inputs" in rollout_data:
+            # Move multimodal training tensors to GPU in advance
+            rollout_data["multimodal_train_inputs"] = [
+                (
+                    {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
+                    if mm_dict is not None
+                    else None
+                )
+                for mm_dict in rollout_data["multimodal_train_inputs"]
+            ]
+
+        if self.args.qkv_format == "bshd":
+            # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
+            max_seq_len = max(rollout_data["total_lengths"])
+
+            # pad to reduce memory fragmentation and maybe make the computation faster
+            pad_size = mpu.get_tensor_model_parallel_world_size() * self.args.data_pad_size_multiplier
+            max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
+
+            rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+
         if "rollout_log_probs" in rollout_data:
             rollout_data["rollout_log_probs"] = [
                 torch.tensor(
-                    slice_log_prob_with_cp(log_prob, total_length, response_length),
+                    slice_log_prob_with_cp(
+                        log_prob,
+                        total_length,
+                        response_length,
+                        self.args.qkv_format,
+                        rollout_data["max_seq_lens"][i] if self.args.qkv_format == "bshd" else None,
+                    ),
                     device=torch.cuda.current_device(),
                     dtype=torch.float32,
                 )
-                for log_prob, total_length, response_length in zip(
-                    rollout_data["rollout_log_probs"],
-                    rollout_data["total_lengths"],
-                    rollout_data["response_lengths"],
-                    strict=False,
+                for i, (log_prob, total_length, response_length) in enumerate(
+                    zip(
+                        rollout_data["rollout_log_probs"],
+                        rollout_data["total_lengths"],
+                        rollout_data["response_lengths"],
+                        strict=False,
+                    )
                 )
             ]
         if "rollout_routed_experts" in rollout_data:
@@ -448,11 +478,26 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(rollout_id, self.args)
 
     @timer
-    def save_model(self, iteration: int) -> None:
+    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only:
             return
 
-        save(iteration, self.model, self.optimizer, self.opt_param_scheduler)
+        # torch dist may trigger nccl communication during saving.
+        if self.args.offload_train:
+            reload_process_groups()
+
+        if self.args.async_save:
+            from megatron.training.async_utils import maybe_finalize_async_save
+
+            maybe_finalize_async_save(blocking=True)
+
+        save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
+
+        if force_sync and self.args.async_save:
+            maybe_finalize_async_save(blocking=True)
+
+        if self.args.offload_train:
+            destroy_process_groups()
 
     @timer
     def update_weights(self) -> None:
@@ -473,6 +518,14 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("before update_weights")
             self.weight_updater.update_weights()
             print_memory("after update_weights")
+
+            if self.args.ci_test and len(rollout_engines) > 0:
+                engine = random.choice(rollout_engines)
+                engine_version = ray.get(engine.get_weight_version.remote())
+                if str(engine_version) != str(self.weight_updater.weight_version):
+                    raise RuntimeError(
+                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
+                    )
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:

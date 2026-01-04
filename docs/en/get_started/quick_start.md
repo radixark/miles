@@ -39,13 +39,12 @@ docker run --rm --gpus all --ipc=host --shm-size=16g \
 
 ### Install miles
 
-After entering the Docker container, please follow these steps to clone the miles repository and install it:
+miles is already installed in the docker image. To update to the latest version, please execute the following command:
 
 ```bash
 # Path can be adjusted according to actual situation
-cd /root/
-git clone https://github.com/radixark/miles.git
-cd miles
+cd /root/miles
+git pull
 pip install -e .
 ```
 
@@ -54,8 +53,6 @@ pip install -e .
 You can download required models and datasets from platforms like Hugging Face, ModelScope, etc. Here are the commands to download example resources using `huggingface_hub`:
 
 ```bash
-pip install -U huggingface_hub
-
 # Download model weights (GLM-Z1-9B)
 hf download zai-org/GLM-Z1-9B-0414 --local-dir /root/GLM-Z1-9B-0414
 
@@ -108,6 +105,14 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_torch_dist_to_hf.py \
 
 Note that as Megatron will do padding to embedding for better performance, it may happen that the converted embedding is not correct. In that case, please manually set `--vocab-size` during convertion.
 
+For FSDP checkpoints (without `common.pt`), use the dedicated conversion script. Point `--input-dir` to the checkpoint directory (e.g. `iter_xxx` or `iter_xxx/model`) and provide the original Hugging Face directory:
+
+```bash
+python tools/convert_fsdp_to_hf.py \
+  --input-dir /path/to/fsdp_ckpt/iter_xxx \
+  --output-dir /root/fsdp-converted \
+  --origin-hf-dir /root/GLM-Z1-9B-0414
+```
 
 ## Training Script and Parameter Overview
 
@@ -203,7 +208,7 @@ ROLLOUT_ARGS=(
 
    # Rollout sampling parameters
    --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    # Load balancing for data collected in rollout phase. It ensures that the computational workload allocated to each training process (DP rank) is roughly equal, which may be beneficial for training speed
    --balance-data
@@ -225,7 +230,7 @@ EVAL_ARGS=(
    # Maximum response length during evaluation
    --eval-max-response-len 16384
    # Sampling parameters during evaluation
-   --eval-top-p 0.7
+   --eval-top-p 1
 )
 ```
 
