@@ -131,9 +131,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # TODO also use typer
     prepare()
-    os.environ.pop("http_proxy", None)
-    os.environ.pop("https_proxy", None)
-    os.environ.pop("HTTP_PROXY", None)
-    os.environ.pop("HTTPS_PROXY", None)
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
     execute("save" if not args.async_save else "async_save")
     execute("load")
