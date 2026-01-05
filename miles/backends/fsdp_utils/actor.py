@@ -25,6 +25,7 @@ from miles.utils.ppo_utils import (
     compute_gspo_kl,
     compute_opsm_mask,
     compute_policy_loss,
+    compute_sapo_loss,
     vanilla_tis_function,
 )
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -649,7 +650,14 @@ class FSDPTrainRayActor(TrainRayActor):
                 loss_masks=loss_masks,
             )
 
-        pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
+        if self.args.advantage_estimator == "sapo":
+            tau_pos = getattr(self.args, "sapo_tau_pos", 1.0)
+            tau_neg = getattr(self.args, "sapo_tau_neg", 1.05)
+            pg_loss, pg_clipfrac = compute_sapo_loss(
+                ppo_kl=ppo_kl, advantages=advantages, tau_pos=tau_pos, tau_neg=tau_neg
+            )
+        else:
+            pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, self.args.eps_clip, self.args.eps_clip_high)
 
         if self.args.use_opsm:
             pg_loss = pg_loss * opsm_mask
