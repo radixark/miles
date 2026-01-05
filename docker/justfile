@@ -35,3 +35,6 @@ debug:
 
     docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" -t radixark/miles-test:$IMAGE_TAG
     docker push radixark/miles-test:$IMAGE_TAG
+
+    docker tag radixark/miles-test:$IMAGE_TAG radixark/miles-test:latest
+    docker push radixark/miles-test:latest

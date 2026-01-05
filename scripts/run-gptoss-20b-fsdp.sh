@@ -99,16 +99,12 @@ SGLANG_ARGS=(
 )
 
 
-if [ -z "${WANDB_API_KEY}" ]; then
-   WANDB_ARGS=()
-else
-   WANDB_ARGS=(
-      --use-wandb
-      --wandb-project "miles-fsdp-gpt"
-      --wandb-group "20b-bf16"
-      --wandb-key "${WANDB_API_KEY}"
-   )
-fi
+WANDB_ARGS=(
+   --use-wandb
+   --wandb-project "miles-fsdp-gpt"
+   --wandb-group "20b-bf16"
+   --wandb-key ${WANDB_API_KEY}
+)
 
 # launch the master node of ray in container
 ray start --head --node-ip-address 127.0.0.1 --num-gpus 4 --disable-usage-stats
@@ -126,9 +122,9 @@ ray job submit --address="http://127.0.0.1:8265" \
    --train-backend fsdp \
    --bf16 \
    --attn-implementation eager \
-   "${CKPT_ARGS[@]}" \
-   "${ROLLOUT_ARGS[@]}" \
-   "${OPTIMIZER_ARGS[@]}" \
-   "${GRPO_ARGS[@]}" \
-   "${SGLANG_ARGS[@]}" \
-   "${WANDB_ARGS[@]}"
+   ${CKPT_ARGS[@]} \
+   ${ROLLOUT_ARGS[@]} \
+   ${OPTIMIZER_ARGS[@]} \
+   ${GRPO_ARGS[@]} \
+   ${SGLANG_ARGS[@]} \
+   ${WANDB_ARGS[@]} \

@@ -695,6 +695,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
             reset_arg(parser, "--async-save", action="store_true")
+            parser.add_argument(
+                "--save-hf",
+                type=str,
+                default=None,
+                help=(
+                    "Path to save the model in HuggingFace format when using Megatron backend. "
+                    "The model will be saved to `save_hf.format(rollout_id)`. "
+                ),
+            )
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
@@ -826,6 +835,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="Whether to calculate the mismatch metrics.",
+            )
+            parser.add_argument(
+                "--reset-optimizer-states",
+                action="store_true",
+                default=False,
+                help=(
+                    "Whether to reset optimizer states after each rollout. "
+                    "If enabled, the optimizer's history will be cleared at the end of each rollout, which can sometimes help with training stability or fulfill specific experiment requirements."
+                ),
             )
             parser.add_argument(
                 "--use-rollout-logprobs",
@@ -1232,6 +1250,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="disable trim samples in rollout buffer when converting samples to train data",
             )
+            parser.add_argument(
+                "--use-dynamic-global-batch-size",
+                action="store_true",
+                default=False,
+                help="enable dynamic global batch size, disable trim samples in rollout buffer when converting samples to train data",
+            )
             return parser
 
         def add_custom_megatron_plugins_arguments(parser):
@@ -1598,11 +1622,6 @@ def miles_validate_args(args):
                 f"// num_steps_per_rollout {args.num_steps_per_rollout}"
             )
         args.global_batch_size = global_batch_size
-
-    assert args.rollout_batch_size * args.n_samples_per_prompt % args.global_batch_size == 0, (
-        f"rollout_batch_size {args.rollout_batch_size} * n_samples_per_prompt {args.n_samples_per_prompt} "
-        f"is not a multiple of global_batch_size {args.global_batch_size}"
-    )
 
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False
