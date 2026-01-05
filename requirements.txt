@@ -11,7 +11,7 @@ pyyaml==6.0.3
 qwen_vl_utils==0.0.14 # for VLM
 ray[default]==2.53.0
 ring_flash_attn==0.1.8
-sglang-router>=0.2.3
+sglang-router==0.2.3
 tensorboard==2.20.0
 transformers==4.57.1
 wandb==0.23.1
