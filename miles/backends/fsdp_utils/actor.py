@@ -671,7 +671,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 has_rollout_log_probs and rollout_log_probs is not None
             ), "rollout_log_probs must be provided as non-empty torch.Tensor for TIS/MIS"
 
-            train_log_probs_list = list(old_log_probs.split(response_lengths, dim=0))
+            train_log_probs_list = list(old_log_probs.split(response_lengths, dim=0).detach())
             rollout_log_probs_list = list(rollout_log_probs.split(response_lengths, dim=0))
             ois = (-ppo_kl).exp()
             tis_kwargs = {
