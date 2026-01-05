@@ -76,9 +76,7 @@ def execute(args: ScriptArgs):
     )
 
     if args.train_backend == "megatron":
-        ckpt_args += (
-            f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
-        )
+        ckpt_args += f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
