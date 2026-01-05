@@ -2,6 +2,14 @@
 
 For the minimal demo:
 
+```bash
+docker network create formal_math  # Create a docker network for kimina and miles to communicate
+```
+
+Note: 
+1. Mount the host docker socket to the container `-v /var/run/docker.sock:/var/run/docker.sock` for Docker-in-Docker execution; 
+2. Connect the container to the docker network `--network formal_math` for kimina and miles to communicate.
+
 ```shell
 # install dependencies
 apt update && apt install -y docker-cli
