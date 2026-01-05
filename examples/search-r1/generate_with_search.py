@@ -159,7 +159,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
             **(args.apply_chat_template_kwargs or {}),
         )
     else:
-        assert isinstance(prompt, str), "prompt should be a string when apply_chat_template is False"
+        assert isinstance(prompt, str), "prompt should be a string"
         prompt_text = prompt
     prompt_tokens_ids = state.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
     response = ""
