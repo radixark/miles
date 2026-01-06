@@ -1,0 +1,890 @@
+diff --git a/examples/deepseek_v32/ring_ref.py b/examples/deepseek_v32/ring_ref.py
+new file mode 100644
+index 00000000..5177075e
+--- /dev/null
++++ b/examples/deepseek_v32/ring_ref.py
+@@ -0,0 +1,354 @@
++# Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++
++# Some of this code was adopted from https://github.com/zhuzilin/ring-flash-attention/
++# This source code is licensed under the MIT license found in the
++# LICENSE file in the root directory of this source tree.
++
++import torch
++from torch.nn import functional as F
++import torch.distributed as dist
++
++try:
++    import einops
++
++    HAVE_EINOPS = True
++except ImportError:
++    HAVE_EINOPS = False
++
++
++@torch.no_grad
++def eager_attn_fwd(q, k, v, attn_bias, sinks, scale, dropout):
++    """Forward pass for eager attention"""
++
++    # Rearrange query, key, value to (b, h, s, d)
++    b, sq, h, d = q.shape
++    sk = k.shape[1]
++    _q = einops.rearrange(q, 'b s h d -> b h s d')
++    _k = einops.rearrange(k, 'b s h d -> b h d s')
++    _v = einops.rearrange(v, 'b s h d -> b h s d')
++
++    # Compute attention weights
++    attn_w = torch.matmul(_q, _k) * scale
++    attn_w = attn_w + attn_bias
++
++    # Add sinks to attention weights
++    if sinks is None:
++        logits = attn_w
++    else:
++        _sinks = sinks.reshape(1, h, 1, 1).expand(b, -1, sq, 1)
++        logits = torch.cat([attn_w, _sinks], dim=-1)
++
++    # Compute attention scores
++    probs = F.softmax(logits, dim=-1, dtype=logits.dtype)
++    if sinks is None:
++        attn_w = probs
++    else:
++        attn_w = probs[..., :-1]  # Drop the sink
++
++    # Compute attention output
++    attn_output = torch.matmul(attn_w, _v)
++    attn_output = einops.rearrange(attn_output, 'b h s d -> b s h d')
++    attn_output = attn_output.contiguous()
++
++    return attn_output, probs
++
++
++@torch.no_grad
++def eager_attn_bwd(q, k, v, attn_bias, sinks, scale, dropout, attn_output, probs, grad_output):
++    """Backward pass for eager attention"""
++
++    # Rearrange query, key, value to (b, h, s, d)
++    b, sq, h, d = q.shape
++    sk = k.shape[1]
++    _q_T = einops.rearrange(q, 'b s h d -> b h d s')
++    _k_T = einops.rearrange(k, 'b s h d -> b h s d')
++    _v_T = einops.rearrange(v, ' b s h d -> b h d s')
++
++    # Backward pass for score @ value
++    if sinks is None:
++        attn_w = probs
++    else:
++        attn_w = probs[..., :-1]  # Drop the sink
++    grad_output = einops.rearrange(grad_output, 'b s h d -> b h s d')
++    attn_w_T = einops.rearrange(attn_w, ' b h sq sk -> b h sk sq')
++    grad__v = torch.matmul(attn_w_T, grad_output)
++    grad_attn_w = torch.matmul(grad_output, _v_T)
++
++    # Backward pass for softmax
++    if sinks is None:
++        grad_probs = grad_attn_w
++    else:
++        dummy = torch.zeros((b, h, sq, 1), device=q.device, dtype=q.dtype)
++        grad_probs = torch.cat([grad_attn_w, dummy], dim=3)
++    del grad_attn_w
++    grad_logits = torch._softmax_backward_data(
++        grad_probs, probs, -1, probs.dtype
++    )  # [b, h, sq, sk+1]
++
++    # Backward pass for adding sinks
++    if sinks is None:
++        grad_sinks = None
++        grad_attn_w = grad_logits
++    else:
++        grad__sinks = grad_logits[:, :, :, -1]  # [b, h, sq]
++        grad_sinks = einops.rearrange(grad__sinks, 'b h s -> h (b s)').sum(-1)
++        grad_attn_w = grad_logits[:, :, :, :-1].contiguous()  # [b, h, sq, sk]
++
++    # Backward pass for q @ K^T
++    grad_attn_w *= scale
++    grad__q = torch.matmul(grad_attn_w, _k_T)
++    grad__k = torch.matmul(_q_T, grad_attn_w)
++
++    # Rearrange grads to (b, s, h, d)
++    grad_v = einops.rearrange(grad__v, 'b h s d -> b s h d')
++    grad_k = einops.rearrange(grad__k, 'b h d s -> b s h d')
++    grad_q = einops.rearrange(grad__q, 'b h s d -> b s h d')
++    return grad_q, grad_k, grad_v, grad_sinks
++
++
++class AllGatherComm:
++    """All gather communication with async operations"""
++
++    def __init__(self, group=None) -> None:
++        self.group = group
++        self.handles = []
++
++    def all_gather(self, output_tensor: torch.Tensor, input_tensor: torch.Tensor):
++        '''All gather the input tensor to the output tensor'''
++
++        if self.group is None:
++            output_tensor.copy_(input_tensor)
++        else:
++            handle = torch.distributed.all_gather_into_tensor(
++                output_tensor, input_tensor, group=self.group, async_op=True
++            )
++            self.handles.append(handle)
++
++    def wait(self):
++        '''Wait for all gather operations to complete'''
++
++        if self.group is not None:
++            for handle in self.handles:
++                handle.wait()
++            self.handles = []
++
++
++def to_zz_mask_attn_bias(attention_mask, cp_size, nheads, nheads_k, heads_k_stride, device, dtype, if_zz_mask=False):
++    '''Convert the attention mask to the attention bias'''
++
++    if cp_size == 1 or if_zz_mask:
++        zz_mask = attention_mask
++    else:
++        chunked = attention_mask.chunk(dim=3, chunks=cp_size * 2)
++        zz_mask = [_x for _p in zip(chunked[:cp_size], reversed(chunked[cp_size:])) for _x in _p]
++        zz_mask = torch.cat(zz_mask, dim=3)
++    attn_bias = torch.zeros(zz_mask.shape, device=device, dtype=dtype)
++    attn_bias.masked_fill_(zz_mask, float('-inf'))
++    attn_bias = attn_bias.expand(-1, heads_k_stride * (nheads // nheads_k), -1, -1)
++    return attn_bias
++
++
++class Ref(torch.autograd.Function):
++    """Native attention function with context parallelism."""
++
++    @staticmethod
++    def forward(ctx, q, k, v, attention_mask, attention_dropout, softmax_scale, pg, if_zz_mask=False):
++        '''Forward pass for the native attention function with context parallelism'''
++
++        # Assert einops exists
++        if not HAVE_EINOPS:
++            raise ImportError("einops is required by the attention CP but cannot be imported.")
++
++        # Initialize communication group and constants
++        cp_size = 1
++        if pg is not None:
++            cp_size = torch.distributed.get_world_size(pg)
++        comm = AllGatherComm(group=pg)
++        nheads = q.shape[2]
++        nheads_k = k.shape[2]
++        heads_k_stride = 1
++        assert nheads % nheads_k == 0 and nheads_k % heads_k_stride == 0
++        outs = []
++        probs = []
++
++        # Initialize KV buffers
++        # seperate KV buffer for MLA
++        kv_buffer = [torch.empty(
++            (k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
++            dtype=k.dtype,
++            device=k.device,
++        ), torch.empty(
++            (v.shape[0] * cp_size, v.shape[1], heads_k_stride, v.shape[3]),
++            dtype=v.dtype,
++            device=v.device,
++        )]
++        kv_buffer_copy = [torch.empty_like(kv_buffer[0]), torch.empty_like(kv_buffer[1])]
++
++        # All-gather first chunk of KV buffers
++        k_0 = k[:, :, :heads_k_stride].contiguous()
++        v_0 = v[:, :, :heads_k_stride].contiguous()
++        comm.all_gather(kv_buffer_copy[0], k_0)
++        comm.all_gather(kv_buffer_copy[1], v_0)
++
++        # Prepare attention bias
++        attn_bias = to_zz_mask_attn_bias(
++            attention_mask, cp_size, nheads, nheads_k, heads_k_stride, q.device, q.dtype, if_zz_mask
++        )
++
++        # Iterate over heads
++        for i in range(0, nheads_k, heads_k_stride):
++            # Wait for previous all-gather to complete
++            comm.wait()
++            kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
++            # All-gather the next portion of KV buffers if not the last iteration
++            if i < nheads_k - heads_k_stride:
++                kvsl = i + heads_k_stride
++                kvsr = kvsl + heads_k_stride
++                send_k = k[:, :, kvsl:kvsr].contiguous()
++                send_v = v[:, :, kvsl:kvsr].contiguous()
++                comm.all_gather(kv_buffer_copy[0], send_k)
++                comm.all_gather(kv_buffer_copy[1], send_v)
++
++            # Prepare query, key, value for attention
++            q_i = q[:, :, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
++            k_i = kv_buffer[0]
++            v_i = kv_buffer[1]
++
++            # Rearrange query, key, value to (b, s, h, d)
++            q_i = einops.rearrange(q_i, 's b h d -> b s h d')
++            k_i = einops.rearrange(k_i, 's b h d -> b s h d')
++            v_i = einops.rearrange(v_i, 's b h d -> b s h d')
++
++            # Forward pass
++            out_i, probs_i = eager_attn_fwd(
++                q_i, k_i, v_i, attn_bias.contiguous(), None, softmax_scale, attention_dropout
++            )
++
++            outs.append(out_i)
++            probs.append(probs_i)
++
++        # Concatenate outputs and rearrange to (s, b, h, d)
++        out = torch.cat(outs, dim=2)
++        out = einops.rearrange(out, 'b s h d -> s b h d')
++
++        # Save contexts for backward pass
++        ctx.save_for_backward(q, k, v, attention_mask, *outs, *probs)
++        ctx.if_zz_mask = if_zz_mask
++        ctx.dropout = attention_dropout
++        ctx.scale = softmax_scale
++        ctx.heads_k_stride = heads_k_stride  # TODO make it configurable
++        ctx.pg = pg
++
++        return out
++
++    @staticmethod
++    def backward(ctx, dout):
++        '''Backward pass for the native attention function with context parallelism'''
++
++        # Initialize or resume constants and communication group
++        q, k, v, attention_mask, *rest = ctx.saved_tensors
++        nheads = q.shape[2]
++        nheads_k = k.shape[2]
++        heads_k_stride = ctx.heads_k_stride
++        assert nheads_k % heads_k_stride == 0
++        outs = rest[: nheads_k // heads_k_stride]
++        probs = rest[nheads_k // heads_k_stride :]
++        pg = ctx.pg
++        cp_size = 1
++        if pg is not None:
++            cp_size = torch.distributed.get_world_size(pg)
++        comm = AllGatherComm(group=pg)
++
++        # Initialize KV buffers
++        kv_buffer = [torch.empty(
++            (k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
++            dtype=k.dtype,
++            device=k.device,
++        ), torch.empty(
++            (v.shape[0] * cp_size, v.shape[1], heads_k_stride, v.shape[3]),
++            dtype=v.dtype,
++            device=v.device,
++        )]
++        kv_buffer_copy = [torch.empty_like(kv_buffer[0]), torch.empty_like(kv_buffer[1])]
++
++        # All-gather first chunk of KV buffers
++        dq = []
++        dk = []
++        dv = []
++        k_0 = k[:, :, :heads_k_stride].contiguous()
++        v_0 = v[:, :, :heads_k_stride].contiguous()
++        comm.all_gather(kv_buffer_copy[0], k_0)
++        comm.all_gather(kv_buffer_copy[1], v_0)
++
++        # Prepare attention bias
++        attn_bias = to_zz_mask_attn_bias(
++            attention_mask, cp_size, nheads, nheads_k, heads_k_stride, q.device, q.dtype, ctx.if_zz_mask
++        )
++
++        # Iterate over heads
++        for i in range(0, nheads_k, heads_k_stride):
++            # Slice query and output for this iteration
++            q_slice = slice(i * nheads // nheads_k, (i + heads_k_stride) * nheads // nheads_k)
++            q_i = q[:, :, q_slice]
++            dout_i = dout[:, :, q_slice]
++
++            # Wait for previous all-gather to complete
++            comm.wait()
++            kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
++
++            # All-gather the next portion of KV buffers if not the last iteration
++            if i < nheads_k - heads_k_stride:
++                kvsl = i + heads_k_stride
++                kvsr = kvsl + heads_k_stride
++                send_k = k[:, :, kvsl:kvsr].contiguous()
++                send_v = v[:, :, kvsl:kvsr].contiguous()
++                comm.all_gather(kv_buffer_copy[0], send_k)
++                comm.all_gather(kv_buffer_copy[1], send_v)
++
++            # Prepare key, value for attention
++            k_i = kv_buffer[0]
++            v_i = kv_buffer[1]
++
++            # Rearrange query, key, value to (b, s, h, d)
++            q_i = einops.rearrange(q_i, 's b h d -> b s h d')
++            k_i = einops.rearrange(k_i, 's b h d -> b s h d')
++            v_i = einops.rearrange(v_i, 's b h d -> b s h d')
++            dout_i = einops.rearrange(dout_i, 's b h d -> b s h d')
++
++            # Backward pass
++            dq_i, _dk_i, _dv_i, _ = eager_attn_bwd(
++                q_i, k_i, v_i, attn_bias, None, ctx.scale, ctx.dropout, outs[i], probs[i], dout_i
++            )
++
++            # Rearrange gradients to (s, b, h, d)
++            dq_i = einops.rearrange(dq_i, 'b s h d -> s b h d')
++            _dk_i = einops.rearrange(_dk_i, 'b s h d -> s b h d')
++            _dv_i = einops.rearrange(_dv_i, 'b s h d -> s b h d')
++            if pg is None:
++                dk_i = _dk_i
++                dv_i = _dv_i
++            else:
++                # Reduce-scatter gradients if CP > 1
++                dk_i = torch.zeros(
++                    (k_i.shape[1] // cp_size, k_i.shape[0], k_i.shape[2], k_i.shape[3]),
++                    device=k_i.device,
++                    dtype=k_i.dtype,
++                )
++                dv_i = torch.zeros(
++                    (v_i.shape[1] // cp_size, v_i.shape[0], v_i.shape[2], v_i.shape[3]),
++                    device=v_i.device,
++                    dtype=v_i.dtype,
++                )
++                torch.distributed.reduce_scatter_tensor(dk_i, _dk_i, group=pg)
++                torch.distributed.reduce_scatter_tensor(dv_i, _dv_i, group=pg)
++
++            # Collect gradients
++            dq.append(dq_i)
++            dk.append(dk_i)
++            dv.append(dv_i)
++
++        # Concatenate gradients and return
++        dq = torch.cat(dq, dim=2)
++        dk = torch.cat(dk, dim=2)
++        dv = torch.cat(dv, dim=2)
++        return dq, dk, dv, None, None, None, None, None
+diff --git a/examples/deepseek_v32/ring_wrapper.py b/examples/deepseek_v32/ring_wrapper.py
+new file mode 100644
+index 00000000..16d619cb
+--- /dev/null
++++ b/examples/deepseek_v32/ring_wrapper.py
+@@ -0,0 +1,227 @@
++# Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++
++# Some of this code was adopted from https://github.com/zhuzilin/ring-flash-attention/
++# This source code is licensed under the MIT license found in the
++# LICENSE file in the root directory of this source tree.
++
++import torch
++import torch.distributed as dist
++from torch.nn import functional as F
++from sparse_mla_fwd import sparse_mla_fwd_interface
++from sparse_mla_bwd import sparse_mla_bwd
++
++try:
++    import einops
++
++    HAVE_EINOPS = True
++except ImportError:
++    HAVE_EINOPS = False
++
++
++class AllGatherComm:
++    """All gather communication with async operations"""
++
++    def __init__(self, group=None) -> None:
++        self.group = group
++        self.handles = []
++
++    def all_gather(self, output_tensor: torch.Tensor, input_tensor: torch.Tensor):
++        '''All gather the input tensor to the output tensor'''
++
++        if self.group is None:
++            output_tensor.copy_(input_tensor)
++        else:
++            handle = torch.distributed.all_gather_into_tensor(
++                output_tensor, input_tensor, group=self.group, async_op=True
++            )
++            self.handles.append(handle)
++
++    def wait(self):
++        '''Wait for all gather operations to complete'''
++
++        if self.group is not None:
++            for handle in self.handles:
++                handle.wait()
++            self.handles = []
++
++class AttentionFuncionWithContextParallel(torch.autograd.Function):
++    """Native attention function with context parallelism."""
++
++    # q: [seq_len_shard, batch, nheads, dim + tail_dim]
++    # kv: [seq_len_kv_shard, batch, kv_group, dim + tail_dim]
++    #   k: [seq_len_kv_shard, batch, kv_group, dim + tail_dim]
++    #   v: [seq_len_kv_shard, batch, kv_group, dim]
++    # indices: [batch, kv_group, seq_len, topk]
++    @staticmethod
++    def forward(ctx, q, kv, indices, K, attention_dropout, softmax_scale, pg):
++        '''Forward pass for the native attention function with context parallelism'''
++
++        # Assert einops exists
++        if not HAVE_EINOPS:
++            raise ImportError("einops is required by the attention CP but cannot be imported.")
++
++        # Initialize communication group and constants
++        cp_size = 1
++        if pg is not None:
++            cp_size = torch.distributed.get_world_size(pg)
++        comm = AllGatherComm(group=pg)
++        nheads = q.shape[2]
++        kv_group = kv.shape[2]
++        heads_kv_stride = 1
++        assert nheads % kv_group == 0 and kv_group % heads_kv_stride == 0
++        outs = []
++        lses = []
++
++        # Initialize KV buffers
++        kv_buffer = torch.empty(
++            (kv.shape[0] * cp_size, kv.shape[1], heads_kv_stride, kv.shape[3]),
++            dtype=kv.dtype,
++            device=kv.device,
++        )
++        kv_buffer_copy = torch.empty_like(kv_buffer)
++
++        # All-gather first chunk of KV buffers
++        kv_0 = kv[:, :, :heads_kv_stride].contiguous()
++        comm.all_gather(kv_buffer_copy, kv_0)
++
++        # Prepare topk
++        zz_indices = indices.transpose(1, 2)
++        
++        # Iterate over heads, sequential, i
++        for i in range(0, kv_group, heads_kv_stride):
++            # Wait for previous all-gather to complete
++            comm.wait()
++            kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
++            # All-gather the next portion of KV buffers if not the last iteration
++            if i < kv_group - heads_kv_stride:
++                kvsl = i + heads_kv_stride
++                kvsr = kvsl + heads_kv_stride
++                send_kv = kv[:, :, kvsl:kvsr].contiguous()
++                comm.all_gather(kv_buffer_copy, send_kv)
++
++            # Prepare query, key, value for attention
++            q_i = q[:, :, i * nheads // kv_group : (i + heads_kv_stride) * nheads // kv_group]
++            kv_i = kv_buffer
++
++            # Rearrange query, key, value to (b, s, h, d)
++            q_i = einops.rearrange(q_i, 's b h d -> b s h d')
++            kv_i = einops.rearrange(kv_i, 's b h d -> b s h d')
++            zz_indices_i = zz_indices[:, :, i:(i+heads_kv_stride)].contiguous()
++
++            # Forward pass
++            out_i, lse_i = sparse_mla_fwd_interface(q_i.contiguous(), kv_i.contiguous(), zz_indices_i, sm_scale = softmax_scale)
++
++            outs.append(out_i.contiguous())
++            lses.append(lse_i.contiguous())
++
++        # out: [B, seq_len_shard, h, dim] -> [seq_len, B, h, dim]
++        out = torch.cat(outs, dim=2)
++        out = einops.rearrange(out, 'b s h d -> s b h d')
++
++        # Save contexts for backward pass
++        # outs: [[B, seq_len_shard, nheads // kv_group, dim], ...., [B, seq_len_shard, nheads // kv_group, dim]], repeat kv_group // heads_kv_stride times
++        # lses: [[B, seq_len_shard, heads_kv_stride], ...., [B, seq_len_shard, heads_kv_stride]], repeat kv_group // heads_kv_stride times
++        ctx.save_for_backward(q, kv, indices, *outs, *lses)
++        ctx.K = K
++        ctx.dropout = attention_dropout
++        ctx.softmax_scale = softmax_scale
++        ctx.heads_kv_stride = heads_kv_stride  # TODO make it configurable
++        ctx.pg = pg
++
++        return out
++
++    @staticmethod
++    def backward(ctx, dout):
++        '''Backward pass for the native attention function with context parallelism'''
++
++        # Initialize or resume constants and communication group
++        q, kv, indices, *rest = ctx.saved_tensors
++        K = ctx.K
++        nheads = q.shape[2]
++        kv_group = kv.shape[2]
++        heads_kv_stride = ctx.heads_kv_stride
++        softmax_scale = ctx.softmax_scale
++        assert kv_group % heads_kv_stride == 0
++
++        outs = rest[: kv_group // heads_kv_stride]
++        lses = rest[kv_group // heads_kv_stride :]
++
++        pg = ctx.pg
++        cp_size = 1
++        if pg is not None:
++            cp_size = torch.distributed.get_world_size(pg)
++        comm = AllGatherComm(group=pg)
++
++        # Initialize KV buffers
++        kv_buffer = torch.empty(
++            (kv.shape[0] * cp_size, kv.shape[1], heads_kv_stride, kv.shape[3]),
++            dtype=kv.dtype,
++            device=kv.device,
++        )
++        kv_buffer_copy = torch.empty_like(kv_buffer)
++
++        # All-gather first chunk of KV buffers
++        dq = []
++        dkv = []
++        kv_0 = kv[:, :, :heads_kv_stride].contiguous()
++        comm.all_gather(kv_buffer_copy, kv_0)
++
++        # Prepare topk
++        zz_indices = indices.transpose(1, 2)
++
++        # Iterate over heads
++        for i in range(0, kv_group, heads_kv_stride):
++            # Slice query and output for this iteration
++            q_slice = slice(i * nheads // kv_group, (i + heads_kv_stride) * nheads // kv_group)
++            q_i = q[:, :, q_slice]
++            dout_i = dout[:, :, q_slice]
++
++            # Wait for previous all-gather to complete
++            comm.wait()
++            kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
++
++            # All-gather the next portion of KV buffers if not the last iteration
++            if i < kv_group - heads_kv_stride:
++                kvsl = i + heads_kv_stride
++                kvsr = kvsl + heads_kv_stride
++                send_kv = kv[:, :, kvsl:kvsr].contiguous()
++                comm.all_gather(kv_buffer_copy, send_kv)
++
++            # Prepare key, value for attention
++            kv_i = kv_buffer
++
++            # Rearrange query, key, value to (b, s, h, d)
++            q_i = einops.rearrange(q_i, 's b h d -> b s h d')
++            kv_i = einops.rearrange(kv_i, 's b h d -> b s h d')
++            dout_i = einops.rearrange(dout_i, 's b h d -> b s h d')
++            zz_indices_i = zz_indices[:, :, i:(i+heads_kv_stride)].contiguous()
++
++            # Backward pass
++            # TODO: needs casual = True, may not be compatible with zz
++            dq_i, _dkv_i = sparse_mla_bwd(q_i.contiguous(), kv_i.contiguous(), outs[i], dout_i.contiguous(), zz_indices_i, lses[i], softmax_scale, True)
++
++            # Rearrange gradients to (s, b, h, d)
++            dq_i = einops.rearrange(dq_i, 'b s h d -> s b h d')
++            _dkv_i = einops.rearrange(_dkv_i, 'b s h d -> s b h d')
++            if pg is None:
++                dkv_i = _dkv_i
++            else:
++                # Reduce-scatter gradients if CP > 1
++                dkv_i = torch.zeros(
++                    (kv_i.shape[1] // cp_size, kv_i.shape[0], kv_i.shape[2], kv_i.shape[3]),
++                    device=kv_i.device,
++                    dtype=kv_i.dtype,
++                )
++                torch.distributed.reduce_scatter_tensor(dkv_i, _dkv_i, group=pg)
++
++            # Collect gradients
++            dq.append(dq_i)
++            dkv.append(dkv_i)
++
++        # Concatenate gradients and return
++        dq = torch.cat(dq, dim=2)
++        dkv = torch.cat(dkv, dim=2)
++        return dq, dkv, None, None, None, None, None
++
++
++
+diff --git a/examples/deepseek_v32/sparse_mla_bwd.py b/examples/deepseek_v32/sparse_mla_bwd.py
+index 527de22b..149015f8 100644
+--- a/examples/deepseek_v32/sparse_mla_bwd.py
++++ b/examples/deepseek_v32/sparse_mla_bwd.py
+@@ -94,7 +94,7 @@ def bwd(
+     is_causal=True,
+     block_size=32,
+     num_stages=0,
+-    threads=256,
++    threads=128,
+     indices_dtype=T.int32,
+     dtype=T.bfloat16,
+     accum_dtype=T.float32,
+@@ -147,7 +147,6 @@ def bwd(
+             KV_shared = T.alloc_shared([BS, D], dtype)
+             KV_tail_shared = T.alloc_shared([BS, D_tail], dtype)
+             dO_shared = T.alloc_shared([block_H, D], dtype)
+-            mask = T.alloc_fragment([BS], "bool")
+ 
+             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
+             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
+@@ -174,13 +173,9 @@ def bwd(
+ 
+             # Process each block of indices
+             for i_i in T.Pipelined(NS, num_stages=num_stages):
+-                # Check which indices are valid
+-                for bi_i in T.Parallel(BS):
+-                    mask[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i] <= max_kv_i
+-
+                 # Compute attention scores
+                 for h_i, bi_i in T.Parallel(block_H, BS):
+-                    acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
++                    acc_p[h_i, bi_i] = 0
+ 
+                 # Load KV, V for this block of indices
+                 for bi_i, d_i in T.Parallel(BS, D):
+diff --git a/examples/deepseek_v32/sparse_mla_fwd.py b/examples/deepseek_v32/sparse_mla_fwd.py
+index 2c8bf7fc..963ea18a 100644
+--- a/examples/deepseek_v32/sparse_mla_fwd.py
++++ b/examples/deepseek_v32/sparse_mla_fwd.py
+@@ -105,7 +105,6 @@ def sparse_mla_fwd(
+             b_i, g_i = by, bz
+             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
+             q_i = s_i
+-            max_kv_i = q_i
+ 
+             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
+             H1 = H0 + H_per_block
+@@ -114,16 +113,12 @@ def sparse_mla_fwd(
+             T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared)
+ 
+             for i_i in T.Pipelined(NI, num_stages=num_stages):
+-                for bi_i in T.Parallel(BI):
+-                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] <= max_kv_i
+-
+                 for bi_i, d_i in T.Parallel(BI, D):
+                     KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
+                 for bi_i, d_i in T.Parallel(BI, D_tail):
+                     K_tail_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, D + d_i]
+-
+                 for h_i, bi_i in T.Parallel(H_per_block, BI):
+-                    acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
++                    acc_s[h_i, bi_i] = 0
+                 T.gemm(
+                     Q_shared,
+                     KV_shared,
+@@ -228,6 +223,38 @@ def ref_sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, is_casual=True):
+     o = o.reshape(b, sq, h, dim_v)
+     return o.to(torch.bfloat16)
+ 
++def ref_sparse_mla_fwd_interface_no_mask(q, kv, indices, sm_scale=None, is_casual=True):
++    q = q.float()
++    kv = kv.float()
++    indices = indices.transpose(1, 2)
++    b, sq, h, dim_q = q.shape
++    b, sk, g, _ = kv.shape
++
++    assert kv.shape[-1] == 576, "you should assign dim otherwise"
++    dim = 512
++    k = kv
++    v = kv[..., :dim]
++
++    b, _, _, dim_v = v.shape
++    g_index = g
++    h_index = h // g
++    
++    mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
++    mask = mask[..., :-1]
++    mask[:, :, : 1 - 1, 0] = True
++    mask = mask.view(b, g_index, 1, sq, sk)
++
++    q = q.view(b, sq, g, -1, dim_q)
++    score = torch.einsum("bmghd,bngd->bghmn", q, k)
++    sm_scale = dim_q**-0.5 if sm_scale is None else sm_scale
++    score = score.masked_fill(~mask, float("-inf")).mul(sm_scale)
++    p = score.softmax(dim=-1)
++    p = p.view(b, g_index, h_index, -1, sq, sk)
++    p = p.view(b, g, -1, sq, sk)
++    o = torch.einsum("bghmn,bngd->bmghd", p.type(v.dtype), v)
++    o = o.reshape(b, sq, h, dim_v)
++    return o.to(torch.bfloat16)
++
+ 
+ def test_sparse_mla_fwd(
+     B=1,
+diff --git a/examples/deepseek_v32/sparse_mla_fwd_pipelined.py b/examples/deepseek_v32/sparse_mla_fwd_pipelined.py
+index 7e664d11..99d2dbeb 100644
+--- a/examples/deepseek_v32/sparse_mla_fwd_pipelined.py
++++ b/examples/deepseek_v32/sparse_mla_fwd_pipelined.py
+@@ -310,7 +310,9 @@ def sparse_mla_fwd(
+ def sparse_mla_fwd_interface(
+     q, kv, indices, q_start_index_s, kv_stride, sm_scale=None, is_casual=True, return_kernel=False, print_kernel=False
+ ):
+-    assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
++    assert q.is_contiguous()
++    assert kv.is_contiguous() 
++    assert indices.is_contiguous()
+     batch, seq_len, heads, dim_plus_tail_dim = q.shape
+     _, seq_len_kv, kv_group, _ = kv.shape
+ 
+diff --git a/examples/deepseek_v32/test.py b/examples/deepseek_v32/test.py
+new file mode 100644
+index 00000000..a70a1a16
+--- /dev/null
++++ b/examples/deepseek_v32/test.py
+@@ -0,0 +1,170 @@
++
++import torch
++import torch.distributed as dist
++from torch.nn import functional as F
++import os
++from sparse_mla_fwd import sparse_mla_fwd_interface, ref_sparse_mla_fwd_interface, ref_sparse_mla_fwd_interface_no_mask
++from sparse_mla_bwd import sparse_mla_bwd
++from ring_ref import Ref
++from ring_wrapper import AttentionFuncionWithContextParallel
++
++try:
++    import einops
++
++    HAVE_EINOPS = True
++except ImportError:
++    HAVE_EINOPS = False
++
++@torch.no_grad
++def eager_attn_fwd(q, k, v, attn_bias, sinks, scale, dropout):
++    """Forward pass for eager attention"""
++
++    # Rearrange query, key, value to (b, h, s, d)
++    b, sq, h, d = q.shape
++    sk = k.shape[1]
++    _q = einops.rearrange(q, 'b s h d -> b h s d')
++    _k = einops.rearrange(k, 'b s h d -> b h d s')
++    _v = einops.rearrange(v, 'b s h d -> b h s d')
++
++    # Compute attention weights
++    attn_w = torch.matmul(_q, _k) * scale
++    attn_w = attn_w + attn_bias
++
++    # Add sinks to attention weights
++    if sinks is None:
++        logits = attn_w
++    else:
++        _sinks = sinks.reshape(1, h, 1, 1).expand(b, -1, sq, 1)
++        logits = torch.cat([attn_w, _sinks], dim=-1)
++
++    # Compute attention scores
++    probs = F.softmax(logits, dim=-1, dtype=logits.dtype)
++    if sinks is None:
++        attn_w = probs
++    else:
++        attn_w = probs[..., :-1]  # Drop the sink
++
++    # Compute attention output
++    attn_output = torch.matmul(attn_w, _v)
++    attn_output = einops.rearrange(attn_output, 'b h s d -> b s h d')
++    attn_output = attn_output.contiguous()
++
++    return attn_output, probs
++
++
++def init_dist():
++    local_rank = int(os.environ["LOCAL_RANK"])
++    torch.cuda.set_device(local_rank)
++    device = torch.device("cuda", local_rank)
++    if not dist.is_initialized():
++        dist.init_process_group(
++            backend="nccl",
++            init_method="env://",
++        )
++
++def create_cp_pg(cp_size=4):
++    """
++    Context Parallel (CP) groups:
++    world ranks: [0..world_size-1]
++    groups: [0,1,2,3], [4,5,6,7], ...
++    """
++    world_size = dist.get_world_size()
++    rank = dist.get_rank()
++    assert world_size % cp_size == 0
++
++    cp_groups = []
++    my_cp_pg = None
++    my_cp_rank = None
++
++    for start in range(0, world_size, cp_size):
++        ranks = list(range(start, start + cp_size))
++        pg = dist.new_group(ranks=ranks)
++        cp_groups.append(pg)
++
++        if rank in ranks:
++            my_cp_pg = pg
++            my_cp_rank = ranks.index(rank)
++
++    return my_cp_pg, my_cp_rank
++
++def test_kernel(
++    batch,
++    seq_len,
++    seq_len_kv,
++    dim,
++    tail_dim,
++    topk,
++    nheads,
++    kv_group,
++    cp_size
++):
++    init_dist()
++    cp_pg, curr_rank = create_cp_pg(cp_size=4)
++
++    torch.manual_seed(42)
++    # q: [seq_len_shard, batch, nheads, dim + tail_dim]
++    # kv: [seq_len_kv_shard, batch, kv_group, dim + tail_dim]
++    #   k: [seq_len_kv_shard, batch, kv_group, dim + tail_dim]
++    #   v: [seq_len_kv_shard, batch, kv_group, dim]
++    # indices: [batch, kv_group, seq_len, topk]
++    q_full  = torch.randn((seq_len,    batch, nheads,   dim + tail_dim), device="cuda", dtype=torch.bfloat16)
++    kv_full = torch.randn((seq_len_kv, batch, kv_group, dim + tail_dim), device="cuda", dtype=torch.bfloat16)
++
++    q_tmp  = torch.chunk(q_full,  cp_size * 2, dim=0)
++    kv_tmp = torch.chunk(kv_full, cp_size * 2, dim=0)
++
++    mirror = cp_size * 2 - curr_rank - 1
++    q_local  = torch.cat([q_tmp[curr_rank],  q_tmp[mirror]],  dim=0).contiguous().requires_grad_()
++    kv_local = torch.cat([kv_tmp[curr_rank], kv_tmp[mirror]], dim=0).contiguous().requires_grad_()
++    k_full, v_full = kv_full.clone().contiguous(), kv_full[..., :dim].clone().contiguous()
++    k_local = kv_local.detach().clone().contiguous().requires_grad_(True)
++    v_local = kv_local[..., :dim].detach().clone().contiguous().requires_grad_(True)
++
++    # indices: long, no grad
++    perm = torch.randperm(seq_len_kv, device="cuda")
++    indices_full = perm[:topk]
++    indices_full = indices_full.view(1, 1, 1, topk).expand(
++        batch, 1, seq_len, topk
++    ).contiguous().to(torch.int32)
++
++    # mask: float/bf16, no grad
++    attn_mask_full = torch.ones(
++        (batch, 1, seq_len, seq_len_kv),
++        device="cuda",
++        dtype=torch.bool,
++    )
++    attn_mask_full.scatter_(-1, indices_full, False)
++
++    sparse_mask_tmp   = torch.chunk(attn_mask_full, cp_size * 2, dim=2)
++    sparse_mask_local = torch.cat([sparse_mask_tmp[curr_rank], sparse_mask_tmp[mirror]], dim=2).contiguous()
++
++    indices_tmp   = torch.chunk(indices_full, cp_size * 2, dim=2)
++    indices_local = torch.cat([indices_tmp[curr_rank], indices_tmp[mirror]], dim=2).contiguous().expand(-1, kv_group, -1, -1).contiguous()
++
++    sm_scale = (dim + tail_dim)**-0.5
++    attention_dropout = 0
++
++    do = torch.randn((seq_len//cp_size,  batch, nheads,  dim), device="cuda", dtype=torch.bfloat16).contiguous()
++
++    # [b, 1, sq, skv_global]
++    q_local.grad = None
++    k_local.grad = None
++    v_local.grad = None
++    kv_local.grad = None
++    res1 = Ref.apply(q_local, k_local, v_local, sparse_mask_local, attention_dropout, sm_scale, cp_pg, True)
++    res1.backward(do)
++    if dist.get_rank() == 0:
++        print(k_local.grad[0][0][4])
++        print(v_local.grad[0][0][4])
++    # [batch, kv_group, seq_len, topk]
++    q_local.grad = None
++    k_local.grad = None
++    v_local.grad = None
++    kv_local.grad = None
++    res2 = AttentionFuncionWithContextParallel.apply(q_local, kv_local, indices_local, topk, attention_dropout, sm_scale, cp_pg)
++    res2.backward(do)
++    if dist.get_rank() == 0:
++        print(kv_local.grad[0][0][4])
++
++# run this test: rm -rf /tmp/tilelang_cache_clean && CUDA_VISIBLE_DEVICES=4,5,6,7 TILELANG_CACHE_DIR=/tmp/tilelang_cache_clean torchrun --nproc_per_node=4 /root/tilelang/examples/deepseek_v32/test.py
++test_kernel(32, 512, 512, 512, 64, 128, 128, 128, 4)
+\ No newline at end of file
