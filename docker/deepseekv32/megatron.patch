@@ -1,5 +1,5 @@
 diff --git a/megatron/core/transformer/dot_product_attention_context_parallel.py b/megatron/core/transformer/dot_product_attention_context_parallel.py
-index 89659a1d7..740fd2e2a 100644
+index 89659a1d7..4898b9c5f 100644
 --- a/megatron/core/transformer/dot_product_attention_context_parallel.py
 +++ b/megatron/core/transformer/dot_product_attention_context_parallel.py
 @@ -6,6 +6,7 @@
@@ -80,12 +80,7 @@ index 89659a1d7..740fd2e2a 100644
          zz_mask = attention_mask
      else:
          chunked = attention_mask.chunk(dim=3, chunks=cp_size * 2)
-@@ -147,11 +155,11 @@ def to_zz_mask_attn_bias(attention_mask, cp_size, nheads, nheads_k, heads_k_stri
-     return attn_bias
- 
- 
--class AttentionFuncionWithContextParallel(torch.autograd.Function):
-+class Ref(torch.autograd.Function):
+@@ -151,7 +159,7 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
      """Native attention function with context parallelism."""
  
      @staticmethod
