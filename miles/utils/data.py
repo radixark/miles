@@ -1,3 +1,4 @@
+import heapq
 import itertools
 import json
 import logging
@@ -256,17 +257,21 @@ class Dataset:
 
 
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
-    # use first fit to get the number of micro batches
-    batches = []
+    # Use a Max-Heap to track remaining capacity in each bin
+    # Python's heapq is a min-heap, so we store negative remaining capacity
+    remaining_capacities = []
     for length in total_lengths:
-        for i in range(len(batches)):
-            if batches[i] + length <= max_tokens_per_gpu:
-                batches[i] += length
-                break
+        if remaining_capacities and (-remaining_capacities[0] >= length):
+            # Take the bin with the MOST space
+            most_space = -heapq.heappop(remaining_capacities)
+            new_space = most_space - length
+            heapq.heappush(remaining_capacities, -new_space)
         else:
-            batches.append(length)
+            # Create a new bin
+            new_space = max_tokens_per_gpu - length
+            heapq.heappush(remaining_capacities, -new_space)
 
-    return len(batches)
+    return len(remaining_capacities)
 
 
 def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
