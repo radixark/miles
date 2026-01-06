@@ -48,7 +48,7 @@ docker run -itd \
   --privileged \
   --network swe-net \
   --name miles_<your_name> \
-  slimerl/slime:latest \
+  radixark/miles:latest \
   /bin/zsh
 
 # 4. install utils in environment docker
