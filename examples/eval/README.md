@@ -147,7 +147,7 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     --save /root/Qwen3-4B_torch_dist
 ```
 
-### 4. Run the Training Script
+### Run the Training Script
 
 Run the training script.
 
