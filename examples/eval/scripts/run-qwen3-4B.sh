@@ -122,7 +122,9 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# export CUDA_VISIBLE_DEVICES=6,7
+# export CUDA_VISIBLE_DEVICES=0,1
+# Set Up Your GPUs for Training
+
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 2 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
