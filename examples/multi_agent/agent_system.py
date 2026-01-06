@@ -20,8 +20,7 @@ async def generate_response(args, prompt, key):
 
         url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
-        if args.apply_chat_template:
-            assert isinstance(prompt, list), "prompt should be a list when apply_chat_template is True"
+        if isinstance(prompt, list): 
             prompt_text = tokenizer.apply_chat_template(
                 prompt,
                 tokenize=False,
@@ -30,7 +29,7 @@ async def generate_response(args, prompt, key):
             )
             sample.prompt = prompt_text
         else:
-            assert isinstance(prompt, str), "prompt should be a string when apply_chat_template is False"
+            assert isinstance(prompt, str), f"prompt should be a list or a string, got {type(prompt)}"
             sample.prompt = prompt
         prompt_token_ids = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
         sample.tokens = prompt_token_ids
@@ -114,8 +113,6 @@ class SolverAgent(Agent):
     async def generate_initial_solution(self, args, problem_statement) -> str:
         """Generates the first solution attempt."""
         prompt = SOLVER_PROMPT_TEMPLATE.format(problem_statement=problem_statement)
-        if args.apply_chat_template:
-            prompt = [prompt]
         return await self.run(args, prompt, max_retries=3, key="solver")
 
 
@@ -137,8 +134,6 @@ class RewriterAgent(Agent):
             format_params[f"solution{i+1}"] = solution
 
         prompt = template.format(**format_params)
-        if args.apply_chat_template:
-            prompt = [prompt]
         return await self.run(args, prompt, max_retries=1, key="rewriter")
 
 
@@ -160,8 +155,6 @@ class SelectorAgent(Agent):
             format_params[f"solution{i+1}"] = solution
 
         prompt = template.format(**format_params)
-        if args.apply_chat_template:
-            prompt = [prompt]
         return await self.run(args, prompt, max_retries=10, key="selector")
 
     def extract_selected_solution_idx(self, response: str, candidate_solutions: list[str]) -> int:
