@@ -258,7 +258,7 @@ class Dataset:
 
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
 
-    # Sort lengths in descending order (The "Decreasing" part of BFD).
+    # Sort lengths in descending order .
     sorted_lengths = sorted(total_lengths, reverse=True)
 
     # Maintain a sorted list of current bin totals (filled capacities).
