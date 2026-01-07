@@ -1,4 +1,4 @@
-import heapq
+import bisect
 import itertools
 import json
 import logging
@@ -257,21 +257,31 @@ class Dataset:
 
 
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
-    # Use a Max-Heap to track remaining capacity in each bin
-    # Python's heapq is a min-heap, so we store negative remaining capacity
-    remaining_capacities = []
-    for length in total_lengths:
-        if remaining_capacities and (-remaining_capacities[0] >= length):
-            # Take the bin with the MOST space
-            most_space = -heapq.heappop(remaining_capacities)
-            new_space = most_space - length
-            heapq.heappush(remaining_capacities, -new_space)
-        else:
-            # Create a new bin
-            new_space = max_tokens_per_gpu - length
-            heapq.heappush(remaining_capacities, -new_space)
 
-    return len(remaining_capacities)
+    # Sort lengths in descending order (The "Decreasing" part of BFD).
+    sorted_lengths = sorted(total_lengths, reverse=True)
+
+    # Maintain a sorted list of current bin totals (filled capacities).
+    # This allows us to use binary search (bisect) to find the 'Best-Fit' in O(log B).
+    bin_totals = []
+
+    for length in sorted_lengths:
+        # The 'Best-Fit' bin is the one with the smallest remaining space that still fits.
+        # Mathematically, we want the bin with the largest filled capacity <= (limit - length).
+        threshold = max_tokens_per_gpu - length
+
+        # Binary search for the best bin candidate.
+        idx = bisect.bisect_right(bin_totals, threshold)
+
+        if idx > 0:
+            # Pop and re-insert to maintain the sorted order of bin_totals.
+            current_fill = bin_totals.pop(idx - 1)
+            bisect.insort(bin_totals, current_fill + length)
+        else:
+            # No existing bin fits the current sequence; create a new bin.
+            bisect.insort(bin_totals, length)
+
+    return len(bin_totals)
 
 
 def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
