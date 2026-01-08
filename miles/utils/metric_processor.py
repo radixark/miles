@@ -1,9 +1,7 @@
 import logging
-from typing import Optional, Callable
-import torch.distributed as dist
 
-from miles.utils import tracking_utils
 import torch
+import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +67,7 @@ def _extend_reduce(local_vals: torch.Tensor, group):
         max_ = local_vals.max()
         min_ = local_vals.min()
         local_sum = local_vals.sum()
-        local_sum_sq = (local_vals ** 2).sum()
+        local_sum_sq = (local_vals**2).sum()
     else:
         # default value for empty impl
         max_ = torch.tensor(float("-inf"), device=local_vals.device, dtype=local_vals.dtype)
@@ -89,6 +87,6 @@ def _extend_reduce(local_vals: torch.Tensor, group):
         return 0.0, 0.0, max_, min_
 
     global_mean = global_sum / n
-    global_var = (global_sum_sq / n) - (global_mean ** 2)
-    global_std = (global_var ** 0.5) if global_var > 0 else 0.0
+    global_var = (global_sum_sq / n) - (global_mean**2)
+    global_std = (global_var**0.5) if global_var > 0 else 0.0
     return global_mean, global_std, max_, min_

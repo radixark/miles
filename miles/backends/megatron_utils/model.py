@@ -24,12 +24,12 @@ from megatron.training.training import get_model
 from miles.utils import tracking_utils
 from miles.utils.memory_utils import clear_memory
 
+from ...utils.metric_processor import process_metric
 from .checkpoint import load_checkpoint, save_checkpoint
 from .cp_utils import slice_with_cp
 from .data import DataIterator, get_batch
 from .loss import loss_function
 from .model_provider import get_model_provider_func
-from ...utils.metric_processor import process_metric
 
 logger = logging.getLogger(__name__)
 
@@ -495,7 +495,7 @@ def train_one_step(
 
         loss_reduced = {}
         for i, key in enumerate(keys):
-            process_metric(loss_reduced, key, concat_vals[i+1], group=dp_group, amount=amount)
+            process_metric(loss_reduced, key, concat_vals[i + 1], group=dp_group, amount=amount)
             loss_reduced[key] *= mpu.get_context_parallel_world_size()
 
         return loss_reduced, grad_norm
@@ -724,6 +724,7 @@ def initialize_model_and_optimizer(
 
     if torch.version.hip:
         import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
+
         from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
 
         filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync

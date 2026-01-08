@@ -2,7 +2,6 @@ import logging
 import os
 from argparse import Namespace
 from itertools import accumulate
-from typing import Any
 
 import ray
 import torch
@@ -527,7 +526,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 local_vals = torch.stack(val)
             else:
                 # default value for empty list
-                local_vals = torch.tensor([],device=torch.cuda.current_device(),dtype=torch.float32)
+                local_vals = torch.tensor([], device=torch.cuda.current_device(), dtype=torch.float32)
             process_metric(log_dict, f"rollout/{metric_key}", local_vals, self.dp_group)
 
         if dist.get_rank() == 0:
@@ -761,12 +760,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 # Format and pass to process_metric for metrics in reported_accum
                 combined_tensor = torch.cat([v.view(-1) for v in v_list])
 
-                process_metric(
-                    log_dict=log_dict,
-                    key=f"train/{k}",
-                    metric=combined_tensor,
-                    group=self.dp_group
-                )
+                process_metric(log_dict=log_dict, key=f"train/{k}", metric=combined_tensor, group=self.dp_group)
             reported_accum.clear()
             if dist.get_rank() == 0:
                 log_dict["train/grad_norm"] = grad_norm
@@ -870,6 +864,7 @@ class FSDPTrainRayActor(TrainRayActor):
         if packed_sequence.get("multimodal_inputs"):
             model_args.update(packed_sequence["multimodal_inputs"])
         return model_args
+
 
 def selective_log_softmax_raw(logits: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
     """Fused version of the common `log_softmax -> gather` operation.
@@ -1036,6 +1031,7 @@ def sum_of_sample_mean(x: torch.Tensor, response_lengths: list[int], loss_masks:
         ]
     )
 
+
 def get_sample_mean_info(x: torch.Tensor, response_lengths: list[int], loss_masks: list[torch.Tensor]) -> torch.Tensor:
     """Compute sum and vector of per-sample means for variable-length responses.
 
@@ -1095,7 +1091,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         module
         for name, module in model.named_modules()
         if module.__class__.__name__ in layer_cls_to_wrap
-           or (isinstance(module, torch.nn.Embedding) and not model.config.tie_word_embeddings)
+        or (isinstance(module, torch.nn.Embedding) and not model.config.tie_word_embeddings)
     ]
 
     # Determine precision policy based on args

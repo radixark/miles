@@ -118,6 +118,7 @@ def get_sum_of_sample_mean(
 
     return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
 
+
 def get_vector_of_sample_mean(
     total_lengths: list[int],
     response_lengths: list[int],
@@ -128,11 +129,12 @@ def get_vector_of_sample_mean(
     """
     cp_size = mpu.get_context_parallel_world_size()
     if cp_size == 1:
+
         def vector_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             sample_means = [
-                    (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
-                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
-                ]
+                (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
+                for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
+            ]
             return torch.stack(sample_means) if len(sample_means) > 0 else torch.Tensor([], device=x.device)
 
     else:
@@ -150,11 +152,11 @@ def get_vector_of_sample_mean(
 
         def vector_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             sample_means = [
-                    (x_i * chunked_loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-                    for x_i, chunked_loss_mask, loss_mask in zip(
-                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, loss_masks, strict=False
-                    )
-                ]
+                (x_i * chunked_loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
+                for x_i, chunked_loss_mask, loss_mask in zip(
+                    x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, loss_masks, strict=False
+                )
+            ]
             return torch.stack(sample_means) if len(sample_means) > 0 else torch.Tensor([], device=x.device)
 
     return vector_of_sample_mean

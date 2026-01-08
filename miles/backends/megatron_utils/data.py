@@ -17,8 +17,8 @@ from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils
-from .cp_utils import get_sum_of_sample_mean, slice_with_cp, get_vector_of_sample_mean
 from ...utils.metric_processor import _EXTEND_METRICS, process_metric
+from .cp_utils import get_vector_of_sample_mean, slice_with_cp
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +151,10 @@ def gather_log_data(
 
 
 def reduce_log_data(
-        metric_name: str,
-        args: Namespace,
-        rollout_id: int,
-        log_dict: dict[str, torch.Tensor],
+    metric_name: str,
+    args: Namespace,
+    rollout_id: int,
+    log_dict: dict[str, torch.Tensor],
 ) -> dict[str, float] | None:
     """
     Reduce per-rank tensor metrics across DP group and log results.
@@ -173,17 +173,14 @@ def reduce_log_data(
 
     reduced_log_dict = {}
     for key in global_keys:
-        metric_tensor = log_dict.get(
-            key,
-            torch.tensor([], dtype=torch.float32, device=torch.cuda.current_device())
-        )
+        metric_tensor = log_dict.get(key, torch.tensor([], dtype=torch.float32, device=torch.cuda.current_device()))
 
         process_metric(
             log_dict=reduced_log_dict,
             key=f"{metric_name}/{key}",
             metric=metric_tensor,
             group=dp_group,
-            amount=dp_size if metric_tensor.numel() <= 1 else -1
+            amount=dp_size if metric_tensor.numel() <= 1 else -1,
         )
 
     if mpu.get_data_parallel_rank(with_context_parallel=True) == 0:
@@ -368,7 +365,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
         response_lengths = rollout_data["response_lengths"]
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
-        max_seq_lens = rollout_data.get("max_seq_lens", None)
 
         for key, val in rollout_data.items():
             if key in [

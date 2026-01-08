@@ -21,8 +21,12 @@ from miles.utils.ppo_utils import (
 )
 from miles.utils.types import RolloutBatch
 
-from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean, \
-    get_vector_of_sample_mean
+from .cp_utils import (
+    all_gather_with_cp,
+    get_logits_and_tokens_offset_with_cp,
+    get_sum_of_sample_mean,
+    get_vector_of_sample_mean,
+)
 
 
 def get_responses(
