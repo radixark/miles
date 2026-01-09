@@ -291,7 +291,7 @@ The way SGLang parameters are integrated into miles can be found in [miles/backe
 
 ### How to Use the Router
 
-miles uses [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-router) to manage the SGLang servers during the training process. You can configure the address of the [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-router) using `--sglang-router-ip` and `--sglang-router-port`. If not configured, a router will be started by default within the cluster.
+miles uses [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway) to manage the SGLang servers during the training process. You can configure the address of the [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway) using `--sglang-router-ip` and `--sglang-router-port`. If not configured, a router will be started by default within the cluster.
 
 After starting, all SGLang servers will register with the router via the `/add_worker` endpoint. When actually generating data, you only need to send HTTP requests to the router, which will perform load balancing and forward the requests to the servers.
 
