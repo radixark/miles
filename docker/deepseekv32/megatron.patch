@@ -1,3 +1,7 @@
+diff --git a/megatron/core/transformer/.dot_product_attention_context_parallel.py.swp b/megatron/core/transformer/.dot_product_attention_context_parallel.py.swp
+new file mode 100644
+index 000000000..e4bb2ae5b
+Binary files /dev/null and b/megatron/core/transformer/.dot_product_attention_context_parallel.py.swp differ
 diff --git a/megatron/core/transformer/dot_product_attention_context_parallel.py b/megatron/core/transformer/dot_product_attention_context_parallel.py
 index 89659a1d7..b9bd38718 100644
 --- a/megatron/core/transformer/dot_product_attention_context_parallel.py
@@ -417,8 +421,12 @@ index 89659a1d7..b9bd38718 100644
 -        return dq, dk, dv, None, None, None, None
 +        dkv = torch.cat(dkv, dim=2)
 +        return dq, dkv, dkv[:,:,:,:dim_v].detach().contiguous(), None, None, None, None, None, None, None
+diff --git a/megatron/core/transformer/experimental_attention_variant/.dsa.py.swp b/megatron/core/transformer/experimental_attention_variant/.dsa.py.swp
+new file mode 100644
+index 000000000..e8384391a
+Binary files /dev/null and b/megatron/core/transformer/experimental_attention_variant/.dsa.py.swp differ
 diff --git a/megatron/core/transformer/experimental_attention_variant/dsa.py b/megatron/core/transformer/experimental_attention_variant/dsa.py
-index fc994490b..8570266a8 100644
+index fc994490b..a25aa6d0a 100644
 --- a/megatron/core/transformer/experimental_attention_variant/dsa.py
 +++ b/megatron/core/transformer/experimental_attention_variant/dsa.py
 @@ -6,6 +6,7 @@ from dataclasses import dataclass
@@ -673,7 +681,7 @@ index fc994490b..8570266a8 100644
 +    
 +    topk = topk_indices.shape[-1]
 +    topk_indices = topk_indices.unsqueeze(1)
-+    topk_indices = topk_indices.expand(-1, key.shape[2], -1, -1).contiguous()
++    topk_indices = topk_indices.expand(-1, key.shape[2], -1, -1).contiguous().to(torch.int32)
 +    causal_masks = get_causal_mask(sq, skv, query.device)
 +    causal_masks = causal_masks[None, None, :, :]
 +    causal_masks = causal_masks.expand(b, key.shape[2], -1, -1).contiguous()
@@ -1242,3 +1250,4 @@ index a3a167549..98391fda6 100644
              assert not self.apply_rope_fusion, "RoPE fusion is not supported for DSAttention"
  
          if self.fp8:
+         
