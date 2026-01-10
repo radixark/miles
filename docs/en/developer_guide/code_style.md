@@ -28,7 +28,8 @@ Prioritize writing **Pure Functions**. Avoid in-place modification of input argu
 - **Ternary Operator Limits**: Use `a if condition else b` only for very simple and clear cases. Complex logic must use standard `if-else` blocks.
 - **Extract Complex Logic**: In multi-branch conditionals, if a specific branch contains multiple lines of logic, encapsulate it into a standalone private function.
 - **Type Hints**: All public APIs and function signatures must include type hints.
-- **Access Permission Indicator**: Use `_private` style to indicate this is a function to this class or file only, otherwise, it's a public function that can be exposed outside.
+- **Access Permission Indicator**: Use `_private` style to indicate this is a function of this class or file only; otherwise, it's a public function that can be exposed outside.
+- ***Clean Up the PR**: Remove arbitrary comments and logs for debugging. Remove Chinese comments.
 
 ## Testing Efficiency
 
