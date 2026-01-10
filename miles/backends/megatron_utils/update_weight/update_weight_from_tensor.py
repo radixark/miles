@@ -120,7 +120,7 @@ class UpdateWeightFromTensor:
         self._last_checksums = {}
 
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
-            if self.args.check_weight_update_equal:
+            if self.args.check.enable_weight_checker or self.args.check_weight_update_equal:
                 for name, tensor in hf_named_tensors:
                     t_cpu = tensor.detach().cpu().contiguous()
                     self._last_checksums[name] = hashlib.sha256(t_cpu.view(torch.uint8).numpy()).hexdigest()

@@ -881,7 +881,7 @@ index 1234567..89abcdef 100644
          self._snapshot_tensors = None
 
 -    def handle(self, action: str):
-+    def handle(self, action: str, checksums=None, rank_offset=0):
++    def handle(self, action: str, checksums=None):
          logger.info(f"[WeightChecker] handle action={action}")
          if action == "snapshot":
              self._snapshot()
@@ -890,11 +890,11 @@ index 1234567..89abcdef 100644
          elif action == "compare":
              self._compare()
 +        elif action == "compare_checksum":
-+            self._compare_checksum(checksums, rank_offset=rank_offset)
++            self._compare_checksum(checksums)
          else:
              raise Exception(f"Unsupported {action=}")
 
-+    def _compare_checksum(self, expected_checksums, rank_offset=0):
++    def _compare_checksum(self, expected_checksums):
 +        if expected_checksums is None:
 +            return
 +
@@ -944,7 +944,7 @@ index 1234567..89abcdef 100644
 +                # record mismatch if all reconstruction attempts fail
 +                errors.append(f"name={name} TP_rank={tp_rank} mismatch! expected={expected_hash}, actual_shard={actual_hash}")
 +
-+        print(f"[WeightChecker] verified {matched_count} parameters on TP_rank {tp_rank}")
++        logger.info(f"[WeightChecker] verified {matched_count} parameters on TP_rank {tp_rank}")
 +        if errors:
 +            raise Exception("Weight checksum verification failed:\n" + "\n".join(errors[:5]))
 
@@ -959,7 +959,7 @@ index 293a84350..0947f77e0 100644
 
      def check_weights(self: Scheduler, recv_req: CheckWeightsReqInput):
 -        self.tp_worker.model_runner.check_weights(action=recv_req.action)
-+        self.tp_worker.model_runner.check_weights(action=recv_req.action, checksums=recv_req.checksums, rank_offset=recv_req.rank_offset)
++        self.tp_worker.model_runner.check_weights(action=recv_req.action, checksums=recv_req.checksums)
          return CheckWeightsReqOutput(success=True, message="Success.")
 
 diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
@@ -971,7 +971,6 @@ index 1234567..89abcdef 100644
  class CheckWeightsReqInput(BaseReq):
      action: str
 +    checksums: Optional[list | dict] = None
-+    rank_offset: int = 0
 
  @dataclass
  class CheckWeightsReqOutput(BaseReq):
@@ -986,4 +985,4 @@ index 1d69c0582..9027374be 100644
 -    def check_weights(self, action: str):
 -        self._weight_checker.handle(action=action)
 +    def check_weights(self, action: str, checksums=None, rank_offset=0):
-+        self._weight_checker.handle(action=action, checksums=checksums, rank_offset=rank_offset)
++        self._weight_checker.handle(action=action, checksums=checksums)

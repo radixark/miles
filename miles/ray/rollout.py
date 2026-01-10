@@ -207,7 +207,11 @@ class RolloutManager:
 
     def check_weights(self, action: str, payload: dict | None = None):
         return ray.get(
-            [engine.check_weights.remote(action=action, payload=payload) for engine in self.rollout_engines]
+            [
+                engine.check_weights.remote(action=action, payload=payload)
+                for engine in self.rollout_engines
+                if engine is not None
+            ]
         )
 
     def _get_rollout_data(self, rollout_id):
