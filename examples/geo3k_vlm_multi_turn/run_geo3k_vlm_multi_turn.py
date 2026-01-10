@@ -98,11 +98,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        "--sglang-mem-fraction-static 0.6 "
-        f"--sglang-disable-cuda-graph "
-    )
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.6 " "--sglang-disable-cuda-graph "
 
     fsdp_args = (
         "--train-backend fsdp "
