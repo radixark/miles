@@ -205,8 +205,10 @@ class RolloutManager:
         if self._health_monitor is not None:
             self._health_monitor.resume()
 
-    def check_weights(self, action: str):
-        return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+    def check_weights(self, action: str, payload: dict | None = None):
+        return ray.get(
+            [engine.check_weights.remote(action=action, payload=payload) for engine in self.rollout_engines]
+        )
 
     def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:

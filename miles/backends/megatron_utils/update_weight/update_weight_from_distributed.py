@@ -1,3 +1,4 @@
+import hashlib
 import socket
 import time
 from argparse import Namespace
@@ -82,6 +83,8 @@ class UpdateWeightFromDistributed:
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
+        self._last_checksums = {}
+
         buffer_size = 0
         converted_named_tensors = []
         # non expert params
@@ -115,6 +118,22 @@ class UpdateWeightFromDistributed:
         if dist.get_rank() == 0:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
+
+    def check_weights(self, action: str) -> None:
+        if action == "compare" and self._last_checksums:
+            if dist.get_rank() == 0:
+                # Rank 0 hashes represent the full parameters (post-gathering).
+                ray.get(
+                    [
+                        engine.check_weights.remote(
+                            action="compare_checksum", payload={"checksums": self._last_checksums}
+                        )
+                        for engine in self.rollout_engines
+                    ]
+                )
+        else:
+            if dist.get_rank() == 0:
+                ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
 
     def _update_weight_from_distributed(
         self,
@@ -208,6 +227,11 @@ class UpdateWeightFromDistributed:
         """
         Lock → broadcast → clear → unlock → pbar++. Lock prevents NCCL deadlock.
         """
+        if self.args.enable_weight_checker or self.args.check_weight_update_equal:
+            for name, tensor in converted_named_tensors:
+                t_cpu = tensor.detach().cpu().contiguous()
+                self._last_checksums[name] = hashlib.sha256(t_cpu.view(torch.uint8).numpy()).hexdigest()
+
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)

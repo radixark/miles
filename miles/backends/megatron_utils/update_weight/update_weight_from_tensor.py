@@ -1,3 +1,4 @@
+import hashlib
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -116,7 +117,14 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
+        self._last_checksums = {}
+
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
+            if self.args.check_weight_update_equal:
+                for name, tensor in hf_named_tensors:
+                    t_cpu = tensor.detach().cpu().contiguous()
+                    self._last_checksums[name] = hashlib.sha256(t_cpu.view(torch.uint8).numpy()).hexdigest()
+
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
             del long_lived_tensors
@@ -147,6 +155,22 @@ class UpdateWeightFromTensor:
                 all_refs.extend(refs_distributed)
 
         return all_refs, long_lived_tensors
+
+    def check_weights(self, action: str) -> None:
+        if (self.args.enable_weight_checker or action == "compare") and self._last_checksums:
+            if dist.get_rank() == 0:
+                # Rank 0 hashes represent the full parameters (post-gathering).
+                ray.get(
+                    [
+                        engine.check_weights.remote(
+                            action="compare_checksum", payload={"checksums": self._last_checksums}
+                        )
+                        for engine in self.rollout_engines
+                    ]
+                )
+        else:
+            if dist.get_rank() == 0:
+                ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
 
 
 def _send_to_colocated_engine(

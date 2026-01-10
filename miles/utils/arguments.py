@@ -1126,6 +1126,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["torch", "memray"],
                 default="torch",
             )
+            parser.add_argument("--enable-weight-checker", action="store_true")
             parser.add_argument("--check-weight-update-equal", action="store_true")
             return parser
 
@@ -1568,6 +1569,9 @@ def miles_validate_args(args):
             "will not instantiate sglang servers and will only run the training process."
         )
         args.debug_train_only = True
+
+    if args.enable_weight_checker:
+        pass  # We will use this flag directly in the updaters to trigger the bitwise check.
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.critic_num_gpus_per_node is None:
