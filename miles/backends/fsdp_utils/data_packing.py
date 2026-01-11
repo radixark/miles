@@ -159,7 +159,7 @@ def unpack_sequences(packed_batch: dict) -> list[dict]:
 
         # Copy and slice attributes
         for key, value in packed_batch.items():
-            if key == "multimodal_num_items":
+            if key in ["multimodal_num_items", "cu_seqlens"]:
                 continue
 
             # Handle multimodal training tensors: O(1) slice using pre-calculated offsets
