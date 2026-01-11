@@ -181,6 +181,10 @@ def unpack_sequences(packed_batch: dict) -> list[dict]:
                     instance[key] = value[resp_offsets[i] : resp_offsets[i + 1]]
                 elif key in ["tokens", "position_ids"]:
                     instance[key] = value[start_idx:end_idx]
+                elif key == "rewards":
+                    instance[key] = value[i]
+                else:
+                    raise ValueError(f"Unhandled tensor attribute '{key}' in unpack_sequences")
 
             elif isinstance(value, list):
                 instance[key] = value[i]
