@@ -629,6 +629,20 @@ class FSDPTrainRayActor(TrainRayActor):
         response_lengths = [batch["response_lengths"] for batch in unpacked_batches]
 
         advantages = advantages.to(device=log_probs.device)
+
+        if self.args.advantage_estimator == "on_policy_distillation":
+            student_log_probs = log_probs
+            teacher_log_probs = rollout_data.get("teacher_log_probs")
+            response_lengths = rollout_data.get("response_lengths")
+            device = student_log_probs[0].device
+            teacher_log_probs = [t_log_prob.to(device=device) for t_log_prob in teacher_log_probs]
+            teacher_log_probs = [
+                t_log_prob[-response_length:] for t_log_prob, response_length in zip(teacher_log_probs, response_lengths)
+            ]
+            advantages = [
+                teacher_log_prob - student_log_prob
+                for teacher_log_prob, student_log_prob in zip(teacher_log_probs, student_log_probs)
+            ]
         old_log_probs = old_log_probs.to(device=log_probs.device)
         ppo_kl = old_log_probs - log_probs
 
