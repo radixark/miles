@@ -5,7 +5,6 @@ from pathlib import Path
 
 import torch.distributed as dist
 import torch.nn as nn
-from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
 try:
     from peft import LoraConfig, PeftModel, TaskType, get_peft_model
@@ -36,7 +35,7 @@ def apply_lora_to_model(model: nn.Module, args) -> nn.Module:
         bias="none",
     )
 
-    model = get_peft_model(model, lora_config)  # autocast_adapter_dtype=False)
+    model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     logger.info(f"Applied LoRA: rank={args.lora_rank}, alpha={args.lora_alpha}")
     return model
@@ -47,13 +46,9 @@ def is_lora_model(module: nn.Module) -> bool:
     return hasattr(unwrapped, "peft_config")
 
 
-def save_lora_to_disk(module: nn.Module, save_dir: str) -> str:
+def save_lora_to_disk(module: nn.Module, save_dir: str, lora_weights: dict) -> str:
     """Save LoRA adapter to disk with file lock mechanism."""
-    # TODO: All gather lora layers not full layers
-    options = StateDictOptions(full_state_dict=True, cpu_offload=True)
-    full_state_dict = get_model_state_dict(module, options=options)
-
-    lora_state_dict = {name: param for name, param in full_state_dict.items() if "lora_" in name}
+    lora_state_dict = lora_weights
 
     if dist.get_rank() == 0:
         save_path = Path(save_dir)
@@ -76,21 +71,8 @@ def delete_lora_from_disk(save_dir: str) -> None:
         logger.info(f"Deleted LoRA adapter from {save_path}")
 
 
-def get_lora_weights_and_config(module: nn.Module) -> tuple[dict[str, any], dict[str, any]]:
-    """Extract LoRA weights and config from PEFT model for tensor-based sync."""
-    # TODO: only gather lora weights, or gather lora weights in bucket logic i.e., layered summon
-    # options = StateDictOptions(full_state_dict=True, cpu_offload=True)
-    options = StateDictOptions(full_state_dict=True, cpu_offload=False)
-    full_state_dict = get_model_state_dict(module, options=options)
-
-    state_dict = {name: param for name, param in full_state_dict.items() if "lora_" in name}
-    if dist.get_rank() == 0:
-        logger.info(f"Extracted {len(state_dict)} LoRA weight tensors")
-
-    for name in list(state_dict.keys()):
-        key = name.replace(".default.weight", ".weight")  # .replace("base_model.model.", "")
-        state_dict[key] = state_dict.pop(name)
-
+def get_lora_config(module: nn.Module) -> dict[str, any]:
+    """Extract LoRA config from PEFT model."""
     peft_config = module.peft_config["default"]
     config_dict = {
         "peft_type": "LORA",
@@ -99,5 +81,4 @@ def get_lora_weights_and_config(module: nn.Module) -> tuple[dict[str, any], dict
         "target_modules": list(peft_config.target_modules),
         "bias": peft_config.bias,
     }
-
-    return state_dict, config_dict
+    return config_dict
