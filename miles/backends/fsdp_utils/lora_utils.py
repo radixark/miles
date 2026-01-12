@@ -1,9 +1,5 @@
 import logging
-import os
-import shutil
-from pathlib import Path
 
-import torch.distributed as dist
 import torch.nn as nn
 
 try:
@@ -44,31 +40,6 @@ def apply_lora_to_model(model: nn.Module, args) -> nn.Module:
 def is_lora_model(module: nn.Module) -> bool:
     unwrapped = getattr(module, "_fsdp_wrapped_module", module)
     return hasattr(unwrapped, "peft_config")
-
-
-def save_lora_to_disk(module: nn.Module, save_dir: str, lora_weights: dict) -> str:
-    """Save LoRA adapter to disk with file lock mechanism."""
-    lora_state_dict = lora_weights
-
-    if dist.get_rank() == 0:
-        save_path = Path(save_dir)
-        save_path.mkdir(parents=True, exist_ok=True)
-
-        module.save_pretrained(str(save_path), state_dict=lora_state_dict)
-
-        # TODO: check if file lock is needed or better way to do it
-        os.sync()
-
-        logger.info(f"Saved LoRA adapter to {save_path}")
-    return save_dir
-
-
-def delete_lora_from_disk(save_dir: str) -> None:
-    """Delete LoRA adapter files from disk."""
-    save_path = Path(save_dir)
-    if save_path.exists():
-        shutil.rmtree(save_path)
-        logger.info(f"Deleted LoRA adapter from {save_path}")
 
 
 def get_lora_config(module: nn.Module) -> dict[str, any]:

@@ -1,9 +1,11 @@
 import abc
 import logging
 import os
+import shutil
 import socket
 from argparse import Namespace
 from collections.abc import Sequence
+from pathlib import Path
 
 import ray
 import torch
@@ -25,14 +27,7 @@ try:
 except ImportError:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
 
-from .lora_utils import (
-    LORA_ADAPTER_NAME,
-    LORA_SUBDIR,
-    delete_lora_from_disk,
-    get_lora_config,
-    is_lora_model,
-    save_lora_to_disk,
-)
+from .lora_utils import LORA_ADAPTER_NAME, LORA_SUBDIR, get_lora_config, is_lora_model
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +59,8 @@ class UpdateWeight(abc.ABC):
 
         for name, param in self.model.state_dict().items():
             # Skip FSDP internal parameters
-            if "_flat_param" in name:
-                continue
+            # if "_flat_param" in name:
+            #     continue
 
             # Extract LoRA weights
             if is_lora and "lora_" in name:
@@ -76,7 +71,8 @@ class UpdateWeight(abc.ABC):
                         async_op=True,
                     ).to_local()
                 param = param.wait() if hasattr(param, "wait") else param
-                key = name.replace(".default.weight", ".weight")
+                key = name.replace(".default.weight", ".weight") if self.args.lora_sync_from_tensor else name
+
                 lora_weights[key] = param
                 continue
 
@@ -116,12 +112,19 @@ class UpdateWeight(abc.ABC):
         """Push LoRA weights to rollout engines using disk files."""
         self._lora_save_dir = os.path.join(self.args.save, LORA_SUBDIR)
         if dist.get_rank() == 0:
-            if os.path.exists(self._lora_save_dir):
-                delete_lora_from_disk(self._lora_save_dir)
+            save_path = Path(self._lora_save_dir)
+            if save_path.exists():
+                shutil.rmtree(save_path)
+                logger.info(f"Deleted LoRA adapter from {save_path}")
 
         dist.barrier()
 
-        save_lora_to_disk(self.model, self._lora_save_dir, lora_weights)
+        if dist.get_rank() == 0:
+            save_path = Path(self._lora_save_dir)
+            save_path.mkdir(parents=True, exist_ok=True)
+            self.model.save_pretrained(str(save_path), state_dict=lora_weights)
+            os.sync()
+            logger.info(f"Saved LoRA adapter to {save_path}")
 
         dist.barrier()
 
@@ -155,9 +158,6 @@ class UpdateWeight(abc.ABC):
             serialized_tensors = MultiprocessingSerializer.serialize(lora_weights, output_str=True)
 
             if self._lora_loaded:
-                refs = [engine.flush_cache.remote() for engine in self.rollout_engines]
-                ray.get(refs)
-
                 refs = [engine.unload_lora_adapter.remote(LORA_ADAPTER_NAME) for engine in self.rollout_engines]
                 ray.get(refs)
 

@@ -530,8 +530,6 @@ def _compute_server_args(
     if args.lora_rank > 0 or args.lora_adapter_path is not None:
         kwargs["enable_lora"] = True
         kwargs["max_lora_rank"] = args.lora_rank
-        # kwargs["max_loaded_loras"] = 1
-        # kwargs["max_loras_per_batch"] = 1
         kwargs["lora_target_modules"] = args.target_modules
 
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
