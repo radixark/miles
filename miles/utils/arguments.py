@@ -104,6 +104,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
+            ##############################
+            ###########lora###############
+            ##############################
+            parser.add_argument(
+                "--offload-rollout-level",
+                type=str,
+                nargs="+",
+                default=["kv_cache", "weight"],
+                help=(
+                    "Specifies what to offload during rollout when offload-rollout is set. "
+                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
+                    "Example: --offload-rollout-level kv_cache weight"
+                ),
+            )
+            ##############################
+            ##############################
+            ##############################
+            
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
 
@@ -967,13 +985,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             #     help="Share base model between actor and reference model (saves memory for LoRA)",
             # )
 
-            parser.add_argument(
-                "--no-use-distributed-optimizer",
-                action="store_false",
-                default=True,
-                dest="Use distributed optimizer (ZeRO)",
-                help="Use distributed optimizer (ZeRO). Disable for LoRA training. (default: True)",
-            )
+            # parser.add_argument(
+            #     "--no-use-distributed-optimizer",
+            #     action="store_false",
+            #     default=True,
+            #     dest="Use distributed optimizer (ZeRO)",
+            #     help="Use distributed optimizer (ZeRO). Disable for LoRA training. (default: True)",
+            # )
             
             return parser
         ##############################

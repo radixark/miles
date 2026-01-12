@@ -31,6 +31,8 @@ from miles.utils.memory_utils import clear_memory
 # from .checkpoint import load_checkpoint, save_checkpoint
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .lora_utils import is_lora_model
+# from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import is_lora_enabled, apply_lora_to_megatron_model
 ##############################
 ##############################
 ##############################
@@ -114,7 +116,149 @@ def setup_model_and_optimizer(
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
 
-    model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+    ##############################
+    ###########lora###############
+    ############################## 
+    # model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+
+    # if is_lora_enabled(args):
+
+    #     from megatron.core.distributed import DistributedDataParallelConfig
+    #     from megatron.bridge.models.model_provider import get_model 
+    #     provider = get_model_provider_func(args, role)
+
+    #     ddp_config = DistributedDataParallelConfig(
+    #         grad_reduce_in_fp32=getattr(args, 'grad_reduce_in_fp32', False),
+    #         check_for_nan_in_grad=getattr(args, 'check_for_nan_in_grad', False),
+    #         overlap_grad_reduce=getattr(args, 'overlap_grad_reduce', False),
+    #         overlap_param_gather=getattr(args, 'overlap_param_gather', False),
+    #         average_in_collective=getattr(args, 'average_in_collective', False),
+    #         use_distributed_optimizer=getattr(args, 'use_distributed_optimizer', False),
+    #     )
+    #     # model = provider.provide_distributed_model(
+    #     #     ddp_config=ddp_config,
+    #     #     wrap_with_ddp=True,
+    #     #     bf16=getattr(args, 'bf16', False),
+    #     #     fp16=getattr(args, 'fp16', False),
+    #     # )
+
+    #     model = get_model(
+    #         model_provider=provider,  # must be ModelProviderMixin object
+    #         ddp_config=ddp_config,
+    #         model_type=ModelType.encoder_or_decoder,
+    #         wrap_with_ddp=True,
+    #         use_cpu_initialization=False,
+    #     )
+
+
+    #     print(111111)
+    #     print(model)
+    #     print(111111)
+    #     exit()
+    # else:
+    #     model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+
+
+    ###########
+    
+    if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
+        from megatron.core.distributed import DistributedDataParallelConfig
+        from megatron.bridge.models.model_provider import get_model as bridge_get_model
+        from megatron.bridge import AutoBridge
+        from megatron.bridge.peft.lora import LoRA
+        import torch
+        
+        # Build the provider from HF checkpoint
+        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        provider = bridge.to_megatron_provider(load_weights=False)
+        
+        # Set parallel configs on the provider
+        provider.tensor_model_parallel_size = args.tensor_model_parallel_size
+        provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
+        provider.expert_model_parallel_size = args.expert_model_parallel_size
+        provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
+        provider.sequence_parallel = args.sequence_parallel
+        
+        # Determine lora_dtype
+        if hasattr(args, 'bf16') and args.bf16:
+            lora_dtype = torch.bfloat16
+        elif hasattr(args, 'fp16') and args.fp16:
+            lora_dtype = torch.float16
+        else:
+            lora_dtype = None
+        
+        # Get exclude_modules as list
+        exclude_modules = []
+        if hasattr(args, 'exclude_modules') and args.exclude_modules:
+            if isinstance(args.exclude_modules, str):
+                exclude_modules = [m.strip() for m in args.exclude_modules.split(",")]
+            else:
+                exclude_modules = list(args.exclude_modules)
+        
+        # Create LoRA config
+        lora = LoRA(
+            target_modules=args.target_modules,
+            exclude_modules=exclude_modules,
+            dim=args.lora_rank,
+            alpha=args.lora_alpha,
+            dropout=args.lora_dropout,
+            dropout_position=getattr(args, 'lora_dropout_position', 'pre'),
+            lora_A_init_method=getattr(args, 'lora_A_init_method', 'xavier'),
+            lora_B_init_method=getattr(args, 'lora_B_init_method', 'zero'),
+            a2a_experimental=getattr(args, 'lora_a2a_experimental', False),
+            lora_dtype=lora_dtype,
+        )
+        
+        # Define pre_wrap_hook to apply LoRA before DDP wrapping
+        def apply_lora_hook(model_chunks):
+            transformed = lora(model_chunks, training=True)
+            lora.set_params_to_save(transformed)
+            return transformed
+        
+        # Register the hook
+        provider.register_pre_wrap_hook(apply_lora_hook)
+        provider.finalize()
+        
+        # Build DDP config
+        ddp_config = DistributedDataParallelConfig(
+            grad_reduce_in_fp32=getattr(args, 'grad_reduce_in_fp32', False),
+            check_for_nan_in_grad=getattr(args, 'check_for_nan_in_grad', False),
+            overlap_grad_reduce=getattr(args, 'overlap_grad_reduce', False),
+            overlap_param_gather=getattr(args, 'overlap_param_gather', False),
+            average_in_collective=getattr(args, 'average_in_collective', False),
+            use_distributed_optimizer=getattr(args, 'use_distributed_optimizer', False),
+        )
+        
+        # Use Bridge's get_model with the provider (which now has LoRA hook registered)
+        model = bridge_get_model(
+            model_provider=provider,
+            ddp_config=ddp_config,
+            model_type=ModelType.encoder_or_decoder,
+            wrap_with_ddp=True,
+            use_cpu_initialization=False,
+            bf16=getattr(args, 'bf16', False),
+            fp16=getattr(args, 'fp16', False),
+            pre_wrap_hook=provider.pre_wrap_hook,
+        )
+        
+        # Store lora instance for later use (e.g., checkpoint saving)
+        # You may want to attach this to the model or args for later access
+        if hasattr(args, '_lora_instance'):
+            args._lora_instance = lora
+
+        # print(11111111)
+        # print(model)
+        # print(11111111)
+        # exit()
+    else:
+        # Original non-LoRA path or non-bridge mode
+        model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+
+
+    ############################## 
+    ############################## 
+    ############################## 
+
 
     ##############################
     ###########lora###############
@@ -122,6 +266,20 @@ def setup_model_and_optimizer(
     # from miles.backends.megatron_utils.lora_utils import is_lora_enabled, apply_lora_to_megatron_model
     # if is_lora_enabled(args) and role == "actor":
     #     model = apply_lora_to_megatron_model(model, args)
+
+    #########
+    # if is_lora_enabled(args) and role == "actor":
+    #     from megatron.bridge.peft.lora import LoRA
+
+    #     lora = LoRA(
+    #         target_modules=args.target_modules,
+    #         dim=args.lora_rank,
+    #         alpha=args.lora_alpha,
+    #         dropout=args.lora_dropout,
+    #     )
+    #     # model is list[DDP]，it require unwrap
+    #     model = lora(model, training=True)
+    #     lora.set_params_to_save(model)
     ##############################
     ##############################
     ##############################
@@ -133,7 +291,6 @@ def setup_model_and_optimizer(
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = None
-
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,

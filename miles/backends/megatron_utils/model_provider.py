@@ -19,6 +19,9 @@ from megatron.training.arguments import core_transformer_config_from_args
 from miles.utils.misc import load_function
 
 
+
+
+
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
 class LinearForLastLayer(torch.nn.Linear):
     def __init__(
@@ -82,7 +85,7 @@ def get_model_provider_func(
         ##############################
         ###########lora###############
         ##############################
-        from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+        # from miles.backends.megatron_utils.lora_utils import is_lora_enabled 
         ##############################
         ##############################
         ##############################
@@ -97,43 +100,29 @@ def get_model_provider_func(
         provider.sequence_parallel = args.sequence_parallel
         ##############################
         ###########lora###############
-        ############################## 
-        # Register LoRA pre_wrap_hook（before setting up DDP）
-        if is_lora_enabled(args) and role == "actor":
-            def lora_pre_wrap_hook(model):
-                """Apply LoRA to model BEFORE DDP wrapping."""
-                from megatron.bridge.peft.lora import LoRA
-                import torch
-                
-                # Set up lora_dtype
-                if hasattr(args, 'bf16') and args.bf16:
-                    lora_dtype = torch.bfloat16
-                elif hasattr(args, 'fp16') and args.fp16:
-                    lora_dtype = torch.float16
-                else:
-                    lora_dtype = None
-                
-                lora = LoRA(
-                    target_modules=args.target_modules,
-                    dim=args.lora_rank,
-                    alpha=args.lora_alpha,
-                    dropout=args.lora_dropout,
-                    lora_dtype=lora_dtype,
-                )
-                
-                # Apply LoRA and freeze base model
-                transformed_model = lora(model, training=True)
-                lora.set_params_to_save(transformed_model)
-                
-                return transformed_model
-            
-            provider.register_pre_wrap_hook(lora_pre_wrap_hook)
+        ##############################
+        # if is_lora_enabled(args) and role == "actor":
+        #     from megatron.bridge.peft.lora import LoRA
+        #     lora = LoRA(
+        #         target_modules=args.target_modules,
+        #         dim=args.lora_rank,
+        #         alpha=args.lora_alpha,
+        #         dropout=args.lora_dropout,
+        #         # lora_dtype=lora_dtype,
+        #     )
+        #     # Apply LoRA and freeze base model
+        #     def apply_lora(model_chunks):
+        #         transformed = lora(model_chunks, training=True)
+        #         lora.set_params_to_save(transformed)
+        #         return transformed
+        #     provider.register_pre_wrap_hook(apply_lora)
         ##############################
         ##############################
         ##############################
         provider.finalize()
         return provider.provide
-
+    
+    
     def model_provider(pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None) -> GPTModel:
         """Builds the model.
 

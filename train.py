@@ -12,6 +12,16 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils import init_tracking
 
+##############################
+###########lora###############
+##############################
+from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
+##############################
+##############################
+##############################
+
+
+
 
 def train(args):
     configure_logger()
@@ -55,9 +65,19 @@ def train(args):
         else:
             actor_model.clear_memory()
 
+    ##############################
+    ###########lora###############
+    ##############################
     def onload_rollout():
         if args.offload_rollout:
             ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+
+    # def onload_rollout():
+    #     if args.offload_rollout and "weight" in args.offload_rollout_level:
+    #         ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+    ##############################
+    ##############################
+    ##############################
 
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
@@ -67,8 +87,22 @@ def train(args):
 
         rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
 
+        ##############################
+        ###########lora###############
+        ##############################
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())
+
+        # if args.offload_rollout:
+        #     offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+        #     if "kv_cache" in args.offload_rollout_level:
+        #         offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+        #     if "weight" in args.offload_rollout_level:
+        #         offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+        #     ray.get(rollout_manager.offload.remote(tags=offload_tags))
+        ##############################
+        ##############################
+        ##############################
 
         if args.use_critic:
             critic_train_handle = critic_model.async_train(rollout_id, rollout_data_ref)

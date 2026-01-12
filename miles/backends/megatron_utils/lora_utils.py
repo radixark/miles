@@ -27,78 +27,78 @@ def is_lora_enabled(args: Namespace) -> bool:
     return args.lora_rank > 0 or args.lora_adapter_path is not None
 
 
-# def apply_lora_to_megatron_model(
-#     model: Sequence[torch.nn.Module],
-#     args: Namespace,
-# ) -> Sequence[torch.nn.Module]:
-#     """Apply LoRA to Megatron model using Megatron-Bridge PEFT integration.
+def apply_lora_to_megatron_model(
+    model: Sequence[torch.nn.Module],
+    args: Namespace,
+) -> Sequence[torch.nn.Module]:
+    """Apply LoRA to Megatron model using Megatron-Bridge PEFT integration.
     
-#     This uses the Megatron-Bridge's PEFT support from:
-#     https://github.com/NVIDIA-NeMo/Megatron-Bridge/tree/main/src/megatron/bridge/peft
+    This uses the Megatron-Bridge's PEFT support from:
+    https://github.com/NVIDIA-NeMo/Megatron-Bridge/tree/main/src/megatron/bridge/peft
     
-#     Note: in this version implementation, we use this Megatron-Bridge branch: https://github.com/yushengsu-thu/Megatron-Bridge/tree/merged-megatron-0.16.0rc0
+    Note: in this version implementation, we use this Megatron-Bridge branch: https://github.com/yushengsu-thu/Megatron-Bridge/tree/merged-megatron-0.16.0rc0
      
-#     Args:
-#         model: Megatron model (DDP wrapped)
-#         args: Training arguments with LoRA config
+    Args:
+        model: Megatron model (DDP wrapped)
+        args: Training arguments with LoRA config
         
-#     Returns:
-#         LoRA-wrapped model
-#     """
-#     # from megatron.bridge.peft import apply_lora_adapter, LoraConfig
-#     from megatron.bridge.peft.lora import LoRA
+    Returns:
+        LoRA-wrapped model
+    """
+    # from megatron.bridge.peft import apply_lora_adapter, LoraConfig
+    from megatron.bridge.peft.lora import LoRA
     
-#     if args.lora_adapter_path:
-#         # TODO: Loading existing LoRA adapter needs separate implementation
-#         # Megatron-Bridge may have different API for loading
-#         # Refer to this one: https://github.com/volcengine/verl/pull/4063/files#diff-10d5abfbdb508c9478018ad08f295686a960701639fc4e3f3c24a4bdc2f0b711
-#         raise NotImplementedError("Loading existing LoRA adapter is not yet implemented")
-#     else:
-#         # Determine lora_dtype from args
-#         if hasattr(args, 'bf16') and args.bf16:
-#             lora_dtype = torch.bfloat16
-#         elif hasattr(args, 'fp16') and args.fp16:
-#             lora_dtype = torch.float16
-#         else:
-#             lora_dtype = None  # Will use model's dtype
+    if args.lora_adapter_path:
+        # TODO: Loading existing LoRA adapter needs separate implementation
+        # Megatron-Bridge may have different API for loading
+        # Refer to this one: https://github.com/volcengine/verl/pull/4063/files#diff-10d5abfbdb508c9478018ad08f295686a960701639fc4e3f3c24a4bdc2f0b711
+        raise NotImplementedError("Loading existing LoRA adapter is not yet implemented")
+    else:
+        # Determine lora_dtype from args
+        if hasattr(args, 'bf16') and args.bf16:
+            lora_dtype = torch.bfloat16
+        elif hasattr(args, 'fp16') and args.fp16:
+            lora_dtype = torch.float16
+        else:
+            lora_dtype = None  # Will use model's dtype
         
-#         # Get exclude_modules as list
-#         exclude_modules = []
-#         if hasattr(args, 'exclude_modules') and args.exclude_modules:
-#             if isinstance(args.exclude_modules, str):
-#                 exclude_modules = [m.strip() for m in args.exclude_modules.split(",")]
-#             else:
-#                 exclude_modules = list(args.exclude_modules)
+        # Get exclude_modules as list
+        exclude_modules = []
+        if hasattr(args, 'exclude_modules') and args.exclude_modules:
+            if isinstance(args.exclude_modules, str):
+                exclude_modules = [m.strip() for m in args.exclude_modules.split(",")]
+            else:
+                exclude_modules = list(args.exclude_modules)
         
-#         # Create new LoRA adapter using Megatron-Bridge LoRA dataclass
-#         # There are different lora_type, I just use the classic one (speed and acc might not the optimal)
-#         # https://github.com/volcengine/verl/pull/4063/files#diff-10d5abfbdb508c9478018ad08f295686a960701639fc4e3f3c24a4bdc2f0b711
-#         lora = LoRA(
-#             target_modules=args.target_modules,                    # e.g., ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
-#             exclude_modules=exclude_modules,                       # Modules to exclude from LoRA
-#             dim=args.lora_rank,                                    # LoRA rank (called 'dim' in Megatron-Bridge)
-#             alpha=args.lora_alpha,                                 # LoRA alpha scaling factor
-#             dropout=args.lora_dropout,                             # LoRA dropout rate
-#             dropout_position=getattr(args, 'lora_dropout_position', 'pre'),  # 'pre' or 'post'
-#             lora_A_init_method=getattr(args, 'lora_A_init_method', 'xavier'),  # Initialization for LoRA A matrix
-#             lora_B_init_method=getattr(args, 'lora_B_init_method', 'zero'),    # Initialization for LoRA B matrix
-#             a2a_experimental=getattr(args, 'lora_a2a_experimental', False),    # Experimental All-to-All communication
-#             lora_dtype=lora_dtype,                                 # Parameter data type for LoRA weights
-#         )
-#         logger.info(f"Applying LoRA: rank={args.lora_rank}, alpha={args.lora_alpha}, "
-#                    f"dropout={args.lora_dropout}, target_modules={args.target_modules}, "
-#                    f"exclude_modules={exclude_modules}, lora_dtype={lora_dtype}")
+        # Create new LoRA adapter using Megatron-Bridge LoRA dataclass
+        # There are different lora_type, I just use the classic one (speed and acc might not the optimal)
+        # https://github.com/volcengine/verl/pull/4063/files#diff-10d5abfbdb508c9478018ad08f295686a960701639fc4e3f3c24a4bdc2f0b711
+        lora = LoRA(
+            target_modules=args.target_modules,                    # e.g., ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
+            exclude_modules=exclude_modules,                       # Modules to exclude from LoRA
+            dim=args.lora_rank,                                    # LoRA rank (called 'dim' in Megatron-Bridge)
+            alpha=args.lora_alpha,                                 # LoRA alpha scaling factor
+            dropout=args.lora_dropout,                             # LoRA dropout rate
+            dropout_position=getattr(args, 'lora_dropout_position', 'pre'),  # 'pre' or 'post'
+            lora_A_init_method=getattr(args, 'lora_A_init_method', 'xavier'),  # Initialization for LoRA A matrix
+            lora_B_init_method=getattr(args, 'lora_B_init_method', 'zero'),    # Initialization for LoRA B matrix
+            a2a_experimental=getattr(args, 'lora_a2a_experimental', False),    # Experimental All-to-All communication
+            lora_dtype=lora_dtype,                                 # Parameter data type for LoRA weights
+        )
+        logger.info(f"Applying LoRA: rank={args.lora_rank}, alpha={args.lora_alpha}, "
+                   f"dropout={args.lora_dropout}, target_modules={args.target_modules}, "
+                   f"exclude_modules={exclude_modules}, lora_dtype={lora_dtype}")
         
-#         # Apply LoRA to each model chunk
-#         # The LoRA class is callable - calling it applies the transformation
-#         for model_chunk in model:
-#             # lora(model_chunk.module, training=True) applies LoRA and freezes base model
-#             lora(model_chunk.module, training=True)
+        # Apply LoRA to each model chunk
+        # The LoRA class is callable - calling it applies the transformation
+        for model_chunk in model:
+            # lora(model_chunk.module, training=True) applies LoRA and freezes base model
+            lora(model_chunk.module, training=True)
     
-#     # Print trainable parameters info
-#     _print_trainable_parameters(model)
+    # Print trainable parameters info
+    _print_trainable_parameters(model)
     
-#     return model
+    return model
 
 
 def _print_trainable_parameters(model: Sequence[torch.nn.Module]) -> None:

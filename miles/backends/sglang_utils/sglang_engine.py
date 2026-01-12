@@ -408,9 +408,29 @@ class SGLangEngine(RayActor):
     ##############################
     ##############################
 
-    def release_memory_occupation(self):
+
+    ##############################
+    ###########lora###############
+    ##############################
+    # def release_memory_occupation(self):
+    #     self.flush_cache()
+    #     return self._make_request("release_memory_occupation")
+
+    def release_memory_occupation(self, tags: list[str] = None):
+        """
+        Available tags for multi-stage release: weights, kv_cache
+        """
         self.flush_cache()
-        return self._make_request("release_memory_occupation")
+        return self._make_request(
+            "release_memory_occupation",
+            {"tags": tags},
+        )
+    ##############################
+    ##############################
+    ##############################
+
+    
+
 
     def resume_memory_occupation(self, tags: list[str] = None):
         """

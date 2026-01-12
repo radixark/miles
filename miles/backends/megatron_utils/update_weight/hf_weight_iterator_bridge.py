@@ -87,8 +87,8 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                         ##############################
                         ###########lora###############
                         ##############################
-                        # hf_param_name,
-                        _normalize_base_weight_name(hf_param_name),
+                        hf_param_name,
+                        # _normalize_base_weight_name(hf_param_name),
                         ##############################
                         ##############################
                         ##############################

@@ -43,7 +43,7 @@ from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 from .lora_utils import (
     is_lora_enabled,
     is_lora_model,
-    # apply_lora_to_megatron_model,
+    apply_lora_to_megatron_model,
     # get_lora_weights_and_config,
     freeze_base_model,
 )
@@ -638,7 +638,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             destroy_process_groups()
-
+    
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
         self.args.load = path

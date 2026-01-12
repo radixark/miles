@@ -19,6 +19,14 @@ from .update_weight_from_distributed import (
     update_weights_from_distributed,
 )
 
+##############################
+###########lora###############
+##############################
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
+##############################
+##############################
+##############################
+
 
 class UpdateWeightFromTensor:
     """
@@ -65,7 +73,7 @@ class UpdateWeightFromTensor:
         # )
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args, model=model, model_name=model_name, quantization_config=quantization_config,
-            # is_lora=self.is_lora,
+            is_lora=self.is_lora,
             _base_synced=self._base_synced, 
         )
         ##############################
@@ -139,12 +147,99 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
+        ##############################
+        ###########lora###############
+        ##############################
+        lora_named_tensors = []
+        ##############################
+        ##############################
+        ##############################
+
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
-            refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
-            ray.get(refs)
-            del long_lived_tensors
+            ##############################
+            ###########lora###############
+            ##############################
+            # refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
+            # ray.get(refs)
+            # del long_lived_tensors
+
+
+            # Check if this chunk contains LoRA weights
+            if self.is_lora:
+                # print()
+                lora_weights = [(name, tensor) for name, tensor in hf_named_tensors 
+                               if 'lora_' in name.lower() or 'adapter' in name.lower()]
+                # print(1111111)
+                # print(hf_named_tensors)
+                # print(lora_weights)
+                # print(1111111)
+                # exit()
+                base_weights = [(name, tensor) for name, tensor in hf_named_tensors 
+                               if 'lora_' not in name.lower()]
+                
+                # Sync base weights normally
+                if base_weights:
+                    refs, long_lived_tensors = self._send_hf_params(base_weights)
+                    ray.get(refs)
+                    del long_lived_tensors
+                
+                # Collect LoRA weights for later
+                lora_named_tensors.extend(lora_weights)
+            else:
+                refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
+                ray.get(refs)
+                del long_lived_tensors
+
+
+        # After syncing all weights, load LoRA adapter into SGLang
+        if self.is_lora and lora_named_tensors:
+            self._load_lora_adapter(lora_named_tensors)
+            ##############################
+            ##############################
+            ##############################
 
         dist.barrier(group=get_gloo_group())
+
+    ##############################
+    ###########lora###############
+    ##############################
+    def _load_lora_adapter(self, lora_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
+        """Load LoRA adapter into SGLang engine."""
+        from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
+        
+        # Create config dict
+        config_dict = {
+            "peft_type": "LORA",
+            "r": self.args.lora_rank,
+            "lora_alpha": self.args.lora_alpha,
+            "target_modules": list(self.args.target_modules) if self.args.target_modules else [],
+            "bias": "none",
+        }
+        
+        # Serialize LoRA tensors
+        flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=lora_named_tensors)
+        flattened_tensor_data = {
+            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+            "metadata": flattened_tensor_bucket.get_metadata(),
+        }
+        serialized_tensors = MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True)
+        
+        # Load adapter on rank 0
+        rank = dist.get_rank()
+        if rank == 0:
+            refs = [
+                engine.load_lora_adapter_from_tensors.remote(
+                    lora_name=LORA_ADAPTER_NAME,
+                    serialized_tensors=serialized_tensors,
+                    config_dict=config_dict,
+                )
+                for engine in self.rollout_engines
+            ]
+            ray.get(refs)
+            self._lora_loaded = True
+    ##############################
+    ##############################
+    ##############################  
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         all_refs = []
