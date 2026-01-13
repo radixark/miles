@@ -54,7 +54,7 @@ You can download required models and datasets from platforms like Hugging Face, 
 
 ```bash
 # Download model weights (GLM-Z1-9B)
-hf download zai-org/GLM-Z1-9B-0414 --local-dir /root/GLM-Z1-9B-0414
+hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
 
 # Download training dataset (dapo-math-17k)
 hf download --repo-type dataset zhuzilin/dapo-math-17k \
@@ -71,11 +71,11 @@ hf download --repo-type dataset zhuzilin/aime-2024 \
 
 When using Megatron as the training backend, you need to first convert Hugging Face format model weights to Megatron `torch_dist` format.
 
-First, load the configuration file of the target model. The `miles/scripts/models` directory contains configuration files for supported models. You need to `source` the corresponding model script to load the configuration parameters into the current environment. Here we use GLM4-9B model as an example, and it's similar for Qwen3-4B, Qwen3-30B-A3B, etc.
+First, load the configuration file of the target model. The `miles/scripts/models` directory contains configuration files for supported models. You need to `source` the corresponding model script to load the configuration parameters into the current environment. Here we use Qwen3-4B model as an example, and it's similar for GLM4-9B, Qwen3-30B-A3B, etc.
 
 ```bash
 cd /root/miles
-source scripts/models/glm4-9B.sh
+source scripts/models/qwen3-4B.sh
 ```
 
 Next, run the conversion script. Please note the following parameters:
@@ -85,8 +85,8 @@ Next, run the conversion script. Please note the following parameters:
 ```bash
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
-    --hf-checkpoint /root/GLM-Z1-9B-0414 \
-    --save /root/GLM-Z1-9B-0414_torch_dist
+    --hf-checkpoint /root/Qwen3-4B \
+    --save /root/Qwen3-4B_torch_dist
 ```
 
 For larger models, you can use `torchrun` to start the conversion script to convert with multi-gpus or even multi-nodes.
@@ -99,8 +99,8 @@ You can use the following script to convert the saved Megatron checkpoints back 
 ```bash
 PYTHONPATH=/root/Megatron-LM python tools/convert_torch_dist_to_hf.py \
   --input-dir /path/to/torch_dist_ckpt/iter_xxx/ \
-  --output-dir /root/GLM-Z1-9B-0414-iter_xxx \
-  --origin-hf-dir /root/GLM-Z1-9B-0414
+  --output-dir /root/Qwen3-4B-iter_xxx \
+  --origin-hf-dir /root/Qwen3-4B
 ```
 
 Note that as Megatron will do padding to embedding for better performance, it may happen that the converted embedding is not correct. In that case, please manually set `--vocab-size` during convertion.
@@ -120,24 +120,26 @@ After completing the above preparation work, you can run the training script.
 
 ```bash
 cd /root/miles
-bash scripts/run-glm4-9B.sh
+bash scripts/run-qwen3-4B.sh
 ```
 
-We still use the run-glm4-9B.sh script as an example to briefly analyze the main parameters.
+We still use the run-qwen3-4B.sh script as an example to briefly analyze the main parameters.
+
+> This defalut configuration assumes GPUs with ≈100 GB or more of available VRAM (e.g., H200 or H100-120GB). Running on 80 GB GPUs (A100 / H100) may require reducing batch size or adjusting memory-related settings accordingly.
 
 ### MODEL_ARGS: Model Configuration Parameters
 
 ```bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/glm4-9B.sh"
+source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 ```
 
-This part loads model configuration from the `scripts/models/glm4-9B.sh` file through the `source` command. These configurations are all hyperparameters required by Megatron. Since Megatron cannot directly read model configuration from checkpoints, it needs to be manually specified. We provide configuration examples for some commonly used models in the `scripts/models/` directory.
+This part loads model configuration from the `scripts/models/qwen3-4B.sh` file through the `source` command. These configurations are all hyperparameters required by Megatron. Since Megatron cannot directly read model configuration from checkpoints, it needs to be manually specified. We provide configuration examples for some commonly used models in the `scripts/models/` directory.
 
 > ⚠️ **Note**:
 > Please make sure to check whether the parameters in the model configuration file (such as `--rotary-base`) completely match the model you are currently using. Different versions of the same model structure may use different configuration values. If you need to modify, you can directly override after `source`, for example:
 > ```bash
-> source "${SCRIPT_DIR}/models/glm4-9B.sh"
+> source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 > MODEL_ARGS+=(--rotary-base 10000)
 > ```
 
@@ -146,14 +148,14 @@ This part loads model configuration from the `scripts/models/glm4-9B.sh` file th
 ```bash
 CKPT_ARGS=(
    # To load tokenizer and other information, won't actually use model weight parameters from hf path
-   --hf-checkpoint /root/GLM-Z1-9B-0414
+   --hf-checkpoint /root/Qwen3-4B
    # Reference Model's Megatron format checkpoint
-   --ref-load /root/GLM-Z1-9B-0414_torch_dist
+   --ref-load /root/Qwen3-4B_torch_dist
    # Actor model loading path. Should typically match --save for checkpoint resumption
    # If empty or doesn't contain a valid checkpoint, loads from --ref-load instead
-   --load /root/GLM-Z1-9B-0414_miles/
+   --load /root/Qwen3-4B_miles/
    # Model save path during training
-   --save /root/GLM-Z1-9B-0414_miles/
+   --save /root/Qwen3-4B_miles/
    # Model save interval (steps)
    --save-interval 20
 )
@@ -168,6 +170,9 @@ The entire training process can be viewed as a closed loop of **"Data Sampling �
 - `--n-samples-per-prompt`: Defines the **number of responses** generated for each Prompt (used for GRPO-like algorithms)
 
 > The product of the two determines the **total number of samples generated in a single round of sampling**.
+
+- `--apply-chat-template-kwargs '{"enable_thinking":false}'`: Control if the model is in thinking mode. The default enable_thinking is true. ⚠️ Note that enabling thinking mode requires setting `rollout-max-response-len` to 16384 to avoid reward hacking. If not, the model learns to shorten responses due to truncation, and does not improve on AIME scores. Disabling think mode stabilizes training and VRAM but typically collapses performance on AIME.
+
 
 **Phase Two: Model Training (Training)**
 - `--global-batch-size`: Defines the **sample size required to execute one parameter update (optimizer.step)**
@@ -193,6 +198,8 @@ ROLLOUT_ARGS=(
    --label-key label
    # If the `input_key` of Prompt is in OpenAI message format, apply Chat Template
    --apply-chat-template
+   # Control if the model is thinking mode. 
+   --apply-chat-template-kwargs '{"enable_thinking":false}'
    # Whether to shuffle data in Rollout phase
    --rollout-shuffle
 
@@ -201,7 +208,7 @@ ROLLOUT_ARGS=(
 
    # These five parameters control the relationship between rollout and train
    --num-rollout 3000
-   --rollout-batch-size 16
+   --rollout-batch-size 32
    --n-samples-per-prompt 8
    --num-steps-per-rollout 1
    --global-batch-size 128
@@ -249,7 +256,7 @@ PERF_ARGS=(
    --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 1
-   --context-parallel-size 2
+   --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
@@ -259,7 +266,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1 # This item is ignored when dynamic batching is enabled
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 4608
+   --max-tokens-per-gpu 9216
 )
 ```
 
