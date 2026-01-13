@@ -98,7 +98,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-dapo
+   --wandb-project miles-retool
    --wandb-group qwen3-4B-test-multi-turn
    --wandb-key ${WANDB_KEY}
 )

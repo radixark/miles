@@ -99,7 +99,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-mis
+   --wandb-project miles-train-infer-mismatch
    --wandb-group qwen3-4B-mis
    --wandb-key ${WANDB_KEY}
 )

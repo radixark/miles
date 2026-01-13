@@ -35,7 +35,7 @@ CKPT_ARGS=(
    --save-interval 20
 )
 
-PROMPT_SET=/path/to/dapo-math-17k.jsonl
+PROMPT_SET=/root/dapo-math-17k/dapo-math-17k.jsonl
 
 ROLLOUT_ARGS=(
    --rollout-function-path fully_async_rollout.generate_rollout_fully_async
@@ -96,6 +96,13 @@ OPTIMIZER_ARGS=(
    --adam-beta2 0.98
 )
 
+WANDB_ARGS=(
+   --use-wandb
+   --wandb-project miles-fully-async
+   --wandb-group qwen3-4b-fully_async
+   --wandb-key ${WANDB_KEY}
+)
+
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
 )
@@ -134,6 +141,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${GRPO_ARGS[@]} \
+   ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}

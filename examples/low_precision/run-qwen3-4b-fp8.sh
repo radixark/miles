@@ -98,10 +98,10 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   # --use-wandb
-   # --wandb-project miles-dev
-   # --wandb-group qwen3-4B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project miles-low-precision
+   --wandb-group qwen3-4B-test
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
@@ -125,7 +125,7 @@ PRECISE_ARGS=(
    --bf16
    --fp8-format e4m3
    --fp8-recipe blockwise
-   --fp8-param-gather
+   # --fp8-param-gather
 )
 
 

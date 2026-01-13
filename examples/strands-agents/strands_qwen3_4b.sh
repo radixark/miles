@@ -99,7 +99,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project strands-miles
+   --wandb-project miles-strands-agents
    --wandb-group Qwen3-4B-Instruct-2507-strands-dapo
    --wandb-key ${WANDB_KEY}
 )

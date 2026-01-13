@@ -97,7 +97,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project eval
+   --wandb-project miles-eval-multi-task
    --wandb-group multi_task
    --wandb-key ${WANDB_KEY}
 )

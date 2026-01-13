@@ -80,7 +80,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-dev
+   --wandb-project miles-retool
    --wandb-group qwen3-4B-base-sft
    --wandb-key ${WANDB_KEY}
 )

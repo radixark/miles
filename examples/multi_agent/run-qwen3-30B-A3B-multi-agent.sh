@@ -104,10 +104,10 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   #--use-wandb
-   # --wandb-project miles-dev
-   # --wandb-group qwen3-30B-A3B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project miles-multi-agent
+   --wandb-group qwen3-30B-A3B-test
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(

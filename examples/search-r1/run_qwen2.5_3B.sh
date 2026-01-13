@@ -90,10 +90,10 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   # --use-wandb
-   # --wandb-project miles-dev
-   # --wandb-group search-r1_qwen2.5-3B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project miles-search-r1
+   --wandb-group search-r1_qwen2.5-3B-test
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(

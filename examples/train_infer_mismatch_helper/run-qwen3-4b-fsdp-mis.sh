@@ -50,8 +50,8 @@ ROLLOUT_ARGS=(
    --num-rollout 100
    --rollout-batch-size 8
    --n-samples-per-prompt 8
-   --rollout-max-response-len 4096
-   --rollout-temperature 0.8
+   --rollout-max-response-len 8192
+   --rollout-temperature 1.0
    --global-batch-size 64
 )
 
@@ -78,7 +78,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-dev-mcore-fsdp
+   --wandb-project miles-train-infer-mismatch
    --wandb-group qwen3-4B-fsdp-1130-ref
    --wandb-key ${WANDB_API_KEY}
 )
@@ -106,7 +106,7 @@ PERF_ARGS=(
 
 MISC_ARGS=(
    --actor-num-nodes 1
-   --actor-num-gpus-per-node 8
+   --actor-num-gpus-per-node 4
    --colocate
    --use-fault-tolerance
    --dump-details /root/shared_data/qwen3-4B-fsdp-1116-noref/dump_details
@@ -118,9 +118,9 @@ CUSTOM_ARGS=(
    --custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_fsdp
 )
 
-# launch the master node of ray in container - 8 GPUs for training
+# launch the master node of ray in container - 4 GPUs for training
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats
 
 
 RUNTIME_ENV_JSON="{

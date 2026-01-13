@@ -2,6 +2,15 @@
 
 # usage: bash examples/on_policy_distillation/run-qwen3-8B-opd.sh
 
+pkill -9 sglang
+sleep 3
+ray stop --force
+pkill -9 ray
+pkill -9 python
+sleep 3
+pkill -9 ray
+pkill -9 python
+
 set -ex
 
 
@@ -48,10 +57,10 @@ source "/root/miles/scripts/models/qwen3-8B.sh"
 
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-8B
-   --ref-load /root/Qwen3-8B_torch_dist
-   --load /root/Qwen3-8B_miles/
-   --save /root/Qwen3-8B_miles/
+   --hf-checkpoint /root/models/Qwen3-8B
+   --ref-load /root/models/Qwen3-8B_torch_dist
+   --load /root/models/Qwen3-8B_miles/
+   --save /root/models/Qwen3-8B_miles/
    --save-interval 20
 )
 
@@ -119,10 +128,10 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   #--use-wandb
-   # --wandb-project miles-dev
-   # --wandb-group qwen3-8B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project miles-on-policy-distillation
+   --wandb-group qwen3-8B-test
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(

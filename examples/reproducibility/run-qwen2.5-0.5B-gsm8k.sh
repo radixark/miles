@@ -81,9 +81,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-host https://wandb.ai/
-   --wandb-team glm-zero
-   --wandb-project miles-dev
+   --wandb-project miles-reproducibility
    --wandb-group qwen2.5-0.5B-gsm8k-deterministic
 )
 
@@ -109,7 +107,7 @@ MISC_ARGS=(
 )
 
 # launch the master node of ray in container
-ray start --head --node-ip-address 127.0.0.1 --num-gpus 8 --disable-usage-stats
+ray start --head --node-ip-address 127.0.0.1 --num-gpus 2 --disable-usage-stats
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json='{
@@ -123,7 +121,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    }' \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node 2 \
    --colocate \
    --calculate-per-token-loss \
    --use-miles-router \

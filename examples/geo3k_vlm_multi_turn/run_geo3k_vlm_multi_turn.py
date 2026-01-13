@@ -45,7 +45,7 @@ def execute():
     wandb_args = (
         (
             "--use-wandb "
-            "--wandb-project miles-dev "
+            "--wandb-project miles-geo3k-vlm-multi-turn "
             "--wandb-group geo3k_vlm_multi_turn "
             f"--wandb-key '{wandb_api_key}' "
         )
@@ -98,11 +98,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        "--sglang-mem-fraction-static 0.6 "
-        f"--sglang-cuda-graph-bs {' '.join(map(str, [1, 2, 4, 8] + list(range(16, 257, 8))))} "
-    )
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.6 " "--sglang-disable-cuda-graph "
 
     fsdp_args = (
         "--train-backend fsdp "
