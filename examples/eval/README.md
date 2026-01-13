@@ -4,10 +4,10 @@ This directory contains configuration and utilities for offloading complex evalu
 
 ## Overview
 
-The setup allows Miles to delegate evaluation tasks to a dedicated "Skills" server. This creates a clear separation of concerns:
+The setup allows miles to delegate evaluation tasks to a dedicated "Skills" server. This creates a clear separation of concerns:
 
-1.  **Miles Container**: Runs the main training loop and hosts the model using SGLang.
-2.  **Skills Container**: Hosts the `nemo_skills` environment, runs the evaluation logic, and queries the model running in the Miles container.
+1.  **miles Container**: Runs the main training loop and hosts the model using SGLang.
+2.  **Skills Container**: Hosts the `nemo_skills` environment, runs the evaluation logic, and queries the model running in the miles container.
 
 ## Prerequisites
 
@@ -18,15 +18,15 @@ The setup allows Miles to delegate evaluation tasks to a dedicated "Skills" serv
 
 ### Prepare Host Network
 
-Create a Docker network to allow communication between the Miles and Skills containers.
+Create a Docker network to allow communication between the miles and Skills containers.
 
 ```bash
 docker network create skills-net
 ```
 
-### Launch the Miles Container
+### Launch the miles Container
 
-Start the main container where Miles and the model will run. Replace `<miles container name>` with your desired name (e.g., `miles_main`).
+Start the main container where miles and the model will run. Replace `<miles container name>` with your desired name (e.g., `miles_main`).
 
 ```bash
 docker run \
@@ -76,7 +76,7 @@ git clone -b miles https://github.com/guapisolo/Skills.git /opt/Skills
 
 # Install Skills package
 cd /opt/Skills
-pip install -e .
+pip install -e . --no-deps
 ```
 
 **b) Prepare Datasets**
@@ -92,7 +92,7 @@ python3 arena-hard/prepare.py
 
 **c) Start the Evaluation Server**
 
-Start the server that listens for evaluation requests from Miles.
+Start the server that listens for evaluation requests from miles.
 
 ```bash
 cd /opt/miles
@@ -105,20 +105,20 @@ python examples/eval/nemo_skills/skills_server.py \
   --max-concurrent-requests 512 \
   --openai-model-name miles-openai-model
 ```
-*Note: You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network. The server always proxies evaluation traffic to an OpenAI-compatible sglang router (Miles starts and manage the router), so adjust `--openai-model-name` and `--max-concurrent-requests` as needed for your deployment.
+*Note: You can now connect to the server at `skills_server:9050` from within the `skills-net` Docker network. The server always proxies evaluation traffic to an OpenAI-compatible sglang router (miles starts and manage the router), so adjust `--openai-model-name` and `--max-concurrent-requests` as needed for your deployment.
 
 ## Running Evaluation
 
 The example scripts are located in `examples/eval/scripts`. Here is an example workflow for training Qwen3-4B with delegated evaluation.
 
-### Prepare Miles Container
+### Prepare miles Container
 
-Enter the **Miles container** and install the package.
+Enter the **miles container** and install the package.
 
 ```bash
 cd /root/miles
 git pull
-pip install -e .
+pip install -e . --no-deps
 ```
 
 ### Download Model and Data

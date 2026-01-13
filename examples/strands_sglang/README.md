@@ -1,4 +1,4 @@
-# Miles x Strands-SGLang
+# miles x Strands-SGLang
 
 This example connects `miles` with [`strands-sglang`](https://github.com/horizon-rl/strands-sglang) (SGLang extension for the agentic scaffolding [`strands`](https://github.com/strands-agents/sdk-python)) for agentic RL training.
 
@@ -20,7 +20,7 @@ This example connects `miles` with [`strands-sglang`](https://github.com/horizon
 
 1. Pull the `radixark/miles:latest` image and enter it
 2. Go to miles folder: `cd /root/miles`
-3. Install Miles: `pip install -e .`
+3. Install miles: `pip install -e . --no-deps`
 4. Go to the example folder: `cd /root/miles/examples/strands_sglang`
 5. Install other dependencies: `pip install -r requirements.txt`
 

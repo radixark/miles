@@ -1,6 +1,6 @@
 # Examples
 
-These examples provide concrete examples to leverage Miles in your own RL workflow. Some examples are just demonstrative, but most of them are verifiable with a concrete performance score.
+These examples provide concrete examples to leverage miles in your own RL workflow. Some examples are just demonstrative, but most of them are verifiable with a concrete performance score.
 
 ## Directory Structure
 
