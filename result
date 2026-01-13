@@ -1,0 +1,11 @@
+ Overall: {'total': 100, 'pass_at_1': 0.28, 'pass_at_4': 0.56}
+ airline: {'total': 20, 'pass_at_1': 0.1, 'pass_at_4': 0.45}
+ retail: {'total': 40, 'pass_at_1': 0.45, 'pass_at_4': 0.75}
+ telecom: {'total': 40, 'pass_at_1': 0.2, 'pass_at_4': 0.425}
+
+
+zijie:
+{'total': 100, 'pass_at_1': 0.37, 'pass_at_4': 0.59}
+airline: {'total': 20, 'pass_at_1': 0.15, 'pass_at_4': 0.4}
+retail: {'total': 40, 'pass_at_1': 0.55, 'pass_at_4': 0.7}
+telecom: {'total': 40, 'pass_at_1': 0.3, 'pass_at_4': 0.575}
