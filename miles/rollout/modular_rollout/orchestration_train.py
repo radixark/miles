@@ -29,19 +29,17 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
     # make sure all the pending tasks are finished
     aborted_samples = []
-    while pendings:
-        done, pendings = await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
+    for coro in asyncio.as_completed(pendings):
+        group = await coro
 
         if not args.partial_rollout:
             continue
 
         # for partial rollout, collect the partial samples into the data buffer
-        for task in done:
-            group = task.result()
-            for sample in group:
-                if sample.response and "start_rollout_id" not in sample.metadata:
-                    sample.metadata["start_rollout_id"] = rollout_id
-            aborted_samples.append(group)
+        for sample in group:
+            if sample.response and "start_rollout_id" not in sample.metadata:
+                sample.metadata["start_rollout_id"] = rollout_id
+        aborted_samples.append(group)
 
     if args.partial_rollout:
         count = sum(len(x) for x in aborted_samples)
