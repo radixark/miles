@@ -101,9 +101,3 @@ def should_run_periodic_action(
 async def as_completed_async(tasks):
     for coro in asyncio.as_completed(tasks):
         yield await coro
-
-
-def listify(item) -> list:
-    if isinstance(item, list):
-        return item
-    return [item]

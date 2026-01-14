@@ -7,8 +7,7 @@ from typing import Any
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.modular_rollout.compatibility import load_generate_function
 from miles.rollout.modular_rollout.inference_wrapper import generate
-from miles.rollout.rm_hub import batched_async_rm
-from miles.utils.misc import listify
+from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
 
@@ -74,18 +73,30 @@ async def generate_and_rm(
                 evaluation=evaluation,
             )
         )
-        del sample
-        # TODO decide data structure (currently `list[list[Sample | list[Sample]]]`)
-        samples = listify(output.samples)
+        sample = output.sample
 
-    if any([sample.status == Sample.Status.ABORTED for sample in samples]):
-        return samples
+    # for the rm that need the whole group, we will not do the rm here
+    if args.group_rm:
+        return sample
 
-    if not args.group_rm:
+    # multi samples
+    if isinstance(sample, list):
+        samples = sample
+        if any([sample.status == Sample.Status.ABORTED for sample in samples]):
+            return samples
+
+        # for multi agent system, the reward of some sample is calculated during generation.
         samples_need_reward = [sample for sample in samples if sample.reward is None]
         await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
+        return samples
+    else:
+        if sample.status == Sample.Status.ABORTED:
+            return sample
+        # for multi-turn environment, a reward could be assigned to the agent.
+        if sample.reward is None:
+            sample.reward = await async_rm(args, sample)
 
-    return samples
+    return sample
 
 
 async def generate_and_rm_group(

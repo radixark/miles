@@ -100,7 +100,7 @@ async def generate_rollout_async(
             group: list[Sample] = task.result()
 
             if do_print:
-                sample = group[0][0]
+                sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
                     f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
                 )
@@ -120,7 +120,7 @@ async def generate_rollout_async(
                 pbar.update(args.n_samples_per_prompt)
 
     pbar.close()
-    sample = data[-1][0][0]
+    sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
         f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
     )
@@ -129,8 +129,10 @@ async def generate_rollout_async(
     aborted_samples = await abort(state, pendings, rollout_id)
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
-    data = sorted(data, key=lambda group: group[0][0].index)
-    all_samples = sorted(all_data, key=lambda group: group[0][0].index)
+    data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
+    all_samples = sorted(
+        all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
+    )
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
