@@ -2,7 +2,7 @@ import asyncio
 import threading
 import time
 from argparse import Namespace
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 import pytest
@@ -10,10 +10,10 @@ import requests
 import uvicorn
 
 from miles.rollout.data_source import RolloutDataSourceWithBuffer
+from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, with_mock_server
-from miles.router.router import MilesRouter
 
 
 class _UvicornThreadServer:
@@ -146,4 +146,3 @@ def rollout_integration_env(tmp_path, monkeypatch):
 
             data_source = RolloutDataSourceWithBuffer(args)
             yield args, data_source
-
