@@ -49,6 +49,7 @@ class RolloutFnEvalOutput:
     metrics: dict[str, Any] = None
 
 
+# Duck typing, users do not need to extend this class
 class RolloutFnProtocol(Protocol):
     def __init__(self, input: RolloutFnConstructorInput):
         ...
