@@ -10,10 +10,9 @@ def mock_server():
         yield server
 
 
-def test_basic_server_start_stop():
-    with with_mock_server() as server:
-        assert server.port > 0
-        assert f"http://{server.host}:{server.port}" == server.url
+def test_basic_server_start_stop(mock_server):
+    assert mock_server.port > 0
+    assert f"http://{mock_server.host}:{mock_server.port}" == mock_server.url
 
 
 def test_generate_endpoint_basic(mock_server):
