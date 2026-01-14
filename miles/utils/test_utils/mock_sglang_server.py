@@ -87,6 +87,9 @@ class MockSGLangServer:
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
 
+        self._wait_for_server_to_start()
+
+    def _wait_for_server_to_start(self):
         for _ in range(50):
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
