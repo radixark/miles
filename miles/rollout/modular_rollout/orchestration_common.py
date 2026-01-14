@@ -91,9 +91,7 @@ async def generate_and_rm(
 
         # for multi agent system, the reward of some sample is calculated during generation.
         samples_need_reward = [sample for sample in samples if sample.reward is None]
-        rewards = await batched_async_rm(args, samples_need_reward)
-        for sample, reward in zip(samples_need_reward, rewards, strict=False):
-            sample.reward = reward
+        await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
         return samples
     else:
         if sample.status == Sample.Status.ABORTED:
@@ -127,9 +125,7 @@ async def generate_and_rm_group(
 
     # for the rm that need the whole group, we will do the rm here
     if not state.aborted and args.group_rm:
-        rewards = await batched_async_rm(args, group)
-        for sample, reward in zip(group, rewards, strict=False):
-            sample.reward = reward
+        await batched_async_rm(args, group, inplace_set_reward_field=True)
 
     return group
 
