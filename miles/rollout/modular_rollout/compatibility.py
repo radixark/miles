@@ -7,6 +7,7 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainOutput,
 )
+from miles.utils.misc import load_function
 
 
 class LegacyRolloutFnAdapter:
@@ -23,3 +24,8 @@ class LegacyRolloutFnAdapter:
             output = RolloutFnEvalOutput(data=output) if input.evaluation else RolloutFnTrainOutput(samples=output)
 
         return output
+
+
+def load_rollout_function(path):
+    fn = load_function(path)
+    return TODO
