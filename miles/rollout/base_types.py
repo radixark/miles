@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from miles.rollout.data_source import DataSource
+from miles.rollout.modular_rollout.orchestration_common import GenerateState
 from miles.utils.types import Sample
 
 
@@ -64,9 +65,16 @@ class RolloutFnProtocol(Protocol):
     def __call__(self, input: RolloutFnInput) -> RolloutFnOutput | Awaitable[RolloutFnOutput]: ...
 
 
+# TODO maybe put to modular_rollout folder depending on overall folder structure
 @dataclass(frozen=True)
 class GenerateFnInput:
-    pass
+    state: GenerateState
+    sample: Sample
+    sampling_params: dict[str, Any]
+
+    @property
+    def args(self) -> Namespace:
+        return self.state.args
 
 
 @dataclass(frozen=True)
