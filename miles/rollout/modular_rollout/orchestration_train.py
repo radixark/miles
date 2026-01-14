@@ -60,7 +60,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
 
 
 async def generate_rollout_async(
-        args: Namespace, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
+    args: Namespace, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
 ) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
@@ -154,7 +154,7 @@ async def generate_rollout_async(
 
 
 def generate_rollout(
-        args: Namespace, rollout_id: int, data_source: Any, evaluation: bool = False
+    args: Namespace, rollout_id: int, data_source: Any, evaluation: bool = False
 ) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 

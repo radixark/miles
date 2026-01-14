@@ -86,10 +86,10 @@ class GenerateState(metaclass=SingletonMeta):
 
 
 async def generate_and_rm(
-        args: Namespace,
-        sample: Sample | list[Sample],
-        sampling_params: dict[str, Any],
-        evaluation: bool = False,
+    args: Namespace,
+    sample: Sample | list[Sample],
+    sampling_params: dict[str, Any],
+    evaluation: bool = False,
 ) -> Sample | list[Sample]:
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
@@ -148,7 +148,7 @@ async def generate_and_rm(
 
 
 async def generate_and_rm_group(
-        args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
+    args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
     state = GenerateState(args)
 
@@ -174,4 +174,3 @@ async def generate_and_rm_group(
             sample.reward = reward
 
     return group
-
