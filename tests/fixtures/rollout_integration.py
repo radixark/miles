@@ -2,6 +2,8 @@ import json
 from argparse import Namespace
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import requests
@@ -12,18 +14,6 @@ from miles.utils.arguments import parse_args
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.test_utils.mock_sglang_server import with_mock_server
 from miles.utils.test_utils.thread_server import ThreadServer
-
-
-@contextmanager
-def _patched_argv(argv: list[str]) -> Iterator[None]:
-    import sys
-
-    old = sys.argv
-    try:
-        sys.argv = list(argv)
-        yield
-    finally:
-        sys.argv = old
 
 
 def _build_args(*, train_path: str, eval_path: str, router_port: int) -> Namespace:
@@ -62,7 +52,7 @@ def _build_args(*, train_path: str, eval_path: str, router_port: int) -> Namespa
         "--rollout-max-response-len",
         "16",
     ]
-    with _patched_argv(argv):
+    with patch("sys.argv", argv):
         args = parse_args()
     args.miles_router_middleware_paths = []
     init_http_client(args)
@@ -81,9 +71,7 @@ def _with_miles_router(args: Namespace) -> Iterator[ThreadServer]:
 
 
 def _write_jsonl(path: str, rows: list[dict]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    Path(path).write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
 
 
 @pytest.fixture
