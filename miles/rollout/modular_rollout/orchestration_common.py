@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import logging
 from argparse import Namespace
 from contextlib import contextmanager
@@ -7,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.modular_rollout.compatibility import load_generate_function
 from miles.rollout.modular_rollout.inference_wrapper import generate
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.misc import load_function
@@ -107,15 +108,14 @@ async def generate_and_rm(
             return sample
 
         with state.dp_rank_context() as _:
+            # TODO load function only once during whole lifetime
             if args.custom_generate_function_path is not None:
-                custom_generate_func = load_function(args.custom_generate_function_path)
-                # if signature has evaluation, pass evaluation
-                if "evaluation" in inspect.signature(custom_generate_func).parameters:
-                    sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
-                else:
-                    sample = await custom_generate_func(args, sample, sampling_params)
+                fn = load_generate_function(args.custom_generate_function_path)
             else:
-                sample = await generate(args, sample, sampling_params)
+                fn = generate
+            sample = await fn(
+                GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params, evaluation=evaluation)
+            )
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:

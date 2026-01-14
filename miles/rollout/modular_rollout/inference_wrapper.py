@@ -1,16 +1,18 @@
-from argparse import Namespace
-from typing import Any
-
 import numpy as np
 import pybase64
 
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
 
-async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
+async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Generate using traditional SGLang router with token-based workflow"""
+    state = input.state
+    args = input.args
+    sample = input.sample
+    sampling_params = input.sampling_params
 
     if args.ci_test:
         assert isinstance(sample.prompt, str)

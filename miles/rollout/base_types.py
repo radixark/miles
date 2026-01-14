@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 from argparse import Namespace
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from miles.rollout.data_source import DataSource
 from miles.utils.types import Sample
+
+if TYPE_CHECKING:
+    from miles.rollout.modular_rollout.orchestration_common import GenerateState
 
 
 @dataclass(frozen=True)
@@ -38,12 +43,14 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
         return True
 
 
+# TODO make it frozen
 @dataclass
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
     metrics: dict[str, Any] = None
 
 
+# TODO make it frozen
 @dataclass
 class RolloutFnEvalOutput:
     data: dict[str, dict[str, Any]]
@@ -60,3 +67,28 @@ RolloutFnOutput = RolloutFnTrainOutput | RolloutFnEvalOutput
 @runtime_checkable
 class RolloutFnProtocol(Protocol):
     def __call__(self, input: RolloutFnInput) -> RolloutFnOutput | Awaitable[RolloutFnOutput]: ...
+
+
+# TODO maybe put to modular_rollout folder depending on overall folder structure
+@dataclass(frozen=True)
+class GenerateFnInput:
+    state: "GenerateState"
+    sample: Sample
+    sampling_params: dict[str, Any]
+    evaluation: bool
+
+    @property
+    def args(self) -> Namespace:
+        return self.state.args
+
+
+@dataclass(frozen=True)
+class GenerateFnOutput:
+    sample: Sample | list[Sample]
+
+
+# TODO: may add add_arguments
+# TODO: may add save/load if need it to be stateful
+@runtime_checkable
+class GenerateFnProtocol(Protocol):
+    async def __call__(self, input: GenerateFnInput) -> GenerateFnOutput: ...

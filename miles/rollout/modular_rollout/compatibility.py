@@ -2,6 +2,8 @@ import inspect
 from collections.abc import Callable
 
 from miles.rollout.base_types import (
+    GenerateFnInput,
+    GenerateFnOutput,
     RolloutFnConstructorInput,
     RolloutFnEvalOutput,
     RolloutFnInput,
@@ -48,3 +50,37 @@ def call_rollout_function(fn: RolloutFnProtocol, input: RolloutFnInput) -> Rollo
         output = run(output)
 
     return output
+
+
+class LegacyGenerateFnAdapter:
+    def __init__(self, fn: Callable):
+        self.fn = fn
+        self._has_evaluation_param = "evaluation" in inspect.signature(fn).parameters
+
+    async def __call__(self, input: GenerateFnInput) -> GenerateFnOutput:
+        if self._has_evaluation_param:
+            output = await self.fn(input.args, input.sample, input.sampling_params, evaluation=input.evaluation)
+        else:
+            output = await self.fn(input.args, input.sample, input.sampling_params)
+
+        if not isinstance(output, GenerateFnOutput):
+            output = GenerateFnOutput(sample=output)
+
+        return output
+
+
+def load_generate_function(path: str):
+    fn = load_function(path)
+
+    if inspect.isclass(fn):
+        return fn()
+    elif _is_legacy_generate_fn(fn):
+        return LegacyGenerateFnAdapter(fn)
+    else:
+        return fn
+
+
+def _is_legacy_generate_fn(fn: Callable) -> bool:
+    sig = inspect.signature(fn)
+    params = list(sig.parameters.keys())
+    return len(params) >= 3 and params[0] != "input"
