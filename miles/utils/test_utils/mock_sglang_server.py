@@ -129,14 +129,12 @@ def with_mock_server(
     process_fn: ProcessFn = default_process_fn,
     host: str = "127.0.0.1",
     port: int | None = None,
-    **kwargs,
 ):
     server = MockSGLangServer(
         model_name=model_name,
         process_fn=process_fn,
         host=host,
         port=port,
-        **kwargs,
     )
     try:
         server.start()
