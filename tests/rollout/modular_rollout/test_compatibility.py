@@ -13,12 +13,13 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
 )
 from miles.rollout.modular_rollout.compatibility import (
+    LegacyGenerateFnAdapter,
     LegacyRolloutFnAdapter,
-    call_generate_function,
     call_rollout_function,
     load_generate_function,
     load_rollout_function,
 )
+from miles.utils.async_utils import run
 
 
 @pytest.fixture
@@ -144,8 +145,9 @@ class TestSupportedGenerateFormats:
         with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=legacy_generate_fn):
             fn = load_generate_function("path.to.fn")
 
-        result = call_generate_function(fn, input)
+        result = run(fn(input))
 
+        assert isinstance(fn, LegacyGenerateFnAdapter)
         assert isinstance(result, GenerateFnOutput)
         assert result.sample == {"text": f"generated_eval={evaluation}"}
 
@@ -164,8 +166,9 @@ class TestSupportedGenerateFormats:
         with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=legacy_generate_fn):
             fn = load_generate_function("path.to.fn")
 
-        result = call_generate_function(fn, input)
+        result = run(fn(input))
 
+        assert isinstance(fn, LegacyGenerateFnAdapter)
         assert isinstance(result, GenerateFnOutput)
         assert result.sample == {"text": "generated_no_eval"}
 
@@ -184,7 +187,7 @@ class TestSupportedGenerateFormats:
         with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=generate):
             fn = load_generate_function("path.to.fn")
 
-        result = call_generate_function(fn, input)
+        result = run(fn(input))
 
         assert isinstance(result, GenerateFnOutput)
         assert result.sample == {"text": f"new_fn_eval={evaluation}"}
@@ -192,7 +195,7 @@ class TestSupportedGenerateFormats:
     @pytest.mark.parametrize("evaluation", [False, True])
     def test_format_4_new_class_api(self, generate_fn_input, evaluation):
         class MyGenerateFn:
-            async def generate(self, input: GenerateFnInput) -> GenerateFnOutput:
+            async def __call__(self, input: GenerateFnInput) -> GenerateFnOutput:
                 return GenerateFnOutput(sample={"text": f"class_eval={input.evaluation}"})
 
         input = GenerateFnInput(
@@ -205,7 +208,7 @@ class TestSupportedGenerateFormats:
         with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=MyGenerateFn):
             fn = load_generate_function("path.to.fn")
 
-        result = call_generate_function(fn, input)
+        result = run(fn(input))
 
         assert isinstance(fn, MyGenerateFn)
         assert isinstance(result, GenerateFnOutput)
