@@ -27,6 +27,7 @@ def test_generate_endpoint_basic(mock_server):
     )
     assert response.status_code == 200
     data = response.json()
+    print(f"{data=}")
 
     assert data == {
         "text": data["text"],
