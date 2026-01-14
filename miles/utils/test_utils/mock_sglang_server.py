@@ -1,45 +1,50 @@
 import asyncio
-import base64
-import random
+import re
 import socket
 import threading
 import time
 from collections.abc import Callable
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from transformers import AutoTokenizer
 
 from miles.utils.http_utils import find_available_port
+
+
+@dataclass(frozen=True)
+class ProcessResult:
+    text: str
+    finish_reason: str
+
+
+def default_process_fn(prompt: str) -> ProcessResult:
+    match = re.search(r"What is 1\+(\d+)\?", prompt)
+    if match:
+        num = int(match.group(1))
+        ans = 1 + num
+        return ProcessResult(text=f"It is {ans}.", finish_reason="stop")
+    return ProcessResult(text="I don't understand.", finish_reason="stop")
 
 
 class MockSGLangServer:
     def __init__(
         self,
-        tokenizer,
-        process_fn: Callable[[str], str] | None = None,
+        model_name: str = "Qwen/Qwen3-0.6B",
+        process_fn: Callable[[str], ProcessResult] | None = None,
         host: str = "127.0.0.1",
         port: int | None = None,
-        finish_reason: str = "stop",
         cached_tokens: int = 0,
-        weight_version: str | None = None,
-        num_layers: int = 32,
-        moe_router_topk: int = 2,
-        num_experts: int = 8,
     ):
-        self.tokenizer = tokenizer
-        self.process_fn = process_fn or (lambda x: "This is a mock response.")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.process_fn = process_fn or default_process_fn
         self.host = host
         self.port = port or find_available_port(30000)
-        self.finish_reason = finish_reason
         self.cached_tokens = cached_tokens
-        self.weight_version = weight_version
-        self.num_layers = num_layers
-        self.moe_router_topk = moe_router_topk
-        self.num_experts = num_experts
 
         self.requests: list[dict[str, Any]] = []
         self.app = FastAPI()
@@ -55,48 +60,36 @@ class MockSGLangServer:
             self.requests.append(payload)
 
             return_logprob = payload.get("return_logprob", False)
-            return_routed_experts = payload.get("return_routed_experts", False)
             input_ids = payload.get("input_ids", [])
 
             prompt_str = self.tokenizer.decode(input_ids, skip_special_tokens=False)
-            response_str = self.process_fn(prompt_str)
-            output_ids = self.tokenizer.encode(response_str, add_special_tokens=False)
+            process_result = self.process_fn(prompt_str)
+            output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
 
             prompt_tokens = len(input_ids)
             completion_tokens = len(output_ids)
 
+            finish_reason_dict = {"type": process_result.finish_reason}
+            if process_result.finish_reason == "length":
+                finish_reason_dict["length"] = completion_tokens
+
             response = {
-                "text": response_str,
+                "text": process_result.text,
                 "meta_info": {
-                    "finish_reason": {"type": self.finish_reason},
+                    "finish_reason": finish_reason_dict,
                     "prompt_tokens": prompt_tokens,
                     "cached_tokens": min(self.cached_tokens, prompt_tokens),
                     "completion_tokens": completion_tokens,
                 },
             }
 
-            if self.finish_reason == "length":
-                response["meta_info"]["finish_reason"]["length"] = completion_tokens
-
             if return_logprob:
+                import random
+
                 output_token_logprobs = [
                     (random.uniform(-10.0, -0.1), token_id) for token_id in output_ids
                 ]
                 response["meta_info"]["output_token_logprobs"] = output_token_logprobs
-
-            if return_routed_experts:
-                total_tokens = prompt_tokens + completion_tokens
-                num_tokens_for_routing = max(1, total_tokens - 1)
-                routed_experts_array = np.random.randint(
-                    0, self.num_experts,
-                    size=(num_tokens_for_routing, self.num_layers, self.moe_router_topk),
-                    dtype=np.int32,
-                )
-                routed_experts_b64 = base64.b64encode(routed_experts_array.tobytes()).decode("ascii")
-                response["meta_info"]["routed_experts"] = routed_experts_b64
-
-            if self.weight_version is not None:
-                response["meta_info"]["weight_version"] = self.weight_version
 
             return JSONResponse(content=response)
 
@@ -139,43 +132,17 @@ class MockSGLangServer:
 
 @contextmanager
 def start_mock_server(
-    tokenizer,
-    process_fn: Callable[[str], str] | None = None,
+    model_name: str = "Qwen/Qwen3-0.6B",
+    process_fn: Callable[[str], ProcessResult] | None = None,
     host: str = "127.0.0.1",
     port: int | None = None,
-    finish_reason: str = "stop",
     **kwargs,
 ):
     server = MockSGLangServer(
-        tokenizer=tokenizer,
+        model_name=model_name,
         process_fn=process_fn,
         host=host,
         port=port,
-        finish_reason=finish_reason,
-        **kwargs,
-    )
-    try:
-        server.start()
-        yield server
-    finally:
-        server.stop()
-
-
-@asynccontextmanager
-async def start_mock_server_async(
-    tokenizer,
-    process_fn: Callable[[str], str] | None = None,
-    host: str = "127.0.0.1",
-    port: int | None = None,
-    finish_reason: str = "stop",
-    **kwargs,
-):
-    server = MockSGLangServer(
-        tokenizer=tokenizer,
-        process_fn=process_fn,
-        host=host,
-        port=port,
-        finish_reason=finish_reason,
         **kwargs,
     )
     try:
