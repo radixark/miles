@@ -1,9 +1,11 @@
 import asyncio
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from miles.rollout.base_types import (
+    GenerateFnInput,
+    GenerateFnOutput,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnEvalOutput,
@@ -12,7 +14,9 @@ from miles.rollout.base_types import (
 )
 from miles.rollout.modular_rollout.compatibility import (
     LegacyRolloutFnAdapter,
+    call_generate_function,
     call_rollout_function,
+    load_generate_function,
     load_rollout_function,
 )
 
@@ -20,6 +24,18 @@ from miles.rollout.modular_rollout.compatibility import (
 @pytest.fixture
 def constructor_input():
     return RolloutFnConstructorInput(args="dummy_args", data_source="dummy_data_source")
+
+
+@pytest.fixture
+def generate_fn_input():
+    state = MagicMock()
+    state.args = MagicMock()
+    return GenerateFnInput(
+        state=state,
+        sample={"text": "test prompt"},
+        sampling_params={"temperature": 0.7},
+        evaluation=False,
+    )
 
 
 class TestSupportedRolloutFormats:
@@ -110,3 +126,87 @@ class TestSupportedRolloutFormats:
         assert isinstance(fn, AsyncRolloutFn)
         expected_type = RolloutFnEvalOutput if evaluation else RolloutFnTrainOutput
         assert isinstance(result, expected_type)
+
+
+class TestSupportedGenerateFormats:
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_1_legacy_function_with_evaluation_param(self, generate_fn_input, evaluation):
+        async def legacy_generate_fn(args, sample, sampling_params, evaluation=False):
+            return {"text": f"generated_eval={evaluation}"}
+
+        input = GenerateFnInput(
+            state=generate_fn_input.state,
+            sample=generate_fn_input.sample,
+            sampling_params=generate_fn_input.sampling_params,
+            evaluation=evaluation,
+        )
+
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=legacy_generate_fn):
+            fn = load_generate_function("path.to.fn")
+
+        result = call_generate_function(fn, input)
+
+        assert isinstance(result, GenerateFnOutput)
+        assert result.sample == {"text": f"generated_eval={evaluation}"}
+
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_2_legacy_function_without_evaluation_param(self, generate_fn_input, evaluation):
+        async def legacy_generate_fn(args, sample, sampling_params):
+            return {"text": "generated_no_eval"}
+
+        input = GenerateFnInput(
+            state=generate_fn_input.state,
+            sample=generate_fn_input.sample,
+            sampling_params=generate_fn_input.sampling_params,
+            evaluation=evaluation,
+        )
+
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=legacy_generate_fn):
+            fn = load_generate_function("path.to.fn")
+
+        result = call_generate_function(fn, input)
+
+        assert isinstance(result, GenerateFnOutput)
+        assert result.sample == {"text": "generated_no_eval"}
+
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_3_new_async_function_api(self, generate_fn_input, evaluation):
+        async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+            return GenerateFnOutput(sample={"text": f"new_fn_eval={input.evaluation}"})
+
+        input = GenerateFnInput(
+            state=generate_fn_input.state,
+            sample=generate_fn_input.sample,
+            sampling_params=generate_fn_input.sampling_params,
+            evaluation=evaluation,
+        )
+
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=generate):
+            fn = load_generate_function("path.to.fn")
+
+        result = call_generate_function(fn, input)
+
+        assert isinstance(result, GenerateFnOutput)
+        assert result.sample == {"text": f"new_fn_eval={evaluation}"}
+
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_4_new_class_api(self, generate_fn_input, evaluation):
+        class MyGenerateFn:
+            async def generate(self, input: GenerateFnInput) -> GenerateFnOutput:
+                return GenerateFnOutput(sample={"text": f"class_eval={input.evaluation}"})
+
+        input = GenerateFnInput(
+            state=generate_fn_input.state,
+            sample=generate_fn_input.sample,
+            sampling_params=generate_fn_input.sampling_params,
+            evaluation=evaluation,
+        )
+
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=MyGenerateFn):
+            fn = load_generate_function("path.to.fn")
+
+        result = call_generate_function(fn, input)
+
+        assert isinstance(fn, MyGenerateFn)
+        assert isinstance(result, GenerateFnOutput)
+        assert result.sample == {"text": f"class_eval={evaluation}"}
