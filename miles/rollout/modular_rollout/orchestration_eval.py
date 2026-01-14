@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 EVAL_PROMPT_DATASET = {}
 
 
-async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict[str, list[Any]]], list[list[Sample]]]:
+async def eval_rollout(args: Namespace, rollout_id: int) -> RolloutFnEvalOutput:
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
@@ -29,7 +29,7 @@ async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict
     results = {}
     for r in results_list:
         results.update(r)
-    return RolloutFnEvalOutput(data=results), []
+    return RolloutFnEvalOutput(data=results)
 
 
 async def eval_rollout_single_dataset(
@@ -136,8 +136,6 @@ async def eval_rollout_single_dataset(
 class SimpleEvalRolloutFn:
     def __init__(self, input: RolloutFnConstructorInput):
         self.args = input.args
-        self.data_source = input.data_source
 
     def __call__(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
-        output, _ = run(eval_rollout(self.args, input.rollout_id))
-        return output
+        return run(eval_rollout(self.args, input.rollout_id))
