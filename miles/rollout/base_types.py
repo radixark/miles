@@ -2,13 +2,14 @@ from argparse import Namespace, ArgumentParser
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from miles.rollout.data_source import DataSource
 from miles.utils.types import Sample
 
 
 @dataclass(frozen=True)
 class RolloutFnConstructorInput:
     args: Namespace
-    data_source: Any
+    data_source: DataSource
 
 
 @dataclass(frozen=True)
