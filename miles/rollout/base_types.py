@@ -1,4 +1,4 @@
-from argparse import Namespace, ArgumentParser
+from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -51,15 +51,14 @@ class RolloutFnEvalOutput:
 
 # Duck typing, users do not need to extend this class
 class RolloutFnProtocol(Protocol):
-    def __init__(self, input: RolloutFnConstructorInput):
-        ...
+    def __init__(self, input: RolloutFnConstructorInput): ...
 
     @classmethod
-    def add_arguments(cls, parser: ArgumentParser):
-        ...
+    def add_arguments(cls, parser: ArgumentParser): ...
 
-    def __call__(self, input: RolloutFnTrainInput | RolloutFnEvalInput) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
-        ...
+    def __call__(
+        self, input: RolloutFnTrainInput | RolloutFnEvalInput
+    ) -> RolloutFnTrainOutput | RolloutFnEvalOutput: ...
 
 
 # TODO move / refactor
