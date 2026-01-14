@@ -4,7 +4,7 @@ pip install scikit-learn==1.6.1 --no-deps
 pip install scikit-image==0.25.2 --no-deps
 pip install albumentations==1.4.10 --no-deps
 pip install opencv-python==4.11.0.86 --no-deps
-pip install albucore --no-deps
+pip install albucore==0.0.13 --no-deps
 pip install opencv-python-headless==4.11.0.86 --no-deps
 pip install peft==0.10.0 --no-deps
 pip install bitsandbytes==0.48.0 --no-deps
@@ -16,3 +16,26 @@ pip install joblib --no-deps
 pip install threadpoolctl --no-deps
 pip install simsimd --no-deps
 pip install stringzilla --no-deps
+
+pip install paddlepaddle-gpu==2.6.2 --no-deps
+pip install paddleocr==2.9.1 --no-deps
+pip install python-Levenshtein --no-deps
+pip install levenshtein --no-deps
+pip install astor --no-deps
+pip install opt-einsum==3.3.0 --no-deps
+pip install beautifulsoup4 --no-deps
+pip install soupsieve --no-deps
+pip install cython --no-deps
+pip install fire --no-deps
+pip install termcolor --no-deps
+pip install imgaug --no-deps
+pip install lmdb --no-deps
+pip install opencv-contrib-python==4.11.0.86 --no-deps
+pip install pyclipper --no-deps
+pip install python-docx --no-deps
+pip install rapidfuzz --no-deps
+pip install shapely --no-deps
+pip install tomli --no-deps
+
+apt-get install -y libglib2.0-0
+apt-get install -y libgl1
