@@ -50,10 +50,10 @@ LORA_ARGS=(
    ##############################
    # # Debug
    #### inference
-   --debug-rollout-only
+   #--debug-rollout-only
    ### --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/lora_adapter.pt
-   --lora-adapter-path lewtun/Qwen2.5-0.5B-SFT-LoRA
-   # --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/
+   #--lora-adapter-path lewtun/Qwen2.5-0.5B-SFT-LoRA
+   ## --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/
    ###
 
    #### train
@@ -86,12 +86,14 @@ ROLLOUT_ARGS=(
    --rm-type math
    # --num-rollout 100
    --num-rollout 10 # onyl train 10 stesp
-   --rollout-batch-size 32
+   # --rollout-batch-size 32
+   --rollout-batch-size 16
    --n-samples-per-prompt 8
    --rollout-max-response-len 1024
    --rollout-temperature 1
 
-   --global-batch-size 256
+   # --global-batch-size 256
+   --global-batch-size 32
 )
 
 EVAL_ARGS=(
@@ -168,7 +170,9 @@ MISC_ARGS=(
 ##############################
 ###########lora###############
 ##############################
-export GPUS_PER_NODE=2
+# export GPUS_PER_NODE=1
+# export GPUS_PER_NODE=4
+export GPUS_PER_NODE=8
 ##############################
 ##############################
 ##############################

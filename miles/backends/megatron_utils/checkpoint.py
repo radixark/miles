@@ -30,6 +30,7 @@ __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 ##############################
 
 
+
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
@@ -43,16 +44,31 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     ###########lora###############
     ##############################
     # Check for LoRA adapter first
-    lora_path = Path(load_path) / "adapter"
-    if lora_path.exists() and is_lora_model(ddp_model):
-        logger.info(f"Loading LoRA checkpoint from {lora_path}")
-        iteration = load_lora_checkpoint(ddp_model, args, str(lora_path))
-        num_floating_point_operations_so_far = 0
-        return iteration, num_floating_point_operations_so_far
+    ## Not correct - need to check the saving format and name
+    if is_lora_model(ddp_model):
+        lora_path = Path(load_path) / "adapter"
+        if lora_path.exists():
+            logger.info(f"Loading LoRA checkpoint from {lora_path}")
+            iteration = load_lora_checkpoint(ddp_model, args, str(lora_path))
+            num_floating_point_operations_so_far = 0
+            return iteration, num_floating_point_operations_so_far
+        else:
+            logger.info(f"Not Found LoRA checkpoint from {lora_path}. Use the random initial weight.")
     ##############################
     ##############################
     ##############################
 
+
+    ##############################
+    ###########lora###############
+    ##############################  
+    # (to-do): yusheng- Also need to add megatron load lora function
+    ##############################  
+    ##############################  
+    ##############################  
+    ##############################  
+    
+        
     if _is_megatron_checkpoint(load_path):
         return _load_checkpoint_megatron(
             ddp_model=ddp_model,

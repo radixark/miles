@@ -32,7 +32,8 @@ from miles.utils.memory_utils import clear_memory
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .lora_utils import is_lora_model
 # from miles.backends.megatron_utils.lora_utils import is_lora_enabled
-from miles.backends.megatron_utils.lora_utils import is_lora_enabled, apply_lora_to_megatron_model
+# from miles.backends.megatron_utils.lora_utils import is_lora_enabled, apply_lora_to_megatron_model
+from miles.backends.megatron_utils.lora_utils import is_lora_enabled, convert_target_modules_to_megatron
 ##############################
 ##############################
 ##############################
@@ -161,16 +162,25 @@ def setup_model_and_optimizer(
 
     ###########
     
+    # This part can be moved to `lora_utils.py` def apply_lora_to_megatron_model
     if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
+    # if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
+        # The below written as: get_model_provider_func() usage
         from megatron.core.distributed import DistributedDataParallelConfig
         from megatron.bridge.models.model_provider import get_model as bridge_get_model
         from megatron.bridge import AutoBridge
         from megatron.bridge.peft.lora import LoRA
+        from megatron.bridge.peft.canonical_lora import CanonicalLoRA
         import torch
         
+         
+        # This is register_canonical_lora_adapter usgae - more advnace and efficiency!!!! 
+        # Compare lora, canonical_lora_adapter, .... 
         # Build the provider from HF checkpoint
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        provider = bridge.to_megatron_provider(load_weights=False)
+        ##!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # provider = bridge.to_megatron_provider(load_weights=False)
+        provider = bridge.to_megatron_provider(load_weights=True) # different from full model training - in the training script, I need to load tuned base model weight and initial lora weights. Need to carefully check and optimize - where to load the base model? (but why in `model_provider.py` using: provider = bridge.to_megatron_provider(load_weights=False))
         
         # Set parallel configs on the provider
         provider.tensor_model_parallel_size = args.tensor_model_parallel_size
@@ -194,19 +204,26 @@ def setup_model_and_optimizer(
                 exclude_modules = [m.strip() for m in args.exclude_modules.split(",")]
             else:
                 exclude_modules = list(args.exclude_modules)
+            # Convert HF module names to Megatron format
+            # exclude_modules = convert_target_modules_to_megatron(exclude_modules)
+            exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=CanonicalLoRA)
         
         # Create LoRA config
-        lora = LoRA(
-            target_modules=args.target_modules,
+        # lora = LoRA(
+        lora = CanonicalLoRA(
+            # target_modules=args.target_modules,
+            # target_modules=convert_target_modules_to_megatron(args.target_modules),
+            target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=CanonicalLoRA),
             exclude_modules=exclude_modules,
             dim=args.lora_rank,
             alpha=args.lora_alpha,
             dropout=args.lora_dropout,
-            dropout_position=getattr(args, 'lora_dropout_position', 'pre'),
-            lora_A_init_method=getattr(args, 'lora_A_init_method', 'xavier'),
-            lora_B_init_method=getattr(args, 'lora_B_init_method', 'zero'),
-            a2a_experimental=getattr(args, 'lora_a2a_experimental', False),
-            lora_dtype=lora_dtype,
+            ##Below for Lora
+            # dropout_position=getattr(args, 'lora_dropout_position', 'pre'),
+            # lora_A_init_method=getattr(args, 'lora_A_init_method', 'xavier'),
+            # lora_B_init_method=getattr(args, 'lora_B_init_method', 'zero'),
+            # a2a_experimental=getattr(args, 'lora_a2a_experimental', False),
+            # lora_dtype=lora_dtype,
         )
         
         # Define pre_wrap_hook to apply LoRA before DDP wrapping
@@ -240,7 +257,8 @@ def setup_model_and_optimizer(
             fp16=getattr(args, 'fp16', False),
             pre_wrap_hook=provider.pre_wrap_hook,
         )
-        
+
+        # ???? the below can be remove ??? or it's tag to jude the model is (base) or (base + lora)  
         # Store lora instance for later use (e.g., checkpoint saving)
         # You may want to attach this to the model or args for later access
         if hasattr(args, '_lora_instance'):
@@ -249,7 +267,6 @@ def setup_model_and_optimizer(
     else:
         # Original non-LoRA path or non-bridge mode
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
-
 
     ############################## 
     ############################## 
@@ -952,6 +969,15 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
     except Exception as e:
         if should_log:
             logger.error(f"Failed to save HuggingFace format: {e}")
+
+        
+    ##############################
+    ###########lora###############
+    ##############################
+    # to-do: also need to impl lora saving  
+    ##############################
+    ##############################
+    ##############################
 
 
 def initialize_model_and_optimizer(

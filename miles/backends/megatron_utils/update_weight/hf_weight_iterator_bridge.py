@@ -49,74 +49,74 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             ##############################
             ###########lora###############
             ##############################
-            ## This is the origin way - weight sync will process - base model + lora weights  
-            ## to-do (yusheng): Optimize: use the method in  `self.is_lora` but need to deal with CUDA issue (weight not on the same device) - might need to be delt with in megatron-core 
+            # ## This is the origin way - weight sync will process - base model + lora weights  
+            # ## to-do (yusheng): Optimize: use the method in  `self.is_lora` but need to deal with CUDA issue (weight not on the same device) - might need to be delt with in megatron-core 
 
-            conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-            conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+            # conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+            # conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
 
-            named_weights = self._bridge.export_hf_weights(self.model, cpu=False, conversion_tasks=conversion_tasks)
+            # named_weights = self._bridge.export_hf_weights(self.model, cpu=False, conversion_tasks=conversion_tasks)
 
-            # for hf_param_name, weight, megatron_param_name in named_weights:
-            #     print(hf_param_name)
-            # exit()
+            # # for hf_param_name, weight, megatron_param_name in named_weights:
+            # #     print(hf_param_name)
+            # # exit()
             
-            named_weights = (
-                (
-                    hf_param_name,
-                    postprocess_hf_param(
-                        args=self.args,
-                        megatron_param_name=megatron_param_name,
-                        hf_param_name=hf_param_name,
-                        param=weight,
-                    ),
-                )
-                for hf_param_name, weight, megatron_param_name in named_weights
-            )
+            # named_weights = (
+            #     (
+            #         hf_param_name,
+            #         postprocess_hf_param(
+            #             args=self.args,
+            #             megatron_param_name=megatron_param_name,
+            #             hf_param_name=hf_param_name,
+            #             param=weight,
+            #         ),
+            #     )
+            #     for hf_param_name, weight, megatron_param_name in named_weights
+            # )
 
-            yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
+            # yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
 
             ####
             
-            # # Only sync base model on first call (or if not LoRA-only mode)
-            # # if not self.is_lora or not self._base_synced:
-            # if not self.is_lora:
-            #     # only pass base model 
-            #     conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-            #     conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
-            #     named_weights = self._bridge.export_hf_weights(
-            #         self.model, 
-            #         cpu=False, 
-            #         conversion_tasks=conversion_tasks,
-            #         merge_adapter_weights=not self.is_lora, # Do not return merged (base.weight + lora.weight). 
-            #     )
+            # Only sync base model on first call (or if not LoRA-only mode)
+            # if not self.is_lora or not self._base_synced:
+            if not self.is_lora:
+                # only pass base model 
+                conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+                conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+                named_weights = self._bridge.export_hf_weights(
+                    self.model, 
+                    cpu=False, 
+                    conversion_tasks=conversion_tasks,
+                    merge_adapter_weights=not self.is_lora, # Do not return merged (base.weight + lora.weight). 
+                )
 
-            #     # for hf_param_name, weight, megatron_param_name in named_weights:
-            #     #     print(hf_param_name) 
+                # for hf_param_name, weight, megatron_param_name in named_weights:
+                #     print(hf_param_name) 
                 
-            #     named_weights = (
-            #         (
-            #             ##############################
-            #             ###########lora###############
-            #             ##############################
-            #             hf_param_name,
-            #             # _normalize_base_weight_name(hf_param_name),
-            #             ##############################
-            #             ##############################
-            #             ##############################
-            #             postprocess_hf_param(
-            #                 args=self.args,
-            #                 megatron_param_name=megatron_param_name,
-            #                 hf_param_name=hf_param_name,
-            #                 param=weight,
-            #             ),
-            #         )
-            #         for hf_param_name, weight, megatron_param_name in named_weights
-            #     )
-            #     yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
-            #     if self.is_lora:
-            #         self._base_synced = True
-            #         # torch.cuda.synchronize()
+                named_weights = (
+                    (
+                        ##############################
+                        ###########lora###############
+                        ##############################
+                        hf_param_name,
+                        # _normalize_base_weight_name(hf_param_name),
+                        ##############################
+                        ##############################
+                        ##############################
+                        postprocess_hf_param(
+                            args=self.args,
+                            megatron_param_name=megatron_param_name,
+                            hf_param_name=hf_param_name,
+                            param=weight,
+                        ),
+                    )
+                    for hf_param_name, weight, megatron_param_name in named_weights
+                )
+                yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
+                if self.is_lora:
+                    self._base_synced = True
+                    # torch.cuda.synchronize()
             ##############################
             ##############################
             ##############################
@@ -126,27 +126,27 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             ##############################
             ###########lora###############
             ##############################
-            # if self.is_lora:
-            #     lora_weights = self._bridge.export_adapter_weights(
-            #         self.model,
-            #         cpu=False,
-            #         show_progress=False
-            #     )
+            if self.is_lora:
+                lora_weights = self._bridge.export_adapter_weights(
+                    self.model,
+                    cpu=False,
+                    show_progress=False
+                )
 
-            #     lora_weights = (
-            #         (
-            #             hf_param_name,
-            #             postprocess_hf_param(
-            #                 args=self.args,
-            #                 megatron_param_name=megatron_param_name,
-            #                 hf_param_name=hf_param_name,
-            #                 param=weight,
-            #             ),
-            #         )
-            #         for hf_param_name, weight, megatron_param_name in lora_weights
-            #     )
+                lora_weights = (
+                    (
+                        hf_param_name,
+                        postprocess_hf_param(
+                            args=self.args,
+                            megatron_param_name=megatron_param_name,
+                            hf_param_name=hf_param_name,
+                            param=weight,
+                        ),
+                    )
+                    for hf_param_name, weight, megatron_param_name in lora_weights
+                )
 
-            #     yield from chunk_named_params_by_size(lora_weights, chunk_size=self.args.update_weight_buffer_size)
+                yield from chunk_named_params_by_size(lora_weights, chunk_size=self.args.update_weight_buffer_size)
             ##############################
             ##############################
             ##############################

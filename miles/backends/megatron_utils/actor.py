@@ -43,7 +43,7 @@ from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 from .lora_utils import (
     is_lora_enabled,
     is_lora_model,
-    apply_lora_to_megatron_model,
+    # apply_lora_to_megatron_model,
     # get_lora_weights_and_config,
     freeze_base_model,
 )

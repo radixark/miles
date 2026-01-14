@@ -1616,6 +1616,7 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when LoRA is enabled."
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
+        # (to-do) yusheng: hf->mg; mg->hf 
         if args.target_modules == "all-linear":
             modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         elif "," in args.target_modules:
