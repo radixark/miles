@@ -95,7 +95,7 @@ class MockSyncRolloutClass:
 
     def __call__(self, input):
         return RolloutFnTrainOutput(samples=[[{"text": "sync_class"}]])
-    
+
 
 class MockAsyncRolloutClass:
     def __init__(self, input):
@@ -104,7 +104,7 @@ class MockAsyncRolloutClass:
     async def __call__(self, input):
         await asyncio.sleep(0.01)
         return RolloutFnTrainOutput(samples=[[{"text": "async_class"}]])
-    
+
 
 class MockAsyncRolloutClassEval:
     def __init__(self, input):
@@ -113,7 +113,7 @@ class MockAsyncRolloutClassEval:
     async def __call__(self, input):
         await asyncio.sleep(0.01)
         return RolloutFnEvalOutput(data={"metric": {"accuracy": 0.98}})
-    
+
 
 class TestCallRolloutFunction:
     def test_sync_adapter(self, constructor_input):
