@@ -75,7 +75,7 @@ class MockSGLangServer:
                 "meta_info": {
                     "finish_reason": finish_reason_dict,
                     "prompt_tokens": prompt_tokens,
-                    "cached_tokens": min(self.cached_tokens, prompt_tokens),
+                    "cached_tokens": 0,
                     "completion_tokens": completion_tokens,
                     "output_token_logprobs": output_token_logprobs,
                 },
