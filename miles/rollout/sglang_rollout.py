@@ -138,7 +138,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     }
 
     # Use LoRA adapter when LoRA is enabled
-    if args.lora_rank > 0 or args.lora_adapter_path is not None:
+    if args.lora_adapter_path is not None or (args.lora_rank > 0 and not args.debug_rollout_only):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
