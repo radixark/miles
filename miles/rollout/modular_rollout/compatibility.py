@@ -1,5 +1,5 @@
-from collections.abc import Callable
 import inspect
+from collections.abc import Callable
 
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,

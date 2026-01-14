@@ -13,7 +13,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnTrainInput, RolloutFnConstructorInput
+from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.modular_rollout.compatibility import load_rollout_function
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
