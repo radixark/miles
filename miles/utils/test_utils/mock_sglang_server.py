@@ -1,7 +1,10 @@
 import asyncio
 import base64
 import random
+import socket
 import threading
+import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
@@ -16,35 +19,36 @@ from miles.utils.http_utils import find_available_port
 class MockSGLangServer:
     def __init__(
         self,
+        tokenizer,
+        process_fn: Callable[[str], str] | None = None,
         host: str = "127.0.0.1",
         port: int | None = None,
-        response_text: str = "Hello, world!",
         finish_reason: str = "stop",
-        prompt_tokens: int = 5,
         cached_tokens: int = 0,
-        completion_tokens: int | None = None,
         weight_version: str | None = None,
-        spec_accept_token_num: int = 0,
-        spec_draft_token_num: int = 0,
-        spec_verify_ct: int = 0,
+        num_layers: int = 32,
+        moe_router_topk: int = 2,
+        num_experts: int = 8,
     ):
+        self.tokenizer = tokenizer
+        self.process_fn = process_fn or (lambda x: "This is a mock response.")
         self.host = host
         self.port = port or find_available_port(30000)
-        self.response_text = response_text
         self.finish_reason = finish_reason
-        self.prompt_tokens = prompt_tokens
         self.cached_tokens = cached_tokens
-        self.completion_tokens = completion_tokens or len(response_text.split())
         self.weight_version = weight_version
-        self.spec_accept_token_num = spec_accept_token_num
-        self.spec_draft_token_num = spec_draft_token_num
-        self.spec_verify_ct = spec_verify_ct
+        self.num_layers = num_layers
+        self.moe_router_topk = moe_router_topk
+        self.num_experts = num_experts
 
         self.requests: list[dict[str, Any]] = []
         self.app = FastAPI()
         self.server: uvicorn.Server | None = None
         self.server_thread: threading.Thread | None = None
 
+        self._setup_routes()
+
+    def _setup_routes(self):
         @self.app.post("/generate")
         async def generate(request: Request):
             payload = await request.json()
@@ -54,42 +58,45 @@ class MockSGLangServer:
             return_routed_experts = payload.get("return_routed_experts", False)
             input_ids = payload.get("input_ids", [])
 
+            prompt_str = self.tokenizer.decode(input_ids, skip_special_tokens=False)
+            response_str = self.process_fn(prompt_str)
+            output_ids = self.tokenizer.encode(response_str, add_special_tokens=False)
+
+            prompt_tokens = len(input_ids)
+            completion_tokens = len(output_ids)
+
             response = {
-                "text": self.response_text,
+                "text": response_str,
                 "meta_info": {
                     "finish_reason": {"type": self.finish_reason},
-                    "prompt_tokens": self.prompt_tokens,
-                    "cached_tokens": self.cached_tokens,
-                    "completion_tokens": self.completion_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "cached_tokens": min(self.cached_tokens, prompt_tokens),
+                    "completion_tokens": completion_tokens,
                 },
             }
 
             if self.finish_reason == "length":
-                response["meta_info"]["finish_reason"]["length"] = self.completion_tokens
+                response["meta_info"]["finish_reason"]["length"] = completion_tokens
 
             if return_logprob:
-                num_tokens = self.completion_tokens
                 output_token_logprobs = [
-                    (random.uniform(-10.0, -0.1), random.randint(1, 50000)) for _ in range(num_tokens)
+                    (random.uniform(-10.0, -0.1), token_id) for token_id in output_ids
                 ]
                 response["meta_info"]["output_token_logprobs"] = output_token_logprobs
 
             if return_routed_experts:
-                num_layers = 32
-                moe_router_topk = 2
-                total_tokens = len(input_ids) + self.completion_tokens if input_ids else self.prompt_tokens + self.completion_tokens
-                num_tokens_for_routing = total_tokens - 1
-                routed_experts_array = np.random.randint(0, 8, size=(num_tokens_for_routing, num_layers, moe_router_topk), dtype=np.int32)
+                total_tokens = prompt_tokens + completion_tokens
+                num_tokens_for_routing = max(1, total_tokens - 1)
+                routed_experts_array = np.random.randint(
+                    0, self.num_experts,
+                    size=(num_tokens_for_routing, self.num_layers, self.moe_router_topk),
+                    dtype=np.int32,
+                )
                 routed_experts_b64 = base64.b64encode(routed_experts_array.tobytes()).decode("ascii")
                 response["meta_info"]["routed_experts"] = routed_experts_b64
 
             if self.weight_version is not None:
                 response["meta_info"]["weight_version"] = self.weight_version
-
-            if self.spec_accept_token_num > 0 or self.spec_draft_token_num > 0 or self.spec_verify_ct > 0:
-                response["meta_info"]["spec_accept_token_num"] = self.spec_accept_token_num
-                response["meta_info"]["spec_draft_token_num"] = self.spec_draft_token_num
-                response["meta_info"]["spec_verify_ct"] = self.spec_verify_ct
 
             return JSONResponse(content=response)
 
@@ -103,12 +110,8 @@ class MockSGLangServer:
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
 
-        import time
-
         for _ in range(50):
             try:
-                import socket
-
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 result = sock.connect_ex((self.host, self.port))
                 sock.close()
@@ -136,14 +139,20 @@ class MockSGLangServer:
 
 @contextmanager
 def start_mock_server(
+    tokenizer,
+    process_fn: Callable[[str], str] | None = None,
     host: str = "127.0.0.1",
     port: int | None = None,
-    response_text: str = "Hello, world!",
     finish_reason: str = "stop",
     **kwargs,
 ):
     server = MockSGLangServer(
-        host=host, port=port, response_text=response_text, finish_reason=finish_reason, **kwargs
+        tokenizer=tokenizer,
+        process_fn=process_fn,
+        host=host,
+        port=port,
+        finish_reason=finish_reason,
+        **kwargs,
     )
     try:
         server.start()
@@ -154,14 +163,20 @@ def start_mock_server(
 
 @asynccontextmanager
 async def start_mock_server_async(
+    tokenizer,
+    process_fn: Callable[[str], str] | None = None,
     host: str = "127.0.0.1",
     port: int | None = None,
-    response_text: str = "Hello, world!",
     finish_reason: str = "stop",
     **kwargs,
 ):
     server = MockSGLangServer(
-        host=host, port=port, response_text=response_text, finish_reason=finish_reason, **kwargs
+        tokenizer=tokenizer,
+        process_fn=process_fn,
+        host=host,
+        port=port,
+        finish_reason=finish_reason,
+        **kwargs,
     )
     try:
         server.start()
