@@ -77,6 +77,7 @@ def _write_jsonl(path: str, rows: list[dict]) -> None:
 @pytest.fixture
 def rollout_integration_env(tmp_path, request):
     extra_argv = request.param
+    assert isinstance(extra_argv, list)
 
     data_path = str(tmp_path / "data.jsonl")
     _write_jsonl(data_path, [{"input": "What is 1+7?", "label": "8"}])
