@@ -8,7 +8,6 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput
 from miles.rollout.modular_rollout.orchestration_common import generate_and_rm
-from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -137,5 +136,5 @@ class SimpleEvalRolloutFn:
     def __init__(self, input: RolloutFnConstructorInput):
         self.args = input.args
 
-    def __call__(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
-        return run(eval_rollout(self.args, input.rollout_id))
+    async def __call__(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
+        return await eval_rollout(self.args, input.rollout_id)
