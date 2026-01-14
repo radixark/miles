@@ -77,20 +77,10 @@ def load_generate_function(path: str):
     elif _is_legacy_generate_fn(fn):
         return LegacyGenerateFnAdapter(fn)
     else:
-        return _wrap_new_generate_fn(fn)
+        return fn
 
 
 def _is_legacy_generate_fn(fn: Callable) -> bool:
     sig = inspect.signature(fn)
     params = list(sig.parameters.keys())
     return len(params) >= 3 and params[0] != "input"
-
-
-def _wrap_new_generate_fn(fn: Callable):
-    async def wrapper(input: GenerateFnInput) -> GenerateFnOutput:
-        output = await fn(input)
-        if not isinstance(output, GenerateFnOutput):
-            output = GenerateFnOutput(sample=output)
-        return output
-
-    return wrapper
