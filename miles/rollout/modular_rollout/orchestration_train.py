@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from argparse import Namespace
 from collections.abc import Callable
 
 import sglang_router
