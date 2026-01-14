@@ -109,7 +109,6 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    # for the rm that need the whole group, we will do the rm here
     if args.group_rm:
         await batched_async_rm(args, group, inplace_set_reward_field=True)
 
