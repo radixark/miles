@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -22,130 +22,91 @@ def constructor_input():
     return RolloutFnConstructorInput(args="dummy_args", data_source="dummy_data_source")
 
 
-class TestLoadRolloutFunction:
-    def test_load_class_returns_instance(self, constructor_input):
-        class MockRolloutClass:
-            def __init__(self, input):
-                self.input = input
+class TestSupportedRolloutFormats:
+    """
+    Documentation test to show various supported rollout function formats
+    """
 
-        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=MockRolloutClass):
-            result = load_rollout_function(constructor_input, "some.module.MockRolloutClass")
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_1_legacy_function_raw_output(self, constructor_input, evaluation):
+        def legacy_rollout_fn(args, rollout_id, data_source, evaluation=False):
+            if evaluation:
+                return {"metric": {"accuracy": 0.9}}
+            return [[{"text": "sample"}]]
 
-        assert isinstance(result, MockRolloutClass)
-        assert result.input is constructor_input
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=legacy_rollout_fn):
+            fn = load_rollout_function(constructor_input, "path.to.fn")
 
-    def test_load_function_returns_adapter(self, constructor_input):
-        def mock_fn():
-            pass
+        input_cls = RolloutFnEvalInput if evaluation else RolloutFnTrainInput
+        result = call_rollout_function(fn, input_cls(rollout_id=1))
 
-        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=mock_fn):
-            result = load_rollout_function(constructor_input, "some.module.mock_fn")
+        assert isinstance(fn, LegacyRolloutFnAdapter)
+        if evaluation:
+            assert isinstance(result, RolloutFnEvalOutput)
+            assert result.data == {"metric": {"accuracy": 0.9}}
+        else:
+            assert isinstance(result, RolloutFnTrainOutput)
+            assert result.samples == [[{"text": "sample"}]]
 
-        assert isinstance(result, LegacyRolloutFnAdapter)
-        assert result.fn is mock_fn
-        assert result.args == "dummy_args"
-        assert result.data_source == "dummy_data_source"
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_2_legacy_function_typed_output(self, constructor_input, evaluation):
+        def legacy_rollout_fn(args, rollout_id, data_source, evaluation=False):
+            if evaluation:
+                return RolloutFnEvalOutput(data={"ds": {"acc": 0.95}})
+            return RolloutFnTrainOutput(samples=[[{"text": "typed"}]])
 
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=legacy_rollout_fn):
+            fn = load_rollout_function(constructor_input, "path.to.fn")
 
-class TestLegacyRolloutFnAdapter:
-    def test_call_with_train_input_wraps_output(self, constructor_input):
-        mock_samples = [[{"text": "sample"}]]
-        mock_fn = MagicMock(return_value=mock_samples)
-        adapter = LegacyRolloutFnAdapter(constructor_input, mock_fn)
+        input_cls = RolloutFnEvalInput if evaluation else RolloutFnTrainInput
+        result = call_rollout_function(fn, input_cls(rollout_id=1))
 
-        result = call_rollout_function(adapter, RolloutFnTrainInput(rollout_id=1))
+        if evaluation:
+            assert isinstance(result, RolloutFnEvalOutput)
+            assert result.data == {"ds": {"acc": 0.95}}
+        else:
+            assert isinstance(result, RolloutFnTrainOutput)
+            assert result.samples == [[{"text": "typed"}]]
 
-        mock_fn.assert_called_once_with("dummy_args", 1, "dummy_data_source", evaluation=False)
-        assert isinstance(result, RolloutFnTrainOutput)
-        assert result.samples == mock_samples
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_3_sync_class(self, constructor_input, evaluation):
+        class SyncRolloutFn:
+            def __init__(self, input: RolloutFnConstructorInput):
+                pass
 
-    def test_call_with_eval_input_wraps_output(self, constructor_input):
-        mock_data = {"metric": {"accuracy": 0.9}}
-        mock_fn = MagicMock(return_value=mock_data)
-        adapter = LegacyRolloutFnAdapter(constructor_input, mock_fn)
+            def __call__(self, input):
+                if input.evaluation:
+                    return RolloutFnEvalOutput(data={"test": {"score": 1}})
+                return RolloutFnTrainOutput(samples=[[{"text": "sync"}]])
 
-        result = call_rollout_function(adapter, RolloutFnEvalInput(rollout_id=2))
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=SyncRolloutFn):
+            fn = load_rollout_function(constructor_input, "path.to.SyncRolloutFn")
 
-        mock_fn.assert_called_once_with("dummy_args", 2, "dummy_data_source", evaluation=True)
-        assert isinstance(result, RolloutFnEvalOutput)
-        assert result.data == mock_data
+        input_cls = RolloutFnEvalInput if evaluation else RolloutFnTrainInput
+        result = call_rollout_function(fn, input_cls(rollout_id=1))
 
-    def test_passthrough_train_output(self, constructor_input):
-        expected_output = RolloutFnTrainOutput(samples=[[]])
-        mock_fn = MagicMock(return_value=expected_output)
-        adapter = LegacyRolloutFnAdapter(constructor_input, mock_fn)
+        assert isinstance(fn, SyncRolloutFn)
+        expected_type = RolloutFnEvalOutput if evaluation else RolloutFnTrainOutput
+        assert isinstance(result, expected_type)
 
-        result = call_rollout_function(adapter, RolloutFnTrainInput(rollout_id=0))
+    @pytest.mark.parametrize("evaluation", [False, True])
+    def test_format_4_async_class(self, constructor_input, evaluation):
+        class AsyncRolloutFn:
+            def __init__(self, input: RolloutFnConstructorInput):
+                pass
 
-        assert result is expected_output
+            async def __call__(self, input):
+                await asyncio.sleep(0.001)
+                if input.evaluation:
+                    return RolloutFnEvalOutput(data={"benchmark": {"accuracy": 0.98}})
+                return RolloutFnTrainOutput(samples=[[{"text": "async"}]])
 
-    def test_passthrough_eval_output(self, constructor_input):
-        expected_output = RolloutFnEvalOutput(data={})
-        mock_fn = MagicMock(return_value=expected_output)
-        adapter = LegacyRolloutFnAdapter(constructor_input, mock_fn)
+        with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=AsyncRolloutFn):
+            fn = load_rollout_function(constructor_input, "path.to.AsyncRolloutFn")
 
-        result = call_rollout_function(adapter, RolloutFnEvalInput(rollout_id=0))
+        input_cls = RolloutFnEvalInput if evaluation else RolloutFnTrainInput
+        result = call_rollout_function(fn, input_cls(rollout_id=1))
 
-        assert result is expected_output
-
-
-class MockSyncRolloutClass:
-    def __init__(self, input):
-        self.input = input
-
-    def __call__(self, input):
-        return RolloutFnTrainOutput(samples=[[{"text": "sync_class"}]])
-
-
-class MockAsyncRolloutClass:
-    def __init__(self, input):
-        self.input = input
-
-    async def __call__(self, input):
-        await asyncio.sleep(0.01)
-        return RolloutFnTrainOutput(samples=[[{"text": "async_class"}]])
-
-
-class MockAsyncRolloutClassEval:
-    def __init__(self, input):
-        self.input = input
-
-    async def __call__(self, input):
-        await asyncio.sleep(0.01)
-        return RolloutFnEvalOutput(data={"metric": {"accuracy": 0.98}})
-
-
-class TestCallRolloutFunction:
-    def test_sync_adapter(self, constructor_input):
-        mock_samples = [[{"text": "sample"}]]
-        mock_fn = MagicMock(return_value=mock_samples)
-        adapter = LegacyRolloutFnAdapter(constructor_input, mock_fn)
-
-        result = call_rollout_function(adapter, RolloutFnTrainInput(rollout_id=1))
-
-        assert isinstance(result, RolloutFnTrainOutput)
-        assert result.samples == mock_samples
-
-    def test_sync_class(self, constructor_input):
-        instance = MockSyncRolloutClass(constructor_input)
-
-        result = call_rollout_function(instance, RolloutFnTrainInput(rollout_id=1))
-
-        assert isinstance(result, RolloutFnTrainOutput)
-        assert result.samples == [[{"text": "sync_class"}]]
-
-    def test_async_class(self, constructor_input):
-        instance = MockAsyncRolloutClass(constructor_input)
-
-        result = call_rollout_function(instance, RolloutFnTrainInput(rollout_id=1))
-
-        assert isinstance(result, RolloutFnTrainOutput)
-        assert result.samples == [[{"text": "async_class"}]]
-
-    def test_async_class_eval(self, constructor_input):
-        instance = MockAsyncRolloutClassEval(constructor_input)
-
-        result = call_rollout_function(instance, RolloutFnEvalInput(rollout_id=2))
-
-        assert isinstance(result, RolloutFnEvalOutput)
-        assert result.data == {"metric": {"accuracy": 0.98}}
+        assert isinstance(fn, AsyncRolloutFn)
+        expected_type = RolloutFnEvalOutput if evaluation else RolloutFnTrainOutput
+        assert isinstance(result, expected_type)
