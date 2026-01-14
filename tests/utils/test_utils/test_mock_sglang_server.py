@@ -34,9 +34,11 @@ def test_generate_endpoint_basic(mock_server):
             "finish_reason": {"type": "stop"},
             "prompt_tokens": 5,
             "cached_tokens": 0,
-            "completion_tokens": 4,
+            "completion_tokens": 5,
+            "output_token_logprobs": data["meta_info"]["output_token_logprobs"],
         },
     }
+    assert len(data["meta_info"]["output_token_logprobs"]) == 5
 
 
 def test_finish_reason_stop(mock_server):
