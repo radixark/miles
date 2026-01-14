@@ -72,7 +72,7 @@ class RolloutFnProtocol(Protocol):
 # TODO maybe put to modular_rollout folder depending on overall folder structure
 @dataclass(frozen=True)
 class GenerateFnInput:
-    state: GenerateState
+    state: "GenerateState"
     sample: Sample
     sampling_params: dict[str, Any]
     evaluation: bool
