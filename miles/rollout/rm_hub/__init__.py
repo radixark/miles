@@ -75,7 +75,9 @@ async def batched_async_rm(
     if inplace_set_reward_field:
         rewards = await batched_async_rm(args, samples, **kwargs)
         for sample, reward in zip(samples, rewards, strict=True):
-            assert sample.reward is None, f"Overriding sample.reward from {sample.reward} to {reward}, is this intended?"
+            assert (
+                sample.reward is None
+            ), f"Overriding sample.reward from {sample.reward} to {reward}, is this intended?"
             sample.reward = reward
         return None
 
