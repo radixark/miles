@@ -1,6 +1,5 @@
 import asyncio
 
-import pytest
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.modular_rollout.orchestration_eval import SimpleEvalRolloutFn
@@ -37,7 +36,9 @@ def test_simple_train_rollout_fn_integration(rollout_integration_env):
         metadata={},
         train_metadata=None,
         non_generation_time=0.0,
-        spec_info=Sample.SpecInfo(spec_accept_token_num=0, spec_draft_token_num=0, spec_verify_ct=0, completion_token_num=0),
+        spec_info=Sample.SpecInfo(
+            spec_accept_token_num=0, spec_draft_token_num=0, spec_verify_ct=0, completion_token_num=0
+        ),
         prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=0, total_prompt_tokens=7),
     )
 
@@ -72,6 +73,8 @@ def test_simple_eval_rollout_fn_integration(rollout_integration_env):
         metadata={},
         train_metadata=None,
         non_generation_time=0.0,
-        spec_info=Sample.SpecInfo(spec_accept_token_num=0, spec_draft_token_num=0, spec_verify_ct=0, completion_token_num=0),
+        spec_info=Sample.SpecInfo(
+            spec_accept_token_num=0, spec_draft_token_num=0, spec_verify_ct=0, completion_token_num=0
+        ),
         prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=0, total_prompt_tokens=7),
     )

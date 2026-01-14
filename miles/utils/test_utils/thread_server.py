@@ -47,4 +47,3 @@ class ThreadServer:
                 pass
             time.sleep(0.1)
         raise RuntimeError(f"Failed to start server on {self.url}")
-
