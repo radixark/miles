@@ -13,6 +13,9 @@ def load_function(path):
     :param path: The path to the function, e.g. "module.submodule.function".
     :return: The function object.
     """
+    if path is None:
+        return None
+
     module_path, _, attr = path.rpartition(".")
     module = importlib.import_module(module_path)
     return getattr(module, attr)
