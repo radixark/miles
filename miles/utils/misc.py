@@ -94,6 +94,7 @@ def should_run_periodic_action(
     step = rollout_id + 1
     return (step % interval == 0) or (num_rollout_per_epoch is not None and step % num_rollout_per_epoch == 0)
 
+
 async def as_completed_async(tasks):
     for coro in asyncio.as_completed(tasks):
         yield await coro
