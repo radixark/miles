@@ -2,119 +2,69 @@
 
 ## Introduction
 
-This is an example for SWE-agent training. This example uses NVIDIA's Nemo-Gym as the Gym environment implement, SWE-Gym as the training data, and SWE-bench as the evaluation.
+This is an example for SWE-agent training. This example uses NVIDIA's `mini-swe-agent` as the agent implementation, SWE-Gym as the training data, and SWE-bench as the evaluation harness.
 
-This implementation of this example is partially in submodules below:
-- Nemo-Gym: https://github.com/yueming-yuan/Gym/tree/miles-swe-agent
+The implementation of this example is partially in the submodule below:
 - mini-swe-agent: https://github.com/yueming-yuan/nv-mini-swe-agent/tree/miles-swe-agent
 
-
 ## Prepare environment
+
 ### Update submodules
 ```bash
-git submodule update --init --recursive .
+git submodule update --init --recursive
 ```
+
 ### Docker settings
+To run SWE-agent, the Miles container must be able to launch temporary Docker containers for each task environment. This requires mounting the Docker socket.
+
 ```bash
-# 1. create a docker network
-docker network create swe-net
-
-# 2. create environment docker
-docker run -itd \
-  --name swe_env \
-  --shm-size 16g \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /mnt/data:/data \
-  -v /home/sglang-rl/<your_name>:/workspace \
-  --ipc=host \
-  --ulimit nofile=65536:65536 \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  --network swe-net \
-  ubuntu:latest \
-  /bin/bash
-
-# 3. create miles docker
 docker run -itd \
   --shm-size 32g \
   --gpus all \
   -v /mnt/data/cache/huggingface:/root/.cache/huggingface \
   -v /mnt/data:/data \
-  -v /home/sglang-rl/<your_name>:/workspace \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   --ipc=host \
   --ulimit nofile=65536:65536 \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   --privileged \
-  --network swe-net \
+  --network host \
   --name miles_<your_name> \
   radixark/miles:latest \
   /bin/zsh
-
-# 4. install utils in environment docker
-docker exec -it swe_env /bin/bash
-apt update && apt install -y zsh curl git python3 python3-pip docker.io
 ```
-note: `-v /var/run/docker.sock:/var/run/docker.sock` is required for Docker-in-Docker SWE environment execution; use `--network swe-net` to enable communication between training & environment.
+note: `-v /var/run/docker.sock:/var/run/docker.sock` is required for Docker-in-Docker SWE environment execution.
 
 ### Installation
 
-In **environment docker**, install Gym
+Inside the **Miles docker**, install the Docker CLI and the SWE-Gym harness:
+
 ```bash
-git clone https://github.com/yueming-yuan/Gym
-cd Gym
+# Install Docker CLI
+apt update && apt install -y docker.io
 
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.local/bin/env
-uv venv --python 3.12 && source .venv/bin/activate
-uv sync --extra dev --group docs
-
-# configure env.yaml
-echo "policy_base_url: https://api.openai.com/v1
-policy_api_key: your-openai-api-key
-policy_model_name: gpt-4.1-2025-04-14
-default_host: 0.0.0.0" > env.yaml
+# Install SWE-Gym harness
+pip install "swegym @ git+https://github.com/sdevare-nv/nv-SWE-Bench-Package.git@31e1cb8f0241da1707d00faa633c3d6ce1a8ba3b"
 ```
-note: set host IP to `0.0.0.0` to enable communications between dockers.
-
-then set up for SWE-agent server:
-```bash
-cd responses_api_agents/mini_swe_agent
-uv pip install -r requirements.txt
-```
-Now you should be able to run the SWE-agent server.
-
-For **miles docker** setup, please follow the standard setup process.
 
 ## Preparing data
-In **miles docker**, download **SWE-Gym** data from huggingface and convert it to Miles' prompt data format with this script.
-```
-cd miles/examples/swe-agent
-python download_and_process_data.py --input SWE-Gym/SWE-Gym --output /root/swe_train.jsonl
+Download **SWE-Gym** data from Hugging Face and convert it to Miles' prompt data format:
+```bash
+cd examples/experimental/swe-agent
+python3 download_and_process_data.py --input SWE-Gym/SWE-Gym --output /root/swe_train.jsonl
 ```
 
 ## Running train
-1. In environment docker, launch the agent server
+Launch the training directly from the Miles root directory:
 ```bash
-cd Gym
-source .venv/bin/activate
-cd responses_api_agents/mini_swe_agent
-./start_server.sh
+bash examples/experimental/swe-agent/run-qwen3-4b-instruct.sh
 ```
-
-
-2. In miles docker,
-(1) export `SWE_AGENT_GYM_URL` to be the port of the second server you started in Gym in environment docker, whose `server_type` is `responses_api_agents`. `swe_env` is the environment docker's name; replace it if you changed the name.
-(minor TODO: modify the port selections to avoid setting this every time.) (2) launch the training.
-```bash
-export SWE_AGENT_GYM_URL="http://swe_env:<port_of_responses_api_agents>"
-bash examples/swe-agent/run-qwen3-4b-instruct.sh
-```
-
 
 ## Troubleshooting
-1. The first time of every SWE environment can be slow, and may need to wait before generation, because each SWE-Gym task has a specific docker, and `docker pull` takes time.
-2. Sometimes the environment may also be slow at evaluation. The timeout of evaluation is 10 minutes by default. If the server is stuck at `[EVAL]<instance> Running eval`, you may need to wait for it.
+1. **Slow Startup:** The first time a SWE environment is created, it may be slow because each SWE-Gym task requires a specific Docker image, and `docker pull` takes time.
+2. **Evaluation Timeout:** Sometimes the environment may be slow during evaluation. The default timeout is 10 minutes. If logs show `[EVAL]<instance> Running eval`, please wait for completion.
+3. **Ray Stability:** The rollout process uses background threads to ensure the Ray cluster remains responsive during long-running agent tasks.
 
 ## Metrics
 ```
@@ -124,7 +74,6 @@ agent/total_time_mean/max/min - Total time statistics
 agent/model_query_time_sum_mean - Avg total model time per rollout
 agent/env_execution_time_sum_mean - Avg total env time per rollout
 agent/eval_time_mean - Avg evaluation time
-agent/overhead_time_mean - Avg overhead time
 agent/time_per_turn - Avg time per turn
 agent/model_query_time_avg - Avg model query time per turn
 agent/env_execution_time_avg - Avg env execution time per turn

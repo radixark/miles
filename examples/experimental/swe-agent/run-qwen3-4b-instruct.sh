@@ -25,9 +25,7 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-export SWE_AGENT_GYM_URL="${SWE_AGENT_GYM_URL:-http://swe_env:11000}"
-
-source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B-Instruct-2507.sh"
+source "${SCRIPT_DIR}/../../../scripts/models/qwen3-4B-Instruct-2507.sh"
 
 CKPT_ARGS=(
     --hf-checkpoint /root/qwen3-4B-Instruct-2507
@@ -135,15 +133,13 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-s
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"SWE_AGENT_GYM_URL\": \"${SWE_AGENT_GYM_URL}\"
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles:${SCRIPT_DIR}/mini-swe-agent/src\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
   }
 }"
 #      \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
 
 echo "Launching training..."
-echo "  SWE Agent URL: ${SWE_AGENT_GYM_URL}"
 
 ray job submit --address="http://127.0.0.1:8265" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \
