@@ -61,14 +61,10 @@ class MockSGLangServer:
             prompt_tokens = len(input_ids)
             completion_tokens = len(output_ids)
 
-            finish_reason_dict = {"type": process_result.finish_reason}
-            if process_result.finish_reason == "length":
-                finish_reason_dict["length"] = completion_tokens
-
             response = {
                 "text": process_result.text,
                 "meta_info": {
-                    "finish_reason": finish_reason_dict,
+                    "finish_reason": {"type": process_result.finish_reason},
                     "prompt_tokens": prompt_tokens,
                     "cached_tokens": 0,
                     "completion_tokens": completion_tokens,
