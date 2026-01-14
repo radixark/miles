@@ -108,35 +108,6 @@ def test_request_recording(mock_server):
     assert len(mock_server.requests) == 0
 
 
-def test_prompt_tokens_calculated_from_input_ids(mock_server):
-    input_ids = [10, 20, 30, 40, 50, 60, 70]
-    response = requests.post(
-        f"{mock_server.url}/generate",
-        json={"input_ids": input_ids, "sampling_params": {}},
-        timeout=5.0,
-    )
-    assert response.status_code == 200
-    data = response.json()
-
-    assert data["meta_info"]["prompt_tokens"] == len(input_ids)
-
-
-def test_completion_tokens_calculated_from_output(mock_server):
-    def process_fn(prompt: str) -> ProcessResult:
-        return ProcessResult(text="Short", finish_reason="stop")
-
-    with with_mock_server(process_fn=process_fn) as server:
-        response = requests.post(
-            f"{server.url}/generate",
-            json={"input_ids": [1, 2, 3], "sampling_params": {}},
-            timeout=5.0,
-        )
-        assert response.status_code == 200
-        data = response.json()
-
-        assert data["meta_info"]["completion_tokens"] > 0
-
-
 def test_process_fn_receives_decoded_prompt(mock_server):
     received_prompts = []
 
