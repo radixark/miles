@@ -3,7 +3,7 @@ import re
 import pytest
 import requests
 
-from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, default_process_fn, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import ProcessResult, default_process_fn, with_mock_server
 
 
 @pytest.fixture(scope="module")
@@ -118,7 +118,7 @@ def test_context_manager():
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text="Context test response", finish_reason="stop")
 
-    with start_mock_server(process_fn=process_fn) as server:
+    with with_mock_server(process_fn=process_fn) as server:
         response = requests.post(f"{server.url}/generate", json={"input_ids": [1, 2, 3], "sampling_params": {}}, timeout=5.0)
         assert response.status_code == 200
         data = response.json()
@@ -142,10 +142,7 @@ def test_completion_tokens_calculated_from_output(mock_server):
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text="Short", finish_reason="stop")
 
-    server = MockSGLangServer(process_fn=process_fn)
-    try:
-        server.start()
-
+    with with_mock_server(process_fn=process_fn) as server:
         response = requests.post(
             f"{server.url}/generate",
             json={"input_ids": [1, 2, 3], "sampling_params": {}},
@@ -155,8 +152,6 @@ def test_completion_tokens_calculated_from_output(mock_server):
         data = response.json()
 
         assert data["meta_info"]["completion_tokens"] > 0
-    finally:
-        server.stop()
 
 
 def test_process_fn_receives_decoded_prompt(mock_server):
@@ -166,17 +161,12 @@ def test_process_fn_receives_decoded_prompt(mock_server):
         received_prompts.append(prompt)
         return ProcessResult(text="response", finish_reason="stop")
 
-    server = MockSGLangServer(process_fn=process_fn)
-    try:
-        server.start()
-
+    with with_mock_server(process_fn=process_fn) as server:
         input_ids = [1, 2, 3]
         requests.post(f"{server.url}/generate", json={"input_ids": input_ids, "sampling_params": {}}, timeout=5.0)
 
         assert len(received_prompts) == 1
         assert isinstance(received_prompts[0], str)
-    finally:
-        server.stop()
 
 
 def test_default_process_fn():

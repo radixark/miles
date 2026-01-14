@@ -22,16 +22,19 @@ class ProcessResult:
     finish_reason: str
 
 
+ProcessFn = Callable[[str], ProcessResult]
+
+
 class MockSGLangServer:
     def __init__(
         self,
         model_name: str,
-        process_fn: Callable[[str], ProcessResult],
+        process_fn: ProcessFn,
         host: str,
         port: int,
     ):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.process_fn = process_fn or default_process_fn
+        self.process_fn = process_fn
         self.host = host
         self.port = port or find_available_port(30000)
 
@@ -119,10 +122,19 @@ class MockSGLangServer:
         self.requests.clear()
 
 
+def default_process_fn(prompt: str) -> ProcessResult:
+    match = re.search(r"What is 1\+(\d+)\?", prompt)
+    if match:
+        num = int(match.group(1))
+        ans = 1 + num
+        return ProcessResult(text=f"It is {ans}.", finish_reason="stop")
+    return ProcessResult(text="I don't understand.", finish_reason="stop")
+
+
 @contextmanager
 def with_mock_server(
     model_name: str = "Qwen/Qwen3-0.6B",
-    process_fn: Callable[[str], ProcessResult] | None = None,
+    process_fn: ProcessFn = default_process_fn,
     host: str = "127.0.0.1",
     port: int | None = None,
     **kwargs,
@@ -140,11 +152,3 @@ def with_mock_server(
     finally:
         server.stop()
 
-
-def default_process_fn(prompt: str) -> ProcessResult:
-    match = re.search(r"What is 1\+(\d+)\?", prompt)
-    if match:
-        num = int(match.group(1))
-        ans = 1 + num
-        return ProcessResult(text=f"It is {ans}.", finish_reason="stop")
-    return ProcessResult(text="I don't understand.", finish_reason="stop")
