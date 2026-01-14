@@ -64,7 +64,7 @@ class LegacyGenerateFnAdapter:
             output = await self.fn(input.args, input.sample, input.sampling_params)
 
         if not isinstance(output, GenerateFnOutput):
-            output = GenerateFnOutput(sample=output)
+            output = GenerateFnOutput(samples=output)
 
         return output
 

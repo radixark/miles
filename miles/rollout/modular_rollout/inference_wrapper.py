@@ -40,7 +40,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     ), f"max_new_tokens: {sampling_params['max_new_tokens']} should not be less than 0"
     if sampling_params["max_new_tokens"] == 0:
         sample.status = Sample.Status.TRUNCATED
-        return GenerateFnOutput(sample=sample)
+        return GenerateFnOutput(samples=sample)
 
     # Prepare payload for sglang server
     payload = {
@@ -97,4 +97,4 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     sample.update_from_meta_info(args, output["meta_info"])
 
-    return GenerateFnOutput(sample=sample)
+    return GenerateFnOutput(samples=sample)

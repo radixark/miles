@@ -84,7 +84,7 @@ class GenerateFnInput:
 
 @dataclass(frozen=True)
 class GenerateFnOutput:
-    sample: Sample | list[Sample]
+    samples: Sample | list[Sample]
 
 
 # TODO: may add add_arguments
