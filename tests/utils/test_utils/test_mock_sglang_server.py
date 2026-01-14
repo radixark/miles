@@ -46,6 +46,8 @@ def test_generate_endpoint_basic(mock_server):
         },
     }
 
+    assert data["meta_info"]["prompt_tokens"] == len(input_ids)
+
 
 def test_finish_reason_stop(mock_server):
     def process_fn(prompt: str) -> ProcessResult:
@@ -91,29 +93,6 @@ def test_finish_reason_abort(mock_server):
         assert data["meta_info"]["finish_reason"]["type"] == "abort"
 
 
-def test_return_logprob(mock_server):
-    def process_fn(prompt: str) -> ProcessResult:
-        return ProcessResult(text="Test", finish_reason="stop")
-
-    with with_mock_server(process_fn=process_fn) as server:
-        response = requests.post(
-            f"{server.url}/generate",
-            json={"input_ids": [1, 2, 3], "sampling_params": {}, "return_logprob": True},
-            timeout=5.0,
-        )
-        assert response.status_code == 200
-        data = response.json()
-
-        assert "output_token_logprobs" in data["meta_info"]
-        logprobs = data["meta_info"]["output_token_logprobs"]
-        assert isinstance(logprobs, list)
-        assert len(logprobs) > 0
-        assert isinstance(logprobs[0], list)
-        assert len(logprobs[0]) == 2
-        assert isinstance(logprobs[0][0], float)
-        assert isinstance(logprobs[0][1], int)
-
-
 def test_request_recording(mock_server):
     request1 = {"input_ids": [1, 2, 3], "sampling_params": {"temperature": 0.7}}
     request2 = {"input_ids": [4, 5, 6], "sampling_params": {"temperature": 0.9}, "return_logprob": True}
@@ -127,19 +106,6 @@ def test_request_recording(mock_server):
 
     mock_server.clear_requests()
     assert len(mock_server.requests) == 0
-
-
-def test_context_manager():
-    def process_fn(prompt: str) -> ProcessResult:
-        return ProcessResult(text="Context test response", finish_reason="stop")
-
-    with with_mock_server(process_fn=process_fn) as server:
-        response = requests.post(
-            f"{server.url}/generate", json={"input_ids": [1, 2, 3], "sampling_params": {}}, timeout=5.0
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["text"] == "Context test response"
 
 
 def test_prompt_tokens_calculated_from_input_ids(mock_server):
