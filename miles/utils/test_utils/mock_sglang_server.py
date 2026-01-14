@@ -52,6 +52,7 @@ class MockSGLangServer:
             payload = await request.json()
             self.requests.append(payload)
 
+            assert payload.get("return_logprob", True) is True, "MockSGLangServer requires return_logprob=True"
             input_ids = payload.get("input_ids", [])
 
             prompt_str = self.tokenizer.decode(input_ids, skip_special_tokens=False)

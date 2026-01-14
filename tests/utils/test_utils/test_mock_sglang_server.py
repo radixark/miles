@@ -22,21 +22,27 @@ def test_generate_endpoint_basic(mock_server):
         json={
             "input_ids": input_ids,
             "sampling_params": {"temperature": 0.7, "max_new_tokens": 10},
+            "return_logprob": True,
         },
         timeout=5.0,
     )
     assert response.status_code == 200
     data = response.json()
-    print(f"{data=}")
 
     assert data == {
-        "text": data["text"],
+        "text": "I don't understand.",
         "meta_info": {
             "finish_reason": {"type": "stop"},
             "prompt_tokens": 5,
             "cached_tokens": 0,
             "completion_tokens": 5,
-            "output_token_logprobs": [], # TODO
+            "output_token_logprobs": [
+                [-0.0, 40],
+                [-0.0078125, 1513],
+                [-0.015625, 944],
+                [-0.0234375, 3535],
+                [-0.03125, 13],
+            ],
         },
     }
 
