@@ -1,9 +1,7 @@
-import asyncio
-
 import pytest
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
-from miles.rollout.modular_rollout.compatibility import load_rollout_function, call_rollout_function
+from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.types import Sample
 
 
