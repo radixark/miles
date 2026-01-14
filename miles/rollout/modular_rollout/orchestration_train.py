@@ -92,7 +92,7 @@ async def generate_rollout_async(
         while len(data) + len(pendings) < target_data_size:
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
-            pendings |= submit_generate_tasks(state, samples)
+            pendings.update(submit_generate_tasks(state, samples))
 
         # wait for the generation to finish
         done, pendings = await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
