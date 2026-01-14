@@ -9,7 +9,6 @@ from miles.utils.types import Sample
 class RolloutFnBaseInput:
     args: Namespace
     rollout_id: int
-    data_source: Any
 
     @property
     def evaluation(self):
