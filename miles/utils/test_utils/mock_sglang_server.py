@@ -22,15 +22,6 @@ class ProcessResult:
     finish_reason: str
 
 
-def default_process_fn(prompt: str) -> ProcessResult:
-    match = re.search(r"What is 1\+(\d+)\?", prompt)
-    if match:
-        num = int(match.group(1))
-        ans = 1 + num
-        return ProcessResult(text=f"It is {ans}.", finish_reason="stop")
-    return ProcessResult(text="I don't understand.", finish_reason="stop")
-
-
 class MockSGLangServer:
     def __init__(
         self,
@@ -148,3 +139,12 @@ def with_mock_server(
         yield server
     finally:
         server.stop()
+
+
+def default_process_fn(prompt: str) -> ProcessResult:
+    match = re.search(r"What is 1\+(\d+)\?", prompt)
+    if match:
+        num = int(match.group(1))
+        ans = 1 + num
+        return ProcessResult(text=f"It is {ans}.", finish_reason="stop")
+    return ProcessResult(text="I don't understand.", finish_reason="stop")

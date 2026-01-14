@@ -3,25 +3,19 @@ import re
 import pytest
 import requests
 
-from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, default_process_fn, start_mock_server
+from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, default_process_fn, with_mock_server
 
 
 @pytest.fixture(scope="module")
 def mock_server():
-    server = MockSGLangServer()
-    server.start()
-    yield server
-    server.stop()
+    with with_mock_server() as server:
+        yield server
 
 
 def test_basic_server_start_stop():
-    server = MockSGLangServer()
-    try:
-        server.start()
+    with with_mock_server() as server:
         assert server.port > 0
         assert f"http://{server.host}:{server.port}" == server.url
-    finally:
-        server.stop()
 
 
 def test_generate_endpoint_basic(mock_server):
@@ -48,63 +42,45 @@ def test_finish_reason_stop(mock_server):
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text="Complete response", finish_reason="stop")
 
-    server = MockSGLangServer(process_fn=process_fn)
-    try:
-        server.start()
-
+    with with_mock_server(process_fn=process_fn) as server:
         response = requests.post(f"{server.url}/generate", json={"input_ids": [1, 2, 3], "sampling_params": {}}, timeout=5.0)
         assert response.status_code == 200
         data = response.json()
 
         assert data["meta_info"]["finish_reason"]["type"] == "stop"
         assert "length" not in data["meta_info"]["finish_reason"]
-    finally:
-        server.stop()
 
 
 def test_finish_reason_length(mock_server):
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text="Truncated", finish_reason="length")
 
-    server = MockSGLangServer(process_fn=process_fn)
-    try:
-        server.start()
-
+    with with_mock_server(process_fn=process_fn) as server:
         response = requests.post(f"{server.url}/generate", json={"input_ids": [1, 2, 3], "sampling_params": {}}, timeout=5.0)
         assert response.status_code == 200
         data = response.json()
 
         assert data["meta_info"]["finish_reason"]["type"] == "length"
         assert "length" in data["meta_info"]["finish_reason"]
-    finally:
-        server.stop()
 
 
 def test_finish_reason_abort(mock_server):
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text="Aborted", finish_reason="abort")
 
-    server = MockSGLangServer(process_fn=process_fn)
-    try:
-        server.start()
-
+    with with_mock_server(process_fn=process_fn) as server:
         response = requests.post(f"{server.url}/generate", json={"input_ids": [1, 2, 3], "sampling_params": {}}, timeout=5.0)
         assert response.status_code == 200
         data = response.json()
 
         assert data["meta_info"]["finish_reason"]["type"] == "abort"
-    finally:
-        server.stop()
 
 
 def test_return_logprob(mock_server):
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text="Test", finish_reason="stop")
 
-    server = MockSGLangServer(process_fn=process_fn)
-    try:
-        server.start()
-
+    with with_mock_server(process_fn=process_fn) as server:
         response = requests.post(
             f"{server.url}/generate",
             json={"input_ids": [1, 2, 3], "sampling_params": {}, "return_logprob": True},
@@ -121,8 +97,6 @@ def test_return_logprob(mock_server):
         assert len(logprobs[0]) == 2
         assert isinstance(logprobs[0][0], float)
         assert isinstance(logprobs[0][1], int)
-    finally:
-        server.stop()
 
 
 def test_request_recording(mock_server):
