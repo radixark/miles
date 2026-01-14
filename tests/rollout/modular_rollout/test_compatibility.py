@@ -29,10 +29,10 @@ def constructor_input():
 
 @pytest.fixture
 def make_generate_fn_input():
-    state = MagicMock()
-    state.args = MagicMock()
-
     def _make(evaluation: bool = False):
+        state = MagicMock()
+        state.args = MagicMock()
+
         return GenerateFnInput(
             state=state,
             sample={"text": "test prompt"},
