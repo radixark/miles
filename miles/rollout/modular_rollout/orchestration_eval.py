@@ -6,7 +6,7 @@ from typing import Any
 from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput
-from miles.rollout.modular_rollout.orchestration_common import GenerateState, generate_and_rm
+from miles.rollout.modular_rollout.orchestration_common import GenerateState, generate_and_rm, compute_sampling_params
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.misc import as_completed_async
@@ -43,7 +43,8 @@ async def eval_rollout_single_dataset(
         )
     dataset = prompt_dataset_cache[cache_key]
 
-    base_sampling_params = dict(
+    base_sampling_params = compute_sampling_params(
+        args,
         temperature=dataset_cfg.temperature,
         top_p=dataset_cfg.top_p,
         top_k=dataset_cfg.top_k,
