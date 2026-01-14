@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import inspect
 
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -26,6 +27,10 @@ class LegacyRolloutFnAdapter:
         return output
 
 
-def load_rollout_function(path):
+def load_rollout_function(input: RolloutFnConstructorInput, path: str):
     fn = load_function(path)
-    return TODO
+
+    if not inspect.isclass(fn):
+        fn = LegacyRolloutFnAdapter(input, fn)
+
+    return fn

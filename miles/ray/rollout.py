@@ -13,7 +13,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnTrainInput
+from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnTrainInput, RolloutFnConstructorInput
 from miles.rollout.modular_rollout.compatibility import load_rollout_function
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
@@ -54,8 +54,9 @@ class RolloutManager:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
 
-        self.generate_rollout = load_rollout_function(self.args.rollout_function_path)
-        self.eval_generate_rollout = load_rollout_function(self.args.eval_function_path)
+        input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
+        self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+        self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
         self.custom_reward_post_process_func = None
         if self.args.custom_reward_post_process_path is not None:
             self.custom_reward_post_process_func = load_function(self.args.custom_reward_post_process_path)
