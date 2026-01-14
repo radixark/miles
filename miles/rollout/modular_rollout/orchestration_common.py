@@ -10,7 +10,6 @@ from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.modular_rollout.compatibility import load_generate_function
 from miles.rollout.modular_rollout.inference_wrapper import generate
 from miles.rollout.rm_hub import async_rm, batched_async_rm
-from miles.utils.misc import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
 
