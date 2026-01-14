@@ -24,23 +24,7 @@ def constructor_input():
 
 class TestSupportedRolloutFormats:
     """
-    Supported rollout function formats:
-
-    Format 1: Legacy function returning raw data
-        def fn(args, rollout_id, data_source, evaluation=False) -> list | dict
-
-    Format 2: Legacy function returning typed output
-        def fn(args, rollout_id, data_source, evaluation=False) -> RolloutFnTrainOutput | RolloutFnEvalOutput
-
-    Format 3: Sync class
-        class Fn:
-            def __init__(self, input: RolloutFnConstructorInput): ...
-            def __call__(self, input: RolloutFnInput) -> RolloutFnOutput: ...
-
-    Format 4: Async class
-        class Fn:
-            def __init__(self, input: RolloutFnConstructorInput): ...
-            async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput: ...
+    Documentation test to show various supported rollout function formats
     """
 
     @pytest.mark.parametrize("evaluation", [False, True])
