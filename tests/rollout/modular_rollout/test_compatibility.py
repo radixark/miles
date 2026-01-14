@@ -18,14 +18,16 @@ def constructor_input():
 
 
 class TestLoadRolloutFunction:
-    def test_load_class(self, constructor_input):
+    def test_load_class_returns_instance(self, constructor_input):
         class MockRolloutClass:
-            pass
+            def __init__(self, input):
+                self.input = input
 
         with patch("miles.rollout.modular_rollout.compatibility.load_function", return_value=MockRolloutClass):
             result = load_rollout_function(constructor_input, "some.module.MockRolloutClass")
 
-        assert result is MockRolloutClass
+        assert isinstance(result, MockRolloutClass)
+        assert result.input is constructor_input
 
     def test_load_function_returns_adapter(self, constructor_input):
         def mock_fn():
