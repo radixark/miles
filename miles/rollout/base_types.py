@@ -41,6 +41,7 @@ class RolloutFnEvalOutput:
     metrics: dict[str, Any] = None
 
 
+# TODO move / refactor
 def call_rollout_fn(fn, *args, evaluation: bool, **kwargs):
     output = fn(*args, **kwargs, evaluation=evaluation)
 
