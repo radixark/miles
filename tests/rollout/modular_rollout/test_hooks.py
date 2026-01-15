@@ -14,9 +14,7 @@ def reset_sample_filter_call_log():
 def sample_filter_hook(args, data):
     sample_filter_call_log["called"] = True
     sample_filter_call_log["data_len"] = len(data)
-    sample_filter_call_log["rewards"] = [
-        g[0][0].reward if isinstance(g[0], list) else g[0].reward for g in data
-    ]
+    sample_filter_call_log["rewards"] = [g[0][0].reward if isinstance(g[0], list) else g[0].reward for g in data]
 
 
 all_samples_process_call_log = {

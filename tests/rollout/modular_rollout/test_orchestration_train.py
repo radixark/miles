@@ -1,9 +1,7 @@
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.modular_rollout.orchestration_train import generate_rollout_async
 from miles.utils.async_utils import run
@@ -154,9 +152,7 @@ class TestDynamicFilter:
         def mock_filter(args, group):
             reward = group[0].reward
             keep = reward == 1.0
-            return DynamicFilterOutput(
-                keep=keep, reason=None if keep else "test_drop"
-            )
+            return DynamicFilterOutput(keep=keep, reason=None if keep else "test_drop")
 
         async def mock_generate_and_rm_group(state, group, sampling_params, evaluation):
             return group
@@ -209,9 +205,7 @@ class TestDynamicFilter:
             keep = reward == 1.0
             if not keep:
                 filter_drop_count[0] += 1
-            return DynamicFilterOutput(
-                keep=keep, reason=None if keep else "test_drop"
-            )
+            return DynamicFilterOutput(keep=keep, reason=None if keep else "test_drop")
 
         async def mock_generate_and_rm_group(state, group, sampling_params, evaluation):
             return group
@@ -271,9 +265,7 @@ class TestRolloutSampleFilterPath:
             side_effect=mock_generate_and_rm_group,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.load_function",
-            side_effect=lambda path: mock_sample_filter
-            if path == "some.filter.path"
-            else None,
+            side_effect=lambda path: mock_sample_filter if path == "some.filter.path" else None,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.get_worker_urls",
             new_callable=AsyncMock,
@@ -324,9 +316,7 @@ class TestRolloutAllSamplesProcessPath:
             side_effect=mock_generate_and_rm_group,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.load_function",
-            side_effect=lambda path: mock_processor
-            if path == "some.processor.path"
-            else None,
+            side_effect=lambda path: mock_processor if path == "some.processor.path" else None,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.get_worker_urls",
             new_callable=AsyncMock,

@@ -1,14 +1,9 @@
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from miles.rollout.base_types import GenerateFnOutput
-from miles.rollout.modular_rollout.orchestration_common import (
-    GenerateState,
-    generate_and_rm,
-    generate_and_rm_group,
-)
+from miles.rollout.modular_rollout.orchestration_common import GenerateState, generate_and_rm, generate_and_rm_group
 from miles.utils.async_utils import run
 from miles.utils.types import Sample
 
@@ -40,9 +35,9 @@ def mock_args():
 
 class TestSemaphoreInitialization:
     def test_semaphore_value_calculation(self, mock_args):
-        with patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_tokenizer"
-        ), patch("miles.rollout.modular_rollout.orchestration_common.load_processor"):
+        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
+            "miles.rollout.modular_rollout.orchestration_common.load_processor"
+        ):
             state = GenerateState(mock_args)
             expected = (
                 mock_args.sglang_server_concurrency
@@ -60,15 +55,13 @@ class TestSemaphoreInitialization:
             (1, 8, 2, 4),
         ],
     )
-    def test_semaphore_value_variants(
-        self, mock_args, concurrency, num_gpus, gpus_per_engine, expected
-    ):
+    def test_semaphore_value_variants(self, mock_args, concurrency, num_gpus, gpus_per_engine, expected):
         mock_args.sglang_server_concurrency = concurrency
         mock_args.rollout_num_gpus = num_gpus
         mock_args.rollout_num_gpus_per_engine = gpus_per_engine
-        with patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_tokenizer"
-        ), patch("miles.rollout.modular_rollout.orchestration_common.load_processor"):
+        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
+            "miles.rollout.modular_rollout.orchestration_common.load_processor"
+        ):
             state = GenerateState(mock_args)
             assert state.generate_fn_semaphore._value == expected
 
@@ -76,9 +69,9 @@ class TestSemaphoreInitialization:
 class TestNonGroupRM:
     @pytest.fixture
     def mock_state(self, mock_args):
-        with patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_tokenizer"
-        ), patch("miles.rollout.modular_rollout.orchestration_common.load_processor"):
+        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
+            "miles.rollout.modular_rollout.orchestration_common.load_processor"
+        ):
             state = GenerateState(mock_args)
             state.generate_function = AsyncMock(
                 return_value=GenerateFnOutput(
@@ -101,9 +94,7 @@ class TestNonGroupRM:
             new_callable=AsyncMock,
         ) as mock_async_rm:
             mock_async_rm.return_value = 1.0
-            result = run(
-                generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False)
-            )
+            result = run(generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False))
             mock_async_rm.assert_called_once()
             assert result.reward == 1.0
 
@@ -113,18 +104,14 @@ class TestNonGroupRM:
             Sample(prompt="test", response="\\boxed{8}", label="8", status=Sample.Status.COMPLETED),
             Sample(prompt="test", response="\\boxed{8}", label="8", status=Sample.Status.COMPLETED),
         ]
-        mock_state.generate_function = AsyncMock(
-            return_value=GenerateFnOutput(samples=samples)
-        )
+        mock_state.generate_function = AsyncMock(return_value=GenerateFnOutput(samples=samples))
 
         with patch(
             "miles.rollout.modular_rollout.orchestration_common.batched_async_rm",
             new_callable=AsyncMock,
         ) as mock_batched_rm:
             sample = Sample(prompt="test", response="", label="8", status=Sample.Status.PENDING)
-            result = run(
-                generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False)
-            )
+            result = run(generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False))
             mock_batched_rm.assert_called_once()
 
 
@@ -132,9 +119,9 @@ class TestGroupRM:
     @pytest.fixture
     def mock_state(self, mock_args):
         mock_args.group_rm = True
-        with patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_tokenizer"
-        ), patch("miles.rollout.modular_rollout.orchestration_common.load_processor"):
+        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
+            "miles.rollout.modular_rollout.orchestration_common.load_processor"
+        ):
             state = GenerateState(mock_args)
             state.generate_function = AsyncMock(
                 return_value=GenerateFnOutput(
@@ -155,9 +142,7 @@ class TestGroupRM:
             "miles.rollout.modular_rollout.orchestration_common.async_rm",
             new_callable=AsyncMock,
         ) as mock_async_rm:
-            result = run(
-                generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False)
-            )
+            result = run(generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False))
             mock_async_rm.assert_not_called()
             assert result.reward is None
 
@@ -174,11 +159,7 @@ class TestGroupRM:
             "miles.rollout.modular_rollout.orchestration_common.batched_async_rm",
             new_callable=AsyncMock,
         ) as mock_batched_rm:
-            result = run(
-                generate_and_rm_group(
-                    mock_state, group, {"temperature": 0.7}, evaluation=False
-                )
-            )
+            result = run(generate_and_rm_group(mock_state, group, {"temperature": 0.7}, evaluation=False))
             mock_async_rm.assert_not_called()
             mock_batched_rm.assert_called_once()
             call_args = mock_batched_rm.call_args
@@ -188,9 +169,9 @@ class TestGroupRM:
 class TestDeterministicInference:
     @pytest.fixture
     def mock_state(self, mock_args):
-        with patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_tokenizer"
-        ), patch("miles.rollout.modular_rollout.orchestration_common.load_processor"):
+        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
+            "miles.rollout.modular_rollout.orchestration_common.load_processor"
+        ):
             state = GenerateState(mock_args)
             state.generate_function = AsyncMock(
                 return_value=GenerateFnOutput(
@@ -234,11 +215,7 @@ class TestDeterministicInference:
             "miles.rollout.modular_rollout.orchestration_common.batched_async_rm",
             new_callable=AsyncMock,
         ):
-            run(
-                generate_and_rm_group(
-                    mock_state, group, {"temperature": 0.7}, evaluation=False
-                )
-            )
+            run(generate_and_rm_group(mock_state, group, {"temperature": 0.7}, evaluation=False))
 
         seeds = [p.get("sampling_seed") for p in captured_params]
         assert set(seeds) == {42, 43, 44}
@@ -271,11 +248,7 @@ class TestDeterministicInference:
             "miles.rollout.modular_rollout.orchestration_common.batched_async_rm",
             new_callable=AsyncMock,
         ):
-            run(
-                generate_and_rm_group(
-                    mock_state, group, {"temperature": 0.7}, evaluation=False
-                )
-            )
+            run(generate_and_rm_group(mock_state, group, {"temperature": 0.7}, evaluation=False))
 
         seeds = [p.get("sampling_seed") for p in captured_params]
         assert all(seed is None for seed in seeds)
@@ -285,9 +258,9 @@ class TestMultiSampleOutput:
     @pytest.fixture
     def mock_state(self, mock_args):
         mock_args.group_rm = False
-        with patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_tokenizer"
-        ), patch("miles.rollout.modular_rollout.orchestration_common.load_processor"):
+        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
+            "miles.rollout.modular_rollout.orchestration_common.load_processor"
+        ):
             state = GenerateState(mock_args)
             return state
 
@@ -306,9 +279,7 @@ class TestMultiSampleOutput:
             reward=0.5,
             status=Sample.Status.COMPLETED,
         )
-        mock_state.generate_function = AsyncMock(
-            return_value=GenerateFnOutput(samples=[s1, s2])
-        )
+        mock_state.generate_function = AsyncMock(return_value=GenerateFnOutput(samples=[s1, s2]))
 
         sample = Sample(prompt="test", response="", label="8", status=Sample.Status.PENDING)
 
@@ -324,9 +295,7 @@ class TestMultiSampleOutput:
             "miles.rollout.modular_rollout.orchestration_common.batched_async_rm",
             side_effect=mock_batched_rm,
         ):
-            result = run(
-                generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False)
-            )
+            result = run(generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False))
 
         assert isinstance(result, list)
         assert len(result) == 2
@@ -348,9 +317,7 @@ class TestMultiSampleOutput:
             reward=None,
             status=Sample.Status.COMPLETED,
         )
-        mock_state.generate_function = AsyncMock(
-            return_value=GenerateFnOutput(samples=[s1, s2])
-        )
+        mock_state.generate_function = AsyncMock(return_value=GenerateFnOutput(samples=[s1, s2]))
 
         sample = Sample(prompt="test", response="", label="8", status=Sample.Status.PENDING)
 
@@ -358,9 +325,7 @@ class TestMultiSampleOutput:
             "miles.rollout.modular_rollout.orchestration_common.batched_async_rm",
             new_callable=AsyncMock,
         ) as mock_batched_rm:
-            result = run(
-                generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False)
-            )
+            result = run(generate_and_rm(mock_state, sample, {"temperature": 0.7}, evaluation=False))
 
         mock_batched_rm.assert_not_called()
         assert isinstance(result, list)

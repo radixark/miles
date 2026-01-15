@@ -1,11 +1,10 @@
 import pytest
+from tests.fixtures.rollout_integration import IntegrationEnvConfig
+from tests.rollout.modular_rollout import test_hooks
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.types import Sample
-from tests.fixtures.rollout_integration import IntegrationEnvConfig
-
-from tests.rollout.modular_rollout import test_hooks
 
 
 def _expected_sample(*, group_index: int | None) -> Sample:
@@ -159,12 +158,17 @@ class TestDeterministicInferenceIntegration:
         "rollout_integration_env",
         [
             pytest.param(
-                _config([
-                    "--sglang-enable-deterministic-inference",
-                    "--rollout-seed", "42",
-                    "--n-samples-per-prompt", "3",
-                    "--rollout-batch-size", "1",
-                ]),
+                _config(
+                    [
+                        "--sglang-enable-deterministic-inference",
+                        "--rollout-seed",
+                        "42",
+                        "--n-samples-per-prompt",
+                        "3",
+                        "--rollout-batch-size",
+                        "1",
+                    ]
+                ),
                 id="deterministic_enabled",
             ),
         ],
@@ -223,9 +227,12 @@ class TestOverSamplingIntegration:
             pytest.param(
                 _config(
                     [
-                        "--over-sampling-batch-size", "2",
-                        "--rollout-batch-size", "2",
-                        "--dynamic-sampling-filter-path", "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
+                        "--over-sampling-batch-size",
+                        "2",
+                        "--rollout-batch-size",
+                        "2",
+                        "--dynamic-sampling-filter-path",
+                        "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
                     ],
                     data_rows=[
                         {"input": "What is 1+7?", "label": "8"},
@@ -254,8 +261,10 @@ class TestDynamicFilterIntegration:
             pytest.param(
                 _config(
                     [
-                        "--rollout-batch-size", "2",
-                        "--dynamic-sampling-filter-path", "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
+                        "--rollout-batch-size",
+                        "2",
+                        "--dynamic-sampling-filter-path",
+                        "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
                     ],
                     data_rows=_MULTI_DATA_ROWS,
                 ),
@@ -274,10 +283,14 @@ class TestDynamicFilterIntegration:
 
 
 _SAMPLE_FILTER_ARGV = [
-    "--rollout-batch-size", "2",
-    "--dynamic-sampling-filter-path", "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
-    "--rollout-sample-filter-path", "tests.rollout.modular_rollout.test_hooks.sample_filter_hook",
-    "--rollout-all-samples-process-path", "tests.rollout.modular_rollout.test_hooks.all_samples_process_hook",
+    "--rollout-batch-size",
+    "2",
+    "--dynamic-sampling-filter-path",
+    "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
+    "--rollout-sample-filter-path",
+    "tests.rollout.modular_rollout.test_hooks.sample_filter_hook",
+    "--rollout-all-samples-process-path",
+    "tests.rollout.modular_rollout.test_hooks.all_samples_process_hook",
 ]
 
 
@@ -322,10 +335,14 @@ class TestMultiSampleOutputIntegration:
         [
             pytest.param(
                 IntegrationEnvConfig(
-                    extra_argv=_MODULAR_ROLLOUT_BASE_ARGV[:4] + [
-                        "--custom-generate-function-path", "tests.rollout.modular_rollout.test_hooks.multi_sample_generate",
-                        "--rollout-batch-size", "1",
-                        "--n-samples-per-prompt", "1",
+                    extra_argv=_MODULAR_ROLLOUT_BASE_ARGV[:4]
+                    + [
+                        "--custom-generate-function-path",
+                        "tests.rollout.modular_rollout.test_hooks.multi_sample_generate",
+                        "--rollout-batch-size",
+                        "1",
+                        "--n-samples-per-prompt",
+                        "1",
                     ],
                     data_rows=_DEFAULT_DATA_ROWS,
                 ),
