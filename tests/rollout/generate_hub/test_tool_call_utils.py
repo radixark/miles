@@ -56,15 +56,14 @@ class TestTokenizeToolResponses:
         tool_responses = SAMPLE_TOOL_RESPONSES[:num_tools]
         assert len(tool_responses) == num_tools
 
-        token_ids = tokenize_tool_responses(tool_responses, tokenizer)
-        decoded_str = tokenizer.decode(token_ids)
+        actual_token_ids = tokenize_tool_responses(tool_responses, tokenizer)
+        actual_str = tokenizer.decode(actual_token_ids)
 
         dummy_assistant = _build_dummy_assistant(tool_responses)
         base_messages = [_DUMMY_USER, dummy_assistant]
-
         expected_str = _compute_chat_template_diff(base_messages, tool_responses, tokenizer)
 
-        assert decoded_str == expected_str, f"{model_name=}"
+        assert actual_str == expected_str, f"{model_name=}"
 
 
 def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str:
@@ -73,6 +72,7 @@ def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str
     )
     text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
     return text_with[len(text_without) :]
+
 
 SAMPLE_TOOLS = [
     {
