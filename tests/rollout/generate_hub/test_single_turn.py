@@ -235,7 +235,13 @@ class TestResumedSingleTurn:
         env.mock_server.process_fn = lambda _: ProcessResult(text=remaining_text, finish_reason="stop")
         result2 = run_generate(variant, env, result1.sample)
         tokens_after_turn1 = PROMPT_TOKENS + partial_tokens
-        assert result2.requests == [expected_request(variant, input_ids=tokens_after_turn1)]
+        assert result2.requests == [
+            expected_request(
+                variant,
+                input_ids=tokens_after_turn1,
+                sampling_params={"max_new_tokens": 14, "temperature": 0.7},
+            )
+        ]
         assert result2.sample == expected_sample(
             response=partial_text + remaining_text,
             response_length=2 + 3,
