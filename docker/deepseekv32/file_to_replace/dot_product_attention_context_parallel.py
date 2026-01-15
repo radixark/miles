@@ -158,10 +158,10 @@ class AttentionFuncionWithContextParallel(torch.autograd.Function):
         heads_kv_stride = 16
         for i in range(0, heads, heads_kv_stride):
             q_slice = slice(i, min(i + heads_kv_stride, heads))
-            q_i = q[:, :, q_slice, :]
-            dout_i = dout[:, :, q_slice, :]
-            out_i = out[:, :, q_slice, :]
-            lse_i = lse[:, :, q_slice]
+            q_i = q[:, :, q_slice, :].contiguous()
+            dout_i = dout[:, :, q_slice, :].contiguous()
+            out_i = out[:, :, q_slice, :].contiguous()
+            lse_i = lse[:, :, q_slice].contiguous()
 
             # TODO: needs casual = True, may not be compatible with zz
             dq_i, _dk_i = sparse_mla_bwd(q_i, k_i, out_i, dout_i, zz_indices_i, zz_masks_i, lse_i, dim_v, sm_scale = softmax_scale)
