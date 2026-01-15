@@ -25,9 +25,15 @@ class TestLastBoxedOnlyString:
 
 
 class TestRemoveBoxed:
-    def test_remove_boxed_valid(self):
-        assert remove_boxed(r"\boxed{42}") == "42"
-        assert remove_boxed(r"\boxed{x + 1}") == "x + 1"
+    @pytest.mark.parametrize(
+        "input_str,expected",
+        [
+            (r"\boxed{42}", "42"),
+            (r"\boxed{x + 1}", "x + 1"),
+        ],
+    )
+    def test_remove_boxed_valid(self, input_str, expected):
+        assert remove_boxed(input_str) == expected
 
     def test_remove_boxed_invalid(self):
         with pytest.raises(AssertionError):
@@ -58,56 +64,45 @@ class TestNormalizeFinalAnswer:
 
 class TestIsCorrectMinerva:
     @pytest.mark.parametrize(
-        "solution,gt,expected_correct",
+        "solution,gt,gt_need_extract,expected_correct",
         [
-            ("Answer: 42", "42", True),
-            ("Answer: 100", "42", False),
-            ("Answer: wrong", "42", False),
+            ("Answer: 42", "42", False, True),
+            ("Answer: 100", "42", False, False),
+            ("Answer: wrong", "42", False, False),
+            ("Answer: 42", r"\boxed{42}", True, True),
         ],
     )
-    def test_is_correct_minerva(self, solution, gt, expected_correct):
-        correct, pred = is_correct_minerva(solution, gt)
+    def test_is_correct_minerva(self, solution, gt, gt_need_extract, expected_correct):
+        correct, pred = is_correct_minerva(solution, gt, gt_need_extract=gt_need_extract)
         assert correct == expected_correct
-
-    def test_is_correct_minerva_with_extraction(self):
-        correct, pred = is_correct_minerva("Answer: 42", r"\boxed{42}", gt_need_extract=True)
-        assert correct is True
 
 
 class TestIsCorrectStrictBox:
-    def test_correct_strict_box(self):
-        score, pred = is_correct_strict_box(r"blah blah \boxed{42}", "42")
-        assert score == 1
-        assert pred == "42"
-
-    def test_incorrect_strict_box(self):
-        score, pred = is_correct_strict_box(r"\boxed{wrong}", "42")
-        assert score == -1
-        assert pred == "wrong"
-
-    def test_no_boxed(self):
-        score, pred = is_correct_strict_box("no box here", "42")
-        assert score == -1
-        assert pred is None
+    @pytest.mark.parametrize(
+        "pred,gt,expected_score,expected_pred",
+        [
+            (r"blah blah \boxed{42}", "42", 1, "42"),
+            (r"\boxed{wrong}", "42", -1, "wrong"),
+            ("no box here", "42", -1, None),
+        ],
+    )
+    def test_is_correct_strict_box(self, pred, gt, expected_score, expected_pred):
+        score, extracted = is_correct_strict_box(pred, gt)
+        assert score == expected_score
+        assert extracted == expected_pred
 
 
 class TestComputeScore:
-    def test_correct_answer(self):
-        result = compute_score("Answer: 42", "42")
-        assert result["score"] == 1.0
-        assert result["acc"] is True
-        assert result["pred"] == "42"
-
-    def test_incorrect_answer(self):
-        result = compute_score("Answer: wrong", "42")
-        assert result["score"] == -1.0
-        assert result["acc"] is False
-
-    def test_strict_box_mode(self):
-        result = compute_score(r"\boxed{42}", "42", strict_box_verify=True)
-        assert result["score"] == 1.0
-
-    def test_long_solution_truncated(self):
-        long_solution = "x" * 500 + " Answer: 42"
-        result = compute_score(long_solution, "42")
-        assert result["acc"] is True
+    @pytest.mark.parametrize(
+        "solution,gt,strict_box,expected_score,expected_acc",
+        [
+            ("Answer: 42", "42", False, 1.0, True),
+            ("Answer: wrong", "42", False, -1.0, False),
+            (r"\boxed{42}", "42", True, 1.0, True),
+            ("x" * 500 + " Answer: 42", "42", False, 1.0, True),
+        ],
+    )
+    def test_compute_score(self, solution, gt, strict_box, expected_score, expected_acc):
+        result = compute_score(solution, gt, strict_box_verify=strict_box)
+        assert result["score"] == expected_score
+        assert result["acc"] == expected_acc

@@ -36,13 +36,11 @@ class TestRemoveBoxed:
             (r"\boxed{42}", "42"),
             (r"\boxed{x^2 + 1}", "x^2 + 1"),
             (r"\boxed{\frac{1}{2}}", r"\frac{1}{2}"),
+            ("not boxed", None),
         ],
     )
     def test_remove_boxed(self, input_str, expected):
         assert remove_boxed(input_str) == expected
-
-    def test_remove_boxed_invalid(self):
-        assert remove_boxed("not boxed") is None
 
 
 class TestExtractAnswer:
@@ -71,13 +69,11 @@ class TestNormalize:
             (r"\$50", "50"),
             ("HELLO", "hello"),
             ("1,234,567", "1234567"),
+            (None, None),
         ],
     )
     def test_normalize(self, input_str, expected):
         assert _normalize(input_str) == expected
-
-    def test_normalize_none(self):
-        assert _normalize(None) is None
 
 
 class TestGradeAnswerMathd:
@@ -107,13 +103,11 @@ class TestGradeAnswerSympy:
             ("", "42", False),
             ("(1,2)", "(1,2)", True),
             ("(1,2,3)", "(1,2)", False),
+            ("42", None, False),
         ],
     )
     def test_grade_answer_sympy(self, given, ground_truth, expected):
         assert grade_answer_sympy(given, ground_truth) == expected
-
-    def test_grade_answer_sympy_none_ground_truth(self):
-        assert grade_answer_sympy("42", None) is False
 
 
 class TestGradeAnswerVerl:
@@ -127,11 +121,9 @@ class TestGradeAnswerVerl:
             ("no boxed", "42", False),
             (r"\boxed{42}", r"\boxed{42}", True),
             ("", "42", False),
+            (r"\boxed{42}", "", False),
+            (r"\boxed{42}", None, False),
         ],
     )
     def test_grade_answer_verl(self, solution, ground_truth, expected):
         assert grade_answer_verl(solution, ground_truth) == expected
-
-    def test_grade_answer_verl_empty_ground_truth(self):
-        assert grade_answer_verl(r"\boxed{42}", "") is False
-        assert grade_answer_verl(r"\boxed{42}", None) is False

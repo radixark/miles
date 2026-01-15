@@ -21,40 +21,24 @@ class TestNormalizeAnswer:
 
 
 class TestF1Score:
-    def test_exact_match(self):
-        f1, prec, recall = f1_score("hello world", "hello world")
-        assert f1 == 1.0
-        assert prec == 1.0
-        assert recall == 1.0
-
-    def test_partial_match(self):
-        f1, prec, recall = f1_score("hello world foo", "hello world bar")
-        assert 0 < f1 < 1
-        assert prec == 2 / 3
-        assert recall == 2 / 3
-
-    def test_no_match(self):
-        assert f1_score("abc", "xyz") == (0, 0, 0)
-
-    def test_none_prediction(self):
-        assert f1_score(None, "anything") == (0, 0, 0)
-
-    def test_yes_no_special_handling(self):
-        assert f1_score("yes", "no") == (0, 0, 0)
-        assert f1_score("no", "yes") == (0, 0, 0)
-        assert f1_score("yes", "yes") == (1.0, 1.0, 1.0)
-        assert f1_score("noanswer", "yes") == (0, 0, 0)
-
-    def test_with_articles(self):
-        f1, _, _ = f1_score("the answer is correct", "answer is correct")
-        assert f1 == 1.0
-
-    def test_with_punctuation(self):
-        f1, _, _ = f1_score("hello, world!", "hello world")
-        assert f1 == 1.0
-
-    def test_subset_match(self):
-        f1, prec, recall = f1_score("hello", "hello world")
-        assert prec == 1.0
-        assert recall == 0.5
-        assert f1 == pytest.approx(2 / 3)
+    @pytest.mark.parametrize(
+        "prediction,ground_truth,expected_f1,expected_prec,expected_recall",
+        [
+            ("hello world", "hello world", 1.0, 1.0, 1.0),
+            ("hello world foo", "hello world bar", 2 / 3, 2 / 3, 2 / 3),
+            ("abc", "xyz", 0, 0, 0),
+            (None, "anything", 0, 0, 0),
+            ("yes", "no", 0, 0, 0),
+            ("no", "yes", 0, 0, 0),
+            ("yes", "yes", 1.0, 1.0, 1.0),
+            ("noanswer", "yes", 0, 0, 0),
+            ("the answer is correct", "answer is correct", 1.0, 1.0, 1.0),
+            ("hello, world!", "hello world", 1.0, 1.0, 1.0),
+            ("hello", "hello world", pytest.approx(2 / 3), 1.0, 0.5),
+        ],
+    )
+    def test_f1_score(self, prediction, ground_truth, expected_f1, expected_prec, expected_recall):
+        f1, prec, recall = f1_score(prediction, ground_truth)
+        assert f1 == expected_f1
+        assert prec == expected_prec
+        assert recall == expected_recall
