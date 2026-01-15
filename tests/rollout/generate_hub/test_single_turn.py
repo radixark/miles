@@ -243,14 +243,18 @@ class TestPromptProcessingPath:
 class TestMultiTurn:
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
     def test_first_turn_initializes_tokens(self, variant, generate_env):
-        assert run_generate(variant, generate_env, make_sample(tokens=[])) == expected_sample()
+        result = run_generate(variant, generate_env, make_sample(tokens=[]))
+        assert result.requests == [expected_request(variant)]
+        assert result.sample == expected_sample()
 
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
     def test_subsequent_turn_appends_tokens(self, variant, generate_env):
         existing_tokens = [1, 2, 3, 4, 5, 6, 7, 100, 101, 102]
         sample = make_sample(tokens=existing_tokens, response="previous", response_length=3)
 
-        assert run_generate(variant, generate_env, sample) == expected_sample(
+        result = run_generate(variant, generate_env, sample)
+        assert result.requests == [expected_request(variant, input_ids=existing_tokens)]
+        assert result.sample == expected_sample(
             response="previous" + RESPONSE_TEXT,
             response_length=3 + 5,
             tokens=existing_tokens + RESPONSE_TOKENS,
@@ -262,13 +266,18 @@ class TestMultiTurn:
         existing_tokens = [1, 2, 3, 4, 5, 6, 7, 100, 101, 102]
         sample = make_sample(tokens=existing_tokens, response="prev", response_length=3)
 
-        run_generate(variant, generate_env, sample, {"max_new_tokens": 10, "temperature": 0.7})
-
-        assert generate_env.mock_server.request_log == [
+        result = run_generate(variant, generate_env, sample, {"max_new_tokens": 10, "temperature": 0.7})
+        assert result.requests == [
             expected_request(
                 variant, input_ids=existing_tokens, sampling_params={"max_new_tokens": 7, "temperature": 0.7}
             )
         ]
+        assert result.sample == expected_sample(
+            response="prev" + RESPONSE_TEXT,
+            response_length=3 + 5,
+            tokens=existing_tokens + RESPONSE_TOKENS,
+            prompt_tokens=len(existing_tokens),
+        )
 
 
 class TestBoundaryConditions:
@@ -278,26 +287,31 @@ class TestBoundaryConditions:
         sample = make_sample(tokens=existing_tokens, response="x" * 10, response_length=10)
 
         result = run_generate(variant, generate_env, sample, {"max_new_tokens": 10, "temperature": 0.7})
-
-        assert result.status == Sample.Status.TRUNCATED
-        assert generate_env.mock_server.request_log == []
+        assert result.requests == []
+        assert result.sample.status == Sample.Status.TRUNCATED
 
 
 class TestFinishReason:
     @pytest.mark.parametrize("generate_env", [{"process_fn_kwargs": {"finish_reason": "stop"}}], indirect=True)
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
     def test_finish_stop_sets_completed(self, variant, generate_env):
-        assert run_generate(variant, generate_env) == expected_sample(status=Sample.Status.COMPLETED)
+        result = run_generate(variant, generate_env)
+        assert result.requests == [expected_request(variant)]
+        assert result.sample == expected_sample(status=Sample.Status.COMPLETED)
 
     @pytest.mark.parametrize("generate_env", [{"process_fn_kwargs": {"finish_reason": "length"}}], indirect=True)
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
     def test_finish_length_sets_truncated(self, variant, generate_env):
-        assert run_generate(variant, generate_env) == expected_sample(status=Sample.Status.TRUNCATED)
+        result = run_generate(variant, generate_env)
+        assert result.requests == [expected_request(variant)]
+        assert result.sample == expected_sample(status=Sample.Status.TRUNCATED)
 
     @pytest.mark.parametrize("generate_env", [{"process_fn_kwargs": {"finish_reason": "abort"}}], indirect=True)
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
     def test_finish_abort_sets_aborted(self, variant, generate_env):
-        assert run_generate(variant, generate_env) == expected_sample(status=Sample.Status.ABORTED)
+        result = run_generate(variant, generate_env)
+        assert result.requests == [expected_request(variant)]
+        assert result.sample == expected_sample(status=Sample.Status.ABORTED)
 
 
 class TestRoutedExperts:
