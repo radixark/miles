@@ -47,21 +47,18 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     payload = {
         "sampling_params": sampling_params,
         "return_logprob": True,
+        "return_routed_experts": args.use_rollout_routing_replay,
+        # Use existing tokens for multi-turn or tokenize the new prompt
+        "input_ids": (
+            sample.tokens
+            if len(sample.response) > 0
+            else prompt_ids
+        ),
     }
-
-    if args.use_rollout_routing_replay:
-        payload["return_routed_experts"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
-
-    # Use existing tokens for multi-turn or tokenize the new prompt
-    payload["input_ids"] = (
-        sample.tokens
-        if len(sample.response) > 0
-        else prompt_ids
-    )
 
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and (not sample.tokens):
