@@ -346,8 +346,11 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str):
-        return self._make_request("weights_checker", {"action": action})
+    def check_weights(self, action: str, payload: dict | None = None):
+        data = {"action": action}
+        if payload is not None:
+            data.update(payload)
+        return self._make_request("weights_checker", data)
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
         return self._make_request(
