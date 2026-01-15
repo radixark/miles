@@ -13,9 +13,9 @@ async def compute_prompt_ids(sample, state):
         sample.multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
         } or None
+        return prompt_ids
     else:
-        prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
-    return prompt_ids
+        return state.tokenizer.encode(sample.prompt, add_special_tokens=False)
 
 
 async def compute_request_payload(args, prompt_ids, sample, sampling_params: dict):
