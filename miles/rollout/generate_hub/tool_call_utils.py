@@ -4,6 +4,7 @@ from typing import Any
 _DUMMY_USER = {"role": "user", "content": "dummy"}
 
 
+# TODO: very naive implementation, need the to-be-implemented e2e test to validate.
 def tokenize_tool_responses(
     tool_messages: list[dict[str, Any]],
     tokenizer,

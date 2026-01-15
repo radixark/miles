@@ -4,7 +4,7 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
-from miles.rollout.generate_hub.tool_call_utils import DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
+from miles.rollout.generate_hub.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
 
 # TODO add more models
 # Typical models that support tool calling, mapped from sglang tool call parsers.
@@ -182,7 +182,7 @@ class TestTokenizeToolResponses:
         decoded_str = tokenizer.decode(token_ids)
 
         dummy_assistant = _build_dummy_assistant(tool_responses)
-        base_messages = [DUMMY_USER, dummy_assistant]
+        base_messages = [_DUMMY_USER, dummy_assistant]
 
         expected_str = _compute_chat_template_diff(base_messages, tool_responses, tokenizer)
 
