@@ -7,29 +7,34 @@ from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 
-# Models that support tool calling, mapped from sglang tool call parsers:
-# - deepseekv3/v31/v32: DeepSeek-V3 family
-# - glm/glm45/glm47: GLM-4 family
-# - kimi_k2: Kimi-K2
-# - llama3: Llama-3.2 family
-# - mistral: Mistral family
-# - qwen/qwen25: Qwen2.5 family
-# - qwen3_coder: Qwen3 family
-# - mimo: MiMo
-# - step3: Step-3
-# - minimax-m2: MiniMax-M2
-# - interns1: InternLM
-# TODO: Add more models as they become available:
-# - gpt-oss, pythonic formats
-# - Newer model versions
+# Models that support tool calling, mapped from sglang tool call parsers.
+# TODO: Add more models as they become available (gpt-oss, pythonic, newer versions)
 TOOL_CALL_MODELS = [
+    # qwen/qwen25: Qwen2.5 family
     "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen2.5-7B-Instruct",
+    # qwen3_coder: Qwen3 family
     "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-8B",
+    # llama3: Llama-3.2 family
     "meta-llama/Llama-3.2-1B-Instruct",
+    "meta-llama/Llama-3.2-3B-Instruct",
+    # mistral: Mistral family
     "mistralai/Mistral-7B-Instruct-v0.3",
-    # "deepseek-ai/DeepSeek-V3",  # Large model, skip for CI
-    # "THUDM/glm-4-9b-chat",  # Requires specific setup
-    # "moonshotai/Kimi-K2-Instruct",  # Not publicly available
+    # deepseekv3/v31/v32: DeepSeek-V3 family
+    "deepseek-ai/DeepSeek-V3",
+    # glm/glm45/glm47: GLM-4 family
+    "THUDM/glm-4-9b-chat",
+    # kimi_k2: Kimi-K2
+    "moonshotai/Kimi-K2-Instruct",
+    # mimo: MiMo
+    "XiaomiMiMo/MiMo-7B-RL",
+    # step3: Step-3
+    # "StepFun/Step-3",  # TODO: find correct HF repo
+    # minimax-m2: MiniMax-M2
+    # "MiniMaxAI/MiniMax-M2",  # TODO: find correct HF repo
+    # interns1: InternLM
+    "internlm/internlm3-8b-instruct",
 ]
 
 
