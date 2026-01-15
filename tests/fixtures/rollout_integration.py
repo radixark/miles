@@ -95,7 +95,7 @@ def _cleanup_legacy_singleton():
     SingletonMeta._instances.pop(GenerateState, None)
 
 
-_DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
+DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ def rollout_integration_env(tmp_path, request) -> Iterator[IntegrationEnv]:
     config = request.param
     assert isinstance(config, IntegrationEnvConfig)
 
-    data_rows = config.data_rows or _DEFAULT_DATA_ROWS
+    data_rows = config.data_rows or DEFAULT_DATA_ROWS
 
     data_path = str(tmp_path / "data.jsonl")
     _write_jsonl(data_path, data_rows)

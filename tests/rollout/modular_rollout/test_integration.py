@@ -1,5 +1,5 @@
 import pytest
-from tests.fixtures.rollout_integration import IntegrationEnvConfig
+from tests.fixtures.rollout_integration import DEFAULT_DATA_ROWS, IntegrationEnvConfig
 
 from miles.rollout.base_types import (
     GenerateFnInput,
@@ -42,6 +42,15 @@ def _expected_sample(*, group_index: int | None) -> Sample:
     )
 
 
+_MODULAR_ROLLOUT_BASE_ARGV = [
+    "--rollout-function-path",
+    "miles.rollout.modular_rollout.orchestration_train.SimpleTrainRolloutFn",
+    "--eval-function-path",
+    "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
+    "--custom-generate-function-path",
+    "miles.rollout.modular_rollout.inference_wrapper.generate",
+]
+
 _ROLLOUT_ARGV_VARIANTS = [
     pytest.param(
         IntegrationEnvConfig(
@@ -70,16 +79,7 @@ _ROLLOUT_ARGV_VARIANTS = [
         id="new_rollout_old_generate",
     ),
     pytest.param(
-        IntegrationEnvConfig(
-            extra_argv=[
-                "--rollout-function-path",
-                "miles.rollout.modular_rollout.orchestration_train.SimpleTrainRolloutFn",
-                "--eval-function-path",
-                "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
-                "--custom-generate-function-path",
-                "miles.rollout.modular_rollout.inference_wrapper.generate",
-            ]
-        ),
+        IntegrationEnvConfig(extra_argv=_MODULAR_ROLLOUT_BASE_ARGV),
         id="new_rollout_new_generate",
     ),
 ]
@@ -120,17 +120,6 @@ def test_simple_eval_rollout_fn_integration(rollout_integration_env):
     assert samples[0] == _expected_sample(group_index=None)
 
 
-_DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
-
-_MODULAR_ROLLOUT_BASE_ARGV = [
-    "--rollout-function-path",
-    "miles.rollout.modular_rollout.orchestration_train.SimpleTrainRolloutFn",
-    "--eval-function-path",
-    "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
-    "--custom-generate-function-path",
-    "miles.rollout.modular_rollout.inference_wrapper.generate",
-]
-
 _MULTI_DATA_ROWS = [
     {"input": "What is 1+7?", "label": "8"},
     {"input": "What is 1+8?", "label": "9"},
@@ -142,7 +131,7 @@ _MULTI_DATA_ROWS = [
 def _config(extra_argv: list[str], data_rows: list[dict] | None = None, latency: float = 0.0):
     return IntegrationEnvConfig(
         extra_argv=_MODULAR_ROLLOUT_BASE_ARGV + extra_argv,
-        data_rows=data_rows or _DEFAULT_DATA_ROWS,
+        data_rows=data_rows or DEFAULT_DATA_ROWS,
         latency=latency,
     )
 
@@ -398,7 +387,7 @@ class TestMultiSampleOutputIntegration:
                         "--n-samples-per-prompt",
                         "1",
                     ],
-                    data_rows=_DEFAULT_DATA_ROWS,
+                    data_rows=DEFAULT_DATA_ROWS,
                 ),
                 id="multi_sample_output",
             ),

@@ -88,17 +88,13 @@ def test_request_log_and_reset_stats(mock_server):
     assert mock_server.max_concurrent == 0
 
 
-def test_latency():
-    for long_delay in [False, True]:
-        latency = 0.5 if long_delay else 0.0
-        with with_mock_server(latency=latency) as server:
-            start = time.time()
-            requests.post(f"{server.url}/generate", json={"input_ids": [1], "sampling_params": {}}, timeout=5.0)
-            elapsed = time.time() - start
-            if long_delay:
-                assert elapsed >= 0.5
-            else:
-                assert elapsed < 0.3
+@pytest.mark.parametrize("latency,min_time,max_time", [(0.0, 0.0, 0.3), (0.5, 0.5, 1.0)])
+def test_latency(latency, min_time, max_time):
+    with with_mock_server(latency=latency) as server:
+        start = time.time()
+        requests.post(f"{server.url}/generate", json={"input_ids": [1], "sampling_params": {}}, timeout=5.0)
+        elapsed = time.time() - start
+        assert min_time <= elapsed < max_time
 
 
 def test_max_concurrent_with_latency():
