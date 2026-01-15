@@ -26,6 +26,7 @@ RESPONSE_TEXT = "\\boxed{8}"
 RESPONSE_LOG_PROBS = [-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125]
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 16, "temperature": 0.7}
 
+
 @pytest.fixture(params=["sglang_rollout", "modular_rollout"])
 def variant(request):
     return request.param
@@ -320,9 +321,7 @@ class TestMetaInfo:
 
 class TestPayloadStructure:
     def test_payload_has_required_fields(self, variant, env):
-        result = run_generate(
-            variant, env, sampling_params={"max_new_tokens": 16, "temperature": 0.7, "top_p": 0.9}
-        )
+        result = run_generate(variant, env, sampling_params={"max_new_tokens": 16, "temperature": 0.7, "top_p": 0.9})
         assert result.requests == [
             expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.7, "top_p": 0.9})
         ]
