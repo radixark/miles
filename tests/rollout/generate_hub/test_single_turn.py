@@ -5,15 +5,18 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+import torch
+from PIL import Image
+from transformers import AutoProcessor
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.modular_rollout.orchestration_common import GenerateState
 from miles.utils.async_utils import run
 from miles.utils.http_utils import init_http_client
 from miles.utils.misc import SingletonMeta
+from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, with_mock_server
 from miles.utils.types import Sample
-
 
 # ------------------------------------ fixtures and consts ----------------------------------------
 
@@ -394,12 +397,6 @@ VLM_MODEL_NAME = "Qwen/Qwen2-VL-2B-Instruct"
 class TestMultimodal:
     @pytest.mark.parametrize("env", [{"args_kwargs": {"model_name": VLM_MODEL_NAME}}], indirect=True)
     def test_multimodal_inputs_processed(self, variant, env):
-        import torch
-        from PIL import Image
-        from transformers import AutoProcessor
-
-        from miles.utils.processing_utils import encode_image_for_rollout_engine
-
         test_image = Image.new("RGB", (64, 64), color="red")
         multimodal_inputs = {"images": [test_image]}
         processor = AutoProcessor.from_pretrained(VLM_MODEL_NAME, trust_remote_code=True)
