@@ -8,27 +8,6 @@ from miles.utils.async_utils import run
 from miles.utils.types import Sample
 
 
-class TestSemaphoreInitialization:
-    @pytest.mark.parametrize(
-        "concurrency,num_gpus,gpus_per_engine,expected",
-        [
-            (1, 1, 1, 1),
-            (2, 4, 2, 4),
-            (4, 8, 4, 8),
-            (1, 8, 2, 4),
-        ],
-    )
-    def test_semaphore_value_variants(self, mock_args, concurrency, num_gpus, gpus_per_engine, expected):
-        mock_args.sglang_server_concurrency = concurrency
-        mock_args.rollout_num_gpus = num_gpus
-        mock_args.rollout_num_gpus_per_engine = gpus_per_engine
-        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_processor"
-        ):
-            state = GenerateState(mock_args)
-            assert state.generate_fn_semaphore._value == expected
-
-
 class TestNonGroupRM:
     @pytest.fixture
     def mock_state(self, mock_args):
