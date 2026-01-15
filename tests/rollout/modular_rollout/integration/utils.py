@@ -36,9 +36,7 @@ def expected_sample(*, group_index: int | None) -> Sample:
 
 MODULAR_ROLLOUT_BASE_ARGV = [
     "--rollout-function-path",
-    "miles.rollout.modular_rollout.orchestration_train.SimpleTrainRolloutFn",
-    "--eval-function-path",
-    "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
+    "miles.rollout.modular_rollout.orchestration_entrypoint.SimpleRolloutFn",
     "--custom-generate-function-path",
     "miles.rollout.generate_hub.single_turn.generate",
 ]
