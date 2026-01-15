@@ -3,6 +3,7 @@ import json
 import pytest
 
 from sglang.srt.entrypoints.openai.protocol import Function, Tool
+from sglang.srt.function_call.core_types import StreamingParseResult, ToolCallItem
 from sglang.srt.function_call.deepseekv3_detector import DeepSeekV3Detector
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
@@ -56,13 +57,16 @@ def test_deepseekv3_parse_single_tool_call():
     )
 
     assert detector.has_tool_call(model_output)
-
-    result = detector.detect_and_parse(model_output, SAMPLE_TOOLS)
-
-    assert len(result.calls) == 1
-    assert result.calls[0].name == "get_weather"
-    params = json.loads(result.calls[0].parameters)
-    assert params == {"city": "Beijing", "unit": "celsius"}
+    assert detector.detect_and_parse(model_output, SAMPLE_TOOLS) == StreamingParseResult(
+        normal_text="",
+        calls=[
+            ToolCallItem(
+                tool_index=0,
+                name="get_weather",
+                parameters='{"city": "Beijing", "unit": "celsius"}',
+            )
+        ],
+    )
 
 
 def test_deepseekv3_parse_multiple_tool_calls():
@@ -78,13 +82,13 @@ def test_deepseekv3_parse_multiple_tool_calls():
         "<｜tool▁calls▁end｜>"
     )
 
-    result = detector.detect_and_parse(model_output, SAMPLE_TOOLS)
-
-    assert len(result.calls) == 2
-    assert result.calls[0].name == "get_weather"
-    assert result.calls[1].name == "search"
-    assert json.loads(result.calls[0].parameters) == {"city": "Shanghai"}
-    assert json.loads(result.calls[1].parameters) == {"query": "restaurants"}
+    assert detector.detect_and_parse(model_output, SAMPLE_TOOLS) == StreamingParseResult(
+        normal_text="",
+        calls=[
+            ToolCallItem(tool_index=0, name="get_weather", parameters='{"city": "Shanghai"}'),
+            ToolCallItem(tool_index=1, name="search", parameters='{"query": "restaurants"}'),
+        ],
+    )
 
 
 def test_deepseekv3_text_before_tool_call():
@@ -98,10 +102,10 @@ def test_deepseekv3_text_before_tool_call():
         "<｜tool▁calls▁end｜>"
     )
 
-    result = detector.detect_and_parse(model_output, SAMPLE_TOOLS)
-
-    assert result.normal_text == "Let me check the weather."
-    assert len(result.calls) == 1
+    assert detector.detect_and_parse(model_output, SAMPLE_TOOLS) == StreamingParseResult(
+        normal_text="Let me check the weather.",
+        calls=[ToolCallItem(tool_index=0, name="get_weather", parameters='{"city": "Tokyo"}')],
+    )
 
 
 def test_deepseekv3_no_tool_call():
@@ -109,11 +113,10 @@ def test_deepseekv3_no_tool_call():
     model_output = "The weather is sunny today."
 
     assert not detector.has_tool_call(model_output)
-
-    result = detector.detect_and_parse(model_output, SAMPLE_TOOLS)
-
-    assert result.normal_text == model_output
-    assert len(result.calls) == 0
+    assert detector.detect_and_parse(model_output, SAMPLE_TOOLS) == StreamingParseResult(
+        normal_text="The weather is sunny today.",
+        calls=[],
+    )
 
 
 def test_function_call_parser_wrapper():
@@ -132,6 +135,4 @@ def test_function_call_parser_wrapper():
     normal_text, tool_calls = parser.parse_non_stream(model_output)
 
     assert normal_text == ""
-    assert len(tool_calls) == 1
-    assert tool_calls[0].name == "get_weather"
-    assert json.loads(tool_calls[0].parameters) == {"city": "Paris"}
+    assert tool_calls == [ToolCallItem(tool_index=0, name="get_weather", parameters='{"city": "Paris"}')]
