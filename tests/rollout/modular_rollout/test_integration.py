@@ -119,7 +119,7 @@ class TestSimpleRolloutFnIntegration:
         assert samples[0] == _expected_sample(group_index=None)
 
 
-_MULTI_DATA_ROWS = [
+_MIXED_DATA_ROWS = [
     {"input": "What is 1+7?", "label": "8"},
     {"input": "What is 1+8?", "label": "9"},
     {"input": "What is 1+9?", "label": "wrong"},
@@ -231,68 +231,50 @@ def _filter_by_reward(args, samples, **kwargs):
     return DynamicFilterOutput(keep=False, reason="reward_zero")
 
 
-class TestOverSamplingIntegration:
-    @pytest.mark.parametrize(
-        "rollout_integration_env",
-        [
-            pytest.param(
-                _config(
-                    [
-                        "--over-sampling-batch-size",
-                        "2",
-                        "--rollout-batch-size",
-                        "2",
-                        "--dynamic-sampling-filter-path",
-                        "test:filter_by_reward",
-                    ],
-                    data_rows=[
-                        {"input": "What is 1+7?", "label": "8"},
-                        {"input": "What is 1+8?", "label": "9"},
-                        {"input": "What is 1+9?", "label": "10"},
-                    ],
-                ),
-                id="over_sampling_with_filter",
-            ),
-        ],
-        indirect=True,
-    )
-    def test_over_sampling_with_dynamic_filter(self, rollout_integration_env):
-        env = rollout_integration_env
-        with function_registry.temporary("test:filter_by_reward", _filter_by_reward):
-            out = _load_and_call_train(env.args, env.data_source)
-
-            assert len(out.samples) == env.args.rollout_batch_size
-            for group in out.samples:
-                assert group[0].reward == 1
-
-
 class TestDynamicFilterIntegration:
+    # Data with mixed correct/incorrect answers: 1+7=8(correct), 1+8=9(correct), 1+9=wrong(incorrect), 1+6=7(correct)
+    _DATA_ROWS = [
+        {"input": "What is 1+7?", "label": "8"},
+        {"input": "What is 1+8?", "label": "9"},
+        {"input": "What is 1+9?", "label": "wrong"},
+        {"input": "What is 1+6?", "label": "7"},
+    ]
+
     @pytest.mark.parametrize(
-        "rollout_integration_env",
+        "rollout_integration_env,use_filter,expect_all_correct",
         [
             pytest.param(
+                _config(["--rollout-batch-size", "4"], data_rows=_DATA_ROWS),
+                False,
+                False,
+                id="no_filter",
+            ),
+            pytest.param(
                 _config(
-                    [
-                        "--rollout-batch-size",
-                        "2",
-                        "--dynamic-sampling-filter-path",
-                        "test:filter_by_reward",
-                    ],
-                    data_rows=_MULTI_DATA_ROWS,
+                    ["--rollout-batch-size", "3", "--dynamic-sampling-filter-path", "test:filter_by_reward"],
+                    data_rows=_DATA_ROWS,
                 ),
-                id="dynamic_filter",
+                True,
+                True,
+                id="with_filter",
             ),
         ],
-        indirect=True,
+        indirect=["rollout_integration_env"],
     )
-    def test_dynamic_filter_only_keeps_correct(self, rollout_integration_env):
+    def test_filter_effect(self, rollout_integration_env, use_filter, expect_all_correct):
         env = rollout_integration_env
-        with function_registry.temporary("test:filter_by_reward", _filter_by_reward):
+
+        if use_filter:
+            with function_registry.temporary("test:filter_by_reward", _filter_by_reward):
+                out = _load_and_call_train(env.args, env.data_source)
+        else:
             out = _load_and_call_train(env.args, env.data_source)
 
-            assert len(out.samples) == env.args.rollout_batch_size
-            for group in out.samples:
-                assert group[0].reward == 1
+        rewards = {group[0].reward for group in out.samples}
+        if expect_all_correct:
+            assert rewards == {1}, "Filter should keep only correct samples"
+        else:
+            assert 0 in rewards, "Without filter, incorrect samples should be present"
 
 
 class TestSampleFilterAndAllSamplesProcessIntegration:
