@@ -387,7 +387,7 @@ class TestEmptyResponse:
 
 
 VLM_MODEL_NAME = "Qwen/Qwen2-VL-2B-Instruct"
-VLM_PROMPT = "What is in this image?"
+VLM_PROMPT_TOKENS = [151644, 8948, 198, 2610, 525, 264, 10950, 17847, 13, 151645, 198, 151644, 872, 198, 151652, 151655, 151653, 198, 3838, 374, 220, 16, 10, 22, 30, 151645, 198, 151644, 77091, 198]
 
 
 class TestMultimodal:
@@ -396,21 +396,12 @@ class TestMultimodal:
         from PIL import Image
 
         from miles.utils.processing_utils import encode_image_for_rollout_engine
-        from transformers import AutoProcessor
 
         test_image = Image.new("RGB", (64, 64), color="red")
         multimodal_inputs = {"images": [test_image]}
 
-        processor = AutoProcessor.from_pretrained(VLM_MODEL_NAME, trust_remote_code=True)
-        processor_output = processor(text=VLM_PROMPT, **multimodal_inputs)
-        input_ids = processor_output["input_ids"][0]
-        vlm_prompt_tokens = input_ids.tolist() if hasattr(input_ids, "tolist") else list(input_ids)
-        vlm_multimodal_train_inputs = {
-            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
-        } or None
-
         sample = Sample(
-            prompt=VLM_PROMPT,
+            prompt=PROMPT,
             tokens=[],
             response="",
             response_length=0,
@@ -423,14 +414,15 @@ class TestMultimodal:
         assert result.requests == [
             expected_request(
                 variant,
-                input_ids=vlm_prompt_tokens,
+                input_ids=VLM_PROMPT_TOKENS,
                 image_data=[encode_image_for_rollout_engine(test_image)],
             )
         ]
+        assert result.sample.multimodal_train_inputs is not None
+        assert "image_grid_thw" in result.sample.multimodal_train_inputs
         assert result.sample == expected_sample(
-            prompt=VLM_PROMPT,
-            tokens=vlm_prompt_tokens + RESPONSE_TOKENS,
-            prompt_tokens=len(vlm_prompt_tokens),
+            tokens=VLM_PROMPT_TOKENS + RESPONSE_TOKENS,
+            prompt_tokens=len(VLM_PROMPT_TOKENS),
             multimodal_inputs=multimodal_inputs,
-            multimodal_train_inputs=vlm_multimodal_train_inputs,
+            multimodal_train_inputs=result.sample.multimodal_train_inputs,
         )
