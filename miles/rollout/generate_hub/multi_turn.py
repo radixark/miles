@@ -12,6 +12,7 @@ from miles.utils.types import Sample
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     args = input.args
     sample = input.sample
+    tokenizer = input.state.tokenizer
 
     assert not args.partial_rollout, "Partial rollout is not supported for " "this function at the moment."
 
@@ -21,7 +22,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tool_specs = tool_registry.get_tool_specs()
     prompt = format_conversation_with_tools(prompt=sample.prompt, tools=tool_specs)
 
-    prompt_tokens_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    prompt_tokens_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     response = ""
     response_token_ids = []
     loss_masks = []
@@ -55,7 +56,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         if "output_token_logprobs" in output["meta_info"]:
             cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            cur_response = state.tokenizer.decode(cur_response_token_ids)
+            cur_response = tokenizer.decode(cur_response_token_ids)
             cur_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
             if sample.rollout_log_probs is None:
                 sample.rollout_log_probs = []
@@ -64,7 +65,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         else:
             cur_response = output["text"]
             cur_response = postprocess_responses(cur_response)
-            cur_response_token_ids = state.tokenizer(cur_response, add_special_tokens=False)["input_ids"]
+            cur_response_token_ids = tokenizer(cur_response, add_special_tokens=False)["input_ids"]
 
         response += cur_response
         response_token_ids += cur_response_token_ids
@@ -84,7 +85,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             tool_call_count += 1
 
         assert next_obs != "", "Next observation should not be empty."
-        obs_tokens_ids = state.tokenizer(next_obs, add_special_tokens=False)["input_ids"]
+        obs_tokens_ids = tokenizer(next_obs, add_special_tokens=False)["input_ids"]
         response += next_obs
         response_token_ids += obs_tokens_ids
         loss_masks += [0] * len(obs_tokens_ids)
