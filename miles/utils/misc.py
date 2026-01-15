@@ -1,20 +1,52 @@
 import asyncio
 import importlib
 import subprocess
+from contextlib import contextmanager
 
 import ray
 
 from miles.utils.http_utils import is_port_available
 
 
+class FunctionRegistry:
+    def __init__(self):
+        self._registry: dict[str, object] = {}
+
+    def register(self, name: str, fn: object) -> None:
+        if name in self._registry:
+            raise ValueError(f"Function '{name}' is already registered")
+        self._registry[name] = fn
+
+    def unregister(self, name: str) -> None:
+        self._registry.pop(name, None)
+
+    def get(self, name: str) -> object | None:
+        return self._registry.get(name)
+
+    @contextmanager
+    def temporary(self, name: str, fn: object):
+        self.register(name, fn)
+        try:
+            yield
+        finally:
+            self.unregister(name)
+
+
+function_registry = FunctionRegistry()
+
+
 def load_function(path):
     """
-    Load a function from a module.
+    Load a function from registry or module.
     :param path: The path to the function, e.g. "module.submodule.function".
     :return: The function object.
     """
     if path is None:
         return None
+
+    registered = function_registry.get(path)
+    if registered is not None:
+        return registered
 
     module_path, _, attr = path.rpartition(".")
     module = importlib.import_module(module_path)
