@@ -172,11 +172,13 @@ def generate_env(request):
     SingletonMeta.clear_all_instances()
 
 
+def make_sample(tokens=None, response="", response_length=0, status=Sample.Status.PENDING):
+    return Sample(prompt=PROMPT, tokens=tokens or [], response=response, response_length=response_length, status=status)
+
+
 def run_generate(variant: str, env: GenerateEnv, sample: Sample | None = None, sampling_params: dict | None = None):
     env.mock_server.request_log.clear()
-    if sample is None:
-        sample = Sample(prompt=PROMPT, tokens=[], response="", response_length=0, status=Sample.Status.PENDING)
-    result_sample = run(call_generate(variant, env.args, sample, sampling_params or DEFAULT_SAMPLING_PARAMS))
+    result_sample = run(call_generate(variant, env.args, sample or make_sample(), sampling_params or DEFAULT_SAMPLING_PARAMS))
     return GenerateResult(sample=result_sample, requests=list(env.mock_server.request_log))
 
 
@@ -353,32 +355,15 @@ class TestPayloadStructure:
 
 
 class TestInputStatusValidation:
+    @pytest.mark.parametrize("status", [Sample.Status.PENDING, Sample.Status.ABORTED])
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
-    def test_pending_status_allowed(self, variant, generate_env):
-        sample = make_sample()
-        sample.status = Sample.Status.PENDING
-        result = run_generate(variant, generate_env, sample)
+    def test_allowed_statuses(self, variant, generate_env, status):
+        result = run_generate(variant, generate_env, make_sample(status=status))
         assert result.requests == [expected_request(variant)]
         assert result.sample.status == Sample.Status.COMPLETED
 
+    @pytest.mark.parametrize("status", [Sample.Status.COMPLETED, Sample.Status.TRUNCATED])
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
-    def test_aborted_status_allowed(self, variant, generate_env):
-        sample = make_sample()
-        sample.status = Sample.Status.ABORTED
-        result = run_generate(variant, generate_env, sample)
-        assert result.requests == [expected_request(variant)]
-        assert result.sample.status == Sample.Status.COMPLETED
-
-    @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
-    def test_completed_status_rejected(self, variant, generate_env):
-        sample = make_sample()
-        sample.status = Sample.Status.COMPLETED
+    def test_rejected_statuses(self, variant, generate_env, status):
         with pytest.raises(AssertionError):
-            run_generate(variant, generate_env, sample)
-
-    @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
-    def test_truncated_status_rejected(self, variant, generate_env):
-        sample = make_sample()
-        sample.status = Sample.Status.TRUNCATED
-        with pytest.raises(AssertionError):
-            run_generate(variant, generate_env, sample)
+            run_generate(variant, generate_env, make_sample(status=status))
