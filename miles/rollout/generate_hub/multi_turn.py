@@ -1,61 +1,12 @@
-# Adapted from https://github.com/volcengine/verl/blob/cb809d66e46dfd3342d008628891a14a054fa424/recipe/retool/retool.py
 import re
 from typing import Any
-
-try:
-    from jinja2 import Template
-except ImportError as e:
-    raise ImportError("Jinja2 is required. Please install it with: pip install jinja2") from e
 
 from miles.rollout.sglang_rollout import GenerateState
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
-# Import reward models
-try:
-    from miles.rollout.rm_hub.math_dapo_utils import compute_score as math_dapo_compute_score
-except ImportError as e:
-    raise ImportError("MathDapo is not installed") from e
 
-# Import tool sandbox functionality
-from tool_sandbox import SEMAPHORE, TOOL_CONFIGS, tool_registry
-
-# Jinja2 template for tool-enabled conversations
-TOOL_TEMPLATE = """<|im_start|>system
-{%- if messages[0]['role'] == 'system' %}
-{{- messages[0]['content'] }}
-{%- else %}
-You are a helpful assistant.
-{%- endif %}
-{%- if tools %}
-# Tools
-
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{%- for tool in tools %}
-{{- tool | tojson }}
-{%- endfor %}
-</tools>
-
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{"name": <function-name>, "arguments": <args-json-object>}
-</tool_call>
-{%- endif %}
-<|im_end|>
-{%- for message in messages %}
-{%- if message['role'] == 'user' %}
-<|im_start|>user
-{{- message['content'] }}<|im_end|>
-{%- elif message['role'] == 'assistant' %}
-<|im_start|>assistant
-{{- message['content'] }}<|im_end|>
-{%- endif %}
-{%- endfor %}
-<|im_start|>assistant
-"""
+TOOL_TEMPLATE = "..."
 
 
 def format_conversation_with_tools(
