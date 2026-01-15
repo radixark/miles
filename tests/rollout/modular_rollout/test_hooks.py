@@ -11,7 +11,7 @@ def reset_sample_filter_call_log():
     sample_filter_call_log["rewards"] = None
 
 
-def test_sample_filter(args, data):
+def sample_filter_hook(args, data):
     sample_filter_call_log["called"] = True
     sample_filter_call_log["data_len"] = len(data)
     sample_filter_call_log["rewards"] = [
@@ -34,7 +34,7 @@ def reset_all_samples_process_call_log():
     all_samples_process_call_log["has_data_source"] = False
 
 
-def test_all_samples_process(args, all_samples, data_source):
+def all_samples_process_hook(args, all_samples, data_source):
     all_samples_process_call_log["called"] = True
     all_samples_process_call_log["all_samples_len"] = len(all_samples)
     all_samples_process_call_log["rewards"] = [

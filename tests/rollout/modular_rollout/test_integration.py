@@ -348,9 +348,9 @@ class TestSampleFilterAndAllSamplesProcessIntegration:
                         "--dynamic-sampling-filter-path",
                         "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
                         "--rollout-sample-filter-path",
-                        "tests.rollout.modular_rollout.test_hooks.test_sample_filter",
+                        "tests.rollout.modular_rollout.test_hooks.sample_filter_hook",
                         "--rollout-all-samples-process-path",
-                        "tests.rollout.modular_rollout.test_hooks.test_all_samples_process",
+                        "tests.rollout.modular_rollout.test_hooks.all_samples_process_hook",
                     ],
                     [
                         {"input": "What is 1+7?", "label": "8"},
@@ -392,9 +392,9 @@ class TestSampleFilterAndAllSamplesProcessIntegration:
                         "--dynamic-sampling-filter-path",
                         "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
                         "--rollout-sample-filter-path",
-                        "tests.rollout.modular_rollout.test_hooks.test_sample_filter",
+                        "tests.rollout.modular_rollout.test_hooks.sample_filter_hook",
                         "--rollout-all-samples-process-path",
-                        "tests.rollout.modular_rollout.test_hooks.test_all_samples_process",
+                        "tests.rollout.modular_rollout.test_hooks.all_samples_process_hook",
                     ],
                     [
                         {"input": "What is 1+7?", "label": "8"},
