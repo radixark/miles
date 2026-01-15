@@ -21,8 +21,8 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 @dataclass(frozen=True)
 class IntegrationEnvConfig:
-    extra_argv: tuple[str, ...] = ()
-    data_rows: tuple[dict, ...] | None = None
+    extra_argv: list[str] | None = None
+    data_rows: list[dict] | None = None
     latency: float = 0.0
 
 
@@ -32,8 +32,11 @@ class IntegrationEnv:
     data_source: "RolloutDataSourceWithBuffer"
     mock_server: MockSGLangServer
 
+    def __iter__(self):
+        return iter((self.args, self.data_source, self.mock_server))
 
-def _build_args(*, data_path: str, router_port: int, extra_argv: tuple[str, ...] = ()) -> Namespace:
+
+def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | None = None) -> Namespace:
     argv = [
         "pytest",
         "--train-backend",
@@ -68,7 +71,7 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: tuple[str, ...]
         str(router_port),
         "--rollout-max-response-len",
         "16",
-    ] + list(extra_argv)
+    ] + (extra_argv or [])
     with patch("sys.argv", argv):
         args = parse_args()
     args.miles_router_middleware_paths = []
@@ -99,14 +102,14 @@ _DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
 @pytest.fixture
-def rollout_integration_env(tmp_path, request) -> IntegrationEnv:
+def rollout_integration_env(tmp_path, request) -> Iterator[IntegrationEnv]:
     config = request.param
     assert isinstance(config, IntegrationEnvConfig)
 
     data_rows = config.data_rows or _DEFAULT_DATA_ROWS
 
     data_path = str(tmp_path / "data.jsonl")
-    _write_jsonl(data_path, list(data_rows))
+    _write_jsonl(data_path, data_rows)
 
     router_port = find_available_port(20000)
     args = _build_args(data_path=data_path, router_port=router_port, extra_argv=config.extra_argv)
