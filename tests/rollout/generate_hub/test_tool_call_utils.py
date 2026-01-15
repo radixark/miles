@@ -203,20 +203,21 @@ class TestTokenizeToolResponses:
         dummy_assistant = _build_dummy_assistant(tool_responses)
         base_messages = [DUMMY_USER, dummy_assistant]
 
-        messages_without = base_messages
-        messages_with = base_messages + tool_responses
-
-        text_with = tokenizer.apply_chat_template(
-            messages_with, tokenize=False, add_generation_prompt=False
-        )
-        text_without = tokenizer.apply_chat_template(
-            messages_without, tokenize=False, add_generation_prompt=False
-        )
-
-        expected_str = text_with[len(text_without):]
+        expected_str = _compute_chat_template_diff(base_messages, tool_responses, tokenizer)
 
         assert decoded_str == expected_str, (
             f"Mismatch for {model_name}:\n"
             f"  decoded  = {repr(decoded_str)}\n"
             f"  expected = {repr(expected_str)}"
         )
+
+
+def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str:
+    text_with = tokenizer.apply_chat_template(
+        base_messages + extra_messages, tokenize=False, add_generation_prompt=False
+    )
+    text_without = tokenizer.apply_chat_template(
+        base_messages, tokenize=False, add_generation_prompt=False
+    )
+    return text_with[len(text_without):]
+
