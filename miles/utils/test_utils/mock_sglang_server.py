@@ -16,16 +16,13 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 @dataclass(frozen=True)
 class ProcessResultMetaInfo:
     weight_version: str | None = None
-    routed_experts: bytes | None = None
+    routed_experts: str | None = None
     spec_accept_token_num: int | None = None
     spec_draft_token_num: int | None = None
     spec_verify_ct: int | None = None
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        if d.get("routed_experts") is not None:
-            d["routed_experts"] = pybase64.b64encode(d["routed_experts"]).decode("ascii")
-        return {k: v for k, v in d.items() if v is not None}
+        return {k: v for k, v in asdict(self).items() if v is not None}
 
 
 @dataclass(frozen=True)
