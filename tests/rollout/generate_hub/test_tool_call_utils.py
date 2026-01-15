@@ -46,6 +46,50 @@ TOOL_CALL_MODELS = [
     "XiaomiMiMo/MiMo-7B-RL",
 ]
 
+SAMPLE_TOOL_RESPONSES = [
+    {
+        "role": "tool",
+        "tool_call_id": "call_0",
+        "content": '{"temperature": 25}',
+        "name": "get_weather",
+    },
+    {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": '{"results": ["A", "B"]}',
+        "name": "search",
+    },
+]
+
+
+class TestTokenizeToolResponses:
+    @pytest.mark.parametrize("num_tools", [1, 2])
+    @pytest.mark.parametrize("model_name", TOOL_CALL_MODELS)
+    def test_tokenize_tool_responses(self, model_name, num_tools):
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+        tool_responses = SAMPLE_TOOL_RESPONSES[:num_tools]
+        assert len(tool_responses) == num_tools
+
+        token_ids = tokenize_tool_responses(tool_responses, tokenizer)
+        decoded_str = tokenizer.decode(token_ids)
+
+        dummy_assistant = _build_dummy_assistant(tool_responses)
+        base_messages = [_DUMMY_USER, dummy_assistant]
+
+        expected_str = _compute_chat_template_diff(base_messages, tool_responses, tokenizer)
+
+        assert decoded_str == expected_str, f"{model_name=}"
+
+
+def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str:
+    text_with = tokenizer.apply_chat_template(
+        base_messages + extra_messages, tokenize=False, add_generation_prompt=False
+    )
+    text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
+    return text_with[len(text_without) :]
 
 SAMPLE_TOOLS = [
     {
@@ -157,49 +201,3 @@ class TestSGLangFunctionCallParser:
         tools = TypeAdapter(list[Tool]).validate_python(SAMPLE_TOOLS)
         parser = FunctionCallParser(tools=tools, tool_call_parser="qwen25")
         assert parser.parse_non_stream(model_output) == expected
-
-
-_SAMPLE_TOOL_RESPONSES = [
-    {
-        "role": "tool",
-        "tool_call_id": "call_0",
-        "content": '{"temperature": 25}',
-        "name": "get_weather",
-    },
-    {
-        "role": "tool",
-        "tool_call_id": "call_1",
-        "content": '{"results": ["A", "B"]}',
-        "name": "search",
-    },
-]
-
-
-class TestTokenizeToolResponses:
-    @pytest.mark.parametrize("num_tools", [1, 2])
-    @pytest.mark.parametrize("model_name", TOOL_CALL_MODELS)
-    def test_tokenize_tool_responses(self, model_name, num_tools):
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-
-        tool_responses = _SAMPLE_TOOL_RESPONSES[:num_tools]
-        assert len(tool_responses) == num_tools
-
-        token_ids = tokenize_tool_responses(tool_responses, tokenizer)
-        decoded_str = tokenizer.decode(token_ids)
-
-        dummy_assistant = _build_dummy_assistant(tool_responses)
-        base_messages = [_DUMMY_USER, dummy_assistant]
-
-        expected_str = _compute_chat_template_diff(base_messages, tool_responses, tokenizer)
-
-        assert decoded_str == expected_str, f"{model_name=}"
-
-
-def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str:
-    text_with = tokenizer.apply_chat_template(
-        base_messages + extra_messages, tokenize=False, add_generation_prompt=False
-    )
-    text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
-    return text_with[len(text_without) :]
