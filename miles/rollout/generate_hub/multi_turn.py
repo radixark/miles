@@ -17,52 +17,7 @@ def format_conversation_with_tools(
 
 def postprocess_predictions(prediction: str):
     """Extract action and content from prediction string"""
-    # Check for Answer: \boxed{...} format (only format we need for math_dapo)
-    # Use a more robust regex that handles nested braces
-    answer_pattern = r"Answer:\s*\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}"
-    answer_match = re.search(answer_pattern, prediction, re.DOTALL)
-    if answer_match:
-        content = answer_match.group(1).strip()
-        return "answer", content
-
-    # Then check for <tool_call> tags (new format from Jinja2 template)
-    tool_call_pattern = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
-    tool_call_match = re.search(tool_call_pattern, prediction, re.DOTALL)
-    if tool_call_match:
-        try:
-            import json
-
-            # Clean up the JSON string by removing newlines and extra
-            # whitespace
-            json_str = tool_call_match.group(1)
-            # Replace newlines in string values with \n
-            json_str = json_str.replace("\n", "\\n")
-            tool_call_data = json.loads(json_str)
-            tool_name = tool_call_data.get("name")
-            arguments = tool_call_data.get("arguments", {})
-
-            if tool_name == "code_interpreter":
-                code = arguments.get("code", "")
-                if code.strip():
-                    return "code", code
-        except (json.JSONDecodeError, KeyError, AttributeError):
-            pass
-
-    # Then check for <code> tags
-    code_pattern = r"<code>(.*?)</code>"
-    code_match = re.search(code_pattern, prediction, re.DOTALL)
-    if code_match:
-        content = code_match.group(1).strip()
-        return "code", content
-
-    # Finally check for ```python code blocks (lowest priority)
-    python_code_pattern = r"```python\s*(.*?)\s*```"
-    python_code_match = re.search(python_code_pattern, prediction, re.DOTALL)
-    if python_code_match:
-        content = python_code_match.group(1).strip()
-        return "code", content
-
-    return None, ""
+    return TODO, TODO
 
 
 def postprocess_responses(resp: str) -> str:
