@@ -18,8 +18,10 @@ def tokenize_tool_responses(
     tokens_with = tokenizer.apply_chat_template(messages_with, tokenize=True, add_generation_prompt=False)
     tokens_without = tokenizer.apply_chat_template(messages_without, tokenize=True, add_generation_prompt=False)
 
-    assert tokens_with.startswith(tokens_without), f"{tokens_with=} {tokens_without=}"
-    return tokens_with[len(tokens_without) :]
+    assert tokens_with[:len(tokens_without)] == tokens_without, (
+        f"Token prefix mismatch: {tokens_with=} {tokens_without=}"
+    )
+    return tokens_with[len(tokens_without):]
 
 
 def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
