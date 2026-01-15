@@ -24,6 +24,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     output = await post(url, payload)
 
-    await update_sample_from_response(args, sample, prompt_ids=prompt_ids, output=output)
+    await update_sample_from_response(args, sample, payload=payload, output=output)
 
     return GenerateFnOutput(samples=sample)

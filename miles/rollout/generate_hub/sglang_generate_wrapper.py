@@ -47,10 +47,10 @@ async def compute_request_payload(args, prompt_ids, sample, sampling_params: dic
     return payload, None
 
 
-async def update_sample_from_response(args, sample, prompt_ids, output):
+async def update_sample_from_response(args, sample, payload, output):
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
-        sample.tokens = prompt_ids
+        sample.tokens = payload["input_ids"]
 
     if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
         from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
