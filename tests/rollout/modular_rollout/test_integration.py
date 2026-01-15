@@ -1,6 +1,6 @@
 import pytest
 from tests.fixtures.rollout_integration import IntegrationEnvConfig
-from tests.rollout.modular_rollout import test_hooks
+from tests.rollout.modular_rollout import mock_hooks
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
@@ -232,7 +232,7 @@ class TestOverSamplingIntegration:
                         "--rollout-batch-size",
                         "2",
                         "--dynamic-sampling-filter-path",
-                        "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
+                        "tests.rollout.modular_rollout.mock_hooks.filter_by_reward",
                     ],
                     data_rows=[
                         {"input": "What is 1+7?", "label": "8"},
@@ -264,7 +264,7 @@ class TestDynamicFilterIntegration:
                         "--rollout-batch-size",
                         "2",
                         "--dynamic-sampling-filter-path",
-                        "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
+                        "tests.rollout.modular_rollout.mock_hooks.filter_by_reward",
                     ],
                     data_rows=_MULTI_DATA_ROWS,
                 ),
@@ -286,11 +286,11 @@ _SAMPLE_FILTER_ARGV = [
     "--rollout-batch-size",
     "2",
     "--dynamic-sampling-filter-path",
-    "tests.rollout.modular_rollout.test_hooks.filter_by_reward",
+    "tests.rollout.modular_rollout.mock_hooks.filter_by_reward",
     "--rollout-sample-filter-path",
-    "tests.rollout.modular_rollout.test_hooks.sample_filter_hook",
+    "tests.rollout.modular_rollout.mock_hooks.sample_filter_hook",
     "--rollout-all-samples-process-path",
-    "tests.rollout.modular_rollout.test_hooks.all_samples_process_hook",
+    "tests.rollout.modular_rollout.mock_hooks.all_samples_process_hook",
 ]
 
 
@@ -301,15 +301,15 @@ class TestSampleFilterAndAllSamplesProcessIntegration:
         indirect=True,
     )
     def test_sample_filter_only_sees_unfiltered(self, rollout_integration_env):
-        test_hooks.reset_sample_filter_call_log()
-        test_hooks.reset_all_samples_process_call_log()
+        mock_hooks.reset_sample_filter_call_log()
+        mock_hooks.reset_all_samples_process_call_log()
 
         args, data_source, _ = rollout_integration_env
         _load_and_call_train(args, data_source)
 
-        assert test_hooks.sample_filter_call_log["called"]
-        assert test_hooks.sample_filter_call_log["data_len"] == args.rollout_batch_size
-        assert all(r == 1 for r in test_hooks.sample_filter_call_log["rewards"])
+        assert mock_hooks.sample_filter_call_log["called"]
+        assert mock_hooks.sample_filter_call_log["data_len"] == args.rollout_batch_size
+        assert all(r == 1 for r in mock_hooks.sample_filter_call_log["rewards"])
 
     @pytest.mark.parametrize(
         "rollout_integration_env",
@@ -317,16 +317,16 @@ class TestSampleFilterAndAllSamplesProcessIntegration:
         indirect=True,
     )
     def test_all_samples_process_sees_filtered(self, rollout_integration_env):
-        test_hooks.reset_sample_filter_call_log()
-        test_hooks.reset_all_samples_process_call_log()
+        mock_hooks.reset_sample_filter_call_log()
+        mock_hooks.reset_all_samples_process_call_log()
 
         args, data_source, _ = rollout_integration_env
         _load_and_call_train(args, data_source)
 
-        assert test_hooks.all_samples_process_call_log["called"]
-        assert test_hooks.all_samples_process_call_log["all_samples_len"] >= args.rollout_batch_size
-        assert test_hooks.all_samples_process_call_log["has_data_source"]
-        assert all(r == 1 for r in test_hooks.sample_filter_call_log["rewards"])
+        assert mock_hooks.all_samples_process_call_log["called"]
+        assert mock_hooks.all_samples_process_call_log["all_samples_len"] >= args.rollout_batch_size
+        assert mock_hooks.all_samples_process_call_log["has_data_source"]
+        assert all(r == 1 for r in mock_hooks.sample_filter_call_log["rewards"])
 
 
 class TestMultiSampleOutputIntegration:
@@ -338,7 +338,7 @@ class TestMultiSampleOutputIntegration:
                     extra_argv=_MODULAR_ROLLOUT_BASE_ARGV[:4]
                     + [
                         "--custom-generate-function-path",
-                        "tests.rollout.modular_rollout.test_hooks.multi_sample_generate",
+                        "tests.rollout.modular_rollout.mock_hooks.multi_sample_generate",
                         "--rollout-batch-size",
                         "1",
                         "--n-samples-per-prompt",
