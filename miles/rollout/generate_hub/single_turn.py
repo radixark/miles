@@ -22,12 +22,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.TRUNCATED
         return GenerateFnOutput(samples=sample)
 
-    # Initialize sample.tokens for the first turn
-    if (len(sample.response) == 0) and not sample.tokens:
-        sample.tokens = prompt_ids
-
     output = await post(url, payload)
 
-    await update_sample_from_response(args, sample, output)
+    await update_sample_from_response(args, sample, prompt_ids=prompt_ids, output=output)
 
     return GenerateFnOutput(samples=sample)
