@@ -139,9 +139,6 @@ def make_args(
     with patch("sys.argv", argv):
         args = parse_args()
 
-    args.use_miles_router = False
-    args.miles_router_middleware_paths = []
-    args.ci_test = False
     init_http_client(args)
     return args
 
