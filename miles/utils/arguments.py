@@ -1351,7 +1351,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 args_partial.rollout_function_path,
                 args_partial.custom_generate_function_path,
             ]:
-                fn = load_function(path)
+                try:
+                    fn = load_function(path)
+                except (ModuleNotFoundError, ValueError):
+                    continue
                 if fn is not None and callable(getattr(fn, "add_arguments", None)):
                     fn.add_arguments(parser)
             return parser
