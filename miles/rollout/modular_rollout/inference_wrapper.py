@@ -27,7 +27,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     output = await post(url, payload)
 
-    await fill_sample_by_response(args, sample, output)
+    await update_sample_from_response(args, sample, output)
 
     return GenerateFnOutput(samples=sample)
 
@@ -71,7 +71,7 @@ async def compute_request_payload(args, prompt_ids, sample, sampling_params: dic
     return payload
 
 
-async def fill_sample_by_response(args, sample, output):
+async def update_sample_from_response(args, sample, output):
     if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
         from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
 
