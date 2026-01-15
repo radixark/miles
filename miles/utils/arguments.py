@@ -1396,7 +1396,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
-
         return parser
 
     return add_miles_arguments
