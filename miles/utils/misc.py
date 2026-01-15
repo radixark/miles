@@ -67,8 +67,9 @@ class SingletonMeta(type):
             cls._instances[cls] = instance
         return cls._instances[cls]
 
-    def clear_instances(cls):
-        cls._instances = {}
+    @staticmethod
+    def clear_all_instances():
+        SingletonMeta._instances.clear()
 
 
 def exec_command(cmd: str, capture_output: bool = False) -> str | None:

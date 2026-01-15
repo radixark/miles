@@ -10,7 +10,6 @@ import pytest
 import requests
 
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
-from miles.rollout.modular_rollout.orchestration_common import GenerateState
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
 from miles.utils.http_utils import find_available_port, init_http_client
@@ -91,10 +90,6 @@ def _write_jsonl(path: str, rows: list[dict]) -> None:
     Path(path).write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
 
 
-def _cleanup_legacy_singleton():
-    SingletonMeta._instances.pop(GenerateState, None)
-
-
 DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
@@ -111,7 +106,7 @@ def rollout_integration_env(tmp_path, request) -> IntegrationEnv:
     router_port = find_available_port(20000)
     args = _build_args(data_path=data_path, router_port=router_port, extra_argv=config.extra_argv)
 
-    _cleanup_legacy_singleton()
+    SingletonMeta.clear_all_instances()
 
     with with_mock_server(model_name=args.hf_checkpoint, latency=config.latency) as mock_server:
         with _with_miles_router(args) as router_server:
@@ -125,4 +120,4 @@ def rollout_integration_env(tmp_path, request) -> IntegrationEnv:
             data_source = RolloutDataSourceWithBuffer(args)
             yield IntegrationEnv(args=args, data_source=data_source, mock_server=mock_server)
 
-    _cleanup_legacy_singleton()
+    SingletonMeta.clear_all_instances()

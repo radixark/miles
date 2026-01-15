@@ -40,7 +40,7 @@ MODULAR_ROLLOUT_BASE_ARGV = [
     "--eval-function-path",
     "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
     "--custom-generate-function-path",
-    "miles.rollout.modular_rollout.inference_wrapper.generate",
+    "miles.rollout.generate_hub.single_turn.generate",
 ]
 
 MIXED_DATA_ROWS = [
