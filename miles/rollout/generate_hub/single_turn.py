@@ -1,3 +1,7 @@
+"""
+Simple single-turn generation.
+"""
+
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.generate_endpoint_wrapper import (
     compute_prompt_ids_from_sample,
@@ -8,7 +12,6 @@ from miles.utils.http_utils import post
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
-    """Generate using traditional SGLang router with token-based workflow"""
     args = input.args
     sample = input.sample
 
