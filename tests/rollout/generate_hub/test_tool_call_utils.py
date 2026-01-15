@@ -178,196 +178,66 @@ DOUBLE_TOOL_RESPONSES = [
     },
 ]
 
-# Expected values for each (model, num_tools) combination
-# Format: (model_name, num_tools) -> (tool_response, expected_token_ids, expected_decoded_str)
-EXPECTED_TOKENIZE_RESULTS = {
-    # qwen/qwen25: Qwen2.5 family
-    ("Qwen/Qwen2.5-0.5B-Instruct", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("Qwen/Qwen2.5-0.5B-Instruct", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    ("Qwen/Qwen2.5-7B-Instruct", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("Qwen/Qwen2.5-7B-Instruct", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # qwen3_coder: Qwen3 family
-    ("Qwen/Qwen3-0.6B", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("Qwen/Qwen3-0.6B", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    ("Qwen/Qwen3-8B", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("Qwen/Qwen3-8B", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # llama3: Llama-3.2 family
-    ("meta-llama/Llama-3.2-1B-Instruct", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("meta-llama/Llama-3.2-1B-Instruct", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    ("meta-llama/Llama-3.2-3B-Instruct", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("meta-llama/Llama-3.2-3B-Instruct", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # mistral: Mistral family
-    ("mistralai/Mistral-7B-Instruct-v0.3", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("mistralai/Mistral-7B-Instruct-v0.3", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # deepseekv3: DeepSeek-V3 family
-    ("deepseek-ai/DeepSeek-V3", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("deepseek-ai/DeepSeek-V3", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # glm: GLM-4 family
-    ("THUDM/glm-4-9b-chat", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("THUDM/glm-4-9b-chat", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # kimi_k2: Kimi-K2
-    ("moonshotai/Kimi-K2-Instruct", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("moonshotai/Kimi-K2-Instruct", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # mimo: MiMo
-    ("XiaomiMiMo/MiMo-7B-RL", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("XiaomiMiMo/MiMo-7B-RL", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-    # interns1: InternLM
-    ("internlm/internlm3-8b-instruct", 1): (
-        SINGLE_TOOL_RESPONSE,
-        [],  # TODO: fill after first run
-        "",  # TODO: fill after first run
-    ),
-    ("internlm/internlm3-8b-instruct", 2): (
-        DOUBLE_TOOL_RESPONSES,
-        [[], []],  # TODO: fill after first run
-        ["", ""],  # TODO: fill after first run
-    ),
-}
+
+def _build_messages_for_tool_response(tool_response: dict):
+    """Build base messages (user + assistant with tool_calls) for a tool response."""
+    return [
+        {"role": "user", "content": "dummy"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tool_response.get("tool_call_id", "call_dummy"),
+                    "type": "function",
+                    "function": {
+                        "name": tool_response.get("name", "dummy_func"),
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+    ]
 
 
 def _get_test_params():
-    """Generate pytest parameters from EXPECTED_TOKENIZE_RESULTS."""
+    """Generate pytest parameters: cartesian product of models × (1 tool, 2 tools)."""
     params = []
-    for (model_name, num_tools), (tool_resp, expected_ids, expected_str) in EXPECTED_TOKENIZE_RESULTS.items():
-        params.append(
-            pytest.param(
-                model_name, num_tools, tool_resp, expected_ids, expected_str,
-                id=f"{model_name.split('/')[-1]}-{num_tools}tool",
-            )
-        )
+    for model_name in TOOL_CALL_MODELS:
+        params.append(pytest.param(model_name, 1, id=f"{model_name.split('/')[-1]}-1tool"))
+        params.append(pytest.param(model_name, 2, id=f"{model_name.split('/')[-1]}-2tools"))
     return params
 
 
 class TestTokenizeToolResponse:
     """Test tokenize_tool_response across different models and tool call counts."""
 
-    @pytest.mark.parametrize(
-        "model_name,num_tools,tool_response,expected_token_ids,expected_decoded_str",
-        _get_test_params(),
-    )
-    def test_tokenize_tool_response(
-        self, model_name, num_tools, tool_response, expected_token_ids, expected_decoded_str
-    ):
+    @pytest.mark.parametrize("model_name,num_tools", _get_test_params())
+    def test_tokenize_tool_response(self, model_name, num_tools):
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
-        if num_tools == 1:
+        tool_responses = [SINGLE_TOOL_RESPONSE] if num_tools == 1 else DOUBLE_TOOL_RESPONSES
+
+        for tool_response in tool_responses:
             token_ids = tokenize_tool_response(tool_response, tokenizer)
             decoded_str = tokenizer.decode(token_ids)
 
-            if expected_token_ids:
-                assert token_ids == expected_token_ids
-            if expected_decoded_str:
-                assert decoded_str == expected_decoded_str
+            messages_without_tool = _build_messages_for_tool_response(tool_response)
+            messages_with_tool = messages_without_tool + [tool_response]
 
-            print(f"\n[{model_name}] single tool response:")
-            print(f"  token_ids = {token_ids}")
-            print(f"  decoded   = {repr(decoded_str)}")
+            text_with_tool = tokenizer.apply_chat_template(
+                messages_with_tool, tokenize=False, add_generation_prompt=False
+            )
+            text_without_tool = tokenizer.apply_chat_template(
+                messages_without_tool, tokenize=False, add_generation_prompt=False
+            )
 
-        else:
-            all_token_ids = []
-            all_decoded_strs = []
-            for i, resp in enumerate(tool_response):
-                token_ids = tokenize_tool_response(resp, tokenizer)
-                decoded_str = tokenizer.decode(token_ids)
-                all_token_ids.append(token_ids)
-                all_decoded_strs.append(decoded_str)
+            expected_str = text_with_tool[len(text_without_tool):]
 
-                if expected_token_ids and expected_token_ids[i]:
-                    assert token_ids == expected_token_ids[i]
-                if expected_decoded_str and expected_decoded_str[i]:
-                    assert decoded_str == expected_decoded_str[i]
-
-            print(f"\n[{model_name}] double tool responses:")
-            for i, (tids, dstr) in enumerate(zip(all_token_ids, all_decoded_strs)):
-                print(f"  [{i}] token_ids = {tids}")
-                print(f"  [{i}] decoded   = {repr(dstr)}")
+            assert decoded_str == expected_str, (
+                f"Mismatch for {model_name}:\n"
+                f"  decoded_str = {repr(decoded_str)}\n"
+                f"  expected    = {repr(expected_str)}"
+            )
