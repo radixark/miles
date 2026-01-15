@@ -98,11 +98,6 @@ def _get_rollout_routed_experts_from_output(args, sample, output):
     if info is None:
         return None
 
-    return np.frombuffer(
-        pybase64.b64decode(info.encode("ascii")),
-        dtype=np.int32,
-    ).reshape(
-        len(sample.tokens) - 1,
-        args.num_layers,
-        args.moe_router_topk,
-    )
+    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
+    x = x.reshape(len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
+    return x
