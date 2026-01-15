@@ -1354,6 +1354,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 fn = load_function(path)
                 if fn is not None and callable(getattr(fn, "add_arguments", None)):
                     fn.add_arguments(parser)
+            return parser
 
         def add_sglang_tp_size():
             temp_parser = argparse.ArgumentParser(add_help=False)

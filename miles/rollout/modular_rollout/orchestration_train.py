@@ -7,7 +7,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.modular_rollout.orchestration_common import GenerateState, generate_and_rm_group
 from miles.utils.http_utils import get, post
@@ -144,16 +144,3 @@ async def generate_rollout_async(
         f(args, all_samples, data_source)
 
     return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
-
-
-class SimpleTrainRolloutFn:
-    def __init__(self, input: RolloutFnConstructorInput):
-        self.data_source = input.data_source
-        self.state = GenerateState(input.args)
-
-    async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
-        output, aborted_samples = await generate_rollout_async(
-            self.state, input.rollout_id, self.data_source.get_samples
-        )
-        self.data_source.add_samples(aborted_samples)
-        return output

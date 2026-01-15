@@ -5,7 +5,6 @@ from typing import Any
 
 from tqdm import tqdm
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput
 from miles.rollout.modular_rollout.orchestration_common import GenerateState, compute_sampling_params, generate_and_rm
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
@@ -104,19 +103,3 @@ async def eval_rollout_single_dataset(
             "samples": data,
         }
     }
-
-
-class SimpleEvalRolloutFn:
-    def __init__(self, input: RolloutFnConstructorInput):
-        self.prompt_dataset_cache = {}
-        self.state = GenerateState(input.args)
-
-    async def __call__(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
-        assert not self.state.args.group_rm, "Group RM is not supported for eval rollout"
-
-        coros = []
-        for dataset_cfg in getattr(self.state.args, "eval_datasets", []) or []:
-            coros.append(eval_rollout_single_dataset(self.state, dataset_cfg, self.prompt_dataset_cache))
-        results_list = await asyncio.gather(*coros)
-        results = {k: v for r in results_list for k, v in r.items()}
-        return RolloutFnEvalOutput(data=results)
