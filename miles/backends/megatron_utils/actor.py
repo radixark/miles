@@ -554,6 +554,19 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             destroy_process_groups()
 
+    def check_weights(self, action: str = "compare") -> None:
+        """Verify weights between training and rollout engines."""
+        if self.args.debug_train_only or self.args.debug_rollout_only:
+            return
+
+        if self.args.offload_train:
+            reload_process_groups()
+
+        self.weight_updater.check_weights(action=action)
+
+        if self.args.offload_train:
+            destroy_process_groups()
+
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
         self.args.load = path

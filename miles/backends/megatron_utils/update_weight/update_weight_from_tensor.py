@@ -120,7 +120,7 @@ class UpdateWeightFromTensor:
         self._last_checksums = {}
 
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
-            if self.args.check.enable_weight_checker or self.args.check_weight_update_equal:
+            if self.args.enable_weight_checker or self.args.check_weight_update_equal:
                 for name, tensor in hf_named_tensors:
                     t_cpu = tensor.detach().cpu().contiguous()
                     self._last_checksums[name] = hashlib.sha256(t_cpu.view(torch.uint8).numpy()).hexdigest()
@@ -159,7 +159,7 @@ class UpdateWeightFromTensor:
     def check_weights(self, action: str) -> None:
         if (self.args.enable_weight_checker or action == "compare") and self._last_checksums:
             if dist.get_rank() == 0:
-                # Rank 0 hashes represent the full parameters (post-gathering).
+                # One request per update cycle to keep logs clean and minimize network overhead.
                 ray.get(
                     [
                         engine.check_weights.remote(

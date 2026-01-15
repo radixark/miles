@@ -124,6 +124,10 @@ class RayTrainGroup:
         """Broadcast weights from rank 0 to all other ranks."""
         return ray.get([actor.update_weights.remote() for actor in self._actor_handlers])
 
+    def check_weights(self, action: str = "compare"):
+        """Verify weights between training and rollout engines."""
+        return ray.get([actor.check_weights.remote(action=action) for actor in self._actor_handlers])
+
     def onload(self):
         return ray.get([actor.wake_up.remote() for actor in self._actor_handlers])
 

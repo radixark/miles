@@ -120,9 +120,9 @@ class UpdateWeightFromDistributed:
         dist.barrier(group=get_gloo_group())
 
     def check_weights(self, action: str) -> None:
-        if action == "compare" and self._last_checksums:
+        if (self.args.enable_weight_checker or action == "compare") and self._last_checksums:
             if dist.get_rank() == 0:
-                # Rank 0 hashes represent the full parameters (post-gathering).
+                # Send the entire dictionary in one Ray RPC call to ensure a single summary log.
                 ray.get(
                     [
                         engine.check_weights.remote(
