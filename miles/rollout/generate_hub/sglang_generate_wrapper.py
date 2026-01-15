@@ -42,8 +42,8 @@ async def _compute_prompt_ids(state, sample):
         prompt_ids = processor_output["input_ids"][0]
         # TODO shall we move it to other places? then can make this function immutable
         sample.multimodal_train_inputs = {
-             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
-         } or None
+            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
+        } or None
         return prompt_ids
     else:
         return state.tokenizer.encode(sample.prompt, add_special_tokens=False)
