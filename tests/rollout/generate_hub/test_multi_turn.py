@@ -37,7 +37,7 @@ SAMPLE_TOOLS = [
 
 
 class TestSGLangFunctionCallParser:
-    """Test to ensure SGLang function call parser have features we need without breaking changes."""
+    """Test to demonstrate and ensure SGLang function call parser have features we need without breaking changes."""
 
     @pytest.mark.parametrize(
         "model_output,expected",
