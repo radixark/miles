@@ -14,6 +14,7 @@ from miles.rollout.modular_rollout.orchestration_eval import eval_rollout_single
 from miles.rollout.modular_rollout.orchestration_train import generate_rollout_async
 
 
+# TODO may move `orchestration_*`
 class SimpleRolloutFn:
     def __init__(self, input: RolloutFnConstructorInput):
         self.data_source = input.data_source
