@@ -212,6 +212,10 @@ class TestResumedSingleTurn:
         partial_tokens = [59, 79075]
         partial_log_probs = [-0.0, -0.0078125]
 
+        remaining_text = "{8}"
+        remaining_tokens = [90, 23, 92]
+        remaining_log_probs = [-0.0, -0.0078125, -0.015625]
+
         env.mock_server.process_fn = lambda _: ProcessResult(text=partial_text, finish_reason="abort")
         sample = make_sample()
         result1 = run_generate(variant, env, sample)
@@ -224,15 +228,15 @@ class TestResumedSingleTurn:
             status=Sample.Status.ABORTED,
         )
 
-        env.mock_server.process_fn = lambda _: ProcessResult(text=RESPONSE_TEXT, finish_reason="stop")
+        env.mock_server.process_fn = lambda _: ProcessResult(text=remaining_text, finish_reason="stop")
         result2 = run_generate(variant, env, result1.sample)
         tokens_after_turn1 = PROMPT_TOKENS + partial_tokens
         assert result2.requests == [expected_request(variant, input_ids=tokens_after_turn1)]
         assert result2.sample == expected_sample(
-            response=partial_text + RESPONSE_TEXT,
-            response_length=2 + 5,
-            tokens=tokens_after_turn1 + RESPONSE_TOKENS,
-            rollout_log_probs=partial_log_probs + RESPONSE_LOG_PROBS,
+            response=partial_text + remaining_text,
+            response_length=2 + 3,
+            tokens=tokens_after_turn1 + remaining_tokens,
+            rollout_log_probs=partial_log_probs + remaining_log_probs,
             prompt_tokens=len(tokens_after_turn1),
             status=Sample.Status.COMPLETED,
         )
