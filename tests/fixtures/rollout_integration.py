@@ -98,14 +98,11 @@ def _cleanup_legacy_singleton():
 _DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
-def _parse_fixture_param(param) -> IntegrationEnvConfig:
-    assert isinstance(param, IntegrationEnvConfig), f"Expected IntegrationEnvConfig, got {type(param).__name__}"
-    return param
-
-
 @pytest.fixture
 def rollout_integration_env(tmp_path, request) -> tuple[Namespace, RolloutDataSourceWithBuffer, MockSGLangServer]:
-    config = _parse_fixture_param(request.param)
+    config = request.param
+    assert isinstance(config, IntegrationEnvConfig)
+
     data_rows = config.data_rows or _DEFAULT_DATA_ROWS
 
     data_path = str(tmp_path / "data.jsonl")
