@@ -211,8 +211,4 @@ class TestTokenizeToolResponse:
 
             expected_str = text_with_tool[len(text_without_tool):]
 
-            assert decoded_str == expected_str, (
-                f"Mismatch for {model_name}:\n"
-                f"  decoded_str = {repr(decoded_str)}\n"
-                f"  expected    = {repr(expected_str)}"
-            )
+            assert decoded_str == expected_str
