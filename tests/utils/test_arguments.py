@@ -7,8 +7,7 @@ from miles.utils.arguments import get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
 
-class TestAddArgumentsSupport:
-
+class TestAddArguments:
     def test_calls_class_add_arguments(self):
         mock_add_arguments = MagicMock()
 
