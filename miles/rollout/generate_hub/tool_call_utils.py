@@ -1,26 +1,7 @@
 from typing import Any
 
 
-DUMMY_USER = {"role": "user", "content": "dummy"}
-
-
-def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a dummy assistant message with tool_calls matching the tool responses."""
-    return {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [
-            {
-                "id": resp.get("tool_call_id", f"call_dummy_{i}"),
-                "type": "function",
-                "function": {
-                    "name": resp.get("name", "dummy_func"),
-                    "arguments": "{}",
-                },
-            }
-            for i, resp in enumerate(tool_responses)
-        ],
-    }
+_DUMMY_USER = {"role": "user", "content": "dummy"}
 
 
 def tokenize_tool_responses(
@@ -29,7 +10,7 @@ def tokenize_tool_responses(
 ) -> list[int]:
     """Tokenize tool response messages. Returns token IDs for all tool responses combined."""
     dummy_assistant = _build_dummy_assistant(tool_messages)
-    base_messages = [DUMMY_USER, dummy_assistant]
+    base_messages = [_DUMMY_USER, dummy_assistant]
 
     messages_without = base_messages
     messages_with = base_messages + tool_messages
@@ -46,3 +27,21 @@ def tokenize_tool_responses(
     )
 
     return tokens_with[len(tokens_without) :]
+
+
+def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": resp.get("tool_call_id", f"call_dummy_{i}"),
+                "type": "function",
+                "function": {
+                    "name": resp.get("name", "dummy_func"),
+                    "arguments": "{}",
+                },
+            }
+            for i, resp in enumerate(tool_responses)
+        ],
+    }
