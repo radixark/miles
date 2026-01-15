@@ -175,7 +175,8 @@ class GenerateResult:
 def env(request):
     SingletonMeta.clear_all_instances()
     params = getattr(request, "param", {})
-    model_name = params.get("model_name", MODEL_NAME)
+    args_kwargs = params.get("args_kwargs", {})
+    model_name = args_kwargs.get("model_name", MODEL_NAME)
 
     def process_fn(_):
         x = params.get("process_fn_kwargs", {})
@@ -391,7 +392,7 @@ VLM_PROMPT_TOKENS = [151644, 8948, 198, 2610, 525, 264, 10950, 17847, 13, 151645
 
 
 class TestMultimodal:
-    @pytest.mark.parametrize("env", [{"model_name": VLM_MODEL_NAME}], indirect=True)
+    @pytest.mark.parametrize("env", [{"args_kwargs": {"model_name": VLM_MODEL_NAME}}], indirect=True)
     def test_multimodal_inputs_processed(self, variant, env):
         from PIL import Image
 
