@@ -265,7 +265,7 @@ class TestOverSamplingIntegration:
                     _MODULAR_ROLLOUT_BASE_ARGV
                     + [
                         "--over-sampling-batch-size",
-                        "1",
+                        "2",
                         "--rollout-batch-size",
                         "2",
                         "--dynamic-sampling-filter-path",

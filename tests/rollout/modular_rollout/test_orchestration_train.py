@@ -88,6 +88,8 @@ class TestOverSamplingBatchSize:
         mock_state.args.over_sampling_batch_size = 2
         mock_state.args.rollout_batch_size = 2
         mock_state.args.dynamic_sampling_filter_path = "some.filter.path"
+        mock_state.args.rollout_sample_filter_path = None
+        mock_state.args.rollout_all_samples_process_path = None
 
         get_samples_calls = []
         call_count = [0]
@@ -108,12 +110,17 @@ class TestOverSamplingBatchSize:
         async def mock_generate_and_rm_group(state, group, sampling_params, evaluation):
             return group
 
+        def load_fn_side_effect(path):
+            if path == "some.filter.path":
+                return mock_filter
+            return None
+
         with patch(
             "miles.rollout.modular_rollout.orchestration_train.generate_and_rm_group",
             side_effect=mock_generate_and_rm_group,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.load_function",
-            return_value=mock_filter,
+            side_effect=load_fn_side_effect,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.get_worker_urls",
             new_callable=AsyncMock,
@@ -131,6 +138,8 @@ class TestDynamicFilter:
     def test_filtered_samples_not_in_output(self, mock_state):
         mock_state.args.rollout_batch_size = 2
         mock_state.args.dynamic_sampling_filter_path = "some.filter.path"
+        mock_state.args.rollout_sample_filter_path = None
+        mock_state.args.rollout_all_samples_process_path = None
 
         sample_index = [0]
 
@@ -152,12 +161,17 @@ class TestDynamicFilter:
         async def mock_generate_and_rm_group(state, group, sampling_params, evaluation):
             return group
 
+        def load_fn_side_effect(path):
+            if path == "some.filter.path":
+                return mock_filter
+            return None
+
         with patch(
             "miles.rollout.modular_rollout.orchestration_train.generate_and_rm_group",
             side_effect=mock_generate_and_rm_group,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.load_function",
-            return_value=mock_filter,
+            side_effect=load_fn_side_effect,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.get_worker_urls",
             new_callable=AsyncMock,
@@ -175,6 +189,8 @@ class TestDynamicFilter:
     def test_metrics_contain_drop_count(self, mock_state):
         mock_state.args.rollout_batch_size = 2
         mock_state.args.dynamic_sampling_filter_path = "some.filter.path"
+        mock_state.args.rollout_sample_filter_path = None
+        mock_state.args.rollout_all_samples_process_path = None
 
         sample_index = [0]
 
@@ -200,12 +216,17 @@ class TestDynamicFilter:
         async def mock_generate_and_rm_group(state, group, sampling_params, evaluation):
             return group
 
+        def load_fn_side_effect(path):
+            if path == "some.filter.path":
+                return mock_filter
+            return None
+
         with patch(
             "miles.rollout.modular_rollout.orchestration_train.generate_and_rm_group",
             side_effect=mock_generate_and_rm_group,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.load_function",
-            return_value=mock_filter,
+            side_effect=load_fn_side_effect,
         ), patch(
             "miles.rollout.modular_rollout.orchestration_train.get_worker_urls",
             new_callable=AsyncMock,
