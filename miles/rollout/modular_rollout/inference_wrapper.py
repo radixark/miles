@@ -61,8 +61,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         payload["input_ids"] = sample.tokens
     else:
         payload["input_ids"] = prompt_ids
-        if not sample.tokens:  # Initialize sample.tokens for the first turn
-            sample.tokens = prompt_ids
+
+    # Initialize sample.tokens for the first turn
+    if (len(sample.response) == 0) and (not sample.tokens):
+        sample.tokens = prompt_ids
 
     output = await post(url, payload)
 
