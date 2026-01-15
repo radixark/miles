@@ -6,7 +6,7 @@ from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.rollout.generate_hub.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
 
-TOOL_CALL_MODELS = [
+TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen2.5-0.5B-Instruct",
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-4B-Instruct-2507",
@@ -44,7 +44,7 @@ SAMPLE_TOOL_RESPONSES = [
 
 class TestTokenizeToolResponses:
     @pytest.mark.parametrize("num_tools", [1, 2])
-    @pytest.mark.parametrize("model_name", TOOL_CALL_MODELS)
+    @pytest.mark.parametrize("model_name", TOOL_CALL_TEST_MODELS)
     def test_tokenize_tool_responses(self, model_name, num_tools):
         if num_tools > 1 and model_name in SINGLE_TOOL_CALL_ONLY_MODELS:
             pytest.skip(f"{model_name} only supports single tool call")
