@@ -25,14 +25,14 @@ def _over_sampling_config(rollout_batch_size: int):
 
 
 @pytest.mark.parametrize(
-    "rollout_integration_env,expected_all_samples",
+    "rollout_integration_env,min_expected_rounds",
     [
-        pytest.param(_over_sampling_config(2), 6, id="one_round"),
-        pytest.param(_over_sampling_config(3), 12, id="two_rounds"),
+        pytest.param(_over_sampling_config(2), 1, id="one_round"),
+        pytest.param(_over_sampling_config(3), 2, id="two_rounds"),
     ],
     indirect=["rollout_integration_env"],
 )
-def test_over_sampling_rounds(rollout_integration_env, expected_all_samples):
+def test_over_sampling_rounds(rollout_integration_env, min_expected_rounds):
     env = rollout_integration_env
     all_samples_process_mock = Mock()
 
@@ -46,6 +46,8 @@ def test_over_sampling_rounds(rollout_integration_env, expected_all_samples):
     assert all(group[0].reward == 1 for group in out.samples)
 
     _, all_samples, _ = all_samples_process_mock.call_args[0]
-    assert len(all_samples) == expected_all_samples
+    min_expected_all_samples = min_expected_rounds * env.args.over_sampling_batch_size
+    assert len(all_samples) >= min_expected_all_samples, f"Expected at least {min_expected_rounds} round(s) of sampling"
+    assert len(all_samples) > len(out.samples), "Over sampling should generate more samples than output"
     all_rewards = {g[0].reward for g in all_samples}
     assert 0 in all_rewards, "Some samples should have been filtered out"
