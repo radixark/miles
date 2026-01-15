@@ -43,7 +43,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         current_token_ids = prompt_tokens_ids + response_token_ids
         payload = {
             "input_ids": current_token_ids,
-            "sampling_params": sampling_params,
+            "sampling_params": input.sampling_params,
             "return_logprob": True,  # Request log probabilities for training
         }
 
@@ -52,7 +52,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # Handle abort
         if output["meta_info"]["finish_reason"]["type"] == "abort":
             sample.status = Sample.Status.ABORTED
-            return sample
+            return GenerateFnOutput(samples=sample)
 
         if "output_token_logprobs" in output["meta_info"]:
             cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
@@ -117,7 +117,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         case "stop":
             sample.status = Sample.Status.COMPLETED
 
-    return sample
+    return GenerateFnOutput(samples=sample)
 
 
 def format_conversation_with_tools(
