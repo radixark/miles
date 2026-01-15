@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Qwen3-8B Training with Strands-SGLang
+# Note: 8B model requires ~2x memory of 4B, adjusted settings accordingly
+
 # for rerun the task
 pkill -9 sglang
 sleep 3
@@ -23,38 +26,39 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B.sh"
+source "/root/miles/scripts/models/qwen3-8B.sh"
+
+# Generate timestamp suffix for save path
+TIMESTAMP_SUFFIX=$(date +%Y%m%d_%H%M%S)
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B-FP8
-   #--hf-checkpoint /root/Qwen3-4B-FP8
-   --ref-load /root/Qwen3-4B_torch_dist
-   --load /root/qwen3-4b_cp8_fp8
-   --save /root/rl-model/qwen3-4b_cp8_fp8
+   --hf-checkpoint /root/models/Qwen/Qwen3-8B
+   --ref-load /root/models/Qwen/Qwen3-8B_torch_dist
+   # --load Qwen3-8B_strands_dapo
+   --save /root/models/Qwen/Qwen3-8B_strands_dapo_${TIMESTAMP_SUFFIX}
    --save-interval 20
+   --rotary-base 1000000
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/data/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
-   --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
+   # --reward-key score
    --num-rollout 3000
-   --rollout-batch-size 32
+   --rollout-batch-size 16  # Reduced from 32 for 8B model memory
    --n-samples-per-prompt 8
-   --rollout-max-response-len 8192
+   --rollout-max-response-len 16384
    --rollout-temperature 1
 
-   --global-batch-size 256
+   --global-batch-size 128  # Reduced from 256 for 8B model memory
    --balance-data
 )
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime /root/data/aime-2024.jsonl
+   --eval-prompt-data aime  /root/data/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
@@ -74,7 +78,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 18432
 )
 
 GRPO_ARGS=(
@@ -94,19 +98,20 @@ OPTIMIZER_ARGS=(
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
-
 )
 
 WANDB_ARGS=(
-   # --use-wandb
-   # --wandb-project miles-dev
-   # --wandb-group qwen3-4B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project strands-miles
+   --wandb-group Qwen3-8B-strands-dapo
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.4
+   # Note: strands-sglang handles tool parsing internally (HermesToolCallParser)
+   # No need for --sglang-tool-call-parser
 )
 
 MISC_ARGS=(
@@ -120,19 +125,21 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
+CUSTOM_ARGS=(
+   --custom-generate-function-path examples.strands_sglang.generate_with_strands.generate
+   --custom-rm-path examples.strands_sglang.generate_with_strands.reward_func
+)
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # Build the runtime environment JSON with proper variable substitution
-# you should enable NVTE_FP8_BLOCK_SCALING_FP32_SCALES to use fp32 scales in fp8 training
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}\",
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"NVTE_FP8_BLOCK_SCALING_FP32_SCALES\": \"1\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
 }"
 
@@ -151,4 +158,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   ${CUSTOM_ARGS[@]}
