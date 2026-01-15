@@ -211,9 +211,12 @@ class TestPromptProcessingPath:
         result = run(call_generate(variant, generate_env.args, sample, sampling_params))
 
         assert len(generate_env.mock_server.request_log) == 1
-        payload = generate_env.mock_server.request_log[0]
-        assert "input_ids" in payload
-        assert len(payload["input_ids"]) == 7
+        assert generate_env.mock_server.request_log[0] == {
+            "input_ids": [3838, 374, 220, 16, 10, 22, 30],
+            "sampling_params": {"max_new_tokens": 16, "temperature": 0.7},
+            "return_logprob": True,
+            "return_routed_experts": False,
+        }
 
 
 class TestMultiTurn:
@@ -256,8 +259,12 @@ class TestMultiTurn:
 
         run(call_generate(variant, generate_env.args, sample, sampling_params))
 
-        payload = generate_env.mock_server.request_log[0]
-        assert payload["sampling_params"]["max_new_tokens"] == 10 - 3  # adjusted
+        assert generate_env.mock_server.request_log[0] == {
+            "input_ids": existing_tokens,
+            "sampling_params": {"max_new_tokens": 7, "temperature": 0.7},
+            "return_logprob": True,
+            "return_routed_experts": False,
+        }
 
 
 class TestBoundaryConditions:
@@ -274,7 +281,7 @@ class TestBoundaryConditions:
         result = run(call_generate(variant, generate_env.args, sample, sampling_params))
 
         assert result.status == Sample.Status.TRUNCATED
-        assert len(generate_env.mock_server.request_log) == 0  # no request sent
+        assert generate_env.mock_server.request_log == []
 
 
 class TestFinishReason:
@@ -319,8 +326,12 @@ class TestRoutedExperts:
         result = run(call_generate(variant, generate_env.args, sample, sampling_params))
 
         assert result == expected_sample(rollout_routed_experts=None)
-        payload = generate_env.mock_server.request_log[0]
-        assert payload.get("return_routed_experts", False) is False
+        assert generate_env.mock_server.request_log[0] == {
+            "input_ids": [3838, 374, 220, 16, 10, 22, 30],
+            "sampling_params": {"max_new_tokens": 16, "temperature": 0.7},
+            "return_logprob": True,
+            "return_routed_experts": False,
+        }
 
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
     def test_routed_experts_enabled_and_parsed(self, variant):
@@ -380,11 +391,12 @@ class TestPayloadStructure:
 
         run(call_generate(variant, generate_env.args, sample, sampling_params))
 
-        assert len(generate_env.mock_server.request_log) == 1
-        payload = generate_env.mock_server.request_log[0]
-        assert "input_ids" in payload
-        assert "sampling_params" in payload
-        assert payload.get("return_logprob") is True
+        assert generate_env.mock_server.request_log[0] == {
+            "input_ids": [3838, 374, 220, 16, 10, 22, 30],
+            "sampling_params": {"max_new_tokens": 16, "temperature": 0.7, "top_p": 0.9},
+            "return_logprob": True,
+            "return_routed_experts": False,
+        }
 
     @pytest.mark.parametrize("generate_env", [{"args_kwargs": {"use_rollout_routing_replay": True}}], indirect=True)
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
@@ -394,5 +406,9 @@ class TestPayloadStructure:
 
         run(call_generate(variant, generate_env.args, sample, sampling_params))
 
-        payload = generate_env.mock_server.request_log[0]
-        assert payload.get("return_routed_experts") is True
+        assert generate_env.mock_server.request_log[0] == {
+            "input_ids": [3838, 374, 220, 16, 10, 22, 30],
+            "sampling_params": {"max_new_tokens": 16, "temperature": 0.7},
+            "return_logprob": True,
+            "return_routed_experts": True,
+        }
