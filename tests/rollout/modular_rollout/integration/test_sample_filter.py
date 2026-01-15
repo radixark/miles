@@ -33,7 +33,7 @@ from miles.utils.misc import function_registry
     ],
     indirect=True,
 )
-def test_sample_filter_only_sees_unfiltered(rollout_integration_env):
+def test_sample_filter_and_all_samples_process(rollout_integration_env):
     env = rollout_integration_env
     sample_filter_mock = Mock()
     all_samples_process_mock = Mock()
