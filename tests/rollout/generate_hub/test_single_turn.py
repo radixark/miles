@@ -160,7 +160,7 @@ class GenerateEnv:
 
 @pytest.fixture
 def generate_env(request):
-    SingletonMeta.clear_instances(SingletonMeta)
+    SingletonMeta.clear_all_instances()
     process_fn_kwargs = getattr(request, "param", {}).get("process_fn_kwargs", {})
     args_kwargs = getattr(request, "param", {}).get("args_kwargs", {})
 
@@ -173,7 +173,7 @@ def generate_env(request):
         args = make_args(router_port=mock_server.port, **args_kwargs)
         yield GenerateEnv(args=args, mock_server=mock_server)
 
-    SingletonMeta.clear_instances(SingletonMeta)
+    SingletonMeta.clear_all_instances()
 
 
 class TestBasicGeneration:
@@ -335,7 +335,7 @@ class TestRoutedExperts:
 
     @pytest.mark.parametrize("variant", GENERATE_VARIANTS)
     def test_routed_experts_enabled_and_parsed(self, variant):
-        SingletonMeta.clear_instances(SingletonMeta)
+        SingletonMeta.clear_all_instances()
         num_layers = 2
         moe_router_topk = 4
         num_tokens = 7 + 5  # prompt + response
@@ -358,7 +358,7 @@ class TestRoutedExperts:
             assert result.rollout_routed_experts.shape == (num_tokens - 1, num_layers, moe_router_topk)
             np.testing.assert_array_equal(result.rollout_routed_experts, routed_experts_array)
 
-        SingletonMeta.clear_instances(SingletonMeta)
+        SingletonMeta.clear_all_instances()
 
 
 class TestMetaInfo:

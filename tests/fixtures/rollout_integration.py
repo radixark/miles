@@ -91,7 +91,7 @@ def _write_jsonl(path: str, rows: list[dict]) -> None:
 
 
 def _cleanup_legacy_singleton():
-    SingletonMeta.clear_instances(SingletonMeta)
+    SingletonMeta.clear_all_instances()
 
 
 DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
