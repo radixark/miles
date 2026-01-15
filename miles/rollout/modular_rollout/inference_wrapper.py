@@ -45,15 +45,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     # Prepare payload for sglang server
     payload = {
-        "sampling_params": sampling_params,
-        "return_logprob": True,
-        "return_routed_experts": args.use_rollout_routing_replay,
         # Use existing tokens for multi-turn or tokenize the new prompt
         "input_ids": (
             sample.tokens
             if len(sample.response) > 0
             else prompt_ids
         ),
+        "sampling_params": sampling_params,
+        "return_logprob": True,
+        "return_routed_experts": args.use_rollout_routing_replay,
     }
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
