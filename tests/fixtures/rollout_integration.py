@@ -99,14 +99,14 @@ _DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
 @pytest.fixture
-def rollout_integration_env(tmp_path, request) -> tuple[Namespace, RolloutDataSourceWithBuffer, MockSGLangServer]:
+def rollout_integration_env(tmp_path, request) -> IntegrationEnv:
     config = request.param
     assert isinstance(config, IntegrationEnvConfig)
 
     data_rows = config.data_rows or _DEFAULT_DATA_ROWS
 
     data_path = str(tmp_path / "data.jsonl")
-    _write_jsonl(data_path, data_rows)
+    _write_jsonl(data_path, list(data_rows))
 
     router_port = find_available_port(20000)
     args = _build_args(data_path=data_path, router_port=router_port, extra_argv=config.extra_argv)
@@ -123,6 +123,6 @@ def rollout_integration_env(tmp_path, request) -> tuple[Namespace, RolloutDataSo
             r.raise_for_status()
 
             data_source = RolloutDataSourceWithBuffer(args)
-            yield args, data_source, mock_server
+            yield IntegrationEnv(args=args, data_source=data_source, mock_server=mock_server)
 
     _cleanup_legacy_singleton()
