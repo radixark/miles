@@ -54,6 +54,7 @@ def expected_request(
 
 def expected_sample(
     *,
+    prompt: str = PROMPT,
     response: str = RESPONSE_TEXT,
     response_length: int = 5,
     tokens: list[int] | None = None,
@@ -64,14 +65,16 @@ def expected_sample(
     weight_versions: list[str] | None = None,
     rollout_routed_experts: np.ndarray | None = None,
     spec_info: Sample.SpecInfo | None = None,
+    multimodal_inputs: dict | None = None,
+    multimodal_train_inputs: dict | None = None,
 ) -> Sample:
     return Sample(
         group_index=None,
         index=None,
-        prompt=PROMPT,
+        prompt=prompt,
         tokens=tokens if tokens is not None else PROMPT_TOKENS + RESPONSE_TOKENS,
-        multimodal_inputs=None,
-        multimodal_train_inputs=None,
+        multimodal_inputs=multimodal_inputs,
+        multimodal_train_inputs=multimodal_train_inputs,
         response=response,
         response_length=response_length,
         label=None,
@@ -393,21 +396,41 @@ class TestMultimodal:
     def test_multimodal_inputs_processed(self, variant, env):
         from PIL import Image
 
+        from miles.utils.processing_utils import encode_image_for_rollout_engine
+        from transformers import AutoProcessor
+
         test_image = Image.new("RGB", (64, 64), color="red")
+        multimodal_inputs = {"images": [test_image]}
+
+        processor = AutoProcessor.from_pretrained(VLM_MODEL_NAME, trust_remote_code=True)
+        processor_output = processor(text=VLM_PROMPT, **multimodal_inputs)
+        vlm_prompt_tokens = processor_output["input_ids"][0].tolist()
+        vlm_multimodal_train_inputs = {
+            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
+        } or None
+
         sample = Sample(
             prompt=VLM_PROMPT,
             tokens=[],
             response="",
             response_length=0,
             status=Sample.Status.PENDING,
-            multimodal_inputs={"images": [test_image]},
+            multimodal_inputs=multimodal_inputs,
         )
 
-        env.mock_server.request_log.clear()
-        result_sample = run(call_generate(variant, env.args, sample, DEFAULT_SAMPLING_PARAMS.copy()))
-        result = GenerateResult(sample=result_sample, requests=list(env.mock_server.request_log))
+        result = run_generate(variant, env, sample)
 
-        assert len(result.requests) == 1
-        assert "image_data" in result.requests[0]
-        assert len(result.requests[0]["image_data"]) == 1
-        assert result.sample.multimodal_train_inputs is not None
+        assert result.requests == [
+            expected_request(
+                variant,
+                input_ids=vlm_prompt_tokens,
+                image_data=[encode_image_for_rollout_engine(test_image)],
+            )
+        ]
+        assert result.sample == expected_sample(
+            prompt=VLM_PROMPT,
+            tokens=vlm_prompt_tokens + RESPONSE_TOKENS,
+            prompt_tokens=len(vlm_prompt_tokens),
+            multimodal_inputs=multimodal_inputs,
+            multimodal_train_inputs=vlm_multimodal_train_inputs,
+        )
