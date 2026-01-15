@@ -1,15 +1,10 @@
 import pytest
 from pydantic import TypeAdapter
-
-from miles.rollout.generate_hub.tool_call_utils import (
-    DUMMY_USER,
-    _build_dummy_assistant,
-    tokenize_tool_responses,
-)
 from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
+from miles.rollout.generate_hub.tool_call_utils import DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
 
 # TODO add more models
 # Typical models that support tool calling, mapped from sglang tool call parsers.
@@ -77,9 +72,7 @@ SAMPLE_TOOLS = [
 
 class TestApplyChatTemplateWithTools:
     EXPECTED_PROMPT_WITHOUT_TOOLS = (
-        "<|im_start|>user\n"
-        "What's the weather in Paris?<|im_end|>\n"
-        "<|im_start|>assistant\n"
+        "<|im_start|>user\n" "What's the weather in Paris?<|im_end|>\n" "<|im_start|>assistant\n"
     )
 
     EXPECTED_PROMPT_WITH_TOOLS = (
@@ -113,9 +106,7 @@ class TestApplyChatTemplateWithTools:
         tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
         messages = [{"role": "user", "content": "What's the weather in Paris?"}]
 
-        prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, tools=tools
-        )
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, tools=tools)
 
         assert prompt == expected
 
@@ -202,7 +193,5 @@ def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str
     text_with = tokenizer.apply_chat_template(
         base_messages + extra_messages, tokenize=False, add_generation_prompt=False
     )
-    text_without = tokenizer.apply_chat_template(
-        base_messages, tokenize=False, add_generation_prompt=False
-    )
-    return text_with[len(text_without):]
+    text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
+    return text_with[len(text_without) :]

@@ -14,12 +14,8 @@ def tokenize_tool_responses(
     messages_without = base_messages
     messages_with = base_messages + tool_messages
 
-    tokens_with = tokenizer.apply_chat_template(
-        messages_with, tokenize=True, add_generation_prompt=False
-    )
-    tokens_without = tokenizer.apply_chat_template(
-        messages_without, tokenize=True, add_generation_prompt=False
-    )
+    tokens_with = tokenizer.apply_chat_template(messages_with, tokenize=True, add_generation_prompt=False)
+    tokens_without = tokenizer.apply_chat_template(messages_without, tokenize=True, add_generation_prompt=False)
 
     assert tokens_with.startswith(tokens_without), f"{tokens_with=} {tokens_without=}"
     return tokens_with[len(tokens_without) :]
