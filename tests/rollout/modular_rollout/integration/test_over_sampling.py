@@ -17,10 +17,10 @@ from miles.utils.misc import function_registry
         pytest.param(
             config(
                 [
-                    "--over-sampling-batch-size",
-                    "2",
                     "--rollout-batch-size",
                     "3",
+                    "--over-sampling-batch-size",
+                    "6",
                     "--dynamic-sampling-filter-path",
                     "test:filter_by_reward",
                     "--rollout-all-samples-process-path",
