@@ -220,4 +220,3 @@ def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str
         base_messages, tokenize=False, add_generation_prompt=False
     )
     return text_with[len(text_without):]
-
