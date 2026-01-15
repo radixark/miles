@@ -89,15 +89,16 @@ def test_request_log_and_reset_stats(mock_server):
 
 
 def test_latency():
-    with with_mock_server(latency=0.0) as server:
-        start = time.time()
-        requests.post(f"{server.url}/generate", json={"input_ids": [1], "sampling_params": {}}, timeout=5.0)
-        assert time.time() - start < 0.3
-
-    with with_mock_server(latency=0.5) as server:
-        start = time.time()
-        requests.post(f"{server.url}/generate", json={"input_ids": [1], "sampling_params": {}}, timeout=5.0)
-        assert time.time() - start >= 0.5
+    for long_delay in [False, True]:
+        latency = 0.5 if long_delay else 0.0
+        with with_mock_server(latency=latency) as server:
+            start = time.time()
+            requests.post(f"{server.url}/generate", json={"input_ids": [1], "sampling_params": {}}, timeout=5.0)
+            elapsed = time.time() - start
+            if long_delay:
+                assert elapsed >= 0.5
+            else:
+                assert elapsed < 0.3
 
 
 def test_max_concurrent_with_latency():
