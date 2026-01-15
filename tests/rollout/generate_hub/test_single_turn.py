@@ -404,7 +404,8 @@ class TestMultimodal:
 
         processor = AutoProcessor.from_pretrained(VLM_MODEL_NAME, trust_remote_code=True)
         processor_output = processor(text=VLM_PROMPT, **multimodal_inputs)
-        vlm_prompt_tokens = processor_output["input_ids"][0].tolist()
+        input_ids = processor_output["input_ids"][0]
+        vlm_prompt_tokens = input_ids.tolist() if hasattr(input_ids, "tolist") else list(input_ids)
         vlm_multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
         } or None
