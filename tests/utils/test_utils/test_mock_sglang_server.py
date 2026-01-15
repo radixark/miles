@@ -1,7 +1,9 @@
+import asyncio
+
 import pytest
 import requests
 
-from miles.utils.test_utils.mock_sglang_server import ProcessResult, default_process_fn, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import Counter, ProcessResult, default_process_fn, with_mock_server
 
 
 @pytest.fixture(scope="module")
@@ -77,3 +79,31 @@ def test_default_process_fn():
     result = default_process_fn("Hello")
     assert result.text == "I don't understand."
     assert result.finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_counter_tracks_max_concurrent():
+    counter = Counter()
+    assert counter.max_value == 0
+
+    async with counter.track():
+        assert counter.max_value == 1
+        async with counter.track():
+            assert counter.max_value == 2
+        assert counter.max_value == 2
+    assert counter.max_value == 2
+
+    counter.reset()
+    assert counter.max_value == 0
+
+
+@pytest.mark.asyncio
+async def test_counter_concurrent_tasks():
+    counter = Counter()
+
+    async def task(delay: float):
+        async with counter.track():
+            await asyncio.sleep(delay)
+
+    await asyncio.gather(task(0.1), task(0.1), task(0.1))
+    assert counter.max_value == 3
