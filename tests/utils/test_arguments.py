@@ -39,7 +39,9 @@ class TestAddArgumentsSupport:
     @pytest.mark.parametrize("fn_factory", [make_class_with_add_arguments, make_function_with_add_arguments])
     def test_add_arguments_is_called_and_arg_is_parsed(self, path_arg, fn_factory):
         fn = fn_factory()
-        with function_registry.temporary("test:fn", fn), patch.object(sys, "argv", ["test", path_arg, "test:fn", "--my-custom-arg", "100"]):
+        with function_registry.temporary("test:fn", fn), patch.object(
+            sys, "argv", ["test", path_arg, "test:fn", "--my-custom-arg", "100"]
+        ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
             args, _ = parser.parse_known_args()
