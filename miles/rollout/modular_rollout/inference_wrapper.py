@@ -86,6 +86,8 @@ async def _fill_sample_by_response(args, sample, output):
         sample.rollout_log_probs += new_response_log_probs
 
     sample.rollout_routed_experts = _get_rollout_routed_experts_from_response(args, sample, output)
+
+    # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
 
 
