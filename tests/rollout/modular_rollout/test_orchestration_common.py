@@ -9,18 +9,6 @@ from miles.utils.types import Sample
 
 
 class TestSemaphoreInitialization:
-    def test_semaphore_value_calculation(self, mock_args):
-        with patch("miles.rollout.modular_rollout.orchestration_common.load_tokenizer"), patch(
-            "miles.rollout.modular_rollout.orchestration_common.load_processor"
-        ):
-            state = GenerateState(mock_args)
-            expected = (
-                mock_args.sglang_server_concurrency
-                * mock_args.rollout_num_gpus
-                // mock_args.rollout_num_gpus_per_engine
-            )
-            assert state.generate_fn_semaphore._value == expected
-
     @pytest.mark.parametrize(
         "concurrency,num_gpus,gpus_per_engine,expected",
         [
