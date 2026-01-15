@@ -49,7 +49,7 @@ class TestSGLangFunctionCallParser:
                 ),
             ),
             (
-                'I will search for weather and restaurants.\n'
+                "I will search for weather and restaurants.\n"
                 '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Shanghai"}}\n</tool_call>\n'
                 '<tool_call>\n{"name": "search", "arguments": {"query": "restaurants"}}\n</tool_call>',
                 (
