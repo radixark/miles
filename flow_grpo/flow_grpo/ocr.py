@@ -1,9 +1,38 @@
 from paddleocr import PaddleOCR
 import torch
+import torch.distributed as dist
 import numpy as np
 from Levenshtein import distance
 from typing import List, Union, Tuple
 from PIL import Image
+
+def _is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+def _is_main_process() -> bool:
+    return not _is_distributed() or dist.get_rank() == 0
+
+def _init_paddleocr(use_gpu: bool) -> PaddleOCR:
+    def make_ocr() -> PaddleOCR:
+        return PaddleOCR(
+            use_angle_cls=False,
+            lang="en",
+            use_gpu=use_gpu,
+            show_log=False,
+        )
+
+    if not _is_distributed():
+        return make_ocr()
+
+    if not _is_main_process(): # sub process wait
+        dist.barrier()
+
+    ocr = make_ocr() # main process enter first
+
+    if _is_main_process():
+        dist.barrier()
+
+    return ocr
 
 class OcrScorer:
     def __init__(self, use_gpu: bool = False):
@@ -11,12 +40,7 @@ class OcrScorer:
         OCR reward calculator
         :param use_gpu: Whether to use GPU acceleration for PaddleOCR
         """
-        self.ocr = PaddleOCR(
-            use_angle_cls=False,
-            lang="en",
-            use_gpu=use_gpu,
-            show_log=False  # Disable unnecessary log output
-        )
+        self.ocr = _init_paddleocr(use_gpu)
 
     @torch.no_grad()
     def __call__(self, 
@@ -68,12 +92,7 @@ class OcrScorer_video_or_image:
         OCR reward calculator
         :param use_gpu: Whether to use GPU acceleration for PaddleOCR
         """
-        self.ocr = PaddleOCR(
-            use_angle_cls=False,
-            lang="en",
-            use_gpu=use_gpu,
-            show_log=False  # Disable unnecessary log output
-        )
+        self.ocr = _init_paddleocr(use_gpu)
         self.frame_interval = 4
 
     @torch.no_grad()
