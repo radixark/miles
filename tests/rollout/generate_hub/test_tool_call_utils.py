@@ -7,8 +7,7 @@ from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 
-# Models that support tool calling, mapped from sglang tool call parsers.
-# TODO: Add more models as they become available (gpt-oss, pythonic, newer versions)
+# Typical models that support tool calling, mapped from sglang tool call parsers.
 TOOL_CALL_MODELS = [
     # qwen/qwen25: Qwen2.5 family
     "Qwen/Qwen2.5-0.5B-Instruct",
