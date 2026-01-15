@@ -14,8 +14,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
-    assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
-
     prompt_ids = await _compute_prompt_ids(sample, input.state)
     payload = await _compute_request_payload(args, prompt_ids, sample, input.sampling_params)
 
@@ -48,6 +46,8 @@ async def _compute_prompt_ids(sample, state):
 
 
 async def _compute_request_payload(args, prompt_ids, sample, sampling_params: dict):
+    assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
+
     max_new_tokens = sampling_params.pop("max_new_tokens")
     if len(sample.response) > 0:
         max_new_tokens -= len(sample.tokens) - len(prompt_ids)
