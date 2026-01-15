@@ -23,11 +23,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     if len(sample.response) > 0:
         sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
 
-    assert sampling_params["max_new_tokens"] >= 0
-    if sampling_params["max_new_tokens"] == 0:
-        sample.status = Sample.Status.TRUNCATED
-        return GenerateFnOutput(samples=sample)
-
     # Prepare payload for sglang server
     payload = {
         # Use existing tokens for multi-turn or tokenize the new prompt
@@ -39,6 +34,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     if image_data := (sample.multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+
+    assert sampling_params["max_new_tokens"] >= 0
+    if sampling_params["max_new_tokens"] == 0:
+        sample.status = Sample.Status.TRUNCATED
+        return GenerateFnOutput(samples=sample)
 
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and (not sample.tokens):
