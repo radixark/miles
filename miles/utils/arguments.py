@@ -1345,6 +1345,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_user_provided_function_arguments(parser):
+            args_partial, _ = parser.parse_known_args()
+            for path in [
+                args_partial.rollout_function_path,
+                args_partial.custom_generate_function_path,
+            ]:
+                fn = load_function(path)
+                if fn is not None and callable(getattr(fn, "add_arguments", None)):
+                    fn.add_arguments(parser)
+
         def add_sglang_tp_size():
             temp_parser = argparse.ArgumentParser(add_help=False)
             temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
@@ -1375,6 +1385,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
+        parser = add_user_provided_function_arguments(parser)
         reset_arg(
             parser,
             "--custom-config-path",
@@ -1385,12 +1396,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
-
-        args_partial, _ = parser.parse_known_args()
-        for path in [args_partial.rollout_function_path, getattr(args_partial, "custom_generate_function_path", None)]:
-            fn = load_function(path)
-            if fn is not None and hasattr(fn, "add_arguments") and callable(fn.add_arguments):
-                fn.add_arguments(parser)
 
         return parser
 
