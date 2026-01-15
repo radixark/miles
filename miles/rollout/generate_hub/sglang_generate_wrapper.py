@@ -11,8 +11,8 @@ async def compute_prompt_ids(sample, state):
         prompt_ids = processor_output["input_ids"][0]
         # TODO shall we move it to other places?
         sample.multimodal_train_inputs = {
-                                             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
-                                         } or None
+            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
+        } or None
     else:
         prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
     return prompt_ids

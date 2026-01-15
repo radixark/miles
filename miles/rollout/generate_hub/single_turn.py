@@ -1,8 +1,9 @@
-import pybase64
-
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_hub.sglang_generate_wrapper import compute_prompt_ids, compute_request_payload, \
-    update_sample_from_response
+from miles.rollout.generate_hub.sglang_generate_wrapper import (
+    compute_prompt_ids,
+    compute_request_payload,
+    update_sample_from_response,
+)
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
