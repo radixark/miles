@@ -8,7 +8,6 @@ def tokenize_tool_responses(
     tool_messages: list[dict[str, Any]],
     tokenizer,
 ) -> list[int]:
-    """Tokenize tool response messages. Returns token IDs for all tool responses combined."""
     dummy_assistant = _build_dummy_assistant(tool_messages)
     base_messages = [_DUMMY_USER, dummy_assistant]
 
