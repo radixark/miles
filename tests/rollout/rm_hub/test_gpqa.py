@@ -71,7 +71,12 @@ class TestComputeGpqaReward:
             ("Answer: B", 1, {"choices": ["Option 1", "Option 2", "Option 3", "Option 4"]}, 1.0),
             ("Answer: X", "X", {"valid_letters": ["X", "Y", "Z"]}, 1.0),
             ("Answer: A", "X", {"valid_letters": ["X", "Y", "Z"]}, 0.0),
-            ("I believe the answer is Paris", "", {"choices": ["Paris", "London", "Berlin", "Rome"], "correct_letter": "A"}, 1.0),
+            (
+                "I believe the answer is Paris",
+                "",
+                {"choices": ["Paris", "London", "Berlin", "Rome"], "correct_letter": "A"},
+                1.0,
+            ),
             ("Answer: A", "", {"choices": {"A": "Paris", "B": "London"}, "correct_letter": "A"}, 1.0),
             ("The answer is Paris", "Paris", {"choices": ["Paris", "London", "Berlin", "Rome"]}, 1.0),
             ("Let me think step by step...</think>The answer is A", "A", None, 1.0),

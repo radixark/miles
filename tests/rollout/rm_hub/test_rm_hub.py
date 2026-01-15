@@ -89,7 +89,7 @@ class TestBatchedAsyncRm:
     )
     def test_batched_rm(self, mock_args, rm_type, samples_data, expected):
         mock_args.rm_type = rm_type
-        samples = [Sample(prompt="", response=r, label=l) for r, l in samples_data]
+        samples = [Sample(prompt="", response=r, label=label) for r, label in samples_data]
         rewards = run(batched_async_rm(mock_args, samples))
         assert rewards == expected
 
