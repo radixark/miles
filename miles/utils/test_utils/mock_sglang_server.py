@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 
 from fastapi import FastAPI, Request
@@ -58,8 +58,7 @@ class MockSGLangServer:
             payload = await request.json()
             self.request_log.append(payload)
 
-            await self._concurrency.increment()
-            try:
+            async with self._concurrency.track():
                 if self.latency > 0:
                     await asyncio.sleep(self.latency)
 
@@ -91,8 +90,6 @@ class MockSGLangServer:
                 }
 
                 return JSONResponse(content=response)
-            finally:
-                await self._concurrency.decrement()
 
         @self.app.get("/health")
         async def health():
@@ -129,14 +126,16 @@ class Counter:
         self._current = 0
         self._max = 0
 
-    async def increment(self):
+    @asynccontextmanager
+    async def track(self):
         async with self._lock:
             self._current += 1
             self._max = max(self._max, self._current)
-
-    async def decrement(self):
-        async with self._lock:
-            self._current -= 1
+        try:
+            yield
+        finally:
+            async with self._lock:
+                self._current -= 1
 
 
 def default_process_fn(prompt: str) -> ProcessResult:
