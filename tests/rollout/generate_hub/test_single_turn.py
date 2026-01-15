@@ -87,7 +87,9 @@ def expected_sample(
     )
 
 
-def make_args(*, router_port: int, use_rollout_routing_replay: bool = False) -> Namespace:
+def make_args(
+    *, router_port: int, use_rollout_routing_replay: bool = False, sglang_speculative_algorithm: str | None = None
+) -> Namespace:
     argv = [
         "pytest",
         "--train-backend",
@@ -111,6 +113,8 @@ def make_args(*, router_port: int, use_rollout_routing_replay: bool = False) -> 
     ]
     if use_rollout_routing_replay:
         argv.append("--use-rollout-routing-replay")
+    if sglang_speculative_algorithm:
+        argv.extend(["--sglang-speculative-algorithm", sglang_speculative_algorithm])
 
     from miles.utils.arguments import parse_args
 
@@ -308,6 +312,26 @@ class TestMetaInfo:
         result = run_generate(variant, env)
         assert result.requests == [expected_request(variant)]
         assert result.sample == expected_sample(cached_tokens=3, weight_versions=["v1.0"])
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {
+                "args_kwargs": {"sglang_speculative_algorithm": "EAGLE"},
+                "process_fn_kwargs": {"spec_accept_token_num": 10, "spec_draft_token_num": 15, "spec_verify_ct": 3},
+            }
+        ],
+        indirect=True,
+    )
+    def test_spec_info_updated(self, variant, env):
+        result = run_generate(variant, env)
+        assert result.requests == [expected_request(variant)]
+        expected_spec_info = Sample.SpecInfo()
+        expected_spec_info.spec_accept_token_num = 10
+        expected_spec_info.spec_draft_token_num = 15
+        expected_spec_info.spec_verify_ct = 3
+        expected_spec_info.completion_token_num = 5
+        assert result.sample == expected_sample(spec_info=expected_spec_info)
 
 
 class TestInputStatusValidation:
