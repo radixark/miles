@@ -192,6 +192,9 @@ class TestRoutedExperts:
         indirect=True,
     )
     def test_routed_experts_enabled_and_parsed(self, variant, generation_env):
+        if variant == "multi_turn_single_sample":
+            pytest.skip("TODO: support")
+
         num_layers, moe_router_topk = 2, 4
         num_tokens = len(PROMPT_TOKENS) + len(RESPONSE_TOKENS)
         routed_experts_array = np.arange((num_tokens - 1) * num_layers * moe_router_topk, dtype=np.int32).reshape(

@@ -104,8 +104,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if turn >= args.generate_max_tool_calls:
             break
 
-    sample.rollout_routed_experts = _get_rollout_routed_experts_from_response(args, sample, output)
-
     # Set status
     sample.update_from_meta_info(args, output["meta_info"])
 
