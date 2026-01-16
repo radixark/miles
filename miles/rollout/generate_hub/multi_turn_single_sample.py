@@ -68,6 +68,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         output = await post(url, payload)
 
+        # Handle abort
         if output["meta_info"]["finish_reason"]["type"] == "abort":
             sample.status = Sample.Status.ABORTED
             return GenerateFnOutput(samples=sample)
@@ -83,6 +84,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         response_token_ids += cur_response_token_ids
         loss_masks += [1] * len(cur_response_token_ids)
 
+        # Check length limit
         if output["meta_info"]["finish_reason"]["type"] == "length":
             break
 
