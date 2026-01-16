@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 
 import pytest
-from transformers import AutoTokenizer
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.modular_rollout.orchestration_common import GenerateState
@@ -9,8 +8,6 @@ from miles.utils.async_utils import run
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
 from miles.utils.test_utils.mock_tools import (
     MULTI_TURN_FIRST_PROMPT,
-    MULTI_TURN_FIRST_RESPONSE,
-    MULTI_TURN_SECOND_RESPONSE,
     SAMPLE_TOOLS,
     mock_execute_tool_function,
     multi_turn_tool_call_process_fn,
@@ -22,7 +19,17 @@ _ = generation_env, SAMPLE_TOOLS, mock_execute_tool_function, multi_turn_tool_ca
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
-TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+
+SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
+SINGLE_TURN_RESPONSE = "The answer is 2."
+SINGLE_TURN_PROMPT_TOKENS = [151644, 8948, 198, 2610, 525, 264, 10950, 17847, 13, 151645, 198, 151644, 872, 198, 3838, 374, 220, 16, 10, 16, 30, 151645, 198, 151644, 77091, 198]  # fmt: skip
+SINGLE_TURN_RESPONSE_TOKENS = [785, 4226, 374, 220, 17, 13]
+SINGLE_TURN_RESPONSE_LOG_PROBS = [-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125, -0.0390625]
+
+TWO_TURN_PROMPT = [{"role": "user", "content": MULTI_TURN_FIRST_PROMPT}]
+TWO_TURN_FIRST_RESPONSE_TOKENS = [10061, 752, 633, 279, 1042, 323, 9444, 1156, 624, 198, 27, 14449, 4356, 397, 5765, 606, 794, 330, 455, 14987, 497, 330, 14799, 794, 4687, 534, 522, 14449, 4356, 397, 27, 14449, 4356, 397, 5765, 606, 794, 330, 455, 54625, 497, 330, 14799, 794, 5765, 2588, 794, 330, 41, 1590, 45034, 534, 522, 14449, 4356, 29]  # fmt: skip
+TWO_TURN_TOOL_RESPONSE_TOKENS = [151645, 198, 151644, 11880, 320, 14449, 4356, 1754, 25, 6253, 931, 15, 8, 151645, 198, 5765, 3236, 794, 220, 17, 15, 17, 21, 534, 151644, 11880, 320, 14449, 4356, 1754, 25, 6253, 931, 16, 8, 151645, 198, 5765, 35264, 794, 481, 21, 15, 534, 151644, 77091, 198]  # fmt: skip
+TWO_TURN_SECOND_RESPONSE_TOKENS = [785, 4226, 374, 25, 220, 19, 17, 488, 220, 17, 15, 17, 21, 488, 481, 21, 15, 284, 220, 17, 15, 15, 23, 13]  # fmt: skip
 
 MULTI_TURN_EXTRA_ARGV = [
     "--generate-max-turns", "4",
