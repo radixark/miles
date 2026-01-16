@@ -12,9 +12,11 @@ from miles.utils.types import Sample
 
 
 # Make this an isolated function because users may want to compute their own
-async def compute_prompt_ids_from_sample(state, sample):
+async def compute_prompt_ids_from_sample(state, sample, tools=None):
+    prompt = sample.prompt
+
     if state.processor:
-        processor_output = state.processor(text=sample.prompt, **sample.multimodal_inputs)
+        processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
         # TODO shall we move it to other places? then can make this function immutable
         sample.multimodal_train_inputs = {
@@ -22,7 +24,10 @@ async def compute_prompt_ids_from_sample(state, sample):
         } or None
         return prompt_ids
     else:
-        return state.tokenizer.encode(sample.prompt, add_special_tokens=False)
+        if not isinstance(prompt, str):
+            prompt = state.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True, tools=tools)
+
+        return state.tokenizer.encode(prompt, add_special_tokens=False)
 
 
 # Thin wrapper to construct request payload.
