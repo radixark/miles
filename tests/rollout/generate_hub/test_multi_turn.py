@@ -56,13 +56,12 @@ def parse_sample_into_chunks(sample: Sample, tokenizer) -> list[SampleParsedChun
     idx = 0
     for mask_val, group in groupby(loss_mask):
         group_len = len(list(group))
-        chunk_tokens = response_tokens[idx : idx + group_len]
-        chunk_log_probs = log_probs[idx : idx + group_len]
+        sli = slice(idx, idx + group_len)
         chunks.append(
             SampleParsedChunk(
-                tokens_decoded_str=tokenizer.decode(chunk_tokens),
+                tokens_decoded_str=tokenizer.decode(response_tokens[sli]),
                 loss_mask_value=mask_val,
-                rollout_log_probs=tuple(chunk_log_probs),
+                rollout_log_probs=tuple(log_probs[sli]),
             )
         )
         idx += group_len
