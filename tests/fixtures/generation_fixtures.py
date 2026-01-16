@@ -60,7 +60,26 @@ class GenerateResult:
     requests: list[dict]
 
 
-async def call_generate(
+def run_generate(
+    env: GenerateEnv,
+    sample: Sample,
+    sampling_params: dict[str, Any] | None = None,
+    *,
+    variant: str = "single_turn",
+) -> GenerateResult:
+    env.mock_server.request_log.clear()
+    result_sample = run(
+        _call_generate(
+            env.args,
+            sample,
+            sampling_params or DEFAULT_SAMPLING_PARAMS,
+            variant=variant,
+        )
+    )
+    return GenerateResult(sample=result_sample, requests=list(env.mock_server.request_log))
+
+
+async def _call_generate(
     args: Namespace,
     sample: Sample,
     sampling_params: dict[str, Any],
@@ -72,25 +91,6 @@ async def call_generate(
     input = GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params.copy(), evaluation=False)
     output = await generate_fn(input)
     return output.samples
-
-
-def run_generate(
-    env: GenerateEnv,
-    sample: Sample,
-    sampling_params: dict[str, Any] | None = None,
-    *,
-    variant: str = "single_turn",
-) -> GenerateResult:
-    env.mock_server.request_log.clear()
-    result_sample = run(
-        call_generate(
-            env.args,
-            sample,
-            sampling_params or DEFAULT_SAMPLING_PARAMS,
-            variant=variant,
-        )
-    )
-    return GenerateResult(sample=result_sample, requests=list(env.mock_server.request_log))
 
 
 def make_args(
