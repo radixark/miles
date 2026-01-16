@@ -90,8 +90,8 @@ def multi_turn_tool_call_process_fn(prompt: str) -> ProcessResult:
         MULTI_TURN_SECOND_PROMPT: MULTI_TURN_SECOND_RESPONSE,
     }
 
-    for key, response in prompt_response_pairs.items():
-        if key in prompt:
+    for expect_prompt, response in prompt_response_pairs.items():
+        if prompt == expect_prompt:
             return ProcessResult(text=response, finish_reason="stop")
 
-    raise ValueError(f"Unexpected prompt, no matching key found. {prompt=}")
+    raise ValueError(f"Unexpected {prompt=}")
