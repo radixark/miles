@@ -148,7 +148,7 @@ def generation_env(request, variant):
     params = getattr(request, "param", {})
     args_kwargs = params.get("args_kwargs", {})
     model_name = args_kwargs.get("model_name", MODEL_NAME)
-    custom_generate_function_path = VARIANT_TO_GENERATE_FN_PATH.get(variant)
+    custom_generate_function_path = VARIANT_TO_GENERATE_FN_PATH[variant]
 
     def process_fn(_):
         x = params.get("process_fn_kwargs", {})
