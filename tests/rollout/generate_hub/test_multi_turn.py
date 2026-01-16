@@ -19,6 +19,10 @@ from tests.fixtures.generation_fixtures import GenerateEnv, generation_env
 
 _ = generation_env, SAMPLE_TOOLS, mock_execute_tool_function, multi_turn_tool_call_process_fn
 
+
+# ------------------------------------ fixtures and consts ----------------------------------------
+
+
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
@@ -150,6 +154,9 @@ TWO_TURN_TOOL_RESPONSE = (
     '<|im_start|>tool (tool_call_id: call00001)<|im_end|>\n{"temperature": -60}<|im_start|>assistant\n'
 )
 TWO_TURN_SECOND_RESPONSE = "The answer is: 42 + 2026 + -60 = 2008."
+
+
+# ------------------------------------ tests ----------------------------------------
 
 
 class TestBasicMultiTurn:
