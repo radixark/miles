@@ -65,7 +65,7 @@ class MilesRouter:
             self.app.add_middleware(middleware, router=self)
 
     def _setup_routes(self):
-        """Setup all the HTTP routes"""
+        """Setup all the HTTP routes except catch-all proxy"""
         # sglang-router api
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
@@ -201,28 +201,6 @@ class MilesRouter:
     async def list_workers(self, request: Request):
         """List all registered workers"""
         return {"urls": list(self.worker_request_counts.keys())}
-
-    async def retrieve_from_text(self, request: Request):
-        """Get token information from text input"""
-        body = await request.body()
-        payload = json.loads(body) if body else {}
-
-        text = payload.get("text", "")
-
-        # Use radix tree's retrieve_from_text method (no need to fetch weight version here)
-        token_ids, logp, loss_mask = self.radix_tree.retrieve_from_text(text, return_logprob=True)
-
-        # Handle the result based on whether logp was requested
-        result = {
-            "tokens": token_ids,  # token IDs
-            "response": text,  # The input text
-            "loss_mask": loss_mask,  # Loss mask for the tokens
-            "token_length": len(token_ids),
-            "loss_mask_length": len(loss_mask),
-            "rollout_logp": logp,
-        }
-
-        return result
 
     def _use_url(self):
         """Select worker URL with minimal active requests."""
