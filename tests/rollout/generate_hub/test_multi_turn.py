@@ -83,17 +83,18 @@ def expected_partial_sample(
     response: str,
     response_length: int,
     status: Sample.Status = Sample.Status.COMPLETED,
-    cached_tokens: int = 0,
-    prompt_tokens: int = 0,
 ) -> Sample:
     return Sample(
         prompt=prompt,
         response=response,
         response_length=response_length,
         status=status,
+        tokens=[],
+        loss_mask=[],
+        rollout_log_probs=[],
         weight_versions=[],
         spec_info=Sample.SpecInfo(),
-        prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=cached_tokens, total_prompt_tokens=prompt_tokens),
+        prefix_cache_info=Sample.PrefixCacheInfo(),
     )
 
 
@@ -106,7 +107,13 @@ def verify_sample(
     actual_chunks = parse_sample_into_chunks(actual, TOKENIZER)
     assert actual_chunks == expected_chunks
 
-    actual_partial = replace(deepcopy(actual), tokens=[], loss_mask=[], rollout_log_probs=[])
+    actual_partial = replace(
+        deepcopy(actual),
+        tokens=[],
+        loss_mask=[],
+        rollout_log_probs=[],
+        prefix_cache_info=Sample.PrefixCacheInfo(),
+    )
     assert actual_partial == expected_partial_sample
 
 
