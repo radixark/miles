@@ -17,7 +17,6 @@ from miles.rollout.generate_hub.generate_endpoint_wrapper import (
 from miles.rollout.generate_hub.tool_call_utils import execute_tool_calls, update_sample_with_tool_responses
 from miles.utils.http_utils import post
 from miles.utils.misc import load_function
-from miles.utils.types import Sample
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
