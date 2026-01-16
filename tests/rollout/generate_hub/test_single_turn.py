@@ -304,7 +304,7 @@ class TestMultimodal:
             if k not in ["input_ids", "attention_mask"]
         }
 
-        result = run_generate(variant, generation_env, make_sample(multimodal_inputs=multimodal_inputs))
+        result = _run_generate(variant, generation_env, _make_sample(multimodal_inputs=multimodal_inputs))
 
         assert result.requests == [
             expected_request(

@@ -4,7 +4,6 @@ from itertools import groupby
 import pytest
 from transformers import AutoTokenizer
 
-from miles.utils.async_utils import run
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
 from miles.utils.test_utils.mock_tools import (
     MULTI_TURN_FIRST_PROMPT,
@@ -13,7 +12,13 @@ from miles.utils.test_utils.mock_tools import (
     multi_turn_tool_call_process_fn,
 )
 from miles.utils.types import Sample
-from tests.fixtures.generation_fixtures import GenerateEnv, call_generate, generation_env
+from tests.fixtures.generation_fixtures import (
+    GenerateEnv,
+    GenerateResult,
+    generation_env,
+    make_sample,
+    run_generate,
+)
 
 _ = generation_env, SAMPLE_TOOLS, mock_execute_tool_function, multi_turn_tool_call_process_fn
 
