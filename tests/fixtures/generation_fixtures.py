@@ -72,9 +72,8 @@ async def call_generate(
     elif variant in VARIANT_TO_GENERATE_FN_PATH:
         generate_fn = load_function(VARIANT_TO_GENERATE_FN_PATH[variant])
         state = GenerateState(args)
-        output = await generate_fn(
-            GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params.copy(), evaluation=False)
-        )
+        input = GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params.copy(), evaluation=False)
+        output = await generate_fn(input)
         return output.samples
     else:
         raise NotImplementedError(f"Unknown variant: {variant}")
