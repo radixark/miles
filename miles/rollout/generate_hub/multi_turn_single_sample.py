@@ -73,7 +73,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             break
 
         # TODO decide execute_tool_function API
-        out = await execute_tool_function(cur_response)
+        out = await execute_tool_function(TODO)
         next_obs, done = out["next_obs"], out["done"]
 
         assert next_obs != "", "Next observation should not be empty."
