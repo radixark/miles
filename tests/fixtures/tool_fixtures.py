@@ -1,5 +1,3 @@
-import json
-
 SAMPLE_TOOLS = [
     {
         "type": "function",
@@ -27,13 +25,21 @@ SAMPLE_TOOLS = [
     },
 ]
 
+def _get_year(params: dict) -> dict:
+    assert len(params) == 0
+    return {"year": 2025}
+
+
+def _get_temperature(params: dict) -> dict:
+    assert params.get("location") == "Mars"
+    return {"temperature": 25}
+
+
 TOOL_EXECUTORS = {
-    "get_year": lambda params: {"year": 2025},
-    "get_temperature": lambda params: {"temperature": 25, "location": params.get("location", "unknown")},
+    "get_year": _get_year,
+    "get_temperature": _get_temperature,
 }
 
 
-def execute_tool_call(tool_call: dict) -> dict:
-    name = tool_call["name"]
-    params = json.loads(tool_call["parameters"]) if isinstance(tool_call["parameters"], str) else tool_call["parameters"]
+def execute_tool_call(name: str, params: dict) -> dict:
     return TOOL_EXECUTORS[name](params)

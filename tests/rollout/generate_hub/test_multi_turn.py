@@ -18,7 +18,7 @@ def make_first_turn_response() -> str:
         '{"name": "get_year", "arguments": {}}\n'
         "</tool_call>\n"
         "<tool_call>\n"
-        '{"name": "get_temperature", "arguments": {"location": "Shanghai"}}\n'
+        '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
         "</tool_call>"
     )
 
@@ -27,7 +27,7 @@ def make_second_turn_response(i: int) -> str:
     result = i + 2025 + 25
     return (
         "Now I have the information I need.\n"
-        "The current year is 2025, and the temperature in Shanghai is 25 degrees.\n"
+        "The current year is 2025, and the temperature on Mars is 25 degrees.\n"
         f"So the calculation is: {i} + 2025 + 25 = {result}.\n"
         f"The answer is {result}."
     )
@@ -50,19 +50,12 @@ def make_multi_turn_process_fn(i: int):
 
 class TestToolExecution:
     def test_execute_get_year(self):
-        tool_call = {"name": "get_year", "parameters": "{}"}
-        result = execute_tool_call(tool_call)
+        result = execute_tool_call("get_year", {})
         assert result == {"year": 2025}
 
     def test_execute_get_temperature(self):
-        tool_call = {"name": "get_temperature", "parameters": '{"location": "Shanghai"}'}
-        result = execute_tool_call(tool_call)
-        assert result == {"temperature": 25, "location": "Shanghai"}
-
-    def test_execute_with_dict_params(self):
-        tool_call = {"name": "get_temperature", "parameters": {"location": "Beijing"}}
-        result = execute_tool_call(tool_call)
-        assert result == {"temperature": 25, "location": "Beijing"}
+        result = execute_tool_call("get_temperature", {"location": "Mars"})
+        assert result == {"temperature": 25}
 
 
 class TestToolCallParsing:
@@ -80,7 +73,7 @@ class TestToolCallParsing:
         assert calls[0].name == "get_year"
         assert calls[0].parameters == "{}"
         assert calls[1].name == "get_temperature"
-        assert json.loads(calls[1].parameters) == {"location": "Shanghai"}
+        assert json.loads(calls[1].parameters) == {"location": "Mars"}
 
     def test_parse_no_tool_calls(self, parser):
         response = make_second_turn_response(10)
