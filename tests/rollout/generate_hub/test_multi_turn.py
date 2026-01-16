@@ -127,11 +127,12 @@ class TestEndToEndToolFlow:
         assert len(calls) == 2
         tool_results = []
         for call in calls:
-            result = execute_tool_call({"name": call.name, "parameters": call.parameters})
+            params = json.loads(call.parameters) if call.parameters else {}
+            result = execute_tool_call(call.name, params)
             tool_results.append({"name": call.name, "result": result})
 
         assert tool_results[0] == {"name": "get_year", "result": {"year": 2025}}
-        assert tool_results[1] == {"name": "get_temperature", "result": {"temperature": 25, "location": "Shanghai"}}
+        assert tool_results[1] == {"name": "get_temperature", "result": {"temperature": 25}}
 
         tool_response_str = "\n".join(json.dumps(r["result"]) for r in tool_results)
         second_response = process_fn(tool_response_str)
