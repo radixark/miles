@@ -48,26 +48,27 @@ def execute_tool_call(name: str, params: dict) -> dict:
     return TOOL_EXECUTORS[name](params)
 
 
+# TODO incorrect
+MULTI_TURN_FIRST_PROMPT = "What is 42 + year + temperature?"
+MULTI_TURN_FIRST_RESPONSE = (
+    "Let me get the year and temperature first.\n"
+    "<tool_call>\n"
+    '{"name": "get_year", "arguments": {}}\n'
+    "</tool_call>\n"
+    "<tool_call>\n"
+    '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
+    "</tool_call>"
+)
+
+# TODO incorrect
+MULTI_TURN_SECOND_PROMPT = '{"year": 2026}'
+MULTI_TURN_SECOND_RESPONSE = "The answer is: 42 + 2026 + -60 = 2008."
+
+
 def multi_turn_tool_call_process_fn(prompt: str) -> ProcessResult:
-    # TODO incorrect
-    first_prompt = "What is 42 + year + temperature?"
-    first_response = (
-        "Let me get the year and temperature first.\n"
-        "<tool_call>\n"
-        '{"name": "get_year", "arguments": {}}\n'
-        "</tool_call>\n"
-        "<tool_call>\n"
-        '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
-        "</tool_call>"
-    )
-
-    # TODO incorrect
-    second_prompt = '{"year": 2026}'
-    second_response = "The answer is: 42 + 2026 + -60 = 2008."
-
     prompt_response_pairs = {
-        first_prompt: first_response,
-        second_prompt: second_response,
+        MULTI_TURN_FIRST_PROMPT: MULTI_TURN_FIRST_RESPONSE,
+        MULTI_TURN_SECOND_PROMPT: MULTI_TURN_SECOND_RESPONSE,
     }
 
     for key, response in prompt_response_pairs.items():
