@@ -1,7 +1,8 @@
 """
 Wrapper to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
-from typing import Any, Optional
+
+from typing import Any
 
 import numpy as np
 import pybase64
@@ -31,7 +32,7 @@ async def compute_request_payload(
     args,
     input_ids: list[int],
     sampling_params: dict,
-    multimodal_inputs: Optional[dict] = None,
+    multimodal_inputs: dict | None = None,
 ) -> dict[str, Any]:
     payload = {
         "input_ids": input_ids,
