@@ -103,7 +103,6 @@ def make_args(
     extra_argv: list[str] | None = None,
     custom_generate_function_path: str | None = None,
     generate_max_turns: int = 16,
-    generate_max_tool_calls: int = 16,
     generate_tool_specs_path: str = "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
     generate_tool_call_parser: str = "qwen25",
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
@@ -143,7 +142,6 @@ def make_args(
 
     if variant == "multi_turn_single_sample":
         argv.extend(["--generate-max-turns", str(generate_max_turns)])
-        argv.extend(["--generate-max-tool-calls", str(generate_max_tool_calls)])
         argv.extend(["--generate-tool-specs-path", generate_tool_specs_path])
         argv.extend(["--generate-tool-call-parser", generate_tool_call_parser])
         argv.extend(["--generate-execute-tool-function-path", generate_execute_tool_function_path])
