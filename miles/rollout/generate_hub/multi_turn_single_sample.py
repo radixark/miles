@@ -4,7 +4,6 @@ Simple multi-turn generation with tool calling.
 
 import argparse
 import json
-from typing import Any
 
 from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool

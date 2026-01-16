@@ -8,7 +8,6 @@ from transformers import AutoTokenizer
 
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
 from miles.utils.test_utils.mock_tools import (
-    MULTI_TURN_FIRST_PROMPT,
     MULTI_TURN_FIRST_RESPONSE,
     MULTI_TURN_SECOND_RESPONSE,
     SAMPLE_TOOLS,
@@ -127,13 +126,13 @@ SINGLE_TURN_RESPONSE = "The answer is 2."
 TWO_TURN_USER_QUESTION = "What is 42 + year + temperature?"
 TWO_TURN_PROMPT = [{"role": "user", "content": TWO_TURN_USER_QUESTION}]
 TWO_TURN_TOOL_RESPONSE = (
-    '<|im_start|>user\n'
-    '<tool_response>\n'
+    "<|im_start|>user\n"
+    "<tool_response>\n"
     '{"year": 2026}\n'
-    '</tool_response>\n'
-    '<tool_response>\n'
+    "</tool_response>\n"
+    "<tool_response>\n"
     '{"temperature": -60}\n'
-    '</tool_response><|im_end|>\n'
+    "</tool_response><|im_end|>\n"
 )
 
 

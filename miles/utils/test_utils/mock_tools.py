@@ -51,24 +51,24 @@ def execute_tool_call(name: str, params: dict) -> str:
 
 
 MULTI_TURN_FIRST_PROMPT = (
-    '<|im_start|>system\n'
-    '# Tools\n'
-    '\n'
-    'You may call one or more functions to assist with the user query.\n'
-    '\n'
-    'You are provided with function signatures within <tools></tools> XML tags:\n'
-    '<tools>\n'
+    "<|im_start|>system\n"
+    "# Tools\n"
+    "\n"
+    "You may call one or more functions to assist with the user query.\n"
+    "\n"
+    "You are provided with function signatures within <tools></tools> XML tags:\n"
+    "<tools>\n"
     '{"type": "function", "function": {"name": "get_year", "description": "Get current year", "parameters": {"type": "object", "properties": {}, "required": []}}}\n'
     '{"type": "function", "function": {"name": "get_temperature", "description": "Get temperature for a location", "parameters": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}}}\n'
-    '</tools>\n'
-    '\n'
-    'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n'
-    '<tool_call>\n'
+    "</tools>\n"
+    "\n"
+    "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n"
+    "<tool_call>\n"
     '{"name": <function-name>, "arguments": <args-json-object>}\n'
-    '</tool_call><|im_end|>\n'
-    '<|im_start|>user\n'
-    'What is 42 + year + temperature?<|im_end|>\n'
-    '<|im_start|>assistant\n'
+    "</tool_call><|im_end|>\n"
+    "<|im_start|>user\n"
+    "What is 42 + year + temperature?<|im_end|>\n"
+    "<|im_start|>assistant\n"
 )
 MULTI_TURN_FIRST_RESPONSE = (
     "Let me get the year and temperature first.\n"
@@ -81,38 +81,38 @@ MULTI_TURN_FIRST_RESPONSE = (
 )
 
 MULTI_TURN_SECOND_PROMPT = (
-    '<|im_start|>system\n'
-    '# Tools\n'
-    '\n'
-    'You may call one or more functions to assist with the user query.\n'
-    '\n'
-    'You are provided with function signatures within <tools></tools> XML tags:\n'
-    '<tools>\n'
+    "<|im_start|>system\n"
+    "# Tools\n"
+    "\n"
+    "You may call one or more functions to assist with the user query.\n"
+    "\n"
+    "You are provided with function signatures within <tools></tools> XML tags:\n"
+    "<tools>\n"
     '{"type": "function", "function": {"name": "get_year", "description": "Get current year", "parameters": {"type": "object", "properties": {}, "required": []}}}\n'
     '{"type": "function", "function": {"name": "get_temperature", "description": "Get temperature for a location", "parameters": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}}}\n'
-    '</tools>\n'
-    '\n'
-    'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n'
-    '<tool_call>\n'
+    "</tools>\n"
+    "\n"
+    "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n"
+    "<tool_call>\n"
     '{"name": <function-name>, "arguments": <args-json-object>}\n'
-    '</tool_call><|im_end|>\n'
-    '<|im_start|>user\n'
-    'What is 42 + year + temperature?<|im_end|>\n'
-    '<|im_start|>assistant\n'
-    'Let me get the year and temperature first.\n'
-    '<tool_call>\n'
+    "</tool_call><|im_end|>\n"
+    "<|im_start|>user\n"
+    "What is 42 + year + temperature?<|im_end|>\n"
+    "<|im_start|>assistant\n"
+    "Let me get the year and temperature first.\n"
+    "<tool_call>\n"
     '{"name": "get_year", "arguments": {}}\n'
-    '</tool_call>\n'
-    '<tool_call>\n'
+    "</tool_call>\n"
+    "<tool_call>\n"
     '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
-    '</tool_call>'
-    '<|im_start|>user\n'
-    '<tool_response>\n'
+    "</tool_call>"
+    "<|im_start|>user\n"
+    "<tool_response>\n"
     '{"year": 2026}\n'
-    '</tool_response>\n'
-    '<tool_response>\n'
+    "</tool_response>\n"
+    "<tool_response>\n"
     '{"temperature": -60}\n'
-    '</tool_response><|im_end|>\n'
+    "</tool_response><|im_end|>\n"
 )
 MULTI_TURN_SECOND_RESPONSE = "The answer is: 42 + 2026 + -60 = 2008."
 
