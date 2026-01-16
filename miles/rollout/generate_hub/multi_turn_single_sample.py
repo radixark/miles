@@ -81,6 +81,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         sample.loss_mask += [1] * len(new_response_tokens)
 
+        sample.update_from_meta_info(args, output["meta_info"])
+
         finish_reason_type = output["meta_info"]["finish_reason"]["type"]
         if finish_reason_type in ("abort", "length"):
             break
@@ -92,8 +94,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
 
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
-
-        sample.update_from_meta_info(args, output["meta_info"])
 
     return GenerateFnOutput(samples=sample)
 
