@@ -94,6 +94,7 @@ def verify_sample(
     actual: Sample,
     *,
     expected_chunks: list[SampleParsedChunk],
+    expected_partial_sample: Sample,
     prompt: list[dict],
     response: str,
     response_length: int,
@@ -103,8 +104,7 @@ def verify_sample(
     assert actual_chunks == expected_chunks
 
     actual_partial = replace(deepcopy(actual), tokens=[], loss_mask=[], rollout_log_probs=[])
-    expected_partial = expected_partial_sample(prompt=prompt, response=response, response_length=response_length, status=status)
-    assert actual_partial == expected_partial
+    assert actual_partial == expected_partial_sample
 
 
 MULTI_TURN_GENERATE_FN_PATH = "miles.rollout.generate_hub.multi_turn_single_sample:generate"
@@ -150,9 +150,11 @@ class TestBasicMultiTurn:
                     rollout_log_probs=tuple(-1 / 128 * i for i in range(6)),
                 ),
             ],
-            prompt=SINGLE_TURN_PROMPT,
-            response=SINGLE_TURN_RESPONSE,
-            response_length=6,
+            expected_partial_sample=expected_partial_sample(
+                prompt=SINGLE_TURN_PROMPT,
+                response=SINGLE_TURN_RESPONSE,
+                response_length=6,
+            ),
         )
 
     @pytest.mark.parametrize(
@@ -185,7 +187,9 @@ class TestBasicMultiTurn:
                     rollout_log_probs=tuple(-1 / 128 * i for i in range(25)),
                 ),
             ],
-            prompt=TWO_TURN_PROMPT,
-            response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE + MULTI_TURN_SECOND_RESPONSE,
-            response_length=57 + 47 + 25,
+            expected_partial_sample=expected_partial_sample(
+                prompt=TWO_TURN_PROMPT,
+                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE + MULTI_TURN_SECOND_RESPONSE,
+                response_length=57 + 47 + 25,
+            ),
         )
