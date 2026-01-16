@@ -136,7 +136,7 @@ async def _execute_tool_calls(parsed_tool_calls, execute_one) -> list[dict]:
     tool_messages = []
     for call in parsed_tool_calls:
         params = json.loads(call.parameters) if call.parameters else {}
-        result = execute_one(call.name, params)
+        result = await execute_one(call.name, params)
         tool_messages.append(
             {
                 "role": "tool",
