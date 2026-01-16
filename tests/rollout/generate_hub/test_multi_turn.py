@@ -73,6 +73,7 @@ def verify_sample(
     *,
     expected_chunks: list[SampleParsedChunk],
     prompt: list[dict],
+    response_length: int,
     status: Sample.Status = Sample.Status.COMPLETED,
 ):
     actual_chunks = parse_sample_into_chunks(actual, TOKENIZER)
@@ -80,10 +81,11 @@ def verify_sample(
 
     from copy import deepcopy
     from dataclasses import replace
-    actual_copy = replace(deepcopy(actual), tokens=[], response="", response_length=0, loss_mask=[], rollout_log_probs=[])
+    actual_copy = replace(deepcopy(actual), tokens=[], response="", loss_mask=[], rollout_log_probs=[])
 
     expected = Sample(
         prompt=prompt,
+        response_length=response_length,
         status=status,
         weight_versions=[],
         spec_info=Sample.SpecInfo(),
