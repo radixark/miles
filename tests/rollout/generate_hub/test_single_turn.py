@@ -175,8 +175,6 @@ class TestFinishReason:
         indirect=["generation_env"],
     )
     def test_finish_reason_sets_status(self, variant, generation_env, expected_status):
-        if variant == "multi_turn_single_sample" and expected_status == Sample.Status.ABORTED:
-            pytest.skip("TODO: support")
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
         assert result.sample == expected_sample(variant, status=expected_status)
@@ -194,8 +192,6 @@ class TestRoutedExperts:
         indirect=True,
     )
     def test_routed_experts_enabled_and_parsed(self, variant, generation_env):
-        if variant == "multi_turn_single_sample":
-            pytest.skip("TODO: support")
         num_layers, moe_router_topk = 2, 4
         num_tokens = len(PROMPT_TOKENS) + len(RESPONSE_TOKENS)
         routed_experts_array = np.arange((num_tokens - 1) * num_layers * moe_router_topk, dtype=np.int32).reshape(

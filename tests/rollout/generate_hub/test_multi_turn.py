@@ -210,7 +210,6 @@ class TestExitConditions:
             _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
     def test_abort_preserves_content(self, variant, generation_env):
-        pytest.skip("TODO: support")
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=SINGLE_TURN_RESPONSE, finish_reason="abort"
         )
