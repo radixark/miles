@@ -140,7 +140,7 @@ async def _execute_tool_calls(parsed_tool_calls, execute_one) -> list[dict]:
         tool_messages.append(
             {
                 "role": "tool",
-                "tool_call_id": f"call{call.tool_index:05d}",
+                "tool_call_id": call.id,
                 "content": json.dumps(result),
                 "name": call.name,
             }
