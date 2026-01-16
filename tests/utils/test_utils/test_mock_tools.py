@@ -4,7 +4,7 @@ YEAR = 2026
 TEMPERATURE = -60
 
 
-class TestToolExecution:
+class TestExecuteToolCall:
     def test_execute_get_year(self):
         result = execute_tool_call("get_year", {})
         assert result == {"year": YEAR}

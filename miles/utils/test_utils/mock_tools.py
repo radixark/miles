@@ -1,3 +1,5 @@
+from miles.utils.test_utils.mock_sglang_server import ProcessResult
+
 SAMPLE_TOOLS = [
     {
         "type": "function",
@@ -45,8 +47,6 @@ TOOL_EXECUTORS = {
 def execute_tool_call(name: str, params: dict) -> dict:
     return TOOL_EXECUTORS[name](params)
 
-
-from miles.utils.test_utils.mock_sglang_server import ProcessResult
 
 MULTI_TURN_FIRST_PROMPT = "What is 42 + year + temperature?"
 MULTI_TURN_FIRST_RESPONSE = (
