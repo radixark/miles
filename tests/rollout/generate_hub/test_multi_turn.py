@@ -40,11 +40,6 @@ MULTI_TURN_EXTRA_ARGV = [
     "miles.utils.test_utils.mock_tools:mock_execute_tool_function",
 ]
 
-VARIANT_TO_GENERATE_FN_PATH = {
-    "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn_single_sample:generate",
-}
-
-
 @pytest.fixture(params=["multi_turn_single_sample"])
 def variant(request):
     return request.param
@@ -113,7 +108,7 @@ def verify_sample(
 
 
 def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_params: dict | None = None):
-    return run_generate(env, sample, sampling_params, generate_fn_path=VARIANT_TO_GENERATE_FN_PATH[variant])
+    return run_generate(env, sample, sampling_params, variant=variant)
 
 
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
