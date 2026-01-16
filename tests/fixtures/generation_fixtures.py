@@ -1,3 +1,7 @@
+"""
+Fixtures to test custom-generate-function
+"""
+
 from argparse import Namespace
 from dataclasses import dataclass
 from typing import Any
