@@ -154,8 +154,9 @@ def make_args(
             argv.extend(["--generate-execute-tool-function-path", generate_execute_tool_function_path])
         if rollout_max_context_len is not None:
             argv.extend(["--rollout-max-context-len", str(rollout_max_context_len)])
+
     if extra_argv:
-            argv.extend(extra_argv)
+        argv.extend(extra_argv)
 
     from miles.utils.arguments import parse_args
 
