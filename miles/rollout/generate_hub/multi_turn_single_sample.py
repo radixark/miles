@@ -78,6 +78,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         response_token_ids += cur_response_token_ids
         loss_masks += [1] * len(cur_response_token_ids)
 
+        # Set status
+        sample.update_from_meta_info(args, output["meta_info"])
+
         finish_reason_type = output["meta_info"]["finish_reason"]["type"]
         if finish_reason_type in ("abort", "length"):
             break
@@ -105,9 +108,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     sample.response_length = len(response_token_ids)
     sample.response = response
     sample.loss_mask = loss_masks
-
-    # Set status
-    sample.update_from_meta_info(args, output["meta_info"])
 
     return GenerateFnOutput(samples=sample)
 
