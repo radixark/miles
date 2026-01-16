@@ -42,7 +42,7 @@ def expected_request(
         "sampling_params": sampling_params or SAMPLING_PARAMS,
         "return_logprob": True,
     }
-    if variant == "single_turn" or return_routed_experts:
+    if variant in ("single_turn", "multi_turn_single_sample") or return_routed_experts:
         result["return_routed_experts"] = return_routed_experts
     if image_data is not None:
         result["image_data"] = image_data
