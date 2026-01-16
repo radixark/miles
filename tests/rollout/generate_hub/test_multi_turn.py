@@ -120,8 +120,13 @@ SINGLE_TURN_RESPONSE = "The answer is 2."
 TWO_TURN_USER_QUESTION = "What is 42 + year + temperature?"
 TWO_TURN_PROMPT = [{"role": "user", "content": TWO_TURN_USER_QUESTION}]
 TWO_TURN_TOOL_RESPONSE = (
-    '<|im_end|>\n<|im_start|>tool (tool_call_id: call00000)<|im_end|>\n{"year": 2026}'
-    '<|im_start|>tool (tool_call_id: call00001)<|im_end|>\n{"temperature": -60}<|im_start|>assistant\n'
+    '<|im_start|>user\n'
+    '<tool_response>\n'
+    '{"year": 2026}\n'
+    '</tool_response>\n'
+    '<tool_response>\n'
+    '{"temperature": -60}\n'
+    '</tool_response><|im_end|>\n'
 )
 
 
@@ -175,22 +180,22 @@ class TestBasicMultiTurn:
                 SampleParsedChunk(
                     tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
                     loss_mask_value=1,
-                    rollout_log_probs=[-1 / 128 * i for i in range(57)],
+                    rollout_log_probs=[-1 / 128 * i for i in range(45)],
                 ),
                 SampleParsedChunk(
                     tokens_decoded_str=TWO_TURN_TOOL_RESPONSE,
                     loss_mask_value=0,
-                    rollout_log_probs=[0.0] * 47,
+                    rollout_log_probs=[0.0] * 28,
                 ),
                 SampleParsedChunk(
                     tokens_decoded_str=MULTI_TURN_SECOND_RESPONSE,
                     loss_mask_value=1,
-                    rollout_log_probs=[-1 / 128 * i for i in range(25)],
+                    rollout_log_probs=[-1 / 128 * i for i in range(24)],
                 ),
             ],
             expected_partial_sample=expected_partial_sample(
                 prompt=TWO_TURN_PROMPT,
                 response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE + MULTI_TURN_SECOND_RESPONSE,
-                response_length=57 + 47 + 25,
+                response_length=45 + 28 + 24,
             ),
         )
