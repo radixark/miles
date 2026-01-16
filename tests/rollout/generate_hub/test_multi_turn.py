@@ -46,7 +46,7 @@ class SampleParsedChunk:
     rollout_log_probs: tuple[float, ...]
 
 
-def parse_sample_chunks(sample: Sample, tokenizer) -> list[SampleParsedChunk]:
+def parse_sample_into_chunks(sample: Sample, tokenizer) -> list[SampleParsedChunk]:
     prompt_len = len(sample.tokens) - sample.response_length
     response_tokens = sample.tokens[prompt_len:]
     loss_mask = sample.loss_mask
@@ -76,7 +76,7 @@ def verify_sample(
     prompt: list[dict],
     status: Sample.Status = Sample.Status.COMPLETED,
 ):
-    actual_chunks = parse_sample_chunks(actual, TOKENIZER)
+    actual_chunks = parse_sample_into_chunks(actual, TOKENIZER)
     assert actual_chunks == expected_chunks
 
     expected_other_fields = Sample(
