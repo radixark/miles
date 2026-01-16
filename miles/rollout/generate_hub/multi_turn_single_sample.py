@@ -41,10 +41,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
 
-    assert sample.tokens == []
-    assert sample.response == ""
-    assert sample.response_length == 0
-    assert sample.loss_mask is None
     sample.loss_mask = []
     sample.tokens = prompt_tokens_ids.copy()
 
