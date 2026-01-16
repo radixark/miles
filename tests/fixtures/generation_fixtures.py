@@ -100,6 +100,7 @@ def make_args(
     sglang_speculative_algorithm: str | None = None,
     model_name: str = MODEL_NAME,
     extra_argv: list[str] | None = None,
+    custom_generate_function_path: str | None = None,
 ) -> Namespace:
     argv = [
         "pytest",
@@ -130,6 +131,8 @@ def make_args(
         argv.append("--use-rollout-routing-replay")
     if sglang_speculative_algorithm:
         argv.extend(["--sglang-speculative-algorithm", sglang_speculative_algorithm])
+    if custom_generate_function_path:
+        argv.extend(["--custom-generate-function-path", custom_generate_function_path])
     if extra_argv:
         argv.extend(extra_argv)
 
