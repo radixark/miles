@@ -1,3 +1,4 @@
+# TODO may rename to rollout_fixutres.py to be aligned
 import json
 from argparse import Namespace
 from collections.abc import Iterator
@@ -93,6 +94,7 @@ def _write_jsonl(path: str, rows: list[dict]) -> None:
 DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
+# TODO may rename to rollout_env
 @pytest.fixture
 def rollout_integration_env(tmp_path, request) -> IntegrationEnv:
     config = request.param
