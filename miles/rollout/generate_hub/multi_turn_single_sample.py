@@ -74,8 +74,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         new_response_logprobs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
 
         sample.tokens += new_response_tokens
-        sample.response += output["text"]
         sample.response_length += len(new_response_tokens)
+        sample.response += output["text"]
 
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = []
