@@ -66,11 +66,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         output = await post(url, payload)
 
-        # Handle abort
-        if output["meta_info"]["finish_reason"]["type"] == "abort":
-            sample.status = Sample.Status.ABORTED
-            return GenerateFnOutput(samples=sample)
-
         cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
         cur_response = tokenizer.decode(cur_response_token_ids)
         cur_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
@@ -82,8 +77,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         response_token_ids += cur_response_token_ids
         loss_masks += [1] * len(cur_response_token_ids)
 
-        # Check length limit
-        if output["meta_info"]["finish_reason"]["type"] == "length":
+        finish_reason_type = output["meta_info"]["finish_reason"]["type"]
+        if finish_reason_type in ("abort", "length"):
             break
 
         _, parsed_tool_calls = tool_call_parser.parse_non_stream(cur_response)
