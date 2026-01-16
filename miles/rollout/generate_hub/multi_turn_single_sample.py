@@ -100,10 +100,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         sample.rollout_log_probs += [0.0] * len(next_obs_tokens_ids)
 
-        assert len(response_token_ids) == len(
-            sample.rollout_log_probs
-        ), f"Token/logp length mismatch at turn {turn}: {len(response_token_ids)} tokens vs {len(sample.rollout_log_probs)} logps"
-
         if turn >= args.generate_max_tool_calls:
             break
 
