@@ -1,0 +1,132 @@
+import asyncio
+import copy
+import logging
+from argparse import Namespace
+from typing import Any
+
+from tqdm import tqdm
+
+from miles.rollout.base_types import RolloutFnEvalOutput
+from miles.rollout.modular_rollout.orchestration_common import generate_and_rm
+from miles.utils.data import Dataset
+from miles.utils.eval_config import EvalDatasetConfig
+from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
+
+EVAL_PROMPT_DATASET = {}
+
+
+async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict[str, list[Any]]], list[list[Sample]]]:
+    assert not args.group_rm, "Group RM is not supported for eval rollout"
+
+    coros = []
+    for dataset_cfg in getattr(args, "eval_datasets", []) or []:
+        coros.append(eval_rollout_single_dataset(args, rollout_id, dataset_cfg))
+    results_list = await asyncio.gather(*coros)
+    results = {}
+    for r in results_list:
+        results.update(r)
+    return RolloutFnEvalOutput(data=results), []
+
+
+async def eval_rollout_single_dataset(
+    args: Namespace, rollout_id: int, dataset_cfg: EvalDatasetConfig
+) -> dict[str, dict[str, list[Any]]]:
+    """An example to implement the eval_rollout function for an rule based rm rollout generation.
+
+    Args:
+        args: the whole args
+        rollout_id: int, the id of the rollout, used for deterministic data generation
+        dataset_cfg: configuration of the dataset
+    """
+    assert not args.group_rm, "Group RM is not supported for eval rollout"
+
+    global EVAL_PROMPT_DATASET
+
+    cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template)
+    if cache_key not in EVAL_PROMPT_DATASET:
+        tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+        EVAL_PROMPT_DATASET[cache_key] = Dataset(
+            path=dataset_cfg.path,
+            tokenizer=tokenizer,
+            processor=processor,
+            max_length=args.eval_max_prompt_len,
+            prompt_key=dataset_cfg.input_key,
+            label_key=dataset_cfg.label_key,
+            multimodal_keys=args.multimodal_keys,
+            metadata_key=dataset_cfg.metadata_key,
+            tool_key=dataset_cfg.tool_key,
+            apply_chat_template=args.apply_chat_template,
+            apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+        )
+    dataset = EVAL_PROMPT_DATASET[cache_key]
+
+    base_sampling_params = dict(
+        temperature=dataset_cfg.temperature,
+        top_p=dataset_cfg.top_p,
+        top_k=dataset_cfg.top_k,
+        max_new_tokens=dataset_cfg.max_response_len,
+        stop=args.rollout_stop,
+        stop_token_ids=args.rollout_stop_token_ids,
+        skip_special_tokens=args.rollout_skip_special_tokens,
+        no_stop_trim=True,
+        spaces_between_special_tokens=False,
+    )
+
+    tasks = []
+    # do multiple samples for eval prompts
+    sample_index = 0
+    for _i, prompt_sample in enumerate(dataset.samples):
+        for j in range(dataset_cfg.n_samples_per_eval_prompt):
+            # use the same prompt for multiple samples
+            sample = copy.deepcopy(prompt_sample)
+            sample.index = sample_index
+            sample_index += 1
+            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
+            sampling_params = base_sampling_params
+            if getattr(args, "sglang_enable_deterministic_inference", False):
+                sampling_params = base_sampling_params.copy()
+                sampling_params["sampling_seed"] = args.rollout_seed + j
+            tasks.append(
+                asyncio.create_task(
+                    generate_and_rm(
+                        args,
+                        sample,
+                        sampling_params=sampling_params,
+                        evaluation=True,
+                    )
+                )
+            )
+
+    data = []
+    do_print = True
+    pbar = tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
+    for coro in asyncio.as_completed(tasks):
+        sample = await coro
+        if do_print:
+            logger.info(
+                "eval_rollout_single_dataset example data: "
+                f"{[str(sample.prompt) + sample.response]} "
+                f"reward={sample.reward}"
+            )
+            do_print = False
+        if isinstance(sample, list):
+            data.extend(sample)
+        else:
+            data.append(sample)
+        pbar.update(1)
+    pbar.close()
+
+    data.sort(key=lambda sample: sample.index)
+
+    reward_key = args.eval_reward_key or args.reward_key
+    return {
+        dataset_cfg.name: {
+            "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
+            "truncated": [sample.status == Sample.Status.TRUNCATED for sample in data],
+            "samples": data,
+        }
+    }
