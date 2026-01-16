@@ -97,14 +97,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         response_token_ids += next_obs_tokens_ids
         loss_masks += [0] * len(next_obs_tokens_ids)
 
-        # Add dummy log probs for observation tokens (they won't be used due to loss_mask=0)
-        # Check if maximum tool call count reached
-        if sample.rollout_log_probs is not None:
-            sample.rollout_log_probs += [0.0] * len(next_obs_tokens_ids)
+        sample.rollout_log_probs += [0.0] * len(next_obs_tokens_ids)
 
-            assert len(response_token_ids) == len(
-                sample.rollout_log_probs
-            ), f"Token/logp length mismatch at turn {turn}: {len(response_token_ids)} tokens vs {len(sample.rollout_log_probs)} logps"
+        assert len(response_token_ids) == len(
+            sample.rollout_log_probs
+        ), f"Token/logp length mismatch at turn {turn}: {len(response_token_ids)} tokens vs {len(sample.rollout_log_probs)} logps"
 
         if turn >= args.generate_max_tool_calls:
             break
