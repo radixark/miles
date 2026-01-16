@@ -57,11 +57,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         # ----------------------- Call inference endpoint -------------------------
 
-        payload = compute_request_payload(
-            args,
-            input_ids=sample.tokens,
-            sampling_params=input.sampling_params,
-        )
+        payload = compute_request_payload(args, sample.tokens, input.sampling_params)
 
         output = await post(url, payload)
 
