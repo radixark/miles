@@ -5,7 +5,6 @@ This file is in preview, and will be further refined and optimized.
 import re
 from dataclasses import dataclass
 from typing import Literal
-from pathlib import Path
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -282,7 +281,7 @@ def train(args: ScriptArgs):
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
         "--disable-weights-backuper "
-        "--model-name deepseekv32 " # for mbridge load
+        "--model-name deepseekv32 "  # for mbridge load
         "--train-memory-margin-bytes 1073741824 "
         # "--check-weight-update-equal "
         "--qkv-format bshd "

@@ -202,11 +202,17 @@ def _named_params_and_buffers_global(
                 expert_idx = int(expert_idx) + expert_offset
                 yield f"module.module.mtp.layers.{layer_idx}.transformer_layer.mlp.experts.{rest}.weight{expert_idx}", param
                 continue
-            
+
             # TODO: a hacking here, need to be cleaner
-            duplicated = ['indexer.linear_weights_proj', 'indexer.linear_wk', 'indexer.linear_wq_b', 'linear_q_down_proj', 'linear_kv_down_proj']
+            duplicated = [
+                "indexer.linear_weights_proj",
+                "indexer.linear_wk",
+                "indexer.linear_wq_b",
+                "linear_q_down_proj",
+                "linear_kv_down_proj",
+            ]
             if any(dup in name for dup in duplicated):
-                param.parallel_mode = 'duplicated' 
+                param.parallel_mode = "duplicated"
 
             layer_idx, rest = match.groups()
             layer_idx = int(layer_idx) + layer_offset
