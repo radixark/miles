@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from itertools import groupby
+from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 from transformers import AutoTokenizer
@@ -97,11 +99,9 @@ def verify_sample(
     actual_chunks = parse_sample_into_chunks(actual, TOKENIZER)
     assert actual_chunks == expected_chunks
 
-    from copy import deepcopy
-    from dataclasses import replace
-    actual_copy = replace(deepcopy(actual), tokens=[], response="", loss_mask=[], rollout_log_probs=[])
-    expected = expected_partial_sample(prompt=prompt, response_length=response_length, status=status)
-    assert actual_copy == expected
+    actual_partial = replace(deepcopy(actual), tokens=[], response="", loss_mask=[], rollout_log_probs=[])
+    expected_partial = expected_partial_sample(prompt=prompt, response_length=response_length, status=status)
+    assert actual_partial == expected_partial
 
 
 MULTI_TURN_GENERATE_FN_PATH = "miles.rollout.generate_hub.multi_turn_single_sample:generate"
