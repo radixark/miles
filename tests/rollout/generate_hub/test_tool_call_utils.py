@@ -62,17 +62,18 @@ class TestTokenizeToolResponses:
 
         dummy_assistant = _build_dummy_assistant(tool_responses)
         base_messages = [_DUMMY_USER, dummy_assistant]
-        expected_str = _compute_chat_template_diff(base_messages, tool_responses, tokenizer)
+        expected_str = self._compute_chat_template_diff(base_messages, tool_responses, tokenizer)
 
         assert actual_str == expected_str, f"{model_name=}"
 
 
-def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str:
-    text_with = tokenizer.apply_chat_template(
-        base_messages + extra_messages, tokenize=False, add_generation_prompt=False
-    )
-    text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
-    return text_with[len(text_without) :]
+    @staticmethod
+    def _compute_chat_template_diff(base_messages, extra_messages, tokenizer) -> str:
+        text_with = tokenizer.apply_chat_template(
+            base_messages + extra_messages, tokenize=False, add_generation_prompt=False
+        )
+        text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
+        return text_with[len(text_without) :]
 
 
 class TestApplyChatTemplateWithTools:
