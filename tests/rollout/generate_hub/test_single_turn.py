@@ -24,7 +24,7 @@ RESPONSE_LOG_PROBS = [-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125]
 SAMPLING_PARAMS = {"max_new_tokens": 16, "temperature": 0.7}
 
 
-@pytest.fixture(params=["old_sglang_rollout", "single_turn"])
+@pytest.fixture(params=["old_sglang_rollout", "single_turn", "multi_turn_single_sample"])
 def variant(request):
     return request.param
 
@@ -50,6 +50,7 @@ def expected_request(
 
 
 def expected_sample(
+    variant: str,
     *,
     prompt: str = PROMPT,
     response: str = RESPONSE_TEXT,
@@ -65,6 +66,8 @@ def expected_sample(
     multimodal_inputs: dict | None = None,
     multimodal_train_inputs: dict | None = None,
 ) -> Sample:
+    actual_response_length = response_length if response_length is not None else len(RESPONSE_TOKENS)
+    loss_mask = [1] * actual_response_length if variant == "multi_turn_single_sample" else None
     return Sample(
         group_index=None,
         index=None,
@@ -76,7 +79,7 @@ def expected_sample(
         response_length=response_length,
         label=None,
         reward=None,
-        loss_mask=None,
+        loss_mask=loss_mask,
         weight_versions=weight_versions or [],
         rollout_log_probs=rollout_log_probs if rollout_log_probs is not None else RESPONSE_LOG_PROBS,
         rollout_routed_experts=rollout_routed_experts,
@@ -112,7 +115,7 @@ class TestBasicGeneration:
     def test_basic_generation(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample()
+        assert result.sample == expected_sample(variant)
 
 
 class TestResumedSingleTurn:
@@ -130,6 +133,7 @@ class TestResumedSingleTurn:
         result1 = _run_generate(variant, generation_env, sample)
         assert result1.requests == [expected_request(variant)]
         assert result1.sample == expected_sample(
+            variant,
             response=partial_text,
             response_length=2,
             tokens=PROMPT_TOKENS + partial_tokens,
@@ -148,6 +152,7 @@ class TestResumedSingleTurn:
             )
         ]
         assert result2.sample == expected_sample(
+            variant,
             response=partial_text + remaining_text,
             response_length=2 + 3,
             tokens=tokens_after_turn1 + remaining_tokens,
@@ -170,7 +175,7 @@ class TestFinishReason:
     def test_finish_reason_sets_status(self, variant, generation_env, expected_status):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample(status=expected_status)
+        assert result.sample == expected_sample(variant, status=expected_status)
 
 
 class TestRoutedExperts:
@@ -214,7 +219,7 @@ class TestMetaInfo:
     def test_meta_info_fields_updated(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample(cached_tokens=3, weight_versions=["v1.0"])
+        assert result.sample == expected_sample(variant, cached_tokens=3, weight_versions=["v1.0"])
 
     @pytest.mark.parametrize(
         "generation_env",
@@ -230,9 +235,10 @@ class TestMetaInfo:
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
         assert result.sample == expected_sample(
+            variant,
             spec_info=Sample.SpecInfo(
                 spec_accept_token_num=10, spec_draft_token_num=15, spec_verify_ct=3, completion_token_num=5
-            )
+            ),
         )
 
 
@@ -257,7 +263,7 @@ class TestPayloadStructure:
         assert result.requests == [
             expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9})
         ]
-        assert result.sample == expected_sample()
+        assert result.sample == expected_sample(variant)
 
 
 class TestBoundaryConditions:
@@ -276,7 +282,7 @@ class TestEmptyResponse:
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
         assert result.sample == expected_sample(
-            response="", response_length=0, tokens=PROMPT_TOKENS, rollout_log_probs=[]
+            variant, response="", response_length=0, tokens=PROMPT_TOKENS, rollout_log_probs=[]
         )
 
 
@@ -310,6 +316,7 @@ class TestMultimodal:
         assert torch.all(actual_mti["pixel_values"] == expected_mti["pixel_values"])
         assert torch.all(actual_mti["image_grid_thw"] == expected_mti["image_grid_thw"])
         assert result.sample == expected_sample(
+            variant,
             tokens=PROMPT_TOKENS + RESPONSE_TOKENS,
             multimodal_inputs=multimodal_inputs,
             multimodal_train_inputs=actual_mti,

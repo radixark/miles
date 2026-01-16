@@ -28,6 +28,15 @@ VARIANT_TO_GENERATE_FN_PATH = {
     "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn_single_sample.generate",
 }
 
+MULTI_TURN_DEFAULT_EXTRA_ARGV = [
+    "--generate-max-turns", "16",
+    "--generate-max-tool-calls", "16",
+    "--generate-tool-specs-path", "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
+    "--generate-tool-call-parser", "qwen25",
+    "--generate-execute-tool-function-path", "miles.utils.test_utils.mock_tools.execute_tool_call",
+    "--rollout-max-context-len", "4096",
+]
+
 
 def make_sample(
     *,
@@ -153,6 +162,10 @@ def generation_env(request, variant):
     model_name = args_kwargs.get("model_name", MODEL_NAME)
     custom_generate_function_path = VARIANT_TO_GENERATE_FN_PATH[variant]
 
+    extra_argv = list(args_kwargs.get("extra_argv", []))
+    if variant == "multi_turn_single_sample":
+        extra_argv = MULTI_TURN_DEFAULT_EXTRA_ARGV + extra_argv
+
     def process_fn(_):
         x = params.get("process_fn_kwargs", {})
         return ProcessResult(
@@ -169,11 +182,12 @@ def generation_env(request, variant):
         )
 
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
-        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k != "model_name"}
+        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in ["model_name", "extra_argv"]}
         args = make_args(
             router_port=mock_server.port,
             model_name=model_name,
             custom_generate_function_path=custom_generate_function_path,
+            extra_argv=extra_argv if extra_argv else None,
             **other_args_kwargs,
         )
         yield GenerateEnv(args=args, mock_server=mock_server)
