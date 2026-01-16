@@ -50,10 +50,9 @@ def execute_tool_call(name: str, params: dict) -> dict:
     return TOOL_EXECUTORS[name](params)
 
 
-async def mock_execute_tool_function(parsed_tool_call) -> dict:
-    _normal_text, tool_calls = parsed_tool_call
+async def mock_execute_tool_function(parsed_tool_calls) -> dict:
     tool_messages = []
-    for call in tool_calls:
+    for call in parsed_tool_calls:
         params = json.loads(call.parameters) if call.parameters else {}
         result = execute_tool_call(call.name, params)
         tool_messages.append(
