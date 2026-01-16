@@ -205,3 +205,164 @@ class TestBasicMultiTurn:
                 response_length=45 + 31 + 24,
             ),
         )
+
+
+def _make_extra_argv(**overrides) -> list[str]:
+    base = {
+        "generate-max-turns": "4",
+        "generate-max-tool-calls": "4",
+        "generate-tool-specs-path": "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
+        "generate-tool-call-parser": "qwen25",
+        "generate-execute-tool-function-path": "miles.utils.test_utils.mock_tools.execute_tool_call",
+        "rollout-max-context-len": "4096",
+    }
+    base.update(overrides)
+    result = []
+    for k, v in base.items():
+        if v is not None:
+            result.extend([f"--{k}", str(v)])
+    return result
+
+
+class TestExitConditions:
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        indirect=True,
+    )
+    def test_partial_rollout_not_supported(self, variant, generation_env):
+        generation_env.args.partial_rollout = True
+
+        with pytest.raises(AssertionError, match="Partial rollout is not supported"):
+            _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        indirect=True,
+    )
+    def test_abort_returns_immediately(self, variant, generation_env):
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=SINGLE_TURN_RESPONSE, finish_reason="abort"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+        assert len(result.requests) == 1
+        assert result.sample.status == Sample.Status.ABORTED
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        indirect=True,
+    )
+    def test_finish_reason_length_exits_and_preserves_content(self, variant, generation_env):
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=MULTI_TURN_FIRST_RESPONSE, finish_reason="length"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+
+        assert len(result.requests) == 1
+        assert result.sample.status == Sample.Status.TRUNCATED
+        verify_sample(
+            result.sample,
+            expected_chunks=[
+                SampleParsedChunk(
+                    tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
+                    loss_mask_value=1,
+                    rollout_log_probs=[-1 / 128 * i for i in range(45)],
+                ),
+            ],
+            expected_partial_sample=expected_partial_sample(
+                prompt=TWO_TURN_PROMPT,
+                response=MULTI_TURN_FIRST_RESPONSE,
+                response_length=45,
+                status=Sample.Status.TRUNCATED,
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": _make_extra_argv(**{"rollout-max-context-len": "10"})}}],
+        indirect=True,
+    )
+    def test_context_length_exceeded_truncates(self, variant, generation_env):
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+        assert len(result.requests) == 0
+        assert result.sample.status == Sample.Status.TRUNCATED
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": _make_extra_argv(**{"generate-max-turns": "1"})}}],
+        indirect=True,
+    )
+    def test_max_turns_reached(self, variant, generation_env):
+        call_count = [0]
+
+        def always_tool_call_process_fn(_):
+            call_count[0] += 1
+            return ProcessResult(text=MULTI_TURN_FIRST_RESPONSE, finish_reason="stop")
+
+        generation_env.mock_server.process_fn = always_tool_call_process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+
+        assert call_count[0] == 1
+        assert len(result.requests) == 1
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": _make_extra_argv(**{"generate-max-tool-calls": "0"})}}],
+        indirect=True,
+    )
+    def test_max_tool_calls_reached(self, variant, generation_env):
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=MULTI_TURN_FIRST_RESPONSE, finish_reason="stop"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+
+        assert len(result.requests) == 1
+        assert result.sample.response_length > 0
+
+
+class TestBoundaryConditions:
+    def test_exact_context_limit(self, variant, generation_env):
+        prompt = SINGLE_TURN_PROMPT
+        prompt_text = TOKENIZER.apply_chat_template(
+            prompt, tokenize=False, add_generation_prompt=True, tools=SAMPLE_TOOLS
+        )
+        prompt_len = len(TOKENIZER(prompt_text, add_special_tokens=False)["input_ids"])
+
+        extra_argv = _make_extra_argv(**{"rollout-max-context-len": str(prompt_len)})
+        generation_env.args.rollout_max_context_len = prompt_len
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=prompt))
+
+        assert len(result.requests) == 0
+        assert result.sample.status == Sample.Status.TRUNCATED
+
+    @pytest.fixture
+    def generation_env(self, request, variant):
+        from tests.fixtures.generation_fixtures import generation_env as base_fixture
+
+        yield from base_fixture(request, variant)
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": _make_extra_argv(**{"rollout-max-context-len": None})}}],
+        indirect=True,
+    )
+    def test_no_rollout_max_context_len(self, variant, generation_env):
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=SINGLE_TURN_RESPONSE, finish_reason="stop"
+        )
+
+        assert generation_env.args.rollout_max_context_len is None
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+        assert len(result.requests) == 1
+        assert result.sample.status == Sample.Status.COMPLETED

@@ -24,7 +24,7 @@ RESPONSE_LOG_PROBS = [-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125]
 SAMPLING_PARAMS = {"max_new_tokens": 16, "temperature": 0.7}
 
 
-@pytest.fixture(params=["old_sglang_rollout", "single_turn"])
+@pytest.fixture(params=["old_sglang_rollout", "single_turn", "multi_turn_single_sample"])
 def variant(request):
     return request.param
 
