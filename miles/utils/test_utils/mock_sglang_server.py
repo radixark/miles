@@ -161,6 +161,34 @@ def default_process_fn(prompt: str) -> ProcessResult:
     return ProcessResult(text="I don't understand.", finish_reason="stop")
 
 
+def make_multi_turn_process_fn(i: int, year: int = 2026, temperature: int = -60) -> ProcessFn:
+    turn_count = {"value": 0}
+
+    def first_turn_response() -> str:
+        return (
+            "Let me get the year and temperature first.\n"
+            "<tool_call>\n"
+            '{"name": "get_year", "arguments": {}}\n'
+            "</tool_call>\n"
+            "<tool_call>\n"
+            '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
+            "</tool_call>"
+        )
+
+    def second_turn_response() -> str:
+        return f"The answer is: {i} + {year} + {temperature} = {i + year + temperature}."
+
+    def process_fn(prompt: str) -> ProcessResult:
+        turn = turn_count["value"]
+        turn_count["value"] += 1
+        if turn == 0:
+            return ProcessResult(text=first_turn_response(), finish_reason="stop")
+        else:
+            return ProcessResult(text=second_turn_response(), finish_reason="stop")
+
+    return process_fn
+
+
 @contextmanager
 def with_mock_server(
     model_name: str = "Qwen/Qwen3-0.6B",
