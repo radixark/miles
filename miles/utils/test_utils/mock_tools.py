@@ -48,26 +48,28 @@ def execute_tool_call(name: str, params: dict) -> dict:
     return TOOL_EXECUTORS[name](params)
 
 
-MULTI_TURN_FIRST_PROMPT = "What is 42 + year + temperature?"
-MULTI_TURN_FIRST_RESPONSE = (
-    "Let me get the year and temperature first.\n"
-    "<tool_call>\n"
-    '{"name": "get_year", "arguments": {}}\n'
-    "</tool_call>\n"
-    "<tool_call>\n"
-    '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
-    "</tool_call>"
-)
-MULTI_TURN_SECOND_RESPONSE = "The answer is: 42 + 2026 + -60 = 2008."
-
-MULTI_TURN_REPLIES = {
-    MULTI_TURN_FIRST_PROMPT: MULTI_TURN_FIRST_RESPONSE,
-    '{"year": 2026}': MULTI_TURN_SECOND_RESPONSE,
-}
-
-
 def multi_turn_tool_call_process_fn(prompt: str) -> ProcessResult:
-    for key, response in MULTI_TURN_REPLIES.items():
+    first_prompt = "What is 42 + year + temperature?"
+    first_response = (
+        "Let me get the year and temperature first.\n"
+        "<tool_call>\n"
+        '{"name": "get_year", "arguments": {}}\n'
+        "</tool_call>\n"
+        "<tool_call>\n"
+        '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
+        "</tool_call>"
+    )
+
+    second_prompt = '{"year": 2026}'
+    second_response = "The answer is: 42 + 2026 + -60 = 2008."
+
+    prompt_response_pairs = {
+        first_prompt: first_response,
+        second_prompt: second_response,
+    }
+
+    for key, response in prompt_response_pairs.items():
         if key in prompt:
             return ProcessResult(text=response, finish_reason="stop")
-    raise ValueError(f"Unexpected prompt, no matching key found. Prompt: {prompt[:500]}")
+
+    raise ValueError(f"Unexpected prompt, no matching key found. {prompt=}")
