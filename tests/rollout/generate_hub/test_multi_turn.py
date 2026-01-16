@@ -39,6 +39,41 @@ class GenerateResult:
     requests: list[dict]
 
 
+def expected_sample(
+    *,
+    prompt: list[dict],
+    response: str,
+    response_length: int,
+    tokens: list[int],
+    rollout_log_probs: list[float],
+    loss_mask: list[int] | None = None,
+    status: Sample.Status = Sample.Status.COMPLETED,
+) -> Sample:
+    return Sample(
+        group_index=None,
+        index=None,
+        prompt=prompt,
+        tokens=tokens,
+        multimodal_inputs=None,
+        multimodal_train_inputs=None,
+        response=response,
+        response_length=response_length,
+        label=None,
+        reward=None,
+        loss_mask=loss_mask,
+        weight_versions=[],
+        rollout_log_probs=rollout_log_probs,
+        rollout_routed_experts=None,
+        remove_sample=False,
+        status=status,
+        metadata={},
+        train_metadata=None,
+        non_generation_time=0.0,
+        spec_info=Sample.SpecInfo(),
+        prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=0, total_prompt_tokens=0),
+    )
+
+
 def make_sample(prompt=None):
     return Sample(
         prompt=prompt or [{"role": "user", "content": "What is 1+1?"}],
@@ -74,13 +109,34 @@ class TestBasicMultiTurn:
         indirect=True,
     )
     def test_single_turn_no_tool_call(self, generation_env):
-        generation_env.mock_server.process_fn = lambda _: ProcessResult(text="The answer is 2.", finish_reason="stop")
+        response_text = "The answer is 2."
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(text=response_text, finish_reason="stop")
 
-        result = run_generate(generation_env)
+        prompt = [{"role": "user", "content": "What is 1+1?"}]
+        result = run_generate(generation_env, make_sample(prompt=prompt))
 
-        assert len(result.requests) == 1
-        assert result.sample.status == Sample.Status.COMPLETED
-        assert "The answer is 2." in result.sample.response
+        prompt_with_tools = TOKENIZER.apply_chat_template(
+            prompt, tokenize=False, add_generation_prompt=True, tools=SAMPLE_TOOLS
+        )
+        prompt_token_ids = TOKENIZER(prompt_with_tools, add_special_tokens=False)["input_ids"]
+        response_token_ids = TOKENIZER.encode(response_text, add_special_tokens=False)
+        response_log_probs = [(-1 / 128 * i) for i in range(len(response_token_ids))]
+
+        assert result.requests == [
+            {
+                "input_ids": prompt_token_ids,
+                "sampling_params": DEFAULT_SAMPLING_PARAMS,
+                "return_logprob": True,
+            }
+        ]
+        assert result.sample == expected_sample(
+            prompt=prompt,
+            response=response_text,
+            response_length=len(response_token_ids),
+            tokens=prompt_token_ids + response_token_ids,
+            rollout_log_probs=response_log_probs,
+            loss_mask=[1] * len(response_token_ids),
+        )
 
     @pytest.mark.parametrize(
         "generation_env",
@@ -90,9 +146,40 @@ class TestBasicMultiTurn:
     def test_two_turns_with_tool_call(self, generation_env):
         generation_env.mock_server.process_fn = multi_turn_tool_call_process_fn
 
-        sample = make_sample(prompt=[{"role": "user", "content": MULTI_TURN_FIRST_PROMPT}])
-        result = run_generate(generation_env, sample)
+        prompt = [{"role": "user", "content": MULTI_TURN_FIRST_PROMPT}]
+        result = run_generate(generation_env, make_sample(prompt=prompt))
+
+        prompt_with_tools = TOKENIZER.apply_chat_template(
+            prompt, tokenize=False, add_generation_prompt=True, tools=SAMPLE_TOOLS
+        )
+        prompt_token_ids = TOKENIZER(prompt_with_tools, add_special_tokens=False)["input_ids"]
+
+        first_response_token_ids = TOKENIZER.encode(MULTI_TURN_FIRST_RESPONSE, add_special_tokens=False)
+        tool_response_token_ids = result.sample.tokens[
+            len(prompt_token_ids) + len(first_response_token_ids) : -len(
+                TOKENIZER.encode(MULTI_TURN_SECOND_RESPONSE, add_special_tokens=False)
+            )
+        ]
+        second_response_token_ids = TOKENIZER.encode(MULTI_TURN_SECOND_RESPONSE, add_special_tokens=False)
+
+        all_response_token_ids = first_response_token_ids + tool_response_token_ids + second_response_token_ids
+        expected_loss_mask = (
+            [1] * len(first_response_token_ids)
+            + [0] * len(tool_response_token_ids)
+            + [1] * len(second_response_token_ids)
+        )
+        expected_log_probs = (
+            [(-1 / 128 * i) for i in range(len(first_response_token_ids))]
+            + [0.0] * len(tool_response_token_ids)
+            + [(-1 / 128 * i) for i in range(len(second_response_token_ids))]
+        )
 
         assert len(result.requests) == 2
-        assert result.sample.status == Sample.Status.COMPLETED
-        assert "2008" in result.sample.response
+        assert result.sample == expected_sample(
+            prompt=prompt,
+            response=TOKENIZER.decode(all_response_token_ids),
+            response_length=len(all_response_token_ids),
+            tokens=prompt_token_ids + all_response_token_ids,
+            rollout_log_probs=expected_log_probs,
+            loss_mask=expected_loss_mask,
+        )
