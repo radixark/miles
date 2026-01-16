@@ -59,8 +59,8 @@ class SampleParsedChunk:
 def parse_sample_into_chunks(sample: Sample, tokenizer) -> list[SampleParsedChunk]:
     prompt_len = len(sample.tokens) - sample.response_length
     response_tokens = sample.tokens[prompt_len:]
-    loss_mask = sample.loss_mask
-    log_probs = sample.rollout_log_probs
+    loss_mask = sample.loss_mask or []
+    log_probs = sample.rollout_log_probs or []
 
     chunks = []
     idx = 0
@@ -243,7 +243,7 @@ class TestExitConditions:
         [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
         indirect=True,
     )
-    def test_abort_returns_immediately(self, variant, generation_env):
+    def test_abort_preserves_content(self, variant, generation_env):
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=SINGLE_TURN_RESPONSE, finish_reason="abort"
         )
@@ -251,9 +251,22 @@ class TestExitConditions:
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
         assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
-        assert result.sample.status == Sample.Status.ABORTED
-        assert result.sample.response == ""
-        assert result.sample.response_length == 0
+        verify_sample(
+            result.sample,
+            expected_chunks=[
+                SampleParsedChunk(
+                    tokens_decoded_str=SINGLE_TURN_RESPONSE,
+                    loss_mask_value=1,
+                    rollout_log_probs=[-1 / 128 * i for i in range(6)],
+                ),
+            ],
+            expected_partial_sample=expected_partial_sample(
+                prompt=SINGLE_TURN_PROMPT,
+                response=SINGLE_TURN_RESPONSE,
+                response_length=6,
+                status=Sample.Status.ABORTED,
+            ),
+        )
 
     @pytest.mark.parametrize(
         "generation_env",
