@@ -116,33 +116,24 @@ class TestBasicMultiTurn:
         indirect=True,
     )
     def test_single_turn_no_tool_call(self, generation_env):
-        response_text = "The answer is 2."
-        generation_env.mock_server.process_fn = lambda _: ProcessResult(text=response_text, finish_reason="stop")
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(text=SINGLE_TURN_RESPONSE, finish_reason="stop")
 
-        prompt = [{"role": "user", "content": "What is 1+1?"}]
-        result = run_generate(generation_env, make_sample(prompt=prompt))
-
-        prompt_with_tools = TOKENIZER.apply_chat_template(
-            prompt, tokenize=False, add_generation_prompt=True, tools=SAMPLE_TOOLS
-        )
-        prompt_token_ids = TOKENIZER(prompt_with_tools, add_special_tokens=False)["input_ids"]
-        response_token_ids = TOKENIZER.encode(response_text, add_special_tokens=False)
-        response_log_probs = [(-1 / 128 * i) for i in range(len(response_token_ids))]
+        result = run_generate(generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
         assert result.requests == [
             {
-                "input_ids": prompt_token_ids,
+                "input_ids": SINGLE_TURN_PROMPT_TOKENS,
                 "sampling_params": DEFAULT_SAMPLING_PARAMS,
                 "return_logprob": True,
             }
         ]
         assert result.sample == expected_sample(
-            prompt=prompt,
-            response=response_text,
-            response_length=len(response_token_ids),
-            tokens=prompt_token_ids + response_token_ids,
-            rollout_log_probs=response_log_probs,
-            loss_mask=[1] * len(response_token_ids),
+            prompt=SINGLE_TURN_PROMPT,
+            response=SINGLE_TURN_RESPONSE,
+            response_length=len(SINGLE_TURN_RESPONSE_TOKENS),
+            tokens=SINGLE_TURN_PROMPT_TOKENS + SINGLE_TURN_RESPONSE_TOKENS,
+            rollout_log_probs=SINGLE_TURN_RESPONSE_LOG_PROBS,
+            loss_mask=[1] * len(SINGLE_TURN_RESPONSE_TOKENS),
         )
 
     @pytest.mark.parametrize(
@@ -153,51 +144,38 @@ class TestBasicMultiTurn:
     def test_two_turns_with_tool_call(self, generation_env):
         generation_env.mock_server.process_fn = multi_turn_tool_call_process_fn
 
-        prompt = [{"role": "user", "content": MULTI_TURN_FIRST_PROMPT}]
-        result = run_generate(generation_env, make_sample(prompt=prompt))
+        result = run_generate(generation_env, make_sample(prompt=TWO_TURN_PROMPT))
 
-        prompt_with_tools = TOKENIZER.apply_chat_template(
-            prompt, tokenize=False, add_generation_prompt=True, tools=SAMPLE_TOOLS
-        )
-        prompt_token_ids = TOKENIZER(prompt_with_tools, add_special_tokens=False)["input_ids"]
-
-        first_response_token_ids = TOKENIZER.encode(MULTI_TURN_FIRST_RESPONSE, add_special_tokens=False)
-        tool_response_token_ids = result.sample.tokens[
-            len(prompt_token_ids) + len(first_response_token_ids) : -len(
-                TOKENIZER.encode(MULTI_TURN_SECOND_RESPONSE, add_special_tokens=False)
-            )
-        ]
-        second_response_token_ids = TOKENIZER.encode(MULTI_TURN_SECOND_RESPONSE, add_special_tokens=False)
-
-        all_response_token_ids = first_response_token_ids + tool_response_token_ids + second_response_token_ids
+        prompt_tokens = result.requests[0]["input_ids"]
+        all_response_tokens = TWO_TURN_FIRST_RESPONSE_TOKENS + TWO_TURN_TOOL_RESPONSE_TOKENS + TWO_TURN_SECOND_RESPONSE_TOKENS
         expected_loss_mask = (
-            [1] * len(first_response_token_ids)
-            + [0] * len(tool_response_token_ids)
-            + [1] * len(second_response_token_ids)
+            [1] * len(TWO_TURN_FIRST_RESPONSE_TOKENS)
+            + [0] * len(TWO_TURN_TOOL_RESPONSE_TOKENS)
+            + [1] * len(TWO_TURN_SECOND_RESPONSE_TOKENS)
         )
         expected_log_probs = (
-            [(-1 / 128 * i) for i in range(len(first_response_token_ids))]
-            + [0.0] * len(tool_response_token_ids)
-            + [(-1 / 128 * i) for i in range(len(second_response_token_ids))]
+            [(-1 / 128 * i) for i in range(len(TWO_TURN_FIRST_RESPONSE_TOKENS))]
+            + [0.0] * len(TWO_TURN_TOOL_RESPONSE_TOKENS)
+            + [(-1 / 128 * i) for i in range(len(TWO_TURN_SECOND_RESPONSE_TOKENS))]
         )
 
         assert result.requests == [
             {
-                "input_ids": prompt_token_ids,
+                "input_ids": prompt_tokens,
                 "sampling_params": DEFAULT_SAMPLING_PARAMS,
                 "return_logprob": True,
             },
             {
-                "input_ids": prompt_token_ids + first_response_token_ids + tool_response_token_ids,
+                "input_ids": prompt_tokens + TWO_TURN_FIRST_RESPONSE_TOKENS + TWO_TURN_TOOL_RESPONSE_TOKENS,
                 "sampling_params": DEFAULT_SAMPLING_PARAMS,
                 "return_logprob": True,
             },
         ]
         assert result.sample == expected_sample(
-            prompt=prompt,
-            response=TOKENIZER.decode(all_response_token_ids),
-            response_length=len(all_response_token_ids),
-            tokens=prompt_token_ids + all_response_token_ids,
+            prompt=TWO_TURN_PROMPT,
+            response=result.sample.response,
+            response_length=len(all_response_tokens),
+            tokens=prompt_tokens + all_response_tokens,
             rollout_log_probs=expected_log_probs,
             loss_mask=expected_loss_mask,
         )
