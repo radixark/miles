@@ -284,6 +284,14 @@ class TestBoundaryConditions:
         assert result.requests == []
         assert result.sample.status == Sample.Status.TRUNCATED
 
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"rollout_max_context_len": 5}}], indirect=True)
+    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+        if variant == "multi_turn_single_sample":
+            pytest.skip("not tested yet")
+        result = _run_generate(variant, generation_env)
+        assert result.requests == []
+        assert result.sample.status == Sample.Status.TRUNCATED
+
 
 class TestEmptyResponse:
     @pytest.mark.parametrize("generation_env", [{"process_fn_kwargs": {"response_text": ""}}], indirect=True)

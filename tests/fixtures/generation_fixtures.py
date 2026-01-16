@@ -106,7 +106,7 @@ def make_args(
     generate_tool_specs_path: str = "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
     generate_tool_call_parser: str = "qwen25",
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
-    rollout_max_context_len: int = 4096,
+    rollout_max_context_len: int | None = None,
 ) -> Namespace:
     argv = [
         "pytest",
@@ -145,6 +145,7 @@ def make_args(
         argv.extend(["--generate-tool-specs-path", generate_tool_specs_path])
         argv.extend(["--generate-tool-call-parser", generate_tool_call_parser])
         argv.extend(["--generate-execute-tool-function-path", generate_execute_tool_function_path])
+    if rollout_max_context_len is not None:
         argv.extend(["--rollout-max-context-len", str(rollout_max_context_len)])
     if extra_argv:
         argv.extend(extra_argv)
