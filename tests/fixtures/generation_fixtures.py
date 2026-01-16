@@ -67,8 +67,7 @@ async def call_generate(
     *,
     variant: str = "single_turn",
 ) -> Sample:
-    if variant not in VARIANT_TO_GENERATE_FN_PATH:
-        raise NotImplementedError(f"Unknown variant: {variant}")
+    assert variant in VARIANT_TO_GENERATE_FN_PATH
     generate_fn = load_generate_function(VARIANT_TO_GENERATE_FN_PATH[variant])
     state = GenerateState(args)
     input = GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params.copy(), evaluation=False)
