@@ -4,12 +4,16 @@ Simple multi-turn generation with tool calling.
 
 import argparse
 
+from pydantic import TypeAdapter
+
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.tool_call_utils import tokenize_tool_responses
 from miles.utils.http_utils import post
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
+from sglang.srt.entrypoints.openai.protocol import Tool
+from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     args = input.args
@@ -22,9 +26,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     execute_tool_function = load_function(args.execute_tool_function_path)
 
-    # Set up the initial prompt with system prompt and tools (outside the loop)
     tool_specs = load_function(args.generate_tool_specs_path)
     assert isinstance(tool_specs, list)
+
+    tool_call_parser = FunctionCallParser(
+        tools=(TypeAdapter(list[Tool]).validate_python(tool_specs)),
+        tool_call_parser=args.generate_tool_call_parser,
+    )
+
+    # Set up the initial prompt with system prompt and tools (outside the loop)
     prompt = tokenizer.apply_chat_template(sample.prompt, tokenize=False, add_generation_prompt=True, tools=tool_specs)
 
     prompt_tokens_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
@@ -110,6 +120,7 @@ def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--generate-max-turns", type=int, default=16)
     parser.add_argument("--generate-max-tool-calls", type=int, default=16)
     parser.add_argument("--generate-tool-specs-path", type=str)
+    parser.add_argument("--generate-tool-call-parser", type=str)
     parser.add_argument("--generate-execute-tool-function-path", type=str)
 
 
