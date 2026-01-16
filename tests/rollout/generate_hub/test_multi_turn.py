@@ -30,27 +30,6 @@ FIRST_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_FIRST_PROMPT, add_special_tokens=F
 SECOND_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_SECOND_PROMPT, add_special_tokens=False)["input_ids"]
 
 
-def _make_extra_argv(
-    generate_max_turns: int = 4,
-    generate_max_tool_calls: int = 4,
-    rollout_max_context_len: int = 4096,
-) -> list[str]:
-    return [
-        "--generate-max-turns",
-        str(generate_max_turns),
-        "--generate-max-tool-calls",
-        str(generate_max_tool_calls),
-        "--generate-tool-specs-path",
-        "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
-        "--generate-tool-call-parser",
-        "qwen25",
-        "--generate-execute-tool-function-path",
-        "miles.utils.test_utils.mock_tools.execute_tool_call",
-        "--rollout-max-context-len",
-        str(rollout_max_context_len),
-    ]
-
-
 @pytest.fixture(params=["multi_turn_single_sample"])
 def variant(request):
     return request.param
@@ -163,11 +142,6 @@ TWO_TURN_TOOL_RESPONSE = (
 
 
 class TestBasicMultiTurn:
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
-        indirect=True,
-    )
     def test_single_turn_no_tool_call(self, variant, generation_env):
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=SINGLE_TURN_RESPONSE, finish_reason="stop"
@@ -192,11 +166,6 @@ class TestBasicMultiTurn:
             ),
         )
 
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
-        indirect=True,
-    )
     def test_two_turns_with_tool_call(self, variant, generation_env):
         generation_env.mock_server.process_fn = multi_turn_tool_call_process_fn
 
@@ -234,22 +203,12 @@ class TestBasicMultiTurn:
 
 
 class TestExitConditions:
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
-        indirect=True,
-    )
     def test_partial_rollout_not_supported(self, variant, generation_env):
         generation_env.args.partial_rollout = True
 
         with pytest.raises(AssertionError, match="Partial rollout is not supported"):
             _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
-        indirect=True,
-    )
     def test_abort_preserves_content(self, variant, generation_env):
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=SINGLE_TURN_RESPONSE, finish_reason="abort"
@@ -275,11 +234,6 @@ class TestExitConditions:
             ),
         )
 
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
-        indirect=True,
-    )
     def test_finish_reason_length_exits_and_preserves_content(self, variant, generation_env):
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=MULTI_TURN_FIRST_RESPONSE, finish_reason="length"

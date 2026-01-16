@@ -28,20 +28,24 @@ VARIANT_TO_GENERATE_FN_PATH = {
     "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn_single_sample.generate",
 }
 
-MULTI_TURN_DEFAULT_EXTRA_ARGV = [
-    "--generate-max-turns",
-    "16",
-    "--generate-max-tool-calls",
-    "16",
-    "--generate-tool-specs-path",
-    "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
-    "--generate-tool-call-parser",
-    "qwen25",
-    "--generate-execute-tool-function-path",
-    "miles.utils.test_utils.mock_tools.execute_tool_call",
-    "--rollout-max-context-len",
-    "4096",
-]
+MULTI_TURN_DEFAULT_CONFIG = {
+    "generate_max_turns": 16,
+    "generate_max_tool_calls": 16,
+    "generate_tool_specs_path": "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
+    "generate_tool_call_parser": "qwen25",
+    "generate_execute_tool_function_path": "miles.utils.test_utils.mock_tools.execute_tool_call",
+    "rollout_max_context_len": 4096,
+}
+
+MULTI_TURN_CONFIG_KEYS = set(MULTI_TURN_DEFAULT_CONFIG.keys())
+
+
+def _config_to_argv(config: dict) -> list[str]:
+    result = []
+    for k, v in config.items():
+        if v is not None:
+            result.extend([f"--{k.replace('_', '-')}", str(v)])
+    return result
 
 
 def make_sample(
@@ -170,7 +174,11 @@ def generation_env(request, variant):
 
     extra_argv = list(args_kwargs.get("extra_argv", []))
     if variant == "multi_turn_single_sample":
-        extra_argv = MULTI_TURN_DEFAULT_EXTRA_ARGV + extra_argv
+        config = dict(MULTI_TURN_DEFAULT_CONFIG)
+        for k in MULTI_TURN_CONFIG_KEYS:
+            if k in args_kwargs:
+                config[k] = args_kwargs[k]
+        extra_argv = _config_to_argv(config) + extra_argv
 
     def process_fn(_):
         x = params.get("process_fn_kwargs", {})
@@ -187,8 +195,9 @@ def generation_env(request, variant):
             ),
         )
 
+    excluded_keys = {"model_name", "extra_argv"} | MULTI_TURN_CONFIG_KEYS
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
-        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in ["model_name", "extra_argv"]}
+        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in excluded_keys}
         args = make_args(
             router_port=mock_server.port,
             model_name=model_name,
