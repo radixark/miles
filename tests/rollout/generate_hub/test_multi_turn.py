@@ -288,3 +288,44 @@ class TestExitConditions:
                 response_length=45 + 31,
             ),
         )
+
+    @pytest.mark.parametrize(
+        "generation_env", [{"args_kwargs": {"rollout_max_context_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
+    )
+    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+        assert result.requests == []
+        assert result.sample.status == Sample.Status.TRUNCATED
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"rollout_max_context_len": len(FIRST_PROMPT_TOKEN_IDS) + 45 + 31}}],
+        indirect=True,
+    )
+    def test_second_turn_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+        generation_env.mock_server.process_fn = multi_turn_tool_call_process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+
+        assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
+        verify_sample(
+            result.sample,
+            expected_chunks=[
+                SampleParsedChunk(
+                    tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
+                    loss_mask_value=1,
+                    rollout_log_probs=[-1 / 128 * i for i in range(45)],
+                ),
+                SampleParsedChunk(
+                    tokens_decoded_str=TWO_TURN_TOOL_RESPONSE,
+                    loss_mask_value=0,
+                    rollout_log_probs=[0.0] * 31,
+                ),
+            ],
+            expected_partial_sample=expected_partial_sample(
+                prompt=TWO_TURN_PROMPT,
+                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                response_length=45 + 31,
+                status=Sample.Status.TRUNCATED,
+            ),
+        )

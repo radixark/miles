@@ -139,14 +139,15 @@ def make_args(
         argv.extend(["--sglang-speculative-algorithm", sglang_speculative_algorithm])
     if custom_generate_function_path:
         argv.extend(["--custom-generate-function-path", custom_generate_function_path])
+    if rollout_max_context_len is not None:
+        argv.extend(["--rollout-max-context-len", str(rollout_max_context_len)])
 
     if variant == "multi_turn_single_sample":
         argv.extend(["--generate-max-turns", str(generate_max_turns)])
         argv.extend(["--generate-tool-specs-path", generate_tool_specs_path])
         argv.extend(["--generate-tool-call-parser", generate_tool_call_parser])
         argv.extend(["--generate-execute-tool-function-path", generate_execute_tool_function_path])
-    if rollout_max_context_len is not None:
-        argv.extend(["--rollout-max-context-len", str(rollout_max_context_len)])
+
     if extra_argv:
         argv.extend(extra_argv)
 
