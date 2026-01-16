@@ -21,7 +21,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     prompt_ids = await compute_prompt_ids_from_sample(input.state, sample)
 
-    # Handle partial rollout resuming
+    # Handle Partial Rollout resuming
     if len(sample.response) > 0:
         assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
 
