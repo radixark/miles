@@ -9,7 +9,7 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_hub.generate_endpoint_wrapper import compute_request_payload
+from miles.rollout.generate_hub.generate_endpoint_wrapper import compute_request_payload, update_sample_from_response
 from miles.rollout.generate_hub.tool_call_utils import execute_tool_calls, update_sample_with_tool_responses
 from miles.utils.http_utils import post
 from miles.utils.misc import load_function
@@ -69,20 +69,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         output = await post(url, payload)
 
-        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        new_response_logprobs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-
-        sample.tokens += new_response_tokens
-        sample.response_length += len(new_response_tokens)
-        sample.response += output["text"]
-
-        if sample.rollout_log_probs is None:
-            sample.rollout_log_probs = []
-        sample.rollout_log_probs += new_response_logprobs
-
-        sample.loss_mask += [1] * len(new_response_tokens)
-
-        sample.update_from_meta_info(args, output["meta_info"])
+        await update_sample_from_response(args, sample, payload=payload, output=output)
 
         finish_reason_type = output["meta_info"]["finish_reason"]["type"]
         if finish_reason_type in ("abort", "length"):
