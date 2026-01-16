@@ -26,18 +26,14 @@ async def compute_prompt_ids_from_sample(state, sample):
 async def compute_request_payload(state, sample, prompt_ids: list[int], sampling_params: dict):
     assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
 
-    max_new_tokens = sampling_params.pop("max_new_tokens")
     if len(sample.response) > 0:
-        max_new_tokens -= len(sample.tokens) - len(prompt_ids)
+        sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
 
     # Prepare payload for sglang server
     payload = {
         # Use existing tokens for multi-turn or tokenize the new prompt
         "input_ids": sample.tokens if len(sample.response) > 0 else prompt_ids,
-        "sampling_params": {
-            **sampling_params,
-            "max_new_tokens": max_new_tokens,
-        },
+        "sampling_params": sampling_params,
         "return_logprob": True,
         "return_routed_experts": state.args.use_rollout_routing_replay,
     }
