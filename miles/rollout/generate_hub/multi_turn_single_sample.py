@@ -107,8 +107,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     sample.response = response
     sample.loss_mask = loss_masks
 
-    sample.rollout_routed_experts = _get_rollout_routed_experts_from_response(args, sample, output)
-
     # Set status
     sample.update_from_meta_info(args, output["meta_info"])
 
