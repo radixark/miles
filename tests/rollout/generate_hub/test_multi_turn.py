@@ -24,7 +24,7 @@ def make_first_turn_response() -> str:
 
 
 def make_second_turn_response(i: int) -> str:
-    result = i + 2025 + 25
+    result = i + 2026 + 25
     return (
         "Now I have the information I need.\n"
         "The current year is 2025, and the temperature on Mars is 25 degrees.\n"
@@ -55,7 +55,7 @@ class TestToolExecution:
 
     def test_execute_get_temperature(self):
         result = execute_tool_call("get_temperature", {"location": "Mars"})
-        assert result == {"temperature": 25}
+        assert result == {"temperature": -60}
 
 
 class TestToolCallParsing:
