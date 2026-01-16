@@ -30,7 +30,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     response = ""
     response_token_ids = []
     loss_masks = []
-    tool_call_count = 0  # Track actual tool call rounds
 
     for turn in range(args.generate_max_turns):
         # Check if total length exceeds max context length
@@ -82,11 +81,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # TODO decide execute_tool_function API
         out = await execute_tool_function(cur_response)
         next_obs, done = out["next_obs"], out["done"]
-
-        # Count tool calls (when we get interpreter output, it means a tool
-        # was called)
-        if "<interpreter>" in next_obs:
-            tool_call_count += 1
 
         assert next_obs != "", "Next observation should not be empty."
         obs_tokens_ids = tokenizer(next_obs, add_special_tokens=False)["input_ids"]
