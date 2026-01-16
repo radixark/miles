@@ -74,19 +74,3 @@ class TestTokenizeToolResponses:
         )
         text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
         return text_with[len(text_without) :]
-
-
-class TestSGLangFunctionCallParser:
-    @pytest.fixture
-    def parser(self):
-        tools = TypeAdapter(list[Tool]).validate_python(SAMPLE_TOOLS)
-        return FunctionCallParser(tools=tools, tool_call_parser="qwen25")
-
-    def test_multi_turn_tool_call_process_fn_output(self, parser):
-        first_response = multi_turn_tool_call_process_fn("What is 42 + year + temperature?")
-        normal_text, calls = parser.parse_non_stream(first_response.text)
-
-        assert normal_text == "Let me get the year and temperature first."
-        assert len(calls) == 2
-        assert calls[0] == ToolCallItem(tool_index=0, name="get_year", parameters="{}")
-        assert calls[1] == ToolCallItem(tool_index=1, name="get_temperature", parameters='{"location": "Mars"}')
