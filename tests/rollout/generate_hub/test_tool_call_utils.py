@@ -3,7 +3,7 @@ from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
-from tests.fixtures.tool_fixtures import SAMPLE_TOOLS
+from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS
 
 from miles.rollout.generate_hub.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
 
