@@ -146,6 +146,7 @@ class TestBasicMultiTurn:
                 ),
             ],
             prompt=SINGLE_TURN_PROMPT,
+            response_length=6,
         )
 
     @pytest.mark.parametrize(
@@ -179,4 +180,5 @@ class TestBasicMultiTurn:
                 ),
             ],
             prompt=TWO_TURN_PROMPT,
+            response_length=57 + 47 + 25,
         )
