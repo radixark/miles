@@ -8,7 +8,9 @@ from transformers import AutoTokenizer
 
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
 from miles.utils.test_utils.mock_tools import (
+    MULTI_TURN_FIRST_PROMPT,
     MULTI_TURN_FIRST_RESPONSE,
+    MULTI_TURN_SECOND_PROMPT,
     MULTI_TURN_SECOND_RESPONSE,
     SAMPLE_TOOLS,
     multi_turn_tool_call_process_fn,
@@ -24,6 +26,8 @@ _ = generation_env, SAMPLE_TOOLS, multi_turn_tool_call_process_fn
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+FIRST_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_FIRST_PROMPT, add_special_tokens=False)["input_ids"]
+SECOND_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_SECOND_PROMPT, add_special_tokens=False)["input_ids"]
 
 def _make_extra_argv(
     generate_max_turns: int = 4,
@@ -116,6 +120,14 @@ def verify_sample(
 
 def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_params: dict | None = None):
     return run_generate(env, sample, sampling_params, variant=variant)
+
+
+def expected_request(input_ids: list[int], sampling_params: dict | None = None) -> dict:
+    return {
+        "input_ids": input_ids,
+        "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
+        "return_logprob": True,
+    }
 
 
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
