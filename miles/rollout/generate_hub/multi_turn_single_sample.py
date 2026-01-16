@@ -57,18 +57,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample.status = Sample.Status.ABORTED
             return GenerateFnOutput(samples=sample)
 
-        if "output_token_logprobs" in output["meta_info"]:
-            cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            cur_response = tokenizer.decode(cur_response_token_ids)
-            cur_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-            if sample.rollout_log_probs is None:
-                sample.rollout_log_probs = []
-            sample.rollout_log_probs += cur_log_probs
-
-        else:
-            cur_response = output["text"]
-            cur_response = postprocess_responses(cur_response)
-            cur_response_token_ids = tokenizer(cur_response, add_special_tokens=False)["input_ids"]
+        cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+        cur_response = tokenizer.decode(cur_response_token_ids)
+        cur_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+        if sample.rollout_log_probs is None:
+            sample.rollout_log_probs = []
+        sample.rollout_log_probs += cur_log_probs
 
         response += cur_response
         response_token_ids += cur_response_token_ids
@@ -130,7 +124,3 @@ def format_conversation_with_tools(
 def postprocess_predictions(prediction: str):
     """Extract action and content from prediction string"""
     return TODO, TODO
-
-
-def postprocess_responses(resp: str) -> str:
-    return TODO
