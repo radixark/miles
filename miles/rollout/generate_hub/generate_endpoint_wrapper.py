@@ -43,6 +43,7 @@ def compute_request_payload(
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
+    # TODO need to adjust sampling_params.max_new_tokens when input is moderately long
     max_context_length = args.rollout_max_context_len or float("inf")
     if len(input_ids) >= max_context_length:
         return None, Sample.Status.TRUNCATED
