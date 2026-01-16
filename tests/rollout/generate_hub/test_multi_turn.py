@@ -25,20 +25,19 @@ MODEL_NAME = "Qwen/Qwen3-0.6B"
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
 
-MULTI_TURN_EXTRA_ARGV = [
-    "--generate-max-turns",
-    "4",
-    "--generate-max-tool-calls",
-    "4",
-    "--generate-tool-specs-path",
-    "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
-    "--generate-tool-call-parser",
-    "qwen25",
-    "--generate-execute-tool-function-path",
-    "miles.utils.test_utils.mock_tools.execute_tool_call",
-    "--rollout-max-context-len",
-    "4096",
-]
+def _make_extra_argv(
+    generate_max_turns: int = 4,
+    generate_max_tool_calls: int = 4,
+    rollout_max_context_len: int = 4096,
+) -> list[str]:
+    return [
+        "--generate-max-turns", str(generate_max_turns),
+        "--generate-max-tool-calls", str(generate_max_tool_calls),
+        "--generate-tool-specs-path", "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
+        "--generate-tool-call-parser", "qwen25",
+        "--generate-execute-tool-function-path", "miles.utils.test_utils.mock_tools.execute_tool_call",
+        "--rollout-max-context-len", str(rollout_max_context_len),
+    ]
 
 
 @pytest.fixture(params=["multi_turn_single_sample"])
@@ -146,7 +145,7 @@ TWO_TURN_TOOL_RESPONSE = (
 class TestBasicMultiTurn:
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
         indirect=True,
     )
     def test_single_turn_no_tool_call(self, variant, generation_env):
@@ -175,7 +174,7 @@ class TestBasicMultiTurn:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
         indirect=True,
     )
     def test_two_turns_with_tool_call(self, variant, generation_env):
@@ -211,27 +210,10 @@ class TestBasicMultiTurn:
         )
 
 
-def _make_extra_argv(**overrides) -> list[str]:
-    base = {
-        "generate-max-turns": "4",
-        "generate-max-tool-calls": "4",
-        "generate-tool-specs-path": "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
-        "generate-tool-call-parser": "qwen25",
-        "generate-execute-tool-function-path": "miles.utils.test_utils.mock_tools.execute_tool_call",
-        "rollout-max-context-len": "4096",
-    }
-    base.update(overrides)
-    result = []
-    for k, v in base.items():
-        if v is not None:
-            result.extend([f"--{k}", str(v)])
-    return result
-
-
 class TestExitConditions:
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
         indirect=True,
     )
     def test_partial_rollout_not_supported(self, variant, generation_env):
@@ -242,7 +224,7 @@ class TestExitConditions:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
         indirect=True,
     )
     def test_abort_returns_immediately(self, variant, generation_env):
@@ -257,7 +239,7 @@ class TestExitConditions:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
+        [{"args_kwargs": {"extra_argv": _make_extra_argv()}}],
         indirect=True,
     )
     def test_finish_reason_length_exits_and_preserves_content(self, variant, generation_env):
@@ -301,7 +283,7 @@ class TestExitConditions:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv(**{"generate-max-turns": "1"})}}],
+        [{"args_kwargs": {"extra_argv": _make_extra_argv(generate_max_turns=1)}}],
         indirect=True,
     )
     def test_max_turns_reached(self, variant, generation_env):
@@ -320,7 +302,7 @@ class TestExitConditions:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv(**{"generate-max-tool-calls": "0"})}}],
+        [{"args_kwargs": {"extra_argv": _make_extra_argv(generate_max_tool_calls=0)}}],
         indirect=True,
     )
     def test_max_tool_calls_reached(self, variant, generation_env):

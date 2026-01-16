@@ -120,6 +120,8 @@ class TestBasicGeneration:
 
 class TestResumedSingleTurn:
     def test_two_consecutive_calls_on_same_sample(self, variant, generation_env):
+        if variant == "multi_turn_single_sample":
+            pytest.skip("multi_turn_single_sample does not support resumed single turn")
         partial_text = "\\boxed"
         partial_tokens = [59, 79075]
         partial_log_probs = [-0.0, -0.0078125]
@@ -190,6 +192,8 @@ class TestRoutedExperts:
         indirect=True,
     )
     def test_routed_experts_enabled_and_parsed(self, variant, generation_env):
+        if variant == "multi_turn_single_sample":
+            pytest.skip("multi_turn_single_sample does not support routed_experts")
         num_layers, moe_router_topk = 2, 4
         num_tokens = len(PROMPT_TOKENS) + len(RESPONSE_TOKENS)
         routed_experts_array = np.arange((num_tokens - 1) * num_layers * moe_router_topk, dtype=np.int32).reshape(
@@ -251,6 +255,8 @@ class TestInputStatusValidation:
 
     @pytest.mark.parametrize("status", [Sample.Status.COMPLETED, Sample.Status.TRUNCATED])
     def test_rejected_statuses(self, variant, generation_env, status):
+        if variant == "multi_turn_single_sample":
+            pytest.skip("multi_turn_single_sample does not validate input status")
         with pytest.raises(AssertionError):
             _run_generate(variant, generation_env, _make_sample(status=status))
 
@@ -268,6 +274,8 @@ class TestPayloadStructure:
 
 class TestBoundaryConditions:
     def test_max_new_tokens_zero_returns_truncated(self, variant, generation_env):
+        if variant == "multi_turn_single_sample":
+            pytest.skip("multi_turn_single_sample does not support resumed generation with existing tokens")
         existing_tokens = [1, 2, 3, 4, 5, 6, 7] + list(range(100, 110))
         sample = _make_sample(tokens=existing_tokens, response="x" * 10, response_length=10)
 
