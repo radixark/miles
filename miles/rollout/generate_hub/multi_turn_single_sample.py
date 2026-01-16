@@ -119,8 +119,3 @@ def format_conversation_with_tools(
     prompt: str, tools: list[dict[str, Any]] = None, system_prompt: str = None, messages: list[dict[str, Any]] = None
 ) -> str:
     return TODO
-
-
-def postprocess_predictions(prediction: str):
-    """Extract action and content from prediction string"""
-    return TODO, TODO
