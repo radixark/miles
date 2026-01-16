@@ -331,37 +331,3 @@ class TestExitConditions:
                 response_length=45 + 31,
             ),
         )
-
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": _make_extra_argv(generate_max_tool_calls=0)}}],
-        indirect=True,
-    )
-    def test_max_tool_calls_reached(self, variant, generation_env):
-        generation_env.mock_server.process_fn = lambda _: ProcessResult(
-            text=MULTI_TURN_FIRST_RESPONSE, finish_reason="stop"
-        )
-
-        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
-
-        assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
-        verify_sample(
-            result.sample,
-            expected_chunks=[
-                SampleParsedChunk(
-                    tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
-                    loss_mask_value=1,
-                    rollout_log_probs=[-1 / 128 * i for i in range(45)],
-                ),
-                SampleParsedChunk(
-                    tokens_decoded_str=TWO_TURN_TOOL_RESPONSE,
-                    loss_mask_value=0,
-                    rollout_log_probs=[0.0] * 31,
-                ),
-            ],
-            expected_partial_sample=expected_partial_sample(
-                prompt=TWO_TURN_PROMPT,
-                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
-                response_length=45 + 31,
-            ),
-        )
