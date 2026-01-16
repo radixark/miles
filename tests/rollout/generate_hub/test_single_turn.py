@@ -7,6 +7,7 @@ import pybase64
 import pytest
 import torch
 from PIL import Image
+from tests.fixtures.generation_fixtures import GenerateEnv, generation_env
 from transformers import AutoProcessor
 
 from miles.rollout.base_types import GenerateFnInput
@@ -15,7 +16,6 @@ from miles.utils.async_utils import run
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample
-from tests.fixtures.generation_fixtures import GenerateEnv, generation_env
 
 _ = generation_env
 
@@ -285,7 +285,9 @@ class TestInputStatusValidation:
 
 class TestPayloadStructure:
     def test_sampling_params_passed_through(self, variant, generation_env):
-        result = run_generate(variant, generation_env, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9})
+        result = run_generate(
+            variant, generation_env, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9}
+        )
         assert result.requests == [
             expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9})
         ]
