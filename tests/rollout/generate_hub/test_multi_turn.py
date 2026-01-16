@@ -135,12 +135,12 @@ class TestBasicMultiTurn:
         [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
         indirect=True,
     )
-    def test_single_turn_no_tool_call(self, generation_env):
+    def test_single_turn_no_tool_call(self, variant, generation_env):
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=SINGLE_TURN_RESPONSE, finish_reason="stop"
         )
 
-        result = _run_generate(generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
         assert len(result.requests) == 1
         verify_sample(
@@ -164,10 +164,10 @@ class TestBasicMultiTurn:
         [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
         indirect=True,
     )
-    def test_two_turns_with_tool_call(self, generation_env):
+    def test_two_turns_with_tool_call(self, variant, generation_env):
         generation_env.mock_server.process_fn = multi_turn_tool_call_process_fn
 
-        result = _run_generate(generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
 
         assert len(result.requests) == 2
         verify_sample(

@@ -22,6 +22,25 @@ RESPONSE_TEXT = "\\boxed{8}"
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 
 
+def make_sample(
+        *,
+        prompt: str | list[dict] = "What is 1+7?",
+        tokens: list[int] | None = None,
+        response: str = "",
+        response_length: int = 0,
+        status: Sample.Status = Sample.Status.PENDING,
+        multimodal_inputs: dict | None = None,
+) -> Sample:
+    return Sample(
+        prompt=prompt,
+        tokens=tokens or [],
+        response=response,
+        response_length=response_length,
+        status=status,
+        multimodal_inputs=multimodal_inputs,
+    )
+
+
 @dataclass
 class GenerateEnv:
     args: Namespace
@@ -55,25 +74,6 @@ async def call_generate(
         return output.samples
     else:
         raise NotImplementedError(f"Unknown variant: {variant}")
-
-
-def make_sample(
-    *,
-    prompt: str | list[dict] = "What is 1+7?",
-    tokens: list[int] | None = None,
-    response: str = "",
-    response_length: int = 0,
-    status: Sample.Status = Sample.Status.PENDING,
-    multimodal_inputs: dict | None = None,
-) -> Sample:
-    return Sample(
-        prompt=prompt,
-        tokens=tokens or [],
-        response=response,
-        response_length=response_length,
-        status=status,
-        multimodal_inputs=multimodal_inputs,
-    )
 
 
 def run_generate(
