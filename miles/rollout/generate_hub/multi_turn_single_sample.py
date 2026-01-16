@@ -3,20 +3,17 @@ Simple multi-turn generation with tool calling.
 """
 
 import argparse
-import json
-import uuid
-from typing import Callable, Any
 
 from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_hub.tool_call_utils import tokenize_tool_responses, update_sample_with_tool_responses
+from miles.rollout.generate_hub.tool_call_utils import tokenize_tool_responses, update_sample_with_tool_responses, \
+    execute_tool_calls
 from miles.utils.http_utils import post
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
-from sglang.srt.function_call.core_types import ToolCallItem
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
@@ -110,21 +107,3 @@ def _add_arguments(parser: argparse.ArgumentParser):
 
 
 generate.add_arguments = _add_arguments
-
-
-async def execute_tool_calls(tool_calls: list[ToolCallItem], execute_one: Callable) -> list[dict[str, Any]]:
-    tool_messages = []
-    for call in tool_calls:
-        params = json.loads(call.parameters) if call.parameters else {}
-        result = await execute_one(call.name, params)
-        assert isinstance(result, str)
-        tool_messages.append(
-            {
-                "role": "tool",
-                # src: serving_chat.py :: _process_tool_call_id
-                "tool_call_id": f"call_{uuid.uuid4().hex[:24]}",
-                "content": result,
-                "name": call.name,
-            }
-        )
-    return tool_messages

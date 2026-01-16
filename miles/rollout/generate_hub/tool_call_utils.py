@@ -1,8 +1,29 @@
-from typing import Any
+import json
+import uuid
+from typing import Callable, Any
 
+from sglang.srt.function_call.core_types import ToolCallItem
 from miles.utils.types import Sample
 
 _DUMMY_USER = {"role": "user", "content": "dummy"}
+
+
+async def execute_tool_calls(tool_calls: list[ToolCallItem], execute_one: Callable) -> list[dict[str, Any]]:
+    tool_messages = []
+    for call in tool_calls:
+        params = json.loads(call.parameters) if call.parameters else {}
+        result = await execute_one(call.name, params)
+        assert isinstance(result, str)
+        tool_messages.append(
+            {
+                "role": "tool",
+                # src: serving_chat.py :: _process_tool_call_id
+                "tool_call_id": f"call_{uuid.uuid4().hex[:24]}",
+                "content": result,
+                "name": call.name,
+            }
+        )
+    return tool_messages
 
 
 def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[str, Any]], tokenizer):
