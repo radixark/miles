@@ -39,12 +39,6 @@ MULTI_TURN_EXTRA_ARGV = [
 ]
 
 
-@dataclass
-class GenerateResult:
-    sample: Sample
-    requests: list[dict]
-
-
 @dataclass(frozen=True)
 class SampleParsedChunk:
     tokens_decoded_str: str
@@ -114,27 +108,8 @@ def verify_sample(
 MULTI_TURN_GENERATE_FN_PATH = "miles.rollout.generate_hub.multi_turn_single_sample:generate"
 
 
-def make_sample(prompt=None):
-    return Sample(
-        prompt=prompt or [{"role": "user", "content": "What is 1+1?"}],
-        tokens=[],
-        response="",
-        response_length=0,
-        status=Sample.Status.PENDING,
-    )
-
-
-def run_generate(env: GenerateEnv, sample: Sample | None = None, sampling_params: dict | None = None):
-    env.mock_server.request_log.clear()
-    result_sample = run(
-        call_generate(
-            env.args,
-            sample or make_sample(),
-            sampling_params or DEFAULT_SAMPLING_PARAMS,
-            generate_fn_path=MULTI_TURN_GENERATE_FN_PATH,
-        )
-    )
-    return GenerateResult(sample=result_sample, requests=list(env.mock_server.request_log))
+def _run_generate(env: GenerateEnv, sample: Sample, sampling_params: dict | None = None):
+    return run_generate(env, sample, sampling_params, generate_fn_path=MULTI_TURN_GENERATE_FN_PATH)
 
 
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
@@ -169,7 +144,7 @@ class TestBasicMultiTurn:
     def test_single_turn_no_tool_call(self, generation_env):
         generation_env.mock_server.process_fn = lambda _: ProcessResult(text=SINGLE_TURN_RESPONSE, finish_reason="stop")
 
-        result = run_generate(generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+        result = _run_generate(generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
         assert len(result.requests) == 1
         verify_sample(
