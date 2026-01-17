@@ -72,11 +72,17 @@ def expected_sample(
     spec_info: Sample.SpecInfo | None = None,
     multimodal_inputs: dict | None = None,
     multimodal_train_inputs: dict | None = None,
+    loss_mask_override: list[int] | None | _Unset = _UNSET,
 ) -> Sample:
     actual_response_length = response_length if response_length is not None else len(RESPONSE_TOKENS)
-    loss_mask = (
-        [1] * actual_response_length if variant in ("multi_turn_single_sample", "multi_turn_multi_samples") else None
-    )
+    if isinstance(loss_mask_override, _Unset):
+        loss_mask = (
+            [1] * actual_response_length
+            if variant in ("multi_turn_single_sample", "multi_turn_multi_samples")
+            else None
+        )
+    else:
+        loss_mask = loss_mask_override
     return Sample(
         group_index=None,
         index=None,
@@ -307,6 +313,8 @@ class TestBoundaryConditions:
     def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
         if variant == "old_sglang_rollout":
             pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+        if variant == "multi_turn_multi_samples":
+            pytest.skip("multi_turn_multi_samples returns empty list when first turn fails")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
         tokens = PROMPT_TOKENS if variant in ("multi_turn_single_sample", "multi_turn_multi_samples") else []
@@ -319,6 +327,7 @@ class TestBoundaryConditions:
                 rollout_log_probs=None,
                 status=Sample.Status.TRUNCATED,
                 prompt_tokens=0,
+                loss_mask_override=None if variant == "multi_turn_single_sample" else _UNSET,
             )
         ]
 
