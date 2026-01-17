@@ -83,7 +83,11 @@ def setup_session_routes(app, router: "MilesRouter"):
             path=path,
             request=json.loads(result["request_body"]),
             response=json.loads(result["response_body"]),
-            extras=TODO,
+            extras=SessionRecordChatCompletionsExtras(
+                input_ids=TODO,
+                output_ids=TODO,
+                loss_mask=TODO,
+            ),
             status_code=result["status_code"],
         )
         manager.add_record(session_id, record)
