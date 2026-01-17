@@ -1,14 +1,18 @@
 from unittest.mock import Mock
 
 import pytest
-from tests.rollout.modular_rollout.integration.utils import (
-    MIXED_DATA_ROWS,
-    config,
-    filter_by_reward,
-    load_and_call_train,
-)
+from tests.rollout.modular_rollout.integration.utils import config, filter_by_reward, load_and_call_train
 
 from miles.utils.misc import function_registry
+
+# Data with only 2 reward=1 samples out of 4.
+# This ensures all 4 samples must be generated to collect 2 valid ones.
+_FILTER_TEST_DATA_ROWS = [
+    {"input": "What is 1+7?", "label": "8"},  # reward=1
+    {"input": "What is 1+8?", "label": "wrong"},  # reward=0
+    {"input": "What is 1+9?", "label": "wrong"},  # reward=0
+    {"input": "What is 1+6?", "label": "7"},  # reward=1
+]
 
 
 @pytest.mark.parametrize(
@@ -28,7 +32,7 @@ from miles.utils.misc import function_registry
                     "--rollout-all-samples-process-path",
                     "test:all_samples_process",
                 ],
-                data_rows=MIXED_DATA_ROWS,
+                data_rows=_FILTER_TEST_DATA_ROWS,
             ),
             id="sample_filter_vs_all_samples",
         ),
