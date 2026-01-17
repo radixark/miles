@@ -83,8 +83,12 @@ def mock_worker_factory():
 
 
 @pytest.fixture
-def standalone_router():
-    return MilesRouter(make_router_args(find_available_port(20000)), verbose=False)
+def router_factory():
+    def _create(**overrides) -> MilesRouter:
+        args = make_router_args(find_available_port(20000), **overrides)
+        return MilesRouter(args, verbose=False)
+
+    return _create
 
 
 class TestWorkerManagement:
@@ -129,56 +133,61 @@ class TestWorkerManagement:
 
 
 class TestLoadBalancing:
-    def test_use_url_selects_min_load(self, standalone_router: MilesRouter):
-        standalone_router.worker_request_counts = {"http://w1:8000": 5, "http://w2:8000": 2, "http://w3:8000": 8}
+    def test_use_url_selects_min_load(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 5, "http://w2:8000": 2, "http://w3:8000": 8}
 
-        selected = standalone_router._use_url()
+        selected = router._use_url()
         assert selected == "http://w2:8000"
-        assert standalone_router.worker_request_counts["http://w2:8000"] == 3
+        assert router.worker_request_counts["http://w2:8000"] == 3
 
-    def test_use_url_excludes_dead_workers(self, standalone_router: MilesRouter):
-        standalone_router.worker_request_counts = {"http://w1:8000": 5, "http://w2:8000": 1, "http://w3:8000": 3}
-        standalone_router.dead_workers = {"http://w2:8000"}
+    def test_use_url_excludes_dead_workers(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 5, "http://w2:8000": 1, "http://w3:8000": 3}
+        router.dead_workers = {"http://w2:8000"}
 
-        selected = standalone_router._use_url()
+        selected = router._use_url()
         assert selected == "http://w3:8000"
-        assert standalone_router.worker_request_counts["http://w3:8000"] == 4
+        assert router.worker_request_counts["http://w3:8000"] == 4
 
-    def test_use_url_raises_when_all_dead(self, standalone_router: MilesRouter):
-        standalone_router.worker_request_counts = {"http://w1:8000": 0}
-        standalone_router.dead_workers = {"http://w1:8000"}
+    def test_use_url_raises_when_all_dead(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 0}
+        router.dead_workers = {"http://w1:8000"}
 
         with pytest.raises(RuntimeError, match="No healthy workers"):
-            standalone_router._use_url()
+            router._use_url()
 
-    def test_finish_url_decrements_count(self, standalone_router: MilesRouter):
-        standalone_router.worker_request_counts = {"http://w1:8000": 5}
-        standalone_router._finish_url("http://w1:8000")
-        assert standalone_router.worker_request_counts["http://w1:8000"] == 4
+    def test_finish_url_decrements_count(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 5}
+        router._finish_url("http://w1:8000")
+        assert router.worker_request_counts["http://w1:8000"] == 4
 
-    def test_finish_url_raises_on_unknown(self, standalone_router: MilesRouter):
+    def test_finish_url_raises_on_unknown(self, router_factory):
+        router = router_factory()
         with pytest.raises(AssertionError, match="not recognized"):
-            standalone_router._finish_url("http://unknown:8000")
+            router._finish_url("http://unknown:8000")
 
 
 class TestHealthCheck:
     @pytest.mark.asyncio
-    async def test_check_worker_health_success(self, standalone_router: MilesRouter, mock_worker: MockSGLangServer):
-        url, healthy = await standalone_router._check_worker_health(mock_worker.url)
+    async def test_check_worker_health_success(self, router_factory, mock_worker: MockSGLangServer):
+        router = router_factory()
+        url, healthy = await router._check_worker_health(mock_worker.url)
         assert url == mock_worker.url
         assert healthy is True
 
     @pytest.mark.asyncio
-    async def test_check_worker_health_failure(self, standalone_router: MilesRouter):
-        url, healthy = await standalone_router._check_worker_health("http://127.0.0.1:59999")
+    async def test_check_worker_health_failure(self, router_factory):
+        router = router_factory()
+        url, healthy = await router._check_worker_health("http://127.0.0.1:59999")
         assert url == "http://127.0.0.1:59999"
         assert healthy is False
 
     @pytest.mark.asyncio
-    async def test_health_check_marks_dead_worker(self):
-        args = make_router_args(find_available_port(20000), miles_router_health_check_failure_threshold=2)
-        router = MilesRouter(args, verbose=False)
-
+    async def test_health_check_marks_dead_worker(self, router_factory):
+        router = router_factory(miles_router_health_check_failure_threshold=2)
         bad_url = "http://127.0.0.1:59998"
         router.worker_request_counts[bad_url] = 0
         router.worker_failure_counts[bad_url] = 0
@@ -192,22 +201,23 @@ class TestHealthCheck:
 
             await router._check_worker_health(bad_url)
             router.worker_failure_counts[bad_url] += 1
-            if router.worker_failure_counts[bad_url] >= args.miles_router_health_check_failure_threshold:
+            if router.worker_failure_counts[bad_url] >= router.args.miles_router_health_check_failure_threshold:
                 router.dead_workers.add(bad_url)
             assert bad_url in router.dead_workers
 
     @pytest.mark.asyncio
-    async def test_health_check_resets_on_success(self, standalone_router: MilesRouter):
+    async def test_health_check_resets_on_success(self, router_factory):
+        router = router_factory()
         url = "http://127.0.0.1:59997"
-        standalone_router.worker_request_counts[url] = 0
-        standalone_router.worker_failure_counts[url] = 2
+        router.worker_request_counts[url] = 0
+        router.worker_failure_counts[url] = 2
 
-        with patch.object(standalone_router, "_check_worker_health", new_callable=AsyncMock) as mock_check:
+        with patch.object(router, "_check_worker_health", new_callable=AsyncMock) as mock_check:
             mock_check.return_value = (url, True)
-            _, is_healthy = await standalone_router._check_worker_health(url)
+            _, is_healthy = await router._check_worker_health(url)
             if is_healthy:
-                standalone_router.worker_failure_counts[url] = 0
-            assert standalone_router.worker_failure_counts[url] == 0
+                router.worker_failure_counts[url] = 0
+            assert router.worker_failure_counts[url] == 0
 
 
 class TestProxyIntegration:
