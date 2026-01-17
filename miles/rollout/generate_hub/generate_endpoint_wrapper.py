@@ -1,3 +1,4 @@
+# TODO: may rename to generate_endpoint_utils.py
 """
 Wrapper to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
