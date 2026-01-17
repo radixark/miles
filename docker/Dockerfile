@@ -38,7 +38,7 @@ RUN pip install flash-linear-attention==0.4.0
 RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.11.0"; \
+      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.10.0"; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
     fi
@@ -67,7 +67,11 @@ RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
   fi
 
 # https://github.com/pytorch/pytorch/issues/168167
-RUN pip install nvidia-cudnn-cu12==9.16.0.29
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+    pip install nvidia-cudnn-cu13==9.16.0.29; \
+  else \
+    pip install nvidia-cudnn-cu12==9.16.0.29; \
+  fi
 
 # reinstall numpy 1.x for megatron
 RUN pip install "numpy<2"
