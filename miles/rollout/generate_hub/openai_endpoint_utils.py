@@ -30,11 +30,11 @@ class OpenAIEndpointTracer:
         return response.records
 
 
-def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord]) -> list[Sample]:
-    return [_compute_sample_from_openai_record(input_sample, record) for record in records]
+def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord], tokenizer) -> list[Sample]:
+    return [_compute_sample_from_openai_record(input_sample, record, tokenizer) for record in records]
 
 
-def _compute_sample_from_openai_record(input_sample: Sample, record: SessionRecord) -> Sample:
+def _compute_sample_from_openai_record(input_sample: Sample, record: SessionRecord, tokenizer) -> Sample:
     # TODO may refine after @guapisolo's implementation
     choice = record.response["choices"][0]
     output_token_ids = [item["token_id"] for item in choice["logprobs"]["content"]]
@@ -43,7 +43,7 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
     sample = deepcopy(input_sample)
     sample.tokens = record.request["input_ids"] + output_token_ids
     sample.rollout_log_probs = output_log_probs
-    sample.response = choice["message"]["content"] or ""
+    sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
 
