@@ -1,6 +1,11 @@
 from copy import deepcopy
+from dataclasses import fields
 
 from miles.utils.types import Sample
+
+
+def _get_field_names(cls):
+    return {f.name for f in fields(cls)}
 
 
 def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
@@ -63,7 +68,7 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
         prefix_cache_info=prefix_cache_info,
     )
 
-    expected_fields = set(Sample.__dataclass_fields__.keys())
+    expected_fields = _get_field_names(Sample)
     actual_fields = set(merged_fields.keys())
     assert expected_fields == actual_fields, (
         f"Field mismatch. Missing: {expected_fields - actual_fields}, Extra: {actual_fields - expected_fields}"
