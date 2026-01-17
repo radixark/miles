@@ -68,15 +68,20 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         result = await router._do_proxy(request, path)
 
+        request_body = json.loads(result["request_body"])
+        response_body = json.loads(result["response_body"])
+
         # TODO: remove this hack when @guapisolo implements the real TITO
-        TODO
+        request_body["input_ids"] = TODO
+        for item in response_body["logprobs"]["content"]:
+            item["token_id"] = TODO
 
         record = SessionRecord(
             timestamp=time.time(),
             method=request.method,
             path=path,
-            request=json.loads(result["request_body"]),
-            response=json.loads(result["response_body"]),
+            request=request_body,
+            response=response_body,
             status_code=result["status_code"],
         )
         manager.add_record(session_id, record)
