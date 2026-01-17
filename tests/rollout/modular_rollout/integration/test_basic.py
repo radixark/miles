@@ -1,0 +1,70 @@
+import pytest
+from tests.fixtures.rollout_integration import IntegrationEnvConfig
+from tests.rollout.modular_rollout.integration.utils import (
+    MODULAR_ROLLOUT_BASE_ARGV,
+    expected_sample,
+    load_and_call_train,
+)
+
+from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
+from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
+
+_VARIANTS = [
+    pytest.param(
+        IntegrationEnvConfig(
+            extra_argv=[
+                "--rollout-function-path",
+                "miles.rollout.sglang_rollout.generate_rollout",
+                "--eval-function-path",
+                "miles.rollout.sglang_rollout.generate_rollout",
+                "--custom-generate-function-path",
+                "miles.rollout.sglang_rollout.generate",
+            ]
+        ),
+        id="old_rollout_old_generate",
+    ),
+    pytest.param(
+        IntegrationEnvConfig(
+            extra_argv=[
+                "--rollout-function-path",
+                "miles.rollout.modular_rollout.orchestration_train.SimpleTrainRolloutFn",
+                "--eval-function-path",
+                "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
+                "--custom-generate-function-path",
+                "miles.rollout.sglang_rollout.generate",
+            ]
+        ),
+        id="new_rollout_old_generate",
+    ),
+    pytest.param(
+        IntegrationEnvConfig(extra_argv=MODULAR_ROLLOUT_BASE_ARGV),
+        id="new_rollout_new_generate",
+    ),
+]
+
+
+@pytest.mark.parametrize("rollout_integration_env", _VARIANTS, indirect=True)
+def test_train(rollout_integration_env):
+    env = rollout_integration_env
+    out = load_and_call_train(env.args, env.data_source)
+
+    assert len(out.samples) == env.args.rollout_batch_size
+    group = out.samples[0]
+    assert len(group) == env.args.n_samples_per_prompt
+    assert group[0] == expected_sample(group_index=0)
+
+
+@pytest.mark.parametrize("rollout_integration_env", _VARIANTS, indirect=True)
+def test_eval(rollout_integration_env):
+    env = rollout_integration_env
+    fn = load_rollout_function(
+        RolloutFnConstructorInput(args=env.args, data_source=env.data_source), env.args.eval_function_path
+    )
+    out = call_rollout_function(fn, RolloutFnEvalInput(rollout_id=0))
+
+    assert "toy" in out.data
+    rewards = out.data["toy"]["rewards"]
+    samples = out.data["toy"]["samples"]
+    assert len(rewards) == len(samples) == env.args.n_samples_per_eval_prompt
+    assert rewards[0] == 1
+    assert samples[0] == expected_sample(group_index=None)
