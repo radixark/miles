@@ -71,47 +71,110 @@ class MockSGLangServer:
         self.request_log.clear()
         self._concurrency.reset()
 
+    def start(self):
+        self._server = UvicornThreadServer(self.app, host=self.host, port=self.port)
+        self._server.start()
+
+    def stop(self):
+        if self._server is not None:
+            self._server.stop()
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    def _compute_generate_response(self, payload: dict) -> dict:
+        assert payload.get("return_logprob", True) is True, "MockSGLangServer requires return_logprob=True"
+        input_ids = payload.get("input_ids", [])
+
+        prompt_str = self.tokenizer.decode(input_ids, skip_special_tokens=False)
+        process_result = self.process_fn(prompt_str)
+        output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
+
+        prompt_tokens = len(input_ids)
+        completion_tokens = len(output_ids)
+
+        finish_reason_dict = {"type": process_result.finish_reason}
+        if process_result.finish_reason == "length":
+            finish_reason_dict["length"] = completion_tokens
+
+        output_token_logprobs = [(-1 / 128 * i, token_id) for i, token_id in enumerate(output_ids)]
+
+        meta_info = {
+            "finish_reason": finish_reason_dict,
+            "prompt_tokens": prompt_tokens,
+            "cached_tokens": process_result.cached_tokens,
+            "completion_tokens": completion_tokens,
+            "output_token_logprobs": output_token_logprobs,
+            **process_result.meta_info.to_dict(),
+        }
+
+        return {"text": process_result.text, "meta_info": meta_info}
+
+    def _compute_chat_completions_response(self, payload: dict) -> dict:
+        messages = payload.get("messages", [])
+        tools = payload.get("tools")
+
+        prompt_str = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, tools=tools
+        )
+
+        process_result = self.process_fn(prompt_str)
+        output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
+
+        logprobs_content = [
+            {"token": self.tokenizer.decode([tid]), "logprob": -1 / 128 * i}
+            for i, tid in enumerate(output_ids)
+        ]
+
+        finish_reason = process_result.finish_reason
+        tool_calls = None
+        if tools and finish_reason == "stop":
+            parser = FunctionCallParser(
+                tools=TypeAdapter(list[Tool]).validate_python(tools),
+                tool_call_parser="qwen25",
+            )
+            _, parsed_calls = parser.parse_non_stream(process_result.text)
+            if parsed_calls:
+                finish_reason = "tool_calls"
+                tool_calls = [
+                    {
+                        "id": f"call{i:05d}",
+                        "type": "function",
+                        "function": {"name": call.name, "arguments": call.parameters or "{}"},
+                    }
+                    for i, call in enumerate(parsed_calls)
+                ]
+
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "mock-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": process_result.text if not tool_calls else None,
+                        "tool_calls": tool_calls,
+                    },
+                    "logprobs": {"content": logprobs_content},
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+
     def _setup_routes(self):
         @self.app.post("/generate")
         async def generate(request: Request):
             payload = await request.json()
             self.request_log.append(payload)
-
             with self._concurrency.track():
                 if self.latency > 0:
                     await asyncio.sleep(self.latency)
-
-                assert payload.get("return_logprob", True) is True, "MockSGLangServer requires return_logprob=True"
-                input_ids = payload.get("input_ids", [])
-
-                prompt_str = self.tokenizer.decode(input_ids, skip_special_tokens=False)
-                process_result = self.process_fn(prompt_str)
-                output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
-
-                prompt_tokens = len(input_ids)
-                completion_tokens = len(output_ids)
-
-                finish_reason_dict = {"type": process_result.finish_reason}
-                if process_result.finish_reason == "length":
-                    finish_reason_dict["length"] = completion_tokens
-
-                output_token_logprobs = [(-1 / 128 * i, token_id) for i, token_id in enumerate(output_ids)]
-
-                meta_info = {
-                    "finish_reason": finish_reason_dict,
-                    "prompt_tokens": prompt_tokens,
-                    "cached_tokens": process_result.cached_tokens,
-                    "completion_tokens": completion_tokens,
-                    "output_token_logprobs": output_token_logprobs,
-                    **process_result.meta_info.to_dict(),
-                }
-
-                response = {
-                    "text": process_result.text,
-                    "meta_info": meta_info,
-                }
-
-                return JSONResponse(content=response)
+                response = self._compute_generate_response(payload)
+            return JSONResponse(content=response)
 
         @self.app.get("/health")
         async def health():
@@ -124,79 +187,11 @@ class MockSGLangServer:
         @self.app.post("/v1/chat/completions")
         async def chat_completions(request: Request):
             payload = await request.json()
-            messages = payload.get("messages", [])
-            tools = payload.get("tools")
-
             with self._concurrency.track():
                 if self.latency > 0:
                     await asyncio.sleep(self.latency)
-
-                prompt_str = self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True, tools=tools
-                )
-
-                process_result = self.process_fn(prompt_str)
-                output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
-
-                logprobs_content = [
-                    {"token": self.tokenizer.decode([tid]), "logprob": -1 / 128 * i}
-                    for i, tid in enumerate(output_ids)
-                ]
-
-                finish_reason = process_result.finish_reason
-                tool_calls = None
-                if tools and finish_reason == "stop":
-                    parser = FunctionCallParser(
-                        tools=TypeAdapter(list[Tool]).validate_python(tools),
-                        tool_call_parser="qwen25",
-                    )
-                    _, parsed_calls = parser.parse_non_stream(process_result.text)
-                    if parsed_calls:
-                        finish_reason = "tool_calls"
-                        tool_calls = [
-                            {
-                                "id": f"call{i:05d}",
-                                "type": "function",
-                                "function": {
-                                    "name": call.name,
-                                    "arguments": call.parameters or "{}",
-                                },
-                            }
-                            for i, call in enumerate(parsed_calls)
-                        ]
-
-                response = {
-                    "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": "mock-model",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": process_result.text if not tool_calls else None,
-                                "tool_calls": tool_calls,
-                            },
-                            "logprobs": {"content": logprobs_content},
-                            "finish_reason": finish_reason,
-                        }
-                    ],
-                }
-
-                return JSONResponse(content=response)
-
-    def start(self):
-        self._server = UvicornThreadServer(self.app, host=self.host, port=self.port)
-        self._server.start()
-
-    def stop(self):
-        if self._server is not None:
-            self._server.stop()
-
-    @property
-    def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+                response = self._compute_chat_completions_response(payload)
+            return JSONResponse(content=response)
 
 
 class Counter:
