@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 class SessionRecordChatCompletionsExtras(BaseModel):
     input_ids: list[int]
+    loss_mask: list[int]
 
 
 class SessionRecord(BaseModel):
