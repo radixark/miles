@@ -16,15 +16,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     args = input.args
     sample = input.sample
     sampling_params = input.sampling_params
-
+    assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
     prompt_ids = compute_prompt_ids_from_sample(input.state, sample)
 
     # Handle Partial Rollout resuming
     if len(sample.response) > 0:
-        assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
-
         input_ids = sample.tokens
         sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
 
