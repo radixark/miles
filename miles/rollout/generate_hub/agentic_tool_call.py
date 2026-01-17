@@ -4,7 +4,6 @@ Simple agentic demo with tool calling.
 
 import argparse
 from copy import deepcopy
-from dataclasses import dataclass
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -18,14 +17,13 @@ from miles.utils.misc import load_function
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tracer = OpenAIEndpointTracer()
 
-    agent = _BlackboxToolCallAgent(
+    await _run_blackbox_tool_call_agent(
         base_url=tracer.base_url,
         prompt=input.sample.prompt,
         max_turns=input.args.generate_max_turns,
         tool_specs_path=input.args.generate_tool_specs_path,
         execute_tool_function_path=input.args.generate_execute_tool_function_path,
     )
-    await agent.run()
 
     return tracer.collect()
 
@@ -40,42 +38,40 @@ def _add_arguments(parser: argparse.ArgumentParser):
 generate.add_arguments = _add_arguments
 
 
-@dataclass
-class _BlackboxToolCallAgent:
+async def _run_blackbox_tool_call_agent(
+    base_url: str,
+    prompt: list[dict[str, Any]],
+    max_turns: int,
+    tool_specs_path: str,
+    execute_tool_function_path: str,
+):
     """
     Imagine this is a black-box agent, e.g. SWE-agent, which does arbitrarily complex work,
     only understands OpenAI compatible API, and never understands Miles or the Sample data structure.
     """
 
-    base_url: str
-    prompt: list[dict[str, Any]]
-    max_turns: int
-    tool_specs_path: str
-    execute_tool_function_path: str
+    # ----------------------- Setup -------------------------
 
-    async def run(self):
-        # ----------------------- Setup -------------------------
+    client = AsyncOpenAI(base_url=base_url, api_key="empty")
+    execute_tool_function = load_function(execute_tool_function_path)
+    tool_specs = load_function(tool_specs_path)
 
-        client = AsyncOpenAI(base_url=self.base_url, api_key="empty")
-        execute_tool_function = load_function(self.execute_tool_function_path)
-        tool_specs = load_function(self.tool_specs_path)
+    # ----------------------- Initial prompts -------------------------
 
-        # ----------------------- Initial prompts -------------------------
+    messages = deepcopy(prompt)
 
-        messages = deepcopy(self.prompt)
+    for turn in range(max_turns):
+        # ----------------------- Call inference endpoint -------------------------
 
-        for turn in range(self.max_turns):
-            # ----------------------- Call inference endpoint -------------------------
+        response = await client.chat.completions.create(model="default", messages=messages, tools=tool_specs)
 
-            response = await client.chat.completions.create(model="default", messages=messages, tools=tool_specs)
+        choice = response.choices[0]
+        messages.append(choice.message.model_dump())
 
-            choice = response.choices[0]
-            messages.append(choice.message.model_dump())
+        if choice.finish_reason in ("stop", "length"):
+            break
 
-            if choice.finish_reason in ("stop", "length"):
-                break
+        # ----------------------- Execute tools -------------------------
 
-            # ----------------------- Execute tools -------------------------
-
-            if x := choice.message.tool_calls:
-                messages += await execute_tool_calls(x, execute_tool_function)
+        if x := choice.message.tool_calls:
+            messages += await execute_tool_calls(x, execute_tool_function)
