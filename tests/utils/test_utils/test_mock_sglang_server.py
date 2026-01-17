@@ -28,7 +28,7 @@ from miles.utils.test_utils.mock_tools import (
 
 def expected_logprobs(tokenizer, text: str) -> list[dict]:
     output_ids = tokenizer.encode(text, add_special_tokens=False)
-    return [{"token": tokenizer.decode([tid]), "logprob": -i / 128} for i, tid in enumerate(output_ids)]
+    return [{"token": tokenizer.convert_ids_to_tokens(tid), "logprob": -i / 128} for i, tid in enumerate(output_ids)]
 
 
 @pytest.fixture(scope="module")
