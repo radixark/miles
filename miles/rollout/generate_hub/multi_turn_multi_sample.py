@@ -1,7 +1,3 @@
-"""
-Simple multi-turn generation with tool calling.
-"""
-
 import argparse
 
 from pydantic import TypeAdapter
