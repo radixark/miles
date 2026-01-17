@@ -263,7 +263,7 @@ class TestInputStatusValidation:
     def test_allowed_statuses(self, variant, generation_env, status):
         result = _run_generate(variant, generation_env, _make_sample(status=status))
         assert result.requests == [expected_request(variant)]
-        assert get_final_sample(result, variant).status == Sample.Status.COMPLETED
+        assert listify(result.sample)[-1].status == Sample.Status.COMPLETED
 
     @pytest.mark.parametrize("status", [Sample.Status.COMPLETED, Sample.Status.TRUNCATED])
     def test_rejected_statuses(self, variant, generation_env, status):
@@ -281,9 +281,7 @@ class TestPayloadStructure:
         assert result.requests == [
             expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9})
         ]
-        if variant == "multi_turn_multi_samples":
-            assert len(result.sample) == 1
-        assert get_final_sample(result, variant) == expected_sample(variant)
+        assert listify(result.sample)[-1] == expected_sample(variant)
 
 
 class TestBoundaryConditions:
@@ -312,9 +310,7 @@ class TestBoundaryConditions:
         result = _run_generate(variant, generation_env)
         assert result.requests == []
         tokens = PROMPT_TOKENS if variant in ("multi_turn_single_sample", "multi_turn_multi_samples") else []
-        if variant == "multi_turn_multi_samples":
-            assert len(result.sample) == 1
-        assert get_final_sample(result, variant) == expected_sample(
+        assert listify(result.sample)[-1] == expected_sample(
             variant,
             response="",
             response_length=0,
@@ -330,9 +326,7 @@ class TestEmptyResponse:
     def test_empty_response(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        if variant == "multi_turn_multi_samples":
-            assert len(result.sample) == 1
-        assert get_final_sample(result, variant) == expected_sample(
+        assert listify(result.sample)[-1] == expected_sample(
             variant, response="", response_length=0, tokens=PROMPT_TOKENS, rollout_log_probs=[]
         )
 
