@@ -3,6 +3,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.core_types import ToolCallItem
