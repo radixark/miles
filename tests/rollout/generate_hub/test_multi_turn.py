@@ -172,7 +172,6 @@ TWO_TURN_TOOL_RESPONSE = (
 )
 
 
-
 # ------------------------------------ tests ----------------------------------------
 
 
@@ -498,7 +497,13 @@ class TestThreeTurn:
             expected_request(S.THIRD_PROMPT_TOKEN_IDS),
         ]
         if variant == "multi_turn_single_sample":
-            full_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE + S.SECOND_TOOL_RESPONSE + S.THIRD_RESPONSE
+            full_response = (
+                S.FIRST_RESPONSE
+                + S.FIRST_TOOL_RESPONSE
+                + S.SECOND_RESPONSE
+                + S.SECOND_TOOL_RESPONSE
+                + S.THIRD_RESPONSE
+            )
             expected = [
                 ExpectedSampleInfo(
                     chunks=[
