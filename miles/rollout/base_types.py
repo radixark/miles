@@ -94,3 +94,14 @@ class GenerateFnOutput:
 @runtime_checkable
 class GenerateFnProtocol(Protocol):
     async def __call__(self, input: GenerateFnInput) -> GenerateFnOutput: ...
+
+
+def call_rollout_fn(fn, *args, evaluation: bool, **kwargs):
+    """Legacy rollout function call interface. Used when MILES_EXPERIMENTAL_ROLLOUT_REFACTOR is disabled."""
+    output = fn(*args, **kwargs, evaluation=evaluation)
+
+    # compatibility for legacy version
+    if not isinstance(output, (RolloutFnTrainOutput, RolloutFnEvalOutput)):
+        output = RolloutFnEvalOutput(data=output) if evaluation else RolloutFnTrainOutput(samples=output)
+
+    return output
