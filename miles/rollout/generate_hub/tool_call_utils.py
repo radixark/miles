@@ -3,11 +3,21 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from pydantic import TypeAdapter
+from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.core_types import ToolCallItem
+from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.utils.types import Sample
 
 _DUMMY_USER = {"role": "user", "content": "dummy"}
+
+
+def create_tool_call_parser(tool_specs, tool_call_parser):
+    return FunctionCallParser(
+        tools=TypeAdapter(list[Tool]).validate_python(tool_specs),
+        tool_call_parser=tool_call_parser,
+    )
 
 
 async def execute_tool_calls(tool_calls: list[ToolCallItem], execute_one: Callable) -> list[dict[str, Any]]:

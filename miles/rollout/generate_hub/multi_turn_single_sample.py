@@ -4,17 +4,17 @@ Simple multi-turn generation with tool calling.
 
 import argparse
 
-from pydantic import TypeAdapter
-from sglang.srt.entrypoints.openai.protocol import Tool
-from sglang.srt.function_call.function_call_parser import FunctionCallParser
-
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.generate_endpoint_wrapper import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     update_sample_from_response,
 )
-from miles.rollout.generate_hub.tool_call_utils import execute_tool_calls, update_sample_with_tool_responses
+from miles.rollout.generate_hub.tool_call_utils import (
+    create_tool_call_parser,
+    execute_tool_calls,
+    update_sample_with_tool_responses,
+)
 from miles.utils.http_utils import post
 from miles.utils.misc import load_function
 
@@ -32,12 +32,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     execute_tool_function = load_function(args.generate_execute_tool_function_path)
 
     tool_specs = load_function(args.generate_tool_specs_path)
-    assert isinstance(tool_specs, list)
-
-    tool_call_parser = FunctionCallParser(
-        tools=TypeAdapter(list[Tool]).validate_python(tool_specs),
-        tool_call_parser=args.generate_tool_call_parser,
-    )
+    tool_call_parser = create_tool_call_parser(tool_specs, args.generate_tool_call_parser)
 
     # ----------------------- Initial prompts -------------------------
 
