@@ -24,7 +24,15 @@ RESPONSE_LOG_PROBS = [-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125]
 SAMPLING_PARAMS = {"max_new_tokens": 16, "temperature": 0.7}
 
 
-@pytest.fixture(params=["old_sglang_rollout", "single_turn", "multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples"])
+@pytest.fixture(
+    params=[
+        "old_sglang_rollout",
+        "single_turn",
+        "multi_turn_single_sample",
+        "multi_turn_multi_samples",
+        "agentic_tool_call_multi_samples",
+    ]
+)
 def variant(request):
     return request.param
 
@@ -42,7 +50,11 @@ def expected_request(
         "sampling_params": sampling_params or SAMPLING_PARAMS,
         "return_logprob": True,
     }
-    if variant in ("single_turn", "multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples") or return_routed_experts:
+    if (
+        variant
+        in ("single_turn", "multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples")
+        or return_routed_experts
+    ):
         result["return_routed_experts"] = return_routed_experts
     if image_data is not None:
         result["image_data"] = image_data
@@ -316,7 +328,11 @@ class TestBoundaryConditions:
             pytest.skip("multi_turn_multi_samples returns empty list when first turn fails")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
-        tokens = PROMPT_TOKENS if variant in ("multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples") else []
+        tokens = (
+            PROMPT_TOKENS
+            if variant in ("multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples")
+            else []
+        )
         assert listify(result.sample) == [
             expected_sample(
                 variant,
