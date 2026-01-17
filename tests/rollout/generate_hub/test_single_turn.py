@@ -24,9 +24,15 @@ RESPONSE_LOG_PROBS = [-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125]
 SAMPLING_PARAMS = {"max_new_tokens": 16, "temperature": 0.7}
 
 
-@pytest.fixture(params=["old_sglang_rollout", "single_turn", "multi_turn_single_sample"])
+@pytest.fixture(params=["old_sglang_rollout", "single_turn", "multi_turn_single_sample", "multi_turn_multi_samples"])
 def variant(request):
     return request.param
+
+
+def get_final_sample(result, variant: str):
+    if variant == "multi_turn_multi_samples":
+        return result.sample[-1]
+    return result.sample
 
 
 def expected_request(
@@ -42,7 +48,7 @@ def expected_request(
         "sampling_params": sampling_params or SAMPLING_PARAMS,
         "return_logprob": True,
     }
-    if variant in ("single_turn", "multi_turn_single_sample") or return_routed_experts:
+    if variant in ("single_turn", "multi_turn_single_sample", "multi_turn_multi_samples") or return_routed_experts:
         result["return_routed_experts"] = return_routed_experts
     if image_data is not None:
         result["image_data"] = image_data
@@ -74,7 +80,7 @@ def expected_sample(
     multimodal_train_inputs: dict | None = None,
 ) -> Sample:
     actual_response_length = response_length if response_length is not None else len(RESPONSE_TOKENS)
-    loss_mask = [1] * actual_response_length if variant == "multi_turn_single_sample" else None
+    loss_mask = [1] * actual_response_length if variant in ("multi_turn_single_sample", "multi_turn_multi_samples") else None
     return Sample(
         group_index=None,
         index=None,
@@ -122,12 +128,14 @@ class TestBasicGeneration:
     def test_basic_generation(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample(variant)
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
+        assert get_final_sample(result, variant) == expected_sample(variant)
 
 
 class TestResumedSingleTurn:
     def test_two_consecutive_calls_on_same_sample(self, variant, generation_env):
-        if variant == "multi_turn_single_sample":
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
             pytest.skip("not tested yet")
         partial_text = "\\boxed"
         partial_tokens = [59, 79075]
@@ -184,7 +192,9 @@ class TestFinishReason:
     def test_finish_reason_sets_status(self, variant, generation_env, expected_status):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample(variant, status=expected_status)
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
+        assert get_final_sample(result, variant) == expected_sample(variant, status=expected_status)
 
 
 class TestRoutedExperts:
@@ -199,7 +209,7 @@ class TestRoutedExperts:
         indirect=True,
     )
     def test_routed_experts_enabled_and_parsed(self, variant, generation_env):
-        if variant == "multi_turn_single_sample":
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
             pytest.skip("TODO: support")
 
         num_layers, moe_router_topk = 2, 4
@@ -231,7 +241,9 @@ class TestMetaInfo:
     def test_meta_info_fields_updated(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample(variant, cached_tokens=3, weight_versions=["v1.0"])
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
+        assert get_final_sample(result, variant) == expected_sample(variant, cached_tokens=3, weight_versions=["v1.0"])
 
     @pytest.mark.parametrize(
         "generation_env",
@@ -246,7 +258,9 @@ class TestMetaInfo:
     def test_spec_info_updated(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample(
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
+        assert get_final_sample(result, variant) == expected_sample(
             variant,
             spec_info=Sample.SpecInfo(
                 spec_accept_token_num=10, spec_draft_token_num=15, spec_verify_ct=3, completion_token_num=5
@@ -259,11 +273,11 @@ class TestInputStatusValidation:
     def test_allowed_statuses(self, variant, generation_env, status):
         result = _run_generate(variant, generation_env, _make_sample(status=status))
         assert result.requests == [expected_request(variant)]
-        assert result.sample.status == Sample.Status.COMPLETED
+        assert get_final_sample(result, variant).status == Sample.Status.COMPLETED
 
     @pytest.mark.parametrize("status", [Sample.Status.COMPLETED, Sample.Status.TRUNCATED])
     def test_rejected_statuses(self, variant, generation_env, status):
-        if variant == "multi_turn_single_sample":
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
             pytest.skip("not tested yet")
         with pytest.raises(AssertionError):
             _run_generate(variant, generation_env, _make_sample(status=status))
@@ -277,12 +291,14 @@ class TestPayloadStructure:
         assert result.requests == [
             expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9})
         ]
-        assert result.sample == expected_sample(variant)
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
+        assert get_final_sample(result, variant) == expected_sample(variant)
 
 
 class TestBoundaryConditions:
     def test_max_new_tokens_zero_returns_truncated(self, variant, generation_env):
-        if variant == "multi_turn_single_sample":
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
             pytest.skip("not tested yet")
         existing_tokens = [1, 2, 3, 4, 5, 6, 7] + list(range(100, 110))
         sample = _make_sample(tokens=existing_tokens, response="x" * 10, response_length=10)
@@ -305,8 +321,10 @@ class TestBoundaryConditions:
             pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
-        tokens = PROMPT_TOKENS if variant == "multi_turn_single_sample" else []
-        assert result.sample == expected_sample(
+        tokens = PROMPT_TOKENS if variant in ("multi_turn_single_sample", "multi_turn_multi_samples") else []
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
+        assert get_final_sample(result, variant) == expected_sample(
             variant,
             response="",
             response_length=0,
@@ -322,7 +340,9 @@ class TestEmptyResponse:
     def test_empty_response(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
-        assert result.sample == expected_sample(
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
+        assert get_final_sample(result, variant) == expected_sample(
             variant, response="", response_length=0, tokens=PROMPT_TOKENS, rollout_log_probs=[]
         )
 
@@ -333,7 +353,7 @@ VLM_MODEL_NAME = "Qwen/Qwen2-VL-2B-Instruct"
 class TestMultimodal:
     @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"model_name": VLM_MODEL_NAME}}], indirect=True)
     def test_multimodal_inputs_processed(self, variant, generation_env):
-        if variant == "multi_turn_single_sample":
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
             pytest.skip("not tested yet")
         test_image = Image.new("RGB", (64, 64), color="red")
         multimodal_inputs = {"images": [test_image]}

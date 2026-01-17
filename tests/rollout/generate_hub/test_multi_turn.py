@@ -30,9 +30,15 @@ FIRST_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_FIRST_PROMPT, add_special_tokens=F
 SECOND_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_SECOND_PROMPT, add_special_tokens=False)["input_ids"]
 
 
-@pytest.fixture(params=["multi_turn_single_sample"])
+@pytest.fixture(params=["multi_turn_single_sample", "multi_turn_multi_samples"])
 def variant(request):
     return request.param
+
+
+def get_final_sample(result, variant: str) -> Sample:
+    if variant == "multi_turn_multi_samples":
+        return result.sample[-1]
+    return result.sample
 
 
 @dataclass(frozen=True)
@@ -151,8 +157,10 @@ class TestBasicMultiTurn:
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
         assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
         verify_sample(
-            result.sample,
+            get_final_sample(result, variant),
             expected_chunks=[
                 SampleParsedChunk(
                     tokens_decoded_str=SINGLE_TURN_RESPONSE,
@@ -176,8 +184,30 @@ class TestBasicMultiTurn:
             expected_request(FIRST_PROMPT_TOKEN_IDS),
             expected_request(SECOND_PROMPT_TOKEN_IDS),
         ]
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 2
+            verify_sample(
+                result.sample[0],
+                expected_chunks=[
+                    SampleParsedChunk(
+                        tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
+                        loss_mask_value=1,
+                        rollout_log_probs=[-1 / 128 * i for i in range(45)],
+                    ),
+                    SampleParsedChunk(
+                        tokens_decoded_str=TWO_TURN_TOOL_RESPONSE,
+                        loss_mask_value=0,
+                        rollout_log_probs=[0.0] * 31,
+                    ),
+                ],
+                expected_partial_sample=expected_partial_sample(
+                    prompt=TWO_TURN_PROMPT,
+                    response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                    response_length=45 + 31,
+                ),
+            )
         verify_sample(
-            result.sample,
+            get_final_sample(result, variant),
             expected_chunks=[
                 SampleParsedChunk(
                     tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
@@ -218,8 +248,10 @@ class TestExitConditions:
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
         assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
         verify_sample(
-            result.sample,
+            get_final_sample(result, variant),
             expected_chunks=[
                 SampleParsedChunk(
                     tokens_decoded_str=SINGLE_TURN_RESPONSE,
@@ -243,8 +275,10 @@ class TestExitConditions:
         result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
 
         assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
         verify_sample(
-            result.sample,
+            get_final_sample(result, variant),
             expected_chunks=[
                 SampleParsedChunk(
                     tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
@@ -269,8 +303,10 @@ class TestExitConditions:
         result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
 
         assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
         verify_sample(
-            result.sample,
+            get_final_sample(result, variant),
             expected_chunks=[
                 SampleParsedChunk(
                     tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
@@ -298,8 +334,10 @@ class TestRespectMaxContextLen:
     def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
         assert result.requests == []
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 1
         verify_sample(
-            result.sample,
+            get_final_sample(result, variant),
             expected_chunks=[],
             expected_partial_sample=expected_partial_sample(
                 prompt=SINGLE_TURN_PROMPT,
@@ -320,8 +358,30 @@ class TestRespectMaxContextLen:
         result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
 
         assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
+        if variant == "multi_turn_multi_samples":
+            assert len(result.sample) == 2
+            verify_sample(
+                result.sample[0],
+                expected_chunks=[
+                    SampleParsedChunk(
+                        tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
+                        loss_mask_value=1,
+                        rollout_log_probs=[-1 / 128 * i for i in range(45)],
+                    ),
+                    SampleParsedChunk(
+                        tokens_decoded_str=TWO_TURN_TOOL_RESPONSE,
+                        loss_mask_value=0,
+                        rollout_log_probs=[0.0] * 31,
+                    ),
+                ],
+                expected_partial_sample=expected_partial_sample(
+                    prompt=TWO_TURN_PROMPT,
+                    response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                    response_length=45 + 31,
+                ),
+            )
         verify_sample(
-            result.sample,
+            get_final_sample(result, variant),
             expected_chunks=[
                 SampleParsedChunk(
                     tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
