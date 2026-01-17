@@ -89,9 +89,11 @@ def router_url():
         port = find_available_port(31000)
         server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
         server.start()
+
+        url = f"http://127.0.0.1:{port}"
+        requests.post(f"{url}/add_worker", json={"url": backend.url})
+
         try:
-            url = f"http://127.0.0.1:{port}"
-            requests.post(f"{url}/add_worker", json={"url": backend.url})
             yield url
         finally:
             server.stop()
