@@ -224,13 +224,7 @@ class ThreeTurnStub:
 
     THIRD_RESPONSE = "The answer is: 42 + 2026 + -60 + 15 = 2023."
 
-    FIRST_PROMPT = (
-        _SYSTEM_PROMPT
-        + "<|im_start|>user\n"
-        + USER_QUESTION
-        + "<|im_end|>\n"
-        + "<|im_start|>assistant\n"
-    )
+    FIRST_PROMPT = _SYSTEM_PROMPT + "<|im_start|>user\n" + USER_QUESTION + "<|im_end|>\n" + "<|im_start|>assistant\n"
 
     FIRST_TOOL_RESPONSE = (
         "<|im_start|>user\n"
