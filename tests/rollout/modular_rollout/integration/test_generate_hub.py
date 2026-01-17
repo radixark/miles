@@ -103,7 +103,7 @@ def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: 
 async def _simple_reward_function(args, samples: Sample | list[Sample]) -> float | list[float]:
     if isinstance(samples, list):
         # For multi_samples variants, use the last sample's reward
-        if getattr(args, "generate_multi_samples", False) and len(samples) > 0:
+        if getattr(args, "generate_multi_samples", False):
             return [_check_reward(samples[-1])] * len(samples)
         else:
             return [_check_reward(sample) for sample in samples]
