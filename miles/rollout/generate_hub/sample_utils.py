@@ -1,7 +1,7 @@
 from miles.utils.types import Sample
 
 
-def merge_two_samples(sample1: Sample, sample2: Sample, tokenizer) -> Sample:
+def merge_samples(sample1: Sample, sample2: Sample, tokenizer) -> Sample:
     _validate_samples(sample1, sample2)
 
     tool_response_len = len(sample2.tokens) - len(sample1.tokens) - sample2.response_length
