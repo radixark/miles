@@ -12,18 +12,14 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
         assert x == y, f"{field} mismatch: a.{field}={x}, b.{field}={y}"
         return x
 
-    def _fill_default_loss_mask(sample: Sample):
+    def _fill_defaults(sample: Sample):
         if sample.loss_mask is None:
             sample.loss_mask = [1] * sample.response_length
-
-    def _fill_default_rollout_log_probs(sample: Sample):
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = [0.0] * sample.response_length
 
-    _fill_default_loss_mask(a)
-    _fill_default_loss_mask(b)
-    _fill_default_rollout_log_probs(a)
-    _fill_default_rollout_log_probs(b)
+    _fill_defaults(a)
+    _fill_defaults(b)
 
     obs_len = len(b.tokens) - len(a.tokens) - b.response_length
     obs_tokens = b.tokens[len(a.tokens) : len(a.tokens) + obs_len]
