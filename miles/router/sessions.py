@@ -50,13 +50,6 @@ def setup_session_routes(app, router: "MilesRouter"):
         session_id = manager.create_session()
         return {"session_id": session_id}
 
-    @app.get("/sessions/{session_id}")
-    async def get_session(session_id: str):
-        records = manager.get_session(session_id)
-        if records is None:
-            return JSONResponse(status_code=404, content={"error": "session not found"})
-        return {"session_id": session_id, "records": [asdict(r) for r in records]}
-
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: str):
         if session_id not in manager.sessions:
