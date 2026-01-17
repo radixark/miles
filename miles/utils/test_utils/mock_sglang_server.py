@@ -56,6 +56,7 @@ class MockSGLangServer:
         self._server: UvicornThreadServer | None = None
 
         self.request_log: list[dict] = []
+        self.sessions: dict[str, list[dict]] = {}
         self._concurrency = Counter()
 
         self._setup_routes()
@@ -117,6 +118,111 @@ class MockSGLangServer:
         @self.app.post("/abort_request")
         async def abort_request(_request: Request):
             return JSONResponse(content={"status": "ok"})
+
+        @self.app.post("/sessions")
+        async def create_session():
+            session_id = uuid.uuid4().hex
+            self.sessions[session_id] = []
+            return {"session_id": session_id}
+
+        @self.app.delete("/sessions/{session_id}")
+        async def delete_session(session_id: str):
+            if session_id not in self.sessions:
+                return JSONResponse(status_code=404, content={"error": "session not found"})
+            records = self.sessions.pop(session_id)
+            return {"session_id": session_id, "records": records}
+
+        @self.app.post("/sessions/{session_id}/v1/chat/completions")
+        async def session_chat_completions(request: Request, session_id: str):
+            if session_id not in self.sessions:
+                return JSONResponse(status_code=404, content={"error": "session not found"})
+
+            payload = await request.json()
+            messages = payload.get("messages", [])
+            tools = payload.get("tools")
+
+            prompt_str = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, tools=tools
+            )
+            input_ids = self.tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True, add_special_tokens=False, tools=tools
+            )
+
+            with self._concurrency.track():
+                if self.latency > 0:
+                    await asyncio.sleep(self.latency)
+
+                process_result = self.process_fn(prompt_str)
+                output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
+
+                logprobs_content = [
+                    {"token": self.tokenizer.decode([tid]), "token_id": tid, "logprob": -1 / 128 * i}
+                    for i, tid in enumerate(output_ids)
+                ]
+
+                finish_reason = process_result.finish_reason
+                if finish_reason == "stop" and process_result.text.strip().startswith("<tool_call>"):
+                    finish_reason = "tool_calls"
+
+                tool_calls = None
+                if finish_reason == "tool_calls":
+                    tool_calls = self._parse_tool_calls_from_text(process_result.text)
+
+                response = {
+                    "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "mock-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": process_result.text if not tool_calls else None,
+                                "tool_calls": tool_calls,
+                            },
+                            "logprobs": {"content": logprobs_content},
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": len(input_ids),
+                        "completion_tokens": len(output_ids),
+                        "total_tokens": len(input_ids) + len(output_ids),
+                    },
+                }
+
+                record = {
+                    "timestamp": time.time(),
+                    "method": "POST",
+                    "path": "v1/chat/completions",
+                    "request": {**payload, "input_ids": input_ids},
+                    "response": {"choices": response["choices"]},
+                    "status_code": 200,
+                }
+                self.sessions[session_id].append(record)
+
+                return JSONResponse(content=response)
+
+    def _parse_tool_calls_from_text(self, text: str) -> list[dict] | None:
+        import json as json_module
+        tool_calls = []
+        pattern = r"<tool_call>\s*(\{[^}]+\})\s*</tool_call>"
+        matches = re.findall(pattern, text, re.DOTALL)
+        for i, match in enumerate(matches):
+            try:
+                parsed = json_module.loads(match)
+                tool_calls.append({
+                    "id": f"call{i:05d}",
+                    "type": "function",
+                    "function": {
+                        "name": parsed.get("name"),
+                        "arguments": json_module.dumps(parsed.get("arguments", {})),
+                    },
+                })
+            except json_module.JSONDecodeError:
+                continue
+        return tool_calls if tool_calls else None
 
     def start(self):
         self._server = UvicornThreadServer(self.app, host=self.host, port=self.port)
