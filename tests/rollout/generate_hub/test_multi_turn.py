@@ -372,34 +372,30 @@ class TestRespectMaxContextLen:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"rollout_max_context_len": len(FIRST_PROMPT_TOKEN_IDS) + 47 + 31}}],
+        [{"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS) + token_len(TwoTurnStub.FIRST_RESPONSE) + token_len(TwoTurnStub.FIRST_TOOL_RESPONSE)}}],
         indirect=True,
     )
     def test_second_turn_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("TODO: implement")
-        generation_env.mock_server.process_fn = multi_turn_tool_call_process_fn
+        S = TwoTurnStub
+        generation_env.mock_server.process_fn = S.process_fn
 
-        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
-        assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
+        assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
         if variant == "multi_turn_single_sample":
+            partial_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE
             expected = [
                 ExpectedSampleInfo(
                     chunks=[
-                        SampleParsedChunk(
-                            tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
-                            loss_mask_value=1,
-                            rollout_log_probs=[-1 / 128 * i for i in range(47)],
-                        ),
-                        SampleParsedChunk(
-                            tokens_decoded_str=TWO_TURN_TOOL_RESPONSE, loss_mask_value=0, rollout_log_probs=[0.0] * 31
-                        ),
+                        expected_chunk(S.FIRST_RESPONSE, 1),
+                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
                     ],
                     partial_sample=expected_partial_sample(
-                        prompt=TWO_TURN_PROMPT,
-                        response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
-                        response_length=47 + 31,
+                        prompt=S.PROMPT,
+                        response=partial_response,
+                        response_length=token_len(partial_response),
                         status=Sample.Status.TRUNCATED,
                     ),
                 ),
@@ -407,17 +403,11 @@ class TestRespectMaxContextLen:
         else:
             expected = [
                 ExpectedSampleInfo(
-                    chunks=[
-                        SampleParsedChunk(
-                            tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
-                            loss_mask_value=1,
-                            rollout_log_probs=[-1 / 128 * i for i in range(47)],
-                        )
-                    ],
+                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
                     partial_sample=expected_partial_sample(
-                        prompt=TWO_TURN_PROMPT,
-                        response=MULTI_TURN_FIRST_RESPONSE,
-                        response_length=47,
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE),
                         status=Sample.Status.TRUNCATED,
                     ),
                 ),
