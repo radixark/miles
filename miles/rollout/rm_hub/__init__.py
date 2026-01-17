@@ -69,8 +69,18 @@ async def async_rm(args, sample: Sample, **kwargs):
 async def batched_async_rm(
     args,
     samples: list[Sample],
+    inplace_set_reward_field: bool = False,
     **kwargs,
-) -> list[int | float]:
+) -> list[int | float] | None:
+    if inplace_set_reward_field:
+        rewards = await batched_async_rm(args, samples, **kwargs)
+        for sample, reward in zip(samples, rewards, strict=True):
+            assert (
+                sample.reward is None
+            ), f"Overriding sample.reward from {sample.reward} to {reward}, is this intended?"
+            sample.reward = reward
+        return None
+
     if args.custom_rm_path is not None:
         # Ensure the custom reward function is implemented in batch mode
         rm_function = load_function(args.custom_rm_path)
