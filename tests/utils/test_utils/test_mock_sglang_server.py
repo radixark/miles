@@ -439,13 +439,7 @@ class TestMultiTurnToolCallProcessFn:
                     {"role": "user", "content": "What is 42 + year + temperature?"},
                     {
                         "role": "assistant",
-                        "content": "Let me get the year and temperature first.\n"
-                        "<tool_call>\n"
-                        '{"name": "get_year", "arguments": {}}\n'
-                        "</tool_call>\n"
-                        "<tool_call>\n"
-                        '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
-                        "</tool_call>",
+                        "content": "Let me get the year and temperature first.",
                         "tool_calls": [
                             {"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}},
                             {"id": "call00001", "type": "function", "function": {"name": "get_temperature", "arguments": '{"location": "Mars"}'}},
