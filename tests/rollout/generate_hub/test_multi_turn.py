@@ -48,6 +48,7 @@ class SampleParsedChunk:
 
 @dataclass
 class ExpectedSampleInfo:
+    prompt: list[dict]
     chunks: list[SampleParsedChunk]
     response: str
     response_length: int
@@ -76,9 +77,9 @@ def parse_sample_into_chunks(sample: Sample, tokenizer) -> list[SampleParsedChun
     return chunks
 
 
-def _make_expected_partial_sample(prompt: list[dict], info: ExpectedSampleInfo) -> Sample:
+def _make_expected_partial_sample(info: ExpectedSampleInfo) -> Sample:
     return Sample(
-        prompt=prompt,
+        prompt=info.prompt,
         response=info.response,
         response_length=info.response_length,
         status=info.status,
@@ -91,11 +92,7 @@ def _make_expected_partial_sample(prompt: list[dict], info: ExpectedSampleInfo) 
     )
 
 
-def verify_samples(
-    actual: Sample | list[Sample],
-    prompt: list[dict],
-    expected: list[ExpectedSampleInfo],
-):
+def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleInfo]):
     samples = listify(actual)
     assert len(samples) == len(expected), f"Expected {len(expected)} samples, got {len(samples)}"
 
@@ -110,7 +107,7 @@ def verify_samples(
             rollout_log_probs=[],
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
-        assert actual_partial == _make_expected_partial_sample(prompt, info)
+        assert actual_partial == _make_expected_partial_sample(info)
 
 
 def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_params: dict | None = None):
