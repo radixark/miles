@@ -57,6 +57,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         output = await post(url, payload)
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
 
+        if args.generate_multi_samples:
+            multi_samples.append(sample)
+
         if output["meta_info"]["finish_reason"]["type"] in ("abort", "length"):
             break
 
@@ -65,9 +68,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         _, tool_calls = tool_call_parser.parse_non_stream(output["text"])
         if len(tool_calls) == 0:
             break
-
-        if args.generate_multi_samples:
-            multi_samples.append(sample)
 
         tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
