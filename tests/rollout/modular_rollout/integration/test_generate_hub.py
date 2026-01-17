@@ -1,7 +1,7 @@
 import pytest
 from tests.fixtures.rollout_integration import IntegrationEnvConfig
 from tests.rollout.modular_rollout.integration.utils import (
-    _MODULAR_ROLLOUT_ARGV_WITHOUT_GENERATE,
+    MODULAR_ROLLOUT_BASE_ARGV,
     extra_argv_for_variant,
     load_and_call_train,
 )
@@ -16,7 +16,7 @@ TWO_TURN_DATA_ROWS = [{"input": TwoTurnStub.USER_QUESTION, "label": "2008"}]
 
 def _config_for_variant(variant: str) -> IntegrationEnvConfig:
     return IntegrationEnvConfig(
-        extra_argv=_MODULAR_ROLLOUT_ARGV_WITHOUT_GENERATE + extra_argv_for_variant(variant),
+        extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv_for_variant(variant),
         data_rows=TWO_TURN_DATA_ROWS,
     )
 

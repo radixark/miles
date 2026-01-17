@@ -35,7 +35,7 @@ async def _multi_sample_generate(input: GenerateFnInput) -> GenerateFnOutput:
     [
         pytest.param(
             IntegrationEnvConfig(
-                extra_argv=MODULAR_ROLLOUT_BASE_ARGV[:4]
+                extra_argv=MODULAR_ROLLOUT_BASE_ARGV
                 + [
                     "--custom-generate-function-path",
                     "test:multi_sample_generate",

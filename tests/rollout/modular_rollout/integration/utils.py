@@ -58,14 +58,12 @@ def expected_sample(*, group_index: int | None) -> Sample:
     )
 
 
-_MODULAR_ROLLOUT_ARGV_WITHOUT_GENERATE = [
+MODULAR_ROLLOUT_BASE_ARGV = [
     "--rollout-function-path",
     "miles.rollout.modular_rollout.orchestration_train.SimpleTrainRolloutFn",
     "--eval-function-path",
     "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
 ]
-
-MODULAR_ROLLOUT_BASE_ARGV = _MODULAR_ROLLOUT_ARGV_WITHOUT_GENERATE + extra_argv_for_variant("single_turn")
 
 MIXED_DATA_ROWS = [
     {"input": "What is 1+7?", "label": "8"},
@@ -75,9 +73,14 @@ MIXED_DATA_ROWS = [
 ]
 
 
-def config(extra_argv: list[str], data_rows: list[dict] | None = None, latency: float = 0.0):
+def config(
+    extra_argv: list[str],
+    data_rows: list[dict] | None = None,
+    latency: float = 0.0,
+    variant: str = "single_turn",
+):
     return IntegrationEnvConfig(
-        extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv,
+        extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv_for_variant(variant) + extra_argv,
         data_rows=data_rows,
         latency=latency,
     )
