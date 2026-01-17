@@ -145,6 +145,20 @@ class Sample:
     def effective_response_length(self):
         return sum(self.loss_mask) if self.loss_mask is not None else self.response_length
 
+    def validate(self):
+        assert self.response_length >= 0, f"response_length must be >= 0, got {self.response_length}"
+        assert (
+            len(self.tokens) >= self.response_length
+        ), f"tokens length ({len(self.tokens)}) must be >= response_length ({self.response_length})"
+        if self.loss_mask is not None:
+            assert (
+                len(self.loss_mask) == self.response_length
+            ), f"loss_mask length ({len(self.loss_mask)}) != response_length ({self.response_length})"
+        if self.rollout_log_probs is not None:
+            assert (
+                len(self.rollout_log_probs) == self.response_length
+            ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+
     def update_from_meta_info(self, args, meta_info: dict):
         """
         Update the sample with new information from meta_info returned by the rollout engine.
