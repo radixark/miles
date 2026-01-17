@@ -15,6 +15,11 @@ from miles.utils.test_utils.mock_sglang_server import (
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS
 
 
+def expected_logprobs(tokenizer, text: str) -> list[dict]:
+    output_ids = tokenizer.encode(text, add_special_tokens=False)
+    return [{"token": tokenizer.decode([tid]), "logprob": -i / 128} for i, tid in enumerate(output_ids)]
+
+
 @pytest.fixture(scope="module")
 def mock_server():
     with with_mock_server() as server:
@@ -225,7 +230,7 @@ def test_chat_completions_basic(mock_server):
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": "\\boxed{6}", "tool_calls": None},
-                "logprobs": {"content": data["choices"][0]["logprobs"]["content"]},
+                "logprobs": {"content": expected_logprobs(mock_server.tokenizer, "\\boxed{6}")},
                 "finish_reason": "stop",
             }
         ],
@@ -269,21 +274,23 @@ def test_chat_completions_with_tool_calls():
         )
         data = response.json()
 
-    assert data["choices"][0] == {
-        "index": 0,
-        "message": {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}}],
-        },
-        "logprobs": data["choices"][0]["logprobs"],
-        "finish_reason": "tool_calls",
-    }
+        assert data["choices"][0] == {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}}],
+            },
+            "logprobs": {"content": expected_logprobs(server.tokenizer, tool_call_response)},
+            "finish_reason": "tool_calls",
+        }
 
 
 def test_chat_completions_with_tools_but_no_tool_call():
+    response_text = "The weather is sunny today."
+
     def process_fn(_: str) -> ProcessResult:
-        return ProcessResult(text="The weather is sunny today.", finish_reason="stop")
+        return ProcessResult(text=response_text, finish_reason="stop")
 
     with with_mock_server(process_fn=process_fn) as server:
         response = requests.post(
@@ -297,12 +304,12 @@ def test_chat_completions_with_tools_but_no_tool_call():
         )
         data = response.json()
 
-    assert data["choices"][0] == {
-        "index": 0,
-        "message": {"role": "assistant", "content": "The weather is sunny today.", "tool_calls": None},
-        "logprobs": data["choices"][0]["logprobs"],
-        "finish_reason": "stop",
-    }
+        assert data["choices"][0] == {
+            "index": 0,
+            "message": {"role": "assistant", "content": response_text, "tool_calls": None},
+            "logprobs": {"content": expected_logprobs(server.tokenizer, response_text)},
+            "finish_reason": "stop",
+        }
 
 
 def test_chat_completions_with_multiple_tool_calls():
@@ -327,13 +334,19 @@ def test_chat_completions_with_multiple_tool_calls():
         )
         data = response.json()
 
-    choice = data["choices"][0]
-    assert choice["finish_reason"] == "tool_calls"
-    assert len(choice["message"]["tool_calls"]) == 2
-
-    assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_year"
-    assert choice["message"]["tool_calls"][1]["function"]["name"] == "get_temperature"
-    assert choice["message"]["tool_calls"][1]["function"]["arguments"] == '{"location": "Shanghai"}'
+        assert data["choices"][0] == {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}},
+                    {"id": "call00001", "type": "function", "function": {"name": "get_temperature", "arguments": '{"location": "Shanghai"}'}},
+                ],
+            },
+            "logprobs": {"content": expected_logprobs(server.tokenizer, multi_tool_response)},
+            "finish_reason": "tool_calls",
+        }
 
 
 def test_health_endpoint(mock_server):
