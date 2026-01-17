@@ -12,8 +12,8 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
     b.validate()
     assert a.loss_mask is not None, "a.loss_mask is None"
     assert b.loss_mask is not None, "b.loss_mask is None"
-    assert a.rollout_log_probs is not None, "a.rollout_log_probs is None"
-    assert b.rollout_log_probs is not None, "b.rollout_log_probs is None"
+    assert a.rollout_log_probs is not None
+    assert b.rollout_log_probs is not None
     assert b.tokens[: len(a.tokens)] == a.tokens, (
         f"b.tokens must start with a.tokens. "
         f"a.tokens: {a.tokens}, "
