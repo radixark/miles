@@ -36,15 +36,8 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
         e.add_note(f"{a=} {b=}")
         raise
 
-    spec_info = Sample.SpecInfo()
-    spec_info.spec_accept_token_num = a.spec_info.spec_accept_token_num + b.spec_info.spec_accept_token_num
-    spec_info.spec_draft_token_num = a.spec_info.spec_draft_token_num + b.spec_info.spec_draft_token_num
-    spec_info.spec_verify_ct = a.spec_info.spec_verify_ct + b.spec_info.spec_verify_ct
-    spec_info.completion_token_num = a.spec_info.completion_token_num + b.spec_info.completion_token_num
-
-    prefix_cache_info = Sample.PrefixCacheInfo()
-    prefix_cache_info.cached_tokens = a.prefix_cache_info.cached_tokens + b.prefix_cache_info.cached_tokens
-    prefix_cache_info.total_prompt_tokens = a.prefix_cache_info.total_prompt_tokens + b.prefix_cache_info.total_prompt_tokens
+    spec_info = _merge_spec_info(a.spec_info, b.spec_info)
+    prefix_cache_info = _merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info)
 
     merged_fields = dict(
         group_index=_merge_equal_value("group_index"),
@@ -77,3 +70,35 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
     )
 
     return Sample(**merged_fields)
+
+
+def _merge_spec_info(a: Sample.SpecInfo, b: Sample.SpecInfo) -> Sample.SpecInfo:
+    merged_fields = dict(
+        spec_accept_token_num=a.spec_accept_token_num + b.spec_accept_token_num,
+        spec_draft_token_num=a.spec_draft_token_num + b.spec_draft_token_num,
+        spec_verify_ct=a.spec_verify_ct + b.spec_verify_ct,
+        completion_token_num=a.completion_token_num + b.completion_token_num,
+    )
+
+    expected_fields = set(Sample.SpecInfo.__dataclass_fields__.keys())
+    actual_fields = set(merged_fields.keys())
+    assert expected_fields == actual_fields, (
+        f"SpecInfo field mismatch. Missing: {expected_fields - actual_fields}, Extra: {actual_fields - expected_fields}"
+    )
+
+    return Sample.SpecInfo(**merged_fields)
+
+
+def _merge_prefix_cache_info(a: Sample.PrefixCacheInfo, b: Sample.PrefixCacheInfo) -> Sample.PrefixCacheInfo:
+    merged_fields = dict(
+        cached_tokens=a.cached_tokens + b.cached_tokens,
+        total_prompt_tokens=a.total_prompt_tokens + b.total_prompt_tokens,
+    )
+
+    expected_fields = set(Sample.PrefixCacheInfo.__dataclass_fields__.keys())
+    actual_fields = set(merged_fields.keys())
+    assert expected_fields == actual_fields, (
+        f"PrefixCacheInfo field mismatch. Missing: {expected_fields - actual_fields}, Extra: {actual_fields - expected_fields}"
+    )
+
+    return Sample.PrefixCacheInfo(**merged_fields)
