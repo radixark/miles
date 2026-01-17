@@ -49,6 +49,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         payload, halt_status = compute_request_payload(args, sample.tokens, input.sampling_params)
         if payload is None:
             sample.status = halt_status
+            if args.generate_multi_samples and multi_samples:
+                multi_samples[-1].status = halt_status
             break
 
         if args.generate_multi_samples:
