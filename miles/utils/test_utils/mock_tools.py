@@ -269,8 +269,7 @@ class ThreeTurnStub:
 
     OPENAI_MESSAGES_FIRST_TURN = [{"role": "user", "content": USER_QUESTION}]
 
-    OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT = [
-        {"role": "user", "content": USER_QUESTION},
+    OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT = OPENAI_MESSAGES_FIRST_TURN + [
         {
             "content": FIRST_RESPONSE_CONTENT,
             "refusal": None,
