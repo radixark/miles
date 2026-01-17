@@ -170,6 +170,7 @@ class TestLoadBalancing:
             router._finish_url("http://unknown:8000")
 
 
+# TODO: extract main body inside `_health_check_loop`, then can test that function
 class TestHealthCheck:
     def test_check_worker_health_success(self, router_factory, mock_worker: MockSGLangServer):
         router = router_factory()
