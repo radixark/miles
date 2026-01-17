@@ -83,3 +83,8 @@ def _add_arguments(parser: argparse.ArgumentParser):
 
 
 generate.add_arguments = _add_arguments
+
+
+class _ToolCallAgent:
+    """Imagine this is a black-box agent that does arbitrarily complex work."""
+    TODO
