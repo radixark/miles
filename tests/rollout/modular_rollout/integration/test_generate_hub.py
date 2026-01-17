@@ -14,7 +14,7 @@ async def _simple_reward_function(args, samples: Sample | list[Sample]) -> float
     if isinstance(samples, list):
         # For multi_samples variants, check if the last sample contains the label
         # If so, all samples get reward=1 (as requested by user)
-        if len(samples) > 0 and _check_reward(samples[-1]) == 1.0:
+        if getattr(args, "generate_multi_samples", False) and len(samples) > 0 and _check_reward(samples[-1]) == 1.0:
             return [1.0] * len(samples)
         # Otherwise, check each sample individually
         return [_check_reward(sample) for sample in samples]
@@ -99,17 +99,14 @@ def _verify_samples(variant: str, samples: list[Any]):
     is_multi_samples = variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples")
     
     if is_multi_samples:
-        # For multi_samples variants, samples can be either:
-        # 1. list[list[Sample]] (train mode: grouped by prompt)
-        # 2. list[Sample] (eval mode: flattened)
         if len(samples) > 0 and isinstance(samples[0], list):
-            # Train mode: list[list[Sample]]
+            # Train mode: list[list[Sample]], grouped by prompt
             assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
             for group_sample in samples:
                 assert isinstance(group_sample, list), "multi_samples variant should return list[Sample] per generate"
                 _verify_group_samples(group_sample)
         else:
-            # Eval mode: list[Sample] (flattened)
+            # Eval mode: list[Sample], flattened
             # n_samples_per_eval_prompt=2, and each generate returns 2 turns, so 2*2=4 samples
             assert len(samples) == 4, f"n_samples_per_eval_prompt=2, each generate returns 2 turns, so should have 4 samples, got {len(samples)}"
             # Group samples by prompt (every 2 samples form a group)
