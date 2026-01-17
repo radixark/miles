@@ -70,7 +70,7 @@ class TestSessionManager:
             manager.add_record("nonexistent", record)
 
 
-@pytest.fixture
+@pytest.fixture(scope="class")
 def integration_client():
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
