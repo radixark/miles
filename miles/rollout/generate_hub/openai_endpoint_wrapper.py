@@ -1,6 +1,6 @@
 from argparse import Namespace
 
-from miles.router.sessions import SessionRecord
+from miles.router.sessions import DeleteSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 
 
@@ -19,7 +19,8 @@ class OpenAIEndpointTracer:
     async def collect_records(self) -> list[SessionRecord]:
         # TODO: for fault tolerance, we may want to change to GET + DELETE
         response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="delete")
-        return response["records"]
+        response = DeleteSessionResponse.model_validate(response)
+        return response.records
 
 
 def compute_samples_from_openai_records(records: list[SessionRecord]):
