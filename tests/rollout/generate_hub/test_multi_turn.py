@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from itertools import groupby
 
 import pytest
-from tests.fixtures.generation_fixtures import GenerateEnv, generation_env, make_sample, run_generate
+from tests.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoTokenizer
 
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
@@ -33,10 +33,6 @@ SECOND_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_SECOND_PROMPT, add_special_tokens
 @pytest.fixture(params=["multi_turn_single_sample", "multi_turn_multi_samples"])
 def variant(request):
     return request.param
-
-
-def listify(x):
-    return x if isinstance(x, list) else [x]
 
 
 @dataclass(frozen=True)
@@ -96,21 +92,21 @@ def expected_partial_sample(
 
 
 def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleInfo]):
-    samples = listify(actual)
-    assert len(samples) == len(expected), f"Expected {len(expected)} samples, got {len(samples)}"
+    actual = listify(actual)
+    assert len(actual) == len(expected)
 
-    for sample, info in zip(samples, expected, strict=True):
-        actual_chunks = parse_sample_into_chunks(sample, TOKENIZER)
-        assert actual_chunks == info.chunks
+    for actual_item, expected_item in zip(actual, expected, strict=True):
+        actual_chunks = parse_sample_into_chunks(actual_item, TOKENIZER)
+        assert actual_chunks == expected_item.chunks
 
         actual_partial = replace(
-            deepcopy(sample),
+            deepcopy(actual_item),
             tokens=[],
             loss_mask=[],
             rollout_log_probs=[],
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
-        assert actual_partial == info.partial_sample
+        assert actual_partial == expected_item.partial_sample
 
 
 def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_params: dict | None = None):

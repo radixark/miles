@@ -3,7 +3,7 @@ import pybase64
 import pytest
 import torch
 from PIL import Image
-from tests.fixtures.generation_fixtures import GenerateEnv, generation_env, make_sample, run_generate
+from tests.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
 from miles.utils.processing_utils import encode_image_for_rollout_engine
@@ -27,10 +27,6 @@ SAMPLING_PARAMS = {"max_new_tokens": 16, "temperature": 0.7}
 @pytest.fixture(params=["old_sglang_rollout", "single_turn", "multi_turn_single_sample", "multi_turn_multi_samples"])
 def variant(request):
     return request.param
-
-
-def listify(x):
-    return x if isinstance(x, list) else [x]
 
 
 def expected_request(

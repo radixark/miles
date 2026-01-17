@@ -30,6 +30,10 @@ VARIANT_TO_GENERATE_FN_PATH = {
 }
 
 
+def listify(x):
+    return x if isinstance(x, list) else [x]
+
+
 def make_sample(
     *,
     prompt: str | list[dict] = "What is 1+7?",
