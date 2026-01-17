@@ -43,7 +43,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     sample.tokens = prompt_tokens_ids.copy()
 
-    for turn in range(args.generate_max_turns):
+    for _turn in range(args.generate_max_turns):
         # ----------------------- Call inference endpoint -------------------------
 
         payload, halt_status = compute_request_payload(args, sample.tokens, input.sampling_params)
@@ -51,7 +51,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample.status = halt_status
             break
 
-        if args.generate_multi_samples and turn > 0:
+        if args.generate_multi_samples:
             sample = deepcopy(input.sample)
 
         output = await post(url, payload)
