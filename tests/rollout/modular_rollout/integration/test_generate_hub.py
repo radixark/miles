@@ -58,15 +58,14 @@ def _config_for_variant(variant: str) -> IntegrationEnvConfig:
 
 
 @pytest.mark.parametrize(
-    "variant",
-    _VARIANT_NAMES,
+    "variant,rollout_integration_env",
+    [
+        pytest.param(variant, _config_for_variant(variant), id=variant)
+        for variant in _VARIANT_NAMES
+    ],
+    indirect=["rollout_integration_env"],
 )
 @pytest.mark.parametrize("test_type", ["train", "eval"])
-@pytest.mark.parametrize(
-    "rollout_integration_env",
-    [pytest.param(_config_for_variant(variant), id=variant) for variant in _VARIANT_NAMES],
-    indirect=True,
-)
 def test_rollout(rollout_integration_env, variant, test_type):
     env = rollout_integration_env
     env.mock_server.process_fn = TwoTurnStub.process_fn
@@ -83,8 +82,18 @@ def test_rollout(rollout_integration_env, variant, test_type):
         _verify_samples(variant, samples)
 
 
+def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: bool = True):
+    """Verify a single sample's properties."""
+    assert sample.status == Sample.Status.COMPLETED
+    assert sample.reward == expected_reward, f"Sample should have reward={expected_reward}"
+    if expect_answer:
+        assert "2008" in sample.response, "Response should contain final answer '2008'"
+
+
 def _verify_samples(variant: str, samples: list[Any]):
-    if variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
+    is_multi_samples = variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples")
+    
+    if is_multi_samples:
         # For multi_samples variants, samples can be either:
         # 1. list[list[Sample]] (train mode: grouped by prompt)
         # 2. list[Sample] (eval mode: flattened)
@@ -95,9 +104,7 @@ def _verify_samples(variant: str, samples: list[Any]):
                 assert isinstance(group_sample, list), "multi_samples variant should return list[Sample] per generate"
                 assert len(group_sample) == 2, "multi_samples variant should return 2 samples per generate (one per turn)"
                 for i, sample in enumerate(group_sample):
-                    assert sample.status == Sample.Status.COMPLETED
-                    assert sample.reward == 1, f"Sample {i} should have reward=1"
-                assert "2008" in group_sample[-1].response, "Last sample should contain final answer '2008'"
+                    _verify_sample(sample, expect_answer=(i == len(group_sample) - 1))
         else:
             # Eval mode: list[Sample] (flattened)
             # n_samples_per_eval_prompt=2, and each generate returns 2 turns, so 2*2=4 samples
@@ -107,13 +114,9 @@ def _verify_samples(variant: str, samples: list[Any]):
                 group_samples = samples[group_idx * 2 : (group_idx + 1) * 2]
                 assert len(group_samples) == 2, f"Each group should have 2 samples (one per turn)"
                 for i, sample in enumerate(group_samples):
-                    assert sample.status == Sample.Status.COMPLETED
-                    assert sample.reward == 1, f"Sample {i} in group {group_idx} should have reward=1"
-                assert "2008" in group_samples[-1].response, f"Last sample in group {group_idx} should contain final answer '2008'"
+                    _verify_sample(sample, expect_answer=(i == len(group_samples) - 1))
     else:
         assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
         for sample in samples:
             assert isinstance(sample, Sample), "single_sample variant should return Sample, not list"
-            assert sample.status == Sample.Status.COMPLETED
-            assert sample.reward == 1, "multi_turn_single_sample merges all turns, reward should be 1"
-            assert "2008" in sample.response, "Response should contain final answer '2008'"
+            _verify_sample(sample)
