@@ -66,7 +66,6 @@ def setup_session_routes(app, router: "MilesRouter"):
         if session_id not in manager.sessions:
             return JSONResponse(status_code=404, content={"error": "session not found"})
 
-        # TODO may need to pass `session_id` for token-id-consistent oai endpoint processing
         result = await router._do_proxy(request, path)
 
         record = SessionRecord(

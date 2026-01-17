@@ -37,7 +37,7 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
 
     # TODO refine after @guapisolo's implementation
     sample = deepcopy(input_sample)
-    sample.tokens = input_ids + output_ids
+    sample.tokens = record.request["input_ids"] + output_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = choice["message"]["content"]
     sample.response_length = get_response_lengths([sample.loss_mask])[0]
