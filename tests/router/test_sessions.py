@@ -85,14 +85,14 @@ def router_url():
             miles_router_health_check_failure_threshold=3,
         )
         router = MilesRouter(args)
-        router.worker_request_counts[backend.url] = 0
-        router.worker_failure_counts[backend.url] = 0
 
         port = find_available_port(31000)
         server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
         server.start()
         try:
-            yield f"http://127.0.0.1:{port}"
+            url = f"http://127.0.0.1:{port}"
+            requests.post(f"{url}/add_worker", json={"url": backend.url})
+            yield url
         finally:
             server.stop()
 
