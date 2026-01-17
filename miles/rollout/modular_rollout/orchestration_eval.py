@@ -81,11 +81,14 @@ async def eval_rollout_single_dataset(
     pbar = tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
     async for sample in as_completed_async(tasks):
         if do_print:
-            logger.info(
-                "eval_rollout_single_dataset example data: "
-                f"{[str(sample.prompt) + sample.response]} "
-                f"reward={sample.reward}"
-            )
+            # TODO improve this after enhancing samples' type
+            s = (sample[0] if len(sample) > 0 else None) if isinstance(sample, list) else sample
+            if s is not None:
+                logger.info(
+                    "eval_rollout_single_dataset example data: "
+                    f"{[str(s.prompt) + s.response]} "
+                    f"reward={s.reward}"
+                )
             do_print = False
         if isinstance(sample, list):
             data.extend(sample)
