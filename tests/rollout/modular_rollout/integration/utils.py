@@ -73,7 +73,7 @@ MIXED_DATA_ROWS = [
 ]
 
 
-def config(
+def integration_env_config(
     extra_argv: list[str],
     data_rows: list[dict] | None = None,
     latency: float = 0.0,

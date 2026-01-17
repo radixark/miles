@@ -1,7 +1,11 @@
 from unittest.mock import Mock
 
 import pytest
-from tests.rollout.modular_rollout.integration.utils import config, filter_by_reward, load_and_call_train
+from tests.rollout.modular_rollout.integration.utils import (
+    filter_by_reward,
+    integration_env_config,
+    load_and_call_train,
+)
 
 from miles.utils.misc import function_registry
 
@@ -19,7 +23,7 @@ _FILTER_TEST_DATA_ROWS = [
     "rollout_integration_env",
     [
         pytest.param(
-            config(
+            integration_env_config(
                 [
                     "--rollout-batch-size",
                     "2",
