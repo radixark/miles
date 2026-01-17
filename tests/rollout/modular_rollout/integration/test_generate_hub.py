@@ -80,21 +80,6 @@ def test_rollout(rollout_integration_env, variant, test_type):
         _verify_samples(variant, samples)
 
 
-def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: bool = True):
-    """Verify a single sample's properties."""
-    assert sample.status == Sample.Status.COMPLETED
-    assert sample.reward == expected_reward, f"Sample should have reward={expected_reward}"
-    if expect_answer:
-        assert "2008" in sample.response, "Response should contain final answer '2008'"
-
-
-def _verify_group_samples(group_samples: list[Sample], expected_count: int = 2):
-    """Verify a group of samples from multi_samples variants."""
-    assert len(group_samples) == expected_count, f"Group should have {expected_count} samples (one per turn)"
-    for i, sample in enumerate(group_samples):
-        _verify_sample(sample, expect_answer=(i == len(group_samples) - 1))
-
-
 def _verify_samples(variant: str, samples: list[Any]):
     is_multi_samples = variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples")
     
@@ -117,3 +102,17 @@ def _verify_samples(variant: str, samples: list[Any]):
         for sample in samples:
             assert isinstance(sample, Sample), "single_sample variant should return Sample, not list"
             _verify_sample(sample)
+
+
+def _verify_group_samples(group_samples: list[Sample], expected_count: int = 2):
+    assert len(group_samples) == expected_count, f"Group should have {expected_count} samples (one per turn)"
+    for i, sample in enumerate(group_samples):
+        _verify_sample(sample, expect_answer=(i == len(group_samples) - 1))
+
+
+def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: bool = True):
+    assert sample.status == Sample.Status.COMPLETED
+    assert sample.reward == expected_reward, f"Sample should have reward={expected_reward}"
+    if expect_answer:
+        assert "2008" in sample.response, "Response should contain final answer '2008'"
+
