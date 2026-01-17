@@ -36,6 +36,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tool_call_parser = create_tool_call_parser(tool_specs, args.generate_tool_call_parser)
 
     extra_samples = []
+    prev_turn_sample = None
 
     # ----------------------- Initial prompts -------------------------
 
@@ -51,9 +52,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample.status = halt_status
             break
 
-        # Bookkeeping only for multi-sample mode
         if args.generate_multi_samples and turn > 0:
-            extra_samples.append(deepcopy(sample))
+            extra_samples.append(prev_turn_sample)
             sample = deepcopy(input.sample)
 
         output = await post(url, payload)
@@ -67,6 +67,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         _, tool_calls = tool_call_parser.parse_non_stream(output["text"])
         if len(tool_calls) == 0:
             break
+
+        prev_turn_sample = deepcopy(sample)
 
         tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
