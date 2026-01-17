@@ -48,6 +48,5 @@ class TerminalBenchConfig(EvalEnvConfig):
         return base_cfg
 
 
-
 def build_terminal_bench_config(args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]):
     return TerminalBenchConfig.parse(args, raw_env_config, defaults)
