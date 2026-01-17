@@ -50,7 +50,6 @@ class _BlackboxToolCallAgent:
     generate_max_turns: int
     generate_tool_specs_path: str
     generate_execute_tool_function_path: str
-    generate_multi_samples: bool
 
     async def run(self):
         # ----------------------- Setup -------------------------
