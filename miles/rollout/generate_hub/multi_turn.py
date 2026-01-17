@@ -73,7 +73,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
 
 
-    return GenerateFnOutput(samples=extra_samples + [sample])
+    return GenerateFnOutput(samples=(extra_samples + [sample]) if args.generate_multi_samples else sample)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
