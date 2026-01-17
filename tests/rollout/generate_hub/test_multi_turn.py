@@ -537,46 +537,40 @@ class TestRoutedExpertsMultiTurn:
         generation_env.args.num_layers = num_layers
         generation_env.args.moe_router_topk = moe_router_topk
 
-        first_prompt_len = len(S.FIRST_PROMPT_TOKEN_IDS)
-        first_response_len = token_len(S.FIRST_RESPONSE)
-        first_tool_response_len = token_len(S.FIRST_TOOL_RESPONSE)
-        second_response_len = token_len(S.SECOND_RESPONSE)
+        first_total_tokens = len(S.FIRST_PROMPT_TOKEN_IDS) + token_len(S.FIRST_RESPONSE)
+        first_routed_experts_len = first_total_tokens - 1
+        first_routed_experts = np.arange(
+            first_routed_experts_len * num_layers * moe_router_topk, dtype=np.int32
+        ).reshape(first_routed_experts_len, num_layers, moe_router_topk)
 
-        second_total_tokens = first_prompt_len + first_response_len + first_tool_response_len + second_response_len
+        second_total_tokens = len(S.SECOND_PROMPT_TOKEN_IDS) + token_len(S.SECOND_RESPONSE)
         second_routed_experts_len = second_total_tokens - 1
-
         second_routed_experts = np.arange(
             second_routed_experts_len * num_layers * moe_router_topk, dtype=np.int32
         ).reshape(second_routed_experts_len, num_layers, moe_router_topk)
 
         def process_fn(prompt: str) -> ProcessResult:
             if prompt == S.FIRST_PROMPT:
+                routed_experts_str = pybase64.b64encode(first_routed_experts.tobytes()).decode("ascii")
                 return ProcessResult(
                     text=S.FIRST_RESPONSE,
-                    meta_info=ProcessResultMetaInfo(routed_experts=None),
+                    finish_reason="stop",
+                    meta_info=ProcessResultMetaInfo(routed_experts=routed_experts_str),
                 )
             elif prompt == S.SECOND_PROMPT:
                 routed_experts_str = pybase64.b64encode(second_routed_experts.tobytes()).decode("ascii")
                 return ProcessResult(
                     text=S.SECOND_RESPONSE,
+                    finish_reason="stop",
                     meta_info=ProcessResultMetaInfo(routed_experts=routed_experts_str),
                 )
             raise ValueError(f"Unexpected prompt: {prompt}")
 
         generation_env.mock_server.process_fn = process_fn
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT), DEFAULT_SAMPLING_PARAMS)
 
-        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
-
-        if variant == "multi_turn_single_sample":
-            sample = result.sample
-            assert sample.rollout_routed_experts is not None
-            assert sample.rollout_routed_experts.shape == (second_routed_experts_len, num_layers, moe_router_topk)
-            np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)
-            assert len(sample.tokens) - 1 == second_routed_experts_len
-        elif variant == "multi_turn_multi_samples":
-            samples = listify(result.sample)
-            assert len(samples) >= 1
-            last_sample = samples[-1]
-            assert last_sample.rollout_routed_experts is not None
-            assert last_sample.rollout_routed_experts.shape == (second_routed_experts_len, num_layers, moe_router_topk)
-            np.testing.assert_array_equal(last_sample.rollout_routed_experts, second_routed_experts)
+        sample = result.sample[-1] if isinstance(result.sample, list) else result.sample
+        assert sample.rollout_routed_experts is not None
+        assert sample.rollout_routed_experts.shape == (second_routed_experts_len, num_layers, moe_router_topk)
+        np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)
+        assert len(sample.tokens) - 1 == second_routed_experts_len
