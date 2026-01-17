@@ -553,14 +553,12 @@ class TestRoutedExpertsMultiTurn:
             if prompt == S.FIRST_PROMPT:
                 return ProcessResult(
                     text=S.FIRST_RESPONSE,
-                    finish_reason="stop",
                     meta_info=ProcessResultMetaInfo(routed_experts=None),
                 )
             elif prompt == S.SECOND_PROMPT:
                 routed_experts_str = pybase64.b64encode(second_routed_experts.tobytes()).decode("ascii")
                 return ProcessResult(
                     text=S.SECOND_RESPONSE,
-                    finish_reason="stop",
                     meta_info=ProcessResultMetaInfo(routed_experts=routed_experts_str),
                 )
             raise ValueError(f"Unexpected prompt: {prompt}")

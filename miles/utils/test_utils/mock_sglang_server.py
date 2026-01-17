@@ -32,7 +32,7 @@ class ProcessResultMetaInfo:
 @dataclass(frozen=True)
 class ProcessResult:
     text: str
-    finish_reason: str
+    finish_reason: str = "stop"
     cached_tokens: int = 0
     meta_info: ProcessResultMetaInfo = ProcessResultMetaInfo()
 
