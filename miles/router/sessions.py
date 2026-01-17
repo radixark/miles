@@ -4,7 +4,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from transformers import AutoTokenizer
 
@@ -21,7 +21,7 @@ class SessionRecord(BaseModel):
     status_code: int
 
 
-class DeleteSessionResponse(BaseModel):
+class GetSessionResponse(BaseModel):
     session_id: str
     records: list[SessionRecord]
 
@@ -52,7 +52,15 @@ def setup_session_routes(app, router: "MilesRouter"):
 
     # TODO temporary hack before @guapisolo implements TITO
     # ============================= HACK START ===============================
-    tokenizer = AutoTokenizer.from_pretrained(router.args.hf_checkpoint, trust_remote_code=True)
+    # Lazy load tokenizer only when needed (for tests that don't have hf_checkpoint)
+    tokenizer = None
+
+    def get_tokenizer():
+        nonlocal tokenizer
+        if tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained(router.args.hf_checkpoint, trust_remote_code=True)
+        return tokenizer
+
     # ============================= HACK END ===============================
 
     @app.post("/sessions")
@@ -60,12 +68,19 @@ def setup_session_routes(app, router: "MilesRouter"):
         session_id = manager.create_session()
         return {"session_id": session_id}
 
+    @app.get("/sessions/{session_id}")
+    async def get_session(session_id: str):
+        records = manager.get_session(session_id)
+        if records is None:
+            return JSONResponse(status_code=404, content={"error": "session not found"})
+        return GetSessionResponse(session_id=session_id, records=records)
+
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: str):
         if session_id not in manager.sessions:
             return JSONResponse(status_code=404, content={"error": "session not found"})
-        records = manager.delete_session(session_id)
-        return DeleteSessionResponse(session_id=session_id, records=records)
+        manager.delete_session(session_id)
+        return Response(status_code=204)
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def session_proxy(request: Request, session_id: str, path: str):
@@ -79,15 +94,21 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         # TODO: remove this hack when @guapisolo implements the real TITO
         # ============================= HACK START ===============================
-        request_body["input_ids"] = tokenizer.apply_chat_template(
-            request_body["messages"],
-            add_generation_prompt=True,
-            add_special_tokens=False,
-            tools=request_body.get("tools"),
-        )
-        logprobs_content = response_body["choices"][0]["logprobs"]["content"]
-        for item in logprobs_content:
-            item["token_id"] = tokenizer.convert_tokens_to_ids(item["token"])
+        if "messages" in request_body and "input_ids" not in request_body:
+            request_body["input_ids"] = get_tokenizer().apply_chat_template(
+                request_body["messages"],
+                add_generation_prompt=True,
+                add_special_tokens=False,
+                tools=request_body.get("tools"),
+            )
+        if (
+            "logprobs" in response_body.get("choices", [{}])[0]
+            and "content" in response_body["choices"][0]["logprobs"]
+        ):
+            logprobs_content = response_body["choices"][0]["logprobs"]["content"]
+            for item in logprobs_content:
+                if "token" in item and "token_id" not in item:
+                    item["token_id"] = get_tokenizer().convert_tokens_to_ids(item["token"])
         # ============================= HACK END ===============================
 
         record = SessionRecord(

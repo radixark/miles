@@ -2,12 +2,15 @@
 Utilities for the OpenAI endpoint
 """
 
+import logging
 from argparse import Namespace
 from copy import deepcopy
 
-from miles.router.sessions import DeleteSessionResponse, SessionRecord
+from miles.router.sessions import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIEndpointTracer:
@@ -23,10 +26,16 @@ class OpenAIEndpointTracer:
         return OpenAIEndpointTracer(router_url=router_url, session_id=session_id)
 
     async def collect_records(self) -> list[SessionRecord]:
-        # TODO: for fault tolerance, we may want to change to GET + DELETE
-        response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="delete")
-        response = DeleteSessionResponse.model_validate(response)
-        return response.records
+        response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="get")
+        response = GetSessionResponse.model_validate(response)
+        records = response.records
+
+        try:
+            await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="delete")
+        except Exception as e:
+            logger.warning(f"Failed to delete session {self.session_id} after collecting records: {e}")
+
+        return records
 
 
 def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord], tokenizer) -> list[Sample]:

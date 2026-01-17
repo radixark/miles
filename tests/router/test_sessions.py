@@ -83,6 +83,7 @@ def router_url():
             miles_router_middleware_paths=[],
             rollout_health_check_interval=60,
             miles_router_health_check_failure_threshold=3,
+            hf_checkpoint="Qwen/Qwen3-0.6B",
         )
         router = MilesRouter(args)
 
@@ -107,13 +108,40 @@ class TestSessionRoutes:
         assert "session_id" in data
         assert len(data["session_id"]) == 32
 
+    def test_get_session(self, router_url):
+        session_id = requests.post(f"{router_url}/sessions").json()["session_id"]
+
+        get_resp = requests.get(f"{router_url}/sessions/{session_id}")
+        assert get_resp.status_code == 200
+        data = get_resp.json()
+        assert data["session_id"] == session_id
+        assert data["records"] == []
+
+    def test_get_session_not_found(self, router_url):
+        response = requests.get(f"{router_url}/sessions/nonexistent")
+        assert response.status_code == 404
+        assert response.json()["error"] == "session not found"
+
+    def test_get_with_records(self, router_url):
+        session_id = requests.post(f"{router_url}/sessions").json()["session_id"]
+
+        requests.post(
+            f"{router_url}/sessions/{session_id}/generate",
+            json={"input_ids": [1, 2, 3], "sampling_params": {}, "return_logprob": True},
+        )
+
+        get_resp = requests.get(f"{router_url}/sessions/{session_id}")
+        assert get_resp.status_code == 200
+        data = get_resp.json()
+        assert data["session_id"] == session_id
+        assert len(data["records"]) == 1
+
     def test_delete_session(self, router_url):
         session_id = requests.post(f"{router_url}/sessions").json()["session_id"]
 
         delete_resp = requests.delete(f"{router_url}/sessions/{session_id}")
-        assert delete_resp.status_code == 200
-        assert delete_resp.json()["session_id"] == session_id
-        assert delete_resp.json()["records"] == []
+        assert delete_resp.status_code == 204
+        assert delete_resp.text == ""
 
         assert requests.delete(f"{router_url}/sessions/{session_id}").status_code == 404
 
@@ -139,12 +167,16 @@ class TestSessionProxy:
         assert resp.status_code == 200
         assert "text" in resp.json()
 
-        records = requests.delete(f"{router_url}/sessions/{session_id}").json()["records"]
+        get_resp = requests.get(f"{router_url}/sessions/{session_id}")
+        records = get_resp.json()["records"]
         assert len(records) == 1
         assert records[0]["method"] == "POST"
         assert records[0]["path"] == "generate"
-        assert records[0]["request_json"]["input_ids"] == [1, 2, 3]
-        assert "text" in records[0]["response_json"]
+        assert records[0]["request"]["input_ids"] == [1, 2, 3]
+        assert "text" in records[0]["response"]
+
+        delete_resp = requests.delete(f"{router_url}/sessions/{session_id}")
+        assert delete_resp.status_code == 204
 
     def test_proxy_accumulates_records(self, router_url):
         session_id = requests.post(f"{router_url}/sessions").json()["session_id"]
@@ -155,5 +187,9 @@ class TestSessionProxy:
                 json={"input_ids": [1], "sampling_params": {}, "return_logprob": True},
             )
 
-        records = requests.delete(f"{router_url}/sessions/{session_id}").json()["records"]
+        get_resp = requests.get(f"{router_url}/sessions/{session_id}")
+        records = get_resp.json()["records"]
         assert len(records) == 3
+
+        delete_resp = requests.delete(f"{router_url}/sessions/{session_id}")
+        assert delete_resp.status_code == 204
