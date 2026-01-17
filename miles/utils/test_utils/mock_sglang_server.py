@@ -86,13 +86,11 @@ class MockSGLangServer:
     def _setup_routes(self):
         @self.app.post("/generate")
         async def generate(request: Request):
-            payload = await request.json()
-            self.request_log.append(payload)
-            with self._concurrency.track():
-                if self.latency > 0:
-                    await asyncio.sleep(self.latency)
-                response = self._compute_generate_response(payload)
-            return JSONResponse(content=response)
+            return await self._handle_generate_like_request(request, self._compute_generate_response, log=True)
+
+        @self.app.post("/v1/chat/completions")
+        async def chat_completions(request: Request):
+            return await self._handle_generate_like_request(request, self._compute_chat_completions_response)
 
         @self.app.get("/health")
         async def health():
@@ -102,14 +100,15 @@ class MockSGLangServer:
         async def abort_request(_request: Request):
             return JSONResponse(content={"status": "ok"})
 
-        @self.app.post("/v1/chat/completions")
-        async def chat_completions(request: Request):
-            payload = await request.json()
-            with self._concurrency.track():
-                if self.latency > 0:
-                    await asyncio.sleep(self.latency)
-                response = self._compute_chat_completions_response(payload)
-            return JSONResponse(content=response)
+    async def _handle_generate_like_request(self, request: Request, compute_fn: Callable[[dict], dict], log: bool = False):
+        payload = await request.json()
+        if log:
+            self.request_log.append(payload)
+        with self._concurrency.track():
+            if self.latency > 0:
+                await asyncio.sleep(self.latency)
+            response = compute_fn(payload)
+        return JSONResponse(content=response)
 
     def _compute_generate_response(self, payload: dict) -> dict:
         assert payload.get("return_logprob", True) is True, "MockSGLangServer requires return_logprob=True"
