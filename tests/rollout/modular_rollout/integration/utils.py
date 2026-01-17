@@ -1,9 +1,33 @@
+from tests.fixtures.generation_fixtures import VARIANT_TO_GENERATE_FN_PATH
 from tests.fixtures.rollout_integration import IntegrationEnvConfig
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.types import Sample
+
+
+def extra_argv_for_variant(variant: str) -> list[str]:
+    argv = ["--custom-generate-function-path", VARIANT_TO_GENERATE_FN_PATH[variant]]
+
+    if variant in (
+        "multi_turn_single_sample",
+        "multi_turn_multi_samples",
+        "agentic_tool_call_single_sample",
+        "agentic_tool_call_multi_samples",
+    ):
+        argv += [
+            "--generate-tool-specs-path",
+            "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
+            "--generate-execute-tool-function-path",
+            "miles.utils.test_utils.mock_tools.execute_tool_call",
+        ]
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
+            argv += ["--generate-tool-call-parser", "qwen25"]
+        if variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
+            argv.append("--generate-multi-samples")
+
+    return argv
 
 
 def expected_sample(*, group_index: int | None) -> Sample:
@@ -34,14 +58,14 @@ def expected_sample(*, group_index: int | None) -> Sample:
     )
 
 
-MODULAR_ROLLOUT_BASE_ARGV = [
+_MODULAR_ROLLOUT_ARGV_WITHOUT_GENERATE = [
     "--rollout-function-path",
     "miles.rollout.modular_rollout.orchestration_train.SimpleTrainRolloutFn",
     "--eval-function-path",
     "miles.rollout.modular_rollout.orchestration_eval.SimpleEvalRolloutFn",
-    "--custom-generate-function-path",
-    "miles.rollout.generate_hub.single_turn.generate",
 ]
+
+MODULAR_ROLLOUT_BASE_ARGV = _MODULAR_ROLLOUT_ARGV_WITHOUT_GENERATE + extra_argv_for_variant("single_turn")
 
 MIXED_DATA_ROWS = [
     {"input": "What is 1+7?", "label": "8"},
