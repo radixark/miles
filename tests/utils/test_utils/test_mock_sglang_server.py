@@ -12,7 +12,14 @@ from miles.utils.test_utils.mock_sglang_server import (
     default_process_fn,
     with_mock_server,
 )
-from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS
+from miles.utils.test_utils.mock_tools import (
+    MULTI_TURN_FIRST_PROMPT,
+    MULTI_TURN_FIRST_RESPONSE,
+    MULTI_TURN_SECOND_PROMPT,
+    MULTI_TURN_SECOND_RESPONSE,
+    SAMPLE_TOOLS,
+    multi_turn_tool_call_process_fn,
+)
 
 
 def expected_logprobs(tokenizer, text: str) -> list[dict]:
@@ -318,7 +325,7 @@ class TestChatCompletionsEndpoint:
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": None,
+                    "content": "Let me check for you.",
                     "tool_calls": [
                         {"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}}
                     ],
@@ -378,7 +385,7 @@ class TestChatCompletionsEndpoint:
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": None,
+                    "content": "I will get year and temperature.",
                     "tool_calls": [
                         {"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}},
                         {
@@ -391,3 +398,128 @@ class TestChatCompletionsEndpoint:
                 "logprobs": {"content": expected_logprobs(server.tokenizer, multi_tool_response)},
                 "finish_reason": "tool_calls",
             }
+
+
+class TestMultiTurnToolCallProcessFn:
+    def test_generate_endpoint_first_turn(self):
+        with with_mock_server(process_fn=multi_turn_tool_call_process_fn) as server:
+            input_ids = server.tokenizer.encode(MULTI_TURN_FIRST_PROMPT, add_special_tokens=False)
+            response = requests.post(
+                f"{server.url}/generate",
+                json={"input_ids": input_ids, "sampling_params": {}, "return_logprob": True},
+                timeout=5.0,
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["text"] == MULTI_TURN_FIRST_RESPONSE
+            assert data["meta_info"]["finish_reason"] == {"type": "stop"}
+
+    def test_generate_endpoint_second_turn(self):
+        with with_mock_server(process_fn=multi_turn_tool_call_process_fn) as server:
+            input_ids = server.tokenizer.encode(MULTI_TURN_SECOND_PROMPT, add_special_tokens=False)
+            response = requests.post(
+                f"{server.url}/generate",
+                json={"input_ids": input_ids, "sampling_params": {}, "return_logprob": True},
+                timeout=5.0,
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["text"] == MULTI_TURN_SECOND_RESPONSE
+            assert data["meta_info"]["finish_reason"] == {"type": "stop"}
+
+    def test_chat_completions_endpoint_first_turn(self):
+        with with_mock_server(process_fn=multi_turn_tool_call_process_fn) as server:
+            response = requests.post(
+                f"{server.url}/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "What is 42 + year + temperature?"}],
+                    "tools": SAMPLE_TOOLS,
+                },
+                timeout=5.0,
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["message"]["content"] == "Let me get the year and temperature first."
+            assert data["choices"][0]["message"]["tool_calls"] == [
+                {"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}},
+                {
+                    "id": "call00001",
+                    "type": "function",
+                    "function": {"name": "get_temperature", "arguments": '{"location": "Mars"}'},
+                },
+            ]
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+
+    def test_chat_completions_endpoint_second_turn(self):
+        second_turn_prompt_via_chat_template = (
+            "<|im_start|>system\n"
+            "# Tools\n"
+            "\n"
+            "You may call one or more functions to assist with the user query.\n"
+            "\n"
+            "You are provided with function signatures within <tools></tools> XML tags:\n"
+            "<tools>\n"
+            '{"type": "function", "function": {"name": "get_year", "description": "Get current year", "parameters": {"type": "object", "properties": {}, "required": []}}}\n'
+            '{"type": "function", "function": {"name": "get_temperature", "description": "Get temperature for a location", "parameters": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}}}\n'
+            "</tools>\n"
+            "\n"
+            "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n"
+            "<tool_call>\n"
+            '{"name": <function-name>, "arguments": <args-json-object>}\n'
+            "</tool_call><|im_end|>\n"
+            "<|im_start|>user\n"
+            "What is 42 + year + temperature?<|im_end|>\n"
+            "<|im_start|>assistant\n"
+            "Let me get the year and temperature first.\n"
+            "<tool_call>\n"
+            '{"name": "get_year", "arguments": {}}\n'
+            "</tool_call>\n"
+            "<tool_call>\n"
+            '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
+            "</tool_call><|im_end|>\n"
+            "<|im_start|>user\n"
+            "<tool_response>\n"
+            '{"year": 2026}\n'
+            "</tool_response>\n"
+            "<tool_response>\n"
+            '{"temperature": -60}\n'
+            "</tool_response><|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+
+        def process_fn_for_chat_template(prompt: str) -> ProcessResult:
+            if prompt == MULTI_TURN_FIRST_PROMPT:
+                return ProcessResult(text=MULTI_TURN_FIRST_RESPONSE, finish_reason="stop")
+            if prompt == second_turn_prompt_via_chat_template:
+                return ProcessResult(text=MULTI_TURN_SECOND_RESPONSE, finish_reason="stop")
+            raise ValueError(f"Unexpected {prompt=}")
+
+        with with_mock_server(process_fn=process_fn_for_chat_template) as server:
+            response = requests.post(
+                f"{server.url}/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [
+                        {"role": "user", "content": "What is 42 + year + temperature?"},
+                        {
+                            "role": "assistant",
+                            "content": "Let me get the year and temperature first.\n"
+                            "<tool_call>\n"
+                            '{"name": "get_year", "arguments": {}}\n'
+                            "</tool_call>\n"
+                            "<tool_call>\n"
+                            '{"name": "get_temperature", "arguments": {"location": "Mars"}}\n'
+                            "</tool_call>",
+                        },
+                        {"role": "user", "content": "<tool_response>\n{\"year\": 2026}\n</tool_response>\n<tool_response>\n{\"temperature\": -60}\n</tool_response>"},
+                    ],
+                    "tools": SAMPLE_TOOLS,
+                },
+                timeout=5.0,
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["message"]["content"] == MULTI_TURN_SECOND_RESPONSE
+            assert data["choices"][0]["message"]["tool_calls"] is None
+            assert data["choices"][0]["finish_reason"] == "stop"
