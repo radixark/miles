@@ -10,6 +10,8 @@ from openai import AsyncOpenAI
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.oai_endpoint_wrapper import OpenAIEndpointTracer
+
+from miles.rollout.generate_hub.openai_endpoint_wrapper import compute_samples_from_openai_endpoint_records
 from miles.rollout.generate_hub.tool_call_utils import execute_tool_calls
 from miles.utils.misc import load_function
 
@@ -25,9 +27,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         execute_tool_function_path=input.args.generate_execute_tool_function_path,
     )
 
-    call_records = await tracer.collect()
-
-    return GenerateFnOutput(samples=TODO)
+    records = await tracer.collect()
+    samples = compute_samples_from_openai_endpoint_records(records)
+    return GenerateFnOutput(samples=samples)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):

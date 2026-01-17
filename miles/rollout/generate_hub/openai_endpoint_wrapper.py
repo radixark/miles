@@ -19,3 +19,7 @@ class OpenAIEndpointTracer:
         # TODO: for fault tolerance, we may want to change to GET + DELETE
         response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="delete")
         return response["records"]
+
+
+def compute_samples_from_openai_endpoint_records(records):
+    return TODO
