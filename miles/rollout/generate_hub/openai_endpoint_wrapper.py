@@ -34,16 +34,13 @@ def compute_samples_from_openai_records(input_sample: Sample, records: list[Sess
 
 def _compute_sample_from_openai_record(input_sample: Sample, record: SessionRecord) -> Sample:
     choice = record.response["choices"][0]
-
-    logprobs_content = choice["logprobs"]["content"]
-    gen_token_ids = [item["token_id"] for item in logprobs_content]
-    gen_log_probs = [item["logprob"] for item in logprobs_content]
+    output_log_probs = [item["logprob"] for item in (choice["logprobs"]["content"])]
 
     # TODO refine after @guapisolo's implementation
     sample = deepcopy(input_sample)
-    sample.tokens = record.extras.input_ids + gen_token_ids
+    sample.tokens = record.extras.input_ids + record.extras.output_ids
     sample.loss_mask = record.extras.loss_mask
-    sample.rollout_log_probs = gen_log_probs
+    sample.rollout_log_probs = output_log_probs
     sample.response = choice["message"]["content"]
     sample.response_length = get_response_lengths([sample.loss_mask])[0]
 
