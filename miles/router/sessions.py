@@ -69,52 +69,29 @@ def setup_session_routes(app, router: "MilesRouter"):
         if session_id not in manager.sessions:
             return JSONResponse(status_code=404, content={"error": "session not found"})
 
-        worker_url = router._use_url()
-        url = f"{worker_url}/{path}"
-        body = await request.body()
-        headers = dict(request.headers)
+        result = await router._do_proxy(request, path)
 
         request_json = None
-        if body:
+        if result["request_body"]:
             try:
-                request_json = json.loads(body)
+                request_json = json.loads(result["request_body"])
             except Exception:
                 pass
 
+        response_json = None
         try:
-            response = await router.client.request(request.method, url, content=body, headers=headers)
-            content = await response.aread()
+            response_json = json.loads(result["response_body"])
+        except Exception:
+            pass
 
-            response_json = None
-            try:
-                response_json = json.loads(content)
-            except Exception:
-                pass
+        record = SessionRecord(
+            timestamp=time.time(),
+            method=request.method,
+            path=path,
+            request_json=request_json,
+            response_json=response_json,
+            status_code=result["status_code"],
+        )
+        manager.add_record(session_id, record)
 
-            record = SessionRecord(
-                timestamp=time.time(),
-                method=request.method,
-                path=path,
-                request_json=request_json,
-                response_json=response_json,
-                status_code=response.status_code,
-            )
-            manager.add_record(session_id, record)
-
-            if response_json is not None:
-                return JSONResponse(
-                    content=response_json,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                )
-            else:
-                from starlette.responses import Response
-                content_type = response.headers.get("content-type", "")
-                return Response(
-                    content=content,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    media_type=content_type or None,
-                )
-        finally:
-            router._finish_url(worker_url)
+        return router._build_response(result)
