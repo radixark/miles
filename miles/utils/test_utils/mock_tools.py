@@ -188,8 +188,6 @@ _TOKENIZER = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=
 
 
 class ThreeTurnStub:
-    """Stub for 3-turn: get_year + get_temperature(Mars) -> get_temperature(Earth) -> answer"""
-
     SYSTEM_PROMPT = (
         "<|im_start|>system\n"
         "# Tools\n"
