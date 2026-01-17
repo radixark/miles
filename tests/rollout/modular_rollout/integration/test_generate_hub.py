@@ -51,9 +51,9 @@ def test_rollout(rollout_integration_env, request, test_type):
 def _verify_samples(variant: str, samples: list[Sample]):
     if variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
         assert len(samples) == 2, f"multi_samples variant should return 2 samples (one per turn), got {len(samples)}"
-        for sample in samples:
+        for i, sample in enumerate(samples):
             assert sample.status == Sample.Status.COMPLETED
-        assert samples[-1].reward == 1, "Last sample should have reward=1 (contains final answer)"
+            assert sample.reward == 1, f"Sample {i} should have reward=1"
         assert "2008" in samples[-1].response, "Last sample should contain final answer '2008'"
     else:
         assert len(samples) == 1, f"single_sample variant should return 1 sample, got {len(samples)}"
