@@ -26,24 +26,28 @@ async def execute_tool_calls(
     execute_one: Callable,
 ) -> list[dict[str, Any]]:
     tool_messages = []
-
     for call in tool_calls:
-        if isinstance(call, ChatCompletionMessageToolCall):
-            name = call.function.name
-            params = json.loads(call.function.arguments) if call.function.arguments else {}
-            tool_call_id = call.id
-        elif isinstance(call, ToolCallItem):
-            name = call.name
-            params = json.loads(call.parameters) if call.parameters else {}
-            tool_call_id = f"call_{uuid.uuid4().hex[:24]}"
-        else:
-            raise TypeError(f"Unsupported tool call type: {type(call)}")
-
-        result = await execute_one(name, params)
-        assert isinstance(result, str)
-        tool_messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": result, "name": name})
-
+        result = await _execute_tool_call(call, execute_one)
+        tool_messages.append(result)
     return tool_messages
+
+
+async def _execute_tool_call(call: ToolCallItem | ChatCompletionMessageToolCall, execute_one: Callable) -> dict[str, Any]:
+    if isinstance(call, ChatCompletionMessageToolCall):
+        name = call.function.name
+        params = json.loads(call.function.arguments) if call.function.arguments else {}
+        tool_call_id = call.id
+    elif isinstance(call, ToolCallItem):
+        name = call.name
+        params = json.loads(call.parameters) if call.parameters else {}
+        tool_call_id = f"call_{uuid.uuid4().hex[:24]}"
+    else:
+        raise TypeError(f"Unsupported tool call type: {type(call)}")
+
+    result = await execute_one(name, params)
+    assert isinstance(result, str)
+
+    return {"role": "tool", "tool_call_id": tool_call_id, "content": result, "name": name}
 
 
 def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[str, Any]], tokenizer):
