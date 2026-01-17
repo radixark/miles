@@ -11,7 +11,6 @@ from miles.utils.types import Sample
 TWO_TURN_DATA_ROWS = [{"input": TwoTurnStub.USER_QUESTION, "label": "2008"}]
 
 _VARIANT_NAMES = [
-    "single_turn",
     "multi_turn_single_sample",
     "multi_turn_multi_samples",
     "agentic_tool_call_single_sample",
@@ -67,8 +66,5 @@ def _verify_samples(variant: str, samples: list[Any]):
         for sample in samples:
             assert isinstance(sample, Sample), "single_sample variant should return Sample, not list"
             assert sample.status == Sample.Status.COMPLETED
-            if variant == "single_turn":
-                assert sample.reward == 0, "single_turn only does first turn, reward should be 0"
-            else:
-                assert sample.reward == 1, "multi_turn_single_sample merges all turns, reward should be 1"
-                assert "2008" in sample.response, "Response should contain final answer '2008'"
+            assert sample.reward == 1, "multi_turn_single_sample merges all turns, reward should be 1"
+            assert "2008" in sample.response, "Response should contain final answer '2008'"
