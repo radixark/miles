@@ -62,6 +62,5 @@ def test_rollout(rollout_integration_env, request, test_type):
         _verify_samples(variant, group, env.args.n_samples_per_prompt)
     else:
         assert "toy" in out.data
-        rewards = out.data["toy"]["rewards"]
         samples = out.data["toy"]["samples"]
         _verify_samples(variant, samples, env.args.n_samples_per_eval_prompt)
