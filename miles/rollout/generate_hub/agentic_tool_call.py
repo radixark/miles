@@ -6,10 +6,11 @@ import argparse
 from dataclasses import dataclass
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_hub.oai_endpoint_wrapper import OpenAIEndpointTracer
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
-    tracer = TODO()
+    tracer = OpenAIEndpointTracer()
 
     agent = _BlackboxToolCallAgent(
         base_url=tracer.base_url,
