@@ -1,10 +1,7 @@
 import pytest
 from tests.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fixtures.rollout_integration import IntegrationEnvConfig
-from tests.rollout.modular_rollout.integration.utils import (
-    MODULAR_ROLLOUT_BASE_ARGV,
-    load_and_call_rollout,
-)
+from tests.rollout.modular_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_rollout
 
 from miles.utils.test_utils.mock_tools import TwoTurnStub
 from miles.utils.types import Sample
