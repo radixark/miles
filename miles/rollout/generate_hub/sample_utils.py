@@ -16,9 +16,11 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
         if sample.loss_mask is None:
             sample.loss_mask = [1] * sample.response_length
 
-    obs_len = len(b.tokens) - len(a.tokens) - b.response_length
     _fill_default_loss_mask(a)
     _fill_default_loss_mask(b)
+    obs_len = len(b.tokens) - len(a.tokens) - b.response_length
+    obs_tokens = b.tokens[len(a.tokens): len(a.tokens) + obs_len]
+    obs_text = tokenizer.decode(obs_tokens)
 
     try:
         a.validate()
@@ -28,9 +30,6 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
     except AssertionError as e:
         e.add_note(f"{a=} {b=}")
         raise
-
-    obs_tokens = b.tokens[len(a.tokens): len(a.tokens) + obs_len]
-    obs_text = tokenizer.decode(obs_tokens)
 
     return Sample(
         group_index=_merge_equal_value("group_index"),
