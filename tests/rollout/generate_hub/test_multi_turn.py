@@ -509,7 +509,7 @@ class TestThreeTurn:
                         expected_chunk(S.THIRD_RESPONSE, 1),
                     ],
                     partial_sample=expected_partial_sample(
-                        prompt=THREE_TURN_PROMPT,
+                        prompt=S.PROMPT,
                         response=full_response,
                         response_length=token_len(full_response),
                     ),
@@ -520,7 +520,7 @@ class TestThreeTurn:
                 ExpectedSampleInfo(
                     chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
                     partial_sample=expected_partial_sample(
-                        prompt=THREE_TURN_PROMPT,
+                        prompt=S.PROMPT,
                         response=S.FIRST_RESPONSE,
                         response_length=token_len(S.FIRST_RESPONSE),
                     ),
@@ -528,7 +528,7 @@ class TestThreeTurn:
                 ExpectedSampleInfo(
                     chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
                     partial_sample=expected_partial_sample(
-                        prompt=THREE_TURN_PROMPT,
+                        prompt=S.PROMPT,
                         response=S.SECOND_RESPONSE,
                         response_length=token_len(S.SECOND_RESPONSE),
                     ),
@@ -536,7 +536,7 @@ class TestThreeTurn:
                 ExpectedSampleInfo(
                     chunks=[expected_chunk(S.THIRD_RESPONSE, 1)],
                     partial_sample=expected_partial_sample(
-                        prompt=THREE_TURN_PROMPT,
+                        prompt=S.PROMPT,
                         response=S.THIRD_RESPONSE,
                         response_length=token_len(S.THIRD_RESPONSE),
                     ),
