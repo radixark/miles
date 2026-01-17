@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from miles.router.sessions import setup_session_routes
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,8 @@ class MilesRouter:
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
         self.app.post("/retrieve_from_text")(self.retrieve_from_text)
+        # Session routes - must be registered before catch-all
+        setup_session_routes(self.app, self)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 

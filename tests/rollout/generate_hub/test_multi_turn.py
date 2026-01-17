@@ -185,7 +185,6 @@ class TestBasicMultiTurn:
             result.sample,
             [
                 ExpectedSampleInfo(
-                    prompt=SINGLE_TURN_PROMPT,
                     chunks=[
                         SampleParsedChunk(
                             tokens_decoded_str=SINGLE_TURN_RESPONSE,
@@ -193,8 +192,9 @@ class TestBasicMultiTurn:
                             rollout_log_probs=[-1 / 128 * i for i in range(6)],
                         ),
                     ],
-                    response=SINGLE_TURN_RESPONSE,
-                    response_length=6,
+                    partial_sample=expected_partial_sample(
+                        prompt=SINGLE_TURN_PROMPT, response=SINGLE_TURN_RESPONSE, response_length=6
+                    ),
                 ),
             ],
         )
@@ -210,16 +210,20 @@ class TestBasicMultiTurn:
         ]
         expected = [
             ExpectedSampleInfo(
-                prompt=TWO_TURN_PROMPT,
                 chunks=FIRST_TURN_CHUNKS,
-                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
-                response_length=45 + 31,
+                partial_sample=expected_partial_sample(
+                    prompt=TWO_TURN_PROMPT,
+                    response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                    response_length=45 + 31,
+                ),
             ),
             ExpectedSampleInfo(
-                prompt=TWO_TURN_PROMPT,
                 chunks=FINAL_TURN_CHUNKS,
-                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE + MULTI_TURN_SECOND_RESPONSE,
-                response_length=45 + 31 + 24,
+                partial_sample=expected_partial_sample(
+                    prompt=TWO_TURN_PROMPT,
+                    response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE + MULTI_TURN_SECOND_RESPONSE,
+                    response_length=45 + 31 + 24,
+                ),
             ),
         ]
         if variant == "multi_turn_single_sample":
