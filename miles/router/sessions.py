@@ -74,8 +74,7 @@ def setup_session_routes(app, router: "MilesRouter"):
             return JSONResponse(status_code=404, content={"error": "session not found"})
 
         # TODO may need to pass `session_id` for token-id-consistent oai endpoint processing
-        path =  "v1/chat/completions"
-        result = await router._do_proxy(request, path)
+        result = await router._do_proxy(request, "v1/chat/completions")
 
         record = SessionRecord(
             timestamp=time.time(),
