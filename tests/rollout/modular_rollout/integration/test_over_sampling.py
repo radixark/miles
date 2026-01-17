@@ -23,9 +23,7 @@ _BASE_ARGV = [
 
 
 def _over_sampling_config(rollout_batch_size: int):
-    return integration_env_config(
-        ["--rollout-batch-size", str(rollout_batch_size)] + _BASE_ARGV, data_rows=_DATA_ROWS
-    )
+    return integration_env_config(["--rollout-batch-size", str(rollout_batch_size)] + _BASE_ARGV, data_rows=_DATA_ROWS)
 
 
 @pytest.mark.parametrize(

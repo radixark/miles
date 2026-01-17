@@ -1,10 +1,7 @@
 import pytest
 from tests.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fixtures.rollout_integration import IntegrationEnvConfig
-from tests.rollout.modular_rollout.integration.utils import (
-    MODULAR_ROLLOUT_BASE_ARGV,
-    load_and_call_train,
-)
+from tests.rollout.modular_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_train
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
 from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
@@ -29,11 +26,6 @@ def _config_for_variant(variant: str) -> IntegrationEnvConfig:
     )
 
 
-_VARIANTS = [
-    pytest.param(_config_for_variant(variant), id=variant) for variant in _VARIANT_NAMES
-]
-
-
 def _verify_samples(variant: str, samples: list[Sample], expected_count: int):
     if variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
         assert len(samples) == 2
@@ -52,7 +44,11 @@ def _verify_samples(variant: str, samples: list[Sample], expected_count: int):
             assert "2008" in sample.response
 
 
-@pytest.mark.parametrize("rollout_integration_env", _VARIANTS, indirect=True)
+@pytest.mark.parametrize(
+    "rollout_integration_env",
+    [pytest.param(_config_for_variant(variant), id=variant) for variant in _VARIANT_NAMES],
+    indirect=True,
+)
 @pytest.mark.parametrize("test_type", ["train", "eval"])
 def test_rollout(rollout_integration_env, request, test_type):
     env = rollout_integration_env
