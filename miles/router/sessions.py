@@ -12,12 +12,17 @@ if TYPE_CHECKING:
     from miles.router.router import MilesRouter
 
 
+class SessionRecordExtras(BaseModel):
+    input_ids: list[int]
+
+
 class SessionRecord(BaseModel):
     timestamp: float
     method: str
     path: str
-    request: dict | None
-    response: dict | None
+    request: dict
+    response: dict
+    extras: SessionRecordExtras | None
     status_code: int
 
 
