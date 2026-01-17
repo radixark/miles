@@ -3,7 +3,9 @@ Simple agentic demo with tool calling.
 """
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.oai_endpoint_wrapper import OpenAIEndpointTracer
@@ -15,6 +17,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     agent = _BlackboxToolCallAgent(
         base_url=tracer.base_url,
+        prompt=input.sample.prompt,
         **{k: v for k, v in vars(input.args).items() if k.startswith("generate_")},
     )
     await agent.run()
@@ -41,6 +44,7 @@ class _BlackboxToolCallAgent:
     """
 
     base_url: str
+    prompt: list[dict[str, Any]]
     generate_max_turns: int
     generate_tool_specs_path: str
     generate_tool_call_parser: str
@@ -51,14 +55,7 @@ class _BlackboxToolCallAgent:
         execute_tool_function = load_function(self.generate_execute_tool_function_path)
         tool_specs = load_function(self.generate_tool_specs_path)
 
-        messages = []
-
-        # ----------------------- Initial prompts -------------------------
-
-        prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
-
-        sample.loss_mask = []
-        sample.tokens = prompt_tokens_ids.copy()
+        messages = deepcopy(self.prompt)
 
         for turn in range(args.generate_max_turns):
             # ----------------------- Call inference endpoint -------------------------
