@@ -12,11 +12,7 @@ from miles.utils.test_utils.mock_sglang_server import (
     default_process_fn,
     with_mock_server,
 )
-from miles.utils.test_utils.mock_tools import (
-    SAMPLE_TOOLS,
-    TwoTurnStub,
-    multi_turn_tool_call_process_fn,
-)
+from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, TwoTurnStub, multi_turn_tool_call_process_fn
 
 
 def expected_logprobs(tokenizer, text: str) -> list[dict]:
