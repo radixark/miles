@@ -1,33 +1,10 @@
-from tests.fixtures.generation_fixtures import VARIANT_TO_GENERATE_FN_PATH
+from tests.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fixtures.rollout_integration import IntegrationEnvConfig
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.types import Sample
-
-
-def extra_argv_for_variant(variant: str) -> list[str]:
-    argv = ["--custom-generate-function-path", VARIANT_TO_GENERATE_FN_PATH[variant]]
-
-    if variant in (
-        "multi_turn_single_sample",
-        "multi_turn_multi_samples",
-        "agentic_tool_call_single_sample",
-        "agentic_tool_call_multi_samples",
-    ):
-        argv += [
-            "--generate-tool-specs-path",
-            "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
-            "--generate-execute-tool-function-path",
-            "miles.utils.test_utils.mock_tools.execute_tool_call",
-        ]
-        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
-            argv += ["--generate-tool-call-parser", "qwen25"]
-        if variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
-            argv.append("--generate-multi-samples")
-
-    return argv
 
 
 def expected_sample(*, group_index: int | None) -> Sample:
