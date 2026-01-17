@@ -4,7 +4,7 @@ from dataclasses import fields
 from miles.utils.types import Sample
 
 
-def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
+def merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     """Merge two samples generated from sibling inference engine calls."""
     a, b = deepcopy(a), deepcopy(b)
 

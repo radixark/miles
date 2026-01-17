@@ -27,6 +27,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     records = await tracer.collect_records()
     samples = compute_samples_from_openai_records(input.sample, records, input.state.tokenizer)
+    if not input.args.generate_multi_samples:
+        samples =
     return GenerateFnOutput(samples=samples)
 
 

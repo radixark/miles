@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.generate_hub.sample_utils import merge_samples
+from miles.rollout.generate_hub.sample_utils import merge_sample_pair
 from miles.utils.types import Sample
 
 
@@ -59,7 +59,7 @@ class TestMergeSamples:
             status=Sample.Status.TRUNCATED,
         )
 
-        merged = merge_samples(a, b, mock_tokenizer)
+        merged = merge_sample_pair(a, b, mock_tokenizer)
 
         assert merged.tokens == b.tokens
         assert merged.response_length == 3 + 2 + 3
@@ -88,7 +88,7 @@ class TestMergeSamples:
             rollout_log_probs=None,
         )
 
-        merged = merge_samples(a, b, mock_tokenizer)
+        merged = merge_sample_pair(a, b, mock_tokenizer)
 
         assert merged.loss_mask == [1, 0, 1]
         assert merged.rollout_log_probs == [0.0, 0.0, 0.0]
@@ -106,7 +106,7 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="b.tokens must start with a.tokens"):
-            merge_samples(a, b, mock_tokenizer)
+            merge_sample_pair(a, b, mock_tokenizer)
 
     def test_field_mismatch_raises(self, mock_tokenizer):
         a = make_sample(
@@ -123,7 +123,7 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="index mismatch"):
-            merge_samples(a, b, mock_tokenizer)
+            merge_sample_pair(a, b, mock_tokenizer)
 
     def test_obs_len_invalid_raises(self, mock_tokenizer):
         a = make_sample(
@@ -138,7 +138,7 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="obs_len must be > 0"):
-            merge_samples(a, b, mock_tokenizer)
+            merge_sample_pair(a, b, mock_tokenizer)
 
     def test_sample_validate_fails_raises(self, mock_tokenizer):
         a = make_sample(
@@ -153,4 +153,4 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="loss_mask length"):
-            merge_samples(a, b, mock_tokenizer)
+            merge_sample_pair(a, b, mock_tokenizer)
