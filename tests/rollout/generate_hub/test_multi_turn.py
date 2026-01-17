@@ -250,7 +250,6 @@ class TestExitConditions:
             result.sample,
             [
                 ExpectedSampleInfo(
-                    prompt=SINGLE_TURN_PROMPT,
                     chunks=[
                         SampleParsedChunk(
                             tokens_decoded_str=SINGLE_TURN_RESPONSE,
@@ -258,9 +257,12 @@ class TestExitConditions:
                             rollout_log_probs=[-1 / 128 * i for i in range(6)],
                         ),
                     ],
-                    response=SINGLE_TURN_RESPONSE,
-                    response_length=6,
-                    status=Sample.Status.ABORTED,
+                    partial_sample=expected_partial_sample(
+                        prompt=SINGLE_TURN_PROMPT,
+                        response=SINGLE_TURN_RESPONSE,
+                        response_length=6,
+                        status=Sample.Status.ABORTED,
+                    ),
                 ),
             ],
         )
@@ -277,7 +279,6 @@ class TestExitConditions:
             result.sample,
             [
                 ExpectedSampleInfo(
-                    prompt=TWO_TURN_PROMPT,
                     chunks=[
                         SampleParsedChunk(
                             tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
@@ -285,9 +286,12 @@ class TestExitConditions:
                             rollout_log_probs=[-1 / 128 * i for i in range(45)],
                         ),
                     ],
-                    response=MULTI_TURN_FIRST_RESPONSE,
-                    response_length=45,
-                    status=Sample.Status.TRUNCATED,
+                    partial_sample=expected_partial_sample(
+                        prompt=TWO_TURN_PROMPT,
+                        response=MULTI_TURN_FIRST_RESPONSE,
+                        response_length=45,
+                        status=Sample.Status.TRUNCATED,
+                    ),
                 ),
             ],
         )
@@ -305,10 +309,12 @@ class TestExitConditions:
             result.sample,
             [
                 ExpectedSampleInfo(
-                    prompt=TWO_TURN_PROMPT,
                     chunks=FIRST_TURN_CHUNKS,
-                    response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
-                    response_length=45 + 31,
+                    partial_sample=expected_partial_sample(
+                        prompt=TWO_TURN_PROMPT,
+                        response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                        response_length=45 + 31,
+                    ),
                 ),
             ],
         )
@@ -323,7 +329,14 @@ class TestRespectMaxContextLen:
         assert result.requests == []
         verify_samples(
             result.sample,
-            [ExpectedSampleInfo(prompt=SINGLE_TURN_PROMPT, chunks=[], response="", response_length=0, status=Sample.Status.TRUNCATED)],
+            [
+                ExpectedSampleInfo(
+                    chunks=[],
+                    partial_sample=expected_partial_sample(
+                        prompt=SINGLE_TURN_PROMPT, response="", response_length=0, status=Sample.Status.TRUNCATED
+                    ),
+                )
+            ],
         )
 
     @pytest.mark.parametrize(
@@ -339,17 +352,21 @@ class TestRespectMaxContextLen:
         assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
         expected = [
             ExpectedSampleInfo(
-                prompt=TWO_TURN_PROMPT,
                 chunks=FIRST_TURN_CHUNKS,
-                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
-                response_length=45 + 31,
+                partial_sample=expected_partial_sample(
+                    prompt=TWO_TURN_PROMPT,
+                    response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                    response_length=45 + 31,
+                ),
             ),
             ExpectedSampleInfo(
-                prompt=TWO_TURN_PROMPT,
                 chunks=FIRST_TURN_CHUNKS,
-                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
-                response_length=45 + 31,
-                status=Sample.Status.TRUNCATED,
+                partial_sample=expected_partial_sample(
+                    prompt=TWO_TURN_PROMPT,
+                    response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                    response_length=45 + 31,
+                    status=Sample.Status.TRUNCATED,
+                ),
             ),
         ]
         if variant == "multi_turn_single_sample":
