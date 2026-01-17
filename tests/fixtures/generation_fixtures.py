@@ -1,0 +1,181 @@
+"""
+Fixtures to test custom-generate-function
+"""
+
+from argparse import Namespace
+from dataclasses import dataclass
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.modular_rollout.compatibility import load_generate_function
+from miles.rollout.modular_rollout.orchestration_common import GenerateState
+from miles.utils.async_utils import run
+from miles.utils.http_utils import init_http_client
+from miles.utils.misc import SingletonMeta
+from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
+from miles.utils.types import Sample
+
+MODEL_NAME = "Qwen/Qwen3-0.6B"
+RESPONSE_TEXT = "\\boxed{8}"
+DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
+
+VARIANT_TO_GENERATE_FN_PATH = {
+    "old_sglang_rollout": "miles.rollout.sglang_rollout.generate",
+    "single_turn": "miles.rollout.generate_hub.single_turn.generate",
+    "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn_single_sample.generate",
+}
+
+
+def make_sample(
+    *,
+    prompt: str | list[dict] = "What is 1+7?",
+    tokens: list[int] | None = None,
+    response: str = "",
+    response_length: int = 0,
+    status: Sample.Status = Sample.Status.PENDING,
+    multimodal_inputs: dict | None = None,
+) -> Sample:
+    return Sample(
+        prompt=prompt,
+        tokens=tokens or [],
+        response=response,
+        response_length=response_length,
+        status=status,
+        multimodal_inputs=multimodal_inputs,
+    )
+
+
+@dataclass
+class GenerateEnv:
+    args: Namespace
+    mock_server: Any
+
+
+@dataclass
+class GenerateResult:
+    sample: Sample
+    requests: list[dict]
+
+
+def run_generate(
+    env: GenerateEnv,
+    sample: Sample,
+    sampling_params: dict[str, Any] | None = None,
+    *,
+    variant: str = "single_turn",
+) -> GenerateResult:
+    env.mock_server.request_log.clear()
+    result_sample = run(
+        _call_generate(
+            env.args,
+            sample,
+            sampling_params or DEFAULT_SAMPLING_PARAMS,
+            variant=variant,
+        )
+    )
+    return GenerateResult(sample=result_sample, requests=list(env.mock_server.request_log))
+
+
+async def _call_generate(
+    args: Namespace,
+    sample: Sample,
+    sampling_params: dict[str, Any],
+    *,
+    variant: str = "single_turn",
+) -> Sample:
+    generate_fn = load_generate_function(VARIANT_TO_GENERATE_FN_PATH[variant])
+    state = GenerateState(args)
+    input = GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params.copy(), evaluation=False)
+    output = await generate_fn(input)
+    return output.samples
+
+
+def make_args(
+    *,
+    router_port: int,
+    use_rollout_routing_replay: bool = False,
+    sglang_speculative_algorithm: str | None = None,
+    model_name: str = MODEL_NAME,
+    extra_argv: list[str] | None = None,
+    custom_generate_function_path: str | None = None,
+) -> Namespace:
+    argv = [
+        "pytest",
+        "--train-backend",
+        "fsdp",
+        "--rollout-batch-size",
+        "1",
+        "--num-rollout",
+        "1",
+        "--rollout-num-gpus",
+        "1",
+        "--rollout-num-gpus-per-engine",
+        "1",
+        "--hf-checkpoint",
+        model_name,
+        "--prompt-data",
+        "/dev/null",
+        "--rm-type",
+        "math",
+        "--sglang-router-ip",
+        "127.0.0.1",
+        "--sglang-router-port",
+        str(router_port),
+        "--rollout-max-response-len",
+        "16",
+    ]
+    if use_rollout_routing_replay:
+        argv.append("--use-rollout-routing-replay")
+    if sglang_speculative_algorithm:
+        argv.extend(["--sglang-speculative-algorithm", sglang_speculative_algorithm])
+    if custom_generate_function_path:
+        argv.extend(["--custom-generate-function-path", custom_generate_function_path])
+    if extra_argv:
+        argv.extend(extra_argv)
+
+    from miles.utils.arguments import parse_args
+
+    with patch("sys.argv", argv):
+        args = parse_args()
+
+    init_http_client(args)
+    return args
+
+
+@pytest.fixture
+def generation_env(request, variant):
+    SingletonMeta.clear_all_instances()
+    params = getattr(request, "param", {})
+    args_kwargs = params.get("args_kwargs", {})
+    model_name = args_kwargs.get("model_name", MODEL_NAME)
+    custom_generate_function_path = VARIANT_TO_GENERATE_FN_PATH[variant]
+
+    def process_fn(_):
+        x = params.get("process_fn_kwargs", {})
+        return ProcessResult(
+            text=x.get("response_text", RESPONSE_TEXT),
+            finish_reason=x.get("finish_reason", "stop"),
+            cached_tokens=x.get("cached_tokens", 0),
+            meta_info=ProcessResultMetaInfo(
+                weight_version=x.get("weight_version"),
+                routed_experts=x.get("routed_experts"),
+                spec_accept_token_num=x.get("spec_accept_token_num"),
+                spec_draft_token_num=x.get("spec_draft_token_num"),
+                spec_verify_ct=x.get("spec_verify_ct"),
+            ),
+        )
+
+    with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
+        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k != "model_name"}
+        args = make_args(
+            router_port=mock_server.port,
+            model_name=model_name,
+            custom_generate_function_path=custom_generate_function_path,
+            **other_args_kwargs,
+        )
+        yield GenerateEnv(args=args, mock_server=mock_server)
+
+    SingletonMeta.clear_all_instances()
