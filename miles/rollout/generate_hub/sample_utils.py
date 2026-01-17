@@ -20,10 +20,14 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
     _fill_default_loss_mask(a)
     _fill_default_loss_mask(b)
 
-    a.validate()
-    b.validate()
-    assert b.tokens[: len(a.tokens)] == a.tokens
-    assert obs_len > 0
+    try:
+        a.validate()
+        b.validate()
+        assert b.tokens[: len(a.tokens)] == a.tokens
+        assert obs_len > 0
+    except AssertionError as e:
+        e.add_note(f"{a=} {b=}")
+        raise
 
     obs_tokens = b.tokens[len(a.tokens): len(a.tokens) + obs_len]
     obs_text = tokenizer.decode(obs_tokens)
