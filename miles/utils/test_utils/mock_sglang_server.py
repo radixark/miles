@@ -149,7 +149,8 @@ class MockSGLangServer:
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
 
         logprobs_content = [
-            {"token": self.tokenizer.decode([tid]), "logprob": -1 / 128 * i} for i, tid in enumerate(output_ids)
+            {"token": self.tokenizer.convert_ids_to_tokens(tid), "logprob": -1 / 128 * i}
+            for i, tid in enumerate(output_ids)
         ]
 
         finish_reason = process_result.finish_reason
