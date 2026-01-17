@@ -110,5 +110,5 @@ def _startswith(*, short, long) -> bool:
     if isinstance(short, str) and isinstance(long, str):
         return long.startswith(short)
     if isinstance(short, list) and isinstance(long, list):
-        return (len(long) >= len(short)) and (long[:len(short)] == short)
+        return (len(long) >= len(short)) and (long[: len(short)] == short)
     raise NotImplementedError
