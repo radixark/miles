@@ -67,20 +67,26 @@ def merge_samples(a: Sample, b: Sample, tokenizer) -> Sample:
 
 
 def _merge_spec_info(a: Sample.SpecInfo, b: Sample.SpecInfo) -> Sample.SpecInfo:
+    def _merge_plus_value(field):
+        return getattr(a, field) + getattr(b, field)
+
     return _create_with_all_fields(
         Sample.SpecInfo,
-        spec_accept_token_num=a.spec_accept_token_num + b.spec_accept_token_num,
-        spec_draft_token_num=a.spec_draft_token_num + b.spec_draft_token_num,
-        spec_verify_ct=a.spec_verify_ct + b.spec_verify_ct,
-        completion_token_num=a.completion_token_num + b.completion_token_num,
+        spec_accept_token_num=_merge_plus_value("spec_accept_token_num"),
+        spec_draft_token_num=_merge_plus_value("spec_draft_token_num"),
+        spec_verify_ct=_merge_plus_value("spec_verify_ct"),
+        completion_token_num=_merge_plus_value("completion_token_num"),
     )
 
 
 def _merge_prefix_cache_info(a: Sample.PrefixCacheInfo, b: Sample.PrefixCacheInfo) -> Sample.PrefixCacheInfo:
+    def _merge_plus_value(field):
+        return getattr(a, field) + getattr(b, field)
+
     return _create_with_all_fields(
         Sample.PrefixCacheInfo,
-        cached_tokens=a.cached_tokens + b.cached_tokens,
-        total_prompt_tokens=a.total_prompt_tokens + b.total_prompt_tokens,
+        cached_tokens=_merge_plus_value("cached_tokens"),
+        total_prompt_tokens=_merge_plus_value("total_prompt_tokens"),
     )
 
 
