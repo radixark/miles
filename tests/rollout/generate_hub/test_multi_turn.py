@@ -62,9 +62,13 @@ class ExpectedSampleInfo:
     partial_sample: Sample
 
 
+def token_len(text: str) -> int:
+    return len(TOKENIZER(text, add_special_tokens=False)["input_ids"])
+
+
 def make_chunk(text: str, loss_mask: int) -> SampleParsedChunk:
-    token_len = len(TOKENIZER(text, add_special_tokens=False)["input_ids"])
-    log_probs = [-1 / 128 * i for i in range(token_len)] if loss_mask else [0.0] * token_len
+    n = token_len(text)
+    log_probs = [-1 / 128 * i for i in range(n)] if loss_mask else [0.0] * n
     return SampleParsedChunk(text, loss_mask, log_probs)
 
 
