@@ -134,10 +134,9 @@ class MilesRouter:
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
         result = await self._do_proxy(request, path)
-        return self._build_response(result)
+        return self._build_proxy_response(result)
 
     async def _do_proxy(self, request: Request, path: str) -> dict:
-        """Core proxy logic. Returns dict with request_body, response_body, status_code, headers."""
         worker_url = self._use_url()
         url = f"{worker_url}/{path}"
 
@@ -156,8 +155,7 @@ class MilesRouter:
         finally:
             self._finish_url(worker_url)
 
-    def _build_response(self, result: dict) -> Response:
-        """Build HTTP response from proxy result."""
+    def _build_proxy_response(self, result: dict) -> Response:
         response_body = result["response_body"]
         status_code = result["status_code"]
         headers = result["headers"]

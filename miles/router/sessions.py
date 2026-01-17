@@ -75,4 +75,4 @@ def setup_session_routes(app, router: "MilesRouter"):
         )
         manager.add_record(session_id, record)
 
-        return router._build_response(result)
+        return router._build_proxy_response(result)
