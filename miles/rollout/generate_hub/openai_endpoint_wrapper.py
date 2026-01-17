@@ -3,6 +3,7 @@ from copy import deepcopy
 
 from miles.router.sessions import DeleteSessionResponse, SessionRecord
 from miles.utils.http_utils import post
+from miles.utils.mask_utils import get_response_lengths
 from miles.utils.types import Sample
 
 
@@ -37,7 +38,7 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
     sample.loss_mask = record.extras.loss_mask
     sample.rollout_log_probs = TODO
     sample.response = TODO
-    sample.response_length = TODO
+    sample.response_length = get_response_lengths([sample.loss_mask])[0]
 
     num_tool_response_tokens = len(prompt_ids) - len(sample.tokens)
     if num_tool_response_tokens > 0:
