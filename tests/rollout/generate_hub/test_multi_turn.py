@@ -486,6 +486,8 @@ class TestRespectMaxContextLen:
 
 
 class TestThreeTurn:
+    """Need to test 3-turn case besides 2-turn, because e.g. merge_samples may behave differently."""
+
     def test_three_turns_with_sequential_tool_calls(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("TODO: implement agentic variant for 3-turn")
