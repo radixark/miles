@@ -333,8 +333,11 @@ class TestBoundaryConditions:
     @pytest.mark.parametrize(
         "generation_env,expected_max_new_tokens",
         [
+            # max_context_len=10, prompt_len=7, remaining=3, so max_new_tokens adjusted to 3
             ({"args_kwargs": {"rollout_max_context_len": 10}}, 10 - PROMPT_TOKEN_LEN),
+            # max_context_len=8, prompt_len=7, remaining=1, so max_new_tokens adjusted to 1
             ({"args_kwargs": {"rollout_max_context_len": 8}}, 8 - PROMPT_TOKEN_LEN),
+            # max_context_len=100, prompt_len=7, remaining=93 > 16, so max_new_tokens unchanged
             ({"args_kwargs": {"rollout_max_context_len": 100}}, DEFAULT_MAX_NEW_TOKENS),
         ],
         indirect=["generation_env"],
@@ -360,7 +363,7 @@ class TestBoundaryConditions:
             pytest.skip("multi_turn_multi_samples returns empty list when first turn fails")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
-        tokens = PROMPT_TOKENS if variant in ("multi_turn_single_sample", "multi_turn_multi_samples") else []
+        tokens = PROMPT_TOKENS if variant == "multi_turn_single_sample" else []
         assert listify(result.sample) == [
             expected_sample(
                 variant,
