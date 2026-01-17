@@ -3,19 +3,24 @@ Fixtures to test custom-generate-function
 """
 
 from argparse import Namespace
+from contextlib import contextmanager
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+import requests
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.modular_rollout.compatibility import load_generate_function
 from miles.rollout.modular_rollout.orchestration_common import GenerateState
+from miles.router.router import MilesRouter
 from miles.utils.async_utils import run
-from miles.utils.http_utils import init_http_client
+from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
+from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
@@ -169,6 +174,31 @@ def make_args(
     return args
 
 
+@contextmanager
+def with_miles_router(backend_url: str, model_name: str):
+    router_args = SimpleNamespace(
+        miles_router_max_connections=10,
+        miles_router_timeout=30,
+        miles_router_middleware_paths=[],
+        rollout_health_check_interval=60,
+        miles_router_health_check_failure_threshold=3,
+        hf_checkpoint=model_name,
+    )
+    router = MilesRouter(router_args)
+
+    port = find_available_port(31000)
+    server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
+    server.start()
+
+    url = f"http://127.0.0.1:{port}"
+    requests.post(f"{url}/add_worker", json={"url": backend_url})
+
+    try:
+        yield port
+    finally:
+        server.stop()
+
+
 @pytest.fixture
 def generation_env(request, variant):
     SingletonMeta.clear_all_instances()
@@ -193,14 +223,15 @@ def generation_env(request, variant):
         )
 
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
-        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k != "model_name"}
-        args = make_args(
-            variant=variant,
-            router_port=mock_server.port,
-            model_name=model_name,
-            custom_generate_function_path=custom_generate_function_path,
-            **other_args_kwargs,
-        )
-        yield GenerateEnv(args=args, mock_server=mock_server)
+        with with_miles_router(mock_server.url, model_name) as router_port:
+            other_args_kwargs = {k: v for k, v in args_kwargs.items() if k != "model_name"}
+            args = make_args(
+                variant=variant,
+                router_port=router_port,
+                model_name=model_name,
+                custom_generate_function_path=custom_generate_function_path,
+                **other_args_kwargs,
+            )
+            yield GenerateEnv(args=args, mock_server=mock_server)
 
     SingletonMeta.clear_all_instances()

@@ -1,5 +1,7 @@
 import asyncio
 import re
+import time
+import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -115,6 +117,75 @@ class MockSGLangServer:
         @self.app.post("/abort_request")
         async def abort_request(_request: Request):
             return JSONResponse(content={"status": "ok"})
+
+        @self.app.post("/v1/chat/completions")
+        async def chat_completions(request: Request):
+            payload = await request.json()
+            messages = payload.get("messages", [])
+            tools = payload.get("tools")
+
+            prompt_str = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, tools=tools
+            )
+
+            with self._concurrency.track():
+                if self.latency > 0:
+                    await asyncio.sleep(self.latency)
+
+                process_result = self.process_fn(prompt_str)
+                output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
+
+                logprobs_content = [
+                    {"token": self.tokenizer.decode([tid]), "logprob": -1 / 128 * i}
+                    for i, tid in enumerate(output_ids)
+                ]
+
+                finish_reason = process_result.finish_reason
+                tool_calls = None
+                if finish_reason == "stop" and "<tool_call>" in process_result.text:
+                    finish_reason = "tool_calls"
+                    tool_calls = self._parse_tool_calls_from_text(process_result.text)
+
+                response = {
+                    "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "mock-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": process_result.text if not tool_calls else None,
+                                "tool_calls": tool_calls,
+                            },
+                            "logprobs": {"content": logprobs_content},
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                }
+
+                return JSONResponse(content=response)
+
+    def _parse_tool_calls_from_text(self, text: str) -> list[dict] | None:
+        import json as json_module
+        tool_calls = []
+        pattern = r"<tool_call>\s*(\{[^}]+\})\s*</tool_call>"
+        matches = re.findall(pattern, text, re.DOTALL)
+        for i, match in enumerate(matches):
+            try:
+                parsed = json_module.loads(match)
+                tool_calls.append({
+                    "id": f"call{i:05d}",
+                    "type": "function",
+                    "function": {
+                        "name": parsed.get("name"),
+                        "arguments": json_module.dumps(parsed.get("arguments", {})),
+                    },
+                })
+            except json_module.JSONDecodeError:
+                continue
+        return tool_calls if tool_calls else None
 
     def start(self):
         self._server = UvicornThreadServer(self.app, host=self.host, port=self.port)
