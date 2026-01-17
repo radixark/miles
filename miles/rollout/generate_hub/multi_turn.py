@@ -80,7 +80,7 @@ def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--generate-max-turns", type=int, default=16)
     parser.add_argument("--generate-tool-specs-path", type=str)
     parser.add_argument("--generate-tool-call-parser", type=str)
-    parser.add_argument("--generate-multi-samples", type=bool, action="store_true")
+    parser.add_argument("--generate-multi-samples", action="store_true")
 
 
 generate.add_arguments = _add_arguments
