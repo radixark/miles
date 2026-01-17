@@ -100,7 +100,9 @@ class MockSGLangServer:
         async def abort_request(_request: Request):
             return JSONResponse(content={"status": "ok"})
 
-    async def _handle_generate_like_request(self, request: Request, compute_fn: Callable[[dict], dict], log: bool = False):
+    async def _handle_generate_like_request(
+        self, request: Request, compute_fn: Callable[[dict], dict], log: bool = False
+    ):
         payload = await request.json()
         if log:
             self.request_log.append(payload)
@@ -150,8 +152,7 @@ class MockSGLangServer:
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
 
         logprobs_content = [
-            {"token": self.tokenizer.decode([tid]), "logprob": -1 / 128 * i}
-            for i, tid in enumerate(output_ids)
+            {"token": self.tokenizer.decode([tid]), "logprob": -1 / 128 * i} for i, tid in enumerate(output_ids)
         ]
 
         finish_reason = process_result.finish_reason
