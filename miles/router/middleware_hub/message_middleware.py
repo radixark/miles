@@ -1,24 +1,15 @@
-from dataclasses import dataclass, field
-
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-
-@dataclass
-class TrajectoryInfo:
-    """Session trajectory state."""
-
-    token_ids: list[int] = field(default_factory=list)
-    log_probs: list[float] = field(default_factory=list)
-    loss_mask: list[int] = field(default_factory=list)
+from .seq_trajectory import SeqTrajectory
 
 
 class MessageMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, *, router):
         super().__init__(app)
         self.router = router
-        self.session_trajectories: dict[str, TrajectoryInfo] = {}
+        self.session_trajectories: dict[str, SeqTrajectory] = {}
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -44,8 +35,8 @@ class MessageMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     async def _register_session(self, session_id: str):
-        self.session_trajectories[session_id] = TrajectoryInfo()
-        return JSONResponse({"session_id": session_id, "status": "ok"})
+        self.session_trajectories[session_id] = SeqTrajectory()
+        return JSONResponse({"session_id": session_id, "status": "ok"}, status_code=201)
 
     async def _session_chat_completions(self, request: Request, call_next, session_id: str):
         # TODO: Fill chat completion request with cached token ids and update trajectory from response.
@@ -63,3 +54,9 @@ class MessageMiddleware(BaseHTTPMiddleware):
                 "loss_mask": trajectory.loss_mask,
             }
         )
+
+    async def _delete_session(self, session_id: str):
+        if session_id not in self.session_trajectories:
+            return JSONResponse({"error": "session not found", "session_id": session_id}, status_code=404)
+        del self.session_trajectories[session_id]
+        return JSONResponse({"session_id": session_id, "status": "ok"}, status_code=200)
