@@ -9,6 +9,7 @@ from typing import Any
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.oai_endpoint_wrapper import OpenAIEndpointTracer
+from miles.rollout.generate_hub.tool_call_utils import execute_tool_calls
 from miles.utils.misc import load_function
 
 
@@ -68,11 +69,4 @@ class _BlackboxToolCallAgent:
 
             # ----------------------- Execute tools -------------------------
 
-            _, tool_calls = tool_call_parser.parse_non_stream(output["text"])
-            if len(tool_calls) == 0:
-                break
-
-            tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
-            update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
-
-        return GenerateFnOutput(samples=(extra_samples + [sample]) if args.generate_multi_samples else sample)
+            messages += await execute_tool_calls(tool_calls, execute_tool_function)
