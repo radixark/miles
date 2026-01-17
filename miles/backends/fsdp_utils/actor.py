@@ -31,6 +31,7 @@ from ..training_utils.log_utils import (
 )
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from . import checkpoint
+from .lora_utils import apply_lora_to_model, is_lora_model
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
@@ -99,6 +100,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
+        if self.args.lora_rank > 0 or self.args.lora_adapter_path:
+            model = apply_lora_to_model(model, self.args)
+
         model.train()
 
         full_state = model.state_dict()
@@ -112,11 +116,14 @@ class FSDPTrainRayActor(TrainRayActor):
         self.model = model
 
         if args.gradient_checkpointing:
-            self.model.gradient_checkpointing_enable()
+            # Avoid "does not require grad" error
+            gc_kwargs = {"use_reentrant": False} if is_lora_model(self.model) else {}
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gc_kwargs)
 
         if args.optimizer == "adam":
+            trainable_params = [p for p in self.model.parameters() if p.requires_grad]
             self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
+                trainable_params,
                 lr=args.lr,
                 betas=(args.adam_beta1, args.adam_beta2),
                 eps=args.adam_eps,
