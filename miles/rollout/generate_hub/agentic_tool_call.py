@@ -3,7 +3,6 @@ Simple agentic demo with tool calling.
 """
 
 import argparse
-import json
 from copy import deepcopy
 from typing import Any
 
@@ -11,6 +10,7 @@ from openai import AsyncOpenAI
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.openai_endpoint_utils import OpenAIEndpointTracer, compute_samples_from_openai_records
+from miles.rollout.generate_hub.tool_call_utils import execute_tool_calls
 from miles.utils.misc import load_function
 
 
@@ -79,7 +79,10 @@ async def _run_blackbox_tool_call_agent(
             messages += await _execute_openai_tool_calls(x, execute_tool_function)
 
 
-async def _execute_openai_tool_calls(tool_calls, execute_one) -> list[dict[str, Any]]:
+async def _execute_openai_tool_calls(
+    tool_calls: list[ChatCompletionMessageToolCall],
+    execute_one: Callable[[str, dict], Coroutine[Any, Any, str]],
+) -> list[dict[str, Any]]:
     tool_messages = []
     for call in tool_calls:
         params = json.loads(call.function.arguments) if call.function.arguments else {}
