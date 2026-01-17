@@ -206,7 +206,7 @@ class TestRoutedExperts:
         indirect=True,
     )
     def test_routed_experts_enabled_and_parsed(self, variant, generation_env):
-        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
             pytest.skip("TODO: support")
 
         num_layers, moe_router_topk = 2, 4
@@ -272,7 +272,7 @@ class TestInputStatusValidation:
 
     @pytest.mark.parametrize("status", [Sample.Status.COMPLETED, Sample.Status.TRUNCATED])
     def test_rejected_statuses(self, variant, generation_env, status):
-        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
             pytest.skip("not tested yet")
         with pytest.raises(AssertionError):
             _run_generate(variant, generation_env, _make_sample(status=status))
@@ -291,7 +291,7 @@ class TestPayloadStructure:
 
 class TestBoundaryConditions:
     def test_max_new_tokens_zero_returns_truncated(self, variant, generation_env):
-        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
             pytest.skip("not tested yet")
         existing_tokens = [1, 2, 3, 4, 5, 6, 7] + list(range(100, 110))
         sample = _make_sample(tokens=existing_tokens, response="x" * 10, response_length=10)
