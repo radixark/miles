@@ -3,6 +3,7 @@ Simple multi-turn generation with tool calling.
 """
 
 import argparse
+from copy import deepcopy
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.generate_endpoint_wrapper import (
@@ -34,6 +35,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tool_specs = load_function(args.generate_tool_specs_path)
     tool_call_parser = create_tool_call_parser(tool_specs, args.generate_tool_call_parser)
 
+    if args.generate_multi_samples:
+        multi_samples = []
+
     # ----------------------- Initial prompts -------------------------
 
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
@@ -64,7 +68,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
 
-    return GenerateFnOutput(samples=sample)
+        # ----------------------- Multi-sample bookkeeping -------------------------
+
+        if args.generate_multi_samples:
+            multi_samples.append(deepcopy(sample))
+
+    return GenerateFnOutput(samples=multi_samples if args.generate_multi_samples else sample)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
