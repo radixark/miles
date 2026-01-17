@@ -180,9 +180,9 @@ class TestBasicMultiTurn:
         assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
         verify_samples(
             result.sample,
-            SINGLE_TURN_PROMPT,
             [
                 ExpectedSampleInfo(
+                    prompt=SINGLE_TURN_PROMPT,
                     chunks=[
                         SampleParsedChunk(
                             tokens_decoded_str=SINGLE_TURN_RESPONSE,
@@ -207,11 +207,13 @@ class TestBasicMultiTurn:
         ]
         expected = [
             ExpectedSampleInfo(
+                prompt=TWO_TURN_PROMPT,
                 chunks=FIRST_TURN_CHUNKS,
                 response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
                 response_length=45 + 31,
             ),
             ExpectedSampleInfo(
+                prompt=TWO_TURN_PROMPT,
                 chunks=FINAL_TURN_CHUNKS,
                 response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE + MULTI_TURN_SECOND_RESPONSE,
                 response_length=45 + 31 + 24,
@@ -219,7 +221,7 @@ class TestBasicMultiTurn:
         ]
         if variant == "multi_turn_single_sample":
             expected = expected[-1:]
-        verify_samples(result.sample, TWO_TURN_PROMPT, expected)
+        verify_samples(result.sample, expected)
 
 
 class TestExitConditions:
@@ -239,9 +241,9 @@ class TestExitConditions:
         assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
         verify_samples(
             result.sample,
-            SINGLE_TURN_PROMPT,
             [
                 ExpectedSampleInfo(
+                    prompt=SINGLE_TURN_PROMPT,
                     chunks=[
                         SampleParsedChunk(
                             tokens_decoded_str=SINGLE_TURN_RESPONSE,
@@ -266,9 +268,9 @@ class TestExitConditions:
         assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
         verify_samples(
             result.sample,
-            TWO_TURN_PROMPT,
             [
                 ExpectedSampleInfo(
+                    prompt=TWO_TURN_PROMPT,
                     chunks=[
                         SampleParsedChunk(
                             tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
@@ -294,9 +296,9 @@ class TestExitConditions:
         assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
         verify_samples(
             result.sample,
-            TWO_TURN_PROMPT,
             [
                 ExpectedSampleInfo(
+                    prompt=TWO_TURN_PROMPT,
                     chunks=FIRST_TURN_CHUNKS,
                     response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
                     response_length=45 + 31,
@@ -314,8 +316,7 @@ class TestRespectMaxContextLen:
         assert result.requests == []
         verify_samples(
             result.sample,
-            SINGLE_TURN_PROMPT,
-            [ExpectedSampleInfo(chunks=[], response="", response_length=0, status=Sample.Status.TRUNCATED)],
+            [ExpectedSampleInfo(prompt=SINGLE_TURN_PROMPT, chunks=[], response="", response_length=0, status=Sample.Status.TRUNCATED)],
         )
 
     @pytest.mark.parametrize(
@@ -331,11 +332,13 @@ class TestRespectMaxContextLen:
         assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
         expected = [
             ExpectedSampleInfo(
+                prompt=TWO_TURN_PROMPT,
                 chunks=FIRST_TURN_CHUNKS,
                 response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
                 response_length=45 + 31,
             ),
             ExpectedSampleInfo(
+                prompt=TWO_TURN_PROMPT,
                 chunks=FIRST_TURN_CHUNKS,
                 response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
                 response_length=45 + 31,
@@ -344,4 +347,4 @@ class TestRespectMaxContextLen:
         ]
         if variant == "multi_turn_single_sample":
             expected = expected[-1:]
-        verify_samples(result.sample, TWO_TURN_PROMPT, expected)
+        verify_samples(result.sample, expected)
