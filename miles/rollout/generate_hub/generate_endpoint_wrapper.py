@@ -45,17 +45,15 @@ def compute_request_payload(
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
-    sampling_params = deepcopy(sampling_params)
-
     max_context_length = args.rollout_max_context_len or float("inf")
     remaining_len = max_context_length - len(input_ids)
-    sampling_params["max_new_tokens"] = min(sampling_params["max_new_tokens"], remaining_len)
-    if sampling_params["max_new_tokens"] <= 0:
+    max_new_tokens = min(sampling_params.pop("max_new_tokens"), remaining_len)
+    if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED
 
     payload = {
         "input_ids": input_ids,
-        "sampling_params": sampling_params,
+        "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
         "return_logprob": True,
         "return_routed_experts": args.use_rollout_routing_replay,
     }
