@@ -312,11 +312,11 @@ class TestBoundaryConditions:
     def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
         if variant == "old_sglang_rollout":
             pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
-        if variant == "multi_turn_multi_samples":
+        if variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
             pytest.skip("multi_turn_multi_samples returns empty list when first turn fails")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
-        tokens = PROMPT_TOKENS if variant in ("multi_turn_single_sample", "multi_turn_multi_samples") else []
+        tokens = PROMPT_TOKENS if variant in ("multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples") else []
         assert listify(result.sample) == [
             expected_sample(
                 variant,
@@ -347,7 +347,7 @@ VLM_MODEL_NAME = "Qwen/Qwen2-VL-2B-Instruct"
 class TestMultimodal:
     @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"model_name": VLM_MODEL_NAME}}], indirect=True)
     def test_multimodal_inputs_processed(self, variant, generation_env):
-        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
+        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
             pytest.skip("not tested yet")
         test_image = Image.new("RGB", (64, 64), color="red")
         multimodal_inputs = {"images": [test_image]}
