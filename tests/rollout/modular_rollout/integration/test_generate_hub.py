@@ -41,14 +41,14 @@ def test_rollout(rollout_integration_env, request, test_type):
     if test_type == "train":
         assert len(out.samples) == env.args.rollout_batch_size
         group = out.samples[0]
-        _verify_samples(variant, group, env.args.n_samples_per_prompt)
+        _verify_samples(variant, group)
     else:
         assert "toy" in out.data
         samples = out.data["toy"]["samples"]
-        _verify_samples(variant, samples, env.args.n_samples_per_eval_prompt)
+        _verify_samples(variant, samples)
 
 
-def _verify_samples(variant: str, samples: list[Sample], expected_count: int):
+def _verify_samples(variant: str, samples: list[Sample]):
     for sample in samples:
         assert sample.status == Sample.Status.COMPLETED
         if variant == "single_turn":
