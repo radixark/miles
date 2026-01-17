@@ -75,13 +75,12 @@ class _BlackboxToolCallAgent:
             )
 
             choice = response.choices[0]
-            assistant_msg = choice.message
-            messages.append(assistant_msg.model_dump())
+            messages.append(choice.message.model_dump())
 
             if choice.finish_reason in ("stop", "length"):
                 break
 
             # ----------------------- Execute tools -------------------------
 
-            if assistant_msg.tool_calls:
-                messages += await execute_tool_calls(assistant_msg.tool_calls, execute_tool_function)
+            if (x := choice.message.tool_calls):
+                messages += await execute_tool_calls(x, execute_tool_function)
