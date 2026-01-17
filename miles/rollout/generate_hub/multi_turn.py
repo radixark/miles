@@ -45,7 +45,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     sample.tokens = prompt_tokens_ids.copy()
 
     for turn in range(args.generate_max_turns):
-        # ----------------------- Multi-sample bookkeeping -------------------------
+        # ----------------------- Bookkeeping for multi-sample mode -------------------------
 
         if args.generate_multi_samples and turn > 0:
             extra_samples.append(deepcopy(sample))
