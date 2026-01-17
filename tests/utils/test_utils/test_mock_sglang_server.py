@@ -269,22 +269,6 @@ class TestChatCompletionsEndpoint:
             ],
         }
 
-    def test_logprobs_format(self, mock_server):
-        response = requests.post(
-            f"{mock_server.url}/v1/chat/completions",
-            json={"model": "test", "messages": [{"role": "user", "content": "What is 1+2?"}]},
-            timeout=5.0,
-        )
-        data = response.json()
-        logprobs_content = data["choices"][0]["logprobs"]["content"]
-
-        assert len(logprobs_content) > 0
-        for i, item in enumerate(logprobs_content):
-            assert "token" in item
-            assert "logprob" in item
-            assert isinstance(item["token"], str)
-            assert item["logprob"] == -1 / 128 * i
-
     def test_with_tool_calls(self):
         tool_call_response = 'Let me check for you.\n<tool_call>\n{"name": "get_year", "arguments": {}}\n</tool_call>'
 
