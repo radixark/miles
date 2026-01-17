@@ -418,19 +418,11 @@ class TestRespectMaxContextLen:
         "generation_env,expected_max_new_tokens",
         [
             (
-                {
-                    "args_kwargs": {
-                        "rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10
-                    }
-                },
+                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
                 10,
             ),
             (
-                {
-                    "args_kwargs": {
-                        "rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100
-                    }
-                },
+                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
                 64,
             ),
         ],
