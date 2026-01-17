@@ -432,13 +432,60 @@ class TestRespectMaxContextLen:
         if is_agentic_variant(variant):
             pytest.skip("TODO: implement")
         S = TwoTurnStub
-        generation_env.mock_server.process_fn = S.process_fn
+
+        def process_fn(prompt: str) -> ProcessResult:
+            if prompt == S.FIRST_PROMPT:
+                return ProcessResult(text=S.FIRST_RESPONSE, finish_reason="stop")
+            elif prompt == S.SECOND_PROMPT:
+                return ProcessResult(text=S.SECOND_RESPONSE, finish_reason="length")
+            raise ValueError(f"Unexpected {prompt=}")
+
+        generation_env.mock_server.process_fn = process_fn
 
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
-        assert len(result.requests) >= 2
-        assert result.requests[1]["sampling_params"]["max_new_tokens"] == expected_max_new_tokens
-        assert result.requests[1]["sampling_params"]["temperature"] == DEFAULT_SAMPLING_PARAMS["temperature"]
+        assert result.requests == [
+            expected_request(S.FIRST_PROMPT_TOKEN_IDS),
+            expected_request(S.SECOND_PROMPT_TOKEN_IDS, sampling_params={"max_new_tokens": expected_max_new_tokens, "temperature": DEFAULT_SAMPLING_PARAMS["temperature"]}),
+        ]
+        if variant == "multi_turn_single_sample":
+            partial_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[
+                        expected_chunk(S.FIRST_RESPONSE, 1),
+                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                        expected_chunk(S.SECOND_RESPONSE, 1),
+                    ],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=partial_response,
+                        response_length=token_len(partial_response),
+                        status=Sample.Status.TRUNCATED,
+                    ),
+                ),
+            ]
+        else:
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE),
+                    ),
+                ),
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.SECOND_RESPONSE,
+                        response_length=token_len(S.SECOND_RESPONSE),
+                        status=Sample.Status.TRUNCATED,
+                    ),
+                ),
+            ]
+        verify_samples(result.sample, expected)
 
 
 class TestThreeTurn:
