@@ -22,7 +22,10 @@ def _add_arguments(parser: argparse.ArgumentParser):
 generate.add_arguments = _add_arguments
 
 
-class _ToolCallAgent:
-    """Imagine this is a black-box agent that does arbitrarily complex work."""
+class _BlackboxToolCallAgent:
+    """
+    Imagine this is a black-box agent, e.g. SWE-agent, which does arbitrarily complex work,
+    only understands OpenAI compatible API, and never understands Miles or the Sample data structure.
+    """
     async def run(self):
         TODO
