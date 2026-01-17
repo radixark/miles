@@ -1,7 +1,5 @@
 from argparse import Namespace
 
-import requests
-
 from miles.utils.http_utils import post
 
 
