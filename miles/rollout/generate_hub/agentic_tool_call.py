@@ -53,8 +53,12 @@ class _BlackboxToolCallAgent:
     generate_multi_samples: bool
 
     async def run(self):
+        # ----------------------- Setup -------------------------
+
         execute_tool_function = load_function(self.generate_execute_tool_function_path)
         tool_specs = load_function(self.generate_tool_specs_path)
+
+        # ----------------------- Initial prompts -------------------------
 
         messages = deepcopy(self.prompt)
 
