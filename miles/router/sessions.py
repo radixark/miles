@@ -58,8 +58,6 @@ def setup_session_routes(app, router: "MilesRouter"):
     def get_tokenizer():
         nonlocal tokenizer
         if tokenizer is None:
-            if not hasattr(router.args, "hf_checkpoint") or router.args.hf_checkpoint is None:
-                raise AttributeError("router.args.hf_checkpoint is required for session routes")
             tokenizer = AutoTokenizer.from_pretrained(router.args.hf_checkpoint, trust_remote_code=True)
         return tokenizer
     # ============================= HACK END ===============================
