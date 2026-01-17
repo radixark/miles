@@ -8,7 +8,7 @@ from tests.rollout.modular_rollout.integration.utils import MODULAR_ROLLOUT_BASE
 from miles.utils.test_utils.mock_tools import TwoTurnStub
 from miles.utils.types import Sample
 
-TWO_TURN_DATA_ROWS = [{"input": TwoTurnStub.USER_QUESTION, "label": "2008"}]
+TWO_TURN_DATA_ROWS = [{"input": [{"role": "user", "content": TwoTurnStub.USER_QUESTION}], "label": "2008"}]
 
 _VARIANT_NAMES = [
     "multi_turn_single_sample",
@@ -22,7 +22,7 @@ def _config_for_variant(variant: str) -> IntegrationEnvConfig:
     return IntegrationEnvConfig(
         extra_argv=MODULAR_ROLLOUT_BASE_ARGV
         + extra_argv_for_variant(variant)
-        + ["--rollout-batch-size", "2", "--n-samples-per-prompt", "2"],
+        + ["--rollout-batch-size", "2", "--n-samples-per-prompt", "2", "--apply-chat-template"],
         data_rows=TWO_TURN_DATA_ROWS,
     )
 
