@@ -10,6 +10,8 @@ from miles.utils.test_utils.mock_sglang_server import ProcessResult
 from miles.utils.test_utils.mock_tools import (
     MULTI_TURN_FIRST_PROMPT,
     MULTI_TURN_FIRST_RESPONSE,
+    MULTI_TURN_OPENAI_MESSAGES_FIRST_TURN,
+    MULTI_TURN_OPENAI_MESSAGES_SECOND_TURN,
     MULTI_TURN_SECOND_PROMPT,
     MULTI_TURN_SECOND_RESPONSE,
     SAMPLE_TOOLS,
@@ -120,6 +122,10 @@ def expected_request(input_ids: list[int], sampling_params: dict | None = None) 
         "return_logprob": True,
         "return_routed_experts": False,
     }
+
+
+def expected_openai_request(messages: list[dict]) -> dict:
+    return {"messages": messages, "model": "default", "tools": SAMPLE_TOOLS}
 
 
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
