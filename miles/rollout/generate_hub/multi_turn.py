@@ -24,7 +24,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     # ----------------------- Setup -------------------------
 
     args = input.args
-    sample = input.sample
+    sample = deepcopy(input.sample)
     tokenizer = input.state.tokenizer
     assert not args.partial_rollout, "Partial rollout is not supported"
 
@@ -41,7 +41,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
 
-    sample.loss_mask = []
     sample.tokens = prompt_tokens_ids.copy()
 
     for turn in range(args.generate_max_turns):
@@ -55,6 +54,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # Bookkeeping only for multi-sample mode
         if args.generate_multi_samples and turn > 0:
             extra_samples.append(deepcopy(sample))
+            sample = deepcopy(input.sample)
 
         output = await post(url, payload)
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)

@@ -91,6 +91,8 @@ async def update_sample_from_response(
         sample.rollout_log_probs += new_response_log_probs
 
         if update_loss_mask:
+            if sample.loss_mask is None:
+                sample.loss_mask = []
             sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
