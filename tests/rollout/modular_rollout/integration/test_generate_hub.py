@@ -11,9 +11,7 @@ from miles.utils.types import Sample
 
 def _check_reward(sample: Sample) -> float:
     """Check if a single sample contains the label."""
-    if sample.response and sample.label:
-        return 1.0 if str(sample.label) in sample.response else 0.0
-    return 0.0
+    return float(sample.response and (str(sample.label) in sample.response))
 
 
 async def _simple_reward_function(args, samples: Sample | list[Sample]) -> float | list[float]:
@@ -90,6 +88,13 @@ def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: 
         assert "2008" in sample.response, "Response should contain final answer '2008'"
 
 
+def _verify_group_samples(group_samples: list[Sample], expected_count: int = 2):
+    """Verify a group of samples from multi_samples variants."""
+    assert len(group_samples) == expected_count, f"Group should have {expected_count} samples (one per turn)"
+    for i, sample in enumerate(group_samples):
+        _verify_sample(sample, expect_answer=(i == len(group_samples) - 1))
+
+
 def _verify_samples(variant: str, samples: list[Any]):
     is_multi_samples = variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples")
     
@@ -102,9 +107,7 @@ def _verify_samples(variant: str, samples: list[Any]):
             assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
             for group_sample in samples:
                 assert isinstance(group_sample, list), "multi_samples variant should return list[Sample] per generate"
-                assert len(group_sample) == 2, "multi_samples variant should return 2 samples per generate (one per turn)"
-                for i, sample in enumerate(group_sample):
-                    _verify_sample(sample, expect_answer=(i == len(group_sample) - 1))
+                _verify_group_samples(group_sample)
         else:
             # Eval mode: list[Sample] (flattened)
             # n_samples_per_eval_prompt=2, and each generate returns 2 turns, so 2*2=4 samples
@@ -112,9 +115,7 @@ def _verify_samples(variant: str, samples: list[Any]):
             # Group samples by prompt (every 2 samples form a group)
             for group_idx in range(2):
                 group_samples = samples[group_idx * 2 : (group_idx + 1) * 2]
-                assert len(group_samples) == 2, f"Each group should have 2 samples (one per turn)"
-                for i, sample in enumerate(group_samples):
-                    _verify_sample(sample, expect_answer=(i == len(group_samples) - 1))
+                _verify_group_samples(group_samples)
     else:
         assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
         for sample in samples:
