@@ -1,12 +1,13 @@
-import json
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
+import requests
 
 from miles.router.router import MilesRouter
 from miles.router.sessions import SessionManager, SessionRecord
+from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, with_mock_server
+from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
 class TestSessionManager:
