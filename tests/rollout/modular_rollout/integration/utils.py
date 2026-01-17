@@ -68,12 +68,19 @@ def integration_env_config(
     )
 
 
-def load_and_call_train(args, data_source):
+def load_and_call_rollout(args, data_source, mode: str = "train") -> RolloutFnOutput:
     fn = load_rollout_function(
         RolloutFnConstructorInput(args=args, data_source=data_source),
-        args.rollout_function_path,
+        args.rollout_function_path if mode == "train" else args.eval_function_path,
     )
-    return call_rollout_function(fn, RolloutFnTrainInput(rollout_id=0))
+    if mode == "train":
+        return call_rollout_function(fn, RolloutFnTrainInput(rollout_id=0))
+    else:
+        return call_rollout_function(fn, RolloutFnEvalInput(rollout_id=0))
+
+
+def load_and_call_train(args, data_source):
+    return load_and_call_rollout(args, data_source, mode="train")
 
 
 def filter_by_reward(args, samples, **kwargs):

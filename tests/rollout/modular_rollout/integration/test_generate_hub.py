@@ -1,10 +1,11 @@
 import pytest
 from tests.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fixtures.rollout_integration import IntegrationEnvConfig
-from tests.rollout.modular_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_train
+from tests.rollout.modular_rollout.integration.utils import (
+    MODULAR_ROLLOUT_BASE_ARGV,
+    load_and_call_rollout,
+)
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
-from miles.rollout.modular_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.test_utils.mock_tools import TwoTurnStub
 from miles.utils.types import Sample
 
@@ -56,16 +57,13 @@ def test_rollout(rollout_integration_env, request, test_type):
 
     env.mock_server.process_fn = TwoTurnStub.process_fn
 
+    out = load_and_call_rollout(env.args, env.data_source, mode=test_type)
+
     if test_type == "train":
-        out = load_and_call_train(env.args, env.data_source)
         assert len(out.samples) == env.args.rollout_batch_size
         group = out.samples[0]
         _verify_samples(variant, group, env.args.n_samples_per_prompt)
     else:
-        fn = load_rollout_function(
-            RolloutFnConstructorInput(args=env.args, data_source=env.data_source), env.args.eval_function_path
-        )
-        out = call_rollout_function(fn, RolloutFnEvalInput(rollout_id=0))
         assert "toy" in out.data
         rewards = out.data["toy"]["rewards"]
         samples = out.data["toy"]["samples"]
