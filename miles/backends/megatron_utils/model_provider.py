@@ -92,33 +92,32 @@ def get_model_provider_func(
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
+
         # TODO: we should not manually set this...
         provider.tensor_model_parallel_size = args.tensor_model_parallel_size
         provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
         provider.expert_model_parallel_size = args.expert_model_parallel_size
         provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
         provider.sequence_parallel = args.sequence_parallel
-        ##############################
-        ###########lora###############
-        ##############################
+
+        # ##############################
+        # ###########lora###############
+        # ##############################
         # if is_lora_enabled(args) and role == "actor":
-        #     from megatron.bridge.peft.lora import LoRA
-        #     lora = LoRA(
-        #         target_modules=args.target_modules,
-        #         dim=args.lora_rank,
-        #         alpha=args.lora_alpha,
-        #         dropout=args.lora_dropout,
-        #         # lora_dtype=lora_dtype,
-        #     )
-        #     # Apply LoRA and freeze base model
-        #     def apply_lora(model_chunks):
-        #         transformed = lora(model_chunks, training=True)
-        #         lora.set_params_to_save(transformed)
-        #         return transformed
-        #     provider.register_pre_wrap_hook(apply_lora)
-        ##############################
-        ##############################
-        ##############################
+        #     provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
+        #     provider.context_parallel_size = args.context_parallel_size
+        #     provider.variable_seq_lengths = True
+        #     provider.moe_token_dispatcher_type = "alltoall"
+        #     provider.moe_router_load_balancing_type = "none"
+        #     provider.finalize()
+        #     return provider.provide
+        # else:
+        #     provider.finalize()
+        #     return provider.provide
+        # ##############################
+        # ##############################
+        # ##############################
+
         provider.finalize()
         return provider.provide
     

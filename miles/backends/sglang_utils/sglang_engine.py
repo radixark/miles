@@ -395,26 +395,26 @@ class SGLangEngine(RayActor):
     ##############################
     ###########lora###############
     ##############################
-    def load_lora_adapter(self, lora_name: str, lora_path: str):
-        """Load LoRA adapter from disk."""
-        return self._make_request(
-            "load_lora_adapter",
-            {"lora_name": lora_name, "lora_path": lora_path},
-        )
+    # def load_lora_adapter(self, lora_name: str, lora_path: str):
+    #     """Load LoRA adapter from disk."""
+    #     return self._make_request(
+    #         "load_lora_adapter",
+    #         {"lora_name": lora_name, "lora_path": lora_path},
+    #     )
 
-    def load_lora_adapter_from_tensors(self, lora_name: str, serialized_tensors: str, config_dict: dict):
-        """Load LoRA adapter from serialized tensors."""
-        return self._make_request(
-            "load_lora_adapter_from_tensors",
-            {"lora_name": lora_name, "serialized_tensors": serialized_tensors, "config_dict": config_dict},
-        )
+    # def load_lora_adapter_from_tensors(self, lora_name: str, serialized_tensors: str, config_dict: dict):
+    #     """Load LoRA adapter from serialized tensors."""
+    #     return self._make_request(
+    #         "load_lora_adapter_from_tensors",
+    #         {"lora_name": lora_name, "serialized_tensors": serialized_tensors, "config_dict": config_dict},
+    #     )
 
-    def unload_lora_adapter(self, lora_name: str):
-        """Unload LoRA adapter."""
-        return self._make_request(
-            "unload_lora_adapter",
-            {"lora_name": lora_name},
-        )
+    # def unload_lora_adapter(self, lora_name: str):
+    #     """Unload LoRA adapter."""
+    #     return self._make_request(
+    #         "unload_lora_adapter",
+    #         {"lora_name": lora_name},
+    #     )
     ##############################
     ##############################
     ##############################
@@ -618,7 +618,8 @@ def _compute_server_args(
     #     # print(2222222222)
     #     # exit()
 
-    if args.lora_rank > 0 or args.lora_adapter_path is not None:
+    # if args.lora_rank > 0 or args.lora_adapter_path is not None:
+    if is_lora_enabled(args):
         kwargs["max_loras_per_batch"] = 1  #!!!!!!!!
         kwargs["enable_lora"] = True
         # kwargs["max_lora_rank"] = args.lora_rank

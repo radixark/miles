@@ -970,7 +970,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--lora-adapter-path",
                 type=str,
                 default=None,
-                help="Path to pre-trained LoRA adapter to load",
+                help="Path to load pre-trained LoRA adapter weights (default: None)",
             )
             parser.add_argument(
                 "--lora-sync-from-tensor",

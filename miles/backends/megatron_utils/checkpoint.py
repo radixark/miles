@@ -43,17 +43,17 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     ##############################
     ###########lora###############
     ##############################
-    # Check for LoRA adapter first
-    ## Not correct - need to check the saving format and name
-    if is_lora_model(ddp_model):
-        lora_path = Path(load_path) / "adapter"
-        if lora_path.exists():
-            logger.info(f"Loading LoRA checkpoint from {lora_path}")
-            iteration = load_lora_checkpoint(ddp_model, args, str(lora_path))
-            num_floating_point_operations_so_far = 0
-            return iteration, num_floating_point_operations_so_far
-        else:
-            logger.info(f"Not Found LoRA checkpoint from {lora_path}. Use the random initial weight.")
+    # # Check for LoRA adapter first
+    # ## Not correct - need to check the saving format and name
+    # if is_lora_model(ddp_model):
+    #     lora_path = Path(load_path) / "adapter"
+    #     if lora_path.exists():
+    #         logger.info(f"Loading LoRA checkpoint from {lora_path}")
+    #         iteration = load_lora_checkpoint(ddp_model, args, str(lora_path))
+    #         num_floating_point_operations_so_far = 0
+    #         return iteration, num_floating_point_operations_so_far
+    #     else:
+    #         logger.info(f"Not Found LoRA checkpoint from {lora_path}. Use the random initial weight.")
     ##############################
     ##############################
     ##############################
@@ -62,7 +62,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     ##############################
     ###########lora###############
     ##############################  
-    # (to-do): yusheng- Also need to add megatron load lora function
+    # (to-do): yusheng- Also add lora weight loading in `_load_checkpoint_megatron` and `_load_checkpoint_hf` 
+    # if no lora weight - random initalization 
     ##############################  
     ##############################  
     ##############################  

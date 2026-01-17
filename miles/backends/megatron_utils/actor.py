@@ -86,8 +86,10 @@ class MegatronTrainRayActor(TrainRayActor):
         }
         dist.barrier(group=get_gloo_group())
 
+
         if args.offload_train:
             if (x := args.train_memory_margin_bytes) > 0:
+                # --train-memory-margin-bytes can tune this
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
 
@@ -103,33 +105,6 @@ class MegatronTrainRayActor(TrainRayActor):
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
-
-        ### share ref model
-        ##############################
-        ###########lora###############
-        ##############################
-        # # For LoRA with share-ref-base-model: backup base model weights BEFORE applying LoRA
-        # if is_lora_enabled(args) and role == "actor" and with_ref and getattr(args, 'share_ref_base_model', False):
-        #     # Create weights_backuper early to backup base weights as "ref" before LoRA
-        #     self.weights_backuper = TensorBackuper.create(
-        #         source_getter=lambda: named_params_and_buffers(
-        #             self.args,
-        #             self.model,
-        #             convert_to_global_name=args.megatron_to_hf_mode == "raw",
-        #             translate_gpu_to_cpu=not self.args.enable_weights_backuper,
-        #         ),
-        #         single_tag=None if args.enable_weights_backuper else "actor",
-        #     )
-        #     self.weights_backuper.backup("ref")  # Backup base weights as ref BEFORE LoRA
-        #     logger.info("Backed up base model weights as 'ref' before applying LoRA (share-ref-base-model mode)")
-
-        # if is_lora_enabled(args) and role == "actor":
-        #     self.model = apply_lora_to_megatron_model(self.model, args)
-        #     freeze_base_model(self.model)
-        ##############################
-        ##############################
-        ##############################
-
         
         if role == "critic":
             if self.args.offload_train:
@@ -147,46 +122,25 @@ class MegatronTrainRayActor(TrainRayActor):
             ),
             single_tag=None if args.enable_weights_backuper else "actor",
         )
-        # Deal with actor model --> delt with in model.py
-        # ##############################
-        # ###########lora###############
-        # ##############################
-        # if is_lora_enabled(args):
-        #     # self.weights_backuper.backup("ref") # Backup base weights as ref BEFORE LoRA (prevent load model weight again on later)
-
-        #     self.model = apply_lora_to_megatron_model(self.model, args) # model: base + lora including `requires_grad` process 
-        #     # freeze_base_model(self.model) # Set `requires_grad`: base + lora .. do not set here since self.weights_backuper.backup(...) does not process `requires_grad` 
-        # ##############################
-        # ##############################
-        # ##############################
         self._active_model_tag: str | None = "actor"
         self.weights_backuper.backup("actor")
+        #actor already include lora now - You can use self.weights_backuper.get("actor") to check 
 
+        # ###############
+        # print("=======")
+        # actor_weights = self.weights_backuper.get("actor")
+
+        # for name, weight in actor_weights.items():
+        #     print(f"{name}: shape={weight.shape}, sum={weight.float().sum().item()}, requires_grad: {weight.requires_grad}")
+        # actor_weights = self.weights_backuper.get("actor")
+        # print("=======")
+        # exit()
+        # and then it will update_weight (sync) to sglang - so it does not need requires_grad. 
+        # ###############
+        
 
         if with_ref:
-            ##############################
-            ###########lora###############
-            ##############################     
-            # self.load_other_checkpoint("ref", args.ref_load)
-            
-            # if use lora: --ref-load /root/Qwen2.5-0.5B-Instruct_torch_dist/ (should be also lora weight)
-            if is_lora_enabled(args):
-                raise NotImplementedError(
-                    "LoRA with reference model is not yet fully implemented. "
-                    "Please remove reference model settings from your training script:\n"
-                    "  0. Might need to ensure  self.load_other_checkpoint can load loar module as well.\n"
-                    "  1. Remove '--use-kl-loss' flag, OR\n"
-                    "  2. Set '--kl-coef 0' without '--use-kl-loss', OR\n"
-                    "  3. Remove '--ref-load' parameter\n"
-                    "This will disable reference model loading (with_ref=False) and allow LoRA training to proceed."
-                )
-            else: 
-                self.load_other_checkpoint("ref", args.ref_load)
-
-            ##############################     
-            ##############################     
-            ##############################     
-
+            self.load_other_checkpoint("ref", args.ref_load)
         
         if self.args.keep_old_actor:
             # Load old_actor checkpoint
@@ -332,11 +286,11 @@ class MegatronTrainRayActor(TrainRayActor):
         ##############################
         ###########lora###############
         ##############################
-        # Restore requires_grad after weight restoration
-        # For LoRA training: only adapter params should be trainable, base model frozen
-        if is_lora_enabled(self.args):
-            freeze_base_model(self.model)
-            # Note: ref model uses forward_only (@torch.no_grad), so requires_grad doesn't matter
+        # # Restore requires_grad after weight restoration
+        # # For LoRA training: only adapter params should be trainable, base model frozen
+        # if is_lora_enabled(self.args):
+        #     freeze_base_model(self.model)
+        #     # Note: ref model uses forward_only (@torch.no_grad), so requires_grad doesn't matter
         ##############################
         ##############################
         ##############################
@@ -687,3 +641,75 @@ class MegatronTrainRayActor(TrainRayActor):
             rank=0 if self.role == "actor" else 1,
             group_name=group_name,
         )
+
+
+
+ 
+    ##############################
+    ###########lora###############
+    ##############################
+    ###########
+    def check_lora_status(self):
+        """check LoRA module"""
+        from megatron.bridge.peft.lora_layers import LoRALinear
+        from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
+        
+        results = {
+            "lora_modules": [],
+            "trainable_params": 0,
+            "frozen_params": 0,
+            "total_params": 0,
+        }
+        
+        model = self.model[0] if isinstance(self.model, list) else self.model
+        
+        # travel all module 
+        for name, module in model.named_modules():
+            if isinstance(module, (LoRALinear, AdapterWrapper)):
+                results["lora_modules"].append(name)
+                
+                # check adapter weight
+                if hasattr(module, 'adapter'):
+                    adapter = module.adapter
+                    if hasattr(adapter, 'linear_in'):
+                        lora_a_shape = tuple(adapter.linear_in.weight.shape)
+                        lora_b_shape = tuple(adapter.linear_out.weight.shape)
+                        print(adapter.linear_in.weight.shape)
+                        # print(adapter.linear_in.weight)
+                        # print(adapter.linear_in.weight.detach().cpu().clone())
+                        print(adapter.linear_out.weight.shape)
+                        # print(adapter.linear_out.weight)
+                        # print(adapter.linear_out.weight.detach().cpu().clone())
+                        print(f"  {name}: lora_A={lora_a_shape}, lora_B={lora_b_shape}, requires_grad={adapter.linear_in.requires_grad}")
+            else:
+                for param_name, param in module.named_parameters(recurse=False):
+                    # print(f"  {name}.{param_name}: shape={tuple(param.shape)}", param)
+                    # print(f"  {name}.{param_name}: shape={tuple(param.shape)}", param.float().sum().item())
+                    print(f"  {name}.{param_name}: shape={tuple(param.shape)}")
+                        
+        
+        # account parms
+        for p in model.parameters():
+            results["total_params"] += p.numel()
+            if p.requires_grad:
+                results["trainable_params"] += p.numel()
+            else:
+                results["frozen_params"] += p.numel()
+        
+        print(f"LoRA Check Results:")
+        print(f"  - LoRA modules found: {len(results['lora_modules'])}")
+        print(f"  - Trainable params: {results['trainable_params']:,}")
+        print(f"  - Frozen params: {results['frozen_params']:,}")
+        print(f"  - Trainable ratio: {results['trainable_params']/results['total_params']*100:.2f}%")
+        
+        return results
+    ##############################
+    ##############################
+    ##############################
+
+    # │  print(tensor.shape)  ✓                                        │
+    # │  └── only read metadata（do not need GPU memory）                    │
+    # │                                                                │
+    # │  print(tensor)  ✗                                              │
+    # │  └── PyTorch __repr__ will read the actual tensor values               │
+    # │  └── When GPU try to read the data, it has cudaErrorIllegalAddress  

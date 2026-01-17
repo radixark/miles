@@ -65,8 +65,9 @@ class UpdateWeightFromTensor:
         ###########lora###############
         ##############################
         self.is_lora = is_lora
-        self._lora_loaded = False
-        self._base_synced = False
+        # self._lora_loaded = False
+        self._base_synced = True
+        # self._base_synced = False
 
         # self._hf_weight_iterator = HfWeightIteratorBase.create(
         #     args=args, model=model, model_name=model_name, quantization_config=quantization_config
@@ -147,100 +148,102 @@ class UpdateWeightFromTensor:
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-        megatron_local_weights = self.weights_getter()
+        megatron_local_weights = self.weights_getter() 
 
-        ##############################
-        ###########lora###############
-        ##############################
-        # lora_named_tensors = []
-        ##############################
-        ##############################
-        ##############################
+        # error in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights) 
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
-            ##############################
-            ###########lora###############
-            ##############################
+            import logging
+            logger = logging.getLogger(__name__)
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
             del long_lived_tensors
-
-            # above original way: will pass base+lora weight
-            
-            ########## (Optimize - lora pass only): refer - https://github.com/radixark/miles/blob/3b975df8e3e6af3453d36de491a764334f16b059/miles/backends/fsdp_utils/update_weight_utils.py
-        #    # Only pass throguht lora weight
-        #    # Check if this chunk contains LoRA weights
-        #     if self.is_lora:
-        #         # print()
-        #         lora_weights = [(name, tensor) for name, tensor in hf_named_tensors 
-        #                        if 'lora_' in name.lower() or 'adapter' in name.lower()]
-
-        #         base_weights = [(name, tensor) for name, tensor in hf_named_tensors 
-        #                        if 'lora_' not in name.lower()]
-                
-        #         # Sync base weights normally
-        #         if base_weights:
-        #             refs, long_lived_tensors = self._send_hf_params(base_weights)
-        #             ray.get(refs)
-        #             del long_lived_tensors
-                
-        #         # Collect LoRA weights for later
-        #         lora_named_tensors.extend(lora_weights)
-        #     else:
-        #         refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
-        #         ray.get(refs)
-        #         del long_lived_tensors
-
-
-        # # After syncing all weights, load LoRA adapter into SGLang
-        # if self.is_lora and lora_named_tensors:
-        #     self._load_lora_adapter(lora_named_tensors)
-            ##############################
-            ##############################
-            ##############################
         dist.barrier(group=get_gloo_group())
 
-    ##############################
-    ###########lora###############
-    ##############################
-    # def _load_lora_adapter(self, lora_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
-    #     """Load LoRA adapter into SGLang engine."""
-    #     from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-        
-    #     # Create config dict
-    #     config_dict = {
-    #         "peft_type": "LORA",
-    #         "r": self.args.lora_rank,
-    #         "lora_alpha": self.args.lora_alpha,
-    #         "target_modules": list(self.args.target_modules) if self.args.target_modules else [],
-    #         "bias": "none",
-    #     }
-        
-    #     # Serialize LoRA tensors
-    #     flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=lora_named_tensors)
-    #     flattened_tensor_data = {
-    #         "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-    #         "metadata": flattened_tensor_bucket.get_metadata(),
-    #     }
-    #     serialized_tensors = MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True)
-        
-    #     # Load adapter on rank 0
-    #     rank = dist.get_rank()
-    #     if rank == 0:
+
+    # ##############################
+    # ###########lora###############
+    # ##############################
+    # def _update_lora_via_tensor(self) -> None:
+    #     """Push LoRA weights to rollout engines using tensors."""
+    #     lora_weights, config_dict = get_lora_weights_and_config(self.model)
+    #     dist.barrier()
+
+    #     if dist.get_rank() == 0:
+    #         serialized_tensors = MultiprocessingSerializer.serialize(lora_weights, output_str=True)
+
+    #         if self._lora_loaded:
+    #             refs = [engine.unload_lora_adapter.remote(LORA_ADAPTER_NAME) for engine in self.rollout_engines]
+    #             ray.get(refs)
+
     #         refs = [
-    #             engine.load_lora_adapter_from_tensors.remote(
-    #                 lora_name=LORA_ADAPTER_NAME,
-    #                 serialized_tensors=serialized_tensors,
-    #                 config_dict=config_dict,
-    #             )
+    #             engine.load_lora_adapter_from_tensors.remote(LORA_ADAPTER_NAME, serialized_tensors, config_dict)
     #             for engine in self.rollout_engines
     #         ]
     #         ray.get(refs)
+
+    #         refs = [engine.flush_cache.remote() for engine in self.rollout_engines]
+    #         ray.get(refs)
+
     #         self._lora_loaded = True
-    ##############################
-    ##############################
-    ##############################  
+
+    #     dist.barrier()
+    
+    
+    
+    # # _update_lora_via_file -- have not done/fix yet  
+    # def _update_lora_via_file(self) -> None:
+    #     """Push LoRA weights to rollout engines using disk files."""
+    #     self._lora_save_dir = os.path.join(self.args.save, LORA_SUBDIR)
+    #     if dist.get_rank() == 0:
+    #         if os.path.exists(self._lora_save_dir):
+    #             delete_lora_from_disk(self._lora_save_dir)
+
+    #     dist.barrier()
+
+    #     save_lora_to_disk(self.model, self._lora_save_dir)
+
+    #     dist.barrier()
+
+    #     if dist.get_rank() == 0:
+    #         if self._lora_loaded:
+    #             refs = [engine.unload_lora_adapter.remote(LORA_ADAPTER_NAME) for engine in self.rollout_engines]
+    #             ray.get(refs)
+
+    #         refs = [engine.flush_cache.remote() for engine in self.rollout_engines]
+    #         ray.get(refs)
+
+    #         refs = [
+    #             engine.load_lora_adapter.remote(LORA_ADAPTER_NAME, self._lora_save_dir)
+    #             for engine in self.rollout_engines
+    #         ]
+    #         ray.get(refs)
+
+    #         refs = [engine.flush_cache.remote() for engine in self.rollout_engines]
+    #         ray.get(refs)
+
+    #         self._lora_loaded = True
+
+    #     dist.barrier()
+
+    # ##############################
+    # ##############################
+    # ##############################
+    
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+        
+        ##############################
+        ###########lora###############
+        ##############################
+
+        # to-do (yusheng): need to deal with update_from_disk or tensor in this function
+
+        ##############################
+        ##############################
+        ############################## 
+        
+        
+        
         all_refs = []
 
         refs_colocated, long_lived_tensors = _send_to_colocated_engine(

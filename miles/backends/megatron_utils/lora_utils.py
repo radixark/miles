@@ -101,6 +101,19 @@ def is_lora_enabled(args: Namespace) -> bool:
 #     return model
 
 
+
+# def print_adapter_info(model):
+#     """Print information about adapter parameters in the model."""
+#     adapter_params, total_params, percentage = count_adapter_parameters(model)
+
+#     print(f"\n{'=' * 60}")
+#     print("PEFT Adapter Information:")
+#     print(f"  Total parameters:     {total_params:,}")
+#     print(f"  Adapter parameters:   {adapter_params:,}")
+#     print(f"  Trainable percentage: {percentage:.2f}%")
+#     print(f"{'=' * 60}\n")
+
+
 def _print_trainable_parameters(model: Sequence[torch.nn.Module]) -> None:
     """Print trainable parameters statistics."""
     total_params = 0
@@ -423,7 +436,7 @@ def load_lora_checkpoint(
 
 
 
-
+## Check this functions - megatron-bridge might have the same function
 ####!!!! (to-do) yusheng: need to based on different Lora to provide the different mapping
 from typing import Union, Type, TYPE_CHECKING
 if TYPE_CHECKING:
@@ -526,7 +539,8 @@ def convert_target_modules_to_megatron(
             "up_proj": "linear_fc1_up",
             "down_proj": "linear_fc2",
         }
-    else:  # Standard LoRA
+    elif class_name == "LoRA":
+        # Standard LoRA
         # Standard LoRA: Merged Q/K/V and merged up/gate
         hf_to_megatron = {
             "q_proj": "linear_qkv",
@@ -537,6 +551,8 @@ def convert_target_modules_to_megatron(
             "up_proj": "linear_fc1",
             "down_proj": "linear_fc2",
         }
+    else:
+        raise NotImplementedError(f"Unsupported LoRA class: {class_name}")
     
     megatron_modules = []
     for module in hf_modules:

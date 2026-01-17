@@ -45,6 +45,25 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
+        # print(111111)
+        # print(renamed_megatron_local_weights)
+        # print(type(renamed_megatron_local_weights))
+        # print(renamed_megatron_local_weights["vp_stages.0.decoder.layers.23.mlp.linear_fc2.adapter.linear_out.weight"])
+        # print(renamed_megatron_local_weights["vp_stages.0.decoder.layers.21.mlp.linear_fc2.to_wrap.weight"])
+        # print(111111)
+
+        # lora_weights = self._bridge.export_adapter_weights(
+        #         self.model,
+        #         # cpu=False,
+        #         cpu=True, ### if False, it will have the problem - why?
+        #         # conversion_tasks=conversion_tasks, #### 
+        #         show_progress=False
+        #     )
+        # # print("---")
+        # # for i in lora_weights:
+        #     # print(i) 
+        # exit()
+
         with megatron_bridge_utils.patch_megatron_model(self.model):
             ##############################
             ###########lora###############
@@ -78,8 +97,8 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
             ####
             
-            # Only sync base model on first call (or if not LoRA-only mode)
-            # if not self.is_lora or not self._base_synced:
+            # Only sync base model on first call - smile/miles need (or if not LoRA-only mode)
+            # if not self.is_lora or self._base_synced:
             if not self.is_lora:
                 # only pass base model 
                 conversion_tasks = self._bridge.get_conversion_tasks(self.model)
@@ -88,7 +107,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     self.model, 
                     cpu=False, 
                     conversion_tasks=conversion_tasks,
-                    merge_adapter_weights=not self.is_lora, # Do not return merged (base.weight + lora.weight). 
+                    # merge_adapter_weights=not self.is_lora, # Do not return merged (base.weight + lora.weight). 
                 )
 
                 # for hf_param_name, weight, megatron_param_name in named_weights:
@@ -113,9 +132,11 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     )
                     for hf_param_name, weight, megatron_param_name in named_weights
                 )
+
                 yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
+
                 if self.is_lora:
-                    self._base_synced = True
+                    self._base_synced = False
                     # torch.cuda.synchronize()
             ##############################
             ##############################
@@ -126,13 +147,68 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             ##############################
             ###########lora###############
             ##############################
+            # print(4444444)
             if self.is_lora:
+                # (to-do) yusheng: I might need to add the converting weights (mg --> hf) - refer above
+                # conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+                # conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights) 
+
+                # print(333333)
+                # print(self.model)
+                # print(333333)
+                # exit()
+                # conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+                # conversion_tasks = self._bridge.build_adapter_conversion_tasks(self.model)
+                # conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights) 
+                # print(999999)
+                # print(conversion_tasks)
+                # print(999999)
+                # exit()
+                
+
+                ###
+                # conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+                # conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+                # lora_weights = self._bridge.export_hf_weights(
+                #     self.model, 
+                #     cpu=False, 
+                #     conversion_tasks=conversion_tasks,
+                #     merge_adapter_weights=not self.is_lora, # Do not return merged (base.weight + lora.weight). 
+                # )
+                ###
+                
+                # self.model --> eval mode () ##
+                # problem in self._bridge.export_adapter_weights() # verl do the same thing 
+                # print(self.model) --> self.model is a list 
+                # for model_module in self.model:
+                #     print(model_module, "training:", model_module.training)
+                #     model_module.eval()
+                #     print(model_module, "training:", model_module.training)
+                # print("0099")
+                # print(self.model)
+               
+                # print(self.model) 
+                # print("---------")
                 lora_weights = self._bridge.export_adapter_weights(
                     self.model,
-                    cpu=False,
+                    # cpu=False,
+                    cpu=True, ### if False, it will have the problem - why?
+                    # conversion_tasks=conversion_tasks, #### 
                     show_progress=False
                 )
 
+                # print(self.model) 
+                # exit()
+                # for model_module in self.model:
+                    # model_module.train()
+                
+                # for item in lora_weights:
+                #     # print(i) 
+                #     # print(f"param_name: {item.param_name}, shape: {item[1].shape}, dtype: {item[1].dtype}")
+                #     hf_param_name, weight, megatron_param_name = item
+                    
+
+                # hf_param_name's might have big problem  
                 lora_weights = (
                     (
                         hf_param_name,
@@ -141,6 +217,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                             megatron_param_name=megatron_param_name,
                             hf_param_name=hf_param_name,
                             param=weight,
+                            # param=weight.clone(), # solutuon - need to have self._bridge.build_adapter_conversion_tasks in megatron-bridge
                         ),
                     )
                     for hf_param_name, weight, megatron_param_name in lora_weights

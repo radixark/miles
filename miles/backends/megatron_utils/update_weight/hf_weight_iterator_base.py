@@ -14,8 +14,14 @@ class HfWeightIteratorBase(ABC):
 
         return c(args, model, **kwargs)
 
+    ##############################
+    ###########lora###############
+    ##############################
     # def __init__(self, args, model, model_name, quantization_config):
     def __init__(self, args, model, model_name, quantization_config, **kwargs):
+    ##############################
+    ##############################
+    ##############################
         self.args = args
         self.model = model
         self.model_name = model_name

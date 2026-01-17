@@ -28,6 +28,10 @@ CKPT_ARGS=(
    ###
 )
 
+# target-module only support: linear (the proj_ need to be supported in future: in Megatron-Bridge/src/megatron/bridge/models/conversion/peft_bridge.py -  build_adapter_conversion_tasks) 
+# example: if one module have two lora: (linear_proj): LoRALinear(), (linear_fc2): LoRALinear()
+
+# LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-"['linear_qkv','linear_proj','linear_fc1','linear_fc2']"}. It will broken
 
 ##############################
 ###########lora###############
@@ -87,13 +91,13 @@ ROLLOUT_ARGS=(
    # --num-rollout 100
    --num-rollout 10 # onyl train 10 stesp
    # --rollout-batch-size 32
-   --rollout-batch-size 16
+   --rollout-batch-size 16 # for testing 
    --n-samples-per-prompt 8
    --rollout-max-response-len 1024
    --rollout-temperature 1
 
    # --global-batch-size 256
-   --global-batch-size 32
+   --global-batch-size 32 # for testing
 )
 
 EVAL_ARGS=(
@@ -106,7 +110,7 @@ EVAL_ARGS=(
 
 PERF_ARGS=(
    --tensor-model-parallel-size 1
-   --sequence-parallel #becasue of lora training error: RuntimeError: Cannot access the main gradient of a frozen parameter. main_grad is None. (enable)
+   --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
@@ -170,9 +174,11 @@ MISC_ARGS=(
 ##############################
 ###########lora###############
 ##############################
-# export GPUS_PER_NODE=1
+######## Note: Need to set export CUDA_VISIBLE_DEVICES= , or it will fail and have cuda error
+export GPUS_PER_NODE=1
+# export GPUS_PER_NODE=2
 # export GPUS_PER_NODE=4
-export GPUS_PER_NODE=8
+# export GPUS_PER_NODE=8
 ##############################
 ##############################
 ##############################

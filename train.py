@@ -36,11 +36,32 @@ def train(args):
     # create the actor and critic models
     actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
 
+
+    # ##############################
+    # ###########lora###############
+    # ##############################
+    # ========== LoRA check ==========
+    # # check LoRA status
+    # from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+    # if is_lora_enabled(args) or True:
+    #     lora_status = ray.get(actor_model._actor_handlers[0].check_lora_status.remote())
+    #     print(f"LoRA modules: {len(lora_status['lora_modules'])}")
+    #     assert len(lora_status['lora_modules']) > 0, "LoRA modules not found!"
+    # # already cannot access weight here - before torch_memory_saver
+    # # ========== LoRA check end ==========
+    # ##############################
+    # ###########lora###############
+    # ##############################
+
     if args.offload_rollout:
         ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
+    
 
     # always update weight first so that sglang has the loaded weights from training.
+    print(11111)
     actor_model.update_weights()
+    print(22222)
+    exit()
 
     if args.check_weight_update_equal:
         ray.get(rollout_manager.check_weights.remote(action="compare"))
@@ -90,16 +111,17 @@ def train(args):
         ##############################
         ###########lora###############
         ##############################
-        if args.offload_rollout:
-            ray.get(rollout_manager.offload.remote())
-
         # if args.offload_rollout:
-        #     offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
-        #     if "kv_cache" in args.offload_rollout_level:
-        #         offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
-        #     if "weight" in args.offload_rollout_level:
-        #         offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
-        #     ray.get(rollout_manager.offload.remote(tags=offload_tags))
+        #     ray.get(rollout_manager.offload.remote())
+
+        if args.offload_rollout:
+            offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+            if "kv_cache" in args.offload_rollout_level:
+                offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+            if "weight" in args.offload_rollout_level:
+                offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+            ray.get(rollout_manager.offload.remote(tags=offload_tags))
+
         ##############################
         ##############################
         ##############################
