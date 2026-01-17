@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import subprocess
 
@@ -12,6 +13,9 @@ def load_function(path):
     :param path: The path to the function, e.g. "module.submodule.function".
     :return: The function object.
     """
+    if path is None:
+        return None
+
     module_path, _, attr = path.rpartition(".")
     module = importlib.import_module(module_path)
     return getattr(module, attr)
@@ -92,3 +96,8 @@ def should_run_periodic_action(
 
     step = rollout_id + 1
     return (step % interval == 0) or (num_rollout_per_epoch is not None and step % num_rollout_per_epoch == 0)
+
+
+async def as_completed_async(tasks):
+    for coro in asyncio.as_completed(tasks):
+        yield await coro
