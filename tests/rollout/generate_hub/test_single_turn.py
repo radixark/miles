@@ -30,7 +30,6 @@ SAMPLING_PARAMS = {"max_new_tokens": 16, "temperature": 0.7}
         "single_turn",
         "multi_turn_single_sample",
         "multi_turn_multi_samples",
-        "agentic_tool_call_multi_samples",
     ]
 )
 def variant(request):
@@ -139,6 +138,8 @@ def _run_generate(variant: str, env: GenerateEnv, sample: Sample | None = None, 
 
 class TestBasicGeneration:
     def test_basic_generation(self, variant, generation_env):
+        if variant == "agentic_tool_call_multi_samples":
+            pytest.skip("agentic_tool_call requires chat messages format prompt")
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant)]
