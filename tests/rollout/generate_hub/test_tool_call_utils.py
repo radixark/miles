@@ -1,6 +1,6 @@
 import pytest
 
-from miles.rollout.generate_hub.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
+from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
 
 TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen2.5-0.5B-Instruct",

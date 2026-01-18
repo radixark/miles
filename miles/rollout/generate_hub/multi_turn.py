@@ -6,12 +6,12 @@ import argparse
 from copy import deepcopy
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_hub.generate_endpoint_wrapper import (
+from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     update_sample_from_response,
 )
-from miles.rollout.generate_hub.tool_call_utils import (
+from miles.rollout.generate_utils.tool_call_utils import (
     create_tool_call_parser,
     execute_tool_calls,
     update_sample_with_tool_responses,

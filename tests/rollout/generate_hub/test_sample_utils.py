@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.generate_hub.sample_utils import merge_sample_pair
+from miles.rollout.generate_utils.sample_utils import merge_sample_pair
 from miles.utils.types import Sample
 
 

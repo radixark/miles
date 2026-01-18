@@ -9,9 +9,9 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_hub.openai_endpoint_utils import OpenAIEndpointTracer, compute_samples_from_openai_records
-from miles.rollout.generate_hub.sample_utils import merge_samples
-from miles.rollout.generate_hub.tool_call_utils import execute_tool_calls
+from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer, compute_samples_from_openai_records
+from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.tool_call_utils import execute_tool_calls
 from miles.utils.misc import load_function
 
 
