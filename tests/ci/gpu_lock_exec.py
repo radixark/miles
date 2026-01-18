@@ -20,7 +20,7 @@ def main():
         return
 
     if args.count == 0 and not args.device:
-        print(f"[gpu_lock_exec] Do not acquire GPU since count=0", flush=True)
+        print("[gpu_lock_exec] Do not acquire GPU since count=0", flush=True)
     else:
         fd_locks = _try_acquire(args)
 
