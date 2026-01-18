@@ -1,6 +1,8 @@
 name: PR Test Fast
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
