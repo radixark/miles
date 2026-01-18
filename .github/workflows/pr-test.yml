@@ -33,7 +33,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=32g
+        --shm-size=16g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -73,7 +73,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=32g
+        --shm-size=16g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -113,7 +113,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=32g
+        --shm-size=16g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -153,7 +153,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=32g
+        --shm-size=16g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -193,7 +193,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=32g
+        --shm-size=16g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -233,7 +233,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=32g
+        --shm-size=16g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -273,7 +273,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=32g
+        --shm-size=16g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
