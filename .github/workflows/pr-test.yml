@@ -38,10 +38,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=${{ vars.HTTP_PROXY || '' }}
-        -e https_proxy=${{ vars.HTTPS_PROXY || '' }}
-        -e HTTP_PROXY=${{ vars.HTTP_PROXY || '' }}
-        -e HTTPS_PROXY=${{ vars.HTTPS_PROXY || '' }}
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -67,8 +63,6 @@ jobs:
 
       - name: Execute
         shell: bash
-        env:
-          RAY_ADDRESS: ""
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-fsdp:
@@ -84,10 +78,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=${{ vars.HTTP_PROXY || '' }}
-        -e https_proxy=${{ vars.HTTPS_PROXY || '' }}
-        -e HTTP_PROXY=${{ vars.HTTP_PROXY || '' }}
-        -e HTTPS_PROXY=${{ vars.HTTPS_PROXY || '' }}
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -113,8 +103,6 @@ jobs:
 
       - name: Execute
         shell: bash
-        env:
-          RAY_ADDRESS: ""
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-megatron:
@@ -130,10 +118,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=${{ vars.HTTP_PROXY || '' }}
-        -e https_proxy=${{ vars.HTTPS_PROXY || '' }}
-        -e HTTP_PROXY=${{ vars.HTTP_PROXY || '' }}
-        -e HTTPS_PROXY=${{ vars.HTTPS_PROXY || '' }}
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -159,8 +143,6 @@ jobs:
 
       - name: Execute
         shell: bash
-        env:
-          RAY_ADDRESS: ""
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-precision:
@@ -176,10 +158,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=${{ vars.HTTP_PROXY || '' }}
-        -e https_proxy=${{ vars.HTTPS_PROXY || '' }}
-        -e HTTP_PROXY=${{ vars.HTTP_PROXY || '' }}
-        -e HTTPS_PROXY=${{ vars.HTTPS_PROXY || '' }}
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -205,8 +183,6 @@ jobs:
 
       - name: Execute
         shell: bash
-        env:
-          RAY_ADDRESS: ""
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-ckpt:
@@ -222,10 +198,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=${{ vars.HTTP_PROXY || '' }}
-        -e https_proxy=${{ vars.HTTPS_PROXY || '' }}
-        -e HTTP_PROXY=${{ vars.HTTP_PROXY || '' }}
-        -e HTTPS_PROXY=${{ vars.HTTPS_PROXY || '' }}
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -251,8 +223,6 @@ jobs:
 
       - name: Execute
         shell: bash
-        env:
-          RAY_ADDRESS: ""
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-long:
@@ -268,10 +238,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=${{ vars.HTTP_PROXY || '' }}
-        -e https_proxy=${{ vars.HTTPS_PROXY || '' }}
-        -e HTTP_PROXY=${{ vars.HTTP_PROXY || '' }}
-        -e HTTPS_PROXY=${{ vars.HTTPS_PROXY || '' }}
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -297,8 +263,6 @@ jobs:
 
       - name: Execute
         shell: bash
-        env:
-          RAY_ADDRESS: ""
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-image:
@@ -314,10 +278,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=${{ vars.HTTP_PROXY || '' }}
-        -e https_proxy=${{ vars.HTTPS_PROXY || '' }}
-        -e HTTP_PROXY=${{ vars.HTTP_PROXY || '' }}
-        -e HTTPS_PROXY=${{ vars.HTTPS_PROXY || '' }}
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -343,6 +303,4 @@ jobs:
 
       - name: Execute
         shell: bash
-        env:
-          RAY_ADDRESS: ""
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
