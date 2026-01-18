@@ -1,0 +1,25 @@
+name: PR Test Fast
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-test:
+    runs-on: ubuntu-latest
+    container:
+      image: radixark/miles:latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install
+        run: pip install -e . --no-deps --break-system-packages --force-reinstall
+
+      - name: Run fast tests
+        run: pytest tests/fast -v
