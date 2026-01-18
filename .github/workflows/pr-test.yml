@@ -26,7 +26,7 @@ concurrency:
 jobs:
 
   fast:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
