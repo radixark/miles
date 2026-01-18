@@ -38,6 +38,7 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
+        -p 8265:8265
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -78,6 +79,7 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
+        -p 8265:8265
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -118,6 +120,7 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
+        -p 8265:8265
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -158,6 +161,7 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
+        -p 8265:8265
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -198,6 +202,7 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
+        -p 8265:8265
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -238,6 +243,7 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
+        -p 8265:8265
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -278,6 +284,7 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
+        -p 8265:8265
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
