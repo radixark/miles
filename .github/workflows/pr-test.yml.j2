@@ -101,8 +101,9 @@ jobs:
       image: << config.image if config.image else 'radixark/miles:latest' >>
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0

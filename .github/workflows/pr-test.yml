@@ -32,8 +32,9 @@ jobs:
       image: radixark/miles:latest
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -72,8 +73,9 @@ jobs:
       image: radixark/miles:latest
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -112,8 +114,9 @@ jobs:
       image: radixark/miles:latest
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -152,8 +155,9 @@ jobs:
       image: radixark/miles:latest
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -192,8 +196,9 @@ jobs:
       image: radixark/miles:latest
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -232,8 +237,9 @@ jobs:
       image: radixark/miles:latest
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -272,8 +278,9 @@ jobs:
       image: radixark/miles-test:latest
       options: >
         --gpus all
+        --network host
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
