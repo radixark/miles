@@ -109,6 +109,10 @@ def execute_train(
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
+    # Clear proxy and Ray address environment variables to prevent communication issues
+    for env_var in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "RAY_ADDRESS"]:
+        os.environ.pop(env_var, None)
+
     exec_command(
         "pkill -9 sglang; "
         "sleep 3; "
@@ -129,6 +133,7 @@ def execute_train(
     if not external_ray:
         exec_command(
             # will prevent ray from buffering stdout/stderr
+            f"unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY RAY_ADDRESS && "
             f"export PYTHONBUFFERED=16 && "
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
@@ -175,6 +180,7 @@ def execute_train(
             else ""
         )
         exec_command(
+            f"unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY RAY_ADDRESS && "
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
             f'ray job submit --address="http://127.0.0.1:8265" '

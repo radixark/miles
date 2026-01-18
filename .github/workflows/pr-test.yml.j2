@@ -132,5 +132,8 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: |
+          unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY RAY_ADDRESS
+          export no_proxy="127.0.0.1,localhost"
+          python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 <% endfor %>
