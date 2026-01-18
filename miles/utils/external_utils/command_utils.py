@@ -133,11 +133,12 @@ def execute_train(
     if not external_ray:
         exec_command(
             # will prevent ray from buffering stdout/stderr
+            f"unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && "
             f"export PYTHONBUFFERED=16 && "
-            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
+            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-statsd"
         )
         # Wait for Ray to be fully initialized
-        time.sleep(3)
+        time.sleep(5)
 
     if (f := before_ray_job_submit) is not None:
         f()
@@ -181,6 +182,7 @@ def execute_train(
             else ""
         )
         exec_command(
+            f"unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && "
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
             f'ray job submit --address="http://127.0.0.1:8265" '
