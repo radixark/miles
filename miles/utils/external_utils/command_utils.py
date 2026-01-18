@@ -157,6 +157,12 @@ def execute_train(
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
+                # Clear proxy and RAY_ADDRESS to prevent communication issues
+                "http_proxy": "",
+                "https_proxy": "",
+                "HTTP_PROXY": "",
+                "HTTPS_PROXY": "",
+                "RAY_ADDRESS": "",  # Clear to use default Ray connection
                 **(
                     {
                         "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
