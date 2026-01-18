@@ -130,6 +130,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cleanup Ray environment
+      shell: bash
+      run: |
+        # Kill any existing Ray processes
+        ray stop --force || true
+        pkill -9 ray || true
+        # Clean up environment variables
+        unset RAY_ADDRESS || true
+
       - name: Install
         shell: bash
         run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
