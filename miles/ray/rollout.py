@@ -13,8 +13,15 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from miles.rollout.base_types import call_rollout_fn
+from miles.rollout.base_types import (
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnTrainInput,
+    call_rollout_fn,
+)
+from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import tracking_utils
+from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
 from miles.utils.iter_utils import group_by
@@ -53,8 +60,14 @@ class RolloutManager:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
 
-        self.generate_rollout = load_function(self.args.rollout_function_path)
-        self.eval_generate_rollout = load_function(self.args.eval_function_path)
+        self.use_experimental_refactor = enable_experimental_rollout_refactor()
+        if self.use_experimental_refactor:
+            input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
+            self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+            self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+        else:
+            self.generate_rollout = load_function(self.args.rollout_function_path)
+            self.eval_generate_rollout = load_function(self.args.eval_function_path)
         self.custom_reward_post_process_func = None
         if self.args.custom_reward_post_process_path is not None:
             self.custom_reward_post_process_func = load_function(self.args.custom_reward_post_process_path)
@@ -142,7 +155,12 @@ class RolloutManager:
             return
         self.health_monitoring_resume()
 
-        result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
+        if self.use_experimental_refactor:
+            result = call_rollout_function(self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id))
+        else:
+            result = call_rollout_fn(
+                self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
+            )
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
@@ -224,7 +242,12 @@ class RolloutManager:
                 )
             metrics = None
         else:
-            data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
+            if self.use_experimental_refactor:
+                data = call_rollout_function(self.generate_rollout, RolloutFnTrainInput(rollout_id=rollout_id))
+            else:
+                data = call_rollout_fn(
+                    self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
+                )
             metrics = data.metrics
             data = data.samples
             # flatten the data if it is a list of lists

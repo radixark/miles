@@ -95,6 +95,7 @@ def execute():
         num_gpus_per_node=2 if FEW_GPU else 4,
         megatron_model_type=None,
         train_script="train_async.py",
+        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

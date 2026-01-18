@@ -93,6 +93,7 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=2,
         megatron_model_type=None,
+        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

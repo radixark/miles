@@ -92,6 +92,7 @@ def execute():
 
     extra_env_vars = {
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
     }
 
     U.execute_train(

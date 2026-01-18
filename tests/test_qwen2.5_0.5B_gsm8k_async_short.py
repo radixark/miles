@@ -118,6 +118,7 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
+        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

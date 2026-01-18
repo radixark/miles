@@ -95,6 +95,7 @@ def execute():
         "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
         "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
     }
 
     U.execute_train(
