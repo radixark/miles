@@ -187,55 +187,13 @@ def setup_model_and_optimizer(
     ##############################
     ###########lora###############
     ############################## 
-    # model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
-
-    # if is_lora_enabled(args):
-
-    #     from megatron.core.distributed import DistributedDataParallelConfig
-    #     from megatron.bridge.models.model_provider import get_model 
-    #     provider = get_model_provider_func(args, role)
-
-    #     ddp_config = DistributedDataParallelConfig(
-    #         grad_reduce_in_fp32=getattr(args, 'grad_reduce_in_fp32', False),
-    #         check_for_nan_in_grad=getattr(args, 'check_for_nan_in_grad', False),
-    #         overlap_grad_reduce=getattr(args, 'overlap_grad_reduce', False),
-    #         overlap_param_gather=getattr(args, 'overlap_param_gather', False),
-    #         average_in_collective=getattr(args, 'average_in_collective', False),
-    #         use_distributed_optimizer=getattr(args, 'use_distributed_optimizer', False),
-    #     )
-    #     # model = provider.provide_distributed_model(
-    #     #     ddp_config=ddp_config,
-    #     #     wrap_with_ddp=True,
-    #     #     bf16=getattr(args, 'bf16', False),
-    #     #     fp16=getattr(args, 'fp16', False),
-    #     # )
-
-    #     model = get_model(
-    #         model_provider=provider,  # must be ModelProviderMixin object
-    #         ddp_config=ddp_config,
-    #         model_type=ModelType.encoder_or_decoder,
-    #         wrap_with_ddp=True,
-    #         use_cpu_initialization=False,
-    #     )
-
-
-    #     print(111111)
-    #     print(model)
-    #     print(111111)
-    #     exit()
-    # else:
-    #     model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
-
-
-    ###########
+ 
     
     # This part can be moved to `lora_utils.py` def apply_lora_to_megatron_model
     if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
         ######
         # refer to: verl/verl/workers/engine/megatron/transformer_impl.py
         ######
-
-    
         
         # if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         # The below written as: get_model_provider_func() usage
@@ -245,15 +203,7 @@ def setup_model_and_optimizer(
         from megatron.bridge.peft.lora import LoRA
         from megatron.bridge.peft.canonical_lora import CanonicalLoRA
         import torch
-        
          
-        # This is register_canonical_lora_adapter usgae - more advnace and efficiency!!!! 
-        # Compare lora, canonical_lora_adapter, .... 
-        # Build the provider from HF checkpoint
-
-        # model: start
-        # args.hf_checkpoint 
-        # model: done
         
         # bridge : start 
         # hf config:
@@ -265,6 +215,7 @@ def setup_model_and_optimizer(
         # bridge : done 
         ##!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         # provider: start 
+        # I can also use bridge_get_model() method
         provider = bridge.to_megatron_provider(load_weights=False) # should be True???
         # provider = bridge.to_megatron_provider(load_weights=True) # different from full model training - in the training script, I need to load tuned base model weight and initial lora weights. Need to carefully check and optimize - where to load the base model? (but why in `model_provider.py` using: provider = bridge.to_megatron_provider(load_weights=False))
         
@@ -316,7 +267,7 @@ def setup_model_and_optimizer(
        
         # print("========") 
         # Create LoRA config
-        # (to-do) yusheng set - lora_type - the default is LoRA
+        # (to-do) yusheng set - lora_type - the default is LoRA: should support all lora
         lora = LoRA(
         # lora = CanonicalLoRA(
             target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=LoRA),
@@ -371,10 +322,8 @@ def setup_model_and_optimizer(
         # Register the hook
         provider.register_pre_wrap_hook(apply_lora_hook)
         # provider.finalize()
-        
-        
 
-        
+
         #### ------------------- #####
         #### ------------------- #####
         #### ------------------- #####
@@ -408,11 +357,7 @@ def setup_model_and_optimizer(
         # Register post-creation callbacks (make_value_model, freeze_moe_router) as pre-wrap hooks
         for callback in post_model_creation_callbacks:
             provider.register_pre_wrap_hook(callback)
-        
-        # print("====")
-        # print(wrap_config.wrap_with_ddp)
-        # print("====")
-        # exit()
+
          
         if wrap_config.wrap_with_ddp:
             from megatron.bridge.training.config import DistributedDataParallelConfig
@@ -469,6 +414,7 @@ def setup_model_and_optimizer(
         # if hasattr(args, '_lora_instance'):
         #     args._lora_instance = lora
         #############
+
         
     else:
         # Original non-LoRA path or non-bridge mode

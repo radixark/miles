@@ -16,6 +16,22 @@ def _normalize_base_weight_name(param_name: str) -> str:
     if param_name.endswith("base_layer.weight"):
         return param_name[: -len("base_layer.weight")] + "weight"
     return param_name
+
+# CanonicalLoRA - same as sglang
+# Lora - need to below convert (or sglang also need to use Lora)
+# def _convert_lora_name_for_sglang(hf_param_name: str) -> str:
+#     """Convert standard HF LoRA names to SGLang's merged projection format."""
+#     # Handle attention projections - SGLang uses merged qkv_proj
+#     for proj in ['q_proj', 'k_proj', 'v_proj']:
+#         if f'.self_attn.{proj}.' in hf_param_name:
+#             return hf_param_name.replace(f'.self_attn.{proj}.', '.self_attn.qkv_proj.')
+    
+#     # Handle MLP projections - SGLang uses merged gate_up_proj
+#     for proj in ['gate_proj', 'up_proj']:
+#         if f'.mlp.{proj}.' in hf_param_name:
+#             return hf_param_name.replace(f'.mlp.{proj}.', '.mlp.gate_up_proj.')
+    
+#     return hf_param_name
 ##############################
 ##############################
 ##############################
@@ -44,6 +60,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
+        
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
 
 
@@ -130,25 +147,27 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             ##############################
             ###########lora###############
             ##############################
-            # print(4444444)
             if self.is_lora:
                 # (to-do) yusheng: I might need to add the converting weights (mg --> hf) - refer above
                 # conversion_tasks = self._bridge.get_conversion_tasks(self.model)
                 # conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights) 
 
+                # print(self.model) # Identity()
+
                 lora_weights = self._bridge.export_adapter_weights(
                     self.model,
                     cpu=False,
-                    # cpu=True, ### if False, it will have the problem - why?
+                    # cpu=True, ### if False, it will have cudaaccess error
                     # conversion_tasks=conversion_tasks, #### 
                     show_progress=False
                 )
+
 
                 # hf_param_name's might have big problem  
                 lora_weights = (
                     (
                         hf_param_name,
-                        postprocess_hf_param(
+                        postprocess_hf_param( # check if need postprocess_hf_param
                             args=self.args,
                             megatron_param_name=megatron_param_name,
                             hf_param_name=hf_param_name,

@@ -80,15 +80,9 @@ def get_model_provider_func(
 
         return wrapped_model_provider
 
+
     if args.megatron_to_hf_mode == "bridge":
         from megatron.bridge import AutoBridge
-        ##############################
-        ###########lora###############
-        ##############################
-        # from miles.backends.megatron_utils.lora_utils import is_lora_enabled 
-        ##############################
-        ##############################
-        ##############################
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
@@ -99,24 +93,6 @@ def get_model_provider_func(
         provider.expert_model_parallel_size = args.expert_model_parallel_size
         provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
         provider.sequence_parallel = args.sequence_parallel
-
-        # ##############################
-        # ###########lora###############
-        # ##############################
-        # if is_lora_enabled(args) and role == "actor":
-        #     provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
-        #     provider.context_parallel_size = args.context_parallel_size
-        #     provider.variable_seq_lengths = True
-        #     provider.moe_token_dispatcher_type = "alltoall"
-        #     provider.moe_router_load_balancing_type = "none"
-        #     provider.finalize()
-        #     return provider.provide
-        # else:
-        #     provider.finalize()
-        #     return provider.provide
-        # ##############################
-        # ##############################
-        # ##############################
 
         provider.finalize()
         return provider.provide

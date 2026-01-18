@@ -56,6 +56,7 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
             hf_modules.append(module)
     
     return hf_modules
+
 ##############################
 ##############################
 ##############################
@@ -330,6 +331,40 @@ class SGLangEngine(RayActor):
             "update_weights_from_tensor",
             payload,
         )
+    
+    ##############################
+    ###########lora###############
+    ##############################
+    def load_lora_adapter_from_tensors(
+        self,
+        lora_name: str,
+        serialized_tensors: str,
+        config_dict: dict,
+        load_format: str | None = None,  # Add this parameter
+        pinned: bool = False,
+        added_tokens_config: dict | None = None,
+    ):
+        """
+        Load a LoRA adapter from serialized tensor data.
+        """
+        payload = {
+            "lora_name": lora_name,
+            "serialized_tensors": serialized_tensors,
+            "config_dict": config_dict,
+            "pinned": pinned,
+        }
+        if load_format is not None:
+            payload["load_format"] = load_format
+        if added_tokens_config is not None:
+            payload["added_tokens_config"] = added_tokens_config
+            
+        return self._make_request(
+            "load_lora_adapter_from_tensors",
+            payload,
+        )
+    ##############################
+    ##############################
+    ##############################
 
     def flush_cache(self):
         """Flush the cache of the server."""
@@ -409,12 +444,12 @@ class SGLangEngine(RayActor):
     #         {"lora_name": lora_name, "serialized_tensors": serialized_tensors, "config_dict": config_dict},
     #     )
 
-    # def unload_lora_adapter(self, lora_name: str):
-    #     """Unload LoRA adapter."""
-    #     return self._make_request(
-    #         "unload_lora_adapter",
-    #         {"lora_name": lora_name},
-    #     )
+    def unload_lora_adapter(self, lora_name: str):
+        """Unload LoRA adapter."""
+        return self._make_request(
+            "unload_lora_adapter",
+            {"lora_name": lora_name},
+        )
     ##############################
     ##############################
     ##############################
@@ -635,10 +670,18 @@ def _compute_server_args(
         kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
         ##### For rollout debug mode to add:
-        if args.debug_rollout_only and args.lora_adapter_path:
+        if args.debug_rollout_only:
             from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME
             # SGLang lora_paths Format: {"adapter_name": "path_to_adapter"}
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+
+        if args.lora_adapter_path is None: 
+            raise ValueError("lora_adapter_path must be provided")
+        else:
+            from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME
+            # SGLang lora_paths Format: {"adapter_name": "path_to_adapter"}
+            kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+             
     ##############################
     ##############################
     ##############################

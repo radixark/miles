@@ -53,15 +53,14 @@ def train(args):
     # ###########lora###############
     # ##############################
 
+
     if args.offload_rollout:
         ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
     
 
     # always update weight first so that sglang has the loaded weights from training.
-    print(11111)
     actor_model.update_weights()
-    print(22222)
-    exit()
+
 
     if args.check_weight_update_equal:
         ray.get(rollout_manager.check_weights.remote(action="compare"))

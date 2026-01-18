@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export FLASHINFER_DISABLE_VERSION_CHECK=1
+
 # for rerun the task
 pkill -9 sglang
 sleep 3
@@ -54,9 +56,9 @@ LORA_ARGS=(
    ##############################
    # # Debug
    #### inference
-   #--debug-rollout-only
+   # --debug-rollout-only
    ### --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/lora_adapter.pt
-   #--lora-adapter-path lewtun/Qwen2.5-0.5B-SFT-LoRA
+   --lora-adapter-path lewtun/Qwen2.5-0.5B-SFT-LoRA
    ## --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/
    ###
 
@@ -76,6 +78,10 @@ LORA_ARGS=(
    # Disable gradient accumulation fusion for LoRA training
 
    # --no-gradient-accumulation-fusion #Root cause: When training with LoRA, the base model’s parameters are frozen (requires_grad=False). However, Megatron-LM’s tensor-parallel layers use gradient-accumulation fusion during the backward pass, and that fusion path checks weight.main_grad.dtype. For frozen parameters, main_grad is never allocated (it remains None), which triggers the error. (enable)
+
+   #### debug
+   --no-offload-train 
+   # --no-offload-rollout 
 )
 ##############################
 ##############################
@@ -151,7 +157,8 @@ OPTIMIZER_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.7
+   # --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.4
 
    --sglang-enable-deterministic-inference
    --sglang-attention-backend flashinfer
