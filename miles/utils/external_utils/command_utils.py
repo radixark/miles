@@ -109,6 +109,10 @@ def execute_train(
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
+    # Clear proxy environment variables to prevent Ray communication issues
+    for proxy_var in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"]:
+        os.environ.pop(proxy_var, None)
+
     exec_command(
         "pkill -9 sglang; "
         "sleep 3; "
@@ -130,8 +134,10 @@ def execute_train(
         exec_command(
             # will prevent ray from buffering stdout/stderr
             f"export PYTHONBUFFERED=16 && "
-            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
+            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
         )
+        # Wait for Ray to be fully initialized
+        time.sleep(3)
 
     if (f := before_ray_job_submit) is not None:
         f()
