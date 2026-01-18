@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from miles.router.sessions import setup_session_routes
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,8 @@ class MilesRouter:
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
         self.app.post("/retrieve_from_text")(self.retrieve_from_text)
+        # Session routes - must be registered before catch-all
+        setup_session_routes(self.app, self)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
@@ -130,38 +133,40 @@ class MilesRouter:
 
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
-        # Forward all other paths to SGLang router
+        result = await self._do_proxy(request, path)
+        return self._build_proxy_response(result)
+
+    async def _do_proxy(self, request: Request, path: str) -> dict:
+        """Core proxy logic. Returns dict with request_body, response_body, status_code, headers."""
         worker_url = self._use_url()
         url = f"{worker_url}/{path}"
 
-        # Get request body and headers
         body = await request.body()
         headers = dict(request.headers)
 
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
-            # Eagerly read content so we can return JSON (not streaming)
             content = await response.aread()
-            content_type = response.headers.get("content-type", "")
-            try:
-                # Prefer parsing JSON if possible
-                data = json.loads(content)
-                return JSONResponse(
-                    content=data,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                )
-            except Exception:
-                # Fall back to raw body with original content type
-                return Response(
-                    content=content,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    media_type=content_type or None,
-                )
-
+            return {
+                "request_body": body,
+                "response_body": content,
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+            }
         finally:
             self._finish_url(worker_url)
+
+    def _build_proxy_response(self, result: dict) -> Response:
+        """Build HTTP response from proxy result."""
+        content = result["response_body"]
+        status_code = result["status_code"]
+        headers = result["headers"]
+        content_type = headers.get("content-type", "")
+        try:
+            data = json.loads(content)
+            return JSONResponse(content=data, status_code=status_code, headers=headers)
+        except Exception:
+            return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
 
     async def add_worker(self, request: Request):
         """Add a new worker to the router.

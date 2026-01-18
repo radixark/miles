@@ -1,4 +1,10 @@
 <% set jobs = {
+    'fast': {
+      'test_executor': 'pytest',
+      'tests': [
+        {'test_file': 'fast', 'num_gpus': 0},
+      ],
+    },
     'e2e-test-short': {
       'label': 'run-ci-short',
       'tests': [
@@ -95,7 +101,7 @@ concurrency:
 jobs:
 <% for job_name, config in jobs.items() %>
   << job_name >>:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request<% if config.label %> && contains(github.event.pull_request.labels.*.name, '<< config.label >>')<% endif %>)
     runs-on: self-hosted
     container:
       image: << config.image if config.image else 'radixark/miles:latest' >>
@@ -107,10 +113,6 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=$http_proxy
-        -e https_proxy=$https_proxy
-        -e HTTP_PROXY=$HTTP_PROXY
-        -e HTTPS_PROXY=$HTTPS_PROXY
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
@@ -136,5 +138,5 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- << config.test_executor | default('python') >> tests/${{ matrix.info.test_file }}
 <% endfor %>
