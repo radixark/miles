@@ -6,7 +6,7 @@ import logging
 from argparse import Namespace
 from copy import deepcopy
 
-from miles.router.sessions import GetSessionResponse, SessionRecord
+from miles.router.session.sessions import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
