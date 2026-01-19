@@ -1,8 +1,8 @@
 diff --git a/megatron/core/transformer/dot_product_attention_context_parallel.py b/megatron/core/transformer/dot_product_attention_context_parallel.py
-index 89659a1d7..1def27c69 100644
+index 89659a1d7..2c1464fb6 100644
 --- a/megatron/core/transformer/dot_product_attention_context_parallel.py
 +++ b/megatron/core/transformer/dot_product_attention_context_parallel.py
-@@ -3,9 +3,12 @@
+@@ -3,107 +3,12 @@
  # Some of this code was adopted from https://github.com/zhuzilin/ring-flash-attention/
  # This source code is licensed under the MIT license found in the
  # LICENSE file in the root directory of this source tree.
@@ -11,14 +11,15 @@ index 89659a1d7..1def27c69 100644
  import torch
 +import torch.distributed as dist
  from torch.nn import functional as F
-+from .tilelang_kernel import sparse_mla_bwd, sparse_mla_fwd_interface
- 
- try:
-     import einops
-@@ -15,96 +18,6 @@ except ImportError:
-     HAVE_EINOPS = False
- 
- 
+-
+-try:
+-    import einops
+-
+-    HAVE_EINOPS = True
+-except ImportError:
+-    HAVE_EINOPS = False
+-
+-
 -@torch.no_grad
 -def eager_attn_fwd(q, k, v, attn_bias, sinks, scale, dropout):
 -    """Forward pass for eager attention"""
@@ -108,11 +109,11 @@ index 89659a1d7..1def27c69 100644
 -    grad_q = einops.rearrange(grad__q, 'b h s d -> b s h d')
 -    return grad_q, grad_k, grad_v, grad_sinks
 -
--
++from .tilelang_kernel import sparse_mla_bwd, sparse_mla_fwd_interface
+ 
  class AllGatherComm:
      """All gather communication with async operations"""
- 
-@@ -131,212 +44,146 @@ class AllGatherComm:
+@@ -131,212 +36,145 @@ class AllGatherComm:
                  handle.wait()
              self.handles = []
  
@@ -146,9 +147,9 @@ index 89659a1d7..1def27c69 100644
          '''Forward pass for the native attention function with context parallelism'''
  
 -        # Assert einops exists
-         if not HAVE_EINOPS:
-             raise ImportError("einops is required by the attention CP but cannot be imported.")
- 
+-        if not HAVE_EINOPS:
+-            raise ImportError("einops is required by the attention CP but cannot be imported.")
+-
 -        # Initialize communication group and constants
          cp_size = 1
          if pg is not None:
@@ -164,8 +165,6 @@ index 89659a1d7..1def27c69 100644
 -        # Initialize KV buffers
 -        kv_buffer = torch.empty(
 -            (2, k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
-+        s, b, heads, dim = q.shape
-+        skv, _, kv_groups, _ = k.shape
 +
 +        k_buffer = torch.empty(
 +            (k.shape[0] * cp_size, k.shape[1], 1, k.shape[3]),
@@ -232,9 +231,9 @@ index 89659a1d7..1def27c69 100644
 +        k_i = k_buffer
 +
 +        s_, b_, h_, d_ = q_i.shape
-+        q_i = einops.rearrange(q_i, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        q_i = q_i.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = k_i.shape
-+        k_i = einops.rearrange(k_i, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        k_i = k_i.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        zz_indices_i = zz_indices
 +        b_, s_, g_, topk_ = zz_indices_i.shape
 +        zz_indices_i = zz_indices_i.flatten().view(b_, s_, g_, topk_)
@@ -245,7 +244,8 @@ index 89659a1d7..1def27c69 100644
 +        out_i, lse_i = sparse_mla_fwd_interface(q_i.contiguous(), k_i, zz_indices_i, zz_masks_i, dim_v, sm_scale = softmax_scale)
 +
 +        # out: [B, seq_len_shard, h, dim] -> [seq_len, B, h, dim]
-+        out_i = einops.rearrange(out_i, 'b s h d -> s b h d')
++        b_, s_, h_, d_ = out_i.shape
++        out_i = out_i.transpose(0, 1).flatten().view(s_, b_, h_, d_).contiguous()
 +
 +        # outs: [[B, seq_len_shard, nheads // kv_group, dim], ...., [B, seq_len_shard, nheads // kv_group, dim]], repeat kv_group // heads_kv_stride times
 +        # lses: [[B, seq_len_shard, heads_kv_stride], ...., [B, seq_len_shard, heads_kv_stride]], repeat kv_group // heads_kv_stride times
@@ -353,13 +353,13 @@ index 89659a1d7..1def27c69 100644
 +        dk_list = []
 +
 +        s_, b_, h_, d_ = q.shape
-+        q = einops.rearrange(q, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        q = q.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = k_i.shape
-+        k_i = einops.rearrange(k_i, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        k_i = k_i.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = dout.shape
-+        dout = einops.rearrange(dout, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        dout = dout.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = out.shape
-+        out = einops.rearrange(out, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        out = out.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        b_, s_, h_ = lse.shape
 +        lse = lse.flatten().view(b_, s_, h_)
 +        zz_indices_i = zz_indices
@@ -379,12 +379,16 @@ index 89659a1d7..1def27c69 100644
 +
 +            # TODO: needs casual = True, may not be compatible with zz
 +            dq_i, _dk_i = sparse_mla_bwd(q_i, k_i, out_i, dout_i, zz_indices_i, zz_masks_i, lse_i, dim_v, sm_scale = softmax_scale)
++
++            b_, s_, h_, d_ = dq_i.shape
++            dq_i = dq_i.transpose(0, 1).flatten().view(s_, b_, h_, d_).contiguous()
++            b_, s_, h_, d_ = _dk_i.shape
++            _dk_i = _dk_i.transpose(0, 1).flatten().view(s_, b_, h_, d_).contiguous()
  
 -            # Rearrange gradients to (s, b, h, d)
-             dq_i = einops.rearrange(dq_i, 'b s h d -> s b h d')
-             _dk_i = einops.rearrange(_dk_i, 'b s h d -> s b h d')
+-            dq_i = einops.rearrange(dq_i, 'b s h d -> s b h d')
+-            _dk_i = einops.rearrange(_dk_i, 'b s h d -> s b h d')
 -            _dv_i = einops.rearrange(_dv_i, 'b s h d -> s b h d')
-+
              if pg is None:
                  dk_i = _dk_i
 -                dv_i = _dv_i
@@ -416,9 +420,11 @@ index 89659a1d7..1def27c69 100644
 -        dv = torch.cat(dv, dim=2)
 -        return dq, dk, dv, None, None, None, None
 +        dq = torch.cat(dq_list, dim=2)
-+        dk = sum(dk_list)
++        dk_ = torch.cat(dk_list, dim=2)
++        dk = torch.sum(dk_, dim=2, keepdim=True)
 +
 +        return dq, dk, None, None, None, None, None, None
+\ No newline at end of file
 diff --git a/megatron/core/transformer/experimental_attention_variant/dsa.py b/megatron/core/transformer/experimental_attention_variant/dsa.py
 index fc994490b..b23d2e9a8 100644
 --- a/megatron/core/transformer/experimental_attention_variant/dsa.py
