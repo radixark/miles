@@ -102,18 +102,17 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -e http_proxy=$http_proxy
-        -e https_proxy=$https_proxy
-        -e HTTP_PROXY=$HTTP_PROXY
-        -e HTTPS_PROXY=$HTTPS_PROXY
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
+        --privileged
+        --ulimit nofile=65535:65535
+        -v /tmp:/tmp
     strategy:
       fail-fast: false
       matrix:
@@ -130,6 +129,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cleanup Ray processes
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          pkill -9 -f gcs_server 2>/dev/null || true
+          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
+          pkill -9 sglang 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          rm -rf /tmp/ray/* 2>/dev/null || true
+          sleep 3
+
       - name: Install
         shell: bash
         run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
@@ -137,4 +148,13 @@ jobs:
       - name: Execute
         shell: bash
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+
+      - name: Post-test cleanup
+        if: always()
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          rm -rf /tmp/ray/* 2>/dev/null || true
 <% endfor %>
