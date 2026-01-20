@@ -1,5 +1,5 @@
 diff --git a/megatron/core/transformer/dot_product_attention_context_parallel.py b/megatron/core/transformer/dot_product_attention_context_parallel.py
-index 89659a1d7..2c1464fb6 100644
+index 89659a1d7..c69859a04 100644
 --- a/megatron/core/transformer/dot_product_attention_context_parallel.py
 +++ b/megatron/core/transformer/dot_product_attention_context_parallel.py
 @@ -3,107 +3,12 @@
@@ -397,13 +397,14 @@ index 89659a1d7..2c1464fb6 100644
                  dk_i = torch.zeros(
                      (k_i.shape[1] // cp_size, k_i.shape[0], k_i.shape[2], k_i.shape[3]),
                      device=k_i.device,
-                     dtype=k_i.dtype,
-                 )
+-                    dtype=k_i.dtype,
+-                )
 -                dv_i = torch.zeros(
 -                    (v_i.shape[1] // cp_size, v_i.shape[0], v_i.shape[2], v_i.shape[3]),
 -                    device=v_i.device,
 -                    dtype=v_i.dtype,
--                )
++                    dtype=torch.float32,
+                 )
                  torch.distributed.reduce_scatter_tensor(dk_i, _dk_i, group=pg)
 -                torch.distributed.reduce_scatter_tensor(dv_i, _dv_i, group=pg)
  
@@ -421,7 +422,7 @@ index 89659a1d7..2c1464fb6 100644
 -        return dq, dk, dv, None, None, None, None
 +        dq = torch.cat(dq_list, dim=2)
 +        dk_ = torch.cat(dk_list, dim=2)
-+        dk = torch.sum(dk_, dim=2, keepdim=True)
++        dk = torch.sum(dk_, dim=2, keepdim=True).to(torch.bfloat16)
 +
 +        return dq, dk, None, None, None, None, None, None
 \ No newline at end of file
@@ -1004,10 +1005,10 @@ index 000000000..d8f2425f0
 +]
 diff --git a/megatron/core/transformer/tilelang_kernel/sparse_mla_bwd.py b/megatron/core/transformer/tilelang_kernel/sparse_mla_bwd.py
 new file mode 100644
-index 000000000..b8ea416dd
+index 000000000..83a259efa
 --- /dev/null
 +++ b/megatron/core/transformer/tilelang_kernel/sparse_mla_bwd.py
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,272 @@
 +# ruff: noqa
 +import tilelang
 +from tilelang import language as T
@@ -1273,22 +1274,20 @@ index 000000000..b8ea416dd
 +    # Get kernels
 +    preprocess_kernel = preprocess(B, S, H, D)
 +    bwd_kernel = bwd(B, S, S_kv, H, D, D_tail, topk, kv_group, sm_scale, is_casual)
-+    postprocess_kernel = postprocess(B, S_kv, D, D_tail, kv_group)
 +
 +    if delta is None:
 +        delta = preprocess_kernel(o, do)
 +    dkv = torch.zeros_like(kv, dtype=torch.float32)
 +    dq = bwd_kernel(q, kv, do, indices, masks, lse, delta, dkv)
-+    dkv = postprocess_kernel(dkv)
 +
 +    return dq, dkv
 \ No newline at end of file
 diff --git a/megatron/core/transformer/tilelang_kernel/sparse_mla_fwd.py b/megatron/core/transformer/tilelang_kernel/sparse_mla_fwd.py
 new file mode 100644
-index 000000000..d338a2fa6
+index 000000000..e247038de
 --- /dev/null
 +++ b/megatron/core/transformer/tilelang_kernel/sparse_mla_fwd.py
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,191 @@
 +# ruff: noqa
 +import torch
 +import tilelang
@@ -1409,6 +1408,7 @@ index 000000000..d338a2fa6
 +            for i_i in T.Pipelined(NI, num_stages=num_stages):
 +                for bi_i in T.Parallel(BI):
 +                    mask[bi_i] = Masks[b_i, s_i, g_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i]]
++
 +                for bi_i, d_i in T.Parallel(BI, D):
 +                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
 +                for bi_i, d_i in T.Parallel(BI, D_tail):
