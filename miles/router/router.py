@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
-from miles.router.sessions import setup_session_routes
+from miles.router.session.sessions import setup_session_routes
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,6 @@ class MilesRouter:
         # sglang-router api
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
-        self.app.post("/retrieve_from_text")(self.retrieve_from_text)
         # Session routes - must be registered before catch-all
         setup_session_routes(self.app, self)
         # Catch-all route for proxying to SGLang - must be registered LAST
@@ -136,13 +135,23 @@ class MilesRouter:
         result = await self._do_proxy(request, path)
         return self._build_proxy_response(result)
 
-    async def _do_proxy(self, request: Request, path: str) -> dict:
+    async def _do_proxy(
+        self,
+        request: Request,
+        path: str,
+        body: bytes | None = None,
+        headers: dict | None = None,
+    ) -> dict:
         """Core proxy logic. Returns dict with request_body, response_body, status_code, headers."""
         worker_url = self._use_url()
         url = f"{worker_url}/{path}"
 
-        body = await request.body()
-        headers = dict(request.headers)
+        if body is None:
+            body = await request.body()
+        if headers is None:
+            headers = dict(request.headers)
+        if body is not None:
+            headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
 
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
