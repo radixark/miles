@@ -2,11 +2,6 @@ import logging
 
 import torch.nn as nn
 
-try:
-    from peft import LoraConfig, PeftModel, TaskType, get_peft_model
-except ImportError as err:
-    raise ImportError("peft library required for LoRA. Install with: pip install peft") from err
-
 logger = logging.getLogger(__name__)
 
 LORA_ADAPTER_NAME = "miles_lora"
@@ -14,6 +9,11 @@ LORA_SUBDIR = "tmp_lora"
 
 
 def apply_lora_to_model(model: nn.Module, args) -> nn.Module:
+    try:
+        from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+    except ImportError as err:
+        raise ImportError("peft library required for LoRA. Install with: pip install peft") from err
+
     if args.lora_adapter_path:
         logger.info(f"Loading LoRA adapter from {args.lora_adapter_path}")
         model = PeftModel.from_pretrained(model, args.lora_adapter_path, is_trainable=True)
