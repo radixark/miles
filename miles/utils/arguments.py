@@ -1613,7 +1613,7 @@ def miles_validate_args(args):
     ###########lora###############
     ##############################
     if args.lora_rank > 0:
-        assert args.save is not None, "'--save' is required when LoRA is enabled."
+        # assert args.save is not None, "'--save' is required when LoRA is enabled."
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         # (to-do) yusheng: hf->mg; mg->hf 

@@ -25,8 +25,8 @@ CKPT_ARGS=(
    # --ref-load /root/Qwen2.5-0.5B-Instruct_torch_dist/
    # Uncomment to save checkpoints (required for LoRA)
    #### train
-   --save /root/checkpoints/qwen2.5-0.5B-lora-megatron/
-   --save-interval 5
+   # --save /root/checkpoints/qwen2.5-0.5B-lora-megatron/
+   # --save-interval 100
    ###
 )
 
@@ -39,7 +39,7 @@ CKPT_ARGS=(
 ###########lora###############
 ##############################
 LORA_ARGS=(
-   --lora-rank 16                    # LoRA rank (typical values: 8, 16, 32, 64)
+   --lora-rank 32                    # LoRA rank (typical values: 8, 16, 32, 64)
    --lora-alpha 32                   # LoRA alpha (usually 2x rank)
    --lora-dropout 0.0                # LoRA dropout (0.0 for RL training)
    # Target modules - use Megatron naming or HF naming
@@ -58,7 +58,7 @@ LORA_ARGS=(
    #### inference
    # --debug-rollout-only
    ### --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/lora_adapter.pt
-   --lora-adapter-path lewtun/Qwen2.5-0.5B-SFT-LoRA
+   # --lora-adapter-path lewtun/Qwen2.5-0.5B-SFT-LoRA
    ## --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/
    ###
 
@@ -94,20 +94,21 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type math
-   # --num-rollout 100
-   --num-rollout 10 # onyl train 10 stesp
-   # --rollout-batch-size 32
-   --rollout-batch-size 16 # for testing 
+   --num-rollout 100
+   # --num-rollout 10 # onyl train 10 stesp
+   --rollout-batch-size 32
+   # --rollout-batch-size 16 # for testing 
    --n-samples-per-prompt 8
    --rollout-max-response-len 1024
    --rollout-temperature 1
 
-   # --global-batch-size 256
-   --global-batch-size 32 # for testing
+   --global-batch-size 256
+   # --global-batch-size 32 # for testing
 )
 
 EVAL_ARGS=(
-   --eval-interval 20
+   # --eval-interval 20
+   --eval-interval 10
    --eval-prompt-data gsm8k /root/gsm8k/test.parquet
    --n-samples-per-eval-prompt 1
    --eval-max-response-len 1024
@@ -155,6 +156,15 @@ OPTIMIZER_ARGS=(
 #    --wandb-group qwen2.5-0.5B-gsm8k-deterministic
 # )
 
+WANDB_ARGS=(
+   --use-wandb
+   --wandb-host https://wandb.ai/
+   --wandb-team miles-lora
+   --wandb-project miles-lora-megatron
+   --wandb-group qwen2.5-0.5B-gsm8k-test
+)
+
+
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    # --sglang-mem-fraction-static 0.7
@@ -182,9 +192,9 @@ MISC_ARGS=(
 ###########lora###############
 ##############################
 ######## Note: Need to set export CUDA_VISIBLE_DEVICES= , or it will fail and have cuda error
-export GPUS_PER_NODE=1
+# export GPUS_PER_NODE=1
 # export GPUS_PER_NODE=2
-# export GPUS_PER_NODE=4
+export GPUS_PER_NODE=4
 # export GPUS_PER_NODE=8
 ##############################
 ##############################

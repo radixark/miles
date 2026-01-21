@@ -653,10 +653,10 @@ def _compute_server_args(
     #     # print(2222222222)
     #     # exit()
 
-    # if args.lora_rank > 0 or args.lora_adapter_path is not None:
-    if is_lora_enabled(args):
-        kwargs["max_loras_per_batch"] = 1  #!!!!!!!!
+    # if is_lora_enabled(args):
+    if args.lora_rank > 0 or args.lora_adapter_path is not None:
         kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = 1  #!!!!!!!!
         # kwargs["max_lora_rank"] = args.lora_rank
         # Ensure a valid positive LoRA rank is passed to the SGLang engine.
         # If LoRA is enabled via adapter path but lora_rank is not set to a
@@ -676,7 +676,10 @@ def _compute_server_args(
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
 
         if args.lora_adapter_path is None: 
-            raise ValueError("lora_adapter_path must be provided")
+            # raise ValueError("lora_adapter_path must be provided")
+            # raise ValueError("lora_adapter_path must be provided")
+            # pass
+            logger.info("Did not provide pre-trained LoRA adapter_path, will use random initial weights")
         else:
             from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME
             # SGLang lora_paths Format: {"adapter_name": "path_to_adapter"}
