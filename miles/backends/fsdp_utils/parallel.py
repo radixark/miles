@@ -32,8 +32,10 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     # Setup Ring Flash Attention with CP group from mesh (only when cp_size > 1)
     if cp_size > 1:
         substitute_hf_flash_attn(mesh.get_group("cp"), heads_k_stride=1)
+        cp_comm_type = "allgather"
         logger.info(f"[Rank {rank}] CP initialized via device mesh")
     else:
+        cp_comm_type = None
         logger.info(f"[Rank {rank}] Pure DP mode (cp_size=1)")
 
     parallel_state = ParallelState(
@@ -48,6 +50,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         dp_cp_group=dist.group.WORLD,
         dp_cp_group_gloo=get_gloo_group(),
         cp_group=mesh.get_group("cp"),
+        cp_comm_type=cp_comm_type,
         tp_size=1,
         tp_rank=0,
         tp_group=dist.new_group([rank]),

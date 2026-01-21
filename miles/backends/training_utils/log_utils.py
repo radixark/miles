@@ -116,6 +116,7 @@ def log_rollout_data(
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
         max_seq_lens = rollout_data.get("max_seq_lens", None)
+        chunk_size = rollout_data.get("chunk_size", None)
 
         for key, val in rollout_data.items():
             if key in [
@@ -144,6 +145,7 @@ def log_rollout_data(
                             parallel_state,
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
+                            chunk_size=chunk_size,
                         )
                         val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
                     else:

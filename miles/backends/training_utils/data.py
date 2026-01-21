@@ -12,7 +12,7 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
-from .cp_utils import slice_log_prob_with_cp, slice_with_cp
+from .cp_utils import slice_log_prob_with_cp, slice_packed_log_probs, slice_with_cp
 from .parallel import ParallelState
 
 logger = logging.getLogger(__name__)
@@ -56,28 +56,34 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
     if "rollout_log_probs" in rollout_data:
-        rollout_data["rollout_log_probs"] = [
-            torch.tensor(
-                slice_log_prob_with_cp(
-                    log_prob,
-                    total_length,
-                    response_length,
-                    parallel_state,
-                    args.qkv_format,
-                    rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
-                ),
-                device=torch.cuda.current_device(),
-                dtype=torch.float32,
-            )
-            for i, (log_prob, total_length, response_length) in enumerate(
-                zip(
-                    rollout_data["rollout_log_probs"],
-                    rollout_data["total_lengths"],
-                    rollout_data["response_lengths"],
-                    strict=False,
+        if parallel_state.cp_comm_type == "allgather":
+            rollout_data["rollout_log_probs"] = [
+                torch.tensor(log_prob, device=torch.cuda.current_device(), dtype=torch.float32)
+                for log_prob in rollout_data["rollout_log_probs"]
+            ]
+        else:
+            rollout_data["rollout_log_probs"] = [
+                torch.tensor(
+                    slice_log_prob_with_cp(
+                        log_prob,
+                        total_length,
+                        response_length,
+                        parallel_state,
+                        args.qkv_format,
+                        rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
+                    ),
+                    device=torch.cuda.current_device(),
+                    dtype=torch.float32,
                 )
-            )
-        ]
+                for i, (log_prob, total_length, response_length) in enumerate(
+                    zip(
+                        rollout_data["rollout_log_probs"],
+                        rollout_data["total_lengths"],
+                        rollout_data["response_lengths"],
+                        strict=False,
+                    )
+                )
+            ]
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     return rollout_data
@@ -127,6 +133,93 @@ def get_batch(
     batch["unconcat_tokens"] = tokens
 
     cp_size = parallel_state.cp_size
+    cp_comm_type = parallel_state.cp_comm_type
+
+    if cp_comm_type == "allgather":
+        assert qkv_format == "thd"
+        cp_rank = parallel_state.cp_rank
+        # Pack sequences
+        packed_tokens = torch.cat(tokens)
+        total_seq_len = packed_tokens.size(0)
+
+        # Build cu_seqlens
+        cu_seqlens = [0]
+        for t in tokens:
+            cu_seqlens.append(cu_seqlens[-1] + t.size(0))
+
+        # Build position_ids
+        if get_position_ids:
+            position_ids_list = [torch.arange(t.size(0), device=t.device, dtype=torch.long) for t in tokens]
+            packed_position_ids = torch.cat(position_ids_list)
+
+        # Pad to make divisible by cp_size
+        chunk_size = (total_seq_len + cp_size - 1) // cp_size
+        pad_len = chunk_size * cp_size - total_seq_len
+        if pad_len != 0:
+            packed_tokens = F.pad(packed_tokens, (0, pad_len), value=pad_token_id)
+            cu_seqlens[-1] += pad_len
+            if get_position_ids:
+                packed_position_ids = F.pad(packed_position_ids, (0, pad_len), value=pad_token_id)
+
+        # Slice packed batch
+        start, end = chunk_size * cp_rank, chunk_size * (cp_rank + 1)
+        local_tokens = packed_tokens[start:end]
+        if get_position_ids:
+            local_position_ids = packed_position_ids[start:end]
+
+        # TODO: fix global pad
+        # Pad to reduce memory fragmentation and maybe make the computation faster
+        # final_pad = (pad_size - local_tokens.size(0) % pad_size) % pad_size
+        # if final_pad != 0:
+        #     local_tokens = F.pad(local_tokens, (0, final_pad), value=pad_token_id)
+        #     cu_seqlens.append(cu_seqlens[-1] + final_pad)
+        #     if get_position_ids:
+        #         local_position_ids = F.pad(local_position_ids, (0, final_pad), value=pad_token_id)
+
+        batch["tokens"] = local_tokens.unsqueeze(0)
+        batch["cu_seqlens"] = torch.tensor(cu_seqlens, dtype=torch.int).cuda()  # original sequence boundaries
+        batch["packed_len"] = total_seq_len
+        batch["chunk_size"] = chunk_size
+        batch["cp_start_idx"] = start
+        batch["cp_end_idx"] = end
+
+        if get_position_ids:
+            batch["position_ids"] = local_position_ids.unsqueeze(0)
+
+        # Build loss masks
+        loss_masks_list = []
+        for loss_mask, total_length, response_length in zip(
+            batch["loss_masks"],
+            batch["total_lengths"],
+            batch["response_lengths"],
+            strict=True,
+        ):
+            prompt_length = total_length - response_length
+            loss_mask = F.pad(loss_mask, (prompt_length - 1, 1), value=0)
+            loss_masks_list.append(loss_mask)
+
+        packed_loss_masks = torch.cat(loss_masks_list)
+        if pad_len != 0:
+            packed_loss_masks = F.pad(packed_loss_masks, (0, pad_len), value=0)
+
+        local_loss_masks = packed_loss_masks[start:end]
+        # TODO: fix global pad
+        # if final_pad != 0:
+        #     local_loss_masks = F.pad(local_loss_masks, (0, final_pad), value=0)
+
+        batch["full_loss_masks"] = local_loss_masks.unsqueeze(0)
+
+        # Slice rollout_log_probs
+        if "rollout_log_probs" in batch and batch["rollout_log_probs"] is not None:
+            batch["rollout_log_probs"] = slice_packed_log_probs(
+                rollout_log_probs=batch["rollout_log_probs"],
+                total_lengths=batch["total_lengths"],
+                response_lengths=batch["response_lengths"],
+                parallel_state=parallel_state,
+                chunk_size=chunk_size,
+            )
+
+        return batch
 
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]

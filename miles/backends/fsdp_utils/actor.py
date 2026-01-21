@@ -359,6 +359,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             total_lengths=batch["total_lengths"],
                             response_lengths=batch["response_lengths"],
                             with_entropy=(store_prefix == ""),
+                            batch=batch,
                             max_seq_lens=batch.get("max_seq_lens", None),
                         )
 
@@ -427,7 +428,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         compute_advantages_and_returns(self.args, self.parallel_state, rollout_data)
 
-        log_rollout_data(rollout_id, self.args, rollout_data, self.parallel_state)
+        # TODO: Remove this after figure out the logging problem with CP>1
+        if self.parallel_state.cp_size == 1:
+            log_rollout_data(rollout_id, self.args, rollout_data, self.parallel_state)
 
         with timer("actor_train"):
             data_iterator.reset()
@@ -468,8 +471,24 @@ class FSDPTrainRayActor(TrainRayActor):
                     )
                     losses_reduced.append(log_dict)
 
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-                grad_norm = grad_norm.full_tensor().item()
+                if self.parallel_state.cp_size > 1:
+                    # Synchronize gradient norm across all ranks
+                    total_norm_sq = torch.tensor(0.0, device=torch.cuda.current_device())
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_norm_sq += param_norm.item() ** 2
+
+                    dist.all_reduce(total_norm_sq, op=dist.ReduceOp.SUM, group=self.parallel_state.dp_cp_group)
+                    total_norm = total_norm_sq.sqrt().item()
+                    clip_coef = min(1.0, self.args.clip_grad / (total_norm + 1e-6))
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            p.grad.data.mul_(clip_coef)
+                    grad_norm = min(total_norm, self.args.clip_grad)
+                else:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                    grad_norm = grad_norm.full_tensor().item()
 
                 self.optimizer.step()
                 self.lr_scheduler.step()
@@ -620,10 +639,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 cu_seqlens = batch["cu_seqlens"]
                 if not cu_seqlens.is_cuda:
                     cu_seqlens = cu_seqlens.cuda()
-                update_ring_flash_attn_params(cu_seqlens, self.cp_group)
-
-            input_ids = torch.chunk(input_ids, self.parallel_state.cp_size, dim=1)[self.parallel_state.cp_rank]
-            position_ids = torch.chunk(position_ids, self.parallel_state.cp_size, dim=1)[self.parallel_state.cp_rank]
+                update_ring_flash_attn_params(cu_seqlens, self.parallel_state.cp_group)
 
         model_args = {
             "input_ids": input_ids,
