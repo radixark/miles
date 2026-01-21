@@ -3,7 +3,8 @@ import uuid
 from typing import Any
 
 from pydantic import BaseModel, Field
-from miles.router.session.sessions import SessionRecord
+
+from miles.router.session.session_types import SessionRecord
 
 
 class NaiveTrajectory(BaseModel):

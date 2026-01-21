@@ -4,33 +4,20 @@ from typing import TYPE_CHECKING
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
 from transformers import AutoTokenizer
 
-from miles.router.session.naive_trajectory import NaiveTrajectoryManager
+from miles.router.session.session_types import GetSessionResponse, SessionRecord
 
 if TYPE_CHECKING:
     from miles.router.router import MilesRouter
-
-
-class SessionRecord(BaseModel):
-    timestamp: float
-    method: str
-    path: str
-    request: dict
-    response: dict
-    status_code: int
-
-
-class GetSessionResponse(BaseModel):
-    session_id: str
-    records: list[SessionRecord]
 
 
 def setup_session_routes(app, router: "MilesRouter"):
 
     tokenizer = AutoTokenizer.from_pretrained(router.args.hf_checkpoint, trust_remote_code=True)
     if router.args.trajectory_manager == "naive_trajectory":
+        from miles.router.session.naive_trajectory import NaiveTrajectoryManager
+
         manager = NaiveTrajectoryManager(router.args, tokenizer)
     else:
         raise ValueError(f"Invalid trajectory manager: {router.args.trajectory_manager}")
