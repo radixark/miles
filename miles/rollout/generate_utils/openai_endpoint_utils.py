@@ -6,7 +6,7 @@ import logging
 from argparse import Namespace
 from copy import deepcopy
 
-from miles.router.sessions import GetSessionResponse, SessionRecord
+from miles.router.session.sessions import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -22,11 +22,16 @@ class OpenAIEndpointTracer:
     @staticmethod
     async def create(args: Namespace):
         router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-        session_id = (await post(f"{router_url}/sessions", {}))["session_id"]
+        response = await post(f"{router_url}/sessions", {}, action="post")
+        session_id = response["session_id"]
         return OpenAIEndpointTracer(router_url=router_url, session_id=session_id)
 
     async def collect_records(self) -> list[SessionRecord]:
-        response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="get")
+        try:
+            response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="get")
+        except Exception as e:
+            logger.warning(f"Failed to get session {self.session_id} records: {e}")
+            return []
         response = GetSessionResponse.model_validate(response)
         records = response.records
 
@@ -35,7 +40,7 @@ class OpenAIEndpointTracer:
         except Exception as e:
             logger.warning(f"Failed to delete session {self.session_id} after collecting records: {e}")
 
-        return records
+        return records or []
 
 
 def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord], tokenizer) -> list[Sample]:
