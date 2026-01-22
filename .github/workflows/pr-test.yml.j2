@@ -1,4 +1,10 @@
 <% set jobs = {
+    'fast': {
+      'test_executor': 'pytest',
+      'tests': [
+        {'test_file': 'fast', 'num_gpus': 0},
+      ],
+    },
     'e2e-test-short': {
       'label': 'run-ci-short',
       'tests': [
@@ -98,7 +104,7 @@ concurrency:
 jobs:
 <% for job_name, config in jobs.items() %>
   << job_name >>:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request<% if config.label %> && contains(github.event.pull_request.labels.*.name, '<< config.label >>')<% endif %>)
     runs-on: self-hosted
     container:
       image: << config.image if config.image else 'radixark/miles:latest' >>
@@ -153,14 +159,5 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-      - name: Post-test cleanup
-        if: always()
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
+        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- << config.test_executor | default('python') >> tests/${{ matrix.info.test_file }}
 <% endfor %>

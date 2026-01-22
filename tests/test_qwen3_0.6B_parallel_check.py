@@ -95,6 +95,7 @@ def execute():
             ),
             num_gpus_per_node=NUM_GPUS,
             megatron_model_type=MODEL_TYPE,
+            extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
         )
         # 8 GPU CPU 1
         for num_gpus in [8, 4, 2]:
@@ -124,6 +125,7 @@ def execute():
                             train_args=args,
                             num_gpus_per_node=num_gpus,
                             megatron_model_type=MODEL_TYPE,
+                            extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
                         )
         train_args += "--calculate-per-token-loss "
 
