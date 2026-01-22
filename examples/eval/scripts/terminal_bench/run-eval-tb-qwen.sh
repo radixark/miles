@@ -33,8 +33,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3-8B.sh"
 
-# EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/harbor_runner.yaml"}
-EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/tb_runner.yaml"}
+EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/harbor_runner.yaml"}
+# EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/tb_runner.yaml"}
 
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_DIR}/OpenThinker-Agent-v1 # huggingface-cli download open-thoughts/OpenThinker-Agent-v1
@@ -123,25 +123,23 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=6,7
-# export CUDA_VISIBLE_DEVICES=4,5,6,7
-# export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 
-# ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 2 \
-#             --disable-usage-stats \
-#             --dashboard-host=0.0.0.0 \
-#             --dashboard-port=8266 \
-#             --dashboard-agent-listen-port 52366 \
-#             --dashboard-agent-grpc-port 52367 \
-#             --runtime-env-agent-port 52368
-
-ray start --head --node-ip-address ${MASTER_ADDR} --port 6381 --num-gpus 2 \
+ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 4 \
             --disable-usage-stats \
             --dashboard-host=0.0.0.0 \
-            --dashboard-port=8267 \
-            --dashboard-agent-listen-port 52266 \
-            --dashboard-agent-grpc-port 52267 \
-            --runtime-env-agent-port 52268
+            --dashboard-port=8266 \
+            --dashboard-agent-listen-port 52366 \
+            --dashboard-agent-grpc-port 52367 \
+            --runtime-env-agent-port 52368
+
+# ray start --head --node-ip-address ${MASTER_ADDR} --port 6381 --num-gpus 2 \
+#             --disable-usage-stats \
+#             --dashboard-host=0.0.0.0 \
+#             --dashboard-port=8267 \
+#             --dashboard-agent-listen-port 52266 \
+#             --dashboard-agent-grpc-port 52267 \
+#             --runtime-env-agent-port 52268
 
 
 RUNTIME_ENV_JSON="{
@@ -151,12 +149,12 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-ray job submit --address="http://${MASTER_ADDR}:8267" \
+ray job submit --address="http://${MASTER_ADDR}:8266" \
    --working-dir "${REPO_ROOT}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 4 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

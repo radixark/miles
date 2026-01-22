@@ -26,6 +26,17 @@ eval:
       dataset_name: terminal-bench
       dataset_version: "2.0"
       output_path: harbor_runner_jobs
-      # task_ids:
-      #   - fix-git
-      n_concurrent: 8
+      n_concurrent: 32
+      runner_kwargs:
+        # task_name:
+        #   - fix-git
+        # debug: true
+        # timeout_multiplier: 2.0
+        # retry_exclude:
+        #   - AgentTimeoutError
+        #   - VerifierTimeoutError
+        n_attempts: 2
+        agent_kwarg:
+          model_info:
+            max_input_tokens: 40960
+            max_output_tokens: 8192

@@ -9,19 +9,16 @@ Usage:
 
 Miles (or Miles-compatible runners) should POST the payload described in
 `EvalRequestPayload` to http://<host>:<port>/evaluate. The server blocks until
-the run finishes, then returns aggregated metrics along with paths to the
-generated artifacts (logs + raw metrics).
+the run finishes, then returns aggregated metrics.
 """
 
 from __future__ import annotations
 
 import argparse
-import cmd
-import json
 import logging
 import os
+import pty
 import shlex
-import statistics
 import subprocess
 import sys
 import threading
@@ -31,13 +28,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
 from flask import Flask, jsonify, request
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
+
+from utils.metrics import extract_harbor_metrics, extract_tb_metrics
+from utils.runner import (
+    Runner,
+    ServerConfig,
+    _build_harbor_command,
+    _build_tb_command,
+    _normalize_model_name,
+)
 
 logger = logging.getLogger("terminal_bench_server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -56,11 +58,11 @@ class EvalRequestPayload:
     runner: str | None = None
     dataset_name: str | None = None
     dataset_version: str | None = None
-    n_tasks: int | None = None
     n_concurrent: int | None = None
-    task_ids: list[str] | None = None
     metric_prefix: str | None = None
     output_path: str | None = None
+    runner_kwargs: dict[str, Any] | None = None
+
 
 @dataclass
 class JobRecord:
@@ -69,7 +71,6 @@ class JobRecord:
     run_id: str
     command: str
     output_dir: str
-    log_path: str
     raw_metrics: dict[str, Any] | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
@@ -83,7 +84,6 @@ class JobRecord:
             "run_id": self.run_id,
             "command": self.command,
             "output_dir": self.output_dir,
-            "log_path": self.log_path,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -95,47 +95,12 @@ class JobRecord:
         return payload
 
 
-# ---------------------------------------------------------------------------
-# Configuration + command helpers
-# ---------------------------------------------------------------------------
-
-
-def _normalize_model_name(model_name: str) -> str:
-    name = (model_name or "").strip()
-    if not name:
-        return ""
-    if "/" in name:
-        return name
-    return f"openai/{name}"
-
-def _normalize_runner(runner: str | None) -> str:
-    value = (runner or "").strip().lower()
-    if not value:
-        return "harbor"
-    if value in {"tb", "harbor"}:
-        return value
-    raise ValueError(
-        f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
-    )
-
-@dataclass
-class ServerConfig:
-    output_root: Path
-
-    @classmethod
-    def from_args(cls, args: argparse.Namespace) -> ServerConfig:
-        return cls(output_root=Path(args.output_root).expanduser().resolve())
-
-
 class TerminalBenchEvaluator:
     def __init__(self, config: ServerConfig):
         self._config = config
         self._lock = threading.Lock()
         self._jobs_lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
-        self._config.output_root.mkdir(parents=True, exist_ok=True)
-        self._log_root = REPO_ROOT.parent / "tb_eval_logs"
-        self._log_root.mkdir(parents=True, exist_ok=True)
 
     def evaluate(self, payload: EvalRequestPayload) -> dict[str, Any]:
         if not payload.model_name:
@@ -145,21 +110,11 @@ class TerminalBenchEvaluator:
 
         job_id = uuid.uuid4().hex
         run_id = f"{int(time.time())}-{job_id[:8]}"
-        runner = _normalize_runner(payload.runner)
-        job_name = None
-        if runner == "harbor":
-            jobs_dir = Path(payload.output_path or "jobs").expanduser()
-            jobs_dir.mkdir(parents=True, exist_ok=True)
-            job_name = run_id
-            run_dir = jobs_dir / job_name
-        else:
-            tb_root = Path(payload.output_path or self._config.output_root).expanduser()
-            tb_root.mkdir(parents=True, exist_ok=True)
-            run_dir = tb_root / run_id
+        runner = Runner(payload.runner)
+        run_dir, job_name = self._prepare_run_dir(payload, runner, run_id)
 
         command = self._build_command(payload, run_id, runner, job_name)
-        command_str = " ".join(shlex.quote(part) for part in command)
-        log_path = self._log_root / f"{run_id}.log"
+        command_str = self._format_command(command)
 
         record = JobRecord(
             job_id=job_id,
@@ -167,14 +122,13 @@ class TerminalBenchEvaluator:
             run_id=run_id,
             command=command_str,
             output_dir=str(run_dir),
-            log_path=str(log_path),
         )
         with self._jobs_lock:
             self._jobs[job_id] = record
 
         thread = threading.Thread(
             target=self._run_job,
-            args=(job_id, payload, run_dir, command, log_path, runner),
+            args=(job_id, payload, run_dir, command, runner),
             daemon=True,
         )
         thread.start()
@@ -186,7 +140,6 @@ class TerminalBenchEvaluator:
             "run_id": run_id,
             "command": command_str,
             "output_dir": str(run_dir),
-            "log_path": str(log_path),
         }
 
     def _run_job(
@@ -195,39 +148,34 @@ class TerminalBenchEvaluator:
         payload: EvalRequestPayload,
         run_dir: Path,
         command: list[str],
-        log_path: Path,
-        runner: str,
+        runner: Runner,
     ) -> None:
-        with self._jobs_lock:
-            record = self._jobs.get(job_id)
-            if record is None:
-                return
-            record.status = "running"
-            record.started_at = time.time()
+        self._update_job(job_id, status="running", started_at=time.time())
 
         env = self._build_env()
         logger.info("Starting Terminal Bench run: %s", " ".join(shlex.quote(part) for part in command))
         try:
             with self._lock:
-                self._run_command(command, env=env, log_path=log_path)
+                self._run_command(
+                    command,
+                    env=env,
+                )
             metrics = self._collect_metrics(run_dir, runner, payload)
             if payload.metric_prefix:
                 metrics = {payload.metric_prefix: metrics}
-            with self._jobs_lock:
-                record = self._jobs.get(job_id)
-                if record is None:
-                    return
-                record.status = "completed"
-                record.raw_metrics = metrics
-                record.finished_at = time.time()
+            self._update_job(
+                job_id,
+                status="completed",
+                raw_metrics=metrics,
+                finished_at=time.time(),
+            )
         except Exception as exc:  # noqa: BLE001
-            with self._jobs_lock:
-                record = self._jobs.get(job_id)
-                if record is None:
-                    return
-                record.status = "failed"
-                record.error = str(exc)
-                record.finished_at = time.time()
+            self._update_job(
+                job_id,
+                status="failed",
+                error=str(exc),
+                finished_at=time.time(),
+            )
 
     def get_job_status(self, job_id: str) -> dict[str, Any] | None:
         with self._jobs_lock:
@@ -240,17 +188,13 @@ class TerminalBenchEvaluator:
         self,
         payload: EvalRequestPayload,
         run_id: str,
-        runner: str,
+        runner: Runner,
         job_name: str | None,
     ) -> list[str]:
-        if runner == "harbor":
-            cmd = self._build_harbor_command(payload, job_name)
-        elif runner == "tb":
-            cmd = self._build_tb_command(payload, run_id)
+        if runner is Runner.HARBOR:
+            cmd = _build_harbor_command(payload, job_name)
         else:
-            raise ValueError(
-                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
-            )
+            cmd = _build_tb_command(payload, run_id, self._config.output_root)
 
         model_name = _normalize_model_name(payload.model_name)
         if model_name:
@@ -268,50 +212,32 @@ class TerminalBenchEvaluator:
 
         return cmd
 
-    def _build_harbor_command(self, payload: EvalRequestPayload, job_name: str | None) -> list[str]:
-        dataset_name = (payload.dataset_name or "terminal-bench").strip() or "terminal-bench"
-        dataset_version = (payload.dataset_version or "2.0").strip() or "2.0"
-        cmd = [
-            "harbor",
-            "run",
-            "-d",
-            f"{dataset_name}@{dataset_version}",
-        ]
-        jobs_dir = payload.output_path
-        if jobs_dir:
-            cmd.extend(["--jobs-dir", jobs_dir])
-        if job_name:
-            cmd.extend(["--job-name", job_name])
+    def _prepare_run_dir(
+        self,
+        payload: EvalRequestPayload,
+        runner: Runner,
+        run_id: str,
+    ) -> tuple[Path, str | None]:
+        if runner is Runner.HARBOR:
+            jobs_dir = Path(payload.output_path or "jobs").expanduser()
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            return jobs_dir / run_id, run_id
 
-        task_ids = [str(item) for item in (payload.task_ids or []) if item]
-        if task_ids:
-            for task_name in task_ids:
-                cmd.extend(["--task-name", task_name])
-        elif payload.n_tasks is not None:
-            raise ValueError("n_tasks is only supported for runner=tb.")
-        
-        return cmd
+        tb_root = Path(payload.output_path or self._config.output_root).expanduser()
+        tb_root.mkdir(parents=True, exist_ok=True)
+        return tb_root / run_id, None
 
-    def _build_tb_command(self, payload: EvalRequestPayload, run_id: str) -> list[str]:
-        dataset_name = (payload.dataset_name or "terminal-bench-core").strip() or "terminal-bench-core"
-        dataset_version = (payload.dataset_version or "0.1.1").strip() or "0.1.1"
-        cmd = [
-            "tb",
-            "run",
-            "-d",
-            f"{dataset_name}=={dataset_version}",
-        ]
-        output_root = str(Path(payload.output_path or self._config.output_root).expanduser())
-        cmd.extend(["--output-path", output_root, "--run-id", run_id])
-        
-        task_ids = [str(item) for item in (payload.task_ids or []) if item]
-        if task_ids:
-            for task_id in task_ids:
-                cmd.extend(["--task-id", task_id])
-        elif payload.n_tasks is not None:
-            cmd.extend(["--n-tasks", str(payload.n_tasks)])
+    def _update_job(self, job_id: str, **updates: Any) -> None:
+        with self._jobs_lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                return
+            for key, value in updates.items():
+                setattr(record, key, value)
 
-        return cmd
+    @staticmethod
+    def _format_command(command: list[str]) -> str:
+        return " ".join(shlex.quote(part) for part in command)
 
     def _build_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -320,31 +246,41 @@ class TerminalBenchEvaluator:
         return env
 
     @staticmethod
-    def _run_command(cmd: list[str], *, env: dict[str, str], log_path: Path):
-        with open(log_path, "w", encoding="utf-8") as log_file:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-                text=True,
-                bufsize=1,
-            )
-            assert process.stdout is not None
-            for line in process.stdout:
-                log_file.write(line)
-                log_file.flush()
-                sys.stdout.write(line)
-                sys.stdout.flush()
-            retcode = process.wait()
+    def _run_command(
+        cmd: list[str],
+        *,
+        env: dict[str, str],
+    ):
+        env = env.copy()
+        env.setdefault("TERM", "xterm-256color")
+        env.setdefault("RICH_FORCE_TERMINAL", "1")
+        master_fd, slave_fd = pty.openpty()
+        process = subprocess.Popen(
+            cmd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+        )
+        os.close(slave_fd)
+        try:
+            while True:
+                try:
+                    data = os.read(master_fd, 1024)
+                except OSError:
+                    break
+                if not data:
+                    break
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+        finally:
+            os.close(master_fd)
+        retcode = process.wait()
         if retcode != 0:
-            with open(log_path, encoding="utf-8", errors="ignore") as log_file:
-                tail = "".join(log_file.readlines()[-200:])
-            raise RuntimeError(f"Command failed with exit code {retcode}. See {log_path}\n{tail}")
+            raise RuntimeError(f"Command failed with exit code {retcode}.")
 
     @staticmethod
-    def _collect_metrics(run_dir: Path, runner: str, payload: EvalRequestPayload) -> dict[str, Any]:
-        if runner == "harbor":
+    def _collect_metrics(run_dir: Path, runner: Runner, payload: EvalRequestPayload) -> dict[str, Any]:
+        if runner is Runner.HARBOR:
             metrics_path = run_dir / "result.json"
             if not metrics_path.exists():
                 fallback = TerminalBenchEvaluator._find_latest_result(
@@ -355,8 +291,9 @@ class TerminalBenchEvaluator:
             if not metrics_path.exists():
                 logger.warning("Results file missing at %s", metrics_path)
                 return {}
-            metrics = TerminalBenchEvaluator._extract_harbor_metrics(
+            metrics = extract_harbor_metrics(
                 metrics_path,
+                run_dir,
                 model_name=_normalize_model_name(payload.model_name),
                 dataset_name=(payload.dataset_name or "terminal-bench"),
                 agent_name=(payload.agent_name or "terminus-2"),
@@ -366,63 +303,9 @@ class TerminalBenchEvaluator:
             if not metrics_path.exists():
                 logger.warning("Results file missing at %s", metrics_path)
                 return {}
-            metrics = TerminalBenchEvaluator._extract_metrics(metrics_path)
+            metrics = extract_tb_metrics(metrics_path)
         if not metrics:
             logger.warning("No accuracy/n_resolved metrics found in %s", metrics_path)
-        return metrics
-
-    @staticmethod
-    def _extract_metrics(metrics_path: Path) -> dict[str, Any]:
-        try:
-            with open(metrics_path, encoding="utf-8") as fp:
-                metrics_data = json.load(fp)
-        except json.JSONDecodeError as exc:
-            logger.warning("Failed to parse %s: %s", metrics_path, exc)
-            return {}
-
-        metrics: dict[str, Any] = {}
-
-        # core metrics
-        accuracy = metrics_data.get("accuracy")
-        if isinstance(accuracy, (int, float)):
-            metrics["accuracy"] = float(accuracy)
-
-        n_resolved = metrics_data.get("n_resolved")
-        if isinstance(n_resolved, (int, float)):
-            metrics["n_resolved"] = int(n_resolved)
-
-        n_unresolved = metrics_data.get("n_unresolved")
-        if isinstance(n_unresolved, (int, float)):
-            metrics["n_unresolved"] = int(n_unresolved)
-
-        # pass@k flatten
-        pass_at_k = metrics_data.get("pass_at_k")
-        if isinstance(pass_at_k, dict):
-            for k, v in pass_at_k.items():
-                if isinstance(v, (int, float)):
-                    metrics[f"pass_at_k/{k}"] = float(v)
-
-        # token stats from per-task results
-        results = metrics_data.get("results")
-        if isinstance(results, list):
-            input_tokens = [
-                r.get("total_input_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_input_tokens"), (int, float))
-            ]
-            output_tokens = [
-                r.get("total_output_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_output_tokens"), (int, float))
-            ]
-
-            if input_tokens:
-                metrics["total_input_tokens_mean"] = float(statistics.mean(input_tokens))
-                metrics["total_input_tokens_median"] = float(statistics.median(input_tokens))
-            if output_tokens:
-                metrics["total_output_tokens_mean"] = float(statistics.mean(output_tokens))
-                metrics["total_output_tokens_median"] = float(statistics.median(output_tokens))
-
         return metrics
 
     @staticmethod
@@ -433,112 +316,6 @@ class TerminalBenchEvaluator:
         if not candidates:
             return None
         return max(candidates, key=lambda path: path.stat().st_mtime)
-
-    @staticmethod
-    def _extract_harbor_metrics(
-        metrics_path: Path,
-        *,
-        model_name: str,
-        dataset_name: str,
-        agent_name: str,
-    ) -> dict[str, Any]:
-        try:
-            with open(metrics_path, encoding="utf-8") as fp:
-                metrics_data = json.load(fp)
-        except json.JSONDecodeError as exc:
-            logger.warning("Failed to parse %s: %s", metrics_path, exc)
-            return {}
-
-        metrics: dict[str, Any] = {}
-        stats = metrics_data.get("stats")
-        if isinstance(stats, dict):
-            evals = stats.get("evals")
-        else:
-            evals = None
-
-        accuracy = None
-        if isinstance(evals, dict):
-            candidates = [
-                f"{agent_name}__{model_name}__{dataset_name}",
-                f"{agent_name}__{model_name}__terminal-bench",
-            ]
-            for key in candidates:
-                entry = evals.get(key)
-                accuracy = TerminalBenchEvaluator._extract_harbor_accuracy(entry)
-                if accuracy is not None:
-                    break
-            if accuracy is None:
-                for entry in evals.values():
-                    accuracy = TerminalBenchEvaluator._extract_harbor_accuracy(entry)
-                    if accuracy is not None:
-                        break
-
-        if isinstance(accuracy, (int, float)):
-            metrics["accuracy"] = float(accuracy)
-            metrics["pass_at_k/1"] = float(accuracy)
-
-        reward_stats = metrics_data.get("reward_stats")
-        if isinstance(reward_stats, dict):
-            reward_counts = reward_stats.get("reward")
-        else:
-            reward_counts = None
-
-        if isinstance(reward_counts, dict):
-            resolved = TerminalBenchEvaluator._extract_reward_count(reward_counts, 1.0)
-            unresolved = TerminalBenchEvaluator._extract_reward_count(reward_counts, 0.0)
-            if resolved is not None:
-                metrics["n_resolved"] = resolved
-            if unresolved is not None:
-                metrics["n_unresolved"] = unresolved
-
-        results = metrics_data.get("results")
-        if isinstance(results, list):
-            input_tokens = [
-                r.get("total_input_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_input_tokens"), (int, float))
-            ]
-            output_tokens = [
-                r.get("total_output_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_output_tokens"), (int, float))
-            ]
-
-            if input_tokens:
-                metrics["total_input_tokens_mean"] = float(statistics.mean(input_tokens))
-                metrics["total_input_tokens_median"] = float(statistics.median(input_tokens))
-            if output_tokens:
-                metrics["total_output_tokens_mean"] = float(statistics.mean(output_tokens))
-                metrics["total_output_tokens_median"] = float(statistics.median(output_tokens))
-
-        return metrics
-
-    @staticmethod
-    def _extract_harbor_accuracy(entry: Any) -> float | None:
-        if not isinstance(entry, dict):
-            return None
-        metrics_block = entry.get("metrics")
-        if isinstance(metrics_block, list) and metrics_block:
-            first_metric = metrics_block[0]
-            if isinstance(first_metric, dict):
-                mean = first_metric.get("mean")
-                if isinstance(mean, (int, float)):
-                    return float(mean)
-        mean = entry.get("mean")
-        if isinstance(mean, (int, float)):
-            return float(mean)
-        return None
-
-    @staticmethod
-    def _extract_reward_count(reward_counts: dict[Any, Any], reward_value: float) -> int | None:
-        for key, value in reward_counts.items():
-            try:
-                key_value = float(key)
-            except (TypeError, ValueError):
-                continue
-            if key_value == reward_value and isinstance(value, (int, float)):
-                return int(value)
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +381,7 @@ def main():
     config = ServerConfig.from_args(args)
     evaluator = TerminalBenchEvaluator(config)
     app = build_app(evaluator)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logger.info(
         "Starting Terminal Bench evaluation server on %s:%s (output root=%s)",
         args.host,

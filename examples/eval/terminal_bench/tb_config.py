@@ -15,12 +15,11 @@ class TerminalBenchConfig(EvalEnvConfig):
     agent_name: str = "terminus-2"
     api_base: str = "http://127.0.1.1:30001/v1"
     runner: str = "harbor"
-    dataset_name: str = ""
-    dataset_version: str = ""
+    dataset_name: str = "terminal-bench"
+    dataset_version: str = "2.0"
     output_path: str | None = None
-    n_tasks: int | None = None
-    task_ids: list[str] = field(default_factory=list)
     n_concurrent: int = 8
+    runner_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def parse(cls, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]) -> TerminalBenchConfig:
@@ -36,7 +35,6 @@ class TerminalBenchConfig(EvalEnvConfig):
             "dataset_name": lambda v: str(v).strip(),
             "dataset_version": lambda v: str(v).strip(),
             "output_path": lambda v: str(v).strip(),
-            "n_tasks": int,
             "n_concurrent": int,
         }
 
@@ -45,31 +43,9 @@ class TerminalBenchConfig(EvalEnvConfig):
             if value is not None:
                 setattr(base_cfg, key, caster(value))
 
-        runner = (base_cfg.runner or "").strip().lower()
-        if not runner:
-            runner = "harbor"
-        elif runner not in {"tb", "harbor"}:
-            raise ValueError(
-                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
-            )
-        base_cfg.runner = runner
-        # runner-specific defaults
-        if runner == "tb":
-            if not base_cfg.dataset_name:
-                base_cfg.dataset_name = "terminal-bench-core"
-            if not base_cfg.dataset_version:
-                base_cfg.dataset_version = "0.1.1"
-        else:
-            if not base_cfg.dataset_name:
-                base_cfg.dataset_name = "terminal-bench"
-            if not base_cfg.dataset_version:
-                base_cfg.dataset_version = "2.0"
-
-        task_ids = clean_raw.get("task_ids")
-        if isinstance(task_ids, (list, tuple)):
-            base_cfg.task_ids = [str(item) for item in task_ids if item]
-        elif task_ids is not None:
-            raise ValueError("task_ids must be a list")
+        runner_kwargs = clean_raw.get("runner_kwargs")
+        if runner_kwargs is not None:
+            base_cfg.runner_kwargs = dict(runner_kwargs)
 
         return base_cfg
 

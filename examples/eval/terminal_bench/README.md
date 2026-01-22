@@ -15,7 +15,6 @@ This folder wires Terminal Bench (TB) into Miles as an eval delegate. The run ha
 mkdir miles-tb
 cd miles-tb
 git clone https://github.com/radixark/miles.git
-git clone https://github.com/laude-institute/terminal-bench
 ```
 
 ## 2) Launch the Miles container
@@ -31,7 +30,7 @@ docker run \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   --ulimit nofile=65536:65536 \
-  -v /mnt/data/.cache:/root/.cache \
+  -v /data/cache:/root/.cache \
   -v $(pwd):/shared/miles-tb \
   --name <miles container name> \
   radixark/miles:latest \
@@ -58,7 +57,7 @@ uv pip install -r miles/examples/eval/terminal_bench/requirements.txt
 Terminal Bench 2.0 (default, via harbor):
 
 ```bash
-uv tool install harbor
+uv pip install harbor
 ```
 
 Terminal Bench 1.0 (legacy, via tb CLI):
@@ -73,34 +72,33 @@ Notes:
 
 ## 5) Start the Terminal Bench server
 
-Run on the host (same machine where `tb` works):
+Run on the host (same machine where `tb`/`harbor` works). Match the port in your
+eval config (examples use `9051`):
 
 ```bash
-python miles/examples/eval/terminal_bench/tb_server.py \
-  --host 0.0.0.0 --port 9051 
+python miles/examples/eval/terminal_bench/tb_server.py --host 0.0.0.0 --port 9051 
 ```
 
 What it does:
 - Uses `OPENAI_API_KEY=EMPTY`
-- Runs `harbor run -d terminal-bench@2.0 -a terminus-2 -m openai/<model> ... -n 8` by default
-- Supports `tb run ... --n-concurrent 8` when `runner: tb` is used
+- For `runner: harbor`, builds a command like:
+  `harbor run -d terminal-bench@2.0 --jobs-dir <output_path> --job-name <run_id> --model openai/<model> --agent <agent> --agent-kwarg api_base=... --n-concurrent <n> ...`
+- For `runner: tb`, builds a command like:
+  `tb run -d terminal-bench-core==0.1.1 --output-path <output_path> --run-id <run_id> --model openai/<model> --agent <agent> --agent-kwarg api_base=... --n-concurrent <n> ...`
 - Waits for completion, then returns `accuracy`, `n_resolved`,
   `n_unresolved`, `pass_at_k/*`, and token stats such as
   `total_input_tokens_mean/median` and `total_output_tokens_mean/median`
 
 ## 6) Run the eval script (example)
 
-If you use the provided Qwen eval launcher (`run-eval-tb-qwen.sh`), follow the steps below to run Terminal-Bench evaluation.
+If you use the provided Qwen eval launcher (`run-eval-tb-qwen.sh`), follow the steps below to run Terminal-Bench evaluation. Configure the runner via `harbor_runner.yaml` or `tb_runner.yaml`. runner_kwargs is used to pass through extra CLI arguments, new parameters can be added directly via runner_kwargs.
 
-For Terminal Bench 2.0, set `runner: harbor` and specify `dataset_name`, `dataset_version`, and `jobs_dir` in `eval_tb_example.yaml`. No local `terminal-bench/tasks` path is needed.
-
-For Terminal Bench 1.0, set `runner: tb` and update the `dataset_path` to the local path of `terminal-bench/tasks` on your host (not an internal Docker-only path). 
 
 Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
 huggingface-cli download open-thoughts/OpenThinker-Agent-v1 \
---local-dir /root/.cache/OpenThinker-Agent-v1
+--local-dir /root/.cache/huggingface/OpenThinker-Agent-v1
 ```
 
 After downloading, convert the HuggingFace checkpoint to Miles's torch distributed format. From the Miles root directory, run:
@@ -113,8 +111,8 @@ export PYTHONPATH=/root/Megatron-LM:/shared/miles-tb/miles
 
 python tools/convert_hf_to_torch_dist.py \
   ${MODEL_ARGS[@]} \
-  --hf-checkpoint /root/.cache/OpenThinker-Agent-v1 \
-  --save /root/.cache/OpenThinker-Agent-v1_torch_dist
+  --hf-checkpoint /root/.cache/huggingface/OpenThinker-Agent-v1 \
+  --save /root/.cache/huggingface/OpenThinker-Agent-v1_torch_dist
 ```
 
 Finally, run the following command inside the Miles container:
@@ -122,8 +120,6 @@ Finally, run the following command inside the Miles container:
 ```bash
 bash miles/examples/eval/scripts/terminal_bench/run-eval-tb-qwen.sh 2>&1 | tee run.log
 ```
-
-For convenience, you can restrict the evaluation scope in `eval_tb_example.yaml`, either by specifying a single task or multiple tasks (`task_ids`), or by limiting the number of tasks via `n_tasks`.
 
 ## 7) Common Issues
 
@@ -133,10 +129,10 @@ In some cases, this manifests as Ray failing to start or reporting Redis- or ses
 
 In more severe cases, Ray job submission may fail with errors indicating that no available agent can accept jobs. This typically happens when the dashboard agent or runtime environment agent ports are also in conflict. In such situations, explicitly specifying the agent-related ports (e.g. `--dashboard-agent-listen-port`, `--dashboard-agent-grpc-port`, and `--runtime-env-agent-port`) when starting Ray can resolve the issue.
 
-If the TB server cannot connect to the Miles server through the sglang router (`InternalServerError`), check which address is actually listening on the router port (e.g. 30005 in this example) and update the `api_base` in `eval_tb_example.yaml` accordingly:
+If the TB server cannot connect to the Miles server through the sglang router (`InternalServerError`), check which address is actually listening on the router port (e.g. 30005 in this example) and update the `api_base` in `harbor_runner.yaml` or `tb_runner.yaml` accordingly:
 
 ```bash
 ss -lntp | grep 30005
 ```
 
-You may see `Parser warnings`, `Context length exceeded`, `Command 1 should end with newline`, `Harness execution failed` in `tb_server.py` logs. They are warnings from Terminal Bench and can be ignored if runs proceed normally.
+You may see `Parser warnings`, `Context length exceeded`, `Command 1 should end with newline`, `Harness execution failed`, `Provider List` in `tb_server.py` logs. They are warnings from Terminal Bench and can be ignored if runs proceed normally.
