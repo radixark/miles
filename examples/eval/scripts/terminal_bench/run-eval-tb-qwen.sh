@@ -133,15 +133,6 @@ ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 4 \
             --dashboard-agent-grpc-port 52367 \
             --runtime-env-agent-port 52368
 
-# ray start --head --node-ip-address ${MASTER_ADDR} --port 6381 --num-gpus 2 \
-#             --disable-usage-stats \
-#             --dashboard-host=0.0.0.0 \
-#             --dashboard-port=8267 \
-#             --dashboard-agent-listen-port 52266 \
-#             --dashboard-agent-grpc-port 52267 \
-#             --runtime-env-agent-port 52268
-
-
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
