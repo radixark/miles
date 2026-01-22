@@ -84,7 +84,7 @@ LORA_ARGS=(
 
    #### debug
    --no-offload-train 
-   # --no-offload-rollout 
+   --no-offload-rollout 
 )
 ##############################
 ##############################

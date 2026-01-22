@@ -36,6 +36,7 @@ source "${REPO_ROOT}/miles/scripts/models/qwen3-4B.sh"
 # EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/multi_tasks.yaml"}
 EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/miles/examples/eval/scripts/multi_tasks.yaml"}
 
+
 CKPT_ARGS=(
    # --hf-checkpoint /root/Qwen3-4B
    --hf-checkpoint /root/models/Qwen3-4B
@@ -54,7 +55,7 @@ LORA_ARGS=(
    --megatron-to-hf-mode bridge
    #### debug
    --no-offload-train 
-   # --no-offload-rollout 
+   --no-offload-rollout 
 )
 
 
