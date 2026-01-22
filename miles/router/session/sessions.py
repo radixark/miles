@@ -6,6 +6,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from transformers import AutoTokenizer
 
+from miles.router.session.naive_trajectory import NaiveTrajectoryManager
 from miles.router.session.session_types import GetSessionResponse, SessionRecord
 
 if TYPE_CHECKING:
@@ -15,12 +16,7 @@ if TYPE_CHECKING:
 def setup_session_routes(app, router: "MilesRouter"):
 
     tokenizer = AutoTokenizer.from_pretrained(router.args.hf_checkpoint, trust_remote_code=True)
-    if router.args.trajectory_manager == "naive_trajectory":
-        from miles.router.session.naive_trajectory import NaiveTrajectoryManager
-
-        manager = NaiveTrajectoryManager(router.args, tokenizer)
-    else:
-        raise ValueError(f"Invalid trajectory manager: {router.args.trajectory_manager}")
+    manager = NaiveTrajectoryManager(router.args, tokenizer)
 
     @app.post("/sessions")
     async def create_session():
@@ -70,9 +66,7 @@ def setup_session_routes(app, router: "MilesRouter"):
         logprobs_content = choice["logprobs"]["content"]
 
         for item in logprobs_content:
-            if "token" in item and "token_id" not in item:
-                item["token_id"] = tokenizer.convert_tokens_to_ids(item["token"])
-
+            assert "token_id" in item, "token_id must be in item"
         record = SessionRecord(
             timestamp=time.time(),
             method=request.method,
