@@ -17,7 +17,7 @@ class OpenAIEndpointTracer:
     def __init__(self, router_url: str, session_id: str):
         self.router_url = router_url
         self.session_id = session_id
-        self.base_url = f"{router_url}/sessions/{session_id}/v1"
+        self.base_url = f"{router_url}/sessions/{session_id}"
 
     @staticmethod
     async def create(args: Namespace):
