@@ -56,7 +56,7 @@ def setup_session_routes(app, router: "MilesRouter"):
                     return JSONResponse(status_code=404, content={"error": "session not found"})
                 body = json.dumps(request_body).encode("utf-8")
 
-        result = await router._do_proxy(request, "/v1/chat/completions", body=body)
+        result = await router._do_proxy(request, "v1/chat/completions", body=body)
 
         response = json.loads(result["response_body"])
 
