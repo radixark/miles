@@ -100,8 +100,37 @@ def call_rollout_fn(fn, *args, evaluation: bool, **kwargs):
     """Legacy rollout function call interface. Used when MILES_EXPERIMENTAL_ROLLOUT_REFACTOR is disabled."""
     output = fn(*args, **kwargs, evaluation=evaluation)
 
-    # compatibility for legacy version
-    if not isinstance(output, (RolloutFnTrainOutput, RolloutFnEvalOutput)):
-        output = RolloutFnEvalOutput(data=output) if evaluation else RolloutFnTrainOutput(samples=output)
 
-    return output
+# TODO: may add add_arguments
+# TODO: may add save/load if need it to be stateful
+# Duck typing, users do not need to extend this class
+@runtime_checkable
+class RolloutFnProtocol(Protocol):
+    def __call__(self, input: RolloutFnInput) -> RolloutFnOutput | Awaitable[RolloutFnOutput]: ...
+
+
+# TODO maybe put to modular_rollout folder depending on overall folder structure
+@dataclass(frozen=True)
+class GenerateFnInput:
+    state: GenerateState
+    sample: Sample
+    sampling_params: dict[str, Any]
+    evaluation: bool
+
+    @property
+    def args(self) -> Namespace:
+        return self.state.args
+
+
+@dataclass(frozen=True)
+class GenerateFnOutput:
+    # One generate may lead to multiple samples, such as multi-agent, tree-like exploration, or
+    # multi-turn with removing thinking tokens.
+    samples: Sample | list[Sample]
+
+
+# TODO: may add add_arguments
+# TODO: may add save/load if need it to be stateful
+@runtime_checkable
+class GenerateFnProtocol(Protocol):
+    async def __call__(self, input: GenerateFnInput) -> GenerateFnOutput: ...
