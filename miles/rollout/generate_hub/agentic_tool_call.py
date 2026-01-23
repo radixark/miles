@@ -59,6 +59,8 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
 
+    # Notice: Here we force the inference backend to return token information.
+    request_kwargs["logprobs"] = True
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys
     return {key: value for key, value in request_kwargs.items() if key in allowed_keys and value is not None}

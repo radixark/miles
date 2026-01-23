@@ -26,28 +26,11 @@ def sglang_server():
 @pytest.mark.system
 def test_chat_completions_input_ids_equivalence(sglang_server):
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    messages = _build_messages()
+    input_ids = _build_input_ids(tokenizer, messages)
 
-    messages = [
-        {"role": "system", "content": "You are a concise assistant."},
-        {"role": "user", "content": "Answer with one word: 2+2?"},
-    ]
-
-    input_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
-
-    base_payload = {
-        "model": MODEL_PATH,
-        "temperature": TEMPERATURE,
-        "top_p": TOP_P,
-        "max_completion_tokens": MAX_COMPLETION_TOKENS,
-        "seed": SEED,
-        "logprobs": True,
-    }
-
-    payload_a = {**base_payload, "messages": messages}
-    payload_b = {**base_payload, "messages": messages, "input_ids": input_ids}
-
-    response_a = _post_chat(sglang_server.base_url, payload_a)
-    response_b = _post_chat(sglang_server.base_url, payload_b)
+    response_a = _post_chat(sglang_server.base_url, _build_payload(messages))
+    response_b = _post_chat(sglang_server.base_url, _build_payload(messages, input_ids))
 
     choice_a = response_a["choices"][0]
     choice_b = response_b["choices"][0]
@@ -55,8 +38,8 @@ def test_chat_completions_input_ids_equivalence(sglang_server):
     assert choice_a["message"]["content"] == choice_b["message"]["content"]
     assert choice_a["finish_reason"] == choice_b["finish_reason"]
 
-    token_ids_a, logprobs_a = _extract_logprobs(choice_a, tokenizer)
-    token_ids_b, logprobs_b = _extract_logprobs(choice_b, tokenizer)
+    token_ids_a, logprobs_a = _extract_tokens_and_logprobs(choice_a, tokenizer)
+    token_ids_b, logprobs_b = _extract_tokens_and_logprobs(choice_b, tokenizer)
 
     assert token_ids_a == token_ids_b
     assert len(logprobs_a) == len(logprobs_b)
@@ -65,27 +48,67 @@ def test_chat_completions_input_ids_equivalence(sglang_server):
         assert math.isclose(a_val, b_val, abs_tol=LOGPROB_TOL), f"logprob mismatch at {index}: {a_val} vs {b_val}"
 
 
+@pytest.mark.system
+def test_chat_completions_input_logprobs_prompt_ids_match(sglang_server):
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    messages = _build_messages()
+    input_ids = _build_input_ids(tokenizer, messages)
+
+    response = _post_chat(sglang_server.base_url, _build_payload(messages, input_ids))
+    choice = response["choices"][0]
+
+    input_token_ids = _extract_input_token_ids(choice)
+
+    assert input_token_ids == input_ids
+
+
 def _post_chat(base_url: str, payload: dict) -> dict:
     response = requests.post(f"{base_url}/v1/chat/completions", json=payload, timeout=120)
+    print(f"response: {response.json()}", flush=True)
     assert response.status_code == 200, response.text
     return response.json()
 
 
-def _extract_logprobs(choice: dict, tokenizer) -> tuple[list[int], list[float]]:
+def _build_messages() -> list[dict]:
+    return [
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "Answer with one word: 2+2?"},
+    ]
+
+
+def _build_input_ids(tokenizer, messages: list[dict]) -> list[int]:
+    return tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+
+
+def _build_payload(messages: list[dict], input_ids: list[int] | None = None) -> dict:
+    payload = {
+        "model": MODEL_PATH,
+        "temperature": TEMPERATURE,
+        "top_p": TOP_P,
+        "max_completion_tokens": MAX_COMPLETION_TOKENS,
+        "seed": SEED,
+        "logprobs": True,
+        "messages": messages,
+        "logprob_start_len": 0,
+    }
+    if input_ids is not None:
+        payload["input_ids"] = input_ids
+    return payload
+
+
+def _extract_tokens_and_logprobs(choice: dict) -> tuple[list[int], list[float]]:
     logprobs = choice.get("logprobs", {}).get("content")
     assert logprobs, "logprobs content is missing"
 
-    tokens = [item["token"] for item in logprobs]
-    token_ids = [_token_id_from_token_string(tokenizer, token) for token in tokens]
+    token_ids = []
+    for item in logprobs:
+        token_ids.append(item["token_id"])
     values = [item["logprob"] for item in logprobs]
     return token_ids, values
 
 
-def _token_id_from_token_string(tokenizer, token: str) -> int:
-    token_id = tokenizer.convert_tokens_to_ids(token)
-    if token_id is not None:
-        return token_id
+def _extract_input_token_ids(choice: dict) -> list[int]:
+    token_ids = choice.get("input_token_ids", [])
 
-    encoded = tokenizer.encode(token, add_special_tokens=False)
-    assert len(encoded) == 1, f"token_id conversion failed for token: {token!r}"
-    return encoded[0]
+    print(f"input_token_ids: {token_ids}", flush=True)
+    return token_ids
