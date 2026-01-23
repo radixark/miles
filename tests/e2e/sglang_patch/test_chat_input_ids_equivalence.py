@@ -25,19 +25,24 @@ def sglang_server():
 
 @pytest.mark.system
 def test_chat_completions_input_ids_equivalence(sglang_server):
+    """Validate that providing input_ids yields the same completion as raw messages."""
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
     messages = _build_messages()
+    # Build the same prompt two ways: message list vs. explicit input_ids.
     input_ids = _build_input_ids(tokenizer, messages)
 
+    # Request completions for both payload variants.
     response_a = _post_chat(sglang_server.base_url, _build_payload(messages))
     response_b = _post_chat(sglang_server.base_url, _build_payload(messages, input_ids))
 
     choice_a = response_a["choices"][0]
     choice_b = response_b["choices"][0]
 
+    # The generated content and finish reason should match across variants.
     assert choice_a["message"]["content"] == choice_b["message"]["content"]
     assert choice_a["finish_reason"] == choice_b["finish_reason"]
 
+    # Compare token ids and per-token logprobs for exact equivalence.
     token_ids_a, logprobs_a = _extract_tokens_and_logprobs(choice_a, tokenizer)
     token_ids_b, logprobs_b = _extract_tokens_and_logprobs(choice_b, tokenizer)
 
@@ -50,10 +55,12 @@ def test_chat_completions_input_ids_equivalence(sglang_server):
 
 @pytest.mark.system
 def test_chat_completions_input_logprobs_prompt_ids_match(sglang_server):
+    """Ensure input_ids are echoed back in input_token_ids when logprobs are enabled."""
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
     messages = _build_messages()
     input_ids = _build_input_ids(tokenizer, messages)
 
+    # When input_ids are provided, the server should echo them in input_token_ids.
     response = _post_chat(sglang_server.base_url, _build_payload(messages, input_ids))
     choice = response["choices"][0]
 
