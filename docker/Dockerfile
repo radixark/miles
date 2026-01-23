@@ -37,10 +37,8 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 RUN pip install flash-linear-attention==0.4.0
 RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
-# TE does not have wheel on cuda 13 yet, thus need to install from source
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install nvidia-mathdx==26.6.0 && \
-      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.10; \
+      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.10.0"; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
     fi
@@ -56,29 +54,23 @@ RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
 RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
-RUN pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
+RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 
-# This patch from masahi will be included in later Triton releases
-RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
-    (cd /root && git clone -b feat/v350_plus_8045 https://github.com/fzyzcjy/triton.git && cd triton && pip install -r python/requirements.txt && pip install --verbose -e .); \
-  fi
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
-# Temporarily install another sgl-kernel version for GB300 without rebuilding the whole image
-RUN if [ "$ENABLE_CUDA_13" = "1" ]; then \
-    SGL_KERNEL_VERSION=0.3.17.post2 && \
-    python3 -m pip install https://github.com/sgl-project/whl/releases/download/v${SGL_KERNEL_VERSION}/sgl_kernel-${SGL_KERNEL_VERSION}+cu130-cp310-abi3-manylinux2014_$(uname -m).whl --force-reinstall --no-deps; \
-  fi
-
 # https://github.com/pytorch/pytorch/issues/168167
-RUN pip install nvidia-cudnn-cu12==9.16.0.29
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+    pip install nvidia-cudnn-cu13==9.16.0.29; \
+  else \
+    pip install nvidia-cudnn-cu12==9.16.0.29; \
+  fi
 
 # reinstall numpy 1.x for megatron
 RUN pip install "numpy<2"
 
-RUN rm /root/.tmux.conf
+RUN rm -f /root/.tmux.conf
 RUN rm -rf /root/.cache/pip /root/flash-attention
 
 # ====================================== Patches ============================================
