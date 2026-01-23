@@ -17,10 +17,11 @@ from miles.rollout.generate_hub.tool_call_utils import (
 )
 from miles.utils.http_utils import post
 from miles.utils.misc import load_function
-from miles.utils.types import Sample
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    # ----------------------- Setup -------------------------
+
     args = input.args
     sample = input.sample
     tokenizer = input.state.tokenizer
@@ -33,28 +34,23 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tool_specs = load_function(args.generate_tool_specs_path)
     tool_call_parser = create_tool_call_parser(tool_specs, args.generate_tool_call_parser)
 
+    # ----------------------- Initial prompts -------------------------
+
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
 
     sample.loss_mask = []
     sample.tokens = prompt_tokens_ids.copy()
 
     for _turn in range(args.generate_max_turns):
-        # TODO handle separately
-        # Check if total length exceeds max context length
-        total_length = len(sample.tokens)
-        if args.rollout_max_context_len is not None:
-            max_context_length = args.rollout_max_context_len
-        else:
-            max_context_length = args.context_parallel_size * args.max_tokens_per_gpu
-        if total_length >= max_context_length:
-            sample.status = Sample.Status.TRUNCATED
-            break
-
         # ----------------------- Call inference endpoint -------------------------
 
-        payload = compute_request_payload(args, sample.tokens, input.sampling_params)
+        payload, halt_status = compute_request_payload(args, sample.tokens, input.sampling_params)
+        if payload is None:
+            sample.status = halt_status
+            break
+
         output = await post(url, payload)
-        await update_sample_from_response(args, sample, payload=payload, output=output)
+        await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
 
         if output["meta_info"]["finish_reason"]["type"] in ("abort", "length"):
             break

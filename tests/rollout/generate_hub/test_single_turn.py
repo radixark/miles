@@ -49,14 +49,21 @@ def expected_request(
     return result
 
 
+class _Unset:
+    pass
+
+
+_UNSET = _Unset()
+
+
 def expected_sample(
     variant: str,
     *,
     prompt: str = PROMPT,
     response: str = RESPONSE_TEXT,
     response_length: int = 5,
-    tokens: list[int] | None = None,
-    rollout_log_probs: list[float] | None = None,
+    tokens: list[int] | None | _Unset = _UNSET,
+    rollout_log_probs: list[float] | None | _Unset = _UNSET,
     status: Sample.Status = Sample.Status.COMPLETED,
     cached_tokens: int = 0,
     prompt_tokens: int = 7,
@@ -72,7 +79,7 @@ def expected_sample(
         group_index=None,
         index=None,
         prompt=prompt,
-        tokens=tokens if tokens is not None else PROMPT_TOKENS + RESPONSE_TOKENS,
+        tokens=PROMPT_TOKENS + RESPONSE_TOKENS if isinstance(tokens, _Unset) else tokens,
         multimodal_inputs=multimodal_inputs,
         multimodal_train_inputs=multimodal_train_inputs,
         response=response,
@@ -81,7 +88,7 @@ def expected_sample(
         reward=None,
         loss_mask=loss_mask,
         weight_versions=weight_versions or [],
-        rollout_log_probs=rollout_log_probs if rollout_log_probs is not None else RESPONSE_LOG_PROBS,
+        rollout_log_probs=RESPONSE_LOG_PROBS if isinstance(rollout_log_probs, _Unset) else rollout_log_probs,
         rollout_routed_experts=rollout_routed_experts,
         remove_sample=False,
         status=status,
@@ -282,7 +289,32 @@ class TestBoundaryConditions:
 
         result = _run_generate(variant, generation_env, sample, {"max_new_tokens": 10, "temperature": 0.7})
         assert result.requests == []
-        assert result.sample.status == Sample.Status.TRUNCATED
+        assert result.sample == expected_sample(
+            variant,
+            response="x" * 10,
+            response_length=10,
+            tokens=existing_tokens,
+            rollout_log_probs=[],
+            status=Sample.Status.TRUNCATED,
+            prompt_tokens=0,
+        )
+
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"rollout_max_context_len": 5}}], indirect=True)
+    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+        if variant == "old_sglang_rollout":
+            pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+        result = _run_generate(variant, generation_env)
+        assert result.requests == []
+        tokens = PROMPT_TOKENS if variant == "multi_turn_single_sample" else []
+        assert result.sample == expected_sample(
+            variant,
+            response="",
+            response_length=0,
+            tokens=tokens,
+            rollout_log_probs=None,
+            status=Sample.Status.TRUNCATED,
+            prompt_tokens=0,
+        )
 
 
 class TestEmptyResponse:

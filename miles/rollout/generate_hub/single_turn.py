@@ -33,9 +33,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     else:
         input_ids = prompt_ids
 
-    payload = compute_request_payload(
+    payload, halt_status = compute_request_payload(
         args, input_ids=input_ids, sampling_params=sampling_params, multimodal_inputs=sample.multimodal_inputs
     )
+    if payload is None:
+        sample.status = halt_status
+        return GenerateFnOutput(samples=sample)
+
     output = await post(url, payload)
     await update_sample_from_response(args, sample, payload=payload, output=output)
 
