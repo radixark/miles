@@ -97,7 +97,6 @@ def execute():
             train_args=train_args + (f"{fsdp_args}" f"--save-debug-rollout-data {debug_data_path} "),
             num_gpus_per_node=NUM_GPUS,
             megatron_model_type=None,
-            extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
         )
 
         U.execute_train(
@@ -110,7 +109,6 @@ def execute():
             ),
             num_gpus_per_node=NUM_GPUS,
             megatron_model_type=None,
-            extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
         )
 
         U.execute_train(
@@ -137,7 +135,6 @@ def execute():
                 "--debug-train-only "
             ),
             num_gpus_per_node=NUM_GPUS,
-            extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
             megatron_model_type=MODEL_TYPE,
         )
 

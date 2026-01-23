@@ -162,15 +162,11 @@ def _next_actor():
     return actor
 
 
-async def _post(client, url, payload, max_retries=60, action="post"):
+async def _post(client, url, payload, max_retries=60):
     retry_count = 0
     while retry_count < max_retries:
         try:
-            if action in ("delete", "get"):
-                assert not payload
-                response = await getattr(client, action)(url)
-            else:
-                response = await getattr(client, action)(url, json=payload or {})
+            response = await client.post(url, json=payload or {})
             response.raise_for_status()
             try:
                 output = response.json()
@@ -244,8 +240,8 @@ def _init_ray_distributed_post(args):
                 timeout=httpx.Timeout(None),
             )
 
-        async def do_post(self, url, payload, max_retries=60, action="post"):
-            return await _post(self._client, url, payload, max_retries, action=action)
+        async def do_post(self, url, payload, max_retries=60):
+            return await _post(self._client, url, payload, max_retries)
 
     # Create actors per node
     created = []
@@ -269,8 +265,7 @@ def _init_ray_distributed_post(args):
     _post_actors = created
 
 
-# TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
-async def post(url, payload, max_retries=60, action="post"):
+async def post(url, payload, max_retries=60):
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:
@@ -279,16 +274,15 @@ async def post(url, payload, max_retries=60, action="post"):
             actor = _next_actor()
             if actor is not None:
                 # Use a thread to avoid blocking the event loop on ray.get
-                obj_ref = actor.do_post.remote(url, payload, max_retries, action=action)
+                obj_ref = actor.do_post.remote(url, payload, max_retries)
                 return await asyncio.to_thread(ray.get, obj_ref)
         except Exception as e:
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
-    return await _post(_http_client, url, payload, max_retries, action=action)
+    return await _post(_http_client, url, payload, max_retries)
 
 
-# TODO unify w/ `post` to add retries and remote-execution
 async def get(url):
     response = await _http_client.get(url)
     response.raise_for_status()
