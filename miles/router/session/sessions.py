@@ -42,20 +42,21 @@ def setup_session_routes(app, router: "MilesRouter"):
             return JSONResponse(status_code=404, content={"error": "session not found"})
         return Response(status_code=204)
 
-    @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-    async def session_proxy(request: Request, session_id: str, path: str):
+    @app.post("/sessions/{session_id}/v1/chat/completions")
+    async def chat_completions(request: Request, session_id: str):
         body = await request.body()
         request_body = json.loads(body) if body else {}
 
-        if "messages" in request_body and "input_ids" not in request_body:
-            try:
-                prompt_token_ids = manager.calc_prompt_tokens(session_id, request_body["messages"])
-                request_body["input_ids"] = prompt_token_ids
-            except ValueError:
-                return JSONResponse(status_code=404, content={"error": "session not found"})
-            body = json.dumps(request_body).encode("utf-8")
+        if router.args.miles_router_enable_token_input_for_chat_completions:
+            if "messages" in request_body and "input_ids" not in request_body:
+                try:
+                    prompt_token_ids = manager.calc_prompt_tokens(session_id, request_body["messages"])
+                    request_body["input_ids"] = prompt_token_ids
+                except ValueError:
+                    return JSONResponse(status_code=404, content={"error": "session not found"})
+                body = json.dumps(request_body).encode("utf-8")
 
-        result = await router._do_proxy(request, path, body=body)
+        result = await router._do_proxy(request, "/v1/chat/completions", body=body)
 
         response = json.loads(result["response_body"])
 
@@ -70,7 +71,7 @@ def setup_session_routes(app, router: "MilesRouter"):
         record = SessionRecord(
             timestamp=time.time(),
             method=request.method,
-            path=path,
+            path="/v1/chat/completions",
             status_code=result["status_code"],
             request=request_body,
             response=response,
@@ -79,4 +80,9 @@ def setup_session_routes(app, router: "MilesRouter"):
             manager.append_session_record(session_id, record)
         except ValueError:
             return JSONResponse(status_code=404, content={"error": "session not found"})
+        return router._build_proxy_response(result)
+
+    @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+    async def session_proxy(request: Request, session_id: str, path: str):
+        result = await router._do_proxy(request, path)
         return router._build_proxy_response(result)
