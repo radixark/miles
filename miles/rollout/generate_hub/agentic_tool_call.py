@@ -60,6 +60,7 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
             request_kwargs.pop(src, None)
 
     # Notice: Here we force the inference backend to return token information and start from 0
+    # The start len should be 0 to make sure prompt token ids and be correctly returned from SGLang.
     request_kwargs["logprobs"] = True
     request_kwargs["logprob_start_len"] = 0
 

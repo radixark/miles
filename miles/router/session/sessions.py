@@ -25,9 +25,8 @@ def setup_session_routes(app, router: "MilesRouter"):
 
     @app.get("/sessions/{session_id}")
     async def get_session(session_id: str):
-        try:
-            records = manager.get_session_records_by_id(session_id)
-        except ValueError:
+        records = manager.get_session_records_by_id(session_id)
+        if records is None:
             return JSONResponse(status_code=404, content={"error": "session not found"})
         return GetSessionResponse(
             session_id=session_id,
@@ -36,9 +35,8 @@ def setup_session_routes(app, router: "MilesRouter"):
 
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: str):
-        try:
-            manager.delete_session_by_id(session_id)
-        except ValueError:
+        deleted = manager.delete_session_by_id(session_id)
+        if deleted is None:
             return JSONResponse(status_code=404, content={"error": "session not found"})
         return Response(status_code=204)
 
@@ -49,11 +47,10 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         if router.args.miles_router_enable_token_input_for_chat_completions:
             if "messages" in request_body and "input_ids" not in request_body:
-                try:
-                    prompt_token_ids = manager.calc_prompt_tokens(session_id, request_body["messages"])
-                    request_body["input_ids"] = prompt_token_ids
-                except ValueError:
+                prompt_token_ids = manager.calc_prompt_tokens(session_id, request_body["messages"])
+                if prompt_token_ids is None:
                     return JSONResponse(status_code=404, content={"error": "session not found"})
+                request_body["input_ids"] = prompt_token_ids
                 body = json.dumps(request_body).encode("utf-8")
 
         result = await router._do_proxy(request, "v1/chat/completions", body=body)
@@ -76,9 +73,8 @@ def setup_session_routes(app, router: "MilesRouter"):
             request=request_body,
             response=response,
         )
-        try:
-            manager.append_session_record(session_id, record)
-        except ValueError:
+        appended = manager.append_session_record(session_id, record)
+        if appended is None:
             return JSONResponse(status_code=404, content={"error": "session not found"})
         return router._build_proxy_response(result)
 
