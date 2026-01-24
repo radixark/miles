@@ -209,8 +209,9 @@ class Dataset:
                         add_generation_prompt=True,
                         **apply_chat_template_kwargs,
                     )
-                except Exception as e:
+                except Exception:
                     from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+
                     encode_config = dict(thinking_mode="thinking", drop_thinking=True, add_default_bos_token=True)
                     prompt = encode_messages(prompt, **encode_config)
                 ### DSV32
