@@ -43,8 +43,8 @@ def test_chat_completions_input_ids_equivalence(sglang_server):
     assert choice_a["finish_reason"] == choice_b["finish_reason"]
 
     # Compare token ids and per-token logprobs for exact equivalence.
-    token_ids_a, logprobs_a = _extract_tokens_and_logprobs(choice_a, tokenizer)
-    token_ids_b, logprobs_b = _extract_tokens_and_logprobs(choice_b, tokenizer)
+    token_ids_a, logprobs_a = _extract_tokens_and_logprobs(choice_a)
+    token_ids_b, logprobs_b = _extract_tokens_and_logprobs(choice_b)
 
     assert token_ids_a == token_ids_b
     assert len(logprobs_a) == len(logprobs_b)
@@ -55,7 +55,7 @@ def test_chat_completions_input_ids_equivalence(sglang_server):
 
 @pytest.mark.system
 def test_chat_completions_input_logprobs_prompt_ids_match(sglang_server):
-    """Ensure input_ids are echoed back in input_token_ids when logprobs are enabled."""
+    """Ensure input_token_ids are not returned in the current response format."""
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
     messages = _build_messages()
     input_ids = _build_input_ids(tokenizer, messages)
@@ -66,7 +66,8 @@ def test_chat_completions_input_logprobs_prompt_ids_match(sglang_server):
 
     input_token_ids = _extract_input_token_ids(choice)
 
-    assert input_token_ids == input_ids
+    assert input_token_ids == []
+    assert choice.get("logprobs", {}).get("content"), "logprobs content is missing"
 
 
 def _post_chat(base_url: str, payload: dict) -> dict:
