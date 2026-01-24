@@ -25,9 +25,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
     enable_deepep: bool = True
     data_dir: str = "/root"
-    model_dir: str = "/root/.cache/dsv32"
-    model_local_dir: str = "/root/.cache/dsv32"
-    save_dir: str = "/root/.cache/dsv32"
+    model_dir: str = "/root/models"
+    model_local_dir: str = "/root/models"
+    save_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
 
 
@@ -115,11 +115,11 @@ def train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 1 "
+        "--n-samples-per-prompt 1 "
         "--rollout-temperature 0.8 "
         # ------------
-        "--num-steps-per-rollout 4 "
+        "--num-steps-per-rollout 1 "
         "--balance-data "
     )
 
@@ -212,6 +212,8 @@ def train(args: ScriptArgs):
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
+        "--use-miles-router "
+        "--use-rollout-routing-replay "
     )
 
     optimizer_args = (
@@ -246,6 +248,7 @@ def train(args: ScriptArgs):
         f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        "--sglang-disable-cuda-graph "
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
     )
@@ -309,7 +312,6 @@ def train(args: ScriptArgs):
         extra_env_vars={**sglang_extra_env_vars},
         megatron_path=args.megatron_path,
     )
-
 
 if __name__ == "__main__":
     app()
