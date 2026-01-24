@@ -9,13 +9,13 @@
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
-[**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Latest Updates**](#latest-updates) | [**Documentation**](./docs/en/get_started/quick_start.md)
+[**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Latest Updates**](#latest-updates) | [**Documentation**](docs/en/get_started/quick_start.md)
 
 </div>
 
 ---
 
-## 🚀 What is Miles?
+## What is Miles?
 
 **Miles** is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. Built as a powerful fork of **[slime](https://github.com/THUDM/slime)**, Miles bridges the gap between research-grade RL and production-grade reliability by integrating **SGLang** for high-throughput rollout and **Megatron-LM** for scalable training.
 
@@ -23,7 +23,7 @@
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 ### 🌪️ Advanced MoE & Low-Precision Training
 
@@ -42,7 +42,7 @@
 *   **Zero-Copy Weight Sync**: Optimized weight refit via **CUDA IPC zero-copy mapping**, async tensor gathering, and bucketed flattening. Sync time reduced by 50% compared to standard HTTP/RPC transfers.
 *   **Partial Rollout & Over-Sampling**: Handles the "Long-Tail Effect" in multi-turn RL by over-sampling requests and recycling half-finished trajectories to maximize GPU utilization.
 
-## 📊 Model Support & Training Diversity
+## Model Support & Training Diversity
 
 ### 🏗️ Supported Models
 Miles supports a wide range of state-of-the-art architectures, with a special emphasis on **DeepSeek** and mainstream MoE models.
@@ -50,10 +50,10 @@ Miles supports a wide range of state-of-the-art architectures, with a special em
 | Family | Supported Models |
 | :--- | :--- |
 | **DeepSeek** | **R1, V3, V3.2** |
-| **Qwen** | **Qwen 2, 2.5, 3 (including Qwen3-30B-A3B)** |
-| **Llama** | **Llama 3, 3.1, 3.3** |
+| **Qwen** | **Qwen 2, 2.5, 3** |
+| **Llama** | **Llama 3, 3.1, 3.3, 4** |
 | **Gemma** | **Gemma 2, 3, 3N** |
-| **Others** | **Mistral, Mixtral, Phi, and any model supported by SGLang/Megatron** |
+| **Others** | **Mistral, Mixtral, Phi, gpt-oss and any model supported by SGLang and Megatron** |
 
 ### 🧩 Diverse Training Scenarios
 Miles is designed to handle the complexity of modern RL workloads across various dimensions:
@@ -64,7 +64,7 @@ Miles is designed to handle the complexity of modern RL workloads across various
 
 ---
 
-## 📅 Latest Updates
+## Latest Updates
 
 *   **[2026/01]** 💎 **INT4 Quantization-Aware Training (QAT)**: Inspired by the Kimi K2-Thinking report, Miles now features a full-stack INT4 W4A16 QAT pipeline. This allows 1TB-scale models to fit into single-machine VRAM (e.g., NVIDIA H200), doubling rollout efficiency by eliminating cross-node bottlenecks while maintaining BF16-equivalent accuracy. [Blog Coming Soon]
 *   **[2026/01]** 🤖 **Multi-Agent Co-Evolution**: Miles now supports **MrlX**, a novel asynchronous co-evolutionary framework for Multi-Agent RL. Achieve superior performance in complex tasks like Doctor-Patient simulations and DeepResearch pipelines by enabling specialized agents to evolve together symbiotically. [[Link]](https://github.com/AQ-MedAI/MrlX)
@@ -75,7 +75,7 @@ Miles is designed to handle the complexity of modern RL workloads across various
 
 ---
 
-## 🛠️ Quick Start
+## Quick Start
 
 ### Installation
 
@@ -105,11 +105,11 @@ python train.py \
     --n-samples-per-prompt 8
 ```
 
-For comprehensive guides on environment setup and custom reward functions, see the [Quick Start Guide](./docs/en/get_started/quick_start.md).
+For comprehensive guides on environment setup and custom reward functions, see the [Quick Start Guide](docs/en/get_started/quick_start.md).
 
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
 ### ✅ Completed
 - [x] **Unified FP8** E2E Training & Rollout
@@ -130,7 +130,7 @@ For comprehensive guides on environment setup and custom reward functions, see t
 
 ---
 
-## 🤝 Acknowledgements
+## Acknowledgements
 
 Miles is built upon the shoulders of giants in the LLM infrastructure ecosystem:
 *   **[slime](https://github.com/THUDM/slime)**: The core modular architecture and inspiration.
@@ -141,7 +141,7 @@ Special thanks to **InfiXAI Team**, **Ant Group AQ Team**, **SGLang RL Team**, a
 
 ---
 
-## 🔗 Links
+## Links
 
 *   **GitHub**: [https://github.com/radixark/miles](https://github.com/radixark/miles)
 *   **Slime Project**: [https://github.com/THUDM/slime](https://github.com/THUDM/slime)
