@@ -7,7 +7,7 @@
 
 [![GitHub Repo](https://img.shields.io/badge/github-radixark%2Fmiles-black?logo=github)](https://github.com/radixark/miles)
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
-[![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](slack.sglang.ai)
+[![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
 [**Quick Start**](#-quick-start) | [**Technical Highlights**](#-technical-highlights) | [**News**](#-latest-updates) | [**Documentation**](./docs/en/get_started/quick_start.md)
 
