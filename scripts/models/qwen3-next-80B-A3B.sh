@@ -51,8 +51,4 @@ MODEL_ARGS=(
    --moe-router-dtype fp32
    --moe-permute-fusion
    --moe-aux-loss-coeff 0
-
-   # qwen3 specific
-   --attention-output-gate
-   --moe-shared-expert-gate
 )

@@ -1,10 +1,7 @@
 import dataclasses
-import ipaddress
 import logging
 import multiprocessing
-import os
 import time
-from urllib.parse import quote
 
 import requests
 import sglang_router
@@ -30,24 +27,6 @@ def get_base_gpu_id(args, rank):
             num_critic_gpus = args.critic_num_gpus_per_node * args.critic_num_nodes
             start_index = (num_actor_gpus + num_critic_gpus + rank * num_gpus) % args.num_gpus_per_node
     return start_index
-
-
-def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if not cvd:
-        return physical_gpu_id  # no remapping
-    # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
-    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
-    # In a remapped process, valid torch device indices are 0..len(visible)-1
-    if physical_gpu_id in visible:
-        return visible.index(physical_gpu_id)
-    # If we're already getting local IDs, allow them
-    if 0 <= physical_gpu_id < len(visible):
-        return physical_gpu_id
-    raise RuntimeError(
-        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
-        f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
-    )
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
@@ -107,46 +86,33 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
 
 
 class SGLangEngine(RayActor):
-    def __init__(self, args, rank: int, worker_type: str = "regular", base_gpu_id: int | None = None):
+    def __init__(self, args, rank: int, worker_type: str = "regular"):
         self.args = args
         self.rank = rank
         self.worker_type = worker_type
-        self.base_gpu_id = base_gpu_id
 
-    def init(self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None):
+    def init(self, dist_init_addr, port, nccl_port, host=None):
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
 
         host = host or get_host_info()[1]
 
-        def _format_v6_uri(addr):
-            if not addr or addr.startswith("["):
-                return addr
-            try:
-                if ipaddress.ip_address(addr).version == 6:
-                    return f"[{addr}]"
-            except ValueError:
-                pass
-            return addr
+        # support ipv6 address
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
 
-        host = _format_v6_uri(host)
-        ip_part, port_part = dist_init_addr.rsplit(":", 1)
-        dist_init_addr = f"{_format_v6_uri(ip_part)}:{port_part}"
+        # dist_init_addr may be 2605:...:10163, should split port
+        *addr_parts, port_str = dist_init_addr.split(":")
+        ipv6_addr = ":".join(addr_parts)
+        if ":" in ipv6_addr and not ipv6_addr.startswith("["):
+            dist_init_addr = f"[{ipv6_addr}]:{port_str}"
 
         server_args_dict, external_engine_need_check_fields = _compute_server_args(
-            self.args,
-            self.rank,
-            dist_init_addr,
-            nccl_port,
-            host,
-            port,
-            self.worker_type,
-            disaggregation_bootstrap_port,
-            base_gpu_id=self.base_gpu_id,
+            self.args, self.rank, dist_init_addr, nccl_port, host, port, self.worker_type
         )
 
         self.node_rank = server_args_dict["node_rank"]
-        self.server_host = server_args_dict["host"]  # with [] if ipv6
+        self.server_host = server_args_dict["host"]
         self.server_port = server_args_dict["port"]
 
         if self.args.rollout_external:
@@ -191,15 +157,12 @@ class SGLangEngine(RayActor):
                     f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
                 )
             else:
-                payload = {
-                    "url": f"http://{self.server_host}:{self.server_port}",
-                    "worker_type": self.worker_type,
-                }
-                if self.worker_type == "prefill":
-                    payload["bootstrap_port"] = server_args_dict["disaggregation_bootstrap_port"]
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/workers",
-                    json=payload,
+                    json={
+                        "url": f"http://{self.server_host}:{self.server_port}",
+                        "worker_type": self.worker_type,
+                    },
                 )
             response.raise_for_status()
 
@@ -298,31 +261,13 @@ class SGLangEngine(RayActor):
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
             worker_url = f"http://{self.server_host}:{self.server_port}"
-            response = None
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}"
                 )
-            elif parse(sglang_router.__version__) < parse("0.3.0"):
-                worker_url = quote(worker_url, safe="")
-                response = requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}")
             else:
-                try:
-                    all_workers = requests.get(f"http://{self.router_ip}:{self.router_port}/workers").json()["workers"]
-                    for worker in all_workers:
-                        if worker["url"] == worker_url:
-                            worker_id = worker["id"]
-                            response = requests.delete(
-                                f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}"
-                            )
-                            break
-                    else:
-                        logger.warning(f"Worker {worker_url} not found in router during shutdown.")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch workers list or remove worker: {e}")
-
-            if response is not None:
-                response.raise_for_status()
+                response = requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}")
+            response.raise_for_status()
         kill_process_tree(self.process.pid)
 
     def get_weight_version(self):
@@ -401,25 +346,6 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def post_process_weights(
-        self,
-        restore_weights_before_load: bool = False,
-        post_process_quantization: bool = False,
-    ):
-        """
-        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
-        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
-        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
-        """
-
-        return self._make_request(
-            "post_process_weights",
-            {
-                "restore_weights_before_load": restore_weights_before_load,
-                "post_process_quantization": post_process_quantization,
-            },
-        )
-
     def start_profile(
         self,
         # The output directory
@@ -454,33 +380,10 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def simulate_crash(self):
-        if self.args.rollout_external or not getattr(self, "process", None):
-            logger.info(
-                "simulate_crash called but no local engine process exists (rollout_external=%s); skip kill",
-                self.args.rollout_external,
-            )
-            return
 
-        logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
-        self.shutdown()
-
-
-def _compute_server_args(
-    args,
-    rank,
-    dist_init_addr,
-    nccl_port,
-    host,
-    port,
-    worker_type: str = "regular",
-    disaggregation_bootstrap_port: int | None = None,
-    base_gpu_id: int | None = None,
-):
+def _compute_server_args(args, rank, dist_init_addr, nccl_port, host, port, worker_type: str = "regular"):
     nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
-    base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
-    base = _to_local_gpu_id(base)
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
@@ -495,7 +398,7 @@ def _compute_server_args(
         "node_rank": node_rank,
         "dist_init_addr": dist_init_addr,
         "gpu_id_step": 1,
-        "base_gpu_id": base,
+        "base_gpu_id": get_base_gpu_id(args, rank),
         # parallel
         "tp_size": args.rollout_num_gpus_per_engine,
         "dp_size": args.sglang_dp_size,
@@ -503,17 +406,11 @@ def _compute_server_args(
         "ep_size": args.sglang_ep_size,
         # always skip warmup to prevent warmup timeout.
         "skip_server_warmup": True,
-        # always enable draft weights cpu backup so that we run training without mtp weights.
-        "enable_draft_weights_cpu_backup": True,
     }
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
         kwargs["load_balance_method"] = "round_robin"
-        assert (
-            disaggregation_bootstrap_port is not None
-        ), "disaggregation_bootstrap_port must be set for prefill worker"
-        kwargs["disaggregation_bootstrap_port"] = disaggregation_bootstrap_port
     elif worker_type == "decode":
         kwargs["disaggregation_mode"] = "decode"
         kwargs["prefill_round_robin_balance"] = True
@@ -522,12 +419,11 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
+
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
-        if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
-            continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
         unused_keys.discard(attr.name)
@@ -548,6 +444,4 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "nccl_port",
     "dist_init_addr",
     "skip_server_warmup",
-    "enable_draft_weights_cpu_backup",
-    "mem_fraction_static",
 ]

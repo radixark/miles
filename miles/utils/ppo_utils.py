@@ -6,7 +6,6 @@ from argparse import Namespace
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from miles.backends.training_utils.parallel import ParallelState
 
 
 @torch.compile(dynamic=True)
@@ -150,7 +149,6 @@ def compute_policy_loss(
 
 
 def compute_log_probs(logits: torch.Tensor, tokens: torch.Tensor, process_group: dist.ProcessGroup | None):
-    # TODO: when megatron is not installed, fall back to naive implementation
     from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
 
     # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
@@ -217,7 +215,6 @@ def get_reinforce_plus_plus_returns(
     total_lengths: list[int],
     kl_coef: float,
     gamma: float,
-    parallel_state: ParallelState,
 ) -> list[torch.Tensor]:
     """
     Calculates discounted returns for REINFORCE++ (https://arxiv.org/pdf/2501.03262)
@@ -246,9 +243,9 @@ def get_reinforce_plus_plus_returns(
 
         if cp_size > 1:
             # Step 1,2:Gather all chunks and token_offsets from all ranks and reconstruct the full response tensor by splitting and placing each part
-            from miles.backends.training_utils.cp_utils import all_gather_with_cp
+            from miles.backends.megatron_utils.cp_utils import all_gather_with_cp
 
-            full_kl_response = all_gather_with_cp(local_kl_chunk, total_len, response_len, parallel_state)
+            full_kl_response = all_gather_with_cp(local_kl_chunk, total_len, response_len)
         else:
             full_kl_response = local_kl_chunk
 
@@ -270,7 +267,7 @@ def get_reinforce_plus_plus_returns(
         if cp_size > 1:
             from miles.backends.megatron_utils.cp_utils import slice_log_prob_with_cp
 
-            local_returns_chunk = slice_log_prob_with_cp(returns_for_seq, total_len, response_len, parallel_state)
+            local_returns_chunk = slice_log_prob_with_cp(returns_for_seq, total_len, response_len)
         else:
             local_returns_chunk = returns_for_seq
 
@@ -316,7 +313,6 @@ def get_advantages_and_returns(
     rewards: torch.Tensor,
     gamma: float,
     lambd: float,
-    parallel_state: ParallelState,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Function that computes advantages and returns from rewards and values.
     Calculated as in the original PPO paper: https://arxiv.org/abs/1707.06347
@@ -342,10 +338,10 @@ def get_advantages_and_returns(
 
     cp_size = mpu.get_context_parallel_world_size()
     if cp_size > 1:
-        from miles.backends.training_utils.cp_utils import all_gather_with_cp
+        from miles.backends.megatron_utils.cp_utils import all_gather_with_cp
 
-        full_rewards = all_gather_with_cp(rewards, total_len, response_len, parallel_state)
-        full_values = all_gather_with_cp(values, total_len, response_len, parallel_state)
+        full_rewards = all_gather_with_cp(rewards, total_len, response_len)
+        full_values = all_gather_with_cp(values, total_len, response_len)
     else:
         full_rewards = rewards
         full_values = values
@@ -364,8 +360,8 @@ def get_advantages_and_returns(
     if cp_size > 1:
         from miles.backends.megatron_utils.cp_utils import slice_log_prob_with_cp
 
-        advantages = slice_log_prob_with_cp(full_advantages, total_len, response_len, parallel_state)
-        returns = slice_log_prob_with_cp(full_returns, total_len, response_len, parallel_state)
+        advantages = slice_log_prob_with_cp(full_advantages, total_len, response_len)
+        returns = slice_log_prob_with_cp(full_returns, total_len, response_len)
     else:
         advantages = full_advantages
         returns = full_returns
@@ -380,7 +376,6 @@ def get_advantages_and_returns_batch(
     rewards_list,
     gamma,
     lambd,
-    parallel_state: ParallelState,
     chunked: bool = True,
 ):
     """
@@ -407,7 +402,7 @@ def get_advantages_and_returns_batch(
         dtype = values_list[0].dtype
 
         if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import all_gather_with_cp
+            from miles.backends.megatron_utils.cp_utils import all_gather_with_cp
 
             full_values_list = []
             full_rewards_list = []
@@ -415,8 +410,8 @@ def get_advantages_and_returns_batch(
             for total_len, resp_len, v, r in zip(
                 total_lengths, response_lengths, values_list, rewards_list, strict=False
             ):
-                full_v = all_gather_with_cp(v, total_len, resp_len, parallel_state)
-                full_r = all_gather_with_cp(r, total_len, resp_len, parallel_state)
+                full_v = all_gather_with_cp(v, total_len, resp_len)
+                full_r = all_gather_with_cp(r, total_len, resp_len)
                 full_values_list.append(full_v)
                 full_rewards_list.append(full_r)
 
@@ -455,7 +450,7 @@ def get_advantages_and_returns_batch(
         returns_list = []
 
         if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
+            from miles.backends.megatron_utils.cp_utils import slice_log_prob_with_cp
 
             for total_len, resp_len, adv_row, ret_row in zip(
                 total_lengths,
@@ -467,8 +462,8 @@ def get_advantages_and_returns_batch(
                 adv_full = adv_row  # shape = [resp_len_i padded to max_len]
                 ret_full = ret_row
 
-                adv_sliced = slice_log_prob_with_cp(adv_full[:resp_len], total_len, resp_len, parallel_state)
-                ret_sliced = slice_log_prob_with_cp(ret_full[:resp_len], total_len, resp_len, parallel_state)
+                adv_sliced = slice_log_prob_with_cp(adv_full[:resp_len], total_len, resp_len)
+                ret_sliced = slice_log_prob_with_cp(ret_full[:resp_len], total_len, resp_len)
 
                 advantages_list.append(adv_sliced)
                 returns_list.append(ret_sliced)
@@ -649,35 +644,21 @@ def chunked_gae(
     return advantages, returns
 
 
-def calculate_log_probs_and_entropy(logits, tokens, tp_group, with_entropy: bool = False, chunk_size: int = -1):
+def calculate_log_probs_and_entropy(logits, tokens, tp_group, with_entropy: bool = False):
     logits = logits.contiguous()
     # TODO: not sure why we need to clone the logits here.
     # Without the clone, the backward will trigger inplace edit error.
     # It seems that the function with tp will modify the logits inplace.
-    entropy = None
     if logits.size(0) != 0:
-        if chunk_size > 0:
-            num_chunks = (logits.size(0) - 1) // chunk_size + 1
-            tokens_chunks = tokens.chunk(num_chunks, dim=0)
-            logits_chunks = logits.chunk(num_chunks, dim=0)
-            log_probs = []
-            for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.clone(), tokens_chunk, tp_group)
-                log_probs.append(log_prob)
-            log_prob = torch.cat(log_probs, dim=0)
-            if with_entropy:
-                entropys = []
-                for _, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                    entropy = compute_entropy_from_logits(logits_chunk.clone(), tp_group)
-                    entropys.append(entropy)
-                entropy = torch.cat(entropys, dim=0)
-        else:
-            log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
-            if with_entropy:
-                entropy = compute_entropy_from_logits(logits.clone(), tp_group)
+        log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
     else:
         log_prob = logits.new_zeros((0,))
-        if with_entropy:
-            entropy = logits.new_zeros((0,))
 
+    if with_entropy:
+        if logits.size(0) != 0:
+            entropy = compute_entropy_from_logits(logits.clone(), tp_group)
+        else:
+            entropy = logits.new_zeros((0,))
+    else:
+        entropy = None
     return log_prob, entropy

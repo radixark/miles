@@ -12,8 +12,6 @@ source ~/.bashrc
 micromamba create -n miles python=3.12 pip -c conda-forge -y
 micromamba activate miles
 export CUDA_HOME="$CONDA_PREFIX"
-export SGLANG_COMMIT="24c91001cf99ba642be791e099d358f4dfe955f5"
-export MEGATRON_COMMIT="3714d81d418c9f1bca4594fc35f9e8289f652862"
 
 export BASE_DIR=${BASE_DIR:-"/root"}
 cd $BASE_DIR
@@ -29,7 +27,7 @@ pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https
 # install sglang
 git clone https://github.com/sgl-project/sglang.git
 cd sglang
-git checkout ${SGLANG_COMMIT}
+git checkout 5e2cda6158e670e64b926a9985d65826c537ac82
 # Install the python packages
 pip install -e "python[all]"
 
@@ -48,6 +46,10 @@ NVCC_APPEND_FLAGS="--threads 4" \
   --no-build-isolation \
   --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4
 
+git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
+    cd Megatron-LM && git checkout ${MEGATRON_COMMIT} && \
+    pip install -e .
+
 pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
 pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
 pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
@@ -55,8 +57,11 @@ pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
 # megatron
 cd $BASE_DIR
 git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
-  cd Megatron-LM/ && git checkout ${MEGATRON_COMMIT} && \
+  cd Megatron-LM/ && git checkout core_v0.14.0 && \
   pip install -e .
+
+# https://github.com/pytorch/pytorch/issues/168167
+pip install nvidia-cudnn-cu12==9.16.0.29
 
 # install miles and apply patches
 
@@ -72,11 +77,8 @@ else
   pip install -e .
 fi
 
-# https://github.com/pytorch/pytorch/issues/168167
-pip install nvidia-cudnn-cu12==9.16.0.29
-
 # apply patch
 cd $BASE_DIR/sglang
-git apply $MILES_DIR/docker/patch/v0.5.7/sglang.patch
+git apply $MILES_DIR/docker/patch/v0.5.6/sglang.patch
 cd $BASE_DIR/Megatron-LM
-git apply $MILES_DIR/docker/patch/v0.5.7/megatron.patch
+git apply $MILES_DIR/docker/patch/v0.5.6/megatron.patch

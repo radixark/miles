@@ -58,8 +58,6 @@ def compute_statistics(values: list[float]) -> dict[str, float]:
     return {
         "mean": np.mean(values).item(),
         "median": np.median(values).item(),
-        "max": np.max(values).item(),
-        "min": np.min(values).item(),
     }
 
 
@@ -107,7 +105,7 @@ def compression_ratio(
     return ratio, savings_pct
 
 
-def has_repetition(text: str):
+def has_repetition(text: str = None):
     if len(text) > 10000 and compression_ratio(text[-10000:])[0] > 10:
         return True
     else:

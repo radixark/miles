@@ -10,10 +10,9 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+
 from miles.utils.logging_utils import configure_logger
-from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -157,24 +156,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
             parser.add_argument(
-                "--custom-model-provider-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom model provider function. "
-                    "If set, we will use this function instead of the default model provider. "
-                    "The function should have the signature "
-                    "`def custom_model_provider(pre_process: bool, post_process: bool, vp_stage: int | None = None) -> GPTModel`. "
-                    "Example: 'my_module.my_model_provider'."
-                ),
-            )
-            parser.add_argument(
                 "--recompute-loss-function",
                 action="store_true",
                 help="Whether to disable recompute loss function to save memory during training.",
-            )
-            parser.add_argument(
-                "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
 
             return parser
@@ -194,6 +178,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--use-hf-config-for-megatron",
+                action="store_true",
+                help="Whether to use HF config for Megatron core to define the model architecture.",
+            )
+            parser.add_argument(
                 "--model-name",
                 type=str,
                 default=None,
@@ -206,11 +195,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-function-path",
                 type=str,
-                default=(
-                    "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-                    if enable_experimental_rollout_refactor()
-                    else "miles.rollout.sglang_rollout.generate_rollout"
-                ),
+                default="miles.rollout.sglang_rollout.generate_rollout",
                 help=(
                     "Path to the rollout generation function."
                     "You should use this model to create your own custom rollout function, "
@@ -255,7 +240,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-max-response-len",
                 type=int,
-                default=None,
+                default=1024,
                 help=(
                     "The maximum length of the response for the inference engine during rollout. "
                     "It is basically `max_tokens` in sglang."
@@ -345,41 +330,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--mask-offpolicy-in-partial-rollout",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to mask previous generation in partial rollout. "
-                    "If set, only on-policy generated tokens will be used in training"
-                ),
-            )
-            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
                 help=(
                     "Only substitue the `def generate(args, sample, sampling_params)` function within the example rollout function. "
                     "This should be useful if you need to implement some special rollout logic, e.g. multi-turn, function calling."
-                ),
-            )
-            parser.add_argument(
-                "--custom-rollout-log-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "The custom function for logging rollout data. The signature of the functions is: "
-                    "def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool. "
-                    "The return value indicates whether to skip the default logging. "
-                ),
-            )
-            parser.add_argument(
-                "--custom-eval-rollout-log-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "The custom function for logging eval rollout data. "
-                    "def log_eval_rollout_data(rollout_id, args, data, extra_metrics) -> bool. "
-                    "The return value indicates whether to skip the default logging. "
                 ),
             )
 
@@ -461,8 +417,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-health-check-first-wait",
                 type=float,
-                default=0,
-                help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
+                default=300.0,
+                help="Time to wait for the compilation before the actual health check.",
             )
             return parser
 
@@ -535,7 +491,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--tool-key",
                 type=str,
-                default="tools",
+                default=None,
                 help=(
                     "When need to add tools during apply_chat_template, you should provide the key for the tools in the prompt dataset."
                 ),
@@ -657,12 +613,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "When provided, this overrides --eval-prompt-data."
                 ),
             )
-            parser.add_argument(
-                "--skip-eval-before-train",
-                action="store_true",
-                default=False,
-                help="Whether to skip evaluation before training.",
-            )
 
             # The following keys are used to override the rollout version during eval.
             parser.add_argument("--eval-input-key", type=str, default=None, help="JSON dataset key")
@@ -700,26 +650,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--load", type=str, default=None)
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
-            reset_arg(parser, "--async-save", action="store_true")
-            reset_arg(
-                parser,
-                "--no-save-optim",
-                action="store_true",
-                default=False,
-                help=(
-                    "If set, do not save the optimizer state when saving checkpoints. "
-                    "This reduces checkpoint size but disables training resumption from the saved checkpoint."
-                ),
-            )
-            parser.add_argument(
-                "--save-hf",
-                type=str,
-                default=None,
-                help=(
-                    "Path to save the model in HuggingFace format when using Megatron backend. "
-                    "The model will be saved to `save_hf.format(rollout_id)`. "
-                ),
-            )
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
@@ -853,15 +783,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to calculate the mismatch metrics.",
             )
             parser.add_argument(
-                "--reset-optimizer-states",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to reset optimizer states after each rollout. "
-                    "If enabled, the optimizer's history will be cleared at the end of each rollout, which can sometimes help with training stability or fulfill specific experiment requirements."
-                ),
-            )
-            parser.add_argument(
                 "--use-rollout-logprobs",
                 action="store_true",
                 default=False,
@@ -894,12 +815,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
-            )
-            parser.add_argument(
-                "--custom-pg-loss-reducer-function-path",
-                type=str,
-                default=None,
-                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
             )
 
             parser.add_argument(
@@ -952,12 +867,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help="Max connections for MilesRouter HTTP client.",
-            )
-            parser.add_argument(
-                "--miles-router-health-check-failure-threshold",
-                type=int,
-                default=3,
-                help="Number of consecutive failures before marking a worker as unhealthy.",
             )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
@@ -1024,12 +933,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Log statistics of the category of reward, such as why the reward function considers it as failed. "
                     "Specify the key in the reward dict using this argument.",
                 ),
-            )
-            parser.add_argument(
-                "--log-correct-samples",
-                action="store_true",
-                default=False,
-                help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout.",
             )
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
@@ -1189,16 +1092,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Path to the custom function that will post process reward, by default it will be the normalization for grpo. "
                 ),
             )
-            parser.add_argument(
-                "--custom-convert-samples-to-train-data-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom function that converts samples to training data. "
-                    "If set, this function will replace the default _convert_samples_to_train_data. "
-                    "The function should have the signature `def convert_samples_to_train_data(args, samples) -> dict`."
-                ),
-            )
             return parser
 
         def add_rollout_buffer_arguments(parser):
@@ -1252,25 +1145,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--rollout-all-samples-process-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the rollout all samples process function that "
-                    "can process all samples including filtered ones."
-                ),
-            )
-            parser.add_argument(
                 "--disable-rollout-trim-samples",
                 action="store_true",
                 default=False,
                 help="disable trim samples in rollout buffer when converting samples to train data",
-            )
-            parser.add_argument(
-                "--use-dynamic-global-batch-size",
-                action="store_true",
-                default=False,
-                help="enable dynamic global batch size, disable trim samples in rollout buffer when converting samples to train data",
             )
             return parser
 
@@ -1350,20 +1228,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_user_provided_function_arguments(parser):
-            args_partial, _ = parser.parse_known_args()
-            for path in [
-                args_partial.rollout_function_path,
-                args_partial.custom_generate_function_path,
-            ]:
-                try:
-                    fn = load_function(path)
-                except (ModuleNotFoundError, ValueError):
-                    continue
-                if fn is not None and callable(getattr(fn, "add_arguments", None)):
-                    fn.add_arguments(parser)
-            return parser
-
         def add_sglang_tp_size():
             temp_parser = argparse.ArgumentParser(add_help=False)
             temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
@@ -1393,19 +1257,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_mtp_training_arguments(parser)
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
-        parser = add_custom_megatron_plugins_arguments(parser)
-        if enable_experimental_rollout_refactor():
-            parser = add_user_provided_function_arguments(parser)
-        reset_arg(
-            parser,
-            "--custom-config-path",
-            type=str,
-            default=None,
-            help="Path to the YAML config for custom function arguments.",
-        )
-        reset_arg(parser, "--padded-vocab-size", type=int, default=None)
-
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
+
+        # For megatron
+        parser = add_custom_megatron_plugins_arguments(parser)
+        try:
+            parser.add_argument(
+                "--custom-config-path",
+                type=str,
+                default=None,
+                help="Path to the YAML config for custom function arguments.",
+            )
+            parser.add_argument("--padded-vocab-size", type=int, default=None)
+        except argparse.ArgumentError:
+            pass
+
         return parser
 
     return add_miles_arguments
@@ -1419,13 +1285,19 @@ def parse_args(add_custom_arguments=None):
 
     backend = parse_args_train_backend()
     if backend == "megatron":
-        from miles.backends.megatron_utils.arguments import parse_args as megatron_parse_args
-        from miles.backends.megatron_utils.arguments import set_default_megatron_args
-        from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
+        from miles.backends.megatron_utils import parse_args as megatron_parse_args
+        from miles.backends.megatron_utils import set_default_megatron_args
+        from miles.backends.megatron_utils import validate_args as megatron_validate_args
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         if args.hf_checkpoint:
             hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            if args.use_hf_config_for_megatron:
+                from miles.backends.megatron_utils.config_mapping import get_mapper
+
+                megatron_config_from_hf = get_mapper(hf_config.model_type)(hf_config)
+                _validate_and_update_megatron_args_from_hf(args, megatron_config_from_hf.transformer_config)
+                _validate_and_update_megatron_args_from_hf(args, megatron_config_from_hf.gpt_model_args)
             hf_validate_args(args, hf_config)
 
         args.rank = 0
@@ -1437,8 +1309,6 @@ def parse_args(add_custom_arguments=None):
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-
-        assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
     miles_validate_args(args)
 
@@ -1526,23 +1396,18 @@ def miles_validate_args(args):
             )
 
     # TODO: During loading, we need to set the start_rollout_id here.
-    if args.megatron_to_hf_mode == "bridge":
-        if args.load is None:
-            args.load = args.ref_load or args.hf_checkpoint
+    if (
+        args.load is None
+        or not os.path.exists(args.load)
+        or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
+    ):
+        args.no_load_optim = True
+        args.no_load_rng = True
+        args.finetune = True
+        args.load = args.ref_load
+        if args.ref_ckpt_step is not None:
+            args.ckpt_step = args.ref_ckpt_step
         args.start_rollout_id = 0
-    else:
-        if (
-            args.load is None
-            or not os.path.exists(args.load)
-            or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
-        ):
-            args.no_load_optim = True
-            args.no_load_rng = True
-            args.finetune = True
-            args.load = args.ref_load
-            if args.ref_ckpt_step is not None:
-                args.ckpt_step = args.ref_ckpt_step
-            args.start_rollout_id = 0
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
@@ -1657,6 +1522,11 @@ def miles_validate_args(args):
             )
         args.global_batch_size = global_batch_size
 
+    assert args.rollout_batch_size * args.n_samples_per_prompt % args.global_batch_size == 0, (
+        f"rollout_batch_size {args.rollout_batch_size} * n_samples_per_prompt {args.n_samples_per_prompt} "
+        f"is not a multiple of global_batch_size {args.global_batch_size}"
+    )
+
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False
         logger.info("n_samples_per_prompt is set to 1, grpo_std_normalization will be set to False.")
@@ -1697,31 +1567,30 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    if args.rollout_max_context_len is None:
+        logger.info(
+            f"args.rollout_max_context_len is not set. Use args.rollout_max_response_len {args.rollout_max_response_len} as default value."
+        )
+        args.rollout_max_context_len = args.rollout_max_response_len
+
     if args.eval_max_context_len is None:
         logger.info(
             f"args.eval_max_context_len is not set. Use args.rollout_max_context_len {args.rollout_max_context_len} as default value."
         )
         args.eval_max_context_len = args.rollout_max_context_len
 
-    if args.rollout_max_context_len is not None:
-        if args.rollout_max_prompt_len is None:
-            args.rollout_max_prompt_len = args.rollout_max_context_len - 1
-            logger.info(
-                f"args.rollout_max_prompt_len is not set. Use args.rollout_max_context_len - 1 ({args.rollout_max_context_len} - 1) as default value so that there is at least one generated token to compute loss."
-            )
-        assert (
-            args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
-        ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
+    if args.rollout_max_prompt_len is None:
+        logger.info(
+            f"args.rollout_max_prompt_len is not set. Use args.rollout_max_context_len - 1 ({args.rollout_max_context_len} - 1) as default value so that there is at least one generated token to compute loss."
+        )
+        args.rollout_max_prompt_len = args.rollout_max_context_len - 1
 
-    assert not (
-        args.prefill_num_servers is not None and args.rollout_external
-    ), "prefill_num_servers cannot be set when rollout_external is set."
+    assert (
+        args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
+    ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
 
-    if args.qkv_format == "bshd":
-        assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
-        assert (
-            args.use_dynamic_batch_size is False
-        ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+    if args.prefill_num_servers is not None:
+        assert not args.use_fault_tolerance, "fault tolerance is not supported when prefill_num_servers is set."
 
     assert args.qkv_format in [
         "thd",
@@ -1739,10 +1608,6 @@ def hf_validate_args(args, hf_config):
         return x == y
 
     errors = []
-
-    # multimodal models have different config structure
-    if hasattr(hf_config, "text_config"):
-        hf_config = hf_config.text_config
 
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
@@ -1762,3 +1627,12 @@ def hf_validate_args(args, hf_config):
 
     if len(errors) > 0:
         raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
+
+
+def _validate_and_update_megatron_args_from_hf(args, args_from_hf_config: dict[str, Any]):
+    for key, value in args_from_hf_config.items():
+        if hasattr(args, key) and getattr(args, key) != value:
+            raise ValueError(
+                f"Argument {key} is not consistent. {key} in args is {getattr(args, key)}, but from HF config is {value}."
+            )
+        setattr(args, key, value)

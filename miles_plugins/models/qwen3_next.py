@@ -169,14 +169,14 @@ class Attention(HuggingfaceAttention):
         config,
         layer_number: int,
         cp_comm_type: str = "p2p",
-        pg_collection=None,
+        model_comm_pgs=None,
     ):
         super().__init__(
             args,
             config,
             layer_number,
             cp_comm_type,
-            pg_collection,
+            model_comm_pgs,
         )
         if Qwen3NextAttention is None:
             raise ImportError("Please install transformers>=4.35.0 to use Qwen3NextAttention.")
@@ -223,4 +223,5 @@ def get_qwen3_next_spec(args, config, vp_stage):
                 params={"args": args},
             )
             transformer_layer_spec.layer_specs[layer_id] = layer_specs
+        transformer_layer_spec.layer_specs[layer_id].submodules.mlp.submodules.shared_experts.params = {"gate": True}
     return transformer_layer_spec

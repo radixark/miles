@@ -6,8 +6,7 @@ from miles.utils.types import Sample
 
 async def reward_func(args, sample, **kwargs):
     payload = {
-        # "text": sample.prompt + sample.response,
-        "input_ids": sample.tokens,
+        "text": sample.prompt + sample.response,
         "sampling_params": {
             "temperature": 0,
             "max_new_tokens": 0,

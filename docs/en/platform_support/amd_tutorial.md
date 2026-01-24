@@ -50,27 +50,13 @@ docker run --rm -it \
   /bin/bash
 ```
 
-Then, download and install miles:
+Then, download and install miles.
 ```bash
 git clone https://github.com/radixark/miles.git
 cd miles
-pip install -e . --no-deps
+pip install -e .
 ```
 
-Download the model and data:
-
-```bash
-# hf checkpoint
-hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
-
-# train data
-hf download --repo-type dataset zhuzilin/dapo-math-17k \
-  --local-dir /root/dapo-math-17k
-
-# eval data
-hf download --repo-type dataset zhuzilin/aime-2024 \
-  --local-dir /root/aime-2024
-```
 
 ### Checkpoint Format Conversion
 
@@ -87,26 +73,19 @@ MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
 PYTHONPATH=${MEGATRON_LM_PATH} python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
     --no-gradient-accumulation-fusion \
-    --hf-checkpoint /root/Qwen3-4B \
-    --save /root/Qwen3-4B_torch_dist
+    --hf-checkpoint model/Qwen3-4B \
+    --save model/Qwen3-4B_torch_dist
 ```
 
 Note: We implemented a dedicated AMD conversion script that forces a CPU-only conversion workflow using the Gloo backend to bypass hardware-specific issues. A GPU-based script for ROCm is currently in development.
 
-⚠️ If you encounter an issue where miles cannot be found, please run `pip install -e . --no-deps` in the miles directory.
+⚠️ If you encounter an issue where miles cannot be found, please run `pip install -e .` in the miles directory.
 
 
 ### Example: Qwen3-4B
 
 We provide examples to use [Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B), please refer to:
-- [Example: Qwen3-4B Model](https://github.com/radixark/miles/blob/main/scripts/run-qwen3-4B-amd.sh): Just run
-
-```bash
-MILES_DIR=/root \
-MODEL_DIR=/root \
-DATA_DIR=/root \
-bash scripts/run-qwen3-4B-amd.sh
-``` 
+- [Example: Qwen3-4B Model](../../../scripts/run-qwen3-4B-amd.sh): Just run `scripts/run-qwen3-4B-amd.sh`
 
 ⚠️ TODO: ROCM seems to not support `apex` yet. Thus, we need to disable gradient accumulation fusionby adding the `--no-gradient-accumulation-fusion` flag in the training script currently. We will continue investigating how to enable this.
 

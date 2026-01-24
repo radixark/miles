@@ -33,7 +33,6 @@ class UpdateWeight(abc.ABC):
     def __init__(self, args: Namespace, model: torch.nn.Module) -> None:
         self.args = args
         self.model = model
-        self.weight_version = 0
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -44,7 +43,6 @@ class UpdateWeight(abc.ABC):
         pass
 
     def update_weights(self) -> None:
-        self.weight_version += 1
         bucket = []
         bucket_size = 0
         for name, param in self.model.state_dict().items():
@@ -73,10 +71,10 @@ class UpdateWeight(abc.ABC):
 
     def wait_and_update_bucket_weights(self, bucket):
         bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
-        self.update_bucket_weights(bucket, weight_version=self.weight_version)
+        self.update_bucket_weights(bucket)
 
     @abc.abstractmethod
-    def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
+    def update_bucket_weights(self, named_tensors) -> None:
         pass
 
 
@@ -116,7 +114,7 @@ class UpdateWeightFromTensor(UpdateWeight):
                 # Calculate TP rank within this SGLang engine group
                 self.tp_rank = dist.get_rank() - start_rank
 
-    def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
+    def update_bucket_weights(self, named_tensors) -> None:
         monkey_patch_torch_reductions()
         # Use flattened bucket approach similar to Megatron
         logger.info("Using flattened tensor bucket")
@@ -164,7 +162,6 @@ class UpdateWeightFromTensor(UpdateWeight):
                     "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],
                     "load_format": "flattened_bucket",
                     "flush_cache": False,
-                    "weight_version": str(weight_version),
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
@@ -176,6 +173,10 @@ class UpdateWeightFromTensor(UpdateWeight):
 
 class UpdateWeightFromDistributed(UpdateWeight):
     """Broadcast weights via a temporary NCCL group to rollout engines."""
+
+    def __init__(self, args: Namespace, model: torch.nn.Module) -> None:
+        self.args = args
+        self.model = model
 
     def connect_rollout_engines(
         self,
@@ -219,7 +220,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
             )
             ray.get(refs)
 
-    def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
+    def update_bucket_weights(self, named_tensors) -> None:
         """Send names/dtypes/shapes metadata to engines, then broadcast tensors.
 
         Ensures tensors are contiguous; when `world_size == 1`, converts DTensors
@@ -234,7 +235,6 @@ class UpdateWeightFromDistributed(UpdateWeight):
                 dtypes=[param.dtype for _, param in named_tensors],
                 shapes=[param.shape for _, param in named_tensors],
                 group_name=self._group_name,
-                weight_version=str(weight_version),
             )
             for engine in self.rollout_engines
         ]

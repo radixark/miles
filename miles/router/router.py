@@ -1,7 +1,5 @@
 import argparse
-import asyncio
 import json
-import logging
 
 import httpx
 import uvicorn
@@ -9,10 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
-from miles.router.sessions import setup_session_routes
 from miles.utils.misc import load_function
-
-logger = logging.getLogger(__name__)
 
 
 def run_router(args):
@@ -33,14 +28,9 @@ class MilesRouter:
         self.verbose = verbose
 
         self.app = FastAPI()
-        self.app.add_event_handler("startup", self._start_background_health_check)
 
-        # URL -> Active Request Count (load state)
-        self.worker_request_counts: dict[str, int] = {}
-        # URL -> Consecutive Failures
-        self.worker_failure_counts: dict[str, int] = {}
-        # Quarantined workers excluded from routing pool
-        self.dead_workers: set[str] = set()
+        # Worker information
+        self.worker_urls: dict[str, int] = {}
         self.max_weight_version = None
 
         max_connections = getattr(args, "miles_router_max_connections", None)
@@ -70,103 +60,47 @@ class MilesRouter:
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
         self.app.post("/retrieve_from_text")(self.retrieve_from_text)
-        # Session routes - must be registered before catch-all
-        setup_session_routes(self.app, self)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
-    async def _start_background_health_check(self):
-        asyncio.create_task(self._health_check_loop())
-
-    async def _check_worker_health(self, url):
-        """Encapsulated health check logic for better maintainability."""
-        try:
-            response = await self.client.get(f"{url}/health", timeout=5.0)
-            if response.status_code == 200:
-                return url, True
-            logger.debug(f"[miles-router] Worker {url} is unhealthy (Status: {response.status_code})")
-        except Exception as e:
-            logger.debug(f"[miles-router] Worker {url} health check failed: {e}")
-        return url, False
-
-    async def _health_check_loop(self):
-        """Background loop to monitor worker health and adjust routing pool."""
-        interval = self.args.rollout_health_check_interval
-        threshold = self.args.miles_router_health_check_failure_threshold
-
-        while True:
-            try:
-                await asyncio.sleep(interval)
-
-                urls = [u for u in self.worker_request_counts if u not in self.dead_workers]
-                if not urls:
-                    continue
-
-                results = await asyncio.gather(*(self._check_worker_health(url) for url in urls))
-
-                for url, is_healthy in results:
-                    if not is_healthy:
-                        failures = self.worker_failure_counts.get(url, 0) + 1
-                        self.worker_failure_counts[url] = failures
-
-                        if failures >= threshold:
-                            logger.warning(
-                                f"[miles-router] Worker {url} failed {threshold} consecutive health checks. Marking as DEAD."
-                            )
-                            self.dead_workers.add(url)
-                            # TODO (chenyang): Connect back 'dead' workers requires a mechanism to sync
-                            # model versions to avoid off-policy issues from stale weights, since these
-                            # dead workers' parameters may not be refitted.
-                    else:
-                        self.worker_failure_counts[url] = 0
-
-                logger.debug(
-                    f"[miles-router] Health check complete. {len(self.worker_request_counts) - len(self.dead_workers)} workers healthy."
-                )
-
-            except asyncio.CancelledError:
-                logger.warning("[miles-router] Background health check loop is being cancelled.")
-                raise
-            except Exception as e:
-                logger.error(f"[miles-router] Unexpected error in health check loop: {e}", exc_info=True)
-                await asyncio.sleep(5)
+    async def health_check(self, request: Request):
+        # TODO: do health check in background
+        pass
 
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
-        result = await self._do_proxy(request, path)
-        return self._build_proxy_response(result)
-
-    async def _do_proxy(self, request: Request, path: str) -> dict:
-        """Core proxy logic. Returns dict with request_body, response_body, status_code, headers."""
+        # Forward all other paths to SGLang router
         worker_url = self._use_url()
         url = f"{worker_url}/{path}"
 
+        # Get request body and headers
         body = await request.body()
         headers = dict(request.headers)
 
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
+            # Eagerly read content so we can return JSON (not streaming)
             content = await response.aread()
-            return {
-                "request_body": body,
-                "response_body": content,
-                "status_code": response.status_code,
-                "headers": dict(response.headers),
-            }
+            content_type = response.headers.get("content-type", "")
+            try:
+                # Prefer parsing JSON if possible
+                data = json.loads(content)
+                return JSONResponse(
+                    content=data,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                )
+            except Exception:
+                # Fall back to raw body with original content type
+                return Response(
+                    content=content,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=content_type or None,
+                )
+
         finally:
             self._finish_url(worker_url)
-
-    def _build_proxy_response(self, result: dict) -> Response:
-        """Build HTTP response from proxy result."""
-        content = result["response_body"]
-        status_code = result["status_code"]
-        headers = result["headers"]
-        content_type = headers.get("content-type", "")
-        try:
-            data = json.loads(content)
-            return JSONResponse(content=data, status_code=status_code, headers=headers)
-        except Exception:
-            return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
 
     async def add_worker(self, request: Request):
         """Add a new worker to the router.
@@ -190,17 +124,16 @@ class MilesRouter:
             )
 
         # Add if new, keep a simple request count per worker
-        if worker_url not in self.worker_request_counts:
-            self.worker_request_counts[worker_url] = 0
-            self.worker_failure_counts[worker_url] = 0
+        if worker_url not in self.worker_urls:
+            self.worker_urls[worker_url] = 0
             if self.verbose:
                 print(f"[miles-router] Added new worker: {worker_url}")
 
-        return {"status": "success", "worker_urls": self.worker_request_counts}
+        return {"status": "success", "worker_urls": self.worker_urls}
 
     async def list_workers(self, request: Request):
         """List all registered workers"""
-        return {"urls": list(self.worker_request_counts.keys())}
+        return {"urls": list(self.worker_urls.keys())}
 
     async def retrieve_from_text(self, request: Request):
         """Get token information from text input"""
@@ -225,27 +158,19 @@ class MilesRouter:
         return result
 
     def _use_url(self):
-        """Select worker URL with minimal active requests."""
+        """Select a worker URL using round-robin strategy"""
+        assert len(self.worker_urls) > 0, "No workers available"
 
-        if not self.dead_workers:
-            # Healthy path: select from all workers
-            url = min(self.worker_request_counts, key=self.worker_request_counts.get)
-        else:
-            # Degraded path: select from workers not in dead_workers
-            valid_workers = (w for w in self.worker_request_counts if w not in self.dead_workers)
-            try:
-                url = min(valid_workers, key=self.worker_request_counts.get)
-            except ValueError:
-                raise RuntimeError("No healthy workers available in the pool") from None
-
-        self.worker_request_counts[url] += 1
+        # get the url with mininal count
+        url = min(self.worker_urls, key=self.worker_urls.get)
+        self.worker_urls[url] += 1
         return url
 
     def _finish_url(self, url):
         """Mark the request to the given URL as finished"""
-        assert url in self.worker_request_counts, f"URL {url} not recognized"
-        self.worker_request_counts[url] -= 1
-        assert self.worker_request_counts[url] >= 0, f"URL {url} count went negative"
+        assert url in self.worker_urls, f"URL {url} not recognized"
+        self.worker_urls[url] -= 1
+        assert self.worker_urls[url] >= 0, f"URL {url} count went negative"
 
 
 if __name__ == "__main__":

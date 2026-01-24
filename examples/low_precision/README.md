@@ -1,14 +1,14 @@
-# FP8 training examples
+## FP8 training examples
 
-This is an example of FP8 training and FP8 inference. Under FP8 training and inference, it can achieve more efficient inference throughput and lower training-inference mismatch, resulting in more stable training. More details can be found in [this blog](https://lmsys.org/blog/2025-11-25-fp8-rl/).
+This is an example of FP8 training and FP8 inference. Under FP8 training and inference, it can achieve more efficient inference throughput and lower training-inference mismatch, resulting in more stable training.
 
-## Files
+### Files
 
 * `run-qwen3-4b-fp8.sh`: example launch script with Qwen3‑4B in FP8.
 
 * `run-qwen3-30b-a3b-fp8-two-nodes.sh`: example launch script for running Qwen3‑30B‑A3B in FP8 across two nodes.
 
-## Quick Start
+### Quick Start
 
 1. Check if your training script is properly configured. 
 
@@ -44,7 +44,7 @@ Following the above command will launch FP8 training.
 Note that TransformerEngine does not specifically save FP8 quantized weights; the saved torch dist remains in original precision (usually bf16). If you want to evaluate under FP8, you need to convert the checkpoint from `torch_dist` to HuggingFace format, then convert to FP8 HuggingFace format.
 
 
-## Quick Explanation
+### Quick Explanation
 
 Here's a quick explanation of how FP8 training is currently implemented in miles:
 
@@ -57,79 +57,10 @@ Here's a quick explanation of how FP8 training is currently implemented in miles
 4. Save checkpoint: Similar to weight updates, if checkpoints need to be saved from the training engine, they will also be dequantized back to bf16 and saved to `torch_dist` format checkpoints.
 
 
-## TODO
+### TODO
 
 Currently, FP8 is far from being a complete feature and still has the following bugs, for examples:
 
 - FP8 weights (`--fp8-param-gather`) can provide memory savings benefits, but currently FP8 weights must be used with TransformerEngine's FusedAdam, which conflicts with the commonly used Adam CPU offload technique in Megatron-LM.
 
 The miles team will continue to collaborate with the NVIDIA team to contribute more complete FP8 training infrastructure to the community.
-
-***
-
-## INT4 Training Examples
-
-This guide provides examples for INT4 STE (Straight-Through Estimator) training and INT4 inference. Utilizing INT4 inference significantly improves throughput, thereby accelerating the training pipeline (specifically during the rollout generation phase).
-
-### Files
-
-*   `run-moonlight-16B-A3B-int4.sh`: Launch script for **Moonlight-16B-A3B** (INT4) on 4x H200 GPUs.
-*   `run-qwen3‑30B‑A3B-int4.sh`: Launch script for **Qwen3‑30B‑A3B** (INT4) on 8x H200 GPUs.
-*   `run-qwen3-235B-A22B-int4.sh`: Launch script for **Qwen3-235B-A22B** (INT4) on 64x H200 GPUs.
-*   `run-kimi-k2-Thinking-int4.sh`: Launch script for **Kimi-k2-Thinking** (INT4) on 256x H200 GPUs.
-
-### Quick Start
-
-#### 1. Convert HuggingFace Weights to INT4
-First, download the PTQ (Post-Training Quantization) calibration dataset from HuggingFace:
-[https://huggingface.co/datasets/Salesforce/wikitext/tree/main/wikitext-2-raw-v1](https://huggingface.co/datasets/Salesforce/wikitext/tree/main/wikitext-2-raw-v1)
-
-Next, use the `tools/convert_hf_to_hf_int4.py` script to convert BF16 weights to INT4 format. Ensure that the `--hf-checkpoint` parameter points to a directory where `config.json` contains the correct `quantization_config`. miles will automatically utilize INT4 quantization during weight updates.
-
-```bash
-python tools/convert_hf_to_hf_int4.py \
-  --input-dir /path/to/your/original/models \
-  --output-dir /path/to/your/save/models \
-  --data-dir /path/to/your/wikitext
-```
-
-#### 2. Start INT4 Training
-
-You need to configure the specific environment variables for quantization settings.
-
-**Environment Variables:**
-
-*   **`OPEN_TRAINING_INT4_FAKE_QAT_FLAG`**: Enables fake quantization operations for INT4 training.
-*   **`OPEN_TRAINING_INT4_GROUP_SIZE`**: Specifies the block size (group size) for model quantization.
-    *   Set to **128** for `moonlight-16B-A3B` 、 `qwen3-30B-A3B`and `qwen3-235B-A22B-int4`.
-    *   Set to **32** for `kimi-k2-Thinking-int4`.
-
-**Configuration Example:**
-
-```json
-RUNTIME_ENV_JSON="{
-  \"env_vars\": {
-    ...
-    \"OPEN_TRAINING_INT4_FAKE_QAT_FLAG\": \"1\",
-    \"OPEN_TRAINING_INT4_GROUP_SIZE\": \"128\"
-  }
-}"
-```
-
-**Launch Commands:**
-
-```bash
-# Moonlight-16B-A3B Int4 training
-bash examples/low_precision/run-moonlight-16B-A3B-int4.sh
-
-# Qwen3‑30B‑A3B Int4 training
-bash examples/low_precision/run-qwen3‑30B‑A3B-int4.sh
-
-# Qwen3-235B-A22B Int4 training (8 nodes)
-bash examples/low_precision/run-qwen3-235B-A22B-int4.sh
-
-# Kimi-k2-Thinking Int4 training (32 nodes)
-bash examples/low_precision/run-kimi-k2-Thinking-int4.sh
-```
-
-- For multi-node environments, please start the Ray service according to your cluster configuration.

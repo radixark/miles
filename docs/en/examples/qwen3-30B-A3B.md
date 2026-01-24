@@ -3,13 +3,13 @@
 
 ## Environment Preparation
 
-The environment setup, model download, data, and checkpoint conversion are the same as for the Qwen3-4B model. You can refer to [Example: Qwen3-4B Model](qwen3-4B.md), replacing mentions of Qwen3-4B with Qwen3-30B-A3B.
+The environment setup, model download, data, and checkpoint conversion are the same as for the Qwen3-4B model. You can refer to [Example: Qwen3-4B Model](./qwen3-4B.md), replacing mentions of Qwen3-4B with Qwen3-30B-A3B.
 
 To convert huggingface checkpoint to torch_dist, please try:
 
 ```bash
 cd miles/
-pip install -e . --no-deps
+pip install -e .
 source scripts/models/qwen3-30B-A3B.sh
 PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
@@ -29,7 +29,7 @@ bash scripts/run-qwen3-30B-A3B.sh
 
 ### Parameter Introduction
 
-Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.sh](https://github.com/radixark/miles/blob/main/scripts/run-qwen3-30B-A3B.sh) script.
+Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.sh](../../../scripts/run-qwen3-30B-A3B.sh) script.
 
 1.  To support running Qwen3-30B-A3B in an 8xH800 environment, we need to enable Megatron's CPU Adam to save GPU memory. The corresponding configuration is:
 

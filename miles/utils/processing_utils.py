@@ -6,11 +6,6 @@ from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, 
 
 logger = logging.getLogger(__name__)
 
-# Default image patch size for vision-language models
-# Note: Qwen3-VL uses 16, Qwen2.5-VL uses 14
-# Reference: https://github.com/QwenLM/Qwen3-VL/blob/main/qwen-vl-utils/README.md
-DEFAULT_PATCH_SIZE = 14
-
 
 def load_tokenizer(name_or_path: str, **kwargs):
     return AutoTokenizer.from_pretrained(name_or_path, **kwargs)
@@ -30,22 +25,57 @@ def load_processor(name_or_path: str, **kwargs):
     return proc
 
 
-def process_vision_info(prompt, processor):
-    # temporary solution, will write image utils for miles later
-    from qwen_vl_utils import process_vision_info
+def prepare_model_inputs(prompt, tokenizer, processor=None, metadata=None, apply_chat_template_kwargs=None):
+    """Prepare all inputs for model inference.
 
-    if hasattr(processor.image_processor, "patch_size"):
-        image_patch_size = processor.image_processor.patch_size
+    Returns:
+        tuple: (input_ids, extra_info)
+            - input_ids: Token IDs for the prompt
+            - extra_info: Dict with 'images', 'videos', 'multimodal_inputs' (or empty dict)
+    """
+    tools = metadata.get("tools") if metadata else None
+
+    try:
+        text_prompt = tokenizer.apply_chat_template(
+            prompt,
+            tools,
+            tokenize=False,
+            add_generation_prompt=True,
+            **apply_chat_template_kwargs,
+        )
+    except Exception:
+        from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+
+        encode_config = dict(thinking_mode="thinking", drop_thinking=True, add_default_bos_token=True)
+        text_prompt = encode_messages(prompt, **encode_config)
+
+    if not processor:
+        input_ids = tokenizer.encode(text_prompt, add_special_tokens=False)
+        return input_ids, {}
     else:
-        logger.info(f"Using default patch size: {DEFAULT_PATCH_SIZE}")
-        image_patch_size = DEFAULT_PATCH_SIZE
-    images, videos = process_vision_info(prompt, image_patch_size=image_patch_size)
-    multimodal_inputs = {"images": images, "videos": videos}
-    return multimodal_inputs
+        # temporary solution, will write image utils for miles later
+        from qwen_vl_utils import process_vision_info
+
+        images, videos = process_vision_info(prompt)
+
+        # Get input IDs with full prompt (text + multimodal)
+        processor_output = processor(text=text_prompt, images=images, videos=videos)
+        input_ids = processor_output["input_ids"][0]
+
+        # Extract multimodal tokens (exclude text-related tokens)
+        multimodal_inputs = {k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]}
+
+        extra_info = {
+            "images": images,
+            "videos": videos,
+            "multimodal_inputs": multimodal_inputs,
+        }
+
+        return input_ids, extra_info
 
 
 def encode_image_for_rollout_engine(image) -> str:
-    """Load an image from path, ensure RGB, encode as PNG base64 string."""
+    """Load an image from path, ensure RGB, encode as JPEG base64 string."""
     buffer = io.BytesIO()
     if image.mode != "RGB":
         image = image.convert("RGB")
