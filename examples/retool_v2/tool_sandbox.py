@@ -15,8 +15,10 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from typing import Any
-
 import psutil
+
+from miles.rollout.rm_hub.math_dapo_utils import compute_score as math_dapo_compute_score
+from miles.utils.types import Sample
 
 # Configuration for tool execution
 TOOL_CONFIGS = {
@@ -363,3 +365,24 @@ tool_specs = tool_registry.get_tool_specs()
 
 async def execute_tool(name: str, params: dict) -> str:
     return await tool_registry.execute_tool(name, params)
+
+
+# Reward function that encourages tool usage
+async def reward_func(args, sample: Sample, **kwargs):
+    """Tool call reward function using math_dapo, with bonus for tool usage."""
+    solution_str = sample.prompt + sample.response if isinstance(sample.prompt, str) else sample.response
+    ground_truth = sample.label if sample.label is not None else ""
+    num_turns = sample.metadata.get("tool_call_count", 0)
+
+    # use \boxed{...} answer
+    result = math_dapo_compute_score(solution_str, ground_truth, strict_box_verify=True)
+
+    # encourage model to call tools
+    if result["score"] < 0:
+        tool_call_reward = num_turns / 2 * 0.1
+        result["score"] = min(-0.6, result["score"] + tool_call_reward)
+
+    if result["pred"] is None:
+        result["pred"] = ""
+
+    return result

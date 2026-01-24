@@ -32,6 +32,7 @@ CUSTOM_ARGS=(
    --generate-tool-call-parser qwen25
    --generate-max-turns 16
    # --generate-multi-samples
+   --log-multi-turn
 )
 
 CKPT_ARGS=(
@@ -46,15 +47,16 @@ ROLLOUT_ARGS=(
    --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
-   --apply-chat-template
+   # --apply-chat-template
    --rollout-shuffle
+   --custom-rm-path examples.retool_v2.tool_sandbox.reward_func
    --reward-key score
    --num-rollout 3000
-   --rollout-batch-size 32
+   --rollout-batch-size 8
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 1
-   --global-batch-size 256
+   --global-batch-size 64
    --balance-data
 )
 

@@ -58,6 +58,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         output = await post(url, payload)
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
+        sample.metadata["round_number"] = _turn + 1
 
         if args.generate_multi_samples:
             multi_samples.append(deepcopy(sample))
