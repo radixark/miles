@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from typing import TYPE_CHECKING
 
@@ -12,10 +13,17 @@ from miles.router.session.session_types import GetSessionResponse, SessionRecord
 if TYPE_CHECKING:
     from miles.router.router import MilesRouter
 
+logger = logging.getLogger(__name__)
+
 
 def setup_session_routes(app, router: "MilesRouter"):
+    hf_checkpoint = getattr(router.args, "hf_checkpoint", None)
+    if not hf_checkpoint:
+        if getattr(router, "verbose", False):
+            logger.info("[miles-router] Skipping session routes (hf_checkpoint not set).")
+        return
 
-    tokenizer = AutoTokenizer.from_pretrained(router.args.hf_checkpoint, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(hf_checkpoint, trust_remote_code=True)
     manager = NaiveTrajectoryManager(router.args, tokenizer)
 
     @app.post("/sessions")
