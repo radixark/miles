@@ -17,7 +17,7 @@
 
 ## 🚀 What is Miles?
 
-**Miles** is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale MoE (Mixture-of-Experts) models**. Built as a powerful fork of **[slime](https://github.com/THUDM/slime)**, Miles bridges the gap between research-grade RL and production-grade reliability by integrating **SGLang** for high-throughput rollout and **Megatron-LM** for scalable training.
+**Miles** is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. Built as a powerful fork of **[slime](https://github.com/THUDM/slime)**, Miles bridges the gap between research-grade RL and production-grade reliability by integrating **SGLang** for high-throughput rollout and **Megatron-LM** for scalable training.
 
 > *"A journey of a thousand miles begins with a single step."* — Miles focuses on the low-level system optimizations that make large-scale RL stable, efficient, and reproducible.
 
