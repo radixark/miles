@@ -2,14 +2,14 @@
 
 <img src="https://raw.githubusercontent.com/radixark/miles/main/imgs/miles_logo.png" alt="Miles Logo" width="550">
 
-### **Enterprise-Grade Reinforcement Learning for Large-Scale MoE Models**
+### **Enterprise-Grade Reinforcement Learning for Large-Scale Model Training**
 ### **High-Performance Rollout • Low Precision Training • Production Stability**
 
 [![GitHub Repo](https://img.shields.io/badge/github-radixark%2Fmiles-black?logo=github)](https://github.com/radixark/miles)
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
-[![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](slack.sglang.ai)
+[![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
-[**Quick Start**](#-quick-start) | [**Technical Highlights**](#-technical-highlights) | [**News**](#-latest-updates) | [**Documentation**](./docs/en/get_started/quick_start.md)
+[**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Latest Updates**](#latest-updates) | [**Documentation**](./docs/en/get_started/quick_start.md)
 
 </div>
 
@@ -66,7 +66,7 @@ Miles is designed to handle the complexity of modern RL workloads across various
 
 ## 📅 Latest Updates
 
-*   **[2026/01]** 💎 **INT4 Quantization-Aware Training (QAT)**: Inspired by the Kimi K2-Thinking report, Miles now features a full-stack INT4 W4A16 QAT pipeline. This allows 1TB-scale models to fit into single-machine VRAM (e.g., NVIDIA H200), doubling rollout efficiency by eliminating cross-node bottlenecks while maintaining BF16-equivalent accuracy. [Blog Commining Soon]
+*   **[2026/01]** 💎 **INT4 Quantization-Aware Training (QAT)**: Inspired by the Kimi K2-Thinking report, Miles now features a full-stack INT4 W4A16 QAT pipeline. This allows 1TB-scale models to fit into single-machine VRAM (e.g., NVIDIA H200), doubling rollout efficiency by eliminating cross-node bottlenecks while maintaining BF16-equivalent accuracy. [Blog Coming Soon]
 *   **[2026/01]** 🤖 **Multi-Agent Co-Evolution**: Miles now supports **MrlX**, a novel asynchronous co-evolutionary framework for Multi-Agent RL. Achieve superior performance in complex tasks like Doctor-Patient simulations and DeepResearch pipelines by enabling specialized agents to evolve together symbiotically. [[Link]](https://github.com/AQ-MedAI/MrlX)
 *   **[2025/12]** 🔄 **Rollout Routing Replay (R3)**: In collaboration with SGLang, we've launched R3 to solve MoE RL instability. R3 records inference routing decisions and replays them during training, effectively eliminating the "training-inference mismatch" and preventing training collapse in large MoE models like Qwen3 and DeepSeek-V3. [[Paper]](https://arxiv.org/pdf/2510.11370)
 *   **[2025/11]** 🔥 **Unified FP8 Release**: Solves the stability issues in MoE RL by ensuring training and inference use the exact same FP8 quantization logic. [[Blog]](https://lmsys.org/blog/2025-11-25-fp8-rl/)
