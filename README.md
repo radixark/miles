@@ -45,7 +45,7 @@
 ## Model Support & Training Diversity
 
 ### 🏗️ Supported Models
-Miles supports a wide range of state-of-the-art architectures, with a special emphasis on **DeepSeek** and mainstream MoE models.
+Miles supports a wide range of state-of-the-art architectures, with a special emphasis on **DeepSeek, Qwen, Llama** and mainstream models.
 
 | Family | Supported Models |
 | :--- | :--- |
@@ -113,7 +113,6 @@ For comprehensive guides on environment setup and custom reward functions, see t
 
 ### ✅ Completed
 - [x] **Unified FP8** E2E Training & Rollout
-- [x] **Rollout Routing Replay (R3)**: Zero mismatch for MoE RL
 - [x] **INT4 Quantization-Aware Training (QAT)**: Single-machine 1TB models
 - [x] **Speculative RL** with Online SFT
 - [x] **Multi-Agent RL** (Co-evolutionary frameworks like MrlX)
@@ -122,6 +121,7 @@ For comprehensive guides on environment setup and custom reward functions, see t
 - [x] **Aligning SGLang with Megatron in Dense Models**
 
 ### 🏗️ In Progress & Planned
+- [ ] **Rollout Routing Replay (R3)**: Zero mismatch for MoE RL
 - [ ] **Aligning SGLang with Megatron in MoE Models**
 - [ ] **Video/Vision RL** Support
 - [ ] **Elastic Resource Scheduling**: Dynamic scaling of rollout vs. training workers
