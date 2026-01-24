@@ -118,13 +118,12 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
+        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 
 if __name__ == "__main__":
     prepare()
-    os.environ.pop("http_proxy")
-    os.environ.pop("https_proxy")
-    os.environ.pop("HTTP_PROXY")
-    os.environ.pop("HTTPS_PROXY")
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
     execute()
