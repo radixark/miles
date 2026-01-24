@@ -9,11 +9,21 @@
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
-[**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Latest Updates**](#latest-updates) | [**Documentation**](docs/en/get_started/quick_start.md)
+[**Latest Updates**](#latest-updates) | [**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Documentation**](docs/en/get_started/quick_start.md)
 
 </div>
 
 ---
+
+
+## Latest Updates
+
+*   **[2026/01]** 💎 **INT4 Quantization-Aware Training (QAT)**: Inspired by the Kimi K2-Thinking report, Miles now features a full-stack INT4 W4A16 QAT pipeline. This allows 1TB-scale models to fit into single-machine VRAM (e.g., NVIDIA H200), doubling rollout efficiency by eliminating cross-node bottlenecks while maintaining BF16-equivalent accuracy. [Blog Coming Soon]
+*   **[2026/01]** 🤖 **Multi-Agent Co-Evolution**: Miles now supports **MrlX**, a novel asynchronous co-evolutionary framework for Multi-Agent RL. Achieve superior performance in complex tasks like Doctor-Patient simulations and DeepResearch pipelines by enabling specialized agents to evolve together symbiotically. [[Link]](https://github.com/AQ-MedAI/MrlX)
+*   **[2025/12]** 🔄 **Rollout Routing Replay (R3)**: In collaboration with SGLang, we've launched R3 to solve MoE RL instability. R3 records inference routing decisions and replays them during training, effectively eliminating the "training-inference mismatch" and preventing training collapse in large MoE models like Qwen3 and DeepSeek-V3. [[Paper]](https://arxiv.org/pdf/2510.11370)
+*   **[2025/11]** 🔥 **Unified FP8 Release**: Solves the stability issues in MoE RL by ensuring training and inference use the exact same FP8 quantization logic. [[Blog]](https://lmsys.org/blog/2025-11-25-fp8-rl/)
+*   **[2025/11]** ⚡ **Speculative Decoding in RL**: Integrated speculative rollout with online SFT for draft models, achieving massive throughput gains. [[Blog]](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/spec/readme-en.md)
+*   **[2025/11]** 🎉 **Miles Project Launch**: A joint effort by InfiXAI, Ant Group, SGLang RL Team, and the Miles community. [[Announcement]](https://lmsys.org/blog/2025-11-19-miles/)
 
 ## What is Miles?
 
@@ -22,6 +32,7 @@
 > *"A journey of a thousand miles begins with a single step."* — Miles focuses on the low-level system optimizations that make large-scale RL stable, efficient, and reproducible.
 
 ---
+
 
 ## Key Features
 
@@ -64,17 +75,6 @@ Miles is designed to handle the complexity of modern RL workloads across various
 
 ---
 
-## Latest Updates
-
-*   **[2026/01]** 💎 **INT4 Quantization-Aware Training (QAT)**: Inspired by the Kimi K2-Thinking report, Miles now features a full-stack INT4 W4A16 QAT pipeline. This allows 1TB-scale models to fit into single-machine VRAM (e.g., NVIDIA H200), doubling rollout efficiency by eliminating cross-node bottlenecks while maintaining BF16-equivalent accuracy. [Blog Coming Soon]
-*   **[2026/01]** 🤖 **Multi-Agent Co-Evolution**: Miles now supports **MrlX**, a novel asynchronous co-evolutionary framework for Multi-Agent RL. Achieve superior performance in complex tasks like Doctor-Patient simulations and DeepResearch pipelines by enabling specialized agents to evolve together symbiotically. [[Link]](https://github.com/AQ-MedAI/MrlX)
-*   **[2025/12]** 🔄 **Rollout Routing Replay (R3)**: In collaboration with SGLang, we've launched R3 to solve MoE RL instability. R3 records inference routing decisions and replays them during training, effectively eliminating the "training-inference mismatch" and preventing training collapse in large MoE models like Qwen3 and DeepSeek-V3. [[Paper]](https://arxiv.org/pdf/2510.11370)
-*   **[2025/11]** 🔥 **Unified FP8 Release**: Solves the stability issues in MoE RL by ensuring training and inference use the exact same FP8 quantization logic. [[Blog]](https://lmsys.org/blog/2025-11-25-fp8-rl/)
-*   **[2025/11]** ⚡ **Speculative Decoding in RL**: Integrated speculative rollout with online SFT for draft models, achieving massive throughput gains. [[Blog]](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/spec/readme-en.md)
-*   **[2025/11]** 🎉 **Miles Project Launch**: A joint effort by InfiXAI, Ant Group, SGLang RL Team, and the Miles community. [[Announcement]](https://lmsys.org/blog/2025-11-19-miles/)
-
----
-
 ## Quick Start
 
 ### Installation
@@ -112,20 +112,25 @@ For comprehensive guides on environment setup and custom reward functions, see t
 ## Roadmap
 
 ### ✅ Completed
+
 - [x] **Unified FP8** E2E Training & Rollout
 - [x] **INT4 Quantization-Aware Training (QAT)**: Single-machine 1TB models
 - [x] **Speculative RL** with Online SFT
-- [x] **Multi-Agent RL** (Co-evolutionary frameworks like MrlX)
+- [x] **Multi-Agent RL** (Co-evolutionary frameworks like [MrlX](https://github.com/AQ-MedAI/MrlX))
 - [x] **Support DeepSeek V3.2 Models**
 - [x] **VLM Multi-Turn Training**
 - [x] **Aligning SGLang with Megatron in Dense Models**
+- [x] **Rollout Routing Replay (R3)**
 
 ### 🏗️ In Progress & Planned
-- [ ] **Rollout Routing Replay (R3)**: Zero mismatch for MoE RL
+
+- [ ] **Zero mismatch for MoE RL**
 - [ ] **Aligning SGLang with Megatron in MoE Models**
-- [ ] **Video/Vision RL** Support
+- [ ] **Diffusion RL** Support
+- [ ] **Omni RL** Support
+- [ ] **Diffusion LLM RL** Support
 - [ ] **Elastic Resource Scheduling**: Dynamic scaling of rollout vs. training workers
-- [ ] **Multi-Agent ecosystems** beyond LLMs
+
 
 
 ---
