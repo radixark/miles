@@ -19,11 +19,14 @@ def main():
         _execute_print_only(args)
         return
 
-    fd_locks = _try_acquire(args)
+    if args.count == 0 and not args.devices:
+        print("[gpu_lock_exec] Do not acquire GPU since count=0", flush=True)
+    else:
+        fd_locks = _try_acquire(args)
 
-    dev_list = ",".join(str(x.gpu_id) for x in fd_locks)
-    os.environ[args.target_env_name] = dev_list
-    print(f"[gpu_lock_exec] Acquired GPUs: {dev_list}", flush=True)
+        dev_list = ",".join(str(x.gpu_id) for x in fd_locks)
+        os.environ[args.target_env_name] = dev_list
+        print(f"[gpu_lock_exec] Acquired GPUs: {dev_list}", flush=True)
 
     _os_execvp(args)
 
