@@ -1,3 +1,4 @@
+import os
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-0.6B"
@@ -92,9 +93,12 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=2,
         megatron_model_type=None,
+        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 
 if __name__ == "__main__":
     prepare()
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
     execute()

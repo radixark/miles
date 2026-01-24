@@ -120,7 +120,7 @@ RUN git clone https://github.com/ROCm/apex.git \
 
 
 ########################################
-###8. Install slime agent framework deps
+###8. Install miles agent framework deps
 ########################################
 RUN pip install pydra_config==0.0.15
 RUN pip install together
@@ -194,7 +194,7 @@ RUN python -m pip cache purge
 #### APPLY PATCHES (gfx950/MI355) #########
 ###########################################
 
-# Copy patches from slime repo
+# Copy patches from miles repo
 COPY amd_patch/latest /app/patch
 
 # Apply Megatron patches
