@@ -1,8 +1,8 @@
 diff --git a/megatron/core/transformer/dot_product_attention_context_parallel.py b/megatron/core/transformer/dot_product_attention_context_parallel.py
-index 89659a1d7..1def27c69 100644
+index 89659a1d7..c69859a04 100644
 --- a/megatron/core/transformer/dot_product_attention_context_parallel.py
 +++ b/megatron/core/transformer/dot_product_attention_context_parallel.py
-@@ -3,9 +3,12 @@
+@@ -3,107 +3,12 @@
  # Some of this code was adopted from https://github.com/zhuzilin/ring-flash-attention/
  # This source code is licensed under the MIT license found in the
  # LICENSE file in the root directory of this source tree.
@@ -11,14 +11,15 @@ index 89659a1d7..1def27c69 100644
  import torch
 +import torch.distributed as dist
  from torch.nn import functional as F
-+from .tilelang_kernel import sparse_mla_bwd, sparse_mla_fwd_interface
- 
- try:
-     import einops
-@@ -15,96 +18,6 @@ except ImportError:
-     HAVE_EINOPS = False
- 
- 
+-
+-try:
+-    import einops
+-
+-    HAVE_EINOPS = True
+-except ImportError:
+-    HAVE_EINOPS = False
+-
+-
 -@torch.no_grad
 -def eager_attn_fwd(q, k, v, attn_bias, sinks, scale, dropout):
 -    """Forward pass for eager attention"""
@@ -108,11 +109,11 @@ index 89659a1d7..1def27c69 100644
 -    grad_q = einops.rearrange(grad__q, 'b h s d -> b s h d')
 -    return grad_q, grad_k, grad_v, grad_sinks
 -
--
++from .tilelang_kernel import sparse_mla_bwd, sparse_mla_fwd_interface
+ 
  class AllGatherComm:
      """All gather communication with async operations"""
- 
-@@ -131,212 +44,146 @@ class AllGatherComm:
+@@ -131,212 +36,145 @@ class AllGatherComm:
                  handle.wait()
              self.handles = []
  
@@ -146,9 +147,9 @@ index 89659a1d7..1def27c69 100644
          '''Forward pass for the native attention function with context parallelism'''
  
 -        # Assert einops exists
-         if not HAVE_EINOPS:
-             raise ImportError("einops is required by the attention CP but cannot be imported.")
- 
+-        if not HAVE_EINOPS:
+-            raise ImportError("einops is required by the attention CP but cannot be imported.")
+-
 -        # Initialize communication group and constants
          cp_size = 1
          if pg is not None:
@@ -164,8 +165,6 @@ index 89659a1d7..1def27c69 100644
 -        # Initialize KV buffers
 -        kv_buffer = torch.empty(
 -            (2, k.shape[0] * cp_size, k.shape[1], heads_k_stride, k.shape[3]),
-+        s, b, heads, dim = q.shape
-+        skv, _, kv_groups, _ = k.shape
 +
 +        k_buffer = torch.empty(
 +            (k.shape[0] * cp_size, k.shape[1], 1, k.shape[3]),
@@ -232,9 +231,9 @@ index 89659a1d7..1def27c69 100644
 +        k_i = k_buffer
 +
 +        s_, b_, h_, d_ = q_i.shape
-+        q_i = einops.rearrange(q_i, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        q_i = q_i.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = k_i.shape
-+        k_i = einops.rearrange(k_i, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        k_i = k_i.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        zz_indices_i = zz_indices
 +        b_, s_, g_, topk_ = zz_indices_i.shape
 +        zz_indices_i = zz_indices_i.flatten().view(b_, s_, g_, topk_)
@@ -245,7 +244,8 @@ index 89659a1d7..1def27c69 100644
 +        out_i, lse_i = sparse_mla_fwd_interface(q_i.contiguous(), k_i, zz_indices_i, zz_masks_i, dim_v, sm_scale = softmax_scale)
 +
 +        # out: [B, seq_len_shard, h, dim] -> [seq_len, B, h, dim]
-+        out_i = einops.rearrange(out_i, 'b s h d -> s b h d')
++        b_, s_, h_, d_ = out_i.shape
++        out_i = out_i.transpose(0, 1).flatten().view(s_, b_, h_, d_).contiguous()
 +
 +        # outs: [[B, seq_len_shard, nheads // kv_group, dim], ...., [B, seq_len_shard, nheads // kv_group, dim]], repeat kv_group // heads_kv_stride times
 +        # lses: [[B, seq_len_shard, heads_kv_stride], ...., [B, seq_len_shard, heads_kv_stride]], repeat kv_group // heads_kv_stride times
@@ -353,13 +353,13 @@ index 89659a1d7..1def27c69 100644
 +        dk_list = []
 +
 +        s_, b_, h_, d_ = q.shape
-+        q = einops.rearrange(q, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        q = q.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = k_i.shape
-+        k_i = einops.rearrange(k_i, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        k_i = k_i.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = dout.shape
-+        dout = einops.rearrange(dout, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        dout = dout.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        s_, b_, h_, d_ = out.shape
-+        out = einops.rearrange(out, 's b h d -> b s h d').flatten().view(b_, s_, h_, d_)
++        out = out.transpose(0, 1).flatten().view(b_, s_, h_, d_)
 +        b_, s_, h_ = lse.shape
 +        lse = lse.flatten().view(b_, s_, h_)
 +        zz_indices_i = zz_indices
@@ -379,12 +379,16 @@ index 89659a1d7..1def27c69 100644
 +
 +            # TODO: needs casual = True, may not be compatible with zz
 +            dq_i, _dk_i = sparse_mla_bwd(q_i, k_i, out_i, dout_i, zz_indices_i, zz_masks_i, lse_i, dim_v, sm_scale = softmax_scale)
++
++            b_, s_, h_, d_ = dq_i.shape
++            dq_i = dq_i.transpose(0, 1).flatten().view(s_, b_, h_, d_).contiguous()
++            b_, s_, h_, d_ = _dk_i.shape
++            _dk_i = _dk_i.transpose(0, 1).flatten().view(s_, b_, h_, d_).contiguous()
  
 -            # Rearrange gradients to (s, b, h, d)
-             dq_i = einops.rearrange(dq_i, 'b s h d -> s b h d')
-             _dk_i = einops.rearrange(_dk_i, 'b s h d -> s b h d')
+-            dq_i = einops.rearrange(dq_i, 'b s h d -> s b h d')
+-            _dk_i = einops.rearrange(_dk_i, 'b s h d -> s b h d')
 -            _dv_i = einops.rearrange(_dv_i, 'b s h d -> s b h d')
-+
              if pg is None:
                  dk_i = _dk_i
 -                dv_i = _dv_i
@@ -393,13 +397,14 @@ index 89659a1d7..1def27c69 100644
                  dk_i = torch.zeros(
                      (k_i.shape[1] // cp_size, k_i.shape[0], k_i.shape[2], k_i.shape[3]),
                      device=k_i.device,
-                     dtype=k_i.dtype,
-                 )
+-                    dtype=k_i.dtype,
+-                )
 -                dv_i = torch.zeros(
 -                    (v_i.shape[1] // cp_size, v_i.shape[0], v_i.shape[2], v_i.shape[3]),
 -                    device=v_i.device,
 -                    dtype=v_i.dtype,
--                )
++                    dtype=torch.float32,
+                 )
                  torch.distributed.reduce_scatter_tensor(dk_i, _dk_i, group=pg)
 -                torch.distributed.reduce_scatter_tensor(dv_i, _dv_i, group=pg)
  
@@ -416,11 +421,13 @@ index 89659a1d7..1def27c69 100644
 -        dv = torch.cat(dv, dim=2)
 -        return dq, dk, dv, None, None, None, None
 +        dq = torch.cat(dq_list, dim=2)
-+        dk = sum(dk_list)
++        dk_ = torch.cat(dk_list, dim=2)
++        dk = torch.sum(dk_, dim=2, keepdim=True).to(torch.bfloat16)
 +
 +        return dq, dk, None, None, None, None, None, None
+\ No newline at end of file
 diff --git a/megatron/core/transformer/experimental_attention_variant/dsa.py b/megatron/core/transformer/experimental_attention_variant/dsa.py
-index fc994490b..b23d2e9a8 100644
+index 353b31e9b..221e93500 100644
 --- a/megatron/core/transformer/experimental_attention_variant/dsa.py
 +++ b/megatron/core/transformer/experimental_attention_variant/dsa.py
 @@ -6,6 +6,7 @@ from dataclasses import dataclass
@@ -431,16 +438,15 @@ index fc994490b..b23d2e9a8 100644
  
  from megatron.core import parallel_state
  from megatron.core.models.common.embeddings import (
-@@ -21,6 +22,8 @@ from megatron.core.transformer.module import MegatronModule
+@@ -20,6 +21,7 @@ from megatron.core.transformer.enums import AttnMaskType
+ from megatron.core.transformer.module import MegatronModule
  from megatron.core.transformer.spec_utils import ModuleSpec, build_module
  from megatron.core.transformer.transformer_config import TransformerConfig
- 
 +from megatron.core.transformer.dot_product_attention_context_parallel import AllGatherComm, AttentionFuncionWithContextParallel
-+
+ 
  try:
      from fast_hadamard_transform import hadamard_transform
- except ImportError:
-@@ -191,44 +194,72 @@ def compute_dsa_indexer_loss(
+@@ -191,44 +193,72 @@ def compute_dsa_indexer_loss(
      Returns:
          index_loss: KL divergence loss (scalar).
      """
@@ -548,9 +554,9 @@ index fc994490b..b23d2e9a8 100644
      if pg_collection.tp.size() > 1:
          # attention scores are scattered to TP ranks in head dimension.
          torch.distributed.all_reduce(attention_scores.contiguous(), group=pg_collection.tp)
-@@ -252,6 +283,57 @@ def compute_dsa_indexer_loss(
-     return indexer_loss
+@@ -251,6 +281,56 @@ def compute_dsa_indexer_loss(
  
+     return indexer_loss
  
 +def compute_attention_scores_with_cp(q, k, attn_bias, scale, heads_k_stride = 1):
 +    """ 
@@ -602,11 +608,10 @@ index fc994490b..b23d2e9a8 100644
 +
 +    return attns
 +
-+
+ 
  class DSAIndexerLossAutoScaler(torch.autograd.Function):
      """An AutoScaler that triggers the backward pass and scales the grad for indexer loss.
- 
-@@ -496,7 +578,15 @@ class DSAIndexer(MegatronModule):
+@@ -496,7 +576,15 @@ class DSAIndexer(MegatronModule):
          # Compute attention scores: q @ k^T
          # [seqlen_q, batch, index_n_heads, index_head_dim] @ [seqlen_k, batch, index_head_dim]^T
          #   -> [seqlen_q, batch, index_n_heads, seqlen_k]
@@ -623,19 +628,35 @@ index fc994490b..b23d2e9a8 100644
  
          # Apply ReLU activation.
          index_scores = torch.relu(index_scores)
-@@ -606,7 +696,10 @@ class DSAIndexer(MegatronModule):
+@@ -546,14 +634,10 @@ class DSAIndexer(MegatronModule):
+             None, None, x, self.config, packed_seq_params
+         )
+         if self.config.rope_type == "rope":
+-            rotary_pos_emb = self.rotary_pos_emb(
+-                rotary_seq_len, packed_seq_params=packed_seq_params
+-            )
++            rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len, packed_seq_params=packed_seq_params)
+             mscale = 1.0
+         else:
+-            rotary_pos_emb, mscale = self.rotary_pos_emb(
+-                rotary_seq_len, packed_seq_params=packed_seq_params
+-            )
++            rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq_params=packed_seq_params)
+ 
+         # =========================================
+         # Gather inputs if sp is enabled
+@@ -610,7 +694,9 @@ class DSAIndexer(MegatronModule):
          # =========================================
          # Select top-k indices
          # =========================================
 -        topk_k = min(self.index_topk, seqlen)
 +        cp_size = parallel_state.get_context_parallel_world_size()
-+
 +        seqlen_k_global = k.shape[0] * cp_size
 +        topk_k = min(self.index_topk, seqlen_k_global)
          # [batch, seqlen, index_topk]
          topk_indices = index_scores.topk(topk_k, dim=-1)[1]
  
-@@ -687,6 +780,48 @@ def unfused_dsa_fn(query, key, value, topk_indices, softmax_scale):
+@@ -691,6 +777,48 @@ def unfused_dsa_fn(query, key, value, topk_indices, softmax_scale):
      output = output.reshape(sq, b, np * hnv)
      return output
  
@@ -684,7 +705,7 @@ index fc994490b..b23d2e9a8 100644
  
  class DSAttention(MegatronModule):
      """
-@@ -729,7 +864,6 @@ class DSAttention(MegatronModule):
+@@ -733,7 +861,6 @@ class DSAttention(MegatronModule):
          self,
          query: torch.Tensor,
          key: torch.Tensor,
@@ -692,7 +713,7 @@ index fc994490b..b23d2e9a8 100644
          x: torch.Tensor,
          qr: torch.Tensor,
          attention_mask: torch.Tensor,
-@@ -743,7 +877,6 @@ class DSAttention(MegatronModule):
+@@ -747,7 +874,6 @@ class DSAttention(MegatronModule):
          Args:
              query: Query tensor [sq, b, np, hn].
              key: Key tensor [skv, b, np, hn].
@@ -700,7 +721,7 @@ index fc994490b..b23d2e9a8 100644
              x: Original hidden states [sq, b, hidden_size].
              qr: Low-rank query representation [sq, b, q_lora_rank].
              attention_mask: Attention mask tensor [b, 1, sq, sk].
-@@ -754,9 +887,11 @@ class DSAttention(MegatronModule):
+@@ -758,9 +884,11 @@ class DSAttention(MegatronModule):
          Returns:
              output: Output tensor [sq, b, hidden_size]
          """
@@ -715,7 +736,7 @@ index fc994490b..b23d2e9a8 100644
  
          # Detach x and qr to prevent gradients of indexer from flowing back to the main model.
          x = x.detach()
-@@ -768,18 +903,17 @@ class DSAttention(MegatronModule):
+@@ -772,18 +900,17 @@ class DSAttention(MegatronModule):
              # Generate upper triangular mask with -inf above diagonal, 0 elsewhere
              # torch.triu with diagonal=1 creates upper triangular matrix (excluding main diagonal)
              # float_mask [sq, skv]
@@ -734,7 +755,7 @@ index fc994490b..b23d2e9a8 100644
 -            float_mask = torch.zeros_like(mask, dtype=torch.float32).masked_fill(
 -                mask, float('-inf')
 -            )
-+
++            
 +        # float_mask [b, sq, skv]
 +        float_mask = torch.zeros_like(mask, dtype=torch.float32).masked_fill(
 +            mask, float('-inf')
@@ -742,7 +763,7 @@ index fc994490b..b23d2e9a8 100644
  
          # ===================================
          # Get index scores and top-k indices
-@@ -791,32 +925,6 @@ class DSAttention(MegatronModule):
+@@ -795,32 +922,6 @@ class DSAttention(MegatronModule):
          # ===================================
          # Run sparse attention kernel
          # ===================================
@@ -773,30 +794,52 @@ index fc994490b..b23d2e9a8 100644
 -                )
 -            # Attach loss to output
 -            output = DSAIndexerLossAutoScaler.apply(output, indexer_loss)
+-
 +        output = unfused_dsa_fn_with_cp(query, key, dim_v, topk_indices, self.softmax_scale)
- 
++        
          return output
+diff --git a/megatron/core/transformer/moe/moe_utils.py b/megatron/core/transformer/moe/moe_utils.py
+index 28cff06f5..befb5c124 100644
+--- a/megatron/core/transformer/moe/moe_utils.py
++++ b/megatron/core/transformer/moe/moe_utils.py
+@@ -586,6 +586,9 @@ def topk_routing_with_score_function(
+             )
+         else:
+             return torch.topk(scores, k=topk, dim=1)
++        
++    from miles.utils.routing_replay import get_routing_replay_compute_topk
++    compute_topk = get_routing_replay_compute_topk(compute_topk)
+ 
+     if score_function == "softmax":
+         if use_pre_softmax:
+diff --git a/megatron/core/transformer/moe/router.py b/megatron/core/transformer/moe/router.py
+index 16fc9d9af..3c50a9516 100644
+--- a/megatron/core/transformer/moe/router.py
++++ b/megatron/core/transformer/moe/router.py
+@@ -200,6 +200,9 @@ class TopKRouter(Router):
+         else:
+             self.global_tokens_per_expert = None
+             self.ga_steps = None
++        
++        from miles.utils.routing_replay import register_routing_replay
++        register_routing_replay(self)
+ 
+     def _maintain_float32_expert_bias(self):
+         """
 diff --git a/megatron/core/transformer/multi_latent_attention.py b/megatron/core/transformer/multi_latent_attention.py
-index 3953d933b..7d030ad02 100644
+index ed90fdffa..7a7597d66 100644
 --- a/megatron/core/transformer/multi_latent_attention.py
 +++ b/megatron/core/transformer/multi_latent_attention.py
-@@ -6,6 +6,7 @@ from dataclasses import dataclass
- from typing import NoReturn, Optional, Union
+@@ -15,7 +15,7 @@ except ImportError:
+     HAVE_EINOPS = False
  
- import torch
-+import torch.nn.functional as F
  
- try:
-     from einops import rearrange
-@@ -167,6 +168,7 @@ class MultiLatentAttention(Attention):
-         )
- 
-         # Output.
-+        # SP_Reduce scatter + TP_Row_par
-         self.linear_proj = build_module(
-             submodules.linear_proj,
-             self.query_projection_size,
-@@ -311,7 +313,6 @@ class MultiLatentAttention(Attention):
+-from megatron.core import tensor_parallel
++from megatron.core import parallel_state, tensor_parallel
+ from megatron.core.models.common.embeddings import (
+     RotaryEmbedding,
+     YarnRotaryEmbedding,
+@@ -312,7 +312,6 @@ class MultiLatentAttention(Attention):
                          core_attn_out = self.core_attention(
                              query,
                              key,
@@ -804,7 +847,7 @@ index 3953d933b..7d030ad02 100644
                              x=hidden_states,
                              qr=q_compressed,
                              attention_mask=attention_mask,
-@@ -370,6 +371,19 @@ class MultiLatentAttention(Attention):
+@@ -371,6 +370,19 @@ class MultiLatentAttention(Attention):
              self.qkv_up_checkpoint.discard_output_and_register_recompute(core_attn_out)
              self.qkv_up_checkpoint = None
  
@@ -824,27 +867,48 @@ index 3953d933b..7d030ad02 100644
          # =================
          # Output. [sq, b, h]
          # =================
-@@ -384,7 +398,6 @@ class MultiLatentAttention(Attention):
+@@ -555,11 +567,7 @@ class MLASelfAttention(MultiLatentAttention):
+         assert (
+             hidden_states.ndim == 3
+         ), f"hidden_states should be 3D, [s, b, n*h], got {hidden_states.ndim}D"
+-        if packed_seq_params is not None:
+-            assert (
+-                packed_seq_params.local_cp_size is None
+-            ), "hybrid_context_parallel is not supported with MLA yet and is planned for future. \
+-            Please disable hybrid_context_parallel."
++        
  
-         return output, bias
+         inference_context = deprecate_inference_params(inference_context, inference_params)
  
--
- class MLASelfAttention(MultiLatentAttention):
-     """MLA Self-attention layer class
- 
-@@ -753,7 +766,6 @@ class MLASelfAttention(MultiLatentAttention):
-             # [num_tokens, qk_pos_emb_head_dim] -> [num_tokens, 1, qk_pos_emb_head_dim]
-             k_pos_emb = torch.unsqueeze(k_pos_emb, -2)
- 
--            # todo add assert about fusions and caching
+@@ -576,9 +584,7 @@ class MLASelfAttention(MultiLatentAttention):
+         rotary_pos_sin = None
+         packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
+         if self.config.rope_type == "rope":
+-            rotary_pos_emb = self.rotary_pos_emb(
+-                rotary_seq_len, packed_seq_params=packed_seq_params
+-            )
++            rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len, packed_seq_params=packed_seq_params)
+         else:
              if self.config.apply_rope_fusion:
-                 cp_rank = self.pg_collection.cp.rank()
-                 cp_size = self.pg_collection.cp.size()
-@@ -844,6 +856,98 @@ class MLASelfAttention(MultiLatentAttention):
-             value = value.contiguous()
+                 rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb.get_cached_cos_sin(
+@@ -591,11 +597,9 @@ class MLASelfAttention(MultiLatentAttention):
+                     and fused_apply_mla_rope_for_kv is not None
+                 ), "Fused MLA RoPE apply is not imported successfully"
+             else:
+-                rotary_pos_emb, mscale = self.rotary_pos_emb(
+-                    rotary_seq_len, packed_seq_params=packed_seq_params
+-                )
++                rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq_params=packed_seq_params)
+ 
+-        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
++        if packed_seq_params is not None:
+             if packed_seq_params.cu_seqlens_q_padded is not None:
+                 cu_seqlens_q = packed_seq_params.cu_seqlens_q_padded
+             else:
+@@ -867,6 +871,98 @@ class MLASelfAttention(MultiLatentAttention):
  
              return query, key, value
-+        
+ 
 +        def mla_absorb(q_compressed, kv_compressed, k_pos_emb, rotary_pos_emb):
 +            if self.config.q_lora_rank is not None:
 +                # q_compressed: [num_tokens, q_lora_rank]
@@ -889,7 +953,7 @@ index 3953d933b..7d030ad02 100644
 +
 +                # TODO: Does it match ZZ? SP does not need but CP needs
 +                if self.config.sequence_parallel:
-+                    kv_compressed = gather_from_sequence_parallel_region(kv_compressed)
++                    kv_compressed = gather_from_sequence_parallel_region(kv_compressed, group=self.tp_group)
 +
 +                # kv_compressed: [num_tokens, kv_lora_rank]
 +                if kv_compressed.ndim == 3:  # [s, b, kv_lora_rank]
@@ -936,10 +1000,11 @@ index 3953d933b..7d030ad02 100644
 +            key = key.contiguous()
 +
 +            return query, key
- 
++            
          if self.recompute_up_proj:
              quantization = self.config.fp8 or self.config.fp4
-@@ -860,9 +964,10 @@ class MLASelfAttention(MultiLatentAttention):
+             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput(fp8=quantization)
+@@ -882,9 +978,10 @@ class MLASelfAttention(MultiLatentAttention):
                      q_compressed, kv_compressed, k_pos_emb, rotary_pos_emb
                  )
              else:
@@ -951,13 +1016,11 @@ index 3953d933b..7d030ad02 100644
  
          if return_compressed_tensors:
              return query, key, value, q_compressed, kv_compressed
-@@ -1104,5 +1209,27 @@ class MLASelfAttention(MultiLatentAttention):
-             * (self.config.qk_head_dim + self.config.v_head_dim),
-             -1,
+@@ -1128,3 +1225,26 @@ class MLASelfAttention(MultiLatentAttention):
          )
--
+ 
          return weight_kv_updated
-+    
++
 +    @property
 +    def up_k_weight_(self):
 +        # linear_kv_up_proj.weight: [num_heads_per_partition * (qk_head_dim + v_head_dim), kv_lora_rank]
@@ -980,9 +1043,10 @@ index 3953d933b..7d030ad02 100644
 +        )
 +        # [num_heads_per_partition, v_head_dim, kv_lora_rank]
 +        return weight_reshaped[:, self.config.qk_head_dim:, :]
+\ No newline at end of file
 diff --git a/megatron/core/transformer/tilelang_kernel/__init__.py b/megatron/core/transformer/tilelang_kernel/__init__.py
 new file mode 100644
-index 000000000..d8f2425f0
+index 000000000..c63794256
 --- /dev/null
 +++ b/megatron/core/transformer/tilelang_kernel/__init__.py
 @@ -0,0 +1,10 @@
@@ -996,12 +1060,13 @@ index 000000000..d8f2425f0
 +    "sparse_mla_fwd_interface",
 +    "sparse_mla_bwd",
 +]
+\ No newline at end of file
 diff --git a/megatron/core/transformer/tilelang_kernel/sparse_mla_bwd.py b/megatron/core/transformer/tilelang_kernel/sparse_mla_bwd.py
 new file mode 100644
-index 000000000..b8ea416dd
+index 000000000..83a259efa
 --- /dev/null
 +++ b/megatron/core/transformer/tilelang_kernel/sparse_mla_bwd.py
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,272 @@
 +# ruff: noqa
 +import tilelang
 +from tilelang import language as T
@@ -1267,22 +1332,20 @@ index 000000000..b8ea416dd
 +    # Get kernels
 +    preprocess_kernel = preprocess(B, S, H, D)
 +    bwd_kernel = bwd(B, S, S_kv, H, D, D_tail, topk, kv_group, sm_scale, is_casual)
-+    postprocess_kernel = postprocess(B, S_kv, D, D_tail, kv_group)
 +
 +    if delta is None:
 +        delta = preprocess_kernel(o, do)
 +    dkv = torch.zeros_like(kv, dtype=torch.float32)
 +    dq = bwd_kernel(q, kv, do, indices, masks, lse, delta, dkv)
-+    dkv = postprocess_kernel(dkv)
 +
 +    return dq, dkv
 \ No newline at end of file
 diff --git a/megatron/core/transformer/tilelang_kernel/sparse_mla_fwd.py b/megatron/core/transformer/tilelang_kernel/sparse_mla_fwd.py
 new file mode 100644
-index 000000000..d338a2fa6
+index 000000000..e247038de
 --- /dev/null
 +++ b/megatron/core/transformer/tilelang_kernel/sparse_mla_fwd.py
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,191 @@
 +# ruff: noqa
 +import torch
 +import tilelang
@@ -1403,6 +1466,7 @@ index 000000000..d338a2fa6
 +            for i_i in T.Pipelined(NI, num_stages=num_stages):
 +                for bi_i in T.Parallel(BI):
 +                    mask[bi_i] = Masks[b_i, s_i, g_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i]]
++
 +                for bi_i, d_i in T.Parallel(BI, D):
 +                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
 +                for bi_i, d_i in T.Parallel(BI, D_tail):
@@ -1475,10 +1539,10 @@ index 000000000..d338a2fa6
 +    return out, lse
 \ No newline at end of file
 diff --git a/megatron/core/transformer/transformer_config.py b/megatron/core/transformer/transformer_config.py
-index a3a167549..98391fda6 100644
+index e2705bd9f..29a0ff9e0 100644
 --- a/megatron/core/transformer/transformer_config.py
 +++ b/megatron/core/transformer/transformer_config.py
-@@ -918,9 +918,9 @@ class TransformerConfig(ModelParallelConfig):
+@@ -935,11 +935,10 @@ class TransformerConfig(ModelParallelConfig):
                      f" but got {self.context_parallel_size=}."
                  )
          elif self.experimental_attention_variant == "dsa":
@@ -1489,5 +1553,7 @@ index a3a167549..98391fda6 100644
 +            #     self.context_parallel_size == 1
 +            # ), "Currently context parallelism is not supported by DSAttention!"
              assert not self.apply_rope_fusion, "RoPE fusion is not supported for DSAttention"
- 
+-
          if self.fp8:
+             # cannot support first last layer bf16 with delayed scaling
+             if self.first_last_layers_bf16 and self.fp8_recipe == Fp8Recipe.delayed:
