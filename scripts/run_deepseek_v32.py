@@ -313,5 +313,6 @@ def train(args: ScriptArgs):
         megatron_path=args.megatron_path,
     )
 
+
 if __name__ == "__main__":
     app()
