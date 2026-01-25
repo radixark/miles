@@ -68,11 +68,15 @@ def prepare_spmd(args: ScriptArgs):
             "--decoder-last-pipeline-num-layers 6 "
         )
 
+    num_gpus_for_convert = args.num_gpus_per_node
+    if args.model_name == "DeepSeek-V4-285B-5layer":
+        num_gpus_for_convert = min(num_gpus_for_convert, 5)
+
     U.convert_checkpoint(
         model_name=args.model_name,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.num_gpus_per_node,
+        num_gpus_per_node=num_gpus_for_convert,
         multinode=True if args.num_nodes > 1 else False,
         extra_args=extra_args,
         dir_dst=f"{args.model_dir}",
