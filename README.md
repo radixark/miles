@@ -1,5 +1,61 @@
 ## Sunrise Env
+
+### 1. The Sunrise Model
+
+```bash
+docker run --name miles_tom \
+  --gpus all --ipc=host --shm-size=16g \
+  --privileged \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  --ulimit nofile=65536:65536 \
+  -v /data:/data \
+  -v /data/tom:/host_home \
+  -v /data/tom/models:/root/models \
+  -v /data/tom/datasets:/root/datasets \
+  -e WANDB_KEY="287b33ca363437decf04a21e95579694c6e301ea" \
+  -d radixark/miles:latest \
+  sleep infinity
+
+docker exec -it miles_tom /bin/zsh
+
+# Install miles
+(cd /host_home/primary_synced/miles-sunrise && pip install -e .)
+
+# Install megatron
+(cd /host_home/primary_synced/megatron-sunrise && pip install -e .)
+
+# Install tilelang
+apt remove -y libgtest-dev
+pip install z3-solver cython
+
+(cd /tmp && rm -rf tilelang && git clone https://github.com/tile-ai/tilelang.git && cd tilelang && pip install -e . -v --no-build-isolation)
+
+# install fast-hamadard-transform
+(cd /tmp && rm -rf fast-hadamard-transform && git clone https://github.com/Dao-AILab/fast-hadamard-transform.git && cd fast-hadamard-transform && pip install -e . -v --no-build-isolation)
+
+# apply transformers patch (because HF does not support new deepseek models)
+(cd /tmp && git clone https://github.com/huggingface/transformers.git && cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc &&  git apply /host_home/primary_synced/miles-sunrise/docker/deepseekv4/transformers.patch && pip install -e .)
+
+pip install --no-deps --force-reinstall -e /host_home/primary_synced/NightFall/python
+
+################################################
+
+cd /host_home/primary_synced/miles-sunrise
+
+# run once
+python scripts/run_deepseek_v4.py prepare-single --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
+
+# run once
+python scripts/run_deepseek_v4.py prepare-spmd --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
+
+# launch training
+python scripts/run_deepseek_v4.py train --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
+```
+
+### 2. DeepSeek V3.2
+
 DeepSeek v3.2 environment, tested on B200
+
 ```bash
 docker run --name miles_yueming \
   --gpus all --ipc=host --shm-size=16g \
