@@ -5,16 +5,13 @@
         {'test_file': 'fast', 'num_gpus': 0},
       ],
     },
-    'e2e-test-short': {
-      'label': 'run-ci-short',
+    'unit-test': {
+      'trigger': 'approval',
       'tests': [
-        {'test_file': 'test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 4},
-        {'test_file': 'test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 4},
-        {'test_file': 'test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 2},
       ],
     },
     'e2e-test-fsdp': {
-      'label': 'run-ci-fsdp',
+      'trigger': 'approval',
       'tests': [
         {'test_file': 'test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 2},
         {'test_file': 'test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
@@ -23,7 +20,7 @@
       ],
     },
     'e2e-test-megatron': {
-      'label': 'run-ci-megatron',
+      'trigger': 'approval',
       'tests': [
         {'test_file': 'test_quick_start_glm4_9B.py', 'num_gpus': 8},
         {'test_file': 'test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1'},
@@ -54,6 +51,14 @@
       'tests': [
         {'test_file': 'test_qwen2.5_0.5B_gsm8k.py', 'num_gpus': 2},
         {'test_file': 'test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 2},
+      ],
+    },
+    'e2e-test-short': {
+      'label': 'run-ci-short',
+      'tests': [
+        {'test_file': 'test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 4},
+        {'test_file': 'test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 4},
+        {'test_file': 'test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 2},
       ],
     },
     'e2e-test-image': {
@@ -104,7 +109,15 @@ concurrency:
 jobs:
 <% for job_name, config in jobs.items() %>
   << job_name >>:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request<% if config.label %> && contains(github.event.pull_request.labels.*.name, '<< config.label >>')<% endif %>)
+    if: >-
+      (github.event_name == 'workflow_dispatch')
+      <% if config.trigger == 'approval' %>
+      || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
+      <% elif config.label %>
+      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
+      <% else %>
+      || (github.event.pull_request)
+      <% endif %>
     runs-on: self-hosted
     container:
       image: << config.image if config.image else 'radixark/miles:latest' >>
@@ -119,9 +132,6 @@ jobs:
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
     strategy:
       fail-fast: false
       matrix:
@@ -140,18 +150,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
 
       - name: Install
         shell: bash
