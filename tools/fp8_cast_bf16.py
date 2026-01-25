@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
-from python.sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
+from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
 
 
 @triton.jit
