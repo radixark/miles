@@ -17,8 +17,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
-    model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B-5layer"
-    megatron_model_type: Literal["deepseek-v4-285B", "deepseek-v4-285B-5layer"] = "deepseek-v4-285B-5layer"
+    model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
+    megatron_model_type: Literal["deepseek-v4-285B", "deepseek-v4-285B-5layer"] = "deepseek-v4-285B"
     num_gpus_per_node: int = 8
     enable_eval: bool = True
     extra_args: str = ""
