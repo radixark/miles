@@ -1,3 +1,48 @@
+## Sunrise Env
+DeepSeek v3.2 environment, tested on B200
+```bash
+# Install miles
+cd miles-sunrise && git checkout sunrise_dev_rebased
+pip install -e .
+
+# Install megatron
+cd miles-megatron
+pip install -e .
+
+# Install tilelang
+apt remove libgtest-dev
+pip install z3-solver
+pip install cython
+
+git clone https://github.com/tile-ai/tilelang.git
+pip install -e . -v --no-build-isolation
+
+# install fast-hamadard-transform
+git clone https://github.com/Dao-AILab/fast-hadamard-transform.git
+pip install -e . -v --no-build-isolation
+
+# apply transformers patch (because HF does not support new deepseek models)
+git clone https://github.com/huggingface/transformers.git
+cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc
+git apply ../miles-sunrise/docker/deepseekv32/transformers.patch
+pip install -e .
+
+```
+
+#### Run deepseek v4.2 (5 layers) as an example
+```bash
+# run once
+hf download Pinaster/DeepSeek-V3.2-5layer --local-dir /root/models/DeepSeek-V3.2-5layer
+# run once
+python scripts/run_deepseek_v32.py prepare-single --model-name DeepSeek-V3.2-5layer --megatron-model-type deepseek-v32-5layer
+# run once
+python scripts/run_deepseek_v32.py prepare-spmd --model-name DeepSeek-V3.2-5layer --megatron-model-type deepseek-v32-5layer
+
+# launch training
+python scripts/run_deepseek_v32.py train --model-name DeepSeek-V3.2-5layer --megatron-model-type deepseek-v32-5layer
+```
+
+
 <div align="center" id="sglangtop">
 <img src="https://raw.githubusercontent.com/radixark/miles/main/imgs/miles_logo.png" alt="logo" width="400" margin="10px"></img>
 
