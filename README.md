@@ -36,7 +36,7 @@ pip install -e . -v --no-build-isolation
 # apply transformers patch (because HF does not support new deepseek models)
 git clone https://github.com/huggingface/transformers.git
 cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc
-git apply ../miles-sunrise/docker/deepseekv32/transformers.patch
+git apply ../miles-sunrise/docker/deepseekv4/transformers.patch
 pip install -e .
 
 ```
