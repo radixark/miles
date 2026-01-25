@@ -21,9 +21,9 @@ _original_from_config = AutoBridge.from_config
 def _patched_from_config(cls, hf_config, **kwargs):
     from mbridge.core.bridge import _MODEL_REGISTRY
 
-    # HACK, only support dsv4 temporarily
-    return _MODEL_REGISTRY["deepseek_v4"](hf_config, **kwargs)
-
+    # V4 has hc_mult attribute
+    if hasattr(hf_config, "hc_mult"):
+        return _MODEL_REGISTRY["deepseek_v4"](hf_config, **kwargs)
     # V3.2 has index_n_heads but no hc_mult
     if hasattr(hf_config, "index_n_heads"):
         return _MODEL_REGISTRY["deepseek_v32"](hf_config, **kwargs)
