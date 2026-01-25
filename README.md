@@ -18,7 +18,7 @@ cd miles-sunrise && git checkout sunrise_dev_rebased
 pip install -e .
 
 # Install megatron
-cd miles-megatron
+cd megatron-sunrise
 pip install -e .
 
 # Install tilelang
