@@ -31,6 +31,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
 
 
+_RAW_HF_CKPT_PATH_DICT = {
+    "DeepSeek-V4-285B-5layer": "/data/weights/hello2026_5layer",
+}
+
+
 @app.command()
 @U.dataclass_cli
 def prepare_single(args: ScriptArgs):
@@ -43,12 +48,9 @@ def prepare_single(args: ScriptArgs):
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
     assert args.megatron_model_type == "deepseek-v4-285B-5layer"
-    path_src = {
-        "DeepSeek-V4-285B-5layer": "/data/weights/hello2026_5layer",
-    }[args.model_name]
 
     U.fp8_cast_bf16(
-        path_src=path_src,
+        path_src=_RAW_HF_CKPT_PATH_DICT[args.model_name],
         path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
 
@@ -110,7 +112,7 @@ def train(args: ScriptArgs):
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
+        f"--hf-checkpoint {_RAW_HF_CKPT_PATH_DICT[args.model_name]} "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
