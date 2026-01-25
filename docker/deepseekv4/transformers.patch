@@ -16,7 +16,7 @@ index f6a12e7cef..79f074ed6c 100644
 +                    config_dict["architectures"] = [
 +                        arch.replace("DeepseekV32", "DeepseekV3") for arch in config_dict["architectures"]
 +                    ]
-+            elif config_dict["model_type"] == "deepseek_v4":
++            elif config_dict["model_type"] in ("deepseek_v4", "deepseek_ref"):
 +                logger.info(
 +                    "Detected deepseek_v4 model, treating as deepseek_v3 for compatibility."
 +                )
