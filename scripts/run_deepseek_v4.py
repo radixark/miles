@@ -19,7 +19,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "deepseek-ai"
     model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
     megatron_model_type: Literal["deepseek-v4-285B", "deepseek-v4-285B-5layer"] = "deepseek-v4-285B"
-    num_gpus_per_node: int = 8
+    num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
