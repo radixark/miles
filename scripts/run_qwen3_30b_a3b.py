@@ -75,7 +75,7 @@ def execute(args: ScriptArgs):
     else:
         hf_checkpoint = f"/root/models/{args.model_name}"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{hf_checkpoint}/ "
+        f"--hf-checkpoint {hf_checkpoint}/ "
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
@@ -165,6 +165,8 @@ def execute(args: ScriptArgs):
                     "--fp8-format e4m3 "
                     "--fp8-recipe mxfp8 "
                     "--fp8-param-gather "
+                    "--overlap-param-gather "
+                    "--overlap-grad-reduce "
                     "--reuse-grad-buf-for-mxfp8-param-ag "
                     # --moe-router-padding-for-quantization
                 )
@@ -212,19 +214,19 @@ def execute(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
+                f"--rollout-num-gpus-per-engine {1 if args.rollout_fp8 else 4} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-attention-backend trtllm_mha "
             )
             if args.rollout_fp8:
-                sglang_world_size = 2
-                sglang_attn_tp_size = 2
+                sglang_world_size = 1
+                sglang_attn_tp_size = 1
                 sglang_decode_max_bs = 256
                 sglang_args += (
-                    f"--sglang-ep-size {sglang_world_size} "
+                    # f"--sglang-ep-size {sglang_world_size} "
                     "--sglang-fp8-gemm-backend triton "
                     "--sglang-moe-runner-backend cutlass "
-                    "--sglang-moe-a2a-backend deepep "
+                    # "--sglang-moe-a2a-backend deepep "
                     f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "

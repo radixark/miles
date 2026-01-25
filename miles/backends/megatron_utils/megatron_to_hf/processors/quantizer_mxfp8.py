@@ -1,17 +1,16 @@
 import re
 
-import torch
 
-from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
-
-from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
+from ...sglang import mxfp8_group_quantize
 
 
-def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
-    assert quantization_config["quant_method"] == "fp8"
+def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
+    assert quantization_config["quant_method"] == "mxfp8"
     assert quantization_config["fmt"] == "e4m3"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
+    if weight_block_size is not None and weight_block_size != [1, 32]:
+        raise ValueError("MXFP8 requires weight_block_size=[1, 32].")
 
     decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
     match = re.search(decoder_layers_pattern, megatron_name)
@@ -42,7 +41,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
                 # TODO: find a clearer way.
                 if converted_name.endswith("_scale"):
                     continue
-                quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size))
+                quantize_named_params.extend(_quantize_param(converted_name, param))
 
             return quantize_named_params
 
@@ -57,7 +56,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         ]:
             quantize_named_params = []
             for converted_name, param in converted_named_params:
-                quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size))
+                quantize_named_params.extend(_quantize_param(converted_name, param))
 
             return quantize_named_params
 
@@ -75,7 +74,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
-            quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size))
+            quantize_named_params.extend(_quantize_param(converted_name, param))
 
         return quantize_named_params
 
@@ -83,23 +82,17 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
-def _quantize_param(name, weight, weight_block_size):
+def _quantize_param(name, weight):
+    if mxfp8_group_quantize is None:
+        raise RuntimeError("MXFP8 quantization requires sglang fp8_utils.mxfp8_group_quantize.")
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
-    FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
-    FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
-    if weight_block_size is not None:
-        if should_deepgemm_weight_requant_ue8m0 and should_deepgemm_weight_requant_ue8m0(
-            weight_block_size=weight_block_size
-        ):
-            qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
-            scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
-        else:
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
-        scale_name = name.replace(".weight", ".weight_scale_inv")
-    else:
-        # per tensor quant
-        scale = weight.abs().max().clamp(min=1e-12).to(torch.float32) / FP8_MAX
-        qweight = (weight / scale).clamp(min=FP8_MIN, max=FP8_MAX).to(torch.float8_e4m3fn)
-        scale = scale.view(1)
-        scale_name = name.replace(".weight", ".weight_scale")
+    weight = weight.contiguous()
+    k = weight.shape[-1]
+    if k % 32 != 0:
+        raise ValueError(f"Last dim {k} must be divisible by 32 for MXFP8.")
+    weight_flat = weight.view(-1, k).contiguous()
+    qweight, scale = mxfp8_group_quantize(weight_flat)
+    qweight = qweight.view_as(weight)
+    scale = scale.view(*weight.shape[:-1], k // 32).contiguous()
+    scale_name = name.replace(".weight", ".weight_scale_inv")
     return [(name, qweight), (scale_name, scale)]

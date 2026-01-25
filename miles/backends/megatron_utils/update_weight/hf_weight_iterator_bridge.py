@@ -3,7 +3,7 @@ import dataclasses
 from miles.utils import megatron_bridge_utils
 from miles.utils.iter_utils import chunk_named_params_by_size
 
-from ..megatron_to_hf import postprocess_hf_param
+from ..megatron_to_hf import postprocess_hf_param, quantize_params
 from ..misc_utils import strip_param_name_prefix
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -19,28 +19,44 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
     def get_hf_weight_chunks(self, megatron_local_weights):
-        # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)
+        quant_method = None
+        if self.quantization_config is not None:
+            quant_method = self.quantization_config.get("quant_method")
+        needs_quant = quant_method in ("fp8", "mxfp8")
+
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
             conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
 
-            named_weights = self._bridge.export_hf_weights(self.model, cpu=False, conversion_tasks=conversion_tasks)
+            named_weights = self._bridge.export_hf_weights(
+                self.model,
+                cpu=False,
+                conversion_tasks=conversion_tasks,
+                include_megatron_param_name=True,
+            )
 
-            named_weights = (
-                (
-                    hf_param_name,
-                    postprocess_hf_param(
+            def _iter_named_weights():
+                for hf_param_name, weight, megatron_param_name in named_weights:
+                    processed = postprocess_hf_param(
                         args=self.args,
                         megatron_param_name=megatron_param_name,
                         hf_param_name=hf_param_name,
                         param=weight,
-                    ),
-                )
-                for hf_param_name, weight, megatron_param_name in named_weights
-            )
+                    )
+                    if needs_quant:
+                        yield from quantize_params(
+                            self.args,
+                            megatron_param_name,
+                            [(hf_param_name, processed)],
+                            self.quantization_config,
+                        )
+                    else:
+                        yield hf_param_name, processed
 
-            yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
+            yield from chunk_named_params_by_size(
+                _iter_named_weights(), chunk_size=self.args.update_weight_buffer_size
+            )
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
