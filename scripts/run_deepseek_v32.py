@@ -23,7 +23,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-    enable_deepep: bool = True
+    enable_deepep: bool = False
     data_dir: str = "/root"
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/models"
@@ -115,11 +115,11 @@ def train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 1 "
-        "--n-samples-per-prompt 1 "
+        "--rollout-batch-size 8 "
+        "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         # ------------
-        "--num-steps-per-rollout 1 "
+        "--num-steps-per-rollout 4 "
         "--balance-data "
     )
 
@@ -161,10 +161,10 @@ def train(args: ScriptArgs):
 
     if args.num_nodes <= 2:
         perf_args = (
-            "--tensor-model-parallel-size 2 "
+            "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 2 "
+            "--context-parallel-size 1 "
             "--expert-model-parallel-size 4 "
             "--expert-tensor-parallel-size 1 "
         )
@@ -212,8 +212,8 @@ def train(args: ScriptArgs):
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
-        "--use-miles-router "
-        "--use-rollout-routing-replay "
+        # "--use-miles-router "
+        # "--use-rollout-routing-replay "
     )
 
     optimizer_args = (
@@ -248,7 +248,7 @@ def train(args: ScriptArgs):
         f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
-        "--sglang-disable-cuda-graph "
+        # "--sglang-disable-cuda-graph "
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
     )
