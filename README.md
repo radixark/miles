@@ -44,7 +44,7 @@
 
 ### 🛡️ Eliminating Train-Inference Mismatch
 
-*   **Bit-Wise Identical Truly On-Policy**: System-level solution achieving deterministic forward/backward passes through kernel-level optimization (FlashAttention-3, DeepGEMM).
+*   **Bit-wise Identical Training and Inference Log Probs**: System-level solution achieving deterministic forward/backward passes through kernel-level optimization (FlashAttention-3, DeepGEMM).
 *   **Algorithmic Correction (TIS/MIS)**: When mismatch is unavoidable, Miles provides **Truncated Importance Sampling (TIS)** and **Masked Importance Sampling (MIS)** to mitigate off-policy bias and prevent training divergence.
 
 ### ⚡ Extreme Performance & Efficiency
@@ -64,6 +64,8 @@ Miles supports a wide range of state-of-the-art architectures, with a special em
 | **Qwen** | **Qwen 2, 2.5, 3** |
 | **Llama** | **Llama 3, 3.1, 3.3, 4** |
 | **Gemma** | **Gemma 2, 3, 3N** |
+| **GLM** | **GLM-4.5, GLM-4.6, GLM-4.7** |
+| **MiniMax** | **M2, M2.1** |
 | **Others** | **Mistral, Mixtral, Phi, gpt-oss and any model supported by SGLang and Megatron** |
 
 ### 🧩 Diverse Training Scenarios
@@ -90,17 +92,15 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Launch Training (e.g., GRPO)
+### Launch Training
 
 Miles provides a unified entry point for complex RL tasks. Here is an example of FP8 GRPO training for Qwen3:
 
 ```bash
 python train.py \
-    --train-backend fsdp \
     --advantage-estimator grpo \
     --model-name qwen3-30b-a3b \
     --hf-checkpoint /path/to/qwen3-30b-a3b-hf \
-    --true-on-policy-mode \
     --rollout-batch-size 512 \
     --n-samples-per-prompt 8
 ```
