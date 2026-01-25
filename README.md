@@ -1,6 +1,16 @@
 ## Sunrise Env
 DeepSeek v3.2 environment, tested on B200
 ```bash
+docker run --name ... \
+  --gpus all --ipc=host --shm-size=16g \
+  --privileged \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  --ulimit nofile=65536:65536 \
+  -v ...
+  -e WANDB_KEY="287b33ca363437decf04a21e95579694c6e301ea" \
+  -it radixark/miles:latest \
+  /bin/zsh
+
 # Install miles
 cd miles-sunrise && git checkout sunrise_dev_rebased
 pip install -e .
