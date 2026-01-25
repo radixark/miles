@@ -98,6 +98,14 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         }
     )
 
+    def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
+        try:
+            return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+        except NotImplementedError:
+            # The parent class, DeepseekV3Bridge, does not handle OTHER_MAPPING and directly throw
+            # thus we override and handle
+            return self._weight_name_mapping_other(mcore_weights_name)
+
     def _build_config(self):
         config = super()._build_config()
 
