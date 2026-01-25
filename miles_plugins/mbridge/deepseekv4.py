@@ -52,15 +52,6 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
             "self_attention.indexer.linear_wq_b.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.wq_b.weight"
             ],
-            "self_attention.indexer.linear_wk.weight": [
-                "model.layers.{layer_number}.self_attn.indexer.wk.weight"
-            ],
-            "self_attention.indexer.k_norm.weight": [
-                "model.layers.{layer_number}.self_attn.indexer.k_norm.weight"
-            ],
-            "self_attention.indexer.k_norm.bias": [
-                "model.layers.{layer_number}.self_attn.indexer.k_norm.bias"
-            ],
             "self_attention.indexer.linear_weights_proj.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"
             ],
