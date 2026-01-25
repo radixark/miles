@@ -17,12 +17,15 @@ from mbridge import AutoBridge
 _original_from_config = AutoBridge.from_config
 
 
-# TODO: may change this for dsv4
 @classmethod
 def _patched_from_config(cls, hf_config, **kwargs):
-    if hasattr(hf_config, "index_n_heads"):
-        from mbridge.core.bridge import _MODEL_REGISTRY
+    from mbridge.core.bridge import _MODEL_REGISTRY
 
+    # V4 has hc_mult attribute
+    if hasattr(hf_config, "hc_mult"):
+        return _MODEL_REGISTRY["deepseek_v4"](hf_config, **kwargs)
+    # V3.2 has index_n_heads but no hc_mult
+    if hasattr(hf_config, "index_n_heads"):
         return _MODEL_REGISTRY["deepseek_v32"](hf_config, **kwargs)
 
     return _original_from_config(hf_config, **kwargs)
