@@ -29,7 +29,7 @@ pip install -e .
 
 ```
 
-#### Run deepseek v4.2 (5 layers) as an example
+#### Run deepseek v3.2 (5 layers) as an example
 ```bash
 # run once
 hf download Pinaster/DeepSeek-V3.2-5layer --local-dir /root/models/DeepSeek-V3.2-5layer

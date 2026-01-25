@@ -1,6 +1,6 @@
 from .deepseekv3 import convert_deepseekv3_to_hf
-from .deepseekv32 import convert_deepseekv32_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf
+from .deepseekv32 import convert_deepseekv32_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
 from .llama import convert_llama_to_hf

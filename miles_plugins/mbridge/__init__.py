@@ -3,8 +3,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from .deepseekv32 import DeepseekV32Bridge
 from .deepseekv4 import DeepseekV4Bridge
+from .deepseekv32 import DeepseekV32Bridge
 from .glm4 import GLM4Bridge
 from .glm4moe import GLM4MoEBridge
 from .mimo import MimoBridge
