@@ -46,6 +46,8 @@ def patch_config(dst, n_layers):
 def make_keep_fn(max_layers):
     pat = re.compile(r"layers\.(\d+)\.")
     def keep(name: str) -> bool:
+        if name.startswith("mtp."):
+            return False
         if not name.startswith("layers."):
             return True
         m = pat.match(name)
