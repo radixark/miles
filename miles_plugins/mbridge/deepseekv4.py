@@ -9,10 +9,10 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
 
     # Weights with parallel_mode="duplicated" that should NOT be gathered across TP
     _DUPLICATED_WEIGHTS = {
-        # DSA Indexer weights (same as V3.2)
-        "self_attention.core_attention.indexer.linear_wq_b.weight",
-        "self_attention.core_attention.indexer.linear_wk.weight",
-        "self_attention.core_attention.indexer.linear_weights_proj.weight",
+        # DSA Indexer weights (V4 has indexer directly under self_attention, not core_attention)
+        "self_attention.indexer.linear_wq_b.weight",
+        "self_attention.indexer.linear_wk.weight",
+        "self_attention.indexer.linear_weights_proj.weight",
         # HC weights are float32 and not sharded
         "hc_attn_fn",
         "hc_attn_base",
@@ -32,15 +32,15 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
     _ATTENTION_MAPPING.update(
         {
             # Q projection
-            "self_attention.wq_a.weight": ["model.layers.{layer_number}.self_attn.q_a_proj.weight"],
-            "self_attention.q_norm.weight": ["model.layers.{layer_number}.self_attn.q_a_layernorm.weight"],
-            "self_attention.wq_b.weight": ["model.layers.{layer_number}.self_attn.q_b_proj.weight"],
+            "self_attention.wq_a.weight": ["model.layers.{layer_number}.self_attn.wq_a.weight"],
+            "self_attention.q_norm.weight": ["model.layers.{layer_number}.self_attn.q_norm.weight"],
+            "self_attention.wq_b.weight": ["model.layers.{layer_number}.self_attn.wq_b.weight"],
             # KV projection
-            "self_attention.wkv.weight": ["model.layers.{layer_number}.self_attn.kv_a_proj_with_mqa.weight"],
-            "self_attention.kv_norm.weight": ["model.layers.{layer_number}.self_attn.kv_a_layernorm.weight"],
+            "self_attention.wkv.weight": ["model.layers.{layer_number}.self_attn.wkv.weight"],
+            "self_attention.kv_norm.weight": ["model.layers.{layer_number}.self_attn.kv_norm.weight"],
             # O projection
-            "self_attention.wo_a.weight": ["model.layers.{layer_number}.self_attn.o_a_proj.weight"],
-            "self_attention.wo_b.weight": ["model.layers.{layer_number}.self_attn.o_proj.weight"],
+            "self_attention.wo_a.weight": ["model.layers.{layer_number}.self_attn.wo_a.weight"],
+            "self_attention.wo_b.weight": ["model.layers.{layer_number}.self_attn.wo_b.weight"],
             # Attention sink
             "self_attention.attn_sink": ["model.layers.{layer_number}.self_attn.attn_sink"],
             # Compressor
@@ -48,23 +48,27 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
             "self_attention.compressor.wkv.weight": ["model.layers.{layer_number}.self_attn.compressor.wkv.weight"],
             "self_attention.compressor.wgate.weight": ["model.layers.{layer_number}.self_attn.compressor.wgate.weight"],
             "self_attention.compressor.norm.weight": ["model.layers.{layer_number}.self_attn.compressor.norm.weight"],
-            # DSA Indexer (same as V3.2)
-            "self_attention.core_attention.indexer.linear_wq_b.weight": [
+            # DSA Indexer (V4 has indexer directly under self_attention)
+            "self_attention.indexer.linear_wq_b.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.wq_b.weight"
             ],
-            "self_attention.core_attention.indexer.linear_wk.weight": [
-                "model.layers.{layer_number}.self_attn.indexer.wk.weight"
-            ],
-            "self_attention.core_attention.indexer.k_norm.weight": [
-                "model.layers.{layer_number}.self_attn.indexer.k_norm.weight"
-            ],
-            "self_attention.core_attention.indexer.k_norm.bias": [
-                "model.layers.{layer_number}.self_attn.indexer.k_norm.bias"
-            ],
-            "self_attention.core_attention.indexer.linear_weights_proj.weight": [
+            "self_attention.indexer.linear_weights_proj.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"
             ],
-            # Hyper-Connection (layer level)
+            # Indexer's nested compressor
+            "self_attention.indexer.compressor.ape": [
+                "model.layers.{layer_number}.self_attn.indexer.compressor.ape"
+            ],
+            "self_attention.indexer.compressor.wkv.weight": [
+                "model.layers.{layer_number}.self_attn.indexer.compressor.wkv.weight"
+            ],
+            "self_attention.indexer.compressor.wgate.weight": [
+                "model.layers.{layer_number}.self_attn.indexer.compressor.wgate.weight"
+            ],
+            "self_attention.indexer.compressor.norm.weight": [
+                "model.layers.{layer_number}.self_attn.indexer.compressor.norm.weight"
+            ],
+            # Hyper-Connection (layer level, directly under layer, not self_attn)
             "hc_attn_fn": ["model.layers.{layer_number}.hc_attn_fn"],
             "hc_attn_base": ["model.layers.{layer_number}.hc_attn_base"],
             "hc_attn_scale": ["model.layers.{layer_number}.hc_attn_scale"],
