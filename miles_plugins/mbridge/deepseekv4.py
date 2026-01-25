@@ -86,12 +86,14 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         }
     )
 
-    # Block-level HC weights (not per-layer)
-    _BLOCK_MAPPING = {
-        "decoder.hc_head_fn": "model.hc_head_fn",
-        "decoder.hc_head_base": "model.hc_head_base",
-        "decoder.hc_head_scale": "model.hc_head_scale",
-    }
+    _DIRECT_MAPPING = DeepseekV3Bridge._DIRECT_MAPPING.copy()
+    _DIRECT_MAPPING.update(
+        {
+            "decoder.hc_head_fn": "model.hc_head_fn",
+            "decoder.hc_head_base": "model.hc_head_base",
+            "decoder.hc_head_scale": "model.hc_head_scale",
+        }
+    )
 
     def _build_config(self):
         config = super()._build_config()
