@@ -69,7 +69,7 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | `--true-on-policy-mode` | Enable true-on-policy mode. | `False` | bool flag (set to enable) |
 | `--train-env-vars` | Extra environment variables for the training process (e.g., PyTorch memory management). | `{}` | Type: JSON / Dict |
 | `--train-memory-margin-bytes` | Reserved memory margin for training in bytes. Defaults to 1GB. | `1073741824` | Type: int |
-| `--disable-weights-backuper` | Disable weights backup to host memory to save host memory. | `True` (enabled) | bool flag (set to enable) |
+| `--disable-weights-backuper` | Disable weights backup to host memory. By default, this feature is enabled. | `False` | bool flag (set to disable) |
 | `--megatron-to-hf-mode` | Method to convert Megatron weights to HuggingFace format for SGLang integration. | `raw` | `raw`, `bridge` |
 | `--custom-model-provider-path` | Path to a custom model provider function (e.g., `my_module.my_provider`). | `None` | Type: str |
 | `--recompute-loss-function` | Enable recomputing the loss function to save VRAM during training. | `False` | bool flag (set to enable) |
@@ -268,7 +268,7 @@ Arguments for the specialized Miles text-based router.
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
 | `--use-miles-router` | Use text-based routing instead of token-based routing. | `False` | bool flag (set to enable) |
-| `--miles-router-middleware-paths` | Paths to custom MilesRouter middleware functions. | `""` | Type: List[str] |
+| `--miles-router-middleware-paths` | Paths to custom MilesRouter middleware functions. | `[]` | Type: List[str] |
 | `--miles-router-timeout` | Timeout for router HTTP requests in seconds. | `None` | Type: float |
 | `--miles-router-max-connections` | Maximum concurrent connections for the router. | `None` | Type: int |
 | `--miles-router-health-check-failure-threshold` | Number of failures allowed before marking a worker as dead. | `3` | Type: int |
