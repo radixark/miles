@@ -9,6 +9,7 @@ import triton
 import triton.language as tl
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
+from python.sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
 
 
 @triton.jit
@@ -72,7 +73,10 @@ def main(fp8_path, bf16_path):
         loaded_files[file_name] = current_state_dict
 
         new_state_dict = {}
-        for weight_name, weight in current_state_dict.items():
+        for weight_name_raw, weight in current_state_dict.items():
+            # HACK, probably not need this when sunrise publishs final model
+            weight_name = DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(weight_name_raw)
+
             if weight_name.endswith("_scale_inv"):
                 continue
             elif weight.element_size() == 1:  # FP8 weight
