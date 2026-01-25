@@ -28,7 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/models"
     save_dir: str = "/root/models"
-    megatron_path: str = "/root/Megatron-LM"
+    megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
 
 
 @app.command()

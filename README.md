@@ -21,8 +21,8 @@ docker exec -it miles_tom /bin/zsh
 # Install miles
 (cd /host_home/primary_synced/miles-sunrise && pip install -e .)
 
-# Install megatron
-(cd /host_home/primary_synced/megatron-sunrise && pip install -e .)
+# Do not install megatron, will use PYTHONPATH
+# (cd /host_home/primary_synced/megatron-sunrise && pip install -e .)
 
 # Install tilelang
 apt remove -y libgtest-dev
