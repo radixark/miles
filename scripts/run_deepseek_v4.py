@@ -17,7 +17,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
-    model_name: Literal["DeepSeek-V4-285B"] = "DeepSeek-V4-285B"
+    model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B-5layer"
     megatron_model_type: Literal["deepseek-v4-285B", "deepseek-v4-285B-5layer"] = "deepseek-v4-285B-5layer"
     num_gpus_per_node: int = 8
     enable_eval: bool = True
@@ -42,8 +42,13 @@ def prepare_single(args: ScriptArgs):
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
+    assert args.megatron_model_type == "deepseek-v4-285B-5layer"
+    path_src = {
+        "DeepSeek-V4-285B-5layer": "/data/weights/hello2026_5layer",
+    }[args.model_name]
+
     U.fp8_cast_bf16(
-        path_src=f"{args.model_dir}/{args.model_name}",
+        path_src=path_src,
         path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
 
