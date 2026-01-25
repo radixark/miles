@@ -68,15 +68,18 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
             "self_attention.indexer.compressor.norm.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.norm.weight"
             ],
-            # Hyper-Connection (layer level, directly under layer, not self_attn)
-            "hc_attn_fn": ["model.layers.{layer_number}.hc_attn_fn"],
-            "hc_attn_base": ["model.layers.{layer_number}.hc_attn_base"],
-            "hc_attn_scale": ["model.layers.{layer_number}.hc_attn_scale"],
-            "hc_ffn_fn": ["model.layers.{layer_number}.hc_ffn_fn"],
-            "hc_ffn_base": ["model.layers.{layer_number}.hc_ffn_base"],
-            "hc_ffn_scale": ["model.layers.{layer_number}.hc_ffn_scale"],
         }
     )
+
+    # Hyper-Connection (layer level, directly under layer, not self_attn)
+    _OTHER_MAPPING = {
+        "hc_attn_fn": ["model.layers.{layer_number}.hc_attn_fn"],
+        "hc_attn_base": ["model.layers.{layer_number}.hc_attn_base"],
+        "hc_attn_scale": ["model.layers.{layer_number}.hc_attn_scale"],
+        "hc_ffn_fn": ["model.layers.{layer_number}.hc_ffn_fn"],
+        "hc_ffn_base": ["model.layers.{layer_number}.hc_ffn_base"],
+        "hc_ffn_scale": ["model.layers.{layer_number}.hc_ffn_scale"],
+    }
 
     _MLP_MAPPING = DeepseekV3Bridge._MLP_MAPPING.copy()
     _MLP_MAPPING.update(
