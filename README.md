@@ -1,12 +1,14 @@
 ## Sunrise Env
 DeepSeek v3.2 environment, tested on B200
 ```bash
-docker run --name ... \
+docker run --name miles_yueming \
   --gpus all --ipc=host --shm-size=16g \
   --privileged \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --ulimit nofile=65536:65536 \
-  -v ...
+  -v /home/radixark/yueming:/workspace \
+  -v /data/yueming/models:/root/models \
+  -v /data/yueming/datasets:/root/datasets \
   -e WANDB_KEY="287b33ca363437decf04a21e95579694c6e301ea" \
   -it radixark/miles:latest \
   /bin/zsh
