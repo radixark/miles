@@ -241,7 +241,6 @@ def train(args: ScriptArgs):
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine 4 "
-        "--sglang-mem-fraction-static 0.7 "
 
         "--sglang-tp-size 4 "
         "--sglang-dp-size 4 "
