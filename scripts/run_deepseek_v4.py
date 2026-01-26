@@ -291,6 +291,7 @@ def train(args: ScriptArgs):
         "--train-memory-margin-bytes 1073741824 "
         # "--check-weight-update-equal "
         "--qkv-format bshd "
+        "--moe-router-freeze-gate "
     )
 
     train_args = (
