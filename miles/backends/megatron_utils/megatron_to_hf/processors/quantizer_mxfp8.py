@@ -6,11 +6,6 @@ from ...sglang import mxfp8_group_quantize
 
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config["quant_method"] == "mxfp8"
-    assert quantization_config["fmt"] == "e4m3"
-    assert quantization_config["activation_scheme"] == "dynamic"
-    weight_block_size = quantization_config.get("weight_block_size", None)
-    if weight_block_size is not None and weight_block_size != [1, 32]:
-        raise ValueError("MXFP8 requires weight_block_size=[1, 32].")
 
     decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
     match = re.search(decoder_layers_pattern, megatron_name)
