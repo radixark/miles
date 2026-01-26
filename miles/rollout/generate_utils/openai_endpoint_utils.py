@@ -51,13 +51,13 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
     # TODO may refine after @guapisolo's implementation
     choice = record.response["choices"][0]
 
-    input_token_ids = [item["token_id"] for item in choice["input_logprobs"]["content"]]
+    input_token_ids = choice["input_token_ids"]
     output_token_ids = [item["token_id"] for item in choice["logprobs"]["content"]]
     output_log_probs = [item["logprob"] for item in choice["logprobs"]["content"]]
 
     sample = deepcopy(input_sample)
     # sample.tokens = record.request["input_ids"] + output_token_ids
-    request_input_ids = record.request.get("input_ids")
+    request_input_ids = record.request.get("input_ids", None)
     if request_input_ids:
         assert (
             request_input_ids == input_token_ids
