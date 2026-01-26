@@ -214,6 +214,12 @@ def _named_params_and_buffers_global(
             if any(dup in name for dup in duplicated):
                 param.parallel_mode = "duplicated"
 
+            # TODO: a hacking here, need to be cleaner
+            if "attn_sink" in name:
+                param.tensor_model_parallel = True
+                param.partition_dim = 0
+                param.partition_stride = 1
+
             layer_idx, rest = match.groups()
             layer_idx = int(layer_idx) + layer_offset
 
