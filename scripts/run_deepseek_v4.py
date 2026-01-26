@@ -172,7 +172,6 @@ def train(args: ScriptArgs):
     if args.num_nodes <= 2:
         perf_args = (
             "--tensor-model-parallel-size 4 "
-            "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
             "--context-parallel-size 1 "
             "--expert-model-parallel-size 4 "
@@ -182,7 +181,6 @@ def train(args: ScriptArgs):
         # TODO remove this temp cfg
         perf_args = (
             "--tensor-model-parallel-size 4 "
-            "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
             "--context-parallel-size 4 "
             "--expert-model-parallel-size 4 "
@@ -192,7 +190,6 @@ def train(args: ScriptArgs):
         # TODO choose a good config (currently randomly change to suit 64gpu)
         perf_args = (
             "--tensor-model-parallel-size 8 "
-            "--sequence-parallel "
             f"--pipeline-model-parallel-size {1 if args.model_name == 'DeepSeek-V4-285B-5layer' else 4} "
             "--context-parallel-size 2 "
             "--expert-model-parallel-size 16 "
@@ -201,6 +198,8 @@ def train(args: ScriptArgs):
         if re.search(r"(\d+)layer", args.model_name) is None:
             perf_args += "--decoder-last-pipeline-num-layers 13 "
     perf_args += (
+        # TODO support SP later
+        # "--sequence-parallel "
         # ------------
         "--recompute-granularity full "
         "--recompute-method uniform "
