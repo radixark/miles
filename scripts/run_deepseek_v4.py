@@ -252,6 +252,8 @@ def train(args: ScriptArgs):
         "--sglang-page-size 256 "
         "--sglang-max-running-requests 64 "
         "--sglang-chunked-prefill-size 8192 "
+        # temporary
+        "--sglang-max-total-tokens 200000 "
 
         "--sglang-server-concurrency 1024 "
     )
