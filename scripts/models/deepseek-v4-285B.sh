@@ -9,7 +9,9 @@ done
 printf -v MOE_LAYER_FREQ "[%s]" "$(IFS=', '; echo "${arr[*]}")"
 
 # compress_ratios from config_285B.json: [0, 0, 4, 128, 4, 128, ...]
-COMPRESS_RATIOS="0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4"
+if [ ${#COMPRESS_RATIOS[@]} -eq 0 ]; then
+  COMPRESS_RATIOS=(0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4)
+fi
 
 # DeepSeek V4 285B config
 MODEL_ARGS=(
@@ -60,7 +62,7 @@ MODEL_ARGS=(
     --experimental-attention-variant dsv4
     --dsv4-hc-mult 4
     --dsv4-hc-sinkhorn-iters 20
-    --dsv4-compress-ratios $COMPRESS_RATIOS
+    --dsv4-compress-ratios "${COMPRESS_RATIOS[@]}"
     --dsv4-compress-rope-theta 160000
     --dsv4-o-groups 8
     --dsv4-o-lora-rank 1024
