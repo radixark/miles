@@ -38,6 +38,8 @@ pip install transformers==4.57.1
 # apply transformers patch (because HF does not support new deepseek models)
 # (cd /tmp && git clone https://github.com/huggingface/transformers.git && cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc &&  git apply /host_home/primary_synced/miles-sunrise/docker/deepseekv4/transformers.patch && pip install -e .)
 
+(cd /tmp && rm -rf flash-mla && git clone https://github.com/deepseek-ai/FlashMLA.git flash-mla && cd flash-mla && git submodule update --init --recursive && pip install --no-build-isolation -v .)
+
 pip install --no-deps --force-reinstall -e /host_home/primary_synced/NightFall/python
 
 ################################################
