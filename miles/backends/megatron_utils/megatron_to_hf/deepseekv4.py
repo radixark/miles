@@ -71,21 +71,21 @@ def convert_deepseekv4_to_hf(args, name, param):
             else:
                 raise ValueError(f"Unknown shared expert parameter name: {name}")
 
-        # V4 Attention weights (wq_a, wkv, etc. naming style)
+        # V4 Attention weights - use MQALayer param names directly
         if rest == "self_attention.wq_a.weight":
-            return [(f"model.layers.{layer_idx}.self_attn.q_a_proj.weight", param)]
+            return [(f"model.layers.{layer_idx}.self_attn.wq_a.weight", param)]
         elif rest == "self_attention.q_norm.weight":
-            return [(f"model.layers.{layer_idx}.self_attn.q_a_layernorm.weight", param)]
+            return [(f"model.layers.{layer_idx}.self_attn.q_norm.weight", param)]
         elif rest == "self_attention.wq_b.weight":
-            return [(f"model.layers.{layer_idx}.self_attn.q_b_proj.weight", param)]
+            return [(f"model.layers.{layer_idx}.self_attn.wq_b.weight", param)]
         elif rest == "self_attention.wkv.weight":
-            return [(f"model.layers.{layer_idx}.self_attn.kv_a_proj_with_mqa.weight", param)]
+            return [(f"model.layers.{layer_idx}.self_attn.wkv.weight", param)]
         elif rest == "self_attention.kv_norm.weight":
-            return [(f"model.layers.{layer_idx}.self_attn.kv_a_layernorm.weight", param)]
+            return [(f"model.layers.{layer_idx}.self_attn.kv_norm.weight", param)]
         elif rest == "self_attention.wo_a.weight":
-            return [(f"model.layers.{layer_idx}.self_attn.o_a_proj.weight", param)]
+            return [(f"model.layers.{layer_idx}.self_attn.wo_a.weight", param)]
         elif rest == "self_attention.wo_b.weight":
-            return [(f"model.layers.{layer_idx}.self_attn.o_proj.weight", param)]
+            return [(f"model.layers.{layer_idx}.self_attn.wo_b.weight", param)]
         elif rest == "self_attention.attn_sink":
             return [(f"model.layers.{layer_idx}.self_attn.attn_sink", param)]
 
