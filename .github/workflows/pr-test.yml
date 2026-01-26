@@ -26,11 +26,7 @@ concurrency:
 jobs:
 
   fast:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request)
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -70,11 +66,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- pytest tests/${{ matrix.info.test_file }}
 
   unit-test:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -114,11 +106,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-e2e'))
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -158,11 +146,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-fsdp:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -202,11 +186,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-megatron:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -246,11 +226,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-precision:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -290,11 +266,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-ckpt:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -334,11 +306,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-long:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long'))
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long'))
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -378,11 +346,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-short:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
     runs-on: self-hosted
     container:
       image: radixark/miles:latest
@@ -422,11 +386,7 @@ jobs:
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
 
   e2e-test-image:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
-      
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
     runs-on: self-hosted
     container:
       image: radixark/miles-test:latest

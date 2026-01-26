@@ -140,15 +140,7 @@ concurrency:
 jobs:
 <% for job_name, config in jobs.items() %>
   << job_name >>:
-    if: >-
-      (github.event_name == 'workflow_dispatch')
-      <% if config.trigger == 'approval' %>
-      || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
-      <% elif config.label %>
-      || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
-      <% else %>
-      || (github.event.pull_request)
-      <% endif %>
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request<% if config.label %> && contains(github.event.pull_request.labels.*.name, '<< config.label >>')<% endif %>)
     runs-on: self-hosted
     container:
       image: << config.image if config.image else 'radixark/miles:latest' >>
