@@ -6,14 +6,6 @@ from mbridge.models import DeepseekV3Bridge
 
 @register_model("deepseek_v32")
 class DeepseekV32Bridge(DeepseekV3Bridge):
-
-    # Weights with parallel_mode="duplicated" that should NOT be gathered across TP
-    _DUPLICATED_WEIGHTS = {
-        "self_attention.core_attention.indexer.linear_wq_b.weight",
-        "self_attention.core_attention.indexer.linear_wk.weight",
-        "self_attention.core_attention.indexer.linear_weights_proj.weight",
-    }
-
     _ATTENTION_MAPPING = DeepseekV3Bridge._ATTENTION_MAPPING.copy()
 
     # Because the indexer needs the norm output, we cannot use the fused transformer engine impl and have to compute it separately.

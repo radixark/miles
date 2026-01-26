@@ -6,22 +6,6 @@ from mbridge.models import DeepseekV3Bridge
 
 @register_model("deepseek_v4")
 class DeepseekV4Bridge(DeepseekV3Bridge):
-
-    # Weights with parallel_mode="duplicated" that should NOT be gathered across TP
-    _DUPLICATED_WEIGHTS = {
-        # DSA Indexer weights (V4 has indexer directly under self_attention, not core_attention)
-        "self_attention.indexer.linear_wq_b.weight",
-        "self_attention.indexer.linear_wk.weight",
-        "self_attention.indexer.linear_weights_proj.weight",
-        # HC weights are float32 and not sharded
-        "hc_attn_fn",
-        "hc_attn_base",
-        "hc_attn_scale",
-        "hc_ffn_fn",
-        "hc_ffn_base",
-        "hc_ffn_scale",
-    }
-
     _ATTENTION_MAPPING = DeepseekV3Bridge._ATTENTION_MAPPING.copy()
 
     # Remove fused layernorm mappings (V4 uses separate layernorms)
