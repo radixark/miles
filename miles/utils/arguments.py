@@ -14,6 +14,7 @@ from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import load_function
+from miles.utils.transformers_patch import with_transformers_patch
 
 logger = logging.getLogger(__name__)
 
@@ -1425,7 +1426,8 @@ def parse_args(add_custom_arguments=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         if args.hf_checkpoint:
-            hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            with with_transformers_patch():
+                hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
             hf_validate_args(args, hf_config)
 
         args.rank = 0
