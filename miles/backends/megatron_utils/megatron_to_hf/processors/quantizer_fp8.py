@@ -4,7 +4,7 @@ import torch
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
-from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
+from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0, per_block_cast_to_fp8
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -105,11 +105,19 @@ def _quantize_param(name, weight, weight_block_size, if_use_ue8m0_in_moe=True):
         #     and if_use_ue8m0_in_moe
         # ):
         # sunrise use triton moe now, but use deep_gemm for attn projection
-        if not any(moe_keyword in name for moe_keyword in ['mlp', 'ffn']):
+        is_moe = any(moe_keyword in name for moe_keyword in ['mlp', 'ffn'])
+        if not is_moe:
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
+            # sunrise: sglang use this per_block_cast_to_fp8, which may cause different scale because 
+            # per_block_cast_to_fp8 use ceil_to_ue8m0 for scale (2^n power),
+            # while blockwise_cast_to_fp8_triton use linear scale (absmax / 448)
+            # so use this quantization function to achieve exact match
+            if True: # TODO: add a flag to choose quantize method
+                qweight, scale = per_block_cast_to_fp8(weight)
+            else:
+                qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
         # per tensor quant
