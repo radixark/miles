@@ -104,6 +104,15 @@ def main(fp8_path, bf16_path):
             else:
                 new_state_dict[weight_name] = weight
 
+        for weight_name, weight in new_state_dict.items():
+            if weight_name.endswith(".compressor.ape"):
+                # ----------------- ref code's conversion ----------------
+                ape = torch.chunk(weight, 2, dim=-1)
+                ape = torch.cat([ape[1], ape[0]], dim=-1)
+                # --------------------------------------------------------
+                new_state_dict[weight_name] = ape
+                print(f"Converted APE: {weight_name}")
+
         new_safetensor_file = os.path.join(bf16_path, file_name)
         save_file(new_state_dict, new_safetensor_file)
 
