@@ -109,7 +109,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 2, "test_file": "e2e/test_qwen3_4B_fsdp_true_on_policy.py"}]
+        info: [{"num_gpus": 2, "test_file": "test_qwen3_4B_fsdp_true_on_policy.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
