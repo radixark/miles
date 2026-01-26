@@ -262,6 +262,7 @@ def train(args: ScriptArgs):
     sglang_extra_env_vars = {
         # TODO this will be default arguments
         "SGLANG_HACK_V4_SET_K_AND_S_BACKEND": "triton",
+        "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
     }
 
     misc_args = (
