@@ -1,5 +1,7 @@
 import logging
 from contextlib import contextmanager
+from sglang.srt.utils.hf_transformers_utils import _load_deepseek_temp_model
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,13 @@ def apply_transformers_patch():
         config_dict, _ = PretrainedConfig.get_config_dict(
             pretrained_model_name_or_path, **kwargs
         )
-        _patch_deepseek_config_dict(config_dict)
+        if config_dict.get("model_type") in ("deepseek_v4", "deepseek_ref"):
+            return _load_deepseek_temp_model(
+                pretrained_model_name_or_path,
+                model_type="deepseek_ref",
+                architecture="DeepseekV4ForCausalLM",
+                **kwargs,
+            )
 
         return _original_from_pretrained.__func__(
             cls, pretrained_model_name_or_path, **kwargs
@@ -49,28 +57,3 @@ def unapply_transformers_patch():
 
     AutoConfig.from_pretrained = _original_from_pretrained
     _original_from_pretrained = None
-
-
-def _patch_deepseek_config_dict(config_dict: dict):
-    model_type = config_dict.get("model_type")
-
-    if model_type == "deepseek_v32":
-        logger.info(
-            "Detected deepseek_v32 model, treating as deepseek_v3 for compatibility."
-        )
-        config_dict["model_type"] = "deepseek_v3"
-        if "architectures" in config_dict:
-            config_dict["architectures"] = [
-                arch.replace("DeepseekV32", "DeepseekV3")
-                for arch in config_dict["architectures"]
-            ]
-    elif model_type in ("deepseek_v4", "deepseek_ref"):
-        logger.info(
-            "Detected deepseek_v4 model, treating as deepseek_v3 for compatibility."
-        )
-        config_dict["model_type"] = "deepseek_v3"
-        if "architectures" in config_dict:
-            config_dict["architectures"] = [
-                arch.replace("DeepseekV4", "DeepseekV3")
-                for arch in config_dict["architectures"]
-            ]
