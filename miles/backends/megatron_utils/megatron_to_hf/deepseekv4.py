@@ -100,16 +100,26 @@ def convert_deepseekv4_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.compressor.norm.weight", param)]
 
         # DSA Indexer weights
-        elif rest == "self_attention.core_attention.indexer.linear_wq_b.weight":
+        elif rest == "self_attention.indexer.linear_wq_b.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.wq_b.weight", param)]
-        elif rest == "self_attention.core_attention.indexer.linear_wk.weight":
+        elif rest == "self_attention.indexer.linear_wk.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.wk.weight", param)]
-        elif rest == "self_attention.core_attention.indexer.k_norm.weight":
+        elif rest == "self_attention.indexer.k_norm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.k_norm.weight", param)]
-        elif rest == "self_attention.core_attention.indexer.k_norm.bias":
+        elif rest == "self_attention.indexer.k_norm.bias":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.k_norm.bias", param)]
-        elif rest == "self_attention.core_attention.indexer.linear_weights_proj.weight":
+        elif rest == "self_attention.indexer.linear_weights_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.weights_proj.weight", param)]
+
+        # DSA Indexer's Compressor weights
+        elif rest == "self_attention.indexer.compressor.ape":
+            return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.ape", param)]
+        elif rest == "self_attention.indexer.compressor.wkv.weight":
+            return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.wkv.weight", param)]
+        elif rest == "self_attention.indexer.compressor.wgate.weight":
+            return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.wgate.weight", param)]
+        elif rest == "self_attention.indexer.compressor.norm.weight":
+            return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.norm.weight", param)]
 
         # Layernorms
         elif rest == "input_layernorm.weight":
