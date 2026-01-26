@@ -55,18 +55,17 @@ def test_chat_completions_input_ids_equivalence(sglang_server):
 
 @pytest.mark.system
 def test_chat_completions_input_logprobs_prompt_ids_match(sglang_server):
-    """Ensure input_token_ids are not returned in the current response format."""
+    """Ensure input_ids are echoed exactly in input_token_ids and logprobs are present."""
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
     messages = _build_messages()
     input_ids = _build_input_ids(tokenizer, messages)
 
-    # When input_ids are provided, the server should echo them in input_token_ids.
     response = _post_chat(sglang_server.base_url, _build_payload(messages, input_ids))
     choice = response["choices"][0]
 
     input_token_ids = _extract_input_token_ids(choice)
 
-    assert input_token_ids == []
+    assert input_token_ids == input_ids
     assert choice.get("logprobs", {}).get("content"), "logprobs content is missing"
 
 
@@ -116,7 +115,8 @@ def _extract_tokens_and_logprobs(choice: dict) -> tuple[list[int], list[float]]:
 
 
 def _extract_input_token_ids(choice: dict) -> list[int]:
-    token_ids = choice.get("input_token_ids", [])
+    token_ids = choice.get("input_token_ids")
+    assert token_ids is not None, "input_token_ids is missing in response"
 
     print(f"input_token_ids: {token_ids}", flush=True)
     return token_ids

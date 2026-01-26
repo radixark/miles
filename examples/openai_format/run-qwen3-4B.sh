@@ -42,7 +42,7 @@ ROLLOUT_ARGS=(
    --label-key label
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 20
+   --num-rollout 200
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
@@ -97,10 +97,10 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   # --use-wandb
-   # --wandb-project miles-dev
-   # --wandb-group qwen3-4B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project miles-oai
+   --wandb-group qwen3-4B-test
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
