@@ -172,39 +172,34 @@ def train(args: ScriptArgs):
     if args.num_nodes <= 2:
         perf_args = (
             "--tensor-model-parallel-size 4 "
-            # TODO: support SP in attn sublayer
-            # "--sequence-parallel "
+            "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
             "--context-parallel-size 1 "
-            # TODO: w/o SP, expert-model-parallel will have assert failure
-            "--expert-model-parallel-size 1 "
-            "--expert-tensor-parallel-size 4 "
+            "--expert-model-parallel-size 4 "
+            "--expert-tensor-parallel-size 1 "
+        )
+    elif args.num_nodes <= 4:
+        # TODO remove this temp cfg
+        perf_args = (
+            "--tensor-model-parallel-size 4 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 1 "
+            "--context-parallel-size 4 "
+            "--expert-model-parallel-size 4 "
+            "--expert-tensor-parallel-size 1 "
         )
     else:
-        raise NotImplementedError
-    # elif args.num_nodes <= 4:
-    #     # TODO remove this temp cfg
-    #     perf_args = (
-    #         "--tensor-model-parallel-size 4 "
-    #         "--sequence-parallel "
-    #         "--pipeline-model-parallel-size 1 "
-    #         "--context-parallel-size 4 "
-    #         "--expert-model-parallel-size 4 "
-    #         "--expert-tensor-parallel-size 1 "
-    #     )
-    # else:
-    #     # TODO choose a good config (currently randomly change to suit 64gpu)
-    #     perf_args = (
-    #         "--tensor-model-parallel-size 8 "
-    #         "--sequence-parallel "
-    #         f"--pipeline-model-parallel-size {1 if args.model_name == 'DeepSeek-V4-285B-5layer' else 4} "
-    #         "--context-parallel-size 2 "
-    #         "--expert-model-parallel-size 16 "
-    #         "--expert-tensor-parallel-size 1 "
-    #     )
-    #     if re.search(r"(\d+)layer", args.model_name) is None:
-    #         perf_args += "--decoder-last-pipeline-num-layers 13 "
-
+        # TODO choose a good config (currently randomly change to suit 64gpu)
+        perf_args = (
+            "--tensor-model-parallel-size 8 "
+            "--sequence-parallel "
+            f"--pipeline-model-parallel-size {1 if args.model_name == 'DeepSeek-V4-285B-5layer' else 4} "
+            "--context-parallel-size 2 "
+            "--expert-model-parallel-size 16 "
+            "--expert-tensor-parallel-size 1 "
+        )
+        if re.search(r"(\d+)layer", args.model_name) is None:
+            perf_args += "--decoder-last-pipeline-num-layers 13 "
     perf_args += (
         # ------------
         "--recompute-granularity full "
