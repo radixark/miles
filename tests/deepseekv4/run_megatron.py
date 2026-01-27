@@ -265,13 +265,26 @@ def run_forward_pass(model, inputs: dict, enable_grad: bool = False) -> torch.Te
     return logits
 
 
-def run_backward_pass(logits: torch.Tensor) -> None:
-    """Run backward pass with dummy loss (mean of logits)."""
-    logger.info("Running backward pass with dummy loss...")
+def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor) -> None:
+    """Run backward pass with cross-entropy loss (next-token prediction).
+    
+    Args:
+        logits: Model output logits of shape [batch_size, seq_length, vocab_size]
+        input_ids: Input token IDs of shape [batch_size, seq_length], used as labels
+    """
+    logger.info("Running backward pass...")
 
-    # Dummy loss: mean of all logits
-    loss = logits.mean()
-    logger.info(f"Dummy loss value: {loss.item():.6f}")
+    # Use cross-entropy loss
+    shift_logits = logits[:, :-1, :].contiguous()  # [batch, seq-1, vocab]
+    shift_labels = input_ids[:, 1:].contiguous()   # [batch, seq-1]
+    
+    loss = torch.nn.functional.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),  # [batch*(seq-1), vocab]
+        shift_labels.view(-1),                          # [batch*(seq-1)]
+        reduction='mean'
+    )
+
+    print(f"Cross-entropy loss value: {loss.item():.6f}")
 
     loss.backward()
 
@@ -356,7 +369,7 @@ def main():
 
     # Run backward pass if requested
     if run_backward:
-        run_backward_pass(logits)
+        run_backward_pass(logits, input_ids=inputs["input_ids"])
 
     # Print results
     top_k = getattr(args, "top_k", 5)
