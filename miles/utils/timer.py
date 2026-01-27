@@ -20,22 +20,23 @@ class Timer(metaclass=SingletonMeta):
         self.timers = {}
         self.start_time = {}
 
-    def start(self, name):
+    def start(self, name, log_info=True):
         assert name not in self.start_time, f"Timer {name} already started."
         self.start_time[name] = time()
-        if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+        if log_info and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
             logger.info(f"Timer {name} start")
 
-    def end(self, name):
+    def end(self, name, log_info=True):
         assert name in self.start_time, f"Timer {name} not started."
         elapsed_time = time() - self.start_time[name]
         self.add(name, elapsed_time)
         del self.start_time[name]
         rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
         if rank == 0:
-            logger.info(f"Timer {name} end (elapsed: {elapsed_time:.1f}s)")
+            if log_info:
+                logger.info(f"Timer {name} end (elapsed: {elapsed_time:.1f}s)")
             with open(f"{LOGFILE}_{rank}.log", "a") as f:
-                f.write(f"Timer {name} end (elapsed: {elapsed_time*1000:.1f}ms)\n")
+                f.write(f"Timer {name} end (elapsed: {elapsed_time*1000:.3f}ms)\n")
 
     def reset(self, name=None):
         if name is None:
@@ -70,15 +71,15 @@ class Timer(metaclass=SingletonMeta):
                 f.write(log_content)
 
     @contextmanager
-    def context(self, name):
-        self.start(name)
+    def context(self, name, log_info=True):
+        self.start(name, log_info=log_info)
         try:
             yield
         finally:
-            self.end(name)
+            self.end(name, log_info=log_info)
 
 
-def timer(name_or_func):
+def timer(name_or_func, log_info=True):
     """
     Can be used either as a decorator or a context manager:
 
@@ -90,17 +91,22 @@ def timer(name_or_func):
 
     with timer("block_name"):
         ...
+
+    or (to suppress logging):
+
+    with timer("block_name", log_info=False):
+        ...
     """
     # When used as a context manager
     if isinstance(name_or_func, str):
         name = name_or_func
-        return Timer().context(name)
+        return Timer().context(name, log_info=log_info)
 
     func = name_or_func
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        with Timer().context(func.__name__):
+        with Timer().context(func.__name__, log_info=log_info):
             return func(*args, **kwargs)
 
     return wrapper
