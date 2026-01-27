@@ -106,12 +106,18 @@ def main(fp8_path, bf16_path):
 
         for weight_name, weight in new_state_dict.items():
             if weight_name.endswith(".compressor.ape"):
-                # ----------------- ref code's conversion ----------------
-                ape = torch.chunk(weight, 2, dim=-1)
-                ape = torch.cat([ape[1], ape[0]], dim=-1)
-                # --------------------------------------------------------
-                new_state_dict[weight_name] = ape
-                print(f"Converted APE: {weight_name}")
+                # Only convert C4 (overlap=True) ape, not C128
+                # C4: shape = (4, 2*head_dim), C128: shape = (128, head_dim)
+                if weight.shape[0] == 4:
+                    # ----------------- ref code's conversion ----------------
+                    ape = torch.chunk(weight, 2, dim=-1)
+                    ape = torch.cat([ape[1], ape[0]], dim=-1)
+                    # --------------------------------------------------------
+                    new_state_dict[weight_name] = ape
+                    print(f"Converted APE (C4): {weight_name}")
+                else:
+                    assert weight.shape[0] == 128
+                    print(f"Skipped APE conversion (C128): {weight_name}")
 
         new_safetensor_file = os.path.join(bf16_path, file_name)
         save_file(new_state_dict, new_safetensor_file)
