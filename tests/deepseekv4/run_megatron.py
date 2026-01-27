@@ -198,6 +198,7 @@ def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, app
         text = prompt
 
     input_ids = tokenizer.encode(text)
+    original_len = len(input_ids)
     
     # Pad or truncate
     if len(input_ids) < seq_length:
@@ -205,6 +206,11 @@ def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, app
         input_ids = input_ids + [pad_id] * (seq_length - len(input_ids))
     else:
         input_ids = input_ids[:seq_length]
+        original_len = seq_length
+    
+    # Set env var for dump comparison (last actual token position)
+    import os
+    os.environ["MEGATRON_HACK_DUMP_LOGITS_POS"] = str(original_len - 1)
 
     input_ids = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
     if batch_size > 1:
