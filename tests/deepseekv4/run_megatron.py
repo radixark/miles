@@ -64,6 +64,8 @@ def add_extra_args(parser):
                             help="Top-k predictions to show")
     test_group.add_argument("--tp-size", type=int, default=1,
                             help="Tensor parallel size")
+    test_group.add_argument("--run-backward", action="store_true",
+                            help="Run backward pass with dummy loss after forward")
     return parser
 
 
@@ -107,7 +109,7 @@ def initialize_megatron(args):
     mpu.initialize_model_parallel(
         tensor_model_parallel_size=args.tensor_model_parallel_size,
         pipeline_model_parallel_size=args.pipeline_model_parallel_size,
-        virtual_pipeline_model_parallel_size=1,
+        virtual_pipeline_model_parallel_size=None,
         context_parallel_size=args.context_parallel_size,
         expert_model_parallel_size=args.expert_model_parallel_size,
         expert_tensor_parallel_size=args.expert_tensor_parallel_size,
@@ -234,17 +236,25 @@ def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, app
     }
 
 
-def run_forward_pass(model, inputs: dict) -> torch.Tensor:
+def run_forward_pass(model, inputs: dict, enable_grad: bool = False) -> torch.Tensor:
     """Run forward pass and return logits."""
-    logger.info("Running forward pass...")
+    logger.info(f"Running forward pass... (enable_grad={enable_grad})")
 
-    with torch.no_grad():
+    if enable_grad:
         output = model(
             input_ids=inputs["input_ids"],
             position_ids=inputs["position_ids"],
             attention_mask=inputs["attention_mask"],
             runtime_gather_output=True,
         )
+    else:
+        with torch.no_grad():
+            output = model(
+                input_ids=inputs["input_ids"],
+                position_ids=inputs["position_ids"],
+                attention_mask=inputs["attention_mask"],
+                runtime_gather_output=True,
+            )
 
     if isinstance(output, tuple):
         logits = output[0]
@@ -253,6 +263,19 @@ def run_forward_pass(model, inputs: dict) -> torch.Tensor:
 
     logger.info(f"Forward pass complete. Output logits shape: {logits.shape}")
     return logits
+
+
+def run_backward_pass(logits: torch.Tensor) -> None:
+    """Run backward pass with dummy loss (mean of logits)."""
+    logger.info("Running backward pass with dummy loss...")
+
+    # Dummy loss: mean of all logits
+    loss = logits.mean()
+    logger.info(f"Dummy loss value: {loss.item():.6f}")
+
+    loss.backward()
+
+    logger.info("Backward pass complete.")
 
 
 def print_top_predictions(logits: torch.Tensor, input_ids: torch.Tensor, top_k: int, tokenizer, pad_token_id: int = None):
@@ -328,7 +351,12 @@ def main():
     )
 
     # Run forward pass
-    logits = run_forward_pass(model, inputs)
+    run_backward = getattr(args, "run_backward", False)
+    logits = run_forward_pass(model, inputs, enable_grad=run_backward)
+
+    # Run backward pass if requested
+    if run_backward:
+        run_backward_pass(logits)
 
     # Print results
     top_k = getattr(args, "top_k", 5)

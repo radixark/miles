@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-Test script for running forward pass with Megatron or Reference implementation.
+Test script for running forward/backward pass with Megatron or Reference implementation.
 Uses typer for CLI (inspired by send_one_compare.py).
 
 Usage:
-    # Run Megatron model
+    # Run Megatron forward pass
     python test_forward_pass.py megatron \
+        --hf-checkpoint /data/weights/hello2026_5layer \
+        --ref-load /data/weights/hello2026_5layer_torch_dist
+
+    # Run Megatron backward pass
+    python test_forward_pass.py megatron-backward \
         --hf-checkpoint /data/weights/hello2026_5layer \
         --ref-load /data/weights/hello2026_5layer_torch_dist
 
@@ -246,6 +251,111 @@ PYTHONPATH="{MEGATRON_PATH}" \\
         os.unlink(prompt_file_path)
 
     print("\nTest completed!")
+
+
+@app.command("megatron-backward")
+def megatron_backward(
+    hf_checkpoint: str = typer.Option(..., "--hf-checkpoint", help="Path to HuggingFace checkpoint"),
+    ref_load: Optional[str] = typer.Option(None, "--ref-load", help="Path to Megatron checkpoint"),
+    input_seq_len: int = typer.Option(128, "--input-seq-len", help="Input sequence length"),
+    tp_size: int = typer.Option(1, "--tp-size", help="Tensor parallel size"),
+    prompt_mode: str = typer.Option("text", "--prompt-mode", help="Prompt mode: math, story, text"),
+    prompt_text: Optional[str] = typer.Option("The capital of France is ", "--prompt-text", help="Custom prompt text (for text mode)"),
+    prompt_file: Optional[str] = typer.Option(None, "--prompt-file", help="Path to prompt file (for story mode)"),
+    apply_chat_template: bool = typer.Option(False, "--apply-chat-template", help="Apply chat template"),
+    postfix_question: bool = typer.Option(False, "--postfix-question", help="Add postfix question"),
+    postfix_dummy_len: int = typer.Option(0, "--postfix-dummy-len", help="Add dummy text of this length"),
+    model_type: str = typer.Option("deepseek-v4-285B-5layer", "--model-type", help="Model type"),
+    batch_size: int = typer.Option(1, "--batch-size", help="Batch size"),
+):
+    """Run Megatron model backward pass test with dummy loss."""
+    from transformers import AutoTokenizer
+
+    print("=" * 60)
+    print("Running Megatron Backward Pass Test")
+    print("=" * 60)
+    print(f"HF Checkpoint:    {hf_checkpoint}")
+    print(f"Ref Load:         {ref_load or '(random weights)'}")
+    print(f"Model Type:       {model_type}")
+    print(f"TP Size:          {tp_size}")
+    print(f"Seq Length:       {input_seq_len}")
+    print(f"Prompt Mode:      {prompt_mode}")
+    print(f"Chat Template:    {apply_chat_template}")
+    print("=" * 60)
+
+    # Load tokenizer to generate prompt
+    tokenizer = AutoTokenizer.from_pretrained(hf_checkpoint, trust_remote_code=True)
+
+    # Generate prompt
+    if prompt_mode == "text" and prompt_text:
+        prompt = prompt_text
+        if postfix_question:
+            prompt += "\n\nPlease answer the question above."
+        if postfix_dummy_len > 0:
+            prompt += "\n\nBelow, I will make some dummy text. Please ignore all text below. " + "1 " * postfix_dummy_len
+    else:
+        prompt = make_input(
+            tokenizer=tokenizer,
+            input_seq_len=input_seq_len,
+            prompt_mode=prompt_mode,
+            prompt_text=prompt_text,
+            prompt_file=prompt_file,
+            apply_chat_template=False,
+            postfix_question=postfix_question,
+            postfix_dummy_len=postfix_dummy_len,
+        )
+
+    print(f"Generated prompt ({len(prompt)} chars): {prompt[:100]}...")
+
+    # Get model args by sourcing the shell script
+    model_script_path = get_model_script_path(model_type)
+    print(f"Model script:     {model_script_path}")
+
+    # Save prompt to temp file to avoid shell escaping issues
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write(prompt)
+        prompt_file_path = f.name
+
+    try:
+        script_path = SCRIPT_DIR / "run_megatron.py"
+
+        extra_args = []
+        if ref_load:
+            extra_args.append(f'--ref-load "{ref_load}"')
+        if apply_chat_template:
+            extra_args.append("--apply-chat-template")
+        extra_args_str = " ".join(extra_args)
+
+        # Build shell command with backward pass flags
+        shell_cmd = f'''
+source "{model_script_path}" && \\
+PYTHONPATH="{MEGATRON_PATH}" \\
+{sys.executable} -m torch.distributed.run \\
+    --nproc-per-node={tp_size} \\
+    "{script_path}" \\
+    "${{MODEL_ARGS[@]}}" \\
+    --prompt-file "{prompt_file_path}" \\
+    --hf-checkpoint "{hf_checkpoint}" \\
+    --seq-length {input_seq_len} \\
+    --micro-batch-size {batch_size} \\
+    --hidden-dropout 0 \\
+    --attention-dropout 0 \\
+    --tp-size {tp_size} \\
+    --run-backward \\
+    --no-gradient-accumulation-fusion \\
+    {extra_args_str}
+'''
+        print(f"\nRunning shell command...")
+        result = subprocess.run(["bash", "-c", shell_cmd])
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Megatron backward run failed with code {result.returncode}")
+
+    finally:
+        # Clean up temp file
+        os.unlink(prompt_file_path)
+
+    print("\nBackward pass test completed!")
 
 
 @app.command()
