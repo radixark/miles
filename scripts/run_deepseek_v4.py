@@ -294,6 +294,7 @@ def train(args: ScriptArgs):
         # "--check-weight-update-equal "
         "--qkv-format bshd "
         "--moe-router-freeze-gate "
+        "--freeze-e-score-correction-bias "
     )
 
     train_args = (
