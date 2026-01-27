@@ -45,13 +45,11 @@ class TransferBundle:
     engine: TransferEngine
     weight_memory_registry: dict
     remote_weight_infos: list[RemoteWeightInfo]
-    async_batch_ids: list[int] = dataclasses.field(default_factory=list)
 
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
 
     def execute_each(self, names: Sequence[str]) -> None:
-        cur_batch_ids = []
         # Find local pointers and lengths for the given names
         source_ptrs, source_lens = [], []
         for name in names:
@@ -68,10 +66,7 @@ class TransferBundle:
                 target_ptrs.append(remote_weights_info[name][0])  # remote address
 
             # Batch transfer weights through RDMA
-            batch_id = self.engine.batch_transfer_async_write(session_id, source_ptrs, target_ptrs, source_lens)
-            cur_batch_ids.append(batch_id)
-
-        self.async_batch_ids.extend(cur_batch_ids)
+            _ = self.engine.batch_transfer_async_write(session_id, source_ptrs, target_ptrs, source_lens)
 
     def execute(self) -> None:
         # Execute transfer for each target session using this replica.
