@@ -959,6 +959,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=3,
                 help="Number of consecutive failures before marking a worker as unhealthy.",
             )
+            parser.add_argument(
+                "--miles-router-enable-token-input-for-chat-completions",
+                action="store_true",
+                default=False,
+                help=(
+                    "This is an experimental feature, and only supports for text model."
+                    "Whether to enable token input for chat completions. If set, we will calculate "
+                    "the input_ids for the prompt part inside miles and add it to the request body."
+                    "This is reserved for cross turn token in under OAI format."
+                ),
+            )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
 

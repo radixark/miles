@@ -3,9 +3,9 @@ Simple agentic demo with tool calling.
 """
 
 import argparse
-from collections.abc import Callable
 from typing import Any
 
+from eval_protocol import InitRequest
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -14,22 +14,22 @@ from miles.rollout.generate_utils.openai_endpoint_utils import (
     compute_samples_from_openai_records,
 )
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.utils.misc import load_function
+from miles.utils.http_utils import post
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tracer = await OpenAIEndpointTracer.create(input.args)
 
-    custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
-    assert (
-        custom_agent_function is not None
-    ), f"Custom agent function {input.args.custom_agent_function_path} not found"
-    await custom_agent_function(
+    init_url = f"{input.args.agent_base_url}/init"
+    init_request = InitRequest(
+        model_base_url=tracer.base_url,
         completion_params=build_chat_completion_params(input.sampling_params),
-        base_url=tracer.base_url,
-        prompt=input.sample.prompt,
+        messages=input.sample.prompt,
         tools=input.sample.metadata.get("tools", None),
     )
+    resp = await post(init_url, init_request.model_dump(exclude_none=True))
+    if resp["status"] != "success":
+        raise ValueError(f"Failed to initialize agent: {resp['error']}")
 
     records = await tracer.collect_records()
     samples = compute_samples_from_openai_records(input.sample, records, input.state.tokenizer)
@@ -39,7 +39,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
-    parser.add_argument("--custom-agent-function-path", type=str)
+    parser.add_argument("--agent-base-url", type=str)
     parser.add_argument("--generate-multi-samples", action="store_true", default=False)
 
 
