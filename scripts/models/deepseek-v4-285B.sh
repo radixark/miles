@@ -26,6 +26,8 @@ MODEL_ARGS=(
     --swiglu
     --untie-embeddings-and-output-weights
     --vocab-size 129280
+    --hidden-dropout 0.0
+    --attention-dropout 0.0
 
     # MLA params (reused by V4)
     --multi-latent-attention
