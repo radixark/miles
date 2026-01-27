@@ -1050,6 +1050,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--use-pytorch-profiler-update-weight",
+                action="store_true",
+                default=False,
+                help="Enable PyTorch profiler for weight update operations. Requires --tensorboard-dir to be set.",
+            )
+            parser.add_argument(
+                "--profile-update-weight-start",
+                type=int,
+                default=0,
+                help="After enabling PyTorch profiler for weight update operations, start profiling from this point. Requires --tensorboard-dir to be set.",
+            )
+            parser.add_argument(
+                "--profile-update-weight-end",
+                type=int,
+                default=1,
+                help="After enabling PyTorch profiler for weight update operations, end profiling at this point. Requires --tensorboard-dir to be set.",
+            )
             return parser
 
         def add_network_arguments(parser):
