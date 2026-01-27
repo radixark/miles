@@ -250,10 +250,11 @@ eval:
                     "--bf16 "
                     "--fp8-format e4m3 "
                     "--fp8-recipe mxfp8 "
-                    "--fp8-param-gather "
-                    "--overlap-param-gather "
-                    "--overlap-grad-reduce "
-                    "--reuse-grad-buf-for-mxfp8-param-ag "
+                    # TODO: --fp8-param-gather not supported yet
+                    # "--fp8-param-gather "
+                    # "--overlap-param-gather "
+                    # "--overlap-grad-reduce "
+                    # "--reuse-grad-buf-for-mxfp8-param-ag "
                     # --moe-router-padding-for-quantization
                 )
 
