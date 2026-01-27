@@ -32,6 +32,9 @@ Miles supports several GPU hardware platforms:
 15. [FSDP Specific Arguments](#fsdp-specific-arguments)
 16. [Debug and Profiling](#debug-and-profiling)
 17. [Environment Variables](#environment-variables)
+18. [Multi-Turn and Agentic Arguments](#multi-turn-and-agentic-arguments)
+19. [Advanced Developer Hooks and CI](#advanced-developer-hooks-and-ci)
+20. [Miscellaneous and System](#miscellaneous-and-system)
 
 ---
 
@@ -133,6 +136,8 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | :--- | :--- | :--- | :--- |
 | `--num-rollout` | Total number of rollout steps (sampling-training loop iterations). | `None` | Type: int |
 | `--num-epoch` | Number of training epochs. `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. | `None` | Type: int |
+| `--disable-rollout-global-dataset` | Disable the global prompt dataset. If set, you must manage sampling manually. | `False` | bool flag |
+| `--data-source-path` | Path to a custom Python class for the rollout data source. | `miles.rollout.data_source.RolloutDataSourceWithBuffer` | Type: str |
 | `--prompt-data` | Path to the JSONL prompt dataset. Each line must be a JSON object. | `None` | Type: str |
 | `--input-key` | JSON dataset key for the input/prompt text. | `input` | Type: str |
 | `--label-key` | JSON dataset key for the ground truth label. | `None` | Type: str |
@@ -141,6 +146,7 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--tool-key` | JSON key for tool definitions in the prompt dataset (used when applying chat templates). | `tools` | Type: str |
 | `--apply-chat-template` | Format the input using the model's chat template. Recommended for Instruct models. | `False` | bool flag (set to enable) |
 | `--apply-chat-template-kwargs` | Extra arguments for the chat template processing. | `{}` | Type: JSON / Dict |
+| `--start-rollout-id` | The specific rollout ID to start from. Useful for manual log alignment during resumes. | `None` | Type: int |
 | `--rollout-batch-size` | Number of prompts sampled in each rollout round. | (Required) | Type: int |
 | `--n-samples-per-prompt` | Number of responses generated for each prompt (used for algorithms like GRPO). | `1` | Type: int |
 | `--global-batch-size` | Total samples per optimizer step. Automatically calculated if `num_steps_per_rollout` is set. | `None` | Type: int |
@@ -173,18 +179,33 @@ Arguments for configuring the evaluation process during training.
 | `--eval-min-new-tokens` | Minimum tokens to generate for evaluation responses. | `None` | Type: int |
 | `--eval-max-context-len` | Maximum context length for evaluation. | `None` | Type: int |
 | `--eval-function-path` | Path to a custom evaluation function. | `None` | Type: str |
+| `--eval-input-key` | JSON key for input text in evaluation datasets. | `None` | Type: str |
+| `--eval-label-key` | JSON key for ground truth labels in evaluation datasets. | `None` | Type: str |
+| `--eval-tool-key` | JSON key for tool definitions in evaluation datasets. | `None` | Type: str |
 
 ---
 
 ## Algorithm and RL Arguments
 
-Arguments for reinforcement learning algorithms, loss calculation, and off-policy correction.
+Arguments for reinforcement learning algorithms, loss calculation, and checkpointing.
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
 | `--advantage-estimator` | Selection of the reinforcement learning algorithm. | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `on_policy_distillation` |
 | `--loss-type` | Selection of the training loss function. | `policy_loss` | `policy_loss`, `sft_loss`, `custom_loss` |
 | `--custom-loss-function-path` | Path to a custom loss calculation function (requires `--loss-type custom_loss`). | `None` | Type: str |
+| `--load` | Path to the training checkpoint to resume from. | `None` | Type: str |
+| `--save` | Directory where training checkpoints will be saved. | `None` | Type: str |
+| `--save-interval` | Interval (in rollout steps) for saving checkpoints. | `None` | Type: int |
+| `--async-save` | Enable background checkpoint saving. | `False` | bool flag |
+| `--save-hf` | Automatically save a HuggingFace-formatted model at intervals. | `None` | Type: str |
+| `--no-save-optim` | Skip saving optimizer states to save disk space. | `False` | bool flag |
+| `--ref-load` | Path to the reference model checkpoint. | `None` | Type: str |
+| `--ref-ckpt-step` | Specific step to load from the reference checkpoint. | `None` | Type: int |
+| `--critic-load` | Path to the critic model checkpoint. | `None` | Type: str |
+| `--critic-save` | Path to save the critic model checkpoint. | `None` | Type: str |
+| `--seed` | Random seed for the training process. | `1234` | Type: int |
+| `--clip-grad` | Maximum gradient norm for gradient clipping. | `1.0` | Type: float |
 | `--lr` | Learning rate for the Actor. | `1e-6` | Type: float |
 | `--critic-lr` | Learning rate for the Critic. Defaults to `--lr`. | `None` | Type: float |
 | `--critic-lr-warmup-iters` | Number of iterations for Critic learning rate linear warmup. | `0` | Type: int |
@@ -212,6 +233,7 @@ Arguments for reinforcement learning algorithms, loss calculation, and off-polic
 | `--use-rollout-routing-replay` | Enable R3: Replay routing from rollout. Requires Miles Router. | `False` | bool flag (set to enable) |
 | `--use-opsm` | Enable Off-Policy Sequence Masking (OPSM). | `False` | bool flag (set to enable) |
 | `--opsm-delta` | Threshold for Off-Policy Sequence Masking. | `1e-4` | Type: float |
+| `--get-mismatch-metrics` | Calculate metrics for distribution mismatch between rollout and training policies. | `False` | bool flag |
 | `--ref-update-interval` | Interval (in rollout steps) to update the reference model from the Actor. | `None` | Type: int |
 | `--reset-optimizer-states` | Reset optimizer history after each rollout round. | `False` | bool flag (set to enable) |
 | `--calculate-per-token-loss` | Calculate loss on a per-token basis instead of per-sample. | `False` | bool flag (set to enable) |
@@ -236,6 +258,7 @@ Arguments for WandB, Tensorboard, and general logging.
 | `--wandb-host` | WandB host address. | `None` | Type: str |
 | `--wandb-key` | WandB API key. | `None` | Type: str |
 | `--wandb-run-id` | Specific WandB run ID to resume. | `None` | Type: str |
+| `--wandb-dir` | Local directory for WandB temporary files. | `None` | Type: str |
 | `--disable-wandb-random-suffix` | Prevent adding a random suffix to the WandB run name. | `False` | bool flag (set to enable) |
 | `--wandb-always-use-train-step` | Use training steps instead of rollout steps for the x-axis. | `False` | bool flag (set to enable) |
 | `--use-tensorboard` | Enable Tensorboard logging. | `False` | bool flag (set to enable) |
@@ -303,6 +326,8 @@ Arguments for managing the rollout data buffer.
 | `--min-batch-collection-ratio` | Minimum batch collection ratio before proceeding. | `1.0` | Type: float |
 | `--disable-rollout-trim-samples` | Disable trimming of samples in the buffer. | `False` | bool flag (set to enable) |
 | `--use-dynamic-global-batch-size` | Enable dynamic global batch size based on buffer availability. | `False` | bool flag (set to enable) |
+| `--rollout-task-type` | Type of task being performed (e.g., 'math'). | `math` | Type: str |
+| `--loss-mask-type` | Selection of the token masking logic. | `qwen` | `qwen`, `qwen3`, `distill_qwen` |
 
 ---
 
@@ -338,8 +363,20 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | `--optimizer` | Optimizer type for FSDP. | `adam` | `adam`, `sgd` |
 | `--fsdp-cpu-offload` | Offload parameters and gradients to CPU. | `False` | bool flag (set to enable) |
 | `--fsdp-state-dict-cpu-offload` | Offload full state dict to CPU during collection. | `True` | bool flag (set to enable) |
+| `--fsdp-cpu-backend` | CPU backend for FSDP CPU offload. | `gloo` | `gloo`, `None` |
+| `--weight-decay` | Weight decay for the optimizer (FSDP only). | `0.0` | Type: float |
+| `--lr-decay-style` | Learning rate decay style (FSDP only). | `constant` | Type: str |
+| `--warmup-ratio` | Ratio of total steps for learning rate warmup (FSDP only). | `0.03` | Type: float |
+| `--gradient-checkpointing` | Enable gradient checkpointing to save memory (FSDP only). | `False` | bool flag |
+| `--fp16` | Enable FP16 mixed precision (FSDP only). | `False` | bool flag |
 | `--context-parallel-size` | Size of context parallelism. | `1` | Type: int |
 | `--attn-implementation` | Selection of the attention implementation. | `flash_attention_2` | `flash_attention_2`, `sdpa`, `eager` |
+| `--deterministic-mode` | Enable deterministic mode for reproducibility. | `False` | bool flag |
+| `--record-memory-history` | Record memory history for snapshots. | `False` | bool flag |
+| `--memory-snapshot-path` | Path to save memory snapshots. | `snapshot.pickle` | Type: str |
+| `--use-pytorch-profiler` | Enable PyTorch-native profiling. | `False` | bool flag |
+| `--profile-step-start` | Starting step for profiling. | `10` | Type: int |
+| `--profile-step-end` | Ending step for profiling. | `12` | Type: int |
 
 ---
 
@@ -350,10 +387,13 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | `--check-weight-update-equal` | Verify that weight updates are equal across ranks. | `False` | bool flag (set to enable) |
 | `--save-debug-rollout-data` | Path to save rollout data for offline analysis. | `None` | Type: str |
 | `--load-debug-rollout-data` | Path to load debug rollout data (bypasses SGLang). | `None` | Type: str |
+| `--load-debug-rollout-data-subsample` | Percentage of debug data to load (0.0 to 1.0). | `None` | Type: float |
 | `--debug-rollout-only` | Run the rollout phase only without training. | `False` | bool flag (set to enable) |
 | `--debug-train-only` | Run the training phase only without launching SGLang servers. | `False` | bool flag (set to enable) |
+| `--save-debug-train-data` | Path to save training batches for offline math debugging. | `None` | Type: str |
 | `--dump-details` | Dump exhaustive training details for post-hoc visualization. | `None` | Type: str |
 | `--memory-snapshot-dir` | Directory for PyTorch memory snapshots. | `.` | Type: str |
+| `--memory-snapshot-num-steps` | Number of steps to record before saving snapshot. | `None` | Type: int |
 | `--memory-recorder` | Selection of the memory recording backend. | `torch` | `torch`, `memray` |
 | `--profile-target` | Selection of training components to profile. | `train_overall` | `train_overall`, `train_actor`, `train_log_probs` |
 
@@ -370,3 +410,48 @@ Miles recognizes several environment variables for advanced configuration.
 | `TENSORBOARD_DIR` | Base directory for Tensorboard logs. |
 | `MILES_HOST_IP` | Overrides the host IP used for distributed communication. |
 | `PYTHONPATH` | Must include the path to your `Megatron-LM` installation when using the Megatron backend. |
+
+---
+
+## Advanced Developer Hooks and CI
+
+Hooks for custom logic and Continuous Integration testing flags.
+
+| Argument | Description | Default | Options |
+| :--- | :--- | :--- | :--- |
+| `--custom-megatron-init-path` | Path to custom Megatron initialization logic. | `None` | Type: str |
+| `--custom-megatron-before-log-prob-hook-path` | Hook called before calculating log probabilities. | `None` | Type: str |
+| `--custom-megatron-before-train-step-hook-path` | Hook called before each training step. | `None` | Type: str |
+| `--ci-test` | Enable Continuous Integration testing mode. | `False` | bool flag |
+| `--ci-disable-kl-checker` | Disable KL divergence sanity checks in CI. | `False` | bool flag |
+| `--ci-metric-checker-key` | Metric key to monitor for pass/fail in CI. | `None` | Type: str |
+| `--ci-metric-checker-threshold` | Pass/fail threshold for the monitored metric. | `None` | Type: float |
+| `--ci-save-grad-norm` | Path to save gradient norms for CI comparison. | `None` | Type: str |
+| `--ci-load-grad-norm` | Path to load gradient norms for CI verification. | `None` | Type: str |
+
+---
+
+## Multi-Turn and Agentic Arguments
+
+Arguments for managing interactions and tools.
+
+| Argument | Description | Default | Options |
+| :--- | :--- | :--- | :--- |
+| `--generate-max-turns` | Maximum number of turns in a conversation. | `16` | Type: int |
+| `--generate-tool-specs-path` | Path to the tool specifications (JSON). | `None` | Type: str |
+| `--generate-tool-call-parser` | The parser used to extract tool calls from text. | `None` | Type: str |
+| `--generate-execute-tool-function-path` | Path to the function that executes the tool. | `None` | Type: str |
+| `--generate-multi-samples` | Whether to generate multiple samples within one turn. | `False` | bool flag |
+
+---
+
+## Miscellaneous and System
+
+General arguments for infrastructure and configuration overrides.
+
+| Argument | Description | Default | Options |
+| :--- | :--- | :--- | :--- |
+| `--http-proxy` | HTTP proxy server for remote reward model calls. | `None` | Type: str |
+| `--use-distributed-post` | Use distributed POST requests for remote reward models. | `False` | bool flag |
+| `--custom-config-path` | Path to a YAML file containing overrides for any argument. | `None` | Type: str |
+| `--padded-vocab-size` | Manually specify the vocab size for padding. | `None` | Type: int |
