@@ -146,7 +146,7 @@ def megatron(
     hf_checkpoint: str = typer.Option(..., "--hf-checkpoint", help="Path to HuggingFace checkpoint"),
     ref_load: Optional[str] = typer.Option(None, "--ref-load", help="Path to Megatron checkpoint"),
     input_seq_len: int = typer.Option(128, "--input-seq-len", help="Input sequence length"),
-    num_gpus: int = typer.Option(1, "--num-gpus", help="Number of GPUs"),
+    tp_size: int = typer.Option(1, "--tp-size", help="Tensor parallel size"),
     prompt_mode: str = typer.Option("text", "--prompt-mode", help="Prompt mode: math, story, text"),
     prompt_text: Optional[str] = typer.Option("The capital of France is ", "--prompt-text", help="Custom prompt text (for text mode)"),
     prompt_file: Optional[str] = typer.Option(None, "--prompt-file", help="Path to prompt file (for story mode)"),
@@ -166,7 +166,7 @@ def megatron(
     print(f"HF Checkpoint:    {hf_checkpoint}")
     print(f"Ref Load:         {ref_load or '(random weights)'}")
     print(f"Model Type:       {model_type}")
-    print(f"Num GPUs:         {num_gpus}")
+    print(f"TP Size:          {tp_size}")
     print(f"Seq Length:       {input_seq_len}")
     print(f"Prompt Mode:      {prompt_mode}")
     print(f"Chat Template:    {apply_chat_template}")
@@ -222,7 +222,7 @@ def megatron(
 source "{model_script_path}" && \\
 PYTHONPATH="{MEGATRON_PATH}" \\
 {sys.executable} -m torch.distributed.run \\
-    --nproc-per-node={num_gpus} \\
+    --nproc-per-node={tp_size} \\
     "{script_path}" \\
     "${{MODEL_ARGS[@]}}" \\
     --prompt-file "{prompt_file_path}" \\
@@ -232,6 +232,7 @@ PYTHONPATH="{MEGATRON_PATH}" \\
     --hidden-dropout 0 \\
     --attention-dropout 0 \\
     --top-k {top_k} \\
+    --tp-size {tp_size} \\
     {extra_args_str}
 '''
         print(f"\nRunning shell command...")
@@ -318,6 +319,7 @@ def reference(
         "--ckpt-path", ckpt_path,
         "--config-path", config_path,
         "--top-k", str(top_k),
+        "--tp-size", str(tp_size),
     ]
     
     if forward_only:

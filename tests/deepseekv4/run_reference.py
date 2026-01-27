@@ -100,6 +100,8 @@ def main():
                         help="Only do forward pass (no generation), print logprobs")
     parser.add_argument("--prefill-mode", action="store_true",
                         help="Use prefill mode (all tokens at once) instead of incremental mode")
+    parser.add_argument("--tp-size", type=int, default=1,
+                        help="Tensor parallel size (used by torchrun, this arg is for documentation)")
     args = parser.parse_args()
 
     world_size = int(os.getenv("WORLD_SIZE", "1"))

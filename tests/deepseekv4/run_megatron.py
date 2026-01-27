@@ -62,6 +62,8 @@ def add_extra_args(parser):
                             help="Apply chat template to prompt")
     test_group.add_argument("--top-k", type=int, default=5,
                             help="Top-k predictions to show")
+    test_group.add_argument("--tp-size", type=int, default=1,
+                            help="Tensor parallel size")
     return parser
 
 
@@ -73,21 +75,18 @@ def parse_args():
     from megatron.training.arguments import parse_args as megatron_parse_args, validate_args
     from miles.backends.megatron_utils.arguments import set_default_megatron_args
 
-    # Parse using Megatron's parser with extra args
     args = megatron_parse_args(extra_args_provider=add_extra_args)
     args = set_default_megatron_args(args)
 
-    # Set rank/world_size
     args.rank = int(os.environ.get("LOCAL_RANK", 0))
     args.world_size = int(os.environ.get("WORLD_SIZE", 1))
 
-    # Override parallelism for single-GPU testing
-    if args.world_size == 1:
-        args.tensor_model_parallel_size = 1
-        args.pipeline_model_parallel_size = 1
-        args.context_parallel_size = 1
-        args.expert_model_parallel_size = 1
-        args.expert_tensor_parallel_size = 1
+    tp_size = args.tp_size
+    args.tensor_model_parallel_size = tp_size
+    args.pipeline_model_parallel_size = 1
+    args.context_parallel_size = 1
+    args.expert_model_parallel_size = tp_size
+    args.expert_tensor_parallel_size = 1
 
     if not args.global_batch_size:
         args.global_batch_size = args.micro_batch_size
@@ -108,10 +107,10 @@ def initialize_megatron(args):
     mpu.initialize_model_parallel(
         tensor_model_parallel_size=args.tensor_model_parallel_size,
         pipeline_model_parallel_size=args.pipeline_model_parallel_size,
-        virtual_pipeline_model_parallel_size=getattr(args, "virtual_pipeline_model_parallel_size", None),
-        context_parallel_size=getattr(args, "context_parallel_size", 1),
-        expert_model_parallel_size=getattr(args, "expert_model_parallel_size", 1),
-        expert_tensor_parallel_size=getattr(args, "expert_tensor_parallel_size", 1),
+        virtual_pipeline_model_parallel_size=1,
+        context_parallel_size=args.context_parallel_size,
+        expert_model_parallel_size=args.expert_model_parallel_size,
+        expert_tensor_parallel_size=args.expert_tensor_parallel_size,
     )
 
     tensor_parallel.model_parallel_cuda_manual_seed(args.seed)
