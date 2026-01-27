@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
-from miles.router.sessions import setup_session_routes
+from miles.router.session.sessions import setup_session_routes
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -65,11 +65,10 @@ class MilesRouter:
             self.app.add_middleware(middleware, router=self)
 
     def _setup_routes(self):
-        """Setup all the HTTP routes"""
+        """Setup all the HTTP routes except catch-all proxy"""
         # sglang-router api
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
-        self.app.post("/retrieve_from_text")(self.retrieve_from_text)
         # Session routes - must be registered before catch-all
         setup_session_routes(self.app, self)
         # Catch-all route for proxying to SGLang - must be registered LAST
@@ -136,13 +135,23 @@ class MilesRouter:
         result = await self._do_proxy(request, path)
         return self._build_proxy_response(result)
 
-    async def _do_proxy(self, request: Request, path: str) -> dict:
+    async def _do_proxy(
+        self,
+        request: Request,
+        path: str,
+        body: bytes | None = None,
+        headers: dict | None = None,
+    ) -> dict:
         """Core proxy logic. Returns dict with request_body, response_body, status_code, headers."""
         worker_url = self._use_url()
         url = f"{worker_url}/{path}"
 
-        body = await request.body()
-        headers = dict(request.headers)
+        if body is None:
+            body = await request.body()
+        if headers is None:
+            headers = dict(request.headers)
+        if body is not None:
+            headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
 
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
@@ -201,28 +210,6 @@ class MilesRouter:
     async def list_workers(self, request: Request):
         """List all registered workers"""
         return {"urls": list(self.worker_request_counts.keys())}
-
-    async def retrieve_from_text(self, request: Request):
-        """Get token information from text input"""
-        body = await request.body()
-        payload = json.loads(body) if body else {}
-
-        text = payload.get("text", "")
-
-        # Use radix tree's retrieve_from_text method (no need to fetch weight version here)
-        token_ids, logp, loss_mask = self.radix_tree.retrieve_from_text(text, return_logprob=True)
-
-        # Handle the result based on whether logp was requested
-        result = {
-            "tokens": token_ids,  # token IDs
-            "response": text,  # The input text
-            "loss_mask": loss_mask,  # Loss mask for the tokens
-            "token_length": len(token_ids),
-            "loss_mask_length": len(loss_mask),
-            "rollout_logp": logp,
-        }
-
-        return result
 
     def _use_url(self):
         """Select worker URL with minimal active requests."""
