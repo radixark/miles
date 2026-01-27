@@ -252,6 +252,9 @@ def reference(
     ckpt_path: str = typer.Option(..., "--ckpt-path", help="Path to reference checkpoint (HF format with safetensors)"),
     config_path: Optional[str] = typer.Option(None, "--config-path", help="Path to model config JSON"),
     prompt_text: str = typer.Option("The capital of France is ", "--prompt-text", help="Prompt text"),
+    input_seq_len: int = typer.Option(0, "--input-seq-len", help="Target input sequence length (0 = use prompt as-is)"),
+    prompt_mode: str = typer.Option("text", "--prompt-mode", help="Prompt mode: math, story, text"),
+    prompt_file: Optional[str] = typer.Option(None, "--prompt-file", help="Path to prompt file (for story mode)"),
     max_new_tokens: int = typer.Option(1, "--max-new-tokens", help="Max new tokens to generate"),
     temperature: float = typer.Option(0.0, "--temperature", help="Sampling temperature"),
     tp_size: int = typer.Option(1, "--tp-size", help="Tensor parallel size"),
@@ -260,13 +263,16 @@ def reference(
     prefill_mode: bool = typer.Option(True, "--prefill-mode/--incremental-mode", help="Prefill mode (all tokens at once) or incremental mode"),
 ):
     """Run Reference implementation forward pass (for comparison with Megatron)."""
+    from transformers import AutoTokenizer
+    
     mode_str = "Forward Pass (logprobs)" if forward_only else "Generation"
     print("=" * 60)
     print(f"Running Reference Implementation - {mode_str}")
     print("=" * 60)
     print(f"Checkpoint:       {ckpt_path}")
     print(f"Config:           {config_path or REF_CONFIG_PATH}")
-    print(f"Prompt:           {prompt_text[:50]}...")
+    print(f"Input Seq Len:    {input_seq_len}")
+    print(f"Prompt Mode:      {prompt_mode}")
     print(f"Mode:             {mode_str}")
     if not forward_only:
         print(f"Max New Tokens:   {max_new_tokens}")
@@ -278,6 +284,21 @@ def reference(
     # Use default config if not provided
     if config_path is None:
         config_path = str(REF_CONFIG_PATH)
+
+    # Generate prompt using make_input if input_seq_len > 0
+    if input_seq_len > 0:
+        tokenizer = AutoTokenizer.from_pretrained(ckpt_path, trust_remote_code=True)
+        prompt = make_input(
+            tokenizer=tokenizer,
+            input_seq_len=input_seq_len,
+            prompt_mode=prompt_mode,
+            prompt_text=prompt_text,
+            prompt_file=prompt_file,
+            apply_chat_template=False,
+        )
+        print(f"Generated prompt ({len(prompt)} chars): {prompt[:100]}...")
+    else:
+        prompt = prompt_text
 
     # Use local run_reference.py in the same directory
     run_reference_script = SCRIPT_DIR / "run_reference.py"
@@ -293,7 +314,7 @@ def reference(
         "-m", "torch.distributed.run",
         f"--nproc-per-node={tp_size}",
         str(run_reference_script),
-        "--prompt", prompt_text,
+        "--prompt", prompt,
         "--ckpt-path", ckpt_path,
         "--config-path", config_path,
         "--top-k", str(top_k),
