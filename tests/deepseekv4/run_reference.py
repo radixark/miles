@@ -65,21 +65,27 @@ def reset_kv_caches(model: Transformer):
 
 @torch.inference_mode()
 def forward_pass(model: Transformer, input_ids: list) -> torch.Tensor:
-    """Run forward pass on input tokens and return logits for all positions."""
+    """Run forward pass on input tokens and return logits for all positions (incremental mode)."""
     seq_len = len(input_ids)
     tokens = torch.tensor([input_ids], dtype=torch.long, device="cuda")
     
-    # The model returns logits only for the last position in the input
-    # We need to iterate to get all positions
     all_logits = []
     for i in range(1, seq_len + 1):
-        # Reset KV caches before each forward pass
         reset_kv_caches(model)
         partial_tokens = tokens[:, :i]
         logits = model.forward(partial_tokens, 0)
         all_logits.append(logits[0].clone())  # [vocab_size]
     
     return torch.stack(all_logits, dim=0)  # [seq_len, vocab_size]
+
+
+@torch.inference_mode()
+def forward_pass_prefill(model: Transformer, input_ids: list) -> torch.Tensor:
+    """Run forward pass on all input tokens at once (prefill mode, for comparison with Megatron)."""
+    tokens = torch.tensor([input_ids], dtype=torch.long, device="cuda")
+    reset_kv_caches(model)
+    logits = model.forward(tokens, 0)
+    return logits
 
 
 def main():
@@ -92,6 +98,8 @@ def main():
     parser.add_argument("--top-k", type=int, default=5, help="Top-k predictions to show")
     parser.add_argument("--forward-only", action="store_true", 
                         help="Only do forward pass (no generation), print logprobs")
+    parser.add_argument("--prefill-mode", action="store_true",
+                        help="Use prefill mode (all tokens at once) instead of incremental mode")
     args = parser.parse_args()
 
     world_size = int(os.getenv("WORLD_SIZE", "1"))
@@ -126,8 +134,12 @@ def main():
 
     if args.forward_only:
         # Forward pass only - print logprobs like run_megatron.py
-        print("\nRunning forward pass...")
-        logits = forward_pass(model, prompt_tokens)
+        if args.prefill_mode:
+            print("\nRunning forward pass (prefill mode - all tokens at once)...")
+            logits = forward_pass_prefill(model, prompt_tokens)
+        else:
+            print("\nRunning forward pass (incremental mode - token by token)...")
+            logits = forward_pass(model, prompt_tokens)
         print(f"Output logits shape: {logits.shape}")
         
         if rank == 0:

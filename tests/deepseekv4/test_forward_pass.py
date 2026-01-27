@@ -257,6 +257,7 @@ def reference(
     tp_size: int = typer.Option(1, "--tp-size", help="Tensor parallel size"),
     top_k: int = typer.Option(5, "--top-k", help="Top-k predictions to show"),
     forward_only: bool = typer.Option(True, "--forward-only/--generate", help="Forward pass only (print logprobs) or generate tokens"),
+    prefill_mode: bool = typer.Option(True, "--prefill-mode/--incremental-mode", help="Prefill mode (all tokens at once) or incremental mode"),
 ):
     """Run Reference implementation forward pass (for comparison with Megatron)."""
     mode_str = "Forward Pass (logprobs)" if forward_only else "Generation"
@@ -300,6 +301,8 @@ def reference(
     
     if forward_only:
         cmd.append("--forward-only")
+        if prefill_mode:
+            cmd.append("--prefill-mode")
     else:
         cmd.extend([
             "--max-new-tokens", str(max_new_tokens),
