@@ -13,11 +13,11 @@ def convert_deepseekv4_to_hf(args, name, param):
         return [("model.norm.weight", param)]
 
     # Block-level Hyper-Connection weights
-    if name == "module.module.decoder.hc_head_fn":
+    if name == "module.module.decoder.hc_head_params.hc_head_fn":
         return [("model.hc_head_fn", param)]
-    if name == "module.module.decoder.hc_head_base":
+    if name == "module.module.decoder.hc_head_params.hc_head_base":
         return [("model.hc_head_base", param)]
-    if name == "module.module.decoder.hc_head_scale":
+    if name == "module.module.decoder.hc_head_params.hc_head_scale":
         return [("model.hc_head_scale", param)]
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"

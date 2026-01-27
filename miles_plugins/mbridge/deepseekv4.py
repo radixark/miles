@@ -76,9 +76,9 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
     _DIRECT_MAPPING = DeepseekV3Bridge._DIRECT_MAPPING.copy()
     _DIRECT_MAPPING.update(
         {
-            "decoder.hc_head_fn": "model.hc_head_fn",
-            "decoder.hc_head_base": "model.hc_head_base",
-            "decoder.hc_head_scale": "model.hc_head_scale",
+            "decoder.hc_head_params.hc_head_fn": "model.hc_head_fn",
+            "decoder.hc_head_params.hc_head_base": "model.hc_head_base",
+            "decoder.hc_head_params.hc_head_scale": "model.hc_head_scale",
         }
     )
 
