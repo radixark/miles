@@ -31,6 +31,7 @@ def convert_checkpoint(
     master_addr: str | None = None,
     nnodes: int = 1,
     node_rank: int = 0,
+    decoder_last_pipeline_num_layers: int | None = None,
 ):
 
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
@@ -38,6 +39,11 @@ def convert_checkpoint(
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
     path_dst = (
         f"{dir_dst}/{model_name}_torch_dist" if nnodes == 1 else f"{dir_dst}/{model_name}_torch_dist_nodes_{nnodes}"
+    )
+    path_dst = (
+        f"{path_dst}_decoder_last_{decoder_last_pipeline_num_layers}"
+        if decoder_last_pipeline_num_layers is not None
+        else path_dst
     )
     if Path(path_dst).exists():
         print(f"convert_checkpoint skip {path_dst} since exists")

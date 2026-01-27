@@ -90,7 +90,7 @@ class SGLangEngine(RayActor):
         self.rank = rank
         self.worker_type = worker_type
 
-    def init(self, dist_init_addr, port, nccl_port, host=None):
+    def init(self, dist_init_addr, port, nccl_port, host=None, node_hosts=None):
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
 
@@ -107,7 +107,7 @@ class SGLangEngine(RayActor):
             dist_init_addr = f"[{ipv6_addr}]:{port_str}"
 
         server_args_dict, external_engine_need_check_fields = _compute_server_args(
-            self.args, self.rank, dist_init_addr, nccl_port, host, port, self.worker_type
+            self.args, self.rank, dist_init_addr, nccl_port, host, port, self.worker_type, node_hosts=node_hosts
         )
 
         self.node_rank = server_args_dict["node_rank"]
@@ -408,7 +408,9 @@ class SGLangEngine(RayActor):
         return response
 
 
-def _compute_server_args(args, rank, dist_init_addr, nccl_port, host, port, worker_type: str = "regular"):
+def _compute_server_args(
+    args, rank, dist_init_addr, nccl_port, host, port, worker_type: str = "regular", node_hosts: str | None = None
+):
     nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
     kwargs = {
@@ -446,7 +448,8 @@ def _compute_server_args(args, rank, dist_init_addr, nccl_port, host, port, work
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
-
+    if node_hosts is not None and nnodes > 1:
+        kwargs["node_hosts"] = node_hosts
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     unused_keys = set(kwargs.keys())

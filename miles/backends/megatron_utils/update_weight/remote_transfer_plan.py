@@ -80,17 +80,21 @@ class RemoteTransferPlan:
         self._dp_rank, self._dp_size = mpu.get_data_parallel_rank(
             with_context_parallel=True
         ), mpu.get_data_parallel_world_size(with_context_parallel=True)
+        self._edp_rank, self._edp_size = mpu.get_expert_data_parallel_rank(), mpu.get_expert_data_parallel_world_size()
 
         # Gather the target (rollout engine count and parallelism) information.
         self._rollout_tp_size = args.sglang_tp_size
         self._rollout_dp_size = args.sglang_dp_size
         self._rollout_ep_size = args.sglang_ep_size
+        self._rollout_attn_tp_size = self._rollout_tp_size // self._rollout_dp_size
+        self._rollout_moe_tp_size = self._rollout_tp_size // self._rollout_ep_size
+
         # EP and PP sizes are not tested and likely miss functionalities.
         self._rollout_pp_size = args.sglang_pp_size
-        if self._rollout_ep_size != 1 or self._rollout_pp_size != 1:
+        if self._rollout_pp_size != 1:
             raise NotImplementedError("Rollout expert and pipeline parallelisms are not supported yet.")
-        self._num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
-        self._rollout_engine_count = args.rollout_num_gpus // self._num_gpu_per_engine
+        self._rollout_num_gpu_per_engine = args.rollout_num_gpus_per_engine
+        self._rollout_engine_count = args.rollout_num_gpus // self._rollout_num_gpu_per_engine
         self._rollout_num_gpus = args.rollout_num_gpus
         logger.info(
             f"RemoteTransferPlan initialized: mode={self.mode}, pp_rank={self._pp_rank}/{self._pp_size}, tp_rank={self._tp_rank}/{self._tp_size}, "
@@ -99,14 +103,15 @@ class RemoteTransferPlan:
         logger.info(
             f"Rollout engine count: {self._rollout_engine_count}, tp_size={self._rollout_tp_size}, ep_size={self._rollout_ep_size}, dp_size={self._rollout_dp_size}"
         )
+        # Calculate the non-expert dp/ expert dp from training side
+        # Reference: `Megatron-LM/megatron/core/parallel_state.py`
 
         self._gathered_dp_size = self._dp_size * self._tp_size
         self._gathered_dp_rank = self._dp_rank * self._tp_size + self._tp_rank
-        # TODO: If I understand correctly the final size should be same as we now only have pp - dp dimensions for both param groups?
         expert_tp_size = self._ep_size * self._etp_size
-        self._gathered_expert_dp_size = self._dp_size * expert_tp_size
+        self._gathered_expert_dp_size = self._edp_size * expert_tp_size
         self._gathered_expert_dp_rank = (
-            self._dp_rank * expert_tp_size + self._ep_rank * self._etp_size + self._etp_rank
+            self._edp_rank * expert_tp_size + self._ep_rank * self._etp_size + self._etp_rank
         )
         logger.info(
             f"Gathered dp_size={self._gathered_dp_size}, gathered expert dp_size={self._gathered_expert_dp_size}"
@@ -116,6 +121,7 @@ class RemoteTransferPlan:
         )
 
         self._rank = self._gathered_dp_rank
+        self._size = self._gathered_dp_size
 
     def get_nccl_group(self) -> str:
         """
@@ -148,19 +154,21 @@ class RemoteTransferPlan:
         """
 
         all_targets = [
-            (m_idx, k_idx) for m_idx in range(self._rollout_engine_count) for k_idx in range(self._num_gpu_per_engine)
+            (m_idx, k_idx)
+            for m_idx in range(self._rollout_engine_count)
+            for k_idx in range(self._rollout_num_gpu_per_engine)
         ]
         # Assignments: source_rank -> {engin_rank: [engine_indices]}
         assignements = defaultdict(lambda: defaultdict(list))
         # First round robin assignment
         i = -1
-        for source_rank, (idx, target) in zip(range(self._gathered_dp_size), enumerate(all_targets), strict=False):
+        for source_rank, (idx, target) in zip(range(self._size), enumerate(all_targets), strict=False):
             i = idx
             m_idx, k_idx = target
             assignements[source_rank][k_idx].append(m_idx)
 
         def count_engine_index_assignments(k_idx: int) -> int:
-            return [len(assignements[source][k_idx]) for source in range(self._gathered_dp_size)]
+            return [len(assignements[source][k_idx]) for source in range(self._size)]
 
         # Reminder assignment by least_assigned_source
         cur_source_index = 0
@@ -174,7 +182,7 @@ class RemoteTransferPlan:
                     _, select_source = min((val, idx) for (idx, val) in enumerate(counted) if val > 0)
                 # Else go back to round robin.
                 else:
-                    select_source = cur_source_index % self._gathered_dp_size
+                    select_source = cur_source_index % self._size
                     cur_source_index += 1
                 assignements[select_source][k_idx].append(m_idx)
 
@@ -190,6 +198,20 @@ class RemoteTransferPlan:
                     TransferTaskP2PMeta(source_shard=self._pp_rank, engine_ind=engine_ind, engine_rank=engine_rank)
                 )
         return transfer_tasks
+
+    def tp_conversion(self, targeted_tp_rank: int) -> dict[str, int]:
+        """
+        Given tp_rank, return the rank of attn_tp/dp/ep/moe-tp.
+        """
+        parallel_rank_dict = {}
+        # attn_tp/dp
+        # NOTE: iiuc, in sglang, _num_gpu_per_engine == targeted_tp_size?
+        parallel_rank_dict["attn_tp_rank"] = targeted_tp_rank % self._rollout_attn_tp_size
+        parallel_rank_dict["dp_rank"] = targeted_tp_rank // self._rollout_attn_tp_size
+        # moe-tp/ep
+        parallel_rank_dict["moe_tp_rank"] = targeted_tp_rank % self._rollout_moe_tp_size
+        parallel_rank_dict["ep_rank"] = targeted_tp_rank // self._rollout_moe_tp_size
+        return parallel_rank_dict
 
     def is_source(self) -> bool:
         """
