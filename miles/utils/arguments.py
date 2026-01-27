@@ -154,6 +154,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="nccl",
                 help="The method to transfer weights to remote rollout engines during update weight.",
             )
+            parser.add_argument(
+                "--rdma-pipelined-transfer",
+                action="store_true",
+                help="Whether to use pipelined transfer when using RDMA for weight transfer.",
+            )
 
             return parser
 
