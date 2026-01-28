@@ -1,5 +1,4 @@
 import atexit
-import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -97,17 +96,6 @@ class BaseReplayManager:
             atexit.register(lambda: self.save_all_to_files(path))
             self._save_registered = True
 
-    def set_load_path(self, path: str):
-        self._load_path = path
-
-    def _maybe_load_from_file(self):
-        if getattr(self, '_file_loaded', False):
-            return
-        load_path = getattr(self, '_load_path', None)
-        if load_path:
-            self.load_all_from_files(load_path)
-            self._file_loaded = True
-
     def get_topk_fn(self, old_topk_fn, layer_id: Optional[int] = None):
         manager = self
 
@@ -130,6 +118,7 @@ class BaseReplayManager:
             elif stage == "record":
                 probs, top_indices = old_topk_fn(scores, topk, **kwargs)
                 replay.record(top_indices)
+                return probs, top_indices
 
             elif stage == "replay_forward":
                 top_indices = replay.pop_forward()
@@ -137,7 +126,7 @@ class BaseReplayManager:
                     top_indices.shape[0] == scores.shape[0]
                     and top_indices.shape[1] == topk
                 ), f"[{_get_rank()}] top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
-                probs, top_indices = get_probs_and_top_indices(top_indices)
+                return get_probs_and_top_indices(top_indices)
 
             elif stage == "replay_backward":
                 top_indices = replay.pop_backward()
@@ -145,18 +134,7 @@ class BaseReplayManager:
                     top_indices.shape[0] == scores.shape[0]
                     and top_indices.shape[1] == topk
                 ), f"top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
-                probs, top_indices = get_probs_and_top_indices(top_indices)
-
-            elif stage == "replay_from_file":
-                manager._maybe_load_from_file()
-                top_indices = replay.pop_forward()
-                num_tokens = scores.shape[0]
-                if top_indices.shape[0] != num_tokens:
-                    tp_size = top_indices.shape[0] // num_tokens
-                    tp_rank = _get_rank() % tp_size
-                    top_indices = top_indices[tp_rank * num_tokens : (tp_rank + 1) * num_tokens]
-                assert top_indices.shape[0] == num_tokens and top_indices.shape[1] == topk
-                probs, top_indices = get_probs_and_top_indices(top_indices)
+                return get_probs_and_top_indices(top_indices)
 
             else:
                 return old_topk_fn(scores, topk, **kwargs)

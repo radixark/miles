@@ -380,8 +380,8 @@ def main():
         routing_replay_manager.set_save_path(args.routing_replay_dump_path)
     elif args.routing_replay_load_path:
         routing_replay_manager.enabled = True
-        routing_replay_manager.stage = "replay_from_file"
-        routing_replay_manager.set_load_path(args.routing_replay_load_path)
+        routing_replay_manager.stage = "replay_forward"
+        routing_replay_manager.load_all_from_files(args.routing_replay_load_path)
 
     # Create model
     model = create_model_and_load_checkpoint(args)
