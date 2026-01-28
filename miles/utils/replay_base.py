@@ -139,17 +139,18 @@ class BaseReplayManager:
             elif stage == "replay_forward":
                 replay_top_indices = replay.pop_forward()
 
-                shape_sanity_check(replay_top_indices, scores)
+                shape_sanity_check(replay_top_indices, scores, topk)
                 top_indices = replay_top_indices[..., :topk].view(scores.shape)
 
-
+                # if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
+                #     self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
 
                 return get_probs_and_top_indices(top_indices, return_probs)
 
             elif stage == "replay_backward":
-                top_indices = replay.pop_backward()
+                replay_top_indices = replay.pop_backward()
 
-                shape_sanity_check(replay_top_indices, scores)
+                shape_sanity_check(replay_top_indices, scores, topk)
                 top_indices = replay_top_indices[..., :topk].view(scores.shape)
 
                 # if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
