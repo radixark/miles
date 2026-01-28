@@ -1,6 +1,5 @@
 import atexit
 from pathlib import Path
-from typing import List, Optional
 
 import torch
 import torch.distributed as dist
@@ -14,7 +13,7 @@ class Replay:
     def __init__(self):
         self.forward_index = 0
         self.backward_index = 0
-        self.top_indices_list: List[torch.Tensor] = []
+        self.top_indices_list: list[torch.Tensor] = []
 
     def record(self, top_indices: torch.Tensor):
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
@@ -45,11 +44,11 @@ class BaseReplayManager:
     filename: str = ""
 
     def __init__(self):
-        self.replays: List[Replay] = []
-        self.current: Optional[Replay] = None
+        self.replays: list[Replay] = []
+        self.current: Replay | None = None
         self.enabled = False
         self.stage = "fallthrough"
-        self._save_path: Optional[str] = None
+        self._save_path: str | None = None
         self._save_registered = False
 
     def create_replay(self) -> Replay:
@@ -60,7 +59,7 @@ class BaseReplayManager:
     def set_current(self, replay: Replay):
         self.current = replay
 
-    def get_current(self) -> Optional[Replay]:
+    def get_current(self) -> Replay | None:
         return self.current
 
     def clear_all(self):
@@ -96,7 +95,7 @@ class BaseReplayManager:
             atexit.register(lambda: self.save_all_to_files(path))
             self._save_registered = True
 
-    def get_topk_fn(self, old_topk_fn, layer_id: Optional[int] = None):
+    def get_topk_fn(self, old_topk_fn):
         manager = self
 
         def new_topk_fn(scores, topk, **kwargs):
@@ -121,47 +120,44 @@ class BaseReplayManager:
                 return probs, top_indices
 
             elif stage == "replay_forward":
-                top_indices = replay.pop_forward()
+                replay_top_indices = replay.pop_forward()
+
+                n_replay_tokens, n_actual_tokens = replay_top_indices[..., 0].numel(), scores[..., 0].numel()
                 assert (
-                    top_indices.shape[0] == scores.shape[0]
-                ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"
-                assert top_indices.shape[1] >= topk, f"not enough topk indices in replay, got {top_indices.shape[1]}, expected at least {topk}"
-                top_indices = top_indices[:, :topk]
+                    n_replay_tokens == n_actual_tokens
+                ), f"rank {_get_rank()}: replay n_tokens {n_replay_tokens} does not match scores n_tokens {n_actual_tokens}"
+
+                assert (
+                    replay_top_indices.shape[1] >= topk
+                ), f"not enough topk indices in replay, got {replay_top_indices.shape[1]}, expected at least {topk}"
+
+                top_indices = replay_top_indices[..., :topk].view(scores.shape)
+
+                # if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
+                #     self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
+
                 return get_probs_and_top_indices(top_indices)
 
             elif stage == "replay_backward":
                 top_indices = replay.pop_backward()
-                assert (
-                    top_indices.shape[0] == scores.shape[0]
-                ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"
-                assert top_indices.shape[1] >= topk, f"not enough topk indices in replay, got {top_indices.shape[1]}, expected at least {topk}"
-                top_indices = top_indices[:, :topk]
-                return get_probs_and_top_indices(top_indices)
 
+                n_replay_tokens, n_actual_tokens = replay_top_indices[..., 0].numel(), scores[..., 0].numel()
+                assert (
+                    n_replay_tokens == n_actual_tokens
+                ), f"rank {_get_rank()}: replay n_tokens {n_replay_tokens} does not match scores n_tokens {n_actual_tokens}"
+
+                assert (
+                    replay_top_indices.shape[1] >= topk
+                ), f"not enough topk indices in replay, got {replay_top_indices.shape[1]}, expected at least {topk}"
+
+                top_indices = replay_top_indices[..., :topk].view(scores.shape)
+
+                # if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
+                #     self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
+
+                return get_probs_and_top_indices(top_indices)
             else:
                 return old_topk_fn(scores, topk, **kwargs)
-
-            if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
-                orig_probs, orig_top_indices = old_topk_fn(scores, topk, **kwargs)
-                try:
-                    assert orig_top_indices.shape == top_indices.shape, \
-                        f"Shape mismatch: orig {orig_top_indices.shape} vs replay {top_indices.shape}"
-                    num_tokens, k = top_indices.shape
-                    min_match = k // 2
-                    for i in range(num_tokens):
-                        orig_set = set(orig_top_indices[i].tolist())
-                        replay_set = set(top_indices[i].tolist())
-                        num_match = len(orig_set & replay_set)
-                        assert num_match >= min_match, \
-                            f"rank {_get_rank()}: Token {i}: only {num_match}/{k} indices match (need at least {min_match})"
-                except Exception as e:
-                    print(f"Routing replay stage: {stage}, layer: {layer_id}, rank: {_get_rank()}", flush=True)
-                    torch.set_printoptions(threshold=float('inf'))
-                    print(f"original top_indices: {orig_top_indices}", flush=True)
-                    print(f"replay top_indices: {top_indices}", flush=True)
-                    raise e
-
-            return probs, top_indices
 
         return new_topk_fn
 
@@ -176,6 +172,29 @@ class BaseReplayManager:
             manager.set_current(replay)
 
         module.register_forward_pre_hook(pre_forward_hook)
+
+    def check_replay_result(self, old_topk_fn, scores, topk, replay_top_indices, **kwargs):
+        manager = self
+        orig_probs, orig_top_indices = old_topk_fn(scores, topk, **kwargs)
+        try:
+            assert (
+                orig_top_indices.shape == replay_top_indices.shape
+            ), f"Shape mismatch: orig {orig_top_indices.shape} vs replay {replay_top_indices.shape}"
+            num_tokens, k = replay_top_indices.shape
+            min_match = k // 2
+            for i in range(num_tokens):
+                orig_set = set(orig_top_indices[i].tolist())
+                replay_set = set(replay_top_indices[i].tolist())
+                num_match = len(orig_set & replay_set)
+                assert (
+                    num_match >= min_match
+                ), f"rank {_get_rank()}: Token {i}: only {num_match}/{k} indices match (need at least {min_match})"
+        except Exception as e:
+            print(f"Routing replay stage: {manager.stage}, rank: {_get_rank()}", flush=True)
+            torch.set_printoptions(threshold=float("inf"))
+            print(f"original top_indices: {orig_top_indices}", flush=True)
+            print(f"replay top_indices: {replay_top_indices}", flush=True)
+            raise e
 
 
 class RoutingReplayManager(BaseReplayManager):
