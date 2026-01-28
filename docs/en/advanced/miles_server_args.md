@@ -21,20 +21,21 @@ Miles supports several GPU hardware platforms:
 4. [Sampling and Filtering](#sampling-and-filtering)
 5. [Data Arguments](#data-arguments)
 6. [Evaluation Arguments](#evaluation-arguments)
-7. [Algorithm and RL Arguments](#algorithm-and-rl-arguments)
-8. [Logging and Monitoring](#logging-and-monitoring)
-9. [Fault Tolerance](#fault-tolerance)
-10. [Miles Router](#miles-router)
-11. [Reward Model Arguments](#reward-model-arguments)
-12. [Rollout Buffer Management](#rollout-buffer-management)
-13. [Multi-Token Prediction (MTP) Arguments](#multi-token-prediction-mtp-arguments)
-14. [SGLang Backend Arguments](#sglang-backend-arguments)
-15. [FSDP Specific Arguments](#fsdp-specific-arguments)
-16. [Debug and Profiling](#debug-and-profiling)
-17. [Environment Variables](#environment-variables)
-18. [Multi-Turn and Agentic Arguments](#multi-turn-and-agentic-arguments)
-19. [Advanced Developer Hooks and CI](#advanced-developer-hooks-and-ci)
-20. [Miscellaneous and System](#miscellaneous-and-system)
+7. [Checkpointing and Resuming](#checkpointing-and-resuming)
+8. [Algorithm and RL Arguments](#algorithm-and-rl-arguments)
+9. [Logging and Monitoring](#logging-and-monitoring)
+10. [Fault Tolerance](#fault-tolerance)
+11. [Miles Router](#miles-router)
+12. [Reward Model Arguments](#reward-model-arguments)
+13. [Rollout Buffer Management](#rollout-buffer-management)
+14. [Multi-Token Prediction (MTP) Arguments](#multi-token-prediction-mtp-arguments)
+15. [SGLang Backend Arguments](#sglang-backend-arguments)
+16. [FSDP Specific Arguments](#fsdp-specific-arguments)
+17. [Debug and Profiling](#debug-and-profiling)
+18. [Environment Variables](#environment-variables)
+19. [Multi-Turn and Agentic Arguments](#multi-turn-and-agentic-arguments)
+20. [Advanced Developer Hooks and CI](#advanced-developer-hooks-and-ci)
+21. [Miscellaneous and System](#miscellaneous-and-system)
 
 ---
 
@@ -146,7 +147,6 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--tool-key` | JSON key for tool definitions in the prompt dataset (used when applying chat templates). | `tools` | Type: str |
 | `--apply-chat-template` | Format the input using the model's chat template. Recommended for Instruct models. | `False` | bool flag (set to enable) |
 | `--apply-chat-template-kwargs` | Extra arguments for the chat template processing. | `{}` | Type: JSON / Dict |
-| `--start-rollout-id` | The specific rollout ID to start from. Useful for manual log alignment during resumes. | `None` | Type: int |
 | `--rollout-batch-size` | Number of prompts sampled in each rollout round. | (Required) | Type: int |
 | `--n-samples-per-prompt` | Number of responses generated for each prompt (used for algorithms like GRPO). | `1` | Type: int |
 | `--global-batch-size` | Total samples per optimizer step. Automatically calculated if `num_steps_per_rollout` is set. | `None` | Type: int |
@@ -185,27 +185,35 @@ Arguments for configuring the evaluation process during training.
 
 ---
 
-## Algorithm and RL Arguments
+## Checkpointing and Resuming
 
-Arguments for reinforcement learning algorithms, loss calculation, and checkpointing.
+Arguments for saving and loading model states.
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
-| `--advantage-estimator` | Selection of the reinforcement learning algorithm. | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `on_policy_distillation` |
-| `--loss-type` | Selection of the training loss function. | `policy_loss` | `policy_loss`, `sft_loss`, `custom_loss` |
-| `--custom-loss-function-path` | Path to a custom loss calculation function (requires `--loss-type custom_loss`). | `None` | Type: str |
 | `--load` | Path to the training checkpoint to resume from. | `None` | Type: str |
 | `--save` | Directory where training checkpoints will be saved. | `None` | Type: str |
 | `--save-interval` | Interval (in rollout steps) for saving checkpoints. | `None` | Type: int |
-| `--async-save` | Enable background checkpoint saving. | `False` | bool flag |
-| `--save-hf` | Automatically save a HuggingFace-formatted model at intervals. | `None` | Type: str |
-| `--no-save-optim` | Skip saving optimizer states to save disk space. | `False` | bool flag |
+| `--async-save` | Enable background checkpoint saving to avoid pausing GPUs. | `False` | bool flag |
+| `--save-hf` | Automatically save a HuggingFace-formatted model at every save interval. | `None` | Type: str |
+| `--no-save-optim` | Skip saving optimizer states to save disk space (disables resuming). | `False` | bool flag |
 | `--ref-load` | Path to the reference model checkpoint. | `None` | Type: str |
 | `--ref-ckpt-step` | Specific step to load from the reference checkpoint. | `None` | Type: int |
 | `--critic-load` | Path to the critic model checkpoint. | `None` | Type: str |
 | `--critic-save` | Path to save the critic model checkpoint. | `None` | Type: str |
-| `--seed` | Random seed for the training process. | `1234` | Type: int |
-| `--clip-grad` | Maximum gradient norm for gradient clipping. | `1.0` | Type: float |
+| `--start-rollout-id` | The specific rollout ID to start from. Useful for manual log alignment during resumes. | `None` | Type: int |
+
+---
+
+## Algorithm and RL Arguments
+
+Arguments for reinforcement learning algorithms and loss calculation.
+
+| Argument | Description | Default | Options |
+| :--- | :--- | :--- | :--- |
+| `--advantage-estimator` | Selection of the reinforcement learning algorithm. | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` |
+| `--loss-type` | Selection of the training loss function. | `policy_loss` | `policy_loss`, `sft_loss`, `custom_loss` |
+| `--custom-loss-function-path` | Path to a custom loss calculation function (requires `--loss-type custom_loss`). | `None` | Type: str |
 | `--lr` | Learning rate for the Actor. | `1e-6` | Type: float |
 | `--critic-lr` | Learning rate for the Critic. Defaults to `--lr`. | `None` | Type: float |
 | `--critic-lr-warmup-iters` | Number of iterations for Critic learning rate linear warmup. | `0` | Type: int |
@@ -241,6 +249,8 @@ Arguments for reinforcement learning algorithms, loss calculation, and checkpoin
 | `--disable-rewards-normalization` | Disable normalization of the reward signals. | `False` | bool flag (set to enable) |
 | `--use-rollout-entropy` | Calculate entropy during logprob computation. | `False` | bool flag (set to enable) |
 | `--use-rollout-logprobs` | Use rollout logprobs for importance sampling ratios. | `False` | bool flag (set to enable) |
+| `--seed` | Random seed for the training process. | `1234` | Type: int |
+| `--clip-grad` | Maximum gradient norm for gradient clipping. | `1.0` | Type: float |
 
 ---
 
@@ -295,6 +305,8 @@ Arguments for the specialized Miles text-based router.
 | `--miles-router-timeout` | Timeout for router HTTP requests in seconds. | `None` | Type: float |
 | `--miles-router-max-connections` | Maximum concurrent connections for the router. | `None` | Type: int |
 | `--miles-router-health-check-failure-threshold` | Number of failures allowed before marking a worker as dead. | `3` | Type: int |
+| `--tokenizer-name` | Name of the tokenizer to use for text-based routing. | `None` | Type: str |
+| `--verbose` | Enable verbose output for the router. | `False` | bool flag |
 
 ---
 
@@ -304,7 +316,7 @@ Arguments for configuring reward signals and post-processing.
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
-| `--rm-type` | Built-in reward model selection. | `None` | `math`, `deepscaler`, `gpqa`, `ifbench`, `remote_rm` |
+| `--rm-type` | Built-in reward model selection. | `None` | `remote_rm`, `deepscaler`, `dapo`, `math`, `f1`, `gpqa`, `ifbench`, `random` |
 | `--rm-url` | URL for the reward model service (used with `--rm-type remote_rm`). | `None` | Type: str |
 | `--reward-key` | JSON key to extract the numerical reward from a returned dictionary. | `None` | Type: str |
 | `--eval-reward-key` | Evaluation variant for `--reward-key`. | `None` | Type: str |
@@ -361,14 +373,14 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
 | `--optimizer` | Optimizer type for FSDP. | `adam` | `adam`, `sgd` |
-| `--fsdp-cpu-offload` | Offload parameters and gradients to CPU. | `False` | bool flag (set to enable) |
-| `--fsdp-state-dict-cpu-offload` | Offload full state dict to CPU during collection. | `True` | bool flag (set to enable) |
-| `--fsdp-cpu-backend` | CPU backend for FSDP CPU offload. | `gloo` | `gloo`, `None` |
 | `--weight-decay` | Weight decay for the optimizer (FSDP only). | `0.0` | Type: float |
 | `--lr-decay-style` | Learning rate decay style (FSDP only). | `constant` | Type: str |
 | `--warmup-ratio` | Ratio of total steps for learning rate warmup (FSDP only). | `0.03` | Type: float |
 | `--gradient-checkpointing` | Enable gradient checkpointing to save memory (FSDP only). | `False` | bool flag |
 | `--fp16` | Enable FP16 mixed precision (FSDP only). | `False` | bool flag |
+| `--fsdp-cpu-offload` | Offload parameters and gradients to CPU. | `False` | bool flag (set to enable) |
+| `--fsdp-state-dict-cpu-offload` | Offload full state dict to CPU during collection. | `False` | bool flag (set to enable) |
+| `--fsdp-cpu-backend` | CPU backend for FSDP CPU offload. | `gloo` | `gloo`, `None` |
 | `--context-parallel-size` | Size of context parallelism. | `1` | Type: int |
 | `--attn-implementation` | Selection of the attention implementation. | `flash_attention_2` | `flash_attention_2`, `sdpa`, `eager` |
 | `--deterministic-mode` | Enable deterministic mode for reproducibility. | `False` | bool flag |
@@ -413,6 +425,20 @@ Miles recognizes several environment variables for advanced configuration.
 
 ---
 
+## Multi-Turn and Agentic Arguments
+
+Arguments for managing interactions and tools.
+
+| Argument | Description | Default | Options |
+| :--- | :--- | :--- | :--- |
+| `--generate-max-turns` | Maximum number of turns in a conversation. | `16` | Type: int |
+| `--generate-tool-specs-path` | Path to the tool specifications (JSON). | `None` | Type: str |
+| `--generate-tool-call-parser` | The parser used to extract tool calls from text. | `None` | Type: str |
+| `--generate-execute-tool-function-path` | Path to the function that executes the tool. | `None` | Type: str |
+| `--generate-multi-samples` | Whether to generate multiple samples within one turn. | `False` | bool flag |
+
+---
+
 ## Advanced Developer Hooks and CI
 
 Hooks for custom logic and Continuous Integration testing flags.
@@ -428,20 +454,6 @@ Hooks for custom logic and Continuous Integration testing flags.
 | `--ci-metric-checker-threshold` | Pass/fail threshold for the monitored metric. | `None` | Type: float |
 | `--ci-save-grad-norm` | Path to save gradient norms for CI comparison. | `None` | Type: str |
 | `--ci-load-grad-norm` | Path to load gradient norms for CI verification. | `None` | Type: str |
-
----
-
-## Multi-Turn and Agentic Arguments
-
-Arguments for managing interactions and tools.
-
-| Argument | Description | Default | Options |
-| :--- | :--- | :--- | :--- |
-| `--generate-max-turns` | Maximum number of turns in a conversation. | `16` | Type: int |
-| `--generate-tool-specs-path` | Path to the tool specifications (JSON). | `None` | Type: str |
-| `--generate-tool-call-parser` | The parser used to extract tool calls from text. | `None` | Type: str |
-| `--generate-execute-tool-function-path` | Path to the function that executes the tool. | `None` | Type: str |
-| `--generate-multi-samples` | Whether to generate multiple samples within one turn. | `False` | bool flag |
 
 ---
 
