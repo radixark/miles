@@ -2,6 +2,11 @@
 
 ### 1. The Sunrise Model
 
+update: enable R3
+```
+CHECK_ROUTING_REPLAY_RESULT=1 python scripts/run_deepseek_v4.py train --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer --megatron-path /workspace/sunrise/megatron-sunrise --enable-r3
+```
+
 ```bash
 docker run --name miles_tom \
   --gpus all --ipc=host --shm-size=16g \
