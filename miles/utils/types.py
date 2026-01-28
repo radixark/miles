@@ -25,6 +25,7 @@ class Sample:
     weight_versions: list[str] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
     rollout_routed_experts: list[list[int]] | None = None  # Routed experts from rollout engine
+    rollout_indexer_topk: list[list[int]] | None = None  # Indexer topk from rollout engine (layers with indexer)
     remove_sample: bool = False
 
     class Status(Enum):
@@ -162,6 +163,10 @@ class Sample:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
+        if self.rollout_indexer_topk is not None:
+            actual = len(self.rollout_indexer_topk)
+            expect = len(self.tokens) - 1
+            assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
 
     def update_from_meta_info(self, args, meta_info: dict):
         """

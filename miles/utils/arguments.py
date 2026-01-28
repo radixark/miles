@@ -916,6 +916,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
             )
             parser.add_argument(
+                "--use-indexer-replay",
+                action="store_true",
+                default=False,
+                help="The indexer replay technique for layers with indexer.",
+            )
+            parser.add_argument(
+                "--use-rollout-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk from rollout during training for layers with indexer.",
+            )
+            parser.add_argument(
                 "--use-opsm",
                 action="store_true",
                 default=False,
@@ -1690,6 +1702,9 @@ def miles_validate_args(args):
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
+
+    if args.use_rollout_indexer_replay:
+        args.use_indexer_replay = True
 
     if args.custom_config_path:
         with open(args.custom_config_path) as f:

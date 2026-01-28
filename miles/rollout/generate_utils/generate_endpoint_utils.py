@@ -53,6 +53,7 @@ def compute_request_payload(
         "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
         "return_logprob": True,
         "return_routed_experts": args.use_rollout_routing_replay,
+        "return_indexer_topk": args.use_rollout_indexer_replay,
     }
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
@@ -96,17 +97,20 @@ async def update_sample_from_response(
             sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = _get_rollout_routed_experts_from_response(args, sample, output)
+    sample.rollout_routed_experts = _get_rollout_topk_from_response(
+        output, sample, "routed_experts", args.num_layers, args.moe_router_topk
+    )
+    sample.rollout_indexer_topk = _get_rollout_topk_from_response(
+        output, sample, "indexer_topk", args.num_indexer_layers, args.index_topk
+    )
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
 
 
-def _get_rollout_routed_experts_from_response(args, sample, output):
-    info = output["meta_info"].get("routed_experts")
+def _get_rollout_topk_from_response(output, sample, key, num_layers, topk):
+    info = output["meta_info"].get(key)
     if info is None:
         return None
-
     x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
-    x = x.reshape(len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
-    return x
+    return x.reshape(len(sample.tokens) - 1, num_layers, topk)
