@@ -157,16 +157,21 @@ def create_model_and_load_checkpoint(args):
     else:
         num_params = sum(p.numel() for p in model.parameters())
 
-    # Add dummy finish_grad_sync to allow finalize_model_grads to work without DDP
-    # (DP=1 means this is a no-op anyway)
+    # Add dummy methods/attributes to allow finalize_model_grads to work without DDP
+    # (DP=1 means these are no-ops anyway)
+    from megatron.core.distributed import DistributedDataParallelConfig
+    dummy_ddp_config = DistributedDataParallelConfig()
+    
     def _dummy_finish_grad_sync(self):
         pass
     
     if isinstance(model, list):
         for m in model:
             m.finish_grad_sync = _dummy_finish_grad_sync.__get__(m, type(m))
+            m.ddp_config = dummy_ddp_config
     else:
         model.finish_grad_sync = _dummy_finish_grad_sync.__get__(model, type(model))
+        model.ddp_config = dummy_ddp_config
     logger.info(f"Model created with {num_params:,} parameters")
 
     load_path = getattr(args, "load", None) or getattr(args, "ref_load", None)
