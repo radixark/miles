@@ -61,7 +61,7 @@ class TransferBundle:
             source_lens.append(numel * ele_size)
 
         # Match with remote sessions and target pointers
-        for idx, remote_session in enumerate(self.remote_weight_infos):
+        for remote_session in self.remote_weight_infos:
             session_id, remote_weights_info = remote_session.session_id, remote_session.weights_info
             target_ptrs = []
             for name in names:
