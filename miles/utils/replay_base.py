@@ -124,16 +124,18 @@ class BaseReplayManager:
                 top_indices = replay.pop_forward()
                 assert (
                     top_indices.shape[0] == scores.shape[0]
-                    and top_indices.shape[1] == topk
-                ), f"rank {_get_rank()} top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
+                ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"
+                assert top_indices.shape[1] >= topk, f"not enough topk indices in replay, got {top_indices.shape[1]}, expected at least {topk}"
+                top_indices = top_indices[:, :topk]
                 return get_probs_and_top_indices(top_indices)
 
             elif stage == "replay_backward":
                 top_indices = replay.pop_backward()
                 assert (
                     top_indices.shape[0] == scores.shape[0]
-                    and top_indices.shape[1] == topk
-                ), f"top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
+                ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"
+                assert top_indices.shape[1] >= topk, f"not enough topk indices in replay, got {top_indices.shape[1]}, expected at least {topk}"
+                top_indices = top_indices[:, :topk]
                 return get_probs_and_top_indices(top_indices)
 
             else:
