@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import ray
 
-from miles.utils.external_utils.typer_utils import dataclass_cli
+from miles.utils.typer_utils import dataclass_cli
 from miles.utils.misc import exec_command
 
 _ = exec_command, dataclass_cli

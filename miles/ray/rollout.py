@@ -10,6 +10,7 @@ import numpy as np
 import ray
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from miles.utils import tracking_utils
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
@@ -17,16 +18,19 @@ from miles.rollout.base_types import call_rollout_fn
 from miles.utils import logging_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
-from miles.utils.logging_utils import configure_logger, init_tracking
+from miles.utils.iter_utils import group_by
+from miles.utils.logging_utils import configure_logger
+from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import (
-    MetricChecker,
     compute_pass_rate,
     compute_rollout_step,
     compute_statistics,
     dict_add_prefix,
 )
-from miles.utils.misc import Box, group_by, load_function
+from miles.utils.misc import load_function
+from miles.utils.ray_utils import Box 
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
 
 from ..utils.metric_utils import has_repetition
@@ -738,7 +742,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     logger.info(f"perf {rollout_id}: {log_dict}")
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
-    logging_utils.log(args, log_dict, step_key="rollout/step")
+    tracking_utils.log(args, log_dict, step_key="rollout/step")
 
 
 def compute_metrics_from_samples(args, samples):
