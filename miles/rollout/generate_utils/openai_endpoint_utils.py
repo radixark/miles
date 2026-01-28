@@ -31,7 +31,7 @@ class OpenAIEndpointTracer:
             response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="get")
         except Exception as e:
             logger.warning(f"Failed to get session {self.session_id} records: {e}")
-            return []
+            raise
         response = GetSessionResponse.model_validate(response)
         records = response.records
 
