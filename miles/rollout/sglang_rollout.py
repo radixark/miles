@@ -184,6 +184,15 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             args.num_layers,
             args.moe_router_topk,
         )
+    if "indexer_topk" in output["meta_info"]:
+        sample.rollout_indexer_topk = np.frombuffer(
+            pybase64.b64decode(output["meta_info"]["indexer_topk"].encode("ascii")),
+            dtype=np.int32,
+        ).reshape(
+            len(sample.tokens) - 1,
+            args.num_indexer_layers,
+            args.index_topk,
+        )
 
     sample.update_from_meta_info(args, output["meta_info"])
 
