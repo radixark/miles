@@ -267,6 +267,8 @@ def megatron_backward(
     postfix_dummy_len: int = typer.Option(0, "--postfix-dummy-len", help="Add dummy text of this length"),
     model_type: str = typer.Option("deepseek-v4-285B-5layer", "--model-type", help="Model type"),
     batch_size: int = typer.Option(1, "--batch-size", help="Batch size"),
+    routing_replay_dump_path: Optional[str] = typer.Option(None, "--routing-replay-dump-path", help="Path to save routing topk indices (for record mode)"),
+    routing_replay_load_path: Optional[str] = typer.Option(None, "--routing-replay-load-path", help="Path to load routing topk indices (for replay mode)"),
 ):
     """Run Megatron model backward pass test with dummy loss."""
     from transformers import AutoTokenizer
@@ -281,6 +283,10 @@ def megatron_backward(
     print(f"Seq Length:       {input_seq_len}")
     print(f"Prompt Mode:      {prompt_mode}")
     print(f"Chat Template:    {apply_chat_template}")
+    if routing_replay_dump_path:
+        print(f"Routing Replay:   DUMP to {routing_replay_dump_path}")
+    elif routing_replay_load_path:
+        print(f"Routing Replay:   LOAD from {routing_replay_load_path}")
     print("=" * 60)
 
     # Load tokenizer to generate prompt
@@ -326,12 +332,24 @@ def megatron_backward(
             extra_args.append("--apply-chat-template")
         extra_args_str = " ".join(extra_args)
 
+        routing_replay_env = ""
+        if routing_replay_dump_path:
+            routing_replay_env = f'''ENABLE_ROUTING_REPLAY=1 \\
+ROUTING_REPLAY_STAGE=record \\
+ROUTING_REPLAY_DUMP_PATH="{routing_replay_dump_path}" \\
+'''
+        elif routing_replay_load_path:
+            routing_replay_env = f'''ENABLE_ROUTING_REPLAY=1 \\
+ROUTING_REPLAY_STAGE=replay_from_file \\
+ROUTING_REPLAY_LOAD_PATH="{routing_replay_load_path}" \\
+'''
+
         # Build shell command with backward pass flags
         shell_cmd = f'''
 source "{model_script_path}" && \\
 PYTHONPATH="{MEGATRON_PATH}" \\
 SGLANG_DUMPER_DUMP_GRAD=1 \\
-{sys.executable} -m torch.distributed.run \\
+{routing_replay_env}{sys.executable} -m torch.distributed.run \\
     --nproc-per-node={tp_size} \\
     "{script_path}" \\
     "${{MODEL_ARGS[@]}}" \\
