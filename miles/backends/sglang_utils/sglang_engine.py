@@ -217,7 +217,9 @@ class SGLangEngine(RayActor):
             return
 
         url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
+
         response = requests.post(url, json=payload or {})
+
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -497,7 +499,7 @@ def _compute_server_args(
         "gpu_id_step": 1,
         "base_gpu_id": base,
         # parallel
-        "tp_size": args.rollout_num_gpus_per_engine,
+        "tp_size": args.rollout_num_gpus_per_engine // args.sglang_pp_size,
         "dp_size": args.sglang_dp_size,
         "pp_size": args.sglang_pp_size,
         "ep_size": args.sglang_ep_size,
