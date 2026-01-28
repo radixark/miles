@@ -5,6 +5,7 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.profile_utils import merge_traces
 from miles.utils.timer import log_experiment_start
 
 MODEL_NAME = "Qwen3-4B"
@@ -27,6 +28,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout_gpus: int = 1
     # Optimizations
     pipelined_transfer: bool = False
+    # Profiling
+    use_pytorch_profiler_update_weight: bool = False
 
     def validate(self):
         assert self.sglang_pp == 1, "Not supported yet for sglang pp"
@@ -152,6 +155,13 @@ def execute(args: ScriptArgs):
     if args.mode == "rdma":
         misc_args += "--update-weight-transfer-mode rdma "
 
+    profile_args = (
+        "--use-pytorch-profiler-update-weight "
+        "--profile-update-weight-start 0 "
+        "--profile-update-weight-end 6 "
+        "--tensorboard-dir /root/profiler_logs/ "
+    )
+
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -162,6 +172,7 @@ def execute(args: ScriptArgs):
         f"{sglang_args} "
         # f"{ci_args} "
         f"{misc_args} "
+        f"{profile_args} "
     )
 
     U.execute_train(
@@ -171,6 +182,7 @@ def execute(args: ScriptArgs):
         train_script="train_async.py",
         # extra_env_vars={"RAY_DEBUG": "1"},
     )
+    merge_traces(name="update_weights", call_end=5, rank=0, output_dir="/root/profiler_logs/")
 
 
 @U.dataclass_cli
