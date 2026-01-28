@@ -109,9 +109,6 @@ class BaseReplayManager:
                 replay_top_indices.shape[1] >= topk
             ), f"not enough topk indices in replay, got {replay_top_indices.shape[1]}, expected at least {topk}"
 
-            # if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
-            #     self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
-
         def new_topk_fn(scores, topk, *args, **kwargs):
             def get_probs_and_top_indices(top_indices, return_probs):
                 if return_probs:
@@ -140,10 +137,9 @@ class BaseReplayManager:
                 replay_top_indices = replay.pop_forward()
 
                 shape_sanity_check(replay_top_indices, scores, topk)
-                top_indices = replay_top_indices[..., :topk].view(scores.shape)
+                top_indices = replay_top_indices[..., :topk].view(scores.shape[:-1] + (topk,))
 
-                # if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
-                #     self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
+                self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
 
                 return get_probs_and_top_indices(top_indices, return_probs)
 
@@ -151,10 +147,9 @@ class BaseReplayManager:
                 replay_top_indices = replay.pop_backward()
 
                 shape_sanity_check(replay_top_indices, scores, topk)
-                top_indices = replay_top_indices[..., :topk].view(scores.shape)
+                top_indices = replay_top_indices[..., :topk].view(scores.shape[:-1] + (topk,))
 
-                # if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
-                #     self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
+                self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
 
                 return get_probs_and_top_indices(top_indices, return_probs)
             else:
@@ -175,6 +170,8 @@ class BaseReplayManager:
         module.register_forward_pre_hook(pre_forward_hook)
 
     def check_replay_result(self, old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs):
+        if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "0":
+            return
         manager = self
         orig_probs, orig_top_indices = old_topk_fn(scores, topk, **kwargs)
         try:
