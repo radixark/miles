@@ -294,7 +294,10 @@ def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor, model: torc
 
     loss.backward()
 
+    # Finalize gradients (all-reduce for sequence_parallel params, etc.)
     if model is not None:
+        from megatron.core.distributed import finalize_model_grads
+        finalize_model_grads([model])
         dumper.dump_param_grads(model, name_prefix="model")
 
     logger.info("Backward pass complete.")
