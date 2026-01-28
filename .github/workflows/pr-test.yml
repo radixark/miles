@@ -33,7 +33,7 @@ jobs:
       options: >
         --gpus all
         --ipc=host
-        --shm-size=16g
+        --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
@@ -41,6 +41,9 @@ jobs:
         -v /mnt/nvme0n1/miles_ci:/data/miles_ci
         -v /mnt/nvme0n1/miles_ci/models:/root/models
         -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
+        --privileged
+        --ulimit nofile=65535:65535
+        -v /tmp:/tmp
     strategy:
       fail-fast: false
       matrix:
@@ -52,10 +55,25 @@ jobs:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Cleanup Ray processes
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          pkill -9 -f gcs_server 2>/dev/null || true
+          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
+          pkill -9 sglang 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          rm -rf /tmp/ray/* 2>/dev/null || true
+          sleep 3
 
       - name: Install
         shell: bash
@@ -64,6 +82,84 @@ jobs:
       - name: Execute
         shell: bash
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- pytest tests/${{ matrix.info.test_file }}
+
+      - name: Post-test cleanup
+        if: always()
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          rm -rf /tmp/ray/* 2>/dev/null || true
+
+
+  unit-test:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-unit-test'))
+    runs-on: self-hosted
+    container:
+      image: radixark/miles:latest
+      options: >
+        --gpus all
+        --ipc=host
+        --shm-size=32g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --memory=0
+        --memory-swap=0
+        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
+        -v /mnt/nvme0n1/miles_ci/models:/root/models
+        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
+        --privileged
+        --ulimit nofile=65535:65535
+        -v /tmp:/tmp
+    strategy:
+      fail-fast: false
+      matrix:
+        info: [{"num_gpus": 2, "test_file": "e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py"}]
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    env:
+      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
+      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup Ray processes
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          pkill -9 -f gcs_server 2>/dev/null || true
+          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
+          pkill -9 sglang 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          rm -rf /tmp/ray/* 2>/dev/null || true
+          sleep 3
+
+      - name: Install
+        shell: bash
+        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+
+      - name: Execute
+        shell: bash
+        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+
+      - name: Post-test cleanup
+        if: always()
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          rm -rf /tmp/ray/* 2>/dev/null || true
+
 
   e2e-test-short:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
@@ -87,7 +183,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 4, "test_file": "test_qwen2.5_0.5B_gsm8k_async_short.py"}, {"num_gpus": 4, "test_file": "test_qwen2.5_0.5B_gsm8k_short.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}]
+        info: [{"num_gpus": 4, "test_file": "e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py"}, {"num_gpus": 4, "test_file": "e2e/short/test_qwen2.5_0.5B_gsm8k_short.py"}, {"num_gpus": 2, "test_file": "e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -131,6 +227,7 @@ jobs:
           pkill -9 -f raylet 2>/dev/null || true
           ray stop --force 2>/dev/null || true
           rm -rf /tmp/ray/* 2>/dev/null || true
+
 
   e2e-test-fsdp:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
@@ -154,7 +251,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 2, "test_file": "test_qwen3_4B_fsdp_true_on_policy.py"}, {"num_gpus": 8, "test_file": "test_qwen3_vl_4B_fsdp.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_distributed.py"}, {"num_gpus": 4, "test_file": "test_qwen3_0.6B_megatron_fsdp_align.py"}]
+        info: [{"num_gpus": 2, "test_file": "e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py"}, {"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_vl_4B_fsdp.py"}, {"num_gpus": 2, "test_file": "e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py"}, {"num_gpus": 4, "test_file": "e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -198,6 +295,7 @@ jobs:
           pkill -9 -f raylet 2>/dev/null || true
           ray stop --force 2>/dev/null || true
           rm -rf /tmp/ray/* 2>/dev/null || true
+
 
   e2e-test-megatron:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
@@ -221,7 +319,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 8, "test_file": "test_quick_start_glm4_9B.py"}, {"num_gpus": 8, "test_file": "test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "test_qwen3_30B_A3B_r3.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "test_qwen3_30B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "test_moonlight_16B_A3B.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "test_moonlight_16B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "test_mimo_7B_mtp_only_grad.py"}]
+        info: [{"num_gpus": 8, "test_file": "e2e/megatron/test_quick_start_glm4_9B.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_mimo_7B_mtp_only_grad.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -265,6 +363,7 @@ jobs:
           pkill -9 -f raylet 2>/dev/null || true
           ray stop --force 2>/dev/null || true
           rm -rf /tmp/ray/* 2>/dev/null || true
+
 
   e2e-test-precision:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
@@ -288,7 +387,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 8, "test_file": "test_qwen3_0.6B_parallel_check.py"}, {"num_gpus": 4, "test_file": "test_qwen3_0.6B_megatron_fsdp_align.py"}]
+        info: [{"num_gpus": 8, "test_file": "e2e/precision/test_qwen3_0.6B_parallel_check.py"}, {"num_gpus": 4, "test_file": "e2e/precision/test_qwen3_0.6B_megatron_fsdp_align.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -332,6 +431,7 @@ jobs:
           pkill -9 -f raylet 2>/dev/null || true
           ray stop --force 2>/dev/null || true
           rm -rf /tmp/ray/* 2>/dev/null || true
+
 
   e2e-test-ckpt:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
@@ -355,7 +455,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 8, "test_file": "test_qwen3_4B_ckpt.py"}, {"num_gpus": 8, "test_file": "test_qwen3_4B_ckpt.py --async-save"}]
+        info: [{"num_gpus": 8, "test_file": "e2e/ckpt/test_qwen3_4B_ckpt.py"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_qwen3_4B_ckpt.py --async-save"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -399,6 +499,7 @@ jobs:
           pkill -9 -f raylet 2>/dev/null || true
           ray stop --force 2>/dev/null || true
           rm -rf /tmp/ray/* 2>/dev/null || true
+
 
   e2e-test-long:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long'))
@@ -422,7 +523,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k_async.py"}]
+        info: [{"num_gpus": 2, "test_file": "e2e/long/test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 2, "test_file": "e2e/long/test_qwen2.5_0.5B_gsm8k_async.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -467,11 +568,12 @@ jobs:
           ray stop --force 2>/dev/null || true
           rm -rf /tmp/ray/* 2>/dev/null || true
 
+
   e2e-test-image:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
     runs-on: self-hosted
     container:
-      image: radixark/miles-test:latest
+      image: radixark/miles:latest
       options: >
         --gpus all
         --ipc=host
@@ -489,7 +591,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 4, "test_file": "test_qwen2.5_0.5B_gsm8k_async_short.py"}, {"num_gpus": 4, "test_file": "test_qwen2.5_0.5B_gsm8k_short.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}, {"num_gpus": 2, "test_file": "test_qwen3_4B_fsdp_true_on_policy.py"}, {"num_gpus": 8, "test_file": "test_qwen3_vl_4B_fsdp.py"}, {"num_gpus": 2, "test_file": "test_qwen3_0.6B_fsdp_distributed.py"}, {"num_gpus": 8, "test_file": "test_quick_start_glm4_9B.py"}, {"num_gpus": 8, "test_file": "test_qwen3_30B_A3B.py"}, {"num_gpus": 8, "test_file": "test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "test_moonlight_16B_A3B.py"}, {"num_gpus": 8, "test_file": "test_mimo_7B_mtp_only_grad.py"}, {"num_gpus": 8, "test_file": "test_qwen3_0.6B_parallel_check.py"}, {"num_gpus": 4, "test_file": "test_qwen3_0.6B_megatron_fsdp_align.py"}, {"num_gpus": 8, "test_file": "test_qwen3_4B_ckpt.py"}, {"num_gpus": 8, "test_file": "test_qwen3_4B_ckpt.py --async-save"}, {"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 2, "test_file": "test_qwen2.5_0.5B_gsm8k_async.py"}]
+        info: [{"num_gpus": 4, "test_file": "e2e/image/test_qwen2.5_0.5B_gsm8k_async_short.py"}, {"num_gpus": 4, "test_file": "e2e/image/test_qwen2.5_0.5B_gsm8k_short.py"}, {"num_gpus": 2, "test_file": "e2e/image/test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}, {"num_gpus": 2, "test_file": "e2e/image/test_qwen3_4B_fsdp_true_on_policy.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_qwen3_vl_4B_fsdp.py"}, {"num_gpus": 2, "test_file": "e2e/image/test_qwen3_0.6B_fsdp_distributed.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_quick_start_glm4_9B.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_qwen3_30B_A3B.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_moonlight_16B_A3B.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_mimo_7B_mtp_only_grad.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_qwen3_0.6B_parallel_check.py"}, {"num_gpus": 4, "test_file": "e2e/image/test_qwen3_0.6B_megatron_fsdp_align.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_qwen3_4B_ckpt.py"}, {"num_gpus": 8, "test_file": "e2e/image/test_qwen3_4B_ckpt.py --async-save"}, {"num_gpus": 2, "test_file": "e2e/image/test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 2, "test_file": "e2e/image/test_qwen2.5_0.5B_gsm8k_async.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -533,3 +635,4 @@ jobs:
           pkill -9 -f raylet 2>/dev/null || true
           ray stop --force 2>/dev/null || true
           rm -rf /tmp/ray/* 2>/dev/null || true
+
