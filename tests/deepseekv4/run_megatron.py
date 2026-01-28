@@ -149,7 +149,9 @@ def create_model_and_load_checkpoint(args):
     with with_transformers_patch():
         model_provider = get_model_provider_func(args, role="actor")
 
-    model = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=False)
+    # wrap_with_ddp=True to get DDP model for proper gradient sync
+    wrap_ddp = getattr(args, "run_backward", False)
+    model = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=wrap_ddp)
 
     if isinstance(model, list):
         num_params = sum(p.numel() for p in model[0].parameters())
