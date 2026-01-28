@@ -4,6 +4,7 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.timer import log_experiment_start
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -13,9 +14,28 @@ MODEL_TYPE = "qwen3-4B"
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["nccl", "rdma"] = "nccl"
     # Right now tp=ep=pp=1
+    train_tp: int = 1
+    train_ep: int = 1
+    train_pp: int = 1
+    sglang_tp: int = 1
+    sglang_dp: int = 1
+    sglang_ep: int = 1
+    sglang_pp: int = 1
+    # Total Ressources
     num_train_gpus: int = 1
     num_rollout_gpus: int = 1
-    # TODO: Add diverse parallelism settings; imbalance training/inference instances, etc for benchmark.
+    # Optimizations
+    pipelined_transfer: bool = False
+
+    def validate(self):
+        assert self.sglang_pp == 1, "Not supported yet for sglang pp"
+        assert (
+            self.num_train_gpus % (self.train_pp * self.train_tp) == 0
+        ), "num_train_gpus must be divisible by train_tp and pp"
+        assert (
+            self.num_train_gpus % (self.train_pp * self.train_ep) == 0
+        ), "num_train_gpus must be divisible by train_ep and pp"
+        assert self.num_rollout_gpus + self.num_train_gpus <= 8, "Not enough GPUs available"
 
 
 def prepare(args: ScriptArgs):
@@ -27,6 +47,24 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    # Log experiment configuration at the start
+    log_experiment_start(
+        {
+            "mode": args.mode,
+            "num_train_gpus": args.num_train_gpus,
+            "num_rollout_gpus": args.num_rollout_gpus,
+            "train_tp": args.train_tp,
+            "train_ep": args.train_ep,
+            "train_pp": args.train_pp,
+            "sglang_tp": args.sglang_tp,
+            "sglang_dp": args.sglang_dp,
+            "sglang_ep": args.sglang_ep,
+            "sglang_pp": args.sglang_pp,
+            "pipelined_transfer": args.pipelined_transfer,
+            "model": MODEL_NAME,
+        }
+    )
+
     num_gpus = args.num_train_gpus + args.num_rollout_gpus
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
@@ -47,9 +85,12 @@ def execute(args: ScriptArgs):
     )
     # Training parallellism settings
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        f"--tensor-model-parallel-size {args.train_tp} "
         # "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
+        # f"--context-parallel-size {args.train_cp} "
+        f"--pipeline-model-parallel-size {args.train_pp} "
+        f"--expert-model-parallel-size {args.train_ep} "
+        f"--expert-tensor-parallel-size 1 "
         "--context-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -78,13 +119,17 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {args.sglang_tp} "
         f"--rollout-num-gpus {args.num_rollout_gpus} "
+        f"--sglang-data-parallel-size {args.sglang_dp} "
+        f"--sglang-expert-parallel-size {args.sglang_ep} "
+        f"--sglang-pipeline-parallel-size {args.sglang_pp} "
         "--sglang-mem-fraction-static 0.8 "
     )
     if args.mode == "rdma":
-        sglang_args += "--sglang-remote-instance-weight-loader-support-transfer-engine "
-
+        sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
+    if args.pipelined_transfer and args.mode == "rdma":
+        sglang_args += "--rdma-pipelined-transfer "
     # ci_args = "--ci-test "
 
     misc_args = (
@@ -97,7 +142,7 @@ def execute(args: ScriptArgs):
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 1 "
+        f"--actor-num-gpus-per-node {args.num_train_gpus} "
         # 1GB buffer for weight update
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
         # enable correctness check
@@ -123,12 +168,13 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=num_gpus,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
-        extra_env_vars={"RAY_DEBUG": "1"},
+        # extra_env_vars={"RAY_DEBUG": "1"},
     )
 
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
+    args.validate()
     prepare(args)
     execute(args)
 

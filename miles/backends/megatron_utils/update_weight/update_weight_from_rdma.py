@@ -7,20 +7,19 @@ import ray
 import sglang.srt.layers.dp_attention as sglang_dp_attention
 import sglang.srt.server_args as sglang_server_args
 import torch
-from torch_memory_saver import torch_memory_saver
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
-
 from sglang.srt.model_loader import get_model
+from sglang.srt.model_loader.remote_instance_weight_loader_utils import register_memory_region_v2
 from sglang.srt.server_args import ServerArgs
+from torch_memory_saver import torch_memory_saver
 from tqdm import tqdm
 
 from miles.utils.memory_utils import print_memory
 
-from .common import register_memory_transfer_engine
 from .update_weight_from_remote import UpdateWeightFromRemote
 
 logger = logging.getLogger(__name__)
@@ -49,7 +48,7 @@ class TransferBundle:
 
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
-    
+
     def execute_each(self, names: Sequence[str]) -> list[int]:
         # FIXME: Execute transfer for updated weight.
         batch_ids = []
@@ -66,9 +65,7 @@ class TransferBundle:
             # Batch transfer weights through RDMA
             batch_id = self.engine.batch_transfer_async_write(session_id, source_ptrs, target_ptrs, source_lens)
             batch_ids.append(batch_id)
-            # logger.info(f"[RDMA] Batch transferred {len(weight_memory_registry)} tensors to session {session_id}.")
         return batch_ids
-       
 
     def execute(self) -> None:
         # Execute transfer for each target session using this replica.
@@ -83,7 +80,6 @@ class TransferBundle:
 
             # Batch transfer weights through RDMA
             ret = self.engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
-            # logger.info(f"[RDMA] Batch transferred {len(weight_memory_registry)} tensors to session {session_id}.")
             if ret < 0:
                 raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {ret}.")
 
@@ -121,7 +117,8 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
 
         # For torch memory saver tagging
         self.tag = f"Model Replica {self.global_rank}"
-        self._is_paused = False
+        self._model_on_cpu = False
+        self.pipelined_transfer = args.rdma_pipelined_transfer
 
     def connect_rollout_engines(
         self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
@@ -191,10 +188,8 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             print_memory("[RDMA] After Local Engine Replicas and engine Creation")
 
     def _register_replica_memory(self, model_replica, remote_weight_info, transfer_engine) -> dict:
-        to_register_named_tensors = []
-        named_tensors = dict(model_replica.named_parameters())
         # Verify the 1-to-1 mapping between local replica and remote weights expected.
-        for name, tensor in named_tensors.items():
+        for name, tensor in model_replica.named_parameters():
             if name not in remote_weight_info:
                 raise RuntimeError(f"Local replica parameter {name} not found in remote replica.")
             remote_numel, remote_ele_size = remote_weight_info[name][1], remote_weight_info[name][2]
@@ -204,11 +199,10 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                 )
             if tensor.device.type != "cuda":
                 raise RuntimeError(f"Local replica parameter {name} is not on CUDA device.")
-            to_register_named_tensors.append((name, tensor))
-        weight_memory_registry = register_memory_transfer_engine(to_register_named_tensors, transfer_engine)
+        weight_memory_registry = register_memory_region_v2(model_replica, transfer_engine)
 
         logger.info(
-            f"[RDMA] Registered {len(to_register_named_tensors)} tensors of total {len(named_tensors)} from replica with transfer engine."
+            f"[RDMA] Registered {len(list(model_replica.named_parameters()))} tensors from replica with transfer engine."
         )
         return weight_memory_registry
 
@@ -239,9 +233,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         device_config = DeviceConfig()
 
         # Mock the distributed environment to get correct weight shapes
-        # TODO: Reuse https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/model_executor/model_runner.py#L845
-        # For memory pinning and CPU offloading
-        logger.error(
+        logger.info(
             f" Engine replica: {target_rank} tp {target_tp} pp_shard {pp_shard}, model pp sharding not implemented "
         )
         with MockSglangDistributedContext(tp_size=target_tp, tp_rank=target_rank, server_args=server_args):
@@ -275,26 +267,15 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         if not self._is_source or not converted_named_tensors:
             return
 
-        # Functionality missing:
-        # TODO: Fix learner PP, right now we still send all weights from any source.
-        # TODO: Support engine expert parallel, which has a bunch of details like dp_attnetion_tp etc.
-        # TODO: Extensive tests on different pp/ep/tp settings --> tp/dp/ep settings.
-        # TODO: Need a correctness test of the model weights similar to the test:https://github.com/sgl-project/sglang/pull/14997/changes#diff-6efab5fd819ef0efa7a1f43989320bb28231702f8840897eb7acacf174f6e71f
-        # TODO: Design of experiments --- what other configurations do we need to enable.
-        # Optimizations:
-        # TODO: pipeline the all-gather/reshard with transfer engine transfer calls for performance.
-        # TODO: increase concurrency with non-blocking transfers to multiple targets.
-        # TODO: memory offloading if the replica becomes a bottleneck.
-
-        # Load weights into local replica matching the target session, this handles sharding and reshaping.
-        if self._is_paused:
+        if self._model_on_cpu:
             torch_memory_saver.resume(self.tag)
-            self._is_paused = False
-        
+            self._model_on_cpu = False
+
         ret_batch = {}
         for n, transfer_bundle in enumerate(self.engines.values()):
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
-            ret_batch[n] = transfer_bundle.execute_each(updated_name) # FIXME: Do not wait for finish here.
+            if self.pipelined_transfer:
+                ret_batch[n] = transfer_bundle.execute_each(updated_name)  # FIXME: Do not wait for finish here.
 
         # FIXME: Add sync barrier for all transfers to finish.
         for n, batch_ids in ret_batch.items():
@@ -306,14 +287,15 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
 
     def finish_transfer_task(self) -> None:
         # Execute transfer for each engine replica.
-        # for transfer_bundle in self.engines.values():
-        #     transfer_bundle.execute()
+        if not self.pipelined_transfer:
+            for transfer_bundle in self.engines.values():
+                transfer_bundle.execute()
 
         # Offload model replicas from memory after transfer.
-        if not self._is_paused:
+        if not self._model_on_cpu:
             print_memory("[RDMA] Before offloading model replica")
             torch_memory_saver.pause(self.tag)
-            self._is_paused = True
+            self._model_on_cpu = True
             print_memory("[RDMA] After offloading model replica")
         return
 
