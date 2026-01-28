@@ -199,20 +199,6 @@ class RemoteTransferPlan:
                 )
         return transfer_tasks
 
-    def tp_conversion(self, targeted_tp_rank: int) -> dict[str, int]:
-        """
-        Given tp_rank, return the rank of attn_tp/dp/ep/moe-tp.
-        """
-        parallel_rank_dict = {}
-        # attn_tp/dp
-        # NOTE: iiuc, in sglang, _num_gpu_per_engine == targeted_tp_size?
-        parallel_rank_dict["attn_tp_rank"] = targeted_tp_rank % self._rollout_attn_tp_size
-        parallel_rank_dict["dp_rank"] = targeted_tp_rank // self._rollout_attn_tp_size
-        # moe-tp/ep
-        parallel_rank_dict["moe_tp_rank"] = targeted_tp_rank % self._rollout_moe_tp_size
-        parallel_rank_dict["ep_rank"] = targeted_tp_rank // self._rollout_moe_tp_size
-        return parallel_rank_dict
-
     def is_source(self) -> bool:
         """
         Determine if the current rank needs to initiate weight transfer.

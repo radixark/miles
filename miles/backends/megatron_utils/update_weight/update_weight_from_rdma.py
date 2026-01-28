@@ -6,15 +6,14 @@ from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 
 import ray
-import sglang.srt.distributed.parallel_state as sglang_parallel_state
-import sglang.srt.layers.dp_attention as sglang_dp_attention
-import sglang.srt.server_args as sglang_server_args
 import torch
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
+from sglang.srt import server_args as server_args_module
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.remote_instance_weight_loader_utils import register_memory_region_v2
 from sglang.srt.server_args import ServerArgs
@@ -91,13 +90,6 @@ class ExecutableQueue:
 
             except queue.Empty:
                 continue
-            except Exception as e:
-                logging.error(f"Error in background worker: {e}")
-                self._queue.task_done()
-                with self._lock:
-                    self._active_tasks -= 1
-                    if self._active_tasks == 0:
-                        self._tasks_completed.set()
 
     def start(self):
         """Start the background worker thread."""
@@ -145,9 +137,55 @@ class TransferBundle:
     engine: TransferEngine
     weight_memory_registry: dict
     remote_weight_infos: list[RemoteWeightInfo]
+    _cached_params_dict: dict = dataclasses.field(default_factory=dict)
+    # Local buffer to check for parameter readiness before transfer
+    _update_pending: dict[str, int] = dataclasses.field(default_factory=dict)
+
+    @property
+    def params_dict(self):
+        if not self._cached_params_dict:
+            self._cached_params_dict = dict(self.model_replica.named_parameters())
+            # logger.info("Full param list: " + str(list(self._cached_params_dict.keys())))
+        return self._cached_params_dict
+
+    def reset(self):
+        self._update_pending = {}
 
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
+
+    def get_transfer_ready_params(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> list[str]:
+        transfer_ready_params = []
+        for name, _ in converted_named_tensors:
+            mapped, shard, num_shards, expert, num_experts = self.model_replica.map_weight_name(name)
+            if mapped not in self.params_dict:
+                logger.warning(f"Parameter {mapped} not found in model replica.")
+                continue
+
+            # Calculate total expected contributions for this parameter
+            if num_experts > 0:
+                # Expert weight: need all experts * shard types
+                # For w13_weight (gate+up): shard is "w1" or "w3", multiplier = 2
+                # For w2_weight (down): shard is "w2", multiplier = 1
+                if shard in ("w1", "w3"):
+                    total_expected = num_experts * 2  # Both gate and up projections
+                else:  # "w2"
+                    total_expected = num_experts
+            else:
+                # Non-expert weight: just count shards
+                total_expected = num_shards
+
+            if total_expected == 1:
+                transfer_ready_params.append(mapped)
+            else:
+                # logger.info(f"Sharded param {name} mapped to {mapped} shard {shard}, expert {expert}, expecting {total_expected}")
+                if mapped not in self._update_pending:
+                    self._update_pending[mapped] = total_expected - 1
+                else:
+                    self._update_pending[mapped] -= 1
+                if self._update_pending[mapped] == 0:
+                    transfer_ready_params.append(mapped)
+        return transfer_ready_params
 
     def execute_each(self, names: Sequence[str], executable_queue: ExecutableQueue = None) -> None:
         """
@@ -158,6 +196,8 @@ class TransferBundle:
         # Find local pointers and lengths for the given names
         source_ptrs, source_lens = [], []
         for name in names:
+            if name in self._update_pending:
+                assert self._update_pending[name] == 0, f"Parameter {name} is not ready for transfer."
             tensor_register = self.weight_memory_registry[name]
             data_ptr, numel, ele_size = tensor_register
             source_ptrs.append(data_ptr)
@@ -262,6 +302,10 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                 session_id, weights_info = ray.get(
                     self.rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(rank=engine_rank)
                 )
+                parallelism_info = ray.get(
+                    self.rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank)
+                )
+
                 self.session_id_to_engine_rank[session_id] = engine_rank
                 self.session_id_to_server_args[session_id] = create_server_args_from_dict(
                     ray.get(self.rollout_engines[engine_ind].get_server_info.remote())
@@ -274,7 +318,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                 )
                 logger.info(f"[RDMA] Remote weight info has {len(weights_info)} tensors.")
                 # logger.info(list(weights_info.keys()))
-                self.remote_weight_infos_by_session_id[session_id] = weights_info
+                self.remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
                 targets_to_session_id[(engine_ind, engine_rank)] = session_id
 
             print_memory("[RDMA] After obtaining remote weight info")
@@ -285,36 +329,19 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             with torch_memory_saver.region(tag=self.tag):
                 for target in targets:
                     session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
-                    remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id])
-                    # Instantiate the local model replicas and a corresponding transfer engine with memory registry for each type of rollout shard.
-                    # TODO verify:
-                    # - if sglang dp is enabled, then attn_tp is equal to tp // dp
-                    # - if sglang ep is enabled, then moe-tp is equal to tp // ep
-                    # generally tp * pp should be equal to the world_size
+                    remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id][0])
+                    parallelism_config = RankParallelismConfig.from_dict(
+                        self.remote_weight_infos_by_session_id[session_id][1]
+                    )
                     if target.engine_rank not in self.engines:
                         transfer_engine = self._create_transfer_engine()
-                        parallel_rank_dict = self.transfer_plan.tp_conversion(target.engine_rank)
-                        logger.info(
-                            f"[RDMA] Creating model replica for engine rank {target.engine_rank} with rank dict {parallel_rank_dict}"
-                        )
+                        logger.info(f"[RDMA] Creating model replica for engine rank {target.engine_rank}")
                         model_replica = self._create_inference_replica(
-                            self.args.hf_checkpoint,
-                            pp_shard=target.source_shard,
-                            target_rank=target.engine_rank,  # NOTE: here we assume that sglang_tp == world_size when pp_size == 1
-                            target_tp=self.args.rollout_num_gpus_per_engine,
-                            dp_rank=parallel_rank_dict["dp_rank"],
-                            dp_size=self.transfer_plan._rollout_dp_size,
-                            attn_tp_rank=parallel_rank_dict["attn_tp_rank"],
-                            attn_tp_size=self.transfer_plan._rollout_attn_tp_size,
-                            ep_rank=parallel_rank_dict["ep_rank"],
-                            ep_size=self.transfer_plan._rollout_ep_size,
-                            moe_tp_rank=parallel_rank_dict["moe_tp_rank"],
-                            moe_tp_size=self.transfer_plan._rollout_moe_tp_size,
-                            server_args=self.session_id_to_server_args[session_id],
+                            parallelism_config, self.args.hf_checkpoint, self.session_id_to_server_args[session_id]
                         )
                         print_memory(f"[RDMA] After model replica at {target.engine_rank}")
                         weight_memory_registry = self._register_replica_memory(
-                            model_replica, self.remote_weight_infos_by_session_id[session_id], transfer_engine
+                            model_replica, self.remote_weight_infos_by_session_id[session_id][0], transfer_engine
                         )
                         self.engines[target.engine_rank] = TransferBundle(
                             model_replica, transfer_engine, weight_memory_registry, [remote_info]
@@ -353,59 +380,21 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
 
     def _create_inference_replica(
         self,
+        parallelism_config: RankParallelismConfig,
         model_path: str,
-        pp_shard: int,
-        target_rank: int,
-        target_tp: int,
-        dp_rank: int,
-        dp_size: int,
-        attn_tp_rank: int,
-        attn_tp_size: int,
-        ep_rank: int,
-        ep_size: int,
-        moe_tp_rank: int,
-        moe_tp_size: int,
         server_args: ServerArgs,
     ):
-        """
-        Create model replica for target rank with correct tp settings.
-
-        Uses MockSglangDistributedContext to avoid initializing actual distributed environment
-        while ensuring the model weights have the correct shape for the target rank.
-        """
-        model_config = ModelConfig(model_path)
         load_config = LoadConfig(
             load_format="auto",
-            tp_rank=target_rank,
             model_loader_extra_config=server_args.model_loader_extra_config,
             rl_quant_profile=server_args.rl_quant_profile,
         )
-        device_config = DeviceConfig()
-
-        # Mock the distributed environment to get correct weight shapes
-        logger.info(
-            f" Engine replica: {target_rank} tp {target_tp} pp_shard {pp_shard}, model pp sharding not implemented, "
-            f" dp_rank {dp_rank}/{dp_size}, attn_tp_rank {attn_tp_rank}/{attn_tp_size}, "
-            f" ep_rank {ep_rank}/{ep_size}, moe_tp_rank {moe_tp_rank}/{moe_tp_size} "
-        )
-        # TODO: should take attn_tp/ep/dp into account in the future.
-        with MockSglangDistributedContext(
-            tp_size=target_tp,
-            tp_rank=target_rank,
-            dp_rank=dp_rank,
-            dp_size=dp_size,
-            attn_tp_rank=attn_tp_rank,
-            attn_tp_size=attn_tp_size,
-            ep_rank=ep_rank,
-            ep_size=ep_size,
-            moe_tp_rank=moe_tp_rank,
-            moe_tp_size=moe_tp_size,
-            server_args=server_args,
-        ):
+        server_args_module._global_server_args = server_args
+        with ParallelismContext(parallelism_config):
             model = get_model(
-                model_config=model_config,
+                model_config=ModelConfig(model_path),
                 load_config=load_config,
-                device_config=device_config,
+                device_config=DeviceConfig(),
             )
         device = next(model.parameters()).device
         logger.info(f" Model {device}, params: {sum(p.numel() for p in model.parameters())} ")
@@ -439,17 +428,13 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             self._model_on_cpu = False
 
         for transfer_bundle in self.engines.values():
-            updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
+            transfer_ready_params = transfer_bundle.get_transfer_ready_params(converted_named_tensors)
+            transfer_bundle.model_replica.load_weights(converted_named_tensors)
             if self.pipelined_transfer:
                 # Use executable queue for async transfer operations
-                transfer_bundle.execute_each(updated_name, self.executable_queue)
+                transfer_bundle.execute_each(transfer_ready_params, self.executable_queue)
 
         converted_named_tensors.clear()
-
-    def __del__(self):
-        """Cleanup resources when the instance is destroyed."""
-        if hasattr(self, "executable_queue"):
-            self.executable_queue.shutdown()
 
     def finish_transfer_task(self) -> None:
         if not self._is_source:
@@ -462,7 +447,6 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         else:
             # Wait for all queued transfer tasks to complete before cpu offloading
             logging.info("[RDMA] Waiting for all queued transfer tasks to complete...")
-            # NOTE: set the timeout?
             assert self.executable_queue.wait_all_complete(
                 timeout=30.0
             ), "[RDMA] Some transfer tasks may not have completed within timeout"
@@ -471,6 +455,8 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # This is critical to prevent race conditions with memory offloading
             logging.info("[RDMA] Synchronizing CUDA to ensure all asynchronous operations complete...")
             torch.cuda.synchronize()
+            for transfer_bundle in self.engines.values():
+                transfer_bundle.reset()
 
         # Offload model replicas from memory after transfer.
         if not self._model_on_cpu:
@@ -478,177 +464,5 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             torch_memory_saver.pause(self.tag)
             self._model_on_cpu = True
             print_memory("[RDMA] After offloading model replica")
+
         return
-
-
-class MockSglangDistributedContext:
-    def __init__(
-        self,
-        tp_size: int,
-        tp_rank: int,
-        dp_rank: int,
-        dp_size: int,
-        attn_tp_rank: int,
-        attn_tp_size: int,
-        ep_rank: int,
-        ep_size: int,
-        moe_tp_rank: int,
-        moe_tp_size: int,
-        server_args: ServerArgs,
-    ):
-        """
-        TODO: Extend this to support ep, and dp attention?
-        """
-        self.tp_size = tp_size
-        self.tp_rank = tp_rank
-        self.pp_size = 1
-        self.pp_rank = 0
-        self.attn_tp_size = attn_tp_size
-        self.attn_tp_rank = attn_tp_rank
-        self.dp_rank = dp_rank
-        self.dp_size = dp_size
-        self.ep_rank = ep_rank
-        self.ep_size = ep_size
-        self.moe_tp_rank = moe_tp_rank
-        self.moe_tp_size = moe_tp_size
-        self.server_args = server_args
-        # Store active patches for cleanup
-        self._patches = []
-
-    def __enter__(self):
-        """Apply function-level mocks using unittest.mock.patch."""
-        from unittest.mock import MagicMock, patch
-
-        # Mock TP group
-        mock_group = MagicMock()
-        mock_group.world_size = self.tp_size
-        mock_group.rank_in_group = self.tp_rank
-
-        # Mock Attn TP group
-        mock_attn_tp_group = MagicMock()
-        mock_attn_tp_group.world_size = self.attn_tp_size
-        mock_attn_tp_group.rank_in_group = self.attn_tp_rank
-
-        # Mock PP group with proper attributes
-        mock_pp_group = MagicMock()
-        mock_pp_group.rank_in_group = self.pp_rank
-        mock_pp_group.world_size = self.pp_size
-
-        # Mock MoE EP group
-        mock_ep_group = MagicMock()
-        mock_ep_group.world_size = self.ep_size
-        mock_ep_group.rank_in_group = self.ep_rank
-
-        # Mock Moe-tp group
-        mock_moe_tp_group = MagicMock()
-        mock_moe_tp_group.world_size = self.moe_tp_size
-        mock_moe_tp_group.rank_in_group = self.moe_tp_rank
-
-        sglang_parallel_state._MOE_TP = mock_moe_tp_group
-        sglang_parallel_state._MOE_EP = mock_ep_group
-
-        # IMPORTANT: Set global variables FIRST, before any patches or model loading.
-        # The get_attention_tp_rank() function reads from _ATTN_TP_RANK global variable.
-        # Setting this BEFORE model loading ensures the correct value is used.
-        sglang_server_args._global_server_args = self.server_args
-        sglang_dp_attention._ATTN_TP_RANK = self.attn_tp_rank
-        sglang_dp_attention._ATTN_TP_SIZE = self.attn_tp_size
-        sglang_dp_attention._ATTN_DP_RANK = self.dp_rank
-        sglang_dp_attention._ATTN_DP_SIZE = self.dp_size
-
-        # Mock parallelism getters
-        # IMPORTANT: We need to patch functions at BOTH locations:
-        # 1. Where they are defined (sglang.srt.layers.dp_attention)
-        # 2. Where they are imported and used (sglang.srt.models.qwen3, etc.)
-        # This is because Python's import creates a local reference in the importing module.
-
-        self._patches = [
-            patch("sglang.srt.distributed.parallel_state.get_tp_group", return_value=mock_group),
-            patch("sglang.srt.distributed.parallel_state.get_moe_expert_parallel_rank", return_value=self.ep_rank),
-            patch(
-                "sglang.srt.distributed.parallel_state.get_moe_expert_parallel_world_size", return_value=self.ep_size
-            ),
-            patch("sglang.srt.distributed.parallel_state.get_moe_tensor_parallel_rank", return_value=self.moe_tp_rank),
-            patch(
-                "sglang.srt.distributed.parallel_state.get_moe_tensor_parallel_world_size",
-                return_value=self.moe_tp_size,
-            ),
-            patch(
-                "sglang.srt.distributed.get_pp_group", return_value=mock_pp_group
-            ),  # TODO: redundant. Delete pp group setting in the future
-            patch("sglang.srt.distributed.get_moe_tp_group", return_value=mock_moe_tp_group),
-            patch("sglang.srt.distributed.get_tp_group", return_value=mock_group),
-            patch("sglang.srt.distributed.get_moe_expert_parallel_rank", return_value=self.ep_rank),
-            patch("sglang.srt.distributed.get_moe_expert_parallel_world_size", return_value=self.ep_size),
-            patch("sglang.srt.distributed.get_moe_tensor_parallel_rank", return_value=self.moe_tp_rank),
-            patch("sglang.srt.distributed.get_moe_tensor_parallel_world_size", return_value=self.moe_tp_size),
-            patch(
-                "sglang.srt.distributed.parallel_state.get_tensor_model_parallel_world_size", return_value=self.tp_size
-            ),
-            patch("sglang.srt.distributed.parallel_state.get_tensor_model_parallel_rank", return_value=self.tp_rank),
-            # Patch at definition location
-            patch("sglang.srt.layers.dp_attention.get_attention_tp_rank", return_value=self.attn_tp_rank),
-            patch("sglang.srt.layers.dp_attention.get_attention_tp_size", return_value=self.attn_tp_size),
-            patch("sglang.srt.layers.dp_attention.get_attention_tp_group", return_value=mock_attn_tp_group),
-            # Patch at import locations in model files - these are critical!
-            patch("sglang.srt.models.qwen3.get_attention_tp_rank", return_value=self.attn_tp_rank),
-            patch("sglang.srt.models.qwen3.get_attention_tp_size", return_value=self.attn_tp_size),
-            patch("sglang.srt.models.qwen3.get_pp_group", return_value=mock_pp_group),
-            # Patch at import locations in DeepSeek V2 model
-            patch("sglang.srt.models.deepseek_v2.get_attention_tp_rank", return_value=self.attn_tp_rank),
-            patch("sglang.srt.models.deepseek_v2.get_attention_tp_size", return_value=self.attn_tp_size),
-            patch("sglang.srt.models.deepseek_v2.get_tensor_model_parallel_world_size", return_value=self.tp_size),
-            patch("sglang.srt.models.deepseek_v2.get_pp_group", return_value=mock_pp_group),
-            patch("sglang.srt.models.deepseek_v2.get_moe_expert_parallel_world_size", return_value=self.ep_size),
-            # Patch moe layers
-            patch(
-                "sglang.srt.layers.moe.fused_moe_triton.layer.get_moe_expert_parallel_rank", return_value=self.ep_rank
-            ),
-            patch(
-                "sglang.srt.layers.moe.fused_moe_triton.layer.get_moe_expert_parallel_world_size",
-                return_value=self.ep_size,
-            ),
-            patch("sglang.srt.layers.moe.fused_moe_triton.layer.get_tp_group", return_value=mock_group),
-            patch(
-                "sglang.srt.layers.moe.fused_moe_triton.layer.get_moe_tensor_parallel_rank",
-                return_value=self.moe_tp_rank,
-            ),
-            patch(
-                "sglang.srt.layers.moe.fused_moe_triton.layer.get_moe_tensor_parallel_world_size",
-                return_value=self.moe_tp_size,
-            ),
-            # Patch at import locations in MoE token dispatcher
-            patch(
-                "sglang.srt.layers.moe.token_dispatcher.standard.get_moe_expert_parallel_rank",
-                return_value=self.ep_rank,
-            ),
-            patch(
-                "sglang.srt.layers.moe.token_dispatcher.standard.get_moe_expert_parallel_world_size",
-                return_value=self.ep_size,
-            ),
-            patch("sglang.srt.layers.moe.token_dispatcher.standard.get_tp_group", return_value=mock_group),
-            # Also patch in distributed module where get_tensor_model_parallel_rank may be imported
-            patch("sglang.srt.distributed.get_tensor_model_parallel_rank", return_value=self.tp_rank),
-            patch("sglang.srt.distributed.get_tensor_model_parallel_world_size", return_value=self.tp_size),
-            patch("sglang.srt.distributed.get_moe_expert_parallel_world_size", return_value=self.ep_size),
-        ]
-
-        # Start all patches
-        for p in self._patches:
-            p.start()
-
-        logger.info(
-            f"[MockDist] Activated: TP={self.tp_rank}/{self.tp_size}, "
-            f"PP={self.pp_rank}/{self.pp_size}, AttnTP={self.attn_tp_rank}/{self.attn_tp_size}"
-        )
-
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Stop all patches and restore original functions."""
-        for p in self._patches:
-            p.stop()
-        sglang_server_args._global_server_args = None
-        self._patches.clear()
-        logger.info("[MockDist] Deactivated")
-        return False  # Don't suppress exceptions
