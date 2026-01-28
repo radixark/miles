@@ -330,26 +330,18 @@ def megatron_backward(
             extra_args.append(f'--ref-load "{ref_load}"')
         if apply_chat_template:
             extra_args.append("--apply-chat-template")
-        extra_args_str = " ".join(extra_args)
-
-        routing_replay_env = ""
         if routing_replay_dump_path:
-            routing_replay_env = f'''ENABLE_ROUTING_REPLAY=1 \\
-ROUTING_REPLAY_STAGE=record \\
-ROUTING_REPLAY_DUMP_PATH="{routing_replay_dump_path}" \\
-'''
-        elif routing_replay_load_path:
-            routing_replay_env = f'''ENABLE_ROUTING_REPLAY=1 \\
-ROUTING_REPLAY_STAGE=replay_from_file \\
-ROUTING_REPLAY_LOAD_PATH="{routing_replay_load_path}" \\
-'''
+            extra_args.append(f'--routing-replay-dump-path "{routing_replay_dump_path}"')
+        if routing_replay_load_path:
+            extra_args.append(f'--routing-replay-load-path "{routing_replay_load_path}"')
+        extra_args_str = " ".join(extra_args)
 
         # Build shell command with backward pass flags
         shell_cmd = f'''
 source "{model_script_path}" && \\
 PYTHONPATH="{MEGATRON_PATH}" \\
 SGLANG_DUMPER_DUMP_GRAD=1 \\
-{routing_replay_env}{sys.executable} -m torch.distributed.run \\
+{sys.executable} -m torch.distributed.run \\
     --nproc-per-node={tp_size} \\
     "{script_path}" \\
     "${{MODEL_ARGS[@]}}" \\

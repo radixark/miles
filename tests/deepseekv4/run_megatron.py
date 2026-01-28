@@ -66,6 +66,10 @@ def add_extra_args(parser):
                             help="Tensor parallel size")
     test_group.add_argument("--run-backward", action="store_true",
                             help="Run backward pass with dummy loss after forward")
+    test_group.add_argument("--routing-replay-dump-path", type=str, default=None,
+                            help="Path to save routing topk indices (record mode)")
+    test_group.add_argument("--routing-replay-load-path", type=str, default=None,
+                            help="Path to load routing topk indices (replay mode)")
     return parser
 
 
@@ -367,6 +371,17 @@ def main():
 
     # Initialize Megatron
     initialize_megatron(args)
+
+    # Configure routing replay before model creation
+    from miles.utils.replay_base import routing_replay_manager
+    if args.routing_replay_dump_path:
+        routing_replay_manager.enabled = True
+        routing_replay_manager.stage = "record"
+        routing_replay_manager.set_save_path(args.routing_replay_dump_path)
+    elif args.routing_replay_load_path:
+        routing_replay_manager.enabled = True
+        routing_replay_manager.stage = "replay_forward"
+        routing_replay_manager.load_all_from_files(args.routing_replay_load_path)
 
     # Create model
     model = create_model_and_load_checkpoint(args)
