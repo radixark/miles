@@ -70,11 +70,15 @@ class RoutingReplay:
         base_path = Path(base_path)
         base_path.mkdir(parents=True, exist_ok=True)
         data = [r.top_indices_list for r in RoutingReplay.all_routing_replays]
-        torch.save(data, base_path / "routing_replay.pt")
+        p = base_path / "routing_replay.pt"
+        print(f"[RoutingReplay] save_all_to_files {p}")
+        torch.save(data, p)
 
     @staticmethod
     def load_all_from_files(base_path: str):
-        data = torch.load(Path(base_path) / "routing_replay.pt", weights_only=False)
+        p = Path(base_path) / "routing_replay.pt"
+        print(f"[RoutingReplay] load_all_from_files {p}")
+        data = torch.load(p, weights_only=False)
         for replay, indices_list in zip(RoutingReplay.all_routing_replays, data):
             replay.top_indices_list = indices_list
             replay.forward_index = 0
