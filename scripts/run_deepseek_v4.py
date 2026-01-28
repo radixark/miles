@@ -29,6 +29,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_dir: str = "/root/models"
     megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
     enable_r3: bool = False
+    enable_rir: bool = False
 
 
 _RAW_HF_CKPT_PATH_DICT = {
@@ -298,9 +299,11 @@ def train(args: ScriptArgs):
         "--freeze-e-score-correction-bias "
     )
 
-    if args.enable_r3:
+    assert args.enable_r3 and args.enable_rir
+    if args.enable_r3 and args.enable_rir:
         misc_args += (
             "--use-rollout-routing-replay "
+            "--use-rollout-indexer-replay "
             "--use-miles-router "
         )
 
