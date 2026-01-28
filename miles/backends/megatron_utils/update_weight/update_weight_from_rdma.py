@@ -272,7 +272,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             self._model_on_cpu = False
 
         ret_batch = {}
-        for n, transfer_bundle in enumerate(self.engines.values()):
+        for n, transfer_bundle in self.engines.items():
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
             if self.pipelined_transfer:
                 ret_batch[n] = transfer_bundle.execute_each(updated_name)  # FIXME: Do not wait for finish here.
@@ -286,6 +286,8 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         converted_named_tensors.clear()
 
     def finish_transfer_task(self) -> None:
+        if not self._is_source:
+            return
         # Execute transfer for each engine replica.
         if not self.pipelined_transfer:
             for transfer_bundle in self.engines.values():
@@ -328,13 +330,21 @@ class MockSglangDistributedContext:
         mock_pp_group = MagicMock()
         mock_pp_group.rank_in_group = self.pp_rank
         mock_pp_group.world_size = self.pp_size
-        # Mock underlying global variables
+
+        # IMPORTANT: Set global variables FIRST, before any patches or model loading.
+        # The get_attention_tp_rank() function reads from _ATTN_TP_RANK global variable.
+        # Setting this BEFORE model loading ensures the correct value is used.
         sglang_server_args._global_server_args = self.server_args
         sglang_dp_attention._ATTN_TP_RANK = self.attn_tp_rank
         sglang_dp_attention._ATTN_TP_SIZE = self.attn_tp_size
-        sglang_dp_attention._ATTN_DP_RANK = None
+        sglang_dp_attention._ATTN_DP_RANK = 0
         sglang_dp_attention._ATTN_DP_SIZE = 1
-        # Mock parallelism getter
+
+        # Mock parallelism getters
+        # IMPORTANT: We need to patch functions at BOTH locations:
+        # 1. Where they are defined (sglang.srt.layers.dp_attention)
+        # 2. Where they are imported and used (sglang.srt.models.qwen3, etc.)
+        # This is because Python's import creates a local reference in the importing module.
         self._patches = [
             patch("sglang.srt.distributed.parallel_state.get_tp_group", return_value=mock_group),
             patch("sglang.srt.distributed.get_pp_group", return_value=mock_pp_group),
@@ -342,10 +352,18 @@ class MockSglangDistributedContext:
                 "sglang.srt.distributed.parallel_state.get_tensor_model_parallel_world_size", return_value=self.tp_size
             ),
             patch("sglang.srt.distributed.parallel_state.get_tensor_model_parallel_rank", return_value=self.tp_rank),
+            # Patch at definition location
             patch("sglang.srt.layers.dp_attention.get_attention_tp_rank", return_value=self.attn_tp_rank),
             patch("sglang.srt.layers.dp_attention.get_attention_tp_size", return_value=self.attn_tp_size),
+            # Patch at import locations in model files - these are critical!
+            patch("sglang.srt.models.qwen3.get_attention_tp_rank", return_value=self.attn_tp_rank),
+            patch("sglang.srt.models.qwen3.get_attention_tp_size", return_value=self.attn_tp_size),
+            # Also patch in distributed module where get_tensor_model_parallel_rank may be imported
+            patch("sglang.srt.distributed.get_tensor_model_parallel_rank", return_value=self.tp_rank),
+            patch("sglang.srt.distributed.get_tensor_model_parallel_world_size", return_value=self.tp_size),
         ]
 
+        # Start all patches
         for p in self._patches:
             p.start()
 
