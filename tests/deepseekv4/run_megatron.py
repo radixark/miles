@@ -315,7 +315,11 @@ def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor, model: torc
     if model is not None:
         from megatron.core.distributed import finalize_model_grads
         finalize_model_grads([model])
-        dumper.dump_param_grads(model, name_prefix="model")
+        dumper.dump_param_grads(
+            model,
+            name_prefix="model",
+            skip_patterns=[r"\.experts\.linear_fc[12]\.weight[5-9]\d*", r"\.experts\.linear_fc[12]\.weight[1-9]\d+"],
+        )
 
     logger.info("Backward pass complete.")
 
