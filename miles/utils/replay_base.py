@@ -161,7 +161,7 @@ class BaseReplayManager:
             else:
                 return old_topk_fn(scores, topk, **kwargs)
 
-            if os.environ.get("CHECK_ROUTING_REPLAY_RESULT", "0") == "1":
+            if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "1":
                 orig_probs, orig_top_indices = old_topk_fn(scores, topk, **kwargs)
                 try:
                     assert orig_top_indices.shape == top_indices.shape, \

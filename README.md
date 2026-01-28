@@ -4,7 +4,7 @@
 
 update: enable R3 and RolloutIndexerReplay
 ```bash
-CHECK_ROUTING_REPLAY_RESULT=1 python scripts/run_deepseek_v4.py train --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer --enable-r3 --enable-rir
+MILES_CHECK_REPLAY_RESULT=1 python scripts/run_deepseek_v4.py train --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer --enable-r3 --enable-rir
 ```
 
 ```bash
