@@ -138,6 +138,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
+    if args.use_rollout_indexer_replay:
+        payload["return_indexer_topk"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
