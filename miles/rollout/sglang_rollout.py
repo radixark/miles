@@ -190,8 +190,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             dtype=np.int32,
         ).reshape(
             len(sample.tokens) - 1,
-            args.num_indexer_layers,
-            args.index_topk,
+            # TODO very hacky now
+            sum(1 for r in args.dsv4_compress_ratios if r == 4),
+            args.dsa_indexer_topk,
         )
 
     sample.update_from_meta_info(args, output["meta_info"])
