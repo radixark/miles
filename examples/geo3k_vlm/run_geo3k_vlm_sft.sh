@@ -78,7 +78,6 @@ SFT_ARGS=(
    --rollout-function-path miles.rollout.sft_rollout.generate_rollout
    --prompt-data /root/datasets/${DATASET_LOCAL_NAME}/train_formatted.parquet
    --input-key messages
-   --apply-chat-template
    --rollout-shuffle
    --num-epoch 3000
    --rollout-batch-size 128
