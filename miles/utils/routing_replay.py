@@ -130,9 +130,13 @@ def get_routing_replay_compute_topk(old_compute_topk):
             elif routing_replay_stage == "replay_from_file":
                 _maybe_load_from_file()
                 top_indices = ROUTING_REPLAY.pop_forward()
-                assert (
-                    top_indices.shape[0] == scores.shape[0] and top_indices.shape[1] == topk
-                ), f"top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
+                num_tokens = scores.shape[0]
+                # vanilla handle TP1 vs TP4 in our hacky comparison test
+                if top_indices.shape[0] != num_tokens:
+                    tp_size = top_indices.shape[0] // num_tokens
+                    tp_rank = _get_rank() % tp_size
+                    top_indices = top_indices[tp_rank * num_tokens : (tp_rank + 1) * num_tokens]
+                assert top_indices.shape[0] == num_tokens and top_indices.shape[1] == topk
                 probs = scores.gather(1, top_indices)
             return probs, top_indices
         else:
