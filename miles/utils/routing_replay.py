@@ -111,6 +111,7 @@ def get_routing_replay_compute_topk(old_compute_topk, layer_id: Optional[int] = 
         if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":
             print("[DEBUG] enter routing replay compute topk, stage: ", os.environ["ROUTING_REPLAY_STAGE"])
             routing_replay_stage = os.environ["ROUTING_REPLAY_STAGE"]
+            probs = None
             if routing_replay_stage == "fallthrough":
                 return old_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
             if routing_replay_stage == "record":
@@ -122,13 +123,15 @@ def get_routing_replay_compute_topk(old_compute_topk, layer_id: Optional[int] = 
                 assert (
                     top_indices.shape[0] == scores.shape[0] and top_indices.shape[1] == topk
                 ), f"[{torch.distributed.get_rank()}] top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
-                probs = scores.gather(1, top_indices)
+                if -1 not in top_indices:
+                    probs = scores.gather(1, top_indices)
             elif routing_replay_stage == "replay_backward":
                 top_indices = ROUTING_REPLAY.pop_backward()
                 assert (
                     top_indices.shape[0] == scores.shape[0] and top_indices.shape[1] == topk
                 ), f"top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
-                probs = scores.gather(1, top_indices)
+                if -1 not in top_indices:
+                    probs = scores.gather(1, top_indices)
             elif routing_replay_stage == "replay_from_file":
                 _maybe_load_from_file()
                 top_indices = ROUTING_REPLAY.pop_forward()
@@ -139,21 +142,19 @@ def get_routing_replay_compute_topk(old_compute_topk, layer_id: Optional[int] = 
                     tp_rank = _get_rank() % tp_size
                     top_indices = top_indices[tp_rank * num_tokens : (tp_rank + 1) * num_tokens]
                 assert top_indices.shape[0] == num_tokens and top_indices.shape[1] == topk
-                probs = scores.gather(1, top_indices)
+                if -1 not in top_indices:
+                    probs = scores.gather(1, top_indices)
             if os.environ.get("CHECK_ROUTING_REPLAY_RESULT", "0") == "1":
                 orig_probs, orig_top_indices = old_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
                 try:
                     assert orig_top_indices.shape == top_indices.shape, \
                         f"Shape mismatch: orig_top_indices {orig_top_indices.shape} vs replay_top_indices {top_indices.shape}"
                     
-                    def is_padding(indices):
-                        return (indices == -1).all().item()
-                    
                     # check at least half of the indices match for each token    
                     num_tokens, k = top_indices.shape
                     min_match = k // 2
                     for i in range(num_tokens):
-                        if is_padding(top_indices[i]):
+                        if -1 in top_indices[i]: # is padding
                             continue
                         orig_set = set(orig_top_indices[i].tolist()) 
                         replay_set = set(top_indices[i].tolist())
