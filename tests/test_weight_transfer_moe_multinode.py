@@ -206,6 +206,12 @@ def execute(args: ScriptArgs):
             "--profile-update-weight-end 3 "
             "--tensorboard-dir /root/profiler_logs/ "
         )
+    profile_args = (
+        "--use-pytorch-profiler-update-weight "
+        "--profile-update-weight-start 0 "
+        "--profile-update-weight-end 6 "
+        "--tensorboard-dir /root/profiler_logs/ "
+    )
 
     train_args = (
         f"{ckpt_args} "
