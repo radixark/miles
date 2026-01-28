@@ -330,6 +330,7 @@ def megatron_backward(
         shell_cmd = f'''
 source "{model_script_path}" && \\
 PYTHONPATH="{MEGATRON_PATH}" \\
+SGLANG_DUMPER_DUMP_GRAD=1 \\
 {sys.executable} -m torch.distributed.run \\
     --nproc-per-node={tp_size} \\
     "{script_path}" \\
