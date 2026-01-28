@@ -72,10 +72,6 @@ class RayTrainGroup:
             env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
-        # We cannot do routing replay for critic.
-        if self.args.use_routing_replay and self.role == "actor":
-            env_vars["ENABLE_ROUTING_REPLAY"] = "1"
-
         backend = self.args.train_backend
         if backend == "megatron":
             from miles.backends.megatron_utils.actor import MegatronTrainRayActor
