@@ -30,7 +30,7 @@ def get_packed_batch_offsets_with_allgather_cp(
     results = []
     seq_start = 0
 
-    for total_length, response_length in zip(total_lengths, response_lengths, strict=False):
+    for total_length, response_length in zip(total_lengths, response_lengths, strict=True):
         seq_end = seq_start + total_length
         prompt_length = total_length - response_length
 
