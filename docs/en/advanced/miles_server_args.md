@@ -194,9 +194,9 @@ Arguments for saving and loading model states.
 | `--load` | Path to the training checkpoint to resume from. | `None` | Type: str |
 | `--save` | Directory where training checkpoints will be saved. | `None` | Type: str |
 | `--save-interval` | Interval (in rollout steps) for saving checkpoints. | `None` | Type: int |
-| `--async-save` | Enable background checkpoint saving to avoid pausing GPUs. | `False` | bool flag |
+| `--async-save` | Enable background checkpoint saving to avoid pausing GPUs. | `False` | bool flag (set to enable) |
 | `--save-hf` | Automatically save a HuggingFace-formatted model at every save interval. | `None` | Type: str |
-| `--no-save-optim` | Skip saving optimizer states to save disk space (disables resuming). | `False` | bool flag |
+| `--no-save-optim` | Skip saving optimizer states to save disk space (disables resuming). | `False` | bool flag (set to enable) |
 | `--ref-load` | Path to the reference model checkpoint. | `None` | Type: str |
 | `--ref-ckpt-step` | Specific step to load from the reference checkpoint. | `None` | Type: int |
 | `--critic-load` | Path to the critic model checkpoint. | `None` | Type: str |
@@ -241,7 +241,7 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--use-rollout-routing-replay` | Enable R3: Replay routing from rollout. Requires Miles Router. | `False` | bool flag (set to enable) |
 | `--use-opsm` | Enable Off-Policy Sequence Masking (OPSM). | `False` | bool flag (set to enable) |
 | `--opsm-delta` | Threshold for Off-Policy Sequence Masking. | `1e-4` | Type: float |
-| `--get-mismatch-metrics` | Calculate metrics for distribution mismatch between rollout and training policies. | `False` | bool flag |
+| `--get-mismatch-metrics` | Calculate metrics for distribution mismatch between rollout and training policies. | `False` | bool flag (set to enable) |
 | `--ref-update-interval` | Interval (in rollout steps) to update the reference model from the Actor. | `None` | Type: int |
 | `--reset-optimizer-states` | Reset optimizer history after each rollout round. | `False` | bool flag (set to enable) |
 | `--calculate-per-token-loss` | Calculate loss on a per-token basis instead of per-sample. | `False` | bool flag (set to enable) |
@@ -373,11 +373,15 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
 | `--optimizer` | Optimizer type for FSDP. | `adam` | `adam`, `sgd` |
-| `--weight-decay` | Weight decay for the optimizer (FSDP only). | `0.0` | Type: float |
-| `--lr-decay-style` | Learning rate decay style (FSDP only). | `constant` | Type: str |
-| `--warmup-ratio` | Ratio of total steps for learning rate warmup (FSDP only). | `0.03` | Type: float |
-| `--gradient-checkpointing` | Enable gradient checkpointing to save memory (FSDP only). | `False` | bool flag |
-| `--fp16` | Enable FP16 mixed precision (FSDP only). | `False` | bool flag |
+| `--lr` | Learning rate for FSDP. | `2e-5` | Type: float |
+| `--lr-warmup-init` | Initial learning rate for warmup. | `0.0` | Type: float |
+| `--min-lr` | Minimum learning rate after decay. | `0.0` | Type: float |
+| `--lr-decay-style` | Learning rate decay style. | `constant` | Type: str |
+| `--lr-warmup-iters` | Number of iterations for warmup. | `0` | Type: int |
+| `--weight-decay` | Weight decay for the optimizer. | `0.0` | Type: float |
+| `--warmup-ratio` | Ratio of total steps for warmup. | `0.03` | Type: float |
+| `--gradient-checkpointing` | Enable gradient checkpointing. | `False` | bool flag |
+| `--fp16` | Enable FP16 mixed precision. | `False` | bool flag |
 | `--fsdp-cpu-offload` | Offload parameters and gradients to CPU. | `False` | bool flag (set to enable) |
 | `--fsdp-state-dict-cpu-offload` | Offload full state dict to CPU during collection. | `False` | bool flag (set to enable) |
 | `--fsdp-cpu-backend` | CPU backend for FSDP CPU offload. | `gloo` | `gloo`, `None` |
@@ -389,6 +393,7 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | `--use-pytorch-profiler` | Enable PyTorch-native profiling. | `False` | bool flag |
 | `--profile-step-start` | Starting step for profiling. | `10` | Type: int |
 | `--profile-step-end` | Ending step for profiling. | `12` | Type: int |
+| `--tensorboard-dir` | Directory for FSDP-specific Tensorboard logs. | `None` | Type: str |
 
 ---
 
