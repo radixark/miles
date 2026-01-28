@@ -1441,7 +1441,6 @@ def parse_args(add_custom_arguments=None):
             with with_transformers_patch():
                 hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
             hf_validate_args(args, hf_config)
-            _set_indexer_args_from_hf_config(args, hf_config)
 
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -1780,14 +1779,3 @@ def hf_validate_args(args, hf_config):
 
     if len(errors) > 0:
         raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
-
-
-def _set_indexer_args_from_hf_config(args, hf_config):
-    if hasattr(hf_config, "text_config"):
-        hf_config = hf_config.text_config
-    compress_ratios = getattr(hf_config, "compress_ratios", None)
-    if compress_ratios is not None:
-        args.num_indexer_layers = sum(1 for r in compress_ratios if r == 4)
-    else:
-        args.num_indexer_layers = 0
-    args.index_topk = getattr(hf_config, "index_topk", 512)
