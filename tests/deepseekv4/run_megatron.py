@@ -89,6 +89,9 @@ def parse_args():
     args.context_parallel_size = 1
     args.expert_model_parallel_size = tp_size
     args.expert_tensor_parallel_size = 1
+    
+    if tp_size > 1:
+        args.sequence_parallel = True
 
     if not args.global_batch_size:
         args.global_batch_size = args.micro_batch_size
