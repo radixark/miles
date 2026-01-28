@@ -268,13 +268,16 @@ def run_forward_pass(model, inputs: dict, enable_grad: bool = False) -> torch.Te
     return logits
 
 
-def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor) -> None:
+def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor, model: torch.nn.Module = None) -> None:
     """Run backward pass with cross-entropy loss (next-token prediction).
     
     Args:
         logits: Model output logits of shape [batch_size, seq_length, vocab_size]
         input_ids: Input token IDs of shape [batch_size, seq_length], used as labels
+        model: Optional model to dump parameter gradients
     """
+    from sglang.srt.debug_utils.dumper import dumper
+
     logger.info("Running backward pass...")
 
     # Use cross-entropy loss
@@ -290,6 +293,9 @@ def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor) -> None:
     print(f"Cross-entropy loss value: {loss.item():.6f}")
 
     loss.backward()
+
+    if model is not None:
+        dumper.dump_param_grads(model, name_prefix="model")
 
     logger.info("Backward pass complete.")
 
@@ -372,7 +378,7 @@ def main():
 
     # Run backward pass if requested
     if run_backward:
-        run_backward_pass(logits, input_ids=inputs["input_ids"])
+        run_backward_pass(logits, input_ids=inputs["input_ids"], model=model)
 
     # Print results
     top_k = getattr(args, "top_k", 5)
