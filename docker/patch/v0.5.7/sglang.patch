@@ -131,14 +131,14 @@ index 34aa364cf..da5d0d6b6 100644
      finish_reason: Optional[
          Literal[
 diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
-index cb0c084a3..02babd90c 100644
+index cb0c084a3..daa0db7bb 100644
 --- a/python/sglang/srt/entrypoints/openai/serving_chat.py
 +++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
 @@ -146,6 +146,62 @@ class OpenAIServingChat(OpenAIServingBase):
  
          return None
  
-+    def _hack_convert_input_ids_to_messages(
++    def _convert_chat_completion_with_input_ids_to_internal_request(
 +        self,
 +        request: ChatCompletionRequest,
 +        raw_request: Request = None,
@@ -202,7 +202,7 @@ index cb0c084a3..02babd90c 100644
          is_multimodal = self.tokenizer_manager.model_config.is_multimodal
  
 +        if request.input_ids:
-+            return self._hack_convert_input_ids_to_messages(request, raw_request)
++            return self._convert_chat_completion_with_input_ids_to_internal_request(request, raw_request)
 +
          # Process messages and apply chat template
          processed_messages = self._process_messages(request, is_multimodal)
