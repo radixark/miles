@@ -1,6 +1,7 @@
 import atexit
 import os
 from pathlib import Path
+from typing import Optional
 
 import torch
 import torch.distributed as dist
@@ -105,7 +106,7 @@ def _register_save_on_exit():
         _save_registered = True
 
 
-def get_routing_replay_compute_topk(old_compute_topk):
+def get_routing_replay_compute_topk(old_compute_topk, layer_id: Optional[int] = None):
     def compute_topk(scores, topk, num_groups=None, group_topk=None):
         if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":
             routing_replay_stage = os.environ["ROUTING_REPLAY_STAGE"]
@@ -138,6 +139,27 @@ def get_routing_replay_compute_topk(old_compute_topk):
                     top_indices = top_indices[tp_rank * num_tokens : (tp_rank + 1) * num_tokens]
                 assert top_indices.shape[0] == num_tokens and top_indices.shape[1] == topk
                 probs = scores.gather(1, top_indices)
+            if os.environ.get("CHECK_ROUTING_REPLAY_RESULT", "0") == "1":
+                orig_probs, orig_top_indices = old_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
+                try:
+                    assert orig_top_indices.shape == top_indices.shape, \
+                        f"Shape mismatch: orig_top_indices {orig_top_indices.shape} vs replay_top_indices {top_indices.shape}"
+                    # check at least half of the indices match for each token    
+                    num_tokens, k = top_indices.shape
+                    min_match = k // 2
+                    for i in range(num_tokens):
+                        orig_set = set(orig_top_indices[i].tolist()) 
+                        replay_set = set(top_indices[i].tolist())
+                        num_match = len(orig_set & replay_set)
+                        assert num_match >= min_match, f"Token {i}: only {num_match}/{k} indices match (need at least {min_match})"
+
+                except Exception as e:
+                    print(f"Routing replay stage: {routing_replay_stage}, layer: {layer_id}, rank: {_get_rank()}", flush=True)
+                    torch.set_printoptions(threshold=float('inf'))
+                    print(f"original top_indices: {orig_top_indices}", flush=True)
+                    print(f"replay top_indices: {top_indices}", flush=True)
+                    raise e
+
             return probs, top_indices
         else:
             return old_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
