@@ -301,7 +301,7 @@ def train(args: ScriptArgs):
     if args.enable_r3:
         misc_args += (
             "--use-rollout-routing-replay "
-            "--use-slime-router "
+            "--use-miles-router "
         )
 
     train_args = (
