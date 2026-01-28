@@ -109,6 +109,7 @@ def _register_save_on_exit():
 def get_routing_replay_compute_topk(old_compute_topk, layer_id: Optional[int] = None):
     def compute_topk(scores, topk, num_groups=None, group_topk=None):
         if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":
+            print("[DEBUG] enter routing replay compute topk, stage: ", os.environ["ROUTING_REPLAY_STAGE"])
             routing_replay_stage = os.environ["ROUTING_REPLAY_STAGE"]
             if routing_replay_stage == "fallthrough":
                 return old_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
@@ -144,14 +145,20 @@ def get_routing_replay_compute_topk(old_compute_topk, layer_id: Optional[int] = 
                 try:
                     assert orig_top_indices.shape == top_indices.shape, \
                         f"Shape mismatch: orig_top_indices {orig_top_indices.shape} vs replay_top_indices {top_indices.shape}"
+                    
+                    def is_padding(indices):
+                        return (indices == -1).all().item()
+                    
                     # check at least half of the indices match for each token    
                     num_tokens, k = top_indices.shape
                     min_match = k // 2
                     for i in range(num_tokens):
+                        if is_padding(top_indices[i]):
+                            continue
                         orig_set = set(orig_top_indices[i].tolist()) 
                         replay_set = set(top_indices[i].tolist())
                         num_match = len(orig_set & replay_set)
-                        assert num_match >= min_match, f"Token {i}: only {num_match}/{k} indices match (need at least {min_match})"
+                        assert num_match >= min_match, f"rank {_get_rank()}: Token {i}: only {num_match}/{k} indices match (need at least {min_match})"
 
                 except Exception as e:
                     print(f"Routing replay stage: {routing_replay_stage}, layer: {layer_id}, rank: {_get_rank()}", flush=True)

@@ -207,13 +207,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         def pad_func(experts, pad):
             _, num_layers, topk = experts.shape
-            pad = (
-                torch.arange(
-                    pad * num_layers * topk,
-                    device=experts.device,
-                    dtype=experts.dtype,
-                ).reshape((pad, num_layers, topk))
-                % self.args.num_experts
+            pad = torch.full(
+                (pad, num_layers, topk),
+                fill_value=-1,
+                device=experts.device,
+                dtype=experts.dtype,
             )
             return torch.cat([experts, pad], dim=0)
 
