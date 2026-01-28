@@ -113,7 +113,7 @@ class SGLangEngine(RayActor):
         self.worker_type = worker_type
         self.base_gpu_id = base_gpu_id
 
-    def init(self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None):
+    def init(self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None, node_hosts=None):
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
 
@@ -143,6 +143,7 @@ class SGLangEngine(RayActor):
             self.worker_type,
             disaggregation_bootstrap_port,
             base_gpu_id=self.base_gpu_id,
+            node_hosts=node_hosts,
         )
 
         self.node_rank = server_args_dict["node_rank"]

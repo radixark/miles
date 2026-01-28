@@ -1,4 +1,5 @@
 import itertools
+import json
 import logging
 import multiprocessing
 import random
@@ -13,25 +14,20 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from miles.rollout.base_types import (
-    RolloutFnConstructorInput,
-    RolloutFnEvalInput,
-    RolloutFnTrainInput,
-    call_rollout_fn,
-)
-from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
-from miles.utils import tracking_utils
-from miles.utils.environ import enable_experimental_rollout_refactor
+from miles.rollout.base_types import call_rollout_fn
+from miles.utils import logging_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
-from miles.utils.iter_utils import group_by
-from miles.utils.logging_utils import configure_logger
-from miles.utils.metric_checker import MetricChecker
-from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
-from miles.utils.misc import load_function
-from miles.utils.ray_utils import Box
+from miles.utils.logging_utils import configure_logger, init_tracking
+from miles.utils.metric_utils import (
+    MetricChecker,
+    compute_pass_rate,
+    compute_rollout_step,
+    compute_statistics,
+    dict_add_prefix,
+)
+from miles.utils.misc import Box, group_by, load_function
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
-from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
 
 from ..utils.metric_utils import has_repetition
@@ -60,14 +56,8 @@ class RolloutManager:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
 
-        self.use_experimental_refactor = enable_experimental_rollout_refactor()
-        if self.use_experimental_refactor:
-            input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
-            self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
-            self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
-        else:
-            self.generate_rollout = load_function(self.args.rollout_function_path)
-            self.eval_generate_rollout = load_function(self.args.eval_function_path)
+        self.generate_rollout = load_function(self.args.rollout_function_path)
+        self.eval_generate_rollout = load_function(self.args.eval_function_path)
         self.custom_reward_post_process_func = None
         if self.args.custom_reward_post_process_path is not None:
             self.custom_reward_post_process_func = load_function(self.args.custom_reward_post_process_path)
@@ -155,12 +145,7 @@ class RolloutManager:
             return
         self.health_monitoring_resume()
 
-        if self.use_experimental_refactor:
-            result = call_rollout_function(self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id))
-        else:
-            result = call_rollout_fn(
-                self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
-            )
+        result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
@@ -242,12 +227,7 @@ class RolloutManager:
                 )
             metrics = None
         else:
-            if self.use_experimental_refactor:
-                data = call_rollout_function(self.generate_rollout, RolloutFnTrainInput(rollout_id=rollout_id))
-            else:
-                data = call_rollout_fn(
-                    self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
-                )
+            data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
             metrics = data.metrics
             data = data.samples
             # flatten the data if it is a list of lists
@@ -555,6 +535,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
 
 
 def _allocate_rollout_engine_addr_and_ports_external(args, rollout_engines):
+    # TODO: add bonus address setting for rdma weight transfer
     addr_and_ports = []
     for rank, _ in rollout_engines:
         addr = args.rollout_external_engine_addrs[rank]
@@ -580,6 +561,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
     num_engines_per_node = max(
         1, min(args.num_gpus_per_node, args.rollout_num_gpus) // args.rollout_num_gpus_per_engine
     )
+    nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     addr_and_ports = [{} for _ in range(num_engines)]
 
     # Calculate prefill limit to identify prefill engines
@@ -589,13 +571,8 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
         prefill_limit = args.prefill_num_servers * args.rollout_num_gpus_per_engine // num_gpu_per_engine
 
     visited_nodes = set()
+    all_server_node_hosts = {}  # {server_id: {node_rank:address}  }, server_id = rank // num_engines_per_node
     for rank, engine in rollout_engines:
-        if rank // num_engines_per_node in visited_nodes:
-            continue
-        visited_nodes.add(rank // num_engines_per_node)
-        # TODO: currently when restarting engines, we will set port for all engines on this node starting with this rank.
-        # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
-        num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
 
         def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
@@ -621,6 +598,24 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
 
         get_addr, get_port = get_addr_and_ports(engine)
 
+        # add node_rank and address into the dict for multi-node scenarios
+        if nnodes > 1:
+            server_id = rank // nnodes
+            all_server_node_hosts[server_id] = all_server_node_hosts.get(server_id, {})
+            node_rank = rank % nnodes
+            assert (
+                node_rank not in all_server_node_hosts[server_id]
+            ), f"Duplicate node rank {node_rank} for server {server_id}"
+            all_server_node_hosts[server_id][node_rank] = get_addr()
+
+        engine_id = rank // num_engines_per_node
+        if engine_id in visited_nodes:
+            continue
+        visited_nodes.add(engine_id)
+        # TODO: currently when restarting engines, we will set port for all engines on this node starting with this rank.
+        # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
+        num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
+
         for i in range(num_engines_on_this_node):
             current_rank = rank + i
             addr_and_ports[current_rank]["host"] = get_addr()
@@ -642,6 +637,9 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
                 addr_and_ports[rank + i]["dist_init_addr"] = f"{get_addr()}:{get_port(30 + args.sglang_dp_size)}"
 
     for i, _ in rollout_engines:
+        if nnodes > 1:
+            server_id = i // nnodes
+            addr_and_ports[i]["node_hosts"] = node_host_addr_str[server_id]
         for key in ["port", "nccl_port", "dist_init_addr"]:
             assert key in addr_and_ports[i], f"Engine {i} {key} is not set."
         logger.info(f"Ports for engine {i}: {addr_and_ports[i]}")
@@ -721,7 +719,7 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
 
     step = compute_rollout_step(args, rollout_id)
     log_dict["eval/step"] = step
-    tracking_utils.log(args, log_dict, step_key="eval/step")
+    logging_utils.log(args, log_dict, step_key="eval/step")
 
     return log_dict
 
@@ -741,7 +739,7 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     logger.info(f"perf {rollout_id}: {log_dict}")
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
-    tracking_utils.log(args, log_dict, step_key="rollout/step")
+    logging_utils.log(args, log_dict, step_key="rollout/step")
 
 
 def compute_metrics_from_samples(args, samples):
