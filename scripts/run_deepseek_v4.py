@@ -28,6 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_local_dir: str = "/root/models"
     save_dir: str = "/root/models"
     megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
+    enable_r3: bool = False
 
 
 _RAW_HF_CKPT_PATH_DICT = {
@@ -296,6 +297,12 @@ def train(args: ScriptArgs):
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
     )
+
+    if args.enable_r3:
+        misc_args += (
+            "--use-rollout-routing-replay "
+            "--use-slime-router "
+        )
 
     train_args = (
         f"{ckpt_args} "
