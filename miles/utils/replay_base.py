@@ -125,7 +125,7 @@ class BaseReplayManager:
                 assert (
                     top_indices.shape[0] == scores.shape[0]
                     and top_indices.shape[1] == topk
-                ), f"[{_get_rank()}] top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
+                ), f"rank {_get_rank()} top_indices shape {top_indices.shape} does not match scores shape {scores.shape} and topk {topk}"
                 return get_probs_and_top_indices(top_indices)
 
             elif stage == "replay_backward":
@@ -181,6 +181,7 @@ class RoutingReplayManager(BaseReplayManager):
     filename = "routing_replay.pt"
     data_key = "rollout_routed_experts"
     needs_moe_layer_indices = True
+    if_sp_region = True
 
 
 class IndexerReplayManager(BaseReplayManager):
@@ -188,6 +189,7 @@ class IndexerReplayManager(BaseReplayManager):
     filename = "indexer_replay.pt"
     data_key = "rollout_indexer_topk"
     needs_moe_layer_indices = False
+    if_sp_region = False
 
 
 routing_replay_manager = RoutingReplayManager()

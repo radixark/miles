@@ -201,6 +201,7 @@ class MegatronTrainRayActor(TrainRayActor):
         data_key: str,
         replay_list: list,
         get_layer_indices=None,
+        if_sp_region=True,
     ):
         if data_key not in rollout_data:
             raise ValueError(f"{data_key} is required in rollout_data for replay.")
@@ -256,7 +257,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 if pad != 0:
                     replay_data = pad_func(replay_data, pad)
 
-            if self.args.sequence_parallel:
+            if self.args.sequence_parallel and if_sp_region:
                 seqlen = replay_data.size(0)
                 assert seqlen % tp_size == 0
                 start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
@@ -375,6 +376,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     data_key=m.data_key,
                     replay_list=m.replays,
                     get_layer_indices=self._get_moe_layer_indices if m.needs_moe_layer_indices else None,
+                    if_sp_region=m.if_sp_region,
                 )
 
         with inverse_timer("train_wait"), timer("train"):
