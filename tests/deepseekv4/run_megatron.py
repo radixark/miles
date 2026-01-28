@@ -149,14 +149,24 @@ def create_model_and_load_checkpoint(args):
     with with_transformers_patch():
         model_provider = get_model_provider_func(args, role="actor")
 
-    # wrap_with_ddp=True to get DDP model for proper gradient sync
-    wrap_ddp = getattr(args, "run_backward", False)
-    model = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=wrap_ddp)
+    # Don't use DDP to save memory - we'll add a dummy finish_grad_sync for finalize_model_grads
+    model = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=False)
 
     if isinstance(model, list):
         num_params = sum(p.numel() for p in model[0].parameters())
     else:
         num_params = sum(p.numel() for p in model.parameters())
+
+    # Add dummy finish_grad_sync to allow finalize_model_grads to work without DDP
+    # (DP=1 means this is a no-op anyway)
+    def _dummy_finish_grad_sync(self):
+        pass
+    
+    if isinstance(model, list):
+        for m in model:
+            m.finish_grad_sync = _dummy_finish_grad_sync.__get__(m, type(m))
+    else:
+        model.finish_grad_sync = _dummy_finish_grad_sync.__get__(model, type(model))
     logger.info(f"Model created with {num_params:,} parameters")
 
     load_path = getattr(args, "load", None) or getattr(args, "ref_load", None)
