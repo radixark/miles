@@ -45,6 +45,7 @@ class UpdateWeightFromRemote:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.transfer_plan = RemoteTransferPlan(args, model, weight_update_mode)
+        self.weight_update_mode = weight_update_mode
         self._is_source = self.transfer_plan.is_source()
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self.update_weight_profiler = None
@@ -106,10 +107,12 @@ class UpdateWeightFromRemote:
             expert_params_and_buffers = expert_named_params_and_buffers(self.args, self.model)
             with timer("non_expert_transfer"):
                 self._update_weights(non_expert_params_and_buffers)
-                dist.barrier(group=get_gloo_group())
+                if self.weight_update_mode == "nccl":
+                    dist.barrier(group=get_gloo_group())
             with timer("expert_transfer"):
                 self._update_expert_weights(expert_params_and_buffers)
-                dist.barrier(group=get_gloo_group())
+                if self.weight_update_mode == "nccl":
+                    dist.barrier(group=get_gloo_group())
             with timer("final_trans"):
                 self.finish_transfer_task()
 
