@@ -10,7 +10,6 @@ from megatron.core import mpu
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
-from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import post_process_weights
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.profile_utils import FunctionStepProfiler
 from miles.utils.timer import timer
@@ -90,14 +89,14 @@ class UpdateWeightFromRemote:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
-             # int4/fp4 pre_process
+            # int4/fp4 pre_process
             if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
                 post_process_weights(
                     restore_weights_before_load=True,
                     post_process_quantization=False,
                     rollout_engines=self.rollout_engines,
                 )
-                
+
         dist.barrier(group=get_gloo_group())
 
         with timer("update_weights_implementation"):
@@ -258,3 +257,21 @@ class UpdateWeightFromRemote:
             converted_hf_tensors += convert_to_hf(self.args, self.model_name, name, param, self.quantization_config)
 
         self._update_bucket_weights_from_remote(converted_hf_tensors, pbar)
+
+def post_process_weights(
+    restore_weights_before_load: bool,
+    post_process_quantization: bool,
+    rollout_engines: Sequence[ActorHandle],
+):
+    """
+    Trigger post-process for int4/fp4 quantization on all rollout engines.
+    """
+    ray.get(
+        [
+            engine.post_process_weights.remote(
+                restore_weights_before_load=restore_weights_before_load,
+                post_process_quantization=post_process_quantization,
+            )
+            for engine in rollout_engines
+        ]
+    )

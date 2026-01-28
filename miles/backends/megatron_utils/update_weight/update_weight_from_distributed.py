@@ -164,22 +164,3 @@ def update_weights_from_distributed(
         handle.wait()
 
     return refs
-
-
-def post_process_weights(
-    restore_weights_before_load: bool,
-    post_process_quantization: bool,
-    rollout_engines: Sequence[ActorHandle],
-):
-    """
-    Trigger post-process for int4/fp4 quantization on all rollout engines.
-    """
-    ray.get(
-        [
-            engine.post_process_weights.remote(
-                restore_weights_before_load=restore_weights_before_load,
-                post_process_quantization=post_process_quantization,
-            )
-            for engine in rollout_engines
-        ]
-    )

@@ -448,7 +448,7 @@ class SGLangEngine(RayActor):
                 "post_process_quantization": post_process_quantization,
             },
         )
-    
+
     def update_weight_version(self, weight_version: str):
         return self._make_request(
             "update_weight_version",
@@ -511,6 +511,7 @@ def _compute_server_args(
     worker_type: str = "regular",
     disaggregation_bootstrap_port: int | None = None,
     base_gpu_id: int | None = None,
+    node_hosts: str | None = None,
 ):
     nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
@@ -557,6 +558,8 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
+    if node_hosts is not None and nnodes > 1:
+        kwargs["node_hosts"] = node_hosts
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     unused_keys = set(kwargs.keys())
