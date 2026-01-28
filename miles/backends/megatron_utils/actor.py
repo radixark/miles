@@ -203,6 +203,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         tp_rank = self.parallel_state.tp_rank
         tp_size = self.parallel_state.tp_size
+        qkv_format = self.args.qkv_format
 
         def pad_func(experts, pad):
             _, num_layers, topk = experts.shape
@@ -217,7 +218,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return torch.cat([experts, pad], dim=0)
 
         for _ in range(sum(num_microbatches)):
-            batch = data_iterator[0].get_next(["rollout_routed_experts", "tokens"])
+            batch = data_iterator[0].get_next(["rollout_routed_experts", "tokens", "max_seq_lens"])
             rollout_routed_experts = batch["rollout_routed_experts"]
             tokens = batch["tokens"]
             assert len(rollout_routed_experts) == len(tokens)
@@ -228,12 +229,27 @@ class MegatronTrainRayActor(TrainRayActor):
             # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
             rollout_routed_experts = [pad_func(r, 1) for r in rollout_routed_experts]
             # TODO: maybe extract a common process function for here and get_batch?
-            rollout_routed_experts = [slice_with_cp(r, pad_func, self.parallel_state) for r in rollout_routed_experts]
-            rollout_routed_experts = torch.cat(rollout_routed_experts, dim=0)
-            pad_size = self.parallel_state.dp_size * self.args.data_pad_size_multiplier
-            pad = (pad_size - rollout_routed_experts.size(0) % pad_size) % pad_size
-            if pad != 0:
-                rollout_routed_experts = pad_func(rollout_routed_experts, pad)
+
+            # Handle qkv_format consistently with get_batch
+            if qkv_format == "bshd":
+                max_seqlen = batch["max_seq_lens"][0]
+                rollout_routed_experts = [
+                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format, max_seqlen)
+                    for r in rollout_routed_experts
+                ]
+                rollout_routed_experts = torch.stack(rollout_routed_experts, dim=0)
+                batch_size, seqlen, num_layers, topk = rollout_routed_experts.shape
+                rollout_routed_experts = rollout_routed_experts.reshape(batch_size * seqlen, num_layers, topk)
+            else:
+                rollout_routed_experts = [
+                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format)
+                    for r in rollout_routed_experts
+                ]
+                rollout_routed_experts = torch.cat(rollout_routed_experts, dim=0)
+                pad_size = self.parallel_state.dp_size * self.args.data_pad_size_multiplier
+                pad = (pad_size - rollout_routed_experts.size(0) % pad_size) % pad_size
+                if pad != 0:
+                    rollout_routed_experts = pad_func(rollout_routed_experts, pad)
 
             if self.args.sequence_parallel:
                 seqlen = rollout_routed_experts.size(0)
