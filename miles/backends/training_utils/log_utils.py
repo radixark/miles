@@ -124,6 +124,7 @@ def log_rollout_data(
                 "loss_masks",
                 "sample_indices",
                 "rollout_routed_experts",
+                "rollout_indexer_topk",
                 "max_seq_lens",
                 "dynamic_global_batch_size",
             ]:
