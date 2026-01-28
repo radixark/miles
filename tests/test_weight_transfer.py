@@ -1,3 +1,4 @@
+import subprocess
 from dataclasses import dataclass
 from typing import Literal
 
@@ -177,6 +178,8 @@ def main(args: ScriptArgs):
     args.validate()
     prepare(args)
     execute(args)
+    # Consolidate timer logs after execution
+    subprocess.run(["python", "consolidate_timer_log.py", "miles_timer_0.log"], check=False)
 
 
 if __name__ == "__main__":
