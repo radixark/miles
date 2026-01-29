@@ -569,6 +569,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Address and ports of the external engines.",
             )
             parser.add_argument(
+                "--transfer-backend",
+                type=str,
+                choices=["ray", "mooncake_dataproto"],
+                default="ray",
+                help="The backend used to transfer rollout data from rollout workers to training workers.",
+            )
+            parser.add_argument(
+                "--mooncake-dataproto-hard-pin",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="Hard-pin Mooncake rollout tensors to the producer segment for Mooncake DataProto transfer.",
+            )
+            parser.add_argument(
+                "--mooncake-dataproto-store-init-kwargs",
+                type=json.loads,
+                default=None,
+                help="JSON kwargs used to initialize MooncakeDistributedStore for Mooncake DataProto transfer.",
+            )
+            parser.add_argument(
                 "--update-weight-transfer-mode",
                 choices=["broadcast", "p2p"],
                 default="broadcast",
@@ -2013,6 +2032,13 @@ def miles_validate_args(args):
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
+
+    if getattr(args, "transfer_backend", "ray") == "mooncake_dataproto":
+        from miles.utils.remote_batch import normalize_store_init_kwargs
+
+        args.mooncake_dataproto_store_init_kwargs = normalize_store_init_kwargs(
+            args.mooncake_dataproto_store_init_kwargs
+        )
 
     # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
