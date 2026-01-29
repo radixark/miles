@@ -30,6 +30,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
+from miles.utils.data_transfer import get_data_transfer_backend
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
@@ -96,6 +97,8 @@ class RolloutManager:
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()  # Start the monitor thread (in paused state)
             self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
+
+        self.transfer_backend = get_data_transfer_backend(args)
 
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -466,7 +469,7 @@ class RolloutManager:
             # Pass dynamic global_batch_size to training side
             if hasattr(self, "_dynamic_global_batch_size"):
                 rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
-            rollout_data_refs.append(Box(ray.put(rollout_data)))
+            rollout_data_refs.append(self.transfer_backend.put(rollout_data))
         return rollout_data_refs
 
 

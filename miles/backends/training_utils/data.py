@@ -18,7 +18,7 @@ from .parallel import ParallelState
 logger = logging.getLogger(__name__)
 
 
-def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: ParallelState) -> RolloutBatch:
+def get_rollout_data(args: Namespace, rollout_data_ref, parallel_state: ParallelState, transfer_backend) -> RolloutBatch:
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
     rollout_data = process_rollout_data(
@@ -26,6 +26,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
         rollout_data_ref,
         parallel_state.dp_rank,
         parallel_state.dp_size,
+        transfer_backend=transfer_backend,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
