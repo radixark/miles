@@ -26,7 +26,6 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ...utils.transformers_patch import with_transformers_patch
 from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_perf_data, log_rollout_data
@@ -38,6 +37,7 @@ from .parallel import create_megatron_parallel_state
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from ...utils.transformers_patch import with_transformers_patch
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -224,7 +224,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return torch.cat([data, pad_tensor], dim=0)
 
         for _ in range(sum(num_microbatches)):
-            batch = data_iterator[0].get_next([data_key, "tokens", "max_seq_lens", "total_lengths", "response_lengths"])
+            batch = data_iterator[0].get_next([data_key, "tokens", "max_seq_lens"])
             replay_data = batch[data_key]
             tokens = batch["tokens"]
             assert len(replay_data) == len(tokens)
@@ -240,13 +240,17 @@ class MegatronTrainRayActor(TrainRayActor):
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
                 replay_data = [
-                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format, max_seqlen) for r in replay_data
+                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format, max_seqlen)
+                    for r in replay_data
                 ]
                 replay_data = torch.stack(replay_data, dim=0)
                 batch_size, seqlen, num_layers, topk = replay_data.shape
                 replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
             else:
-                replay_data = [slice_with_cp(r, pad_func, self.parallel_state, qkv_format) for r in replay_data]
+                replay_data = [
+                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format)
+                    for r in replay_data
+                ]
                 replay_data = torch.cat(replay_data, dim=0)
                 pad_size = self.parallel_state.dp_size * self.args.data_pad_size_multiplier
                 pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
@@ -266,7 +270,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             for replay_idx, layer_idx in enumerate(layer_indices):
                 layer_data = replay_data[:, layer_idx]
-                replay_list[replay_idx].record(layer_data, batch.get("total_lengths"), batch.get("response_lengths"))
+                replay_list[replay_idx].record(layer_data)
 
         del rollout_data[data_key]
 
