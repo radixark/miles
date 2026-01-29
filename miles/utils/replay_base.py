@@ -6,6 +6,9 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from megatron.core import mpu
+from megatron.core.transformer.deepseek_v4_cp_utils import natural_to_zigzag_slice
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -103,7 +106,14 @@ class BaseReplayManager:
         p = Path(base_path) / self.filename
         print(f"[{self.__class__.__name__}] load_all_from_files {p}")
         data = torch.load(p, weights_only=False)
+
+        cp_size = mpu.get_context_parallel_world_size() if mpu.is_initialized() else 1
+        cp_rank = mpu.get_context_parallel_rank() if mpu.is_initialized() else 0
+
         for replay, indices_list in zip(self.replays, data):
+            if cp_size > 1:
+                indices_list = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in indices_list]
+                print(f"[{self.__class__.__name__}] CP mode: cp_size={cp_size}, cp_rank={cp_rank}, sliced indices")
             replay.top_indices_list = indices_list
             replay.forward_index = 0
             replay.backward_index = 0
