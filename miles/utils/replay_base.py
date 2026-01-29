@@ -1,3 +1,4 @@
+from curses import tigetflag
 import os
 import atexit
 from pathlib import Path
@@ -17,11 +18,19 @@ class Replay:
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
+        self.total_lengths_list: list[torch.Tensor] = []
+        self.response_lengths_list: list[torch.Tensor] = []
 
-    def record(self, top_indices: torch.Tensor):
+    def record(self, top_indices: torch.Tensor, total_lengths: torch.Tensor = None, response_lengths: torch.Tensor = None):
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
         buf.copy_(top_indices)
         self.top_indices_list.append(buf)
+        
+        assert total_lengths is not None and response_lengths is not None
+        if total_lengths is not None:
+            self.total_lengths_list.append(total_lengths)
+        if response_lengths is not None:
+            self.response_lengths_list.append(response_lengths)
 
     def pop_forward(self) -> torch.Tensor:
         top_indices = self.top_indices_list[self.forward_index]
@@ -33,10 +42,16 @@ class Replay:
         self.backward_index += 1
         return top_indices.to(torch.cuda.current_device())
 
+    def get_forward_lengths(self, is_forward: bool) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        idx = self.forward_index - 1 if is_forward else self.backward_index - 1
+        return self.total_lengths_list[idx], self.response_lengths_list[idx]
+
     def clear(self):
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list = []
+        self.total_lengths_list = []
+        self.response_lengths_list = []
 
     def clear_forward(self):
         self.forward_index = 0
@@ -171,13 +186,59 @@ class BaseReplayManager:
 
         module.register_forward_pre_hook(pre_forward_hook)
 
+    def _check_padding_with_valid_counts(self, top_indices, valid_kv_counts, topk, total_length):
+        flat_indices = top_indices.view(-1, top_indices.shape[-1])
+        flat_counts = valid_kv_counts.view(-1)
+        num_positions = flat_indices.shape[0]
+        
+        assert flat_counts.shape[0] == num_positions, \
+            f"valid_kv_counts shape {flat_counts.shape} doesn't match indices shape {flat_indices.shape}"
+        
+        invalid_positions = []
+        
+        for i in range(num_positions):
+            indices = flat_indices[i].tolist()
+            expected_valid = min(int(flat_counts[i].item()), topk)
+
+            if all(x == -1 for x in indices):
+                if i < total_length:
+                    print(f"[WARNING] rank {_get_rank()}: [{self.name}] Maybe invalid replay: {i} is before total length {total_length}")
+                continue
+            
+            # (non-masked positions must have valid values)
+            for j in range(expected_valid):
+                if indices[j] == -1:
+                    invalid_positions.append({'pos': i, 'index': j, 'expected_valid': expected_valid, 'indices': indices})
+                    break
+            
+        return len(invalid_positions) == 0, invalid_positions
+
     def check_replay_result(self, old_topk_fn, scores, topk, top_indices, **kwargs):
         if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "0":
             return
-        manager = self
+        print(f"rank {_get_rank()}: [{self.name}] check_replay_result called, scores shape: {scores.shape}, top_indices shape: {top_indices.shape}")
+        valid_kv_counts = kwargs.pop('valid_kv_counts', None)
+        replay = self.get_current()
+        
+        total_lengths, response_lengths = replay.get_forward_lengths(True if self.stage == "replay_forward" else False)
+                
         orig_top_indices = old_topk_fn(scores, topk, **kwargs)
         if isinstance(orig_top_indices, tuple):
             _, orig_top_indices = orig_top_indices
+        
+        if valid_kv_counts is not None:
+            padding_valid, invalid_positions = self._check_padding_with_valid_counts(top_indices, valid_kv_counts, topk, total_lengths[0])
+            if not padding_valid:
+                for i, (t, r) in enumerate(zip(total_lengths, response_lengths)):
+                    prompt_len = t - r
+                    print(f"  Sample {i}: total_len={t}, prompt_len={prompt_len}, response_len={r}", flush=True)
+
+                logger.error(f"[{self.name}] Missing valid indices in non-masked positions!")
+                for info in invalid_positions[:5]:
+                    logger.error(f"  Position {info['pos']}: index {info['index']} should be valid but is -1 "
+                                 f"(Megatron expects at least {info['expected_valid']} valid indices)")
+                    logger.error(f"    indices: {info['indices']}")
+                raise AssertionError(f"[{self.name}] Invalid replay: {len(invalid_positions)} positions missing valid indices")
         
         mismatched_tokens = []
         try:
@@ -193,7 +254,7 @@ class BaseReplayManager:
                     continue
                 min_match = len(replay_set) // 2
                 num_match = len(orig_set & replay_set)
-                if num_match < (min_match - 1):
+                if num_match < min_match:
                     mismatched_tokens.append({
                         'token_idx': i,
                         'num_match': num_match,
@@ -204,19 +265,16 @@ class BaseReplayManager:
                     })
             
             if mismatched_tokens:
-                raise AssertionError(f"rank {_get_rank()}: {len(mismatched_tokens)} tokens failed replay check")
+                raise AssertionError(f"rank {_get_rank()}: [{self.name}] {len(mismatched_tokens)} tokens failed replay check")
 
-            logger.info(f"rank {_get_rank()}: routing replay test passed, shape: {top_indices.shape}")
+            print(f"rank {_get_rank()}: [{self.name}] replay test passed, shape: {top_indices.shape}")
 
         except Exception as e:
-            print(f"\n{'='*80}", flush=True)
-            print(f"Replay check exception - Stage: {manager.stage}, rank: {_get_rank()}", flush=True)
+            print(f"[{self.name}] Replay check exception - Stage: {self.stage}, rank: {_get_rank()}", flush=True)
             torch.set_printoptions(threshold=float("inf"))
-            print(f"original top_indices shape: {orig_top_indices.shape}", flush=True)
-            print(f"replay top_indices (padding removed) shape: {top_indices.shape}", flush=True)
             
             if mismatched_tokens:
-                print(f"\n[Rank {_get_rank()}] {len(mismatched_tokens)} tokens mismatched", flush=True)
+                print(f"\n[{self.name}] [Rank {_get_rank()}] {len(mismatched_tokens)} tokens mismatched", flush=True)
                 print(f"Mismatched token indices: {[t['token_idx'] for t in mismatched_tokens]}", flush=True)
                 print(f"\nFirst {min(5, len(mismatched_tokens))} mismatched tokens:", flush=True)
                 
