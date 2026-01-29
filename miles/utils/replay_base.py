@@ -102,6 +102,7 @@ class BaseReplayManager:
         print(f"[{self.__class__.__name__}] save_all_to_files {p}")
         torch.save(data, p)
 
+    # Hacky, only support raw file obtained from 1rank
     def load_all_from_files(self, base_path: str):
         p = Path(base_path) / self.filename
         print(f"[{self.__class__.__name__}] load_all_from_files {p}")
