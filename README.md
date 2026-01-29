@@ -1,212 +1,160 @@
-<div align="center" id="sglangtop">
-<img src="https://raw.githubusercontent.com/radixark/miles/main/imgs/miles_logo.png" alt="logo" width="400" margin="10px"></img>
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/radixark/miles/main/imgs/miles_logo.png" alt="Miles Logo" width="550">
+
+### **Enterprise-Grade Reinforcement Learning for Large-Scale Model Training**
+### **High-Performance Rollout • Low Precision Training • Production Stability**
 
 [![GitHub Repo](https://img.shields.io/badge/github-radixark%2Fmiles-black?logo=github)](https://github.com/radixark/miles)
+[![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
+[![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
+[**Latest Updates**](#latest-updates) | [**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Documentation**](docs/en/get_started/quick_start.md)
 
 </div>
 
-
-> A journey of a thousand miles is made one small step at a time.
-
-**Miles** is an enterprise-facing reinforcement learning framework for **large-scale MoE post-training and production workloads**, forked from and co-evolving with **[slime](https://github.com/THUDM/slime)**.
-
-Miles keeps slime’s lightweight, modular design, but focuses on:
-
-- New hardware support (e.g., GB300 and beyond)  
-- Stable, controllable RL for large MoE models  
-- Production-grade features  
+---
 
 
-## News
+## Latest Updates
 
-- [2025/12] Support FSDP2 as A Training Backend for Miles ([blog](https://lmsys.org/blog/2025-12-03-miles-fsdp/)).
-- [2025/11] Unified FP8: Moving Beyond Mixed Precision for Stable and Accelerated MoE RL ([blog](https://lmsys.org/blog/2025-11-25-fp8-rl/)).
-- [2025/11] Power Up Speculative Decoding In Reinforcement Learning ([blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/spec/readme-en.md)).
-- [2025/11] Introduce Miles - born after slime towards enterprise RL training ([blog](https://lmsys.org/blog/2025-11-19-miles/)).
+*   **[2026/01]** 💎 **INT4 Quantization-Aware Training (QAT)**: Inspired by the Kimi K2-Thinking report, Miles now features a full-stack INT4 W4A16 QAT pipeline. This allows 1TB-scale models to fit into single-machine VRAM (e.g., NVIDIA H200), doubling rollout efficiency by eliminating cross-node bottlenecks while maintaining BF16-equivalent accuracy. [Blog](https://lmsys.org/blog/2026-01-28-int4-qat/)
+*   **[2026/01]** 💎 **Unified VLM/LLM Multi-Turn Training**: We provided an implementation for the VLM multi-turn sampling paradigm. Developers only need to write a customized `rollout` function to easily start multi-turn RL for VLM, just like training LLM. [blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/vlm-multi-turn/readme-en.md)
+*   **[2026/01]** 🤖 **Multi-Agent Co-Evolution**: Miles now supports **MrlX**, a novel asynchronous co-evolutionary framework for Multi-Agent RL. Achieve superior performance in complex tasks like Doctor-Patient simulations and DeepResearch pipelines by enabling specialized agents to evolve together symbiotically. [[Link]](https://github.com/AQ-MedAI/MrlX)
+*   **[2025/12]** 🔄 **Rollout Routing Replay (R3)**: In collaboration with SGLang, we've launched R3 to solve MoE RL instability. R3 records inference routing decisions and replays them during training, effectively eliminating the "training-inference mismatch" and preventing training collapse in large MoE models like Qwen3 and DeepSeek-V3. [[Paper]](https://arxiv.org/pdf/2510.11370)
+*   **[2025/11]** 🔥 **Unified FP8 Release**: Solves the stability issues in MoE RL by ensuring training and inference use the exact same FP8 quantization logic. [[Blog]](https://lmsys.org/blog/2025-11-25-fp8-rl/)
+*   **[2025/11]** ⚡ **Speculative Decoding in RL**: Integrated speculative rollout with online SFT for draft models, achieving massive throughput gains. [[Blog]](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/spec/readme-en.md)
+*   **[2025/11]** 🎉 **Miles Project Launch**: A joint effort by InfiXAI, Ant Group, SGLang RL Team, and the Miles community. [[Announcement]](https://lmsys.org/blog/2025-11-19-miles/)
 
+## What is Miles?
+
+**Miles** is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. Built as a powerful fork of **[slime](https://github.com/THUDM/slime)**, Miles bridges the gap between research-grade RL and production-grade reliability by integrating **SGLang** for high-throughput rollout and **Megatron-LM** for scalable training.
+
+> *"A journey of a thousand miles begins with a single step."* — Miles focuses on the low-level system optimizations that make large-scale RL stable, efficient, and reproducible.
 
 ---
 
-## Table of Contents
-- [Quick Start](#quick-start)
-- [Arguments Walkthrough](#arguments-walkthrough)
-- [Developer Guide](#developer-guide)
-- [Recent Updates](#recent-updates)
-- [Roadmap](#roadmap)
-- [Architecture Overview](#architecture-overview)
-- [FAQ & Acknowledgements](#faq--acknowledgements)
+
+## Key Features
+
+### 🌪️ Advanced MoE & Low-Precision Training
+
+*   **Unified FP8 Pipeline**: The first framework to implement end-to-end FP8 sampling and training. By unifying precision across rollout and training, Miles eliminates the quantization-induced discrepancy that causes RL collapse in large MoE models.
+*   **Rollout Routing Replay (R3)**: Records expert routing decisions during SGLang inference and replays them during training to ensure bit-wise expert alignment.
+*   **INT4 QAT Support**: Recommendation for 1TB+ models to enable single-machine (e.g., H200) deployment by significantly reducing memory footprint.
+
+### 🛡️ Eliminating Train-Inference Mismatch
+
+*   **Bit-wise Identical Training and Inference Log Probs**: System-level solution achieving deterministic forward/backward passes through kernel-level optimization (FlashAttention-3, DeepGEMM).
+*   **Algorithmic Correction (TIS/MIS)**: When mismatch is unavoidable, Miles provides **Truncated Importance Sampling (TIS)** and **Masked Importance Sampling (MIS)** to mitigate off-policy bias and prevent training divergence.
+
+### ⚡ Extreme Performance & Efficiency
+
+*   **Speculative RL Training**: Achieve **25%+ rollout speedup** by using an **Online SFT Draft Model**. Unlike frozen draft models, Miles updates the draft policy during RL to prevent policy drift.
+*   **Zero-Copy Weight Sync**: Optimized weight refit via **CUDA IPC zero-copy mapping**, async tensor gathering, and bucketed flattening. Sync time reduced by 50% compared to standard HTTP/RPC transfers.
+*   **Partial Rollout & Over-Sampling**: Handles the "Long-Tail Effect" in multi-turn RL by over-sampling requests and recycling half-finished trajectories to maximize GPU utilization.
+
+## Model Support & Training Diversity
+
+### 🏗️ Supported Models
+Miles supports a wide range of state-of-the-art architectures, with a special emphasis on **DeepSeek, Qwen, Llama** and mainstream models.
+
+| Family | Supported Models |
+| :--- | :--- |
+| **DeepSeek** | **R1, V3, V3.2** |
+| **Qwen** | **Qwen 2, 2.5, 3** |
+| **Llama** | **Llama 3, 3.1, 3.3, 4** |
+| **Gemma** | **Gemma 2, 3, 3N** |
+| **GLM** | **GLM-4.5, GLM-4.6, GLM-4.7** |
+| **MiniMax** | **M2, M2.1** |
+| **Others** | **Mistral, Mixtral, Phi, gpt-oss and any model supported by SGLang and Megatron** |
+
+### 🧩 Diverse Training Scenarios
+Miles is designed to handle the complexity of modern RL workloads across various dimensions:
+*   **Multi-Turn Interaction**: Optimized for complex, multi-round conversations and tool-use scenarios.
+*   **VLM & LLM Support**: Unified framework for both Vision-Language and pure Text models.
+*   **Reasoning & Coding**: Specific recipes and optimizations for **Reasoning (Math/Logic)** and **Coding Agent** tasks.
+*   **Multi-Agent Training**: Support for advanced co-training and collaborative multi-agent reinforcement learning.
 
 ---
 
 ## Quick Start
 
-> **Note:** Miles is under active development. Commands and examples may evolve; please check the repo for the latest instructions.
+### Installation
 
-For a comprehensive quick start guide covering environment setup, data preparation, training startup, and key code analysis, please refer to:
-- [Quick Start Guide](./docs/en/get_started/quick_start.md)
+We recommend using our official Docker image for the best performance and compatibility:
 
-We also provide examples for some use cases not covered in the quick start guide; please check [examples](examples/).
+```bash
+# Pull the latest image
+docker pull radixark/miles:latest
 
----
+# Or install from source
+pip install -r requirements.txt
+pip install -e .
+```
 
-## Arguments Walkthrough
+### Launch Training
 
-Arguments in Miles follow the same three-layer pattern as slime:
+Miles provides a unified entry point for complex RL tasks. Here is an example of FP8 GRPO training for Qwen3:
 
-1. **Megatron arguments**: Megatron arguments are exposed unchanged, e.g. `--tensor-model-parallel-size 2`.
+```bash
+python train.py \
+    --advantage-estimator grpo \
+    --model-name qwen3-30b-a3b \
+    --hf-checkpoint /path/to/qwen3-30b-a3b-hf \
+    --rollout-batch-size 512 \
+    --n-samples-per-prompt 8
+```
 
-2. **SGLang arguments**: All SGLang arguments are exposed with a prefix `--sglang-`, e.g. `--mem-fraction-static` → `--sglang-mem-fraction-static`.
-
-3. **Miles-specific arguments*: Please refer to [`miles/utils/arguments.py`](miles/utils/arguments.py)  for a full list
-
-For more detailed usage, please refer to the documentation and example configs in the repo as they become available.
- 
-
-
-## Recent Updates
-
-Miles starts from slime’s proven backbone and adds a series of upgrades for production environments. The recent PRs and changes have also been synced to slime side.
-
-### ✅ True On-Policy
-
-Miles extends slime’s deterministic training and supports **infrastructure-level true on-policy support** for SGLang + FSDP:
-
-- Keeps the mismatch between **training** and **inference** effectively at **zero**  
-- Aligns numerical behavior end-to-end between training and deployment  
-- Uses:
-  - FlashAttention-3  
-  - DeepGEMM  
-  - Batch-invariant kernels from Thinking Machines Lab  
-  - `torch.compile` and careful alignment of numeric operations  
-
-This makes Miles suitable for **high-stakes experiments** where repeatability, auditability, and production debugging matter.
-
-### 🧮 Memory Robustness & Efficiency
-
-To fully utilize precious GPU memory **without** constant OOM failures, Miles includes:
-
-- Graceful handling of benign OOMs via error propagation  
-- Memory margins to avoid NCCL-related OOM issues  
-- Fixes for FSDP excessive memory usage  
-- Support for move-based and partial offloading  
-- Host peak memory savings for smoother multi-node training  
-
-The goal is to let large MoE jobs run **closer to the hardware limit** while staying stable.
-
-### ⚡ Speculative Training
-
-Miles adds **speculative training** support tailored for RL:
-
-- Performs **online SFT on the draft model during RL**, instead of freezing it  
-- Avoids draft policy drift away from the target model  
-- Achieves **25%+ rollout speedup** vs. frozen MTP, especially in later training stages  
-- Includes:
-  - MTP with sequence packing + CP  
-  - Proper loss masking and edge-case handling  
-  - LM head / embedding gradient isolation  
-  - Weight sync flows between Megatron and SGLang  
-
-### 🧱 Hardware & Examples
-
-Miles actively tracks new hardware and provides usable examples:
-
-- GB300 training support, with more recipes coming  
-- A **formal mathematics (Lean)** example with SFT / RL scripts, showcasing Miles in a verifiable environment setting  
-
-### 🛠 Miscellaneous Improvements
-
-Additional engineering improvements include:
-
-- Enhanced FSDP training backend  
-- Option to deploy the **rollout subsystem independently** outside the main framework  
-- Better debugging & profiling: more metrics, post-hoc analyzers, and profiler integration  
-- Gradual refactoring for clarity and maintainability  
+For comprehensive guides on environment setup and custom reward functions, see the [Quick Start Guide](docs/en/get_started/quick_start.md).
 
 ---
 
 ## Roadmap
 
-We are actively evolving Miles toward a **production-ready RL engine** for large-scale MoE and multimodal workloads. Current roadmap items include:
+### ✅ Completed
 
-- **Large-scale MoE RL recipes** on new hardware (e.g., GB300 and successors)  
-- **Multimodal training** support  
-- **Rollout accelerations**  
-  - Compatibility with SGLang spec v2 for improved performance  
-  - More advanced speculative training schemes (e.g., EAGLE3-style, multi-spec layers)  
-- **Elasticity & fault tolerance**  
-  - More robust handling of GPU / node failures in long-running jobs  
-- **Resource scheduling for async training**  
-  - Balancing training and serving in large-scale asynchronous RL systems  
+- [x] **Unified FP8** E2E Training & Rollout
+- [x] **INT4 Quantization-Aware Training (QAT)**: Single-machine 1TB models
+- [x] **Speculative RL** with Online SFT
+- [x] **Multi-Agent RL** (Co-evolutionary frameworks like [MrlX](https://github.com/AQ-MedAI/MrlX))
+- [x] **Support DeepSeek V3.2 Models**
+- [x] **VLM Multi-Turn Training**
+- [x] **Aligning SGLang with Megatron in Dense Models**
+- [x] **Rollout Routing Replay (R3)**
 
-We’ll continue to iterate based on feedback from users across research labs, startups, and enterprise teams.
+### 🏗️ In Progress & Planned
 
----
-
-## Architecture Overview
-
-Miles inherits slime’s core architecture as below.
-
-
-![arch](./imgs/arch.png)
+- [ ] **Zero mismatch for MoE RL**
+- [ ] **Aligning SGLang with Megatron in MoE Models**
+- [ ] **Diffusion RL** Support
+- [ ] **Omni RL** Support
+- [ ] **Diffusion LLM RL** Support
+- [ ] **Elastic Resource Scheduling**: Dynamic scaling of rollout vs. training workers
 
 
-**Module overview:**
-
-- **training (Megatron)**  
-  Main training loop. Reads data from the Data Buffer and synchronizes parameters to the rollout subsystem after updates.
-
-- **rollout (SGLang + router)**  
-  Generates new samples, including rewards / verifier outputs, and writes them back to the Data Buffer.
-
-- **data buffer**  
-  Manages prompt initialization, custom data sources, and rollout generation strategies. Serves as the bridge between training and rollout.
-
-This decoupled design lets you:
-
-- Swap in different algorithms / reward functions without touching rollout code  
-- Customize rollout engines independently from training  
-- Scale rollouts and training differently depending on hardware and deployment constraints  
 
 ---
 
+## Acknowledgements
 
-## Developer Guide
+Miles is built upon the shoulders of giants in the LLM infrastructure ecosystem:
+*   **[slime](https://github.com/THUDM/slime)**: The core modular architecture and inspiration.
+*   **[SGLang](https://github.com/sgl-project/sglang)**: The high-performance inference engine.
+*   **[Megatron-LM](https://github.com/NVIDIA/Megatron-LM)**: Robust large-scale training components.
 
-* **Contributions welcome!**
-  We’re especially interested in:
-
-  * New hardware backends & tuning
-  * MoE RL recipes
-  * Stability / determinism improvements
-  * Multimodal & speculative training use cases
-
-* We recommend using [pre-commit](https://pre-commit.com/) to keep style consistent:
-
-```bash
-apt install pre-commit -y
-pre-commit install
-
-# run pre-commit to ensure code style consistency
-pre-commit run --all-files --show-diff-on-failure --color=always
-```
-
-* For debugging tips, performance tuning, and internal architecture notes, see the `docs/` and `developer_guide/` folders (coming soon).
-
----
-
-## FAQ & Acknowledgements
-
-* For FAQs, please see `docs/en/get_started/qa.md` (to be added as the project matures).
-* **Huge thanks** to the **slime** authors and community — Miles would not exist without slime’s design and ecosystem.
-* We also acknowledge and rely on the broader LLM infra ecosystem, including SGLang, Megatron-LM, and related tools.
+Special thanks to **InfiXAI Team**, **Ant Group AQ Team**, **SGLang RL Team**, and the **Miles Team**. We also thank **DataCrunch** for compute sponsorship and **NVIDIA** for technical support on Transformer Engine (TE).
 
 ---
 
 ## Links
 
-* **Miles GitHub**: [https://github.com/radixark/miles](https://github.com/radixark/miles)
-* **slime GitHub**: [https://github.com/THUDM/slime](https://github.com/THUDM/slime)
+*   **GitHub**: [https://github.com/radixark/miles](https://github.com/radixark/miles)
+*   **Slime Project**: [https://github.com/THUDM/slime](https://github.com/THUDM/slime)
+*   **Developer Guide**: Check the `docs/` and `examples/` directories for in-depth technical notes.
 
-We’re excited to see what you build — whether you choose **slime**, **Miles**, or both in different parts of your stack. 🚀
+<div align="center">
 
+**Give Miles a ⭐️ Star if it helps your RL journey!**
+
+</div>
