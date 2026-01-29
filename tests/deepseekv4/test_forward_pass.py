@@ -339,12 +339,13 @@ def megatron_backward(
         extra_args_str = " ".join(extra_args)
 
         # Build shell command with backward pass flags
+        nproc = tp_size * cp_size
         shell_cmd = f'''
 source "{model_script_path}" && \\
 PYTHONPATH="{MEGATRON_PATH}" \\
 SGLANG_DUMPER_DUMP_GRAD=1 \\
 {sys.executable} -m torch.distributed.run \\
-    --nproc-per-node={tp_size} \\
+    --nproc-per-node={nproc} \\
     "{script_path}" \\
     "${{MODEL_ARGS[@]}}" \\
     --prompt-file "{prompt_file_path}" \\
@@ -354,6 +355,7 @@ SGLANG_DUMPER_DUMP_GRAD=1 \\
     --hidden-dropout 0 \\
     --attention-dropout 0 \\
     --tp-size {tp_size} \\
+    --cp-size {cp_size} \\
     --run-backward \\
     --no-gradient-accumulation-fusion \\
     {extra_args_str}
