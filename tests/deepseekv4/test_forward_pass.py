@@ -259,6 +259,7 @@ def megatron_backward(
     ref_load: Optional[str] = typer.Option(None, "--ref-load", help="Path to Megatron checkpoint"),
     input_seq_len: int = typer.Option(128, "--input-seq-len", help="Input sequence length"),
     tp_size: int = typer.Option(1, "--tp-size", help="Tensor parallel size"),
+    cp_size: int = typer.Option(1, "--cp-size", help="Context parallel size"),
     prompt_mode: str = typer.Option("text", "--prompt-mode", help="Prompt mode: math, story, text"),
     prompt_text: Optional[str] = typer.Option("The capital of France is ", "--prompt-text", help="Custom prompt text (for text mode)"),
     prompt_file: Optional[str] = typer.Option(None, "--prompt-file", help="Path to prompt file (for story mode)"),
@@ -280,6 +281,7 @@ def megatron_backward(
     print(f"Ref Load:         {ref_load or '(random weights)'}")
     print(f"Model Type:       {model_type}")
     print(f"TP Size:          {tp_size}")
+    print(f"CP Size:          {cp_size}")
     print(f"Seq Length:       {input_seq_len}")
     print(f"Prompt Mode:      {prompt_mode}")
     print(f"Chat Template:    {apply_chat_template}")

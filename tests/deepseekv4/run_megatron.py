@@ -64,6 +64,8 @@ def add_extra_args(parser):
                             help="Top-k predictions to show")
     test_group.add_argument("--tp-size", type=int, default=1,
                             help="Tensor parallel size")
+    test_group.add_argument("--cp-size", type=int, default=1,
+                            help="Context parallel size")
     test_group.add_argument("--run-backward", action="store_true",
                             help="Run backward pass with dummy loss after forward")
     test_group.add_argument("--routing-replay-dump-path", type=str, default=None,
@@ -88,13 +90,14 @@ def parse_args():
     args.world_size = int(os.environ.get("WORLD_SIZE", 1))
 
     tp_size = args.tp_size
+    cp_size = args.cp_size
     args.tensor_model_parallel_size = tp_size
     args.pipeline_model_parallel_size = 1
-    args.context_parallel_size = 1
+    args.context_parallel_size = cp_size
     args.expert_model_parallel_size = tp_size
     args.expert_tensor_parallel_size = 1
     
-    if tp_size > 1:
+    if tp_size > 1 or cp_size > 1:
         args.sequence_parallel = True
 
     if not args.global_batch_size:
@@ -137,7 +140,7 @@ def initialize_megatron(args):
         getattr(args, "decrease_batch_size_if_needed", False),
     )
 
-    logger.info(f"Initialized Megatron with TP={args.tensor_model_parallel_size}, PP={args.pipeline_model_parallel_size}")
+    logger.info(f"Initialized Megatron with TP={args.tensor_model_parallel_size}, CP={args.context_parallel_size}, PP={args.pipeline_model_parallel_size}")
 
 
 def create_model_and_load_checkpoint(args):
