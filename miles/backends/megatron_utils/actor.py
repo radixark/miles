@@ -162,7 +162,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
-        destroy_process_groups()
+        if not torch.version.hip:
+            destroy_process_groups()
 
         torch_memory_saver.pause()
 
@@ -176,7 +177,8 @@ class MegatronTrainRayActor(TrainRayActor):
         torch_memory_saver.resume()
 
         clear_memory()
-        reload_process_groups()
+        if not torch.version.hip:
+            reload_process_groups()
         print_memory("after wake_up model")
 
     def _switch_model(self, target_tag: str) -> None:
@@ -425,7 +427,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         # torch dist may trigger nccl communication during saving.
         if self.args.offload_train:
-            reload_process_groups()
+            if not torch.version.hip:
+                reload_process_groups()
 
         if self.args.async_save:
             from megatron.training.async_utils import maybe_finalize_async_save
@@ -443,7 +446,8 @@ class MegatronTrainRayActor(TrainRayActor):
             save_hf_model(self.args, rollout_id, self.model)
 
         if self.args.offload_train:
-            destroy_process_groups()
+            if not torch.version.hip:
+                destroy_process_groups()
 
     @timer
     def update_weights(self) -> None:
@@ -460,7 +464,8 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         if self.args.offload_train:
-            reload_process_groups()
+            if not torch.version.hip:
+                reload_process_groups()
 
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
@@ -493,7 +498,8 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("old_actor")
 
         if self.args.offload_train:
-            destroy_process_groups()
+            if not torch.version.hip:
+                destroy_process_groups()
 
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
