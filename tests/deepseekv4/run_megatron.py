@@ -375,7 +375,7 @@ def main():
     # Initialize Megatron
     initialize_megatron(args)
 
-    # Configure routing replay before model creation
+    # Configure routing replay before model creation (so register_to_module creates Replay)
     from miles.utils.replay_base import routing_replay_manager
     if args.routing_replay_dump_path:
         routing_replay_manager.enabled = True
@@ -384,10 +384,14 @@ def main():
     elif args.routing_replay_load_path:
         routing_replay_manager.enabled = True
         routing_replay_manager.stage = "replay_forward"
-        routing_replay_manager.load_all_from_files(args.routing_replay_load_path)
+        # Don't load yet - need to create model first so Replay objects are registered
 
     # Create model
     model = create_model_and_load_checkpoint(args)
+
+    # Load replay data after model creation (Replay objects now exist)
+    if args.routing_replay_load_path:
+        routing_replay_manager.load_all_from_files(args.routing_replay_load_path)
 
     # Get tokenizer
     from transformers import AutoTokenizer
