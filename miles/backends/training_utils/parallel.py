@@ -25,3 +25,4 @@ class ParallelState:
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1
     microbatch_group_size_per_vp_stage: int | None = None
+    cp_comm_type: str | None = None
