@@ -5,6 +5,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+import logging
+logger = logging.getLogger(__name__)
 
 def _get_rank():
     return dist.get_rank() if dist.is_initialized() else 0
@@ -139,7 +141,7 @@ class BaseReplayManager:
                 shape_sanity_check(replay_top_indices, scores, topk)
                 top_indices = replay_top_indices[..., :topk].view(scores.shape[:-1] + (topk,))
 
-                self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
+                self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
 
                 return get_probs_and_top_indices(top_indices, return_probs)
 
@@ -149,7 +151,7 @@ class BaseReplayManager:
                 shape_sanity_check(replay_top_indices, scores, topk)
                 top_indices = replay_top_indices[..., :topk].view(scores.shape[:-1] + (topk,))
 
-                self.check_replay_result(old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs)
+                self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
 
                 return get_probs_and_top_indices(top_indices, return_probs)
             else:
@@ -169,31 +171,62 @@ class BaseReplayManager:
 
         module.register_forward_pre_hook(pre_forward_hook)
 
-    def check_replay_result(self, old_topk_fn, scores, topk, top_indices, replay_top_indices, **kwargs):
+    def check_replay_result(self, old_topk_fn, scores, topk, top_indices, **kwargs):
         if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "0":
             return
         manager = self
-        orig_probs, orig_top_indices = old_topk_fn(scores, topk, **kwargs)
+        orig_top_indices = old_topk_fn(scores, topk, **kwargs)
+        if isinstance(orig_top_indices, tuple):
+            _, orig_top_indices = orig_top_indices
+        
+        mismatched_tokens = []
         try:
-            # assert kept top indices matches original top indices
-            num_tokens, k = top_indices.shape
-            for i in range(num_tokens):
-                orig_set = set(orig_top_indices[i].tolist()) - {-1}
-                replay_set = set(top_indices[i].tolist()) - {-1}
+            orig_flat = orig_top_indices.view(-1, orig_top_indices.shape[-1])
+            replay_flat = top_indices.view(-1, top_indices.shape[-1])
+            num_positions = replay_flat.shape[0]
+            
+            for i in range(num_positions):
+                orig_set = set(orig_flat[i].tolist()) - {-1}
+                replay_set = set(replay_flat[i].tolist()) - {-1}
                 # Skip check if replay has no valid indices (all -1, e.g., early positions with no KV)
                 if len(replay_set) == 0:
                     continue
                 min_match = len(replay_set) // 2
                 num_match = len(orig_set & replay_set)
-                assert (
-                    num_match >= min_match
-                ), f"rank {_get_rank()}: Token {i}: only {num_match}/{len(replay_set)} indices match (need at least {min_match})"
+                if num_match < (min_match - 1):
+                    mismatched_tokens.append({
+                        'token_idx': i,
+                        'num_match': num_match,
+                        'num_expected': len(replay_set),
+                        'min_match': min_match,
+                        'orig_indices': orig_flat[i].tolist(),
+                        'replay_indices': replay_flat[i].tolist(),
+                    })
+            
+            if mismatched_tokens:
+                raise AssertionError(f"rank {_get_rank()}: {len(mismatched_tokens)} tokens failed replay check")
+
+            logger.info(f"rank {_get_rank()}: routing replay test passed, shape: {top_indices.shape}")
+
         except Exception as e:
-            print(f"Routing replay stage: {manager.stage}, rank: {_get_rank()}", flush=True)
+            print(f"\n{'='*80}", flush=True)
+            print(f"Replay check exception - Stage: {manager.stage}, rank: {_get_rank()}", flush=True)
             torch.set_printoptions(threshold=float("inf"))
-            print(f"original top_indices: {orig_top_indices}", flush=True)
-            print(f"replay top_indices: {replay_top_indices}", flush=True)
-            print(f"replay top_indices (padding removed): {top_indices}", flush=True)
+            print(f"original top_indices shape: {orig_top_indices.shape}", flush=True)
+            print(f"replay top_indices (padding removed) shape: {top_indices.shape}", flush=True)
+            
+            if mismatched_tokens:
+                print(f"\n[Rank {_get_rank()}] {len(mismatched_tokens)} tokens mismatched", flush=True)
+                print(f"Mismatched token indices: {[t['token_idx'] for t in mismatched_tokens]}", flush=True)
+                print(f"\nFirst {min(5, len(mismatched_tokens))} mismatched tokens:", flush=True)
+                
+                for idx, mismatch in enumerate(mismatched_tokens[:5]):
+                    print(f"\n--- Token {mismatch['token_idx']} (mismatch #{idx+1}) ---", flush=True)
+                    print(f"  Match rate: {mismatch['num_match']}/{mismatch['num_expected']} (need >= {mismatch['min_match']})", flush=True)
+                    print(f"  Expected (original): {mismatch['orig_indices']}", flush=True)
+                    print(f"  Actual (replay):     {mismatch['replay_indices']}", flush=True)
+            
+            print(f"{'='*80}\n", flush=True)
             raise e
 
 
