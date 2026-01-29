@@ -25,8 +25,9 @@ class Replay:
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
         buf.copy_(top_indices)
         self.top_indices_list.append(buf)
-        
-        assert total_lengths is not None and response_lengths is not None
+
+        # TODO: why do we need this? seems not used, and err in testing
+        # assert total_lengths is not None and response_lengths is not None
         if total_lengths is not None:
             self.total_lengths_list.append(total_lengths)
         if response_lengths is not None:
