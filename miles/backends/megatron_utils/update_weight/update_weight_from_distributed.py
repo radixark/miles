@@ -120,8 +120,11 @@ class UpdateWeightFromDistributed:
 
         if dist.get_rank() == 0:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
-            # int4/fp4 post_process
-            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
+            # int4/fp4 post_process, mxfp8 post-process (swizzle MoE scales).
+            if self.quantization_config and self.quantization_config["quant_method"] in [
+                "compressed-tensors",
+                "mxfp8",
+            ]:
                 post_process_weights(
                     restore_weights_before_load=False,
                     post_process_quantization=True,
