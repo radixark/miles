@@ -225,7 +225,7 @@ class BaseReplayManager:
                 replay_set = set(replay_idx.tolist()) - {-1}
                 if len(replay_set) == 0:
                     continue
-                if len(orig_set & replay_set) < len(replay_set) // 2:
+                if len(orig_set & replay_set) < len(replay_set) * 0.7:
                     raise AssertionError(f"token {i} failed replay check")
         except Exception as e:
             logger.error(f"Rollout Replay Check Failed - Stage: {self.stage}, rank: {_get_rank()}")
