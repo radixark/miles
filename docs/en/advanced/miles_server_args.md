@@ -374,7 +374,7 @@ Commonly used arguments:
 
 ## Megatron Specific Arguments
 
-Arguments applicable when using `--train-backend megatron`. **Note: The Megatron backend is still under development and experimental.**
+Arguments applicable when using `--train-backend megatron`.
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
