@@ -44,7 +44,7 @@ Arguments for configuring Ray cluster resources and GPU allocation.
 | `--critic-num-nodes` | Number of nodes for the Critic. Defaults to `--actor-num-nodes`. | `None` | Type: int |
 | `--critic-num-gpus-per-node` | Number of GPUs per node for the Critic. Defaults to `--actor-num-gpus-per-node`. | `None` | Type: int |
 | `--rollout-num-gpus` | Total number of GPUs required for rollout (inference). In `--colocate` mode, this is ignored and set to `actor-num-gpus-per-node * actor-num-nodes` (and plus critic GPUs if enabled). | `None` | Type: int |
-| `--rollout-num-gpus-per-engine` | Number of GPUs per inference engine, same as `tp_size` in SGLang. For multi-node serving, this should be the total GPU count for the engine. | `1` | Type: int |
+| `--rollout-num-gpus-per-engine` | Number of GPUs per inference engine, same as `tp_size` in SGLang. For multi-node serving, this should be the total GPU count / `tp_size` for each SGLang instance. | `1` | Type: int |
 | `--num-gpus-per-node` | Total GPUs per node on the machine. Specify if using fewer than 8 GPUs per node in colocate mode. | `8` | Type: int |
 | `--colocate` | Deploy training and rollout on the same GPUs. Enables `--offload-train` and `--offload-rollout`. | `False` | bool flag (set to enable) |
 | `--offload` | Equivalent to setting both `--offload-train` and `--offload-rollout` to true. | `False` | bool flag (set to enable) |
@@ -62,7 +62,7 @@ Arguments for configuring the training engine (Megatron or FSDP).
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
-| `--train-backend` | The backend for training. | `"megatron"` | `megatron`, `fsdp` |
+| `--train-backend` | The backend for training. Highly suggest Megatron for numerical stability and efficiency. | `"megatron"` | `megatron`, `fsdp` |
 | `--qkv-format` | The QKV layout. | `"thd"` | `thd`, `bshd` |
 | `--optimizer` | Optimizer type. | `adam` | `adam`, `sgd` |
 | `--lr` | Learning rate for the Actor. | `1e-6` | Type: float |
