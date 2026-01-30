@@ -16,35 +16,6 @@ def _get_rank():
     return dist.get_rank() if dist.is_initialized() else 0
 
 
-def natural_indices_to_zigzag(indices: torch.Tensor, seq_len: int, cp_size: int) -> torch.Tensor:
-    """Convert key indices from natural order to zigzag (all_gather) order.
-    
-    When CP > 1, keys are all_gathered in zigzag order:
-    - cp_size=2: [chunk_0, chunk_3, chunk_1, chunk_2]
-    - This function converts indices pointing to natural order to zigzag order.
-    
-    Mapping: front half chunks go to even positions, back half go to odd positions (reversed).
-    Example cp_size=2: [0,1,2,3] -> [0,2,3,1]
-    """
-    if cp_size == 1:
-        return indices
-    
-    num_chunks = 2 * cp_size
-    chunk_size, remainder = divmod(seq_len, num_chunks)
-    assert remainder == 0
-
-    natural_chunk_idx = indices // chunk_size
-    offset_in_chunk = indices % chunk_size
-    
-    zigzag_chunk_idx = torch.where(
-        natural_chunk_idx < cp_size,
-        2 * natural_chunk_idx,  # front half -> even positions
-        2 * (num_chunks - 1 - natural_chunk_idx) + 1,  # back half -> odd positions (reversed)
-    )
-    
-    return zigzag_chunk_idx * chunk_size + offset_in_chunk
-
-
 class Replay:
     def __init__(self):
         self.forward_index = 0
@@ -139,9 +110,6 @@ class BaseReplayManager:
             shapes_before = [t.shape if isinstance(t, torch.Tensor) else torch.tensor(t).shape for t in indices_list]
             if self.squeeze_batch_for_load_from_file:
                 indices_list = [t.squeeze(0) for t in indices_list]
-            if self.convert_indices_to_zigzag and cp_size > 1:
-                seq_len = indices_list[0].shape[0]
-                indices_list = [natural_indices_to_zigzag(t, seq_len, cp_size) for t in indices_list]
             if cp_size > 1:
                 indices_list = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in indices_list]
             if do_sp_slice:
@@ -275,7 +243,6 @@ class RoutingReplayManager(BaseReplayManager):
     data_key = "rollout_routed_experts"
     if_sp_region = True
     squeeze_batch_for_load_from_file = False
-    convert_indices_to_zigzag = False  # indices point to expert id (global), no conversion needed
     thresh_check_replay_result = 0.5
 
 
@@ -285,7 +252,6 @@ class IndexerReplayManager(BaseReplayManager):
     data_key = "rollout_indexer_topk"
     if_sp_region = False
     squeeze_batch_for_load_from_file = True  # indexer has (batch, seq, topk) format, squeeze batch dim
-    convert_indices_to_zigzag = True  # indices point to key position, need to convert for CP
     thresh_check_replay_result = 0.7
 
 
