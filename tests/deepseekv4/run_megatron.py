@@ -16,9 +16,13 @@ Usage:
 
 import logging
 import os
+from types import SimpleNamespace
 
 import torch
 import torch.distributed as dist
+from megatron.core import mpu
+
+from miles.backends.training_utils.cp_utils import slice_with_cp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -213,7 +217,7 @@ def create_model_and_load_checkpoint(args):
 
 
 def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, apply_chat_template: bool):
-    """Prepare input tensors for forward pass."""
+    """Prepare input tensors for forward pass with CP support."""
     device = torch.cuda.current_device()
 
     if apply_chat_template:
@@ -236,17 +240,28 @@ def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, app
         input_ids = input_ids[:seq_length]
         original_len = seq_length
     
-    # Set env var for dump comparison (last actual token position)
-    import os
     os.environ["MEGATRON_HACK_DUMP_LOGITS_POS"] = str(original_len - 1)
 
-    input_ids = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
+    input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
+    actual_seq_length = input_ids.shape[0]
+    position_ids = torch.arange(actual_seq_length, dtype=torch.long, device=device)
+
+    cp_size = mpu.get_context_parallel_world_size()
+    cp_rank = mpu.get_context_parallel_rank()
+
+    if cp_size > 1:
+        parallel_state = SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size)
+        pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+        input_ids = slice_with_cp(input_ids, pad_token_id, parallel_state, qkv_format="bshd", max_seq_len=seq_length)
+        position_ids = slice_with_cp(position_ids, 0, parallel_state, qkv_format="bshd", max_seq_len=seq_length)
+        actual_seq_length = input_ids.shape[0]
+        logger.info(f"CP enabled: cp_size={cp_size}, cp_rank={cp_rank}, sliced seq_length={actual_seq_length}")
+
+    input_ids = input_ids.unsqueeze(0)
+    position_ids = position_ids.unsqueeze(0)
     if batch_size > 1:
         input_ids = input_ids.repeat(batch_size, 1)
-
-    actual_seq_length = input_ids.shape[1]
-    position_ids = torch.arange(actual_seq_length, dtype=torch.long, device=device)
-    position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+        position_ids = position_ids.repeat(batch_size, 1)
 
     attention_mask = torch.ones(
         (batch_size, 1, actual_seq_length, actual_seq_length), dtype=torch.bool, device=device
