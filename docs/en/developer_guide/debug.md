@@ -49,3 +49,7 @@ Specifically, miles currently provides the following parameters for separate deb
 4.  `--load-debug-rollout-data /your/saved/debug/data_{rollout_id}.pt`
 
     When enabled, data will be loaded from `args.load_debug_rollout_data.format(rollout_id=rollout_id)`, and SGLang will not be initialized (automatically setting `debug_train_only=True`). This method allows you to fix the input for the training part to tune it, for example, by switching between different parallelization strategies.
+
+5.  `--debug-first-weight-sync /your/saved/debug/first_weight_sync/`
+
+    When enabled, miles saves the first Hugging Face checkpoint that Megatron syncs to SGLang into this directory, compares it with `--hf-checkpoint`, and reports any layers that are not bitwise identical (including mismatch percentages and average relative differences). The run terminates after the first sync completes.

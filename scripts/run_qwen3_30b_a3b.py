@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -34,10 +35,19 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    if args.rollout_fp8:
+    use_blackwell_fp8 = args.hardware in ("GB200", "GB300") and (args.rollout_fp8 or args.train_fp8)
+
+    if args.rollout_fp8 and not use_blackwell_fp8:
         U.exec_command(
             f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8"
         )
+
+    if use_blackwell_fp8:
+        mxfp8_path = f"/root/models/{args.model_name}-MXFP8"
+        if not os.path.isdir(mxfp8_path):
+            U.exec_command(
+                f"python tools/convert_hf_to_mxfp8.py --model-dir /root/models/{args.model_name} --save-dir {mxfp8_path}"
+            )
 
     if not args.enable_megatron_bridge:
         U.convert_checkpoint(
@@ -57,8 +67,15 @@ def execute(args: ScriptArgs):
         else f"/root/models/{args.model_name}_torch_dist"
     )
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+    use_blackwell_fp8 = args.hardware in ("GB200", "GB300") and (args.rollout_fp8 or args.train_fp8)
+    if use_blackwell_fp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-MXFP8"
+    elif args.rollout_fp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-FP8"
+    else:
+        hf_checkpoint = f"/root/models/{args.model_name}"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name}{'-FP8' if args.rollout_fp8 else ''}/ "
+        f"--hf-checkpoint {hf_checkpoint}/ "
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
@@ -141,16 +158,17 @@ def execute(args: ScriptArgs):
     if args.train_fp8:
         match args.hardware:
             case "GB200" | "GB300":
-                # It can run but accuracy is incorrect currently
-                raise NotImplementedError
                 # ref: Megatron-MoE-ModelZoo
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
                     "--fp8-format e4m3 "
                     "--fp8-recipe mxfp8 "
-                    "--fp8-param-gather "
-                    "--reuse-grad-buf-for-mxfp8-param-ag "
+                    # TODO: --fp8-param-gather not supported yet
+                    # "--fp8-param-gather "
+                    # "--overlap-param-gather "
+                    # "--overlap-grad-reduce "
+                    # "--reuse-grad-buf-for-mxfp8-param-ag "
                     # --moe-router-padding-for-quantization
                 )
             case "H100" | "H200":
@@ -197,18 +215,19 @@ def execute(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
+                f"--rollout-num-gpus-per-engine {1 if args.rollout_fp8 else 4} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-attention-backend trtllm_mha "
             )
             if args.rollout_fp8:
-                sglang_world_size = 2
-                sglang_attn_tp_size = 2
+                sglang_world_size = 1
+                sglang_attn_tp_size = 1
                 sglang_decode_max_bs = 256
                 sglang_args += (
-                    f"--sglang-ep-size {sglang_world_size} "
-                    "--sglang-moe-runner-backend deep_gemm "
-                    "--sglang-moe-a2a-backend deepep "
+                    # f"--sglang-ep-size {sglang_world_size} "
+                    "--sglang-fp8-gemm-backend triton "
+                    "--sglang-moe-runner-backend cutlass "
+                    # "--sglang-moe-a2a-backend deepep "
                     f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
