@@ -51,6 +51,8 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
 
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp_size * args.data_pad_size_multiplier
+        if getattr(args, "dsv4_hc_mult", 0) != 0:  # TODO improve the way to detect needing this
+            pad_size = max(pad_size, args.data_pad_size_multiplier * parallel_state.cp_size * 2)
         max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
