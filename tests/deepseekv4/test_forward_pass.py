@@ -270,6 +270,8 @@ def megatron_backward(
     batch_size: int = typer.Option(1, "--batch-size", help="Batch size"),
     routing_replay_dump_path: Optional[str] = typer.Option(None, "--routing-replay-dump-path", help="Path to save routing topk indices (for record mode)"),
     routing_replay_load_path: Optional[str] = typer.Option(None, "--routing-replay-load-path", help="Path to load routing topk indices (for replay mode)"),
+    indexer_replay_dump_path: Optional[str] = typer.Option(None, "--indexer-replay-dump-path", help="Path to save indexer topk indices (for record mode)"),
+    indexer_replay_load_path: Optional[str] = typer.Option(None, "--indexer-replay-load-path", help="Path to load indexer topk indices (for replay mode)"),
 ):
     """Run Megatron model backward pass test with dummy loss."""
     from transformers import AutoTokenizer
@@ -289,6 +291,10 @@ def megatron_backward(
         print(f"Routing Replay:   DUMP to {routing_replay_dump_path}")
     elif routing_replay_load_path:
         print(f"Routing Replay:   LOAD from {routing_replay_load_path}")
+    if indexer_replay_dump_path:
+        print(f"Indexer Replay:   DUMP to {indexer_replay_dump_path}")
+    elif indexer_replay_load_path:
+        print(f"Indexer Replay:   LOAD from {indexer_replay_load_path}")
     print("=" * 60)
 
     # Load tokenizer to generate prompt
@@ -336,6 +342,10 @@ def megatron_backward(
             extra_args.append(f'--routing-replay-dump-path "{routing_replay_dump_path}"')
         if routing_replay_load_path:
             extra_args.append(f'--routing-replay-load-path "{routing_replay_load_path}"')
+        if indexer_replay_dump_path:
+            extra_args.append(f'--indexer-replay-dump-path "{indexer_replay_dump_path}"')
+        if indexer_replay_load_path:
+            extra_args.append(f'--indexer-replay-load-path "{indexer_replay_load_path}"')
         extra_args_str = " ".join(extra_args)
 
         # Build shell command with backward pass flags
