@@ -76,18 +76,18 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | `--adam-beta2` | Beta2 for Adam optimizer. | `0.95` | Type: float |
 | `--adam-eps` | Epsilon for Adam optimizer. | `1e-8` | Type: float |
 | `--true-on-policy-mode` | Strictly align SGLang's log probs and training engine's log probs to bit-wise equal. This parameter is only used for FSDP right now. [Reference](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/mismatch/blog-en.md#truly-on-policy-training) | `False` | bool flag (set to enable) |
-| `--train-env-vars` | Extra environment variables for training process, e.g. PyTorch memory management ones. | `{}` | Type: JSON / Dict |
+| `--train-env-vars` | Extra environment variables for training process, e.g., PyTorch memory management ones. | `{}` | Type: JSON / Dict |
 | `--train-memory-margin-bytes` | Reserved memory margin for training in bytes. Defaults to 1GB. | `1073741824` | Type: int |
 | `--disable-weights-backuper` | Disable weights backuper to save host memory. By default, this feature is enabled. | `False` | bool flag (set to disable) |
 | `--custom-model-provider-path` | Path to a custom function that replaces the default model provider. [details](../get_started/customization.md#20-model-provider---custom-model-provider-path) | `None` | Type: str |
 | `--recompute-loss-function` | Enable recomputing the loss function to save memory during training. | `False` | bool flag (set to enable) |
-| `--log-probs-chunk-size` | Chunk size for computing log probabilities to save memory. `-1` means no chunking. | `-1` | Type: int |
+| `--log-probs-chunk-size` | Specifies the chunk size for logprobs computation to reduce peak memory usage. Processing logits in smaller batches, it prevents CUDA OOM errors during long-context prefilling or re-computation. Set to `-1` to disable chunking. [Reference](https://github.com/sgl-project/sglang/pull/6318) | `-1` | Type: int |
 | `--keep-old-actor` | Keep the Actor model loaded during the training process. | `False` | bool flag (set to enable) |
-| `--update-weight-buffer-size` | Buffer size for updating weights, in bytes. This is used for updating weights by chunk and should be useful for MoE models. | `536870912` | Type: int |
-| `--update-weights-interval` | Interval (in rollout rounds) for syncing weights to inference engines. | `1` | Type: int |
+| `--update-weight-buffer-size` | Buffer size for updating weights, in bytes. [Reference](https://hebiao064.github.io/rl-weight-sync#42-optimizing-sglang-server-calls-with-tensor-bucketing-from-50s-to-30s) | `536870912` | Type: int |
+| `--update-weights-interval` | Interval (in rollout rounds) for syncing weights to inference engines. Set to `>1` for async RL. | `1` | Type: int |
 | `--fp16` | Enable FP16 mixed precision. | `False` | bool flag |
 | `--context-parallel-size` | Size of context parallelism. | `1` | Type: int |
-| `--deterministic-mode` | Enable deterministic mode for reproducibility. | `False` | bool flag |
+| `--deterministic-mode` | Enable deterministic mode for reproducibility. [Reference](https://lmsys.org/blog/2025-09-22-sglang-deterministic/) | `False` | bool flag |
 
 ---
 
