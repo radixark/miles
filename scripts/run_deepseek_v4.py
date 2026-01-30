@@ -284,6 +284,7 @@ def train(args: ScriptArgs):
         "--sglang-server-concurrency 1024 "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
+        "--router-health-failure-threshold 40 "  # TODO improve
     )
     sglang_extra_env_vars = {
         # TODO this will be default arguments
