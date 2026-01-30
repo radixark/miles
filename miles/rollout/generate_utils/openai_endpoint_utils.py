@@ -57,8 +57,8 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
 
     sample = deepcopy(input_sample)
     # sample.tokens = record.request["input_ids"] + output_token_ids
-    request_input_ids = record.request.get("input_ids", None)
-    if request_input_ids:
+    request_input_ids = record.request.get("input_ids")
+    if request_input_ids is not None:
         assert (
             request_input_ids == input_token_ids
         ), "for prompt part, input_ids return by sglang should match with the request input_ids"

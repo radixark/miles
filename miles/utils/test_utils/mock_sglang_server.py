@@ -149,14 +149,6 @@ class MockSGLangServer:
         process_result = self.process_fn(prompt_str)
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
 
-        input_logprobs_content = [
-            {
-                "token": self.tokenizer.convert_ids_to_tokens(tid),
-                "token_id": tid,
-                "logprob": -1 / 128 * i,
-            }
-            for i, tid in enumerate(prompt_ids)
-        ]
         logprobs_content = [
             {
                 "token": self.tokenizer.convert_ids_to_tokens(tid),
@@ -201,7 +193,7 @@ class MockSGLangServer:
                         "tool_calls": tool_calls,
                     },
                     "logprobs": {"content": logprobs_content},
-                    "input_logprobs": {"content": input_logprobs_content},
+                    "input_token_ids": prompt_ids,
                     "finish_reason": finish_reason,
                 }
             ],
