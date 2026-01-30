@@ -76,6 +76,10 @@ def add_extra_args(parser):
                             help="Path to save routing topk indices (record mode)")
     test_group.add_argument("--routing-replay-load-path", type=str, default=None,
                             help="Path to load routing topk indices (replay mode)")
+    test_group.add_argument("--indexer-replay-dump-path", type=str, default=None,
+                            help="Path to save indexer topk indices (record mode)")
+    test_group.add_argument("--indexer-replay-load-path", type=str, default=None,
+                            help="Path to load indexer topk indices (replay mode)")
     return parser
 
 
@@ -397,8 +401,8 @@ def main():
     # Initialize Megatron
     initialize_megatron(args)
 
-    # Configure routing replay before model creation (so register_to_module creates Replay)
-    from miles.utils.replay_base import routing_replay_manager
+    # Configure replay managers before model creation (so register_to_module creates Replay)
+    from miles.utils.replay_base import routing_replay_manager, indexer_replay_manager
     if args.routing_replay_dump_path:
         routing_replay_manager.enabled = True
         routing_replay_manager.stage = "record"
@@ -406,7 +410,14 @@ def main():
     elif args.routing_replay_load_path:
         routing_replay_manager.enabled = True
         routing_replay_manager.stage = "replay_forward"
-        # Don't load yet - need to create model first so Replay objects are registered
+
+    if args.indexer_replay_dump_path:
+        indexer_replay_manager.enabled = True
+        indexer_replay_manager.stage = "record"
+        indexer_replay_manager.set_save_path(args.indexer_replay_dump_path)
+    elif args.indexer_replay_load_path:
+        indexer_replay_manager.enabled = True
+        indexer_replay_manager.stage = "replay_forward"
 
     # Create model
     model = create_model_and_load_checkpoint(args)
@@ -414,6 +425,8 @@ def main():
     # Load replay data after model creation (Replay objects now exist)
     if args.routing_replay_load_path:
         routing_replay_manager.load_all_from_files(args.routing_replay_load_path, sequence_parallel=args.sequence_parallel)
+    if args.indexer_replay_load_path:
+        indexer_replay_manager.load_all_from_files(args.indexer_replay_load_path, sequence_parallel=args.sequence_parallel)
 
     # Get tokenizer
     from transformers import AutoTokenizer
