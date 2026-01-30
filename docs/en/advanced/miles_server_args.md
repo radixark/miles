@@ -2,6 +2,11 @@
 
 This document provides a detailed list of command-line arguments used to configure Miles for RL training and inference. These arguments enable precise control over cluster resources, training backends (Megatron/FSDP), inference optimization via SGLang, and RL algorithmic hyperparameters.
 
+You can find all arguments by running:
+```bash
+python3 train.py --help
+```
+
 ## Table of Contents
 1. [Cluster and Resource Management](#cluster-and-resource-management)
 2. [Training Backend](#training-backend)
@@ -59,13 +64,12 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | :--- | :--- | :--- | :--- |
 | `--train-backend` | The backend for training. | `"megatron"` | `megatron`, `fsdp` |
 | `--qkv-format` | The QKV layout. | `"thd"` | `thd`, `bshd` |
-| `--optimizer` | Optimizer type for FSDP. | `adam` | `adam`, `sgd` |
+| `--optimizer` | Optimizer type. | `adam` | `adam`, `sgd` |
 | `--lr` | Learning rate for the Actor. | `1e-6` | Type: float |
-| `--lr-warmup-init` | Initial learning rate for warmup. | `0.0`(FSDP) | Type: float |
-| `--min-lr` | Minimum learning rate after decay. | `0.0`(FSDP) | Type: float |
-| `--lr-decay-style` | Learning rate decay style. | `constant`(FSDP) | Type: str |
-| `--lr-warmup-iters` | Number of iterations for warmup. | `0`(FSDP) | Type: int |
-| `--weight-decay` | Weight decay for the optimizer. | `0.0`(FSDP) | Type: float |
+| `--lr-warmup-init` | Initial learning rate for warmup. | `0.0` | Type: float |
+| `--min-lr` | Minimum learning rate after decay. | `0.0` | Type: float |
+| `--lr-decay-style` | Learning rate decay style. | `constant`(FSDP), `linear`(Megatron) | Type: str |
+| `--lr-warmup-iters` | Number of iterations for warmup. | `0` | Type: int |
 | `--lr-decay-iters` | Number of iterations for learning rate decay. | `None` | Type: int |
 | `--lr-warmup-fraction` | Fraction of total steps to warmup. | `None` | Type: float |
 | `--adam-beta1` | Beta1 for Adam optimizer. | `0.9` | Type: float |
@@ -389,6 +393,7 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
 | `--warmup-ratio` | Ratio of total steps for warmup. | `0.03` | Type: float |
+| `--weight-decay` | Weight decay for the optimizer. | `0.0` | Type: float |
 | `--gradient-checkpointing` | Enable gradient checkpointing. | `False` | bool flag |
 | `--fsdp-cpu-offload` | Offload parameters and gradients to CPU. | `False` | bool flag (set to enable) |
 | `--fsdp-state-dict-cpu-offload` | Offload full state dict to CPU during collection. | `False` | bool flag (set to enable) |
