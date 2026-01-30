@@ -93,20 +93,30 @@ class BaseReplayManager:
         torch.save(data, p)
 
     # Hacky, only support raw file obtained from 1rank
-    def load_all_from_files(self, base_path: str):
+    def load_all_from_files(self, base_path: str, sequence_parallel: bool = False):
         p = Path(base_path) / self.filename
         print(f"[{self.__class__.__name__}] load_all_from_files {p}")
         data = torch.load(p, weights_only=False)
 
         cp_size = mpu.get_context_parallel_world_size() if mpu.is_initialized() else 1
         cp_rank = mpu.get_context_parallel_rank() if mpu.is_initialized() else 0
+        tp_size = mpu.get_tensor_model_parallel_world_size() if mpu.is_initialized() else 1
+        tp_rank = mpu.get_tensor_model_parallel_rank() if mpu.is_initialized() else 0
 
         for replay_idx, (replay, indices_list) in enumerate(zip(self.replays, data)):
             shapes_before = [t.shape if isinstance(t, torch.Tensor) else torch.tensor(t).shape for t in indices_list]
             if cp_size > 1:
                 indices_list = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in indices_list]
+            if sequence_parallel and tp_size > 1:
+                def sp_slice(t):
+                    seqlen = t.size(0)
+                    assert seqlen % tp_size == 0, f"seqlen {seqlen} not divisible by tp_size {tp_size}"
+                    start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
+                    return t[start:end]
+                indices_list = [sp_slice(t) for t in indices_list]
             shapes_after = [t.shape if isinstance(t, torch.Tensor) else torch.tensor(t).shape for t in indices_list]
             print(f"[{self.__class__.__name__}] replay[{replay_idx}]: cp_size={cp_size}, cp_rank={cp_rank}, "
+                  f"tp_size={tp_size}, tp_rank={tp_rank}, sp={sequence_parallel}, "
                   f"n_tensors={len(indices_list)}, shapes_before={shapes_before}, shapes_after={shapes_after}")
             replay.top_indices_list = indices_list
             replay.forward_index = 0

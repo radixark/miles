@@ -413,7 +413,7 @@ def main():
 
     # Load replay data after model creation (Replay objects now exist)
     if args.routing_replay_load_path:
-        routing_replay_manager.load_all_from_files(args.routing_replay_load_path)
+        routing_replay_manager.load_all_from_files(args.routing_replay_load_path, sequence_parallel=args.sequence_parallel)
 
     # Get tokenizer
     from transformers import AutoTokenizer
