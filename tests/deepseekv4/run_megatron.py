@@ -173,12 +173,25 @@ def create_model_and_load_checkpoint(args):
         num_params = sum(p.numel() for p in model.parameters())
 
     # Add dummy methods/attributes to allow finalize_model_grads to work without DDP
-    # (DP=1 means these are no-ops anyway)
+    # When CP>1, we need to all-reduce gradients across CP ranks manually
     from megatron.core.distributed import DistributedDataParallelConfig
+    from megatron.core import parallel_state
     dummy_ddp_config = DistributedDataParallelConfig()
     
     def _dummy_finish_grad_sync(self):
-        pass
+        cp_group = parallel_state.get_context_parallel_group()
+        cp_size = parallel_state.get_context_parallel_world_size()
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        if rank == 0:
+            print(f"[DEBUG] _dummy_finish_grad_sync called, cp_size={cp_size}")
+        if cp_size > 1:
+            n_params_with_grad = 0
+            for param in self.parameters():
+                if param.grad is not None:
+                    n_params_with_grad += 1
+                    torch.distributed.all_reduce(param.grad, group=cp_group)
+            if rank == 0:
+                print(f"[DEBUG] All-reduced {n_params_with_grad} params in CP group")
     
     if isinstance(model, list):
         for m in model:
