@@ -107,6 +107,8 @@ class BaseReplayManager:
 
         for replay_idx, (replay, indices_list) in enumerate(zip(self.replays, data)):
             shapes_before = [t.shape if isinstance(t, torch.Tensor) else torch.tensor(t).shape for t in indices_list]
+            if self.squeeze_batch_for_load_from_file:
+                indices_list = [t.squeeze(0) for t in indices_list]
             if cp_size > 1:
                 indices_list = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in indices_list]
             if do_sp_slice:
@@ -238,6 +240,7 @@ class RoutingReplayManager(BaseReplayManager):
     data_key = "rollout_routed_experts"
     needs_moe_layer_indices = True
     if_sp_region = True
+    squeeze_batch_for_load_from_file = False
 
 
 class IndexerReplayManager(BaseReplayManager):
@@ -246,6 +249,7 @@ class IndexerReplayManager(BaseReplayManager):
     data_key = "rollout_indexer_topk"
     needs_moe_layer_indices = False
     if_sp_region = False
+    squeeze_batch_for_load_from_file = True  # indexer has (batch, seq, topk) format, squeeze batch dim
 
 
 routing_replay_manager = RoutingReplayManager()
