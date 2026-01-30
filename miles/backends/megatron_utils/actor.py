@@ -3,7 +3,6 @@ import random
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
-from types import SimpleNamespace
 
 import ray
 import torch
@@ -202,7 +201,6 @@ class MegatronTrainRayActor(TrainRayActor):
         data_key: str,
         replay_list: list,
         get_layer_indices=None,
-        if_cp_region=True,
         if_sp_region=True,
     ):
         if data_key not in rollout_data:
@@ -239,14 +237,10 @@ class MegatronTrainRayActor(TrainRayActor):
             # TODO: maybe extract a common process function for here and get_batch?
 
             # Handle qkv_format consistently with get_batch
-            # Use a fake parallel_state with cp_size=1 if we don't want CP slicing
-            slice_parallel_state = self.parallel_state if if_cp_region else SimpleNamespace(
-                cp_rank=0, cp_size=1, dp_size=self.parallel_state.dp_size
-            )
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
                 replay_data = [
-                    slice_with_cp(r, pad_func, slice_parallel_state, qkv_format, max_seqlen)
+                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format, max_seqlen)
                     for r in replay_data
                 ]
                 replay_data = torch.stack(replay_data, dim=0)
@@ -254,7 +248,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
             else:
                 replay_data = [
-                    slice_with_cp(r, pad_func, slice_parallel_state, qkv_format)
+                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format)
                     for r in replay_data
                 ]
                 replay_data = torch.cat(replay_data, dim=0)
@@ -382,7 +376,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     data_key=m.data_key,
                     replay_list=m.replays,
                     get_layer_indices=self._get_moe_layer_indices if m.needs_moe_layer_indices else None,
-                    if_cp_region=m.if_cp_region,
                     if_sp_region=m.if_sp_region,
                 )
 
