@@ -405,7 +405,7 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | `--lr-wsd-decay-iters` | Number of iterations for WSD decay. | `None` | Type: int |
 | `--lr-wsd-decay-style` | Decay style for WSD. | `None` | Type: str |
 | `--use-checkpoint-lr-scheduler` | Use the checkpoint's LR scheduler state. | `False` | bool flag (set to enable) |
-| `--override-lr-scheduler` | Override the loaded LR scheduler state. | `False` | bool flag |
+| `--override-lr-scheduler` | Override the loaded LR scheduler state. | `False` | bool flag (set to enable) |
 | `--wandb-run-name` | Specific run name for WandB (FSDP backend). | `None` | Type: str |
 
 ---
@@ -423,7 +423,7 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 | `--save-debug-train-data` | Path to save training batches for offline math debugging. | `None` | Type: str |
 | `--dump-details` | Dump exhaustive training details for post-hoc visualization. | `None` | Type: str |
 | `--memory-snapshot-path` | Path to save memory snapshots. | `snapshot.pickle` | Type: str |
-| `--record-memory-history` | Record memory history for snapshots. | `False` | bool flag |
+| `--record-memory-history` | Record memory history for snapshots. | `False` | bool flag (set to enable) |
 | `--memory-snapshot-dir` | Directory for PyTorch memory snapshots. | `.` | Type: str |
 | `--memory-snapshot-num-steps` | Number of steps to record before saving snapshot. | `None` | Type: int |
 | `--memory-recorder` | Selection of the memory recording backend. | `torch` | `torch`, `memray` |
@@ -447,15 +447,15 @@ Miles recognizes several environment variables for advanced configuration.
 
 ## Multi-Turn and Agentic Arguments
 
-Arguments for managing interactions and tools.
+Arguments for managing interactions and tools. Only available when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` and the rollout/generate function exposes `add_arguments`.
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
-| `--generate-max-turns` | Maximum number of turns in a conversation. Only available when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` and the rollout/generate function exposes `add_arguments`. | `16` | Type: int |
-| `--generate-tool-specs-path` | Path to the tool specifications (JSON). Only available when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` and the rollout/generate function exposes `add_arguments`. | `None` | Type: str |
-| `--generate-tool-call-parser` | The parser used to extract tool calls from text. Only available when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` and the rollout/generate function exposes `add_arguments`. | `None` | Type: str |
-| `--generate-execute-tool-function-path` | Path to the function that executes the tool. Only available when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` and the rollout/generate function exposes `add_arguments`. | `None` | Type: str |
-| `--generate-multi-samples` | Whether to generate multiple samples within one turn. Only available when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` and the rollout/generate function exposes `add_arguments`. | `False` | bool flag (set to enable) |
+| `--generate-max-turns` | Maximum number of turns in a conversation. | `16` | Type: int |
+| `--generate-tool-specs-path` | Path to the tool specifications (JSON). | `None` | Type: str |
+| `--generate-tool-call-parser` | The parser used to extract tool calls from text. | `None` | Type: str |
+| `--generate-execute-tool-function-path` | Path to the function that executes the tool. | `None` | Type: str |
+| `--generate-multi-samples` | Whether to generate multiple samples within one turn. | `False` | bool flag (set to enable) |
 
 ---
 
@@ -484,6 +484,6 @@ General arguments for infrastructure and configuration overrides.
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
 | `--http-proxy` | HTTP proxy server for remote reward model calls. | `None` | Type: str |
-| `--use-distributed-post` | Use distributed POST requests for remote reward models. | `False` | Type: bool |
+| `--use-distributed-post` | Use distributed POST requests for remote reward models. | `False` | bool flag (set to enable) |
 | `--custom-config-path` | Path to the YAML config for custom function arguments. | `None` | Type: str |
 | `--padded-vocab-size` | Manually specify the vocab size for padding. | `None` | Type: int |
