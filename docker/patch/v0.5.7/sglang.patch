@@ -74,6 +74,213 @@ index 0478526ef..cfb1aa669 100644
  
  
  def get_pipeline_model_parallel_world_size():
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 34aa364cf..da5d0d6b6 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -81,6 +81,7 @@ class LogProbs(BaseModel):
+     text_offset: List[int] = Field(default_factory=list)
+     token_logprobs: List[Optional[float]] = Field(default_factory=list)
+     tokens: List[str] = Field(default_factory=list)
++    token_ids: List[int] = Field(default_factory=list)
+     top_logprobs: List[Optional[Dict[str, float]]] = Field(default_factory=list)
+ 
+ 
+@@ -92,6 +93,7 @@ class TopLogprob(BaseModel):
+ 
+ class ChatCompletionTokenLogprob(BaseModel):
+     token: str
++    token_id: int
+     bytes: List[int]
+     logprob: float
+     top_logprobs: List[TopLogprob]
+@@ -501,6 +503,7 @@ class ChatCompletionRequest(BaseModel):
+     top_k: Optional[int] = None
+     min_p: Optional[float] = None
+     min_tokens: int = 0
++    logprob_start_len: Optional[int] = None
+     regex: Optional[str] = None
+     ebnf: Optional[str] = None
+     repetition_penalty: Optional[float] = None
+@@ -536,6 +539,9 @@ class ChatCompletionRequest(BaseModel):
+ 
+     # For data parallel rank routing
+     data_parallel_rank: Optional[int] = None
++    
++    # Input ids, if provided, it will override the message input.
++    input_ids: Optional[Union[List[List[int]], List[int]]] = None
+ 
+     # OpenAI/SGLang default sampling parameters
+     _DEFAULT_SAMPLING_PARAMS = {
+@@ -618,8 +624,8 @@ class ChatCompletionRequest(BaseModel):
+ 
+     def to_sampling_params(
+         self,
+-        stop: List[str],
+         model_generation_config: Dict[str, Any],
++        stop: Optional[List[str]] = None,
+         tool_call_constraint: Optional[ToolCallConstraint] = None,
+     ) -> Dict[str, Any]:
+         """
+@@ -706,6 +712,7 @@ class ChatMessage(BaseModel):
+ class ChatCompletionResponseChoice(BaseModel):
+     index: int
+     message: ChatMessage
++    input_token_ids: Optional[List[int]] = None
+     logprobs: Optional[Union[LogProbs, ChoiceLogprobs]] = None
+     finish_reason: Optional[
+         Literal[
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index cb0c084a3..daa0db7bb 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -146,6 +146,62 @@ class OpenAIServingChat(OpenAIServingBase):
+ 
+         return None
+ 
++    def _convert_chat_completion_with_input_ids_to_internal_request(
++        self,
++        request: ChatCompletionRequest,
++        raw_request: Request = None,
++    ) -> tuple[GenerateReqInput, ChatCompletionRequest]:
++
++        # Notice: currently, if input_ids is provided, the stop token is not used.
++        sampling_params = request.to_sampling_params(
++            model_generation_config=self.default_sampling_params
++        )
++        
++        prompt_kwargs = {"input_ids": request.input_ids}
++        
++         # Extract custom labels from raw request headers
++        custom_labels = self.extract_custom_labels(raw_request)
++
++        # Resolve LoRA adapter from model parameter or explicit lora_path
++        lora_path = self._resolve_lora_path(request.model, request.lora_path)
++        if lora_path:
++            first_adapter = (
++                lora_path
++                if isinstance(lora_path, str)
++                else next((a for a in lora_path if a), None)
++            )
++            if first_adapter:
++                self._validate_lora_enabled(first_adapter)
++
++        logprob_start_len = (
++            request.logprob_start_len if request.logprob_start_len is not None else -1
++        )
++
++        adapted_request = GenerateReqInput(
++            **prompt_kwargs,
++            sampling_params=sampling_params,
++            return_logprob=request.logprobs,
++            logprob_start_len=logprob_start_len,
++            top_logprobs_num=request.top_logprobs or 0,
++            stream=request.stream,
++            return_text_in_logprobs=True,
++            lora_path=lora_path,
++            bootstrap_host=request.bootstrap_host,
++            bootstrap_port=request.bootstrap_port,
++            bootstrap_room=request.bootstrap_room,
++            data_parallel_rank=request.data_parallel_rank,
++            return_hidden_states=request.return_hidden_states,
++            rid=request.rid,
++            extra_key=self._compute_extra_key(request),
++            require_reasoning=self._get_reasoning_from_request(request),
++            priority=request.priority,
++            custom_labels=custom_labels,
++            custom_logit_processor=request.custom_logit_processor,
++        )
++
++        return adapted_request, request
++        
++    
+     def _convert_to_internal_request(
+         self,
+         request: ChatCompletionRequest,
+@@ -162,6 +218,9 @@ class OpenAIServingChat(OpenAIServingBase):
+         """Convert OpenAI chat completion request to internal format"""
+         is_multimodal = self.tokenizer_manager.model_config.is_multimodal
+ 
++        if request.input_ids:
++            return self._convert_chat_completion_with_input_ids_to_internal_request(request, raw_request)
++
+         # Process messages and apply chat template
+         processed_messages = self._process_messages(request, is_multimodal)
+ 
+@@ -195,6 +254,10 @@ class OpenAIServingChat(OpenAIServingBase):
+             if first_adapter:
+                 self._validate_lora_enabled(first_adapter)
+ 
++        logprob_start_len = (
++            request.logprob_start_len if request.logprob_start_len is not None else -1
++        )
++
+         adapted_request = GenerateReqInput(
+             **prompt_kwargs,
+             image_data=processed_messages.image_data,
+@@ -202,7 +265,7 @@ class OpenAIServingChat(OpenAIServingBase):
+             audio_data=processed_messages.audio_data,
+             sampling_params=sampling_params,
+             return_logprob=request.logprobs,
+-            logprob_start_len=-1,
++            logprob_start_len=logprob_start_len,
+             top_logprobs_num=request.top_logprobs or 0,
+             stream=request.stream,
+             return_text_in_logprobs=True,
+@@ -768,8 +831,13 @@ class OpenAIServingChat(OpenAIServingBase):
+         for idx, ret_item in enumerate(ret):
+             # Process logprobs
+             choice_logprobs = None
++            input_token_ids = None
+             if request.logprobs:
+                 choice_logprobs = self._process_response_logprobs(ret_item)
++                input_token_logprobs = ret_item["meta_info"]["input_token_logprobs"]
++                input_token_ids = [
++                    token_id for _, token_id, _ in input_token_logprobs
++                ]
+ 
+             # Handle hidden states
+             hidden_states = process_hidden_states_from_ret(ret_item, request)
+@@ -824,6 +892,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                     tool_calls=tool_calls,
+                     reasoning_content=reasoning_text if reasoning_text else None,
+                 ),
++                input_token_ids=input_token_ids,
+                 logprobs=choice_logprobs,
+                 finish_reason=finish_reason["type"] if finish_reason else None,
+                 matched_stop=(
+@@ -865,6 +934,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         for token_idx, (token, logprob) in enumerate(
+             zip(logprobs.tokens, logprobs.token_logprobs)
+         ):
++            token_id = logprobs.token_ids[token_idx]
+             token_bytes = list(token.encode("utf-8"))
+             top_logprobs = []
+             if logprobs.top_logprobs:
+@@ -885,6 +955,7 @@ class OpenAIServingChat(OpenAIServingBase):
+             token_logprobs.append(
+                 ChatCompletionTokenLogprob(
+                     token=token,
++                    token_id=token_id,
+                     bytes=token_bytes,
+                     logprob=logprob,
+                     top_logprobs=top_logprobs,
+diff --git a/python/sglang/srt/entrypoints/openai/utils.py b/python/sglang/srt/entrypoints/openai/utils.py
+index 94ac5458d..e718ddb2a 100644
+--- a/python/sglang/srt/entrypoints/openai/utils.py
++++ b/python/sglang/srt/entrypoints/openai/utils.py
+@@ -19,9 +19,10 @@ def to_openai_style_logprobs(
+     ret_logprobs = LogProbs()
+ 
+     def append_token_logprobs(token_logprobs):
+-        for logprob, _, token_text in token_logprobs:
++        for logprob, token_id, token_text in token_logprobs:
+             ret_logprobs.tokens.append(token_text)
+             ret_logprobs.token_logprobs.append(logprob)
++            ret_logprobs.token_ids.append(token_id)
+ 
+             # Not supported yet
+             ret_logprobs.text_offset.append(-1)
 diff --git a/python/sglang/srt/layers/layernorm.py b/python/sglang/srt/layers/layernorm.py
 index b07164c53..8e6722ce0 100644
 --- a/python/sglang/srt/layers/layernorm.py
