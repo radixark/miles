@@ -284,7 +284,7 @@ Arguments for WandB, Tensorboard, and general logging.
 | `--log-multi-turn` | Log detailed information for multi-turn conversations. | `False` | bool flag (set to enable) |
 | `--log-passrate` | Enable logging of `pass@n` metrics. | `False` | bool flag (set to enable) |
 | `--log-correct-samples` | Explicitly log metrics for correct samples. | `False` | bool flag (set to enable) |
-| `--log-reward-category` | Log statistics of the category of reward, such as why the reward function considers it as failed. Specify the key in the reward dict using this argument. | `None` | Type: str |
+| `--log-reward-category` | Log reward-category statistics (e.g., why the reward function marked a failure). Use this argument to specify the key in the reward dict. | `None` | Type: str |
 
 ---
 
