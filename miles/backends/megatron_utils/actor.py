@@ -19,7 +19,7 @@ from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
-from miles.utils.replay_base import all_replay_managers, natural_indices_to_zigzag, _INDEXER_COMPRESS_RATIO
+from miles.utils.replay_base import all_replay_managers, natural_indices_to_zigzag
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
@@ -238,9 +238,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 assert qkv_format == "bshd"
                 max_seqlen = batch["max_seq_lens"][0]
                 assert all(x == max_seqlen for x in batch["max_seq_lens"])
-                key_seq_len, remainder = divmod(max_seqlen, _INDEXER_COMPRESS_RATIO)
-                assert remainder == 0
-                replay_data = [natural_indices_to_zigzag(r, key_seq_len, cp_size) for r in replay_data]
+                replay_data = [natural_indices_to_zigzag(r, max_seqlen, cp_size) for r in replay_data]
 
             # We need to pad the experts to the last token. We won't calculate loss on this token so this should be fine.
             # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
