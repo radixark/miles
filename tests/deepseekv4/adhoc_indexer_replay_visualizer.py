@@ -55,12 +55,31 @@ def visualize(orig: torch.Tensor, replay: torch.Tensor, output_path: str):
     
     seq_len, topk = orig.shape
     
-    # Compute match ratio per position
+    # Compute match ratio per position (diagonal comparison)
     match_count = (orig == replay).sum(axis=1)
     match_ratio = match_count / topk
     
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    # Compute pairwise overlap matrix: overlap[x, y] = |orig[x] ∩ replay[y]| / topk
+    sample_size = min(256, seq_len)
+    sample_indices = np.linspace(0, seq_len - 1, sample_size, dtype=int)
     
+    print(f"Computing pairwise overlap matrix ({sample_size}x{sample_size})...")
+    overlap_matrix = np.zeros((sample_size, sample_size), dtype=np.float32)
+    
+    for i, xi in enumerate(sample_indices):
+        orig_set_i = set(orig[xi, :])
+        for j, yj in enumerate(sample_indices):
+            replay_set_j = set(replay[yj, :])
+            overlap = len(orig_set_i & replay_set_j)
+            overlap_matrix[i, j] = overlap / topk
+    
+    best_match_idx = np.argmax(overlap_matrix, axis=1)
+    best_match_pos = sample_indices[best_match_idx]
+    diagonal_overlap = np.diag(overlap_matrix)
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    
+    # Row 1: Original diagnostics
     # Plot 1: Match ratio per sequence position
     ax1 = axes[0, 0]
     ax1.plot(match_ratio)
@@ -75,18 +94,15 @@ def visualize(orig: torch.Tensor, replay: torch.Tensor, output_path: str):
     diff = (orig != replay).astype(float)
     show_len = min(200, seq_len)
     show_topk = min(100, topk)
-    im = ax2.imshow(diff[:show_len, :show_topk], aspect='auto', cmap='Reds')
+    im2 = ax2.imshow(diff[:show_len, :show_topk], aspect='auto', cmap='Reds')
     ax2.set_xlabel('Top-k Index')
     ax2.set_ylabel('Sequence Position')
     ax2.set_title(f'Difference Heatmap (first {show_len}x{show_topk})')
-    plt.colorbar(im, ax=ax2)
+    plt.colorbar(im2, ax=ax2)
     
     # Plot 3: Value distribution at a mismatched position
     mismatch_pos = np.where(match_ratio < 0.5)[0]
-    if len(mismatch_pos) > 0:
-        pos = mismatch_pos[0]
-    else:
-        pos = seq_len // 2
+    pos = mismatch_pos[0] if len(mismatch_pos) > 0 else seq_len // 2
     ax3 = axes[0, 2]
     ax3.hist(orig[pos, :], bins=50, alpha=0.7, label='orig (forward)')
     ax3.hist(replay[pos, :], bins=50, alpha=0.7, label='replay (loaded)')
@@ -95,54 +111,45 @@ def visualize(orig: torch.Tensor, replay: torch.Tensor, output_path: str):
     ax3.set_title(f'Value Distribution at Position {pos}')
     ax3.legend()
     
-    # Plot 4: Scatter plot - orig vs replay indices (overlap visualization)
+    # Row 2: Shuffle analysis
+    # Plot 4: Pairwise overlap heatmap (THE KEY PLOT)
     ax4 = axes[1, 0]
-    # For each position, plot orig indices vs replay indices
-    sample_positions = np.linspace(0, seq_len - 1, min(10, seq_len), dtype=int)
-    colors = plt.cm.viridis(np.linspace(0, 1, len(sample_positions)))
-    for i, pos in enumerate(sample_positions):
-        ax4.scatter(orig[pos, :20], replay[pos, :20], alpha=0.5, c=[colors[i]], label=f'pos {pos}', s=20)
-    max_val = max(orig.max(), replay.max())
-    ax4.plot([0, max_val], [0, max_val], 'r--', label='y=x (perfect match)')
-    ax4.set_xlabel('Orig Index (forward computed)')
-    ax4.set_ylabel('Replay Index (loaded from dump)')
-    ax4.set_title('Orig vs Replay Indices (first 20 topk, sampled positions)')
-    ax4.legend(fontsize=6)
+    im4 = ax4.imshow(overlap_matrix, aspect='auto', cmap='viridis', origin='lower',
+                     extent=[sample_indices[0], sample_indices[-1], sample_indices[0], sample_indices[-1]])
+    ax4.set_xlabel('Replay Position (y)')
+    ax4.set_ylabel('Orig Position (x)')
+    ax4.set_title(f'TopK Overlap: |orig[x] ∩ replay[y]| / {topk}\n(diagonal=same pos, off-diagonal=shuffle)')
+    plt.colorbar(im4, ax=ax4, label='Overlap Ratio')
+    ax4.plot([sample_indices[0], sample_indices[-1]], [sample_indices[0], sample_indices[-1]], 
+             'r--', linewidth=1, label='x=y (no shuffle)')
+    ax4.legend()
     
-    # Plot 5: Sorted indices comparison - shows ordering
+    # Plot 5: Best match analysis
     ax5 = axes[1, 1]
-    pos_to_show = mismatch_pos[0] if len(mismatch_pos) > 0 else 0
-    orig_sorted = np.sort(orig[pos_to_show, :])
-    replay_sorted = np.sort(replay[pos_to_show, :])
-    ax5.scatter(orig_sorted, replay_sorted, alpha=0.5, s=10)
-    ax5.plot([0, max_val], [0, max_val], 'r--', label='y=x')
-    ax5.set_xlabel('Orig Index (sorted)')
-    ax5.set_ylabel('Replay Index (sorted)')
-    ax5.set_title(f'Sorted Indices at Position {pos_to_show}')
+    ax5.scatter(sample_indices, best_match_pos, alpha=0.5, s=10, label='Best matching replay pos')
+    ax5.plot([0, seq_len], [0, seq_len], 'r--', linewidth=1, label='x=y (identity)')
+    ax5.set_xlabel('Orig Position')
+    ax5.set_ylabel('Best Matching Replay Position')
+    ax5.set_title(f'Best Match: argmax_y overlap(orig[x], replay[y])\nDiag mean={diagonal_overlap.mean():.3f}')
     ax5.legend()
     
-    # Plot 6: Index value transformation visualization
-    ax6 = axes[1, 2]
-    # Show how indices are distributed across chunks
+    # Plot 6: Chunk distribution
+    pos_to_show = mismatch_pos[0] if len(mismatch_pos) > 0 else 0
     key_seq_len = max(orig.max(), replay.max()) + 1
     chunk_size = key_seq_len // 4 if key_seq_len >= 4 else key_seq_len
-    
     orig_chunks = orig[pos_to_show, :] // chunk_size
     replay_chunks = replay[pos_to_show, :] // chunk_size
-    
-    chunk_labels = ['chunk_0', 'chunk_1', 'chunk_2', 'chunk_3']
+    ax6 = axes[1, 2]
     x = np.arange(4)
     width = 0.35
-    
     orig_chunk_counts = [np.sum(orig_chunks == i) for i in range(4)]
     replay_chunk_counts = [np.sum(replay_chunks == i) for i in range(4)]
-    
     ax6.bar(x - width/2, orig_chunk_counts, width, label='orig', alpha=0.7)
     ax6.bar(x + width/2, replay_chunk_counts, width, label='replay', alpha=0.7)
     ax6.set_xlabel('Chunk')
     ax6.set_ylabel('Count')
     ax6.set_xticks(x)
-    ax6.set_xticklabels(chunk_labels)
+    ax6.set_xticklabels(['chunk_0', 'chunk_1', 'chunk_2', 'chunk_3'])
     ax6.set_title(f'Chunk Distribution at Position {pos_to_show}')
     ax6.legend()
     
