@@ -19,7 +19,7 @@ from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
-from miles.utils.replay_base import all_replay_managers
+from miles.utils.replay_base import all_replay_managers, natural_indices_to_zigzag
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
@@ -203,6 +203,7 @@ class MegatronTrainRayActor(TrainRayActor):
         replay_list: list,
         register_replay_list_func,
         if_sp_region=True,
+        convert_indices_to_zigzag=False,
     ):
         if data_key not in rollout_data:
             raise ValueError(f"{data_key} is required in rollout_data for replay.")
@@ -212,6 +213,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         tp_rank = self.parallel_state.tp_rank
         tp_size = self.parallel_state.tp_size
+        cp_size = self.parallel_state.cp_size
         qkv_format = self.args.qkv_format
 
         def pad_func(data, pad):
@@ -232,6 +234,12 @@ class MegatronTrainRayActor(TrainRayActor):
             for a, b in zip(replay_data, tokens, strict=False):
                 assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
 
+            if convert_indices_to_zigzag and cp_size > 1:
+                assert qkv_format == "bshd"
+                max_seqlen = batch["max_seq_lens"][0]
+                assert all(x == max_seqlen for x in batch["max_seq_lens"])
+                replay_data = [natural_indices_to_zigzag(r, max_seqlen, cp_size) for r in replay_data]
+
             # We need to pad the experts to the last token. We won't calculate loss on this token so this should be fine.
             # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
             replay_data = [pad_func(r, 1) for r in replay_data]
@@ -240,6 +248,7 @@ class MegatronTrainRayActor(TrainRayActor):
             # Handle qkv_format consistently with get_batch
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
+                assert all(x == max_seqlen for x in batch["max_seq_lens"])
                 replay_data = [
                     slice_with_cp(r, pad_func, self.parallel_state, qkv_format, max_seqlen)
                     for r in replay_data
@@ -351,6 +360,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     replay_list=m.replays,
                     register_replay_list_func=get_register_replay_list_func(m),
                     if_sp_region=m.if_sp_region,
+                    convert_indices_to_zigzag=m.convert_indices_to_zigzag,
                 )
 
         with inverse_timer("train_wait"), timer("train"):
