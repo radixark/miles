@@ -99,7 +99,7 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 | `--rollout-temperature` | Sampling temperature for the inference engine during rollout. | `1.0` | Type: float |
 | `--rollout-top-p` | Top-p (nucleus) sampling threshold during rollout. | `1.0` | Type: float |
 | `--rollout-top-k` | Top-k sampling threshold during rollout. `-1` means disabled. | `-1` | Type: int |
-| `--rollout-max-context-len` | The maximum context size for the inference engine during rollout. It should no exceed the `max_position_embeddinds` in Huggingface model's `config.json`. | `None` | Type: int |
+| `--rollout-max-context-len` | The maximum context size for the inference engine during rollout. It should no exceed the `max_position_embeddings` in Huggingface model's `config.json`. | `None` | Type: int |
 | `--rollout-max-prompt-len` | Maximum length of the prompt. Longer prompts are filtered during dataset initialization. This is not recommended if the dataset is large. | `None` | Type: int |
 | `--rollout-max-response-len` | Maximum length of the response (`max_tokens` in SGLang). | `None` | Type: int |
 | `--rollout-skip-special-tokens` | Skip special tokens in the response. Useful when the response is used as a prompt for the next rollout. | `False` | bool flag (set to enable) |
