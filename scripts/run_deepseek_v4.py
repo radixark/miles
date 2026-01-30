@@ -14,13 +14,13 @@ app = typer.Typer()
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["normal", "debug_minimal"] = "debug_minimal"
+    mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
     model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
     megatron_model_type: Literal["deepseek-v4-285B", "deepseek-v4-285B-5layer"] = "deepseek-v4-285B"
     num_gpus_per_node: int = 4
-    enable_eval: bool = True
+    enable_eval: bool = False
     extra_args: str = ""
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
     data_dir: str = "/root"
