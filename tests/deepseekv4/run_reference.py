@@ -31,7 +31,8 @@ def print_top_predictions(logits: torch.Tensor, input_ids: torch.Tensor, top_k: 
     print("=" * 80)
 
     # Show last 5 positions
-    start_pos = max(0, seq_length - 5)
+    # start_pos = max(0, seq_length - 5)
+    start_pos = 0  # show all pos, in case middle rank has issues
 
     for pos in range(start_pos, seq_length):
         input_token = input_ids[pos]
