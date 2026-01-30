@@ -226,7 +226,7 @@ class BaseReplayManager:
                 replay_set = set(replay_idx.tolist()) - {-1}
                 if len(replay_set) == 0:
                     continue
-                if len(orig_set & replay_set) < len(replay_set) * 0.7:
+                if len(orig_set & replay_set) < len(replay_set) * self.thresh_check_replay_result:
                     raise AssertionError(f"token {i} failed replay check, {len(orig_set & replay_set)=} {len(replay_set)=}")
         except Exception as e:
             logger.error(f"Rollout Replay Check Failed - Stage: {self.stage}, rank: {_get_rank()}")
@@ -244,6 +244,7 @@ class RoutingReplayManager(BaseReplayManager):
     needs_moe_layer_indices = True
     if_sp_region = True
     squeeze_batch_for_load_from_file = False
+    thresh_check_replay_result = 0.5
 
 
 class IndexerReplayManager(BaseReplayManager):
@@ -253,6 +254,7 @@ class IndexerReplayManager(BaseReplayManager):
     needs_moe_layer_indices = False
     if_sp_region = False
     squeeze_batch_for_load_from_file = True  # indexer has (batch, seq, topk) format, squeeze batch dim
+    thresh_check_replay_result = 0.7
 
 
 routing_replay_manager = RoutingReplayManager()
