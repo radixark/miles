@@ -181,7 +181,7 @@ def train(args: ScriptArgs):
                 "--context-parallel-size 1 "
                 "--expert-model-parallel-size 2 "
                 "--expert-tensor-parallel-size 1 "
-                "--pipeline-model-parallel-layout 'E,t*2|t*3,L' "
+                "--pipeline-model-parallel-layout 'E,t*2\\|t*3,L' " # TODO: temporarily for pp=2
             )
         else:
             perf_args = (
