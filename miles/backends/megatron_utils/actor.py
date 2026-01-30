@@ -34,6 +34,7 @@ from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import create_megatron_parallel_state
+from .replay_utils import get_register_replay_list_func
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
@@ -200,7 +201,7 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_data,
         data_key: str,
         replay_list: list,
-        get_layer_indices=None,
+        register_replay_list_func,
         if_sp_region=True,
     ):
         if data_key not in rollout_data:
@@ -263,39 +264,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
                 replay_data = replay_data[start:end]
 
-            if get_layer_indices is not None:
-                layer_indices = get_layer_indices(self.model, replay_data.shape[1])
-            else:
-                layer_indices = list(range(replay_data.shape[1]))
-
-            for replay_idx, layer_idx in enumerate(layer_indices):
-                layer_data = replay_data[:, layer_idx]
-                replay_list[replay_idx].record(layer_data)
+            register_replay_list_func(replay_list, replay_data, self.model)
 
         del rollout_data[data_key]
 
         for iterator in data_iterator:
             iterator.reset()
-
-    def _get_moe_layer_indices(self, models, num_layers):
-        from megatron.core.transformer.transformer_block import get_num_layers_to_build
-        from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-
-        layer_indices = []
-        for vp_stage, model in enumerate(models):
-            config = model.module.config
-            num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
-            offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
-            for layer_id in range(offset, offset + num_layers_to_build):
-                if isinstance(config.moe_layer_freq, int):
-                    if layer_id % config.moe_layer_freq != 0:
-                        continue
-                elif isinstance(config.moe_layer_freq, list):
-                    assert len(config.moe_layer_freq) == config.num_layers
-                    if config.moe_layer_freq[layer_id] == 0:
-                        continue
-                layer_indices.append(layer_id)
-        return layer_indices
 
     def compute_log_prob(
         self,
@@ -375,7 +349,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     rollout_data,
                     data_key=m.data_key,
                     replay_list=m.replays,
-                    get_layer_indices=self._get_moe_layer_indices if m.needs_moe_layer_indices else None,
+                    register_replay_list_func=get_register_replay_list_func(m),
                     if_sp_region=m.if_sp_region,
                 )
 

@@ -241,7 +241,6 @@ class RoutingReplayManager(BaseReplayManager):
     name = "routing"
     filename = "routing_replay.pt"
     data_key = "rollout_routed_experts"
-    needs_moe_layer_indices = True
     if_sp_region = True
     squeeze_batch_for_load_from_file = False
     thresh_check_replay_result = 0.5
@@ -251,7 +250,6 @@ class IndexerReplayManager(BaseReplayManager):
     name = "indexer"
     filename = "indexer_replay.pt"
     data_key = "rollout_indexer_topk"
-    needs_moe_layer_indices = False
     if_sp_region = False
     squeeze_batch_for_load_from_file = True  # indexer has (batch, seq, topk) format, squeeze batch dim
     thresh_check_replay_result = 0.7
