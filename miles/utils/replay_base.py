@@ -163,9 +163,13 @@ class BaseReplayManager:
                 return old_topk_fn(scores, topk, *args, **kwargs)
 
             elif stage == "record":
-                probs, top_indices = old_topk_fn(scores, topk, *args, **kwargs)
+                result = old_topk_fn(scores, topk, *args, **kwargs)
+                if return_probs:
+                    probs, top_indices = result
+                else:
+                    top_indices = result
                 replay.record(top_indices)
-                return probs, top_indices
+                return result
 
             elif stage == "replay_forward":
                 replay_top_indices = replay.pop_forward()
