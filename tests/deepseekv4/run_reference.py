@@ -21,29 +21,42 @@ from generate import generate
 from model import ModelArgs, Transformer
 
 
-def print_top_predictions(logits: torch.Tensor, input_ids: torch.Tensor, top_k: int, tokenizer):
-    """Print top-k predictions for each position (same as run_megatron.py)."""
+def print_top_predictions_for_rank(logits: torch.Tensor, input_ids: torch.Tensor, top_k: int, tokenizer, rank: int):
+    """Print top-k predictions for this rank, compact format (one line per position)."""
     seq_length = logits.shape[0]
-    
-    print("\n" + "=" * 80)
-    print(f"Top-{top_k} Predictions (last 5 positions)")
-    print(f"Sequence length: {seq_length}")
-    print("=" * 80)
-
-    # Show last 5 positions
-    # start_pos = max(0, seq_length - 5)
-    start_pos = 0  # show all pos, in case middle rank has issues
-
-    for pos in range(start_pos, seq_length):
+    print(f"\n--- Rank {rank} (seq_len={seq_length}) ---")
+    for pos in range(seq_length):
         input_token = input_ids[pos]
         probs = torch.softmax(logits[pos], dim=-1)
         top_probs, top_indices = torch.topk(probs, top_k)
+        input_str = tokenizer.decode([input_token]) if tokenizer else f"t{input_token}"
+        preds = ", ".join(
+            f"{tokenizer.decode([idx.item()]) if tokenizer else f't{idx.item()}'}({prob.item():.3f})"
+            for prob, idx in zip(top_probs, top_indices)
+        )
+        print(f"pos[{pos:3d}] {input_str!r:12s} -> {preds}")
 
-        input_token_str = tokenizer.decode([input_token]) if tokenizer else f"token_{input_token}"
-        print(f"\nPosition {pos} (input: {input_token_str!r}):")
-        for i, (prob, idx) in enumerate(zip(top_probs, top_indices)):
-            token_str = tokenizer.decode([idx.item()]) if tokenizer else f"token_{idx.item()}"
-            print(f"  {i + 1}. {token_str!r} (id={idx.item()}): {prob.item():.4f}")
+
+def print_top_predictions_all_ranks(logits: torch.Tensor, input_ids: torch.Tensor, top_k: int, tokenizer):
+    """Print top-k predictions from all ranks sequentially (rank 0 first, then rank 1, etc.)."""
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+    if rank == 0:
+        print("\n" + "=" * 80)
+        print(f"Top-{top_k} Predictions (all ranks)")
+        print(f"World size: {world_size}")
+        print("=" * 80)
+
+    for r in range(world_size):
+        if dist.is_initialized():
+            dist.barrier()
+        if rank == r:
+            print_top_predictions_for_rank(logits, input_ids, top_k, tokenizer, rank)
+            sys.stdout.flush()
+
+    if dist.is_initialized():
+        dist.barrier()
 
 
 def reset_kv_caches(model: Transformer):
@@ -145,9 +158,9 @@ def main():
             logits = forward_pass(model, prompt_tokens)
         print(f"Output logits shape: {logits.shape}")
         
-        if rank == 0:
-            print_top_predictions(logits, prompt_tokens, args.top_k, tokenizer)
+        print_top_predictions_all_ranks(logits, prompt_tokens, args.top_k, tokenizer)
             
+        if rank == 0:
             print("\n" + "=" * 80)
             print("Summary")
             print("=" * 80)

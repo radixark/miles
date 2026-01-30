@@ -342,41 +342,48 @@ def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor, model: torc
     logger.info("Backward pass complete.")
 
 
-def print_top_predictions(logits: torch.Tensor, input_ids: torch.Tensor, top_k: int, tokenizer, pad_token_id: int = None):
-    """Print top-k predictions for each position (excluding padding)."""
+def print_top_predictions_for_rank(logits: torch.Tensor, input_ids: torch.Tensor, top_k: int, tokenizer, rank: int, pad_token_id: int = None):
+    """Print top-k predictions for this rank, compact format (one line per position)."""
     batch_size, seq_length, vocab_size = logits.shape
+    print(f"\n--- Rank {rank} (seq_len={seq_length}) ---")
+    for b in range(batch_size):
+        if batch_size > 1:
+            print(f"  Batch {b}:")
+        for pos in range(seq_length):
+            if pad_token_id is not None and input_ids[b, pos].item() == pad_token_id:
+                continue
+            input_token = input_ids[b, pos].item()
+            probs = torch.softmax(logits[b, pos], dim=-1)
+            top_probs, top_indices = torch.topk(probs, top_k)
+            input_str = tokenizer.decode([input_token]) if tokenizer else f"t{input_token}"
+            preds = ", ".join(
+                f"{tokenizer.decode([idx.item()]) if tokenizer else f't{idx.item()}'}({prob.item():.3f})"
+                for prob, idx in zip(top_probs, top_indices)
+            )
+            print(f"pos[{pos:3d}] {input_str!r:12s} -> {preds}")
 
-    # Find the last non-padding position
-    if pad_token_id is not None:
-        # Find positions where input_ids != pad_token_id
-        non_pad_mask = input_ids[0] != pad_token_id
-        non_pad_indices = torch.where(non_pad_mask)[0]
-        if len(non_pad_indices) > 0:
-            last_token_pos = non_pad_indices[-1].item()
-        else:
-            last_token_pos = seq_length - 1
-    else:
-        last_token_pos = seq_length - 1
 
-    print("\n" + "=" * 80)
-    print(f"Top-{top_k} Predictions (batch 0, last 5 non-padding positions)")
-    print(f"Sequence length: {seq_length}, Last token position: {last_token_pos}")
-    print("=" * 80)
+def print_top_predictions_all_ranks(logits: torch.Tensor, input_ids: torch.Tensor, top_k: int, tokenizer, pad_token_id: int = None):
+    """Gather and print top-k predictions from all ranks sequentially (rank 0 first, then rank 1, etc.)."""
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    # Show last 5 positions before (and including) last_token_pos
-    start_pos = max(0, last_token_pos - 4)
-    end_pos = last_token_pos + 1
+    if rank == 0:
+        print("\n" + "=" * 80)
+        print(f"Top-{top_k} Predictions (all ranks)")
+        print(f"World size: {world_size}")
+        print("=" * 80)
 
-    for pos in range(start_pos, end_pos):
-        input_token = input_ids[0, pos].item()
-        probs = torch.softmax(logits[0, pos], dim=-1)
-        top_probs, top_indices = torch.topk(probs, top_k)
+    for r in range(world_size):
+        if dist.is_initialized():
+            dist.barrier()
+        if rank == r:
+            print_top_predictions_for_rank(logits, input_ids, top_k, tokenizer, rank, pad_token_id)
+            import sys
+            sys.stdout.flush()
 
-        input_token_str = tokenizer.decode([input_token]) if tokenizer else f"token_{input_token}"
-        print(f"\nPosition {pos} (input: {input_token_str!r}):")
-        for i, (prob, idx) in enumerate(zip(top_probs, top_indices)):
-            token_str = tokenizer.decode([idx.item()]) if tokenizer else f"token_{idx.item()}"
-            print(f"  {i + 1}. {token_str!r} (id={idx.item()}): {prob.item():.4f}")
+    if dist.is_initialized():
+        dist.barrier()
 
 
 def main():
@@ -437,12 +444,12 @@ def main():
     if run_backward:
         run_backward_pass(logits, input_ids=inputs["input_ids"], model=model)
 
-    # Print results
+    # Print results (all ranks, sequentially)
     top_k = getattr(args, "top_k", 5)
     pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
-    if rank == 0:
-        print_top_predictions(logits, inputs["input_ids"], top_k, tokenizer, pad_token_id)
+    print_top_predictions_all_ranks(logits, inputs["input_ids"], top_k, tokenizer, pad_token_id)
 
+    if rank == 0:
         print("\n" + "=" * 80)
         print("Summary")
         print("=" * 80)
