@@ -97,13 +97,13 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
-| `--hf-checkpoint` | Path to the Huggingface checkpoint used to initialize SGLang and provide the tokenizer. It must have the same architecture as the model being trained. It doesn't necessary need to contain the most up-to-date parameters. | `None` | Type: str |
-| `--model-name` | The name of the model, this is used to convert the megatron weights into huggingface format. If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as model_name. Also, sometimes this will help alleviate the bug that transformers cannot find certain model. | `None` | Type: str |
+| `--hf-checkpoint` | Path to the Huggingface checkpoint used to initialize SGLang and provide the tokenizer. It must have the same architecture as the model being trained. It doesn't necessarily need to contain the most up-to-date parameters. | `None` | Type: str |
+| `--model-name` | The name of the model that is used to convert the Megatron weights into Huggingface format. If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as model_name. Providing this argument can also help in cases where transformers cannot find certain models. | `None` | Type: str |
 | `--rollout-function-path` | Path to the rollout generation function. Use this to inject custom logic (e.g., for multi-turn or tool use). For more details, see [customization](../get_started/customization.md#1-rollout-function---rollout-function-path). | `miles.rollout.sglang_rollout.generate_rollout` (or `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`) | Type: str |
 | `--rollout-temperature` | Sampling temperature for the inference engine during rollout. | `1.0` | Type: float |
 | `--rollout-top-p` | Top-p (nucleus) sampling threshold during rollout. | `1.0` | Type: float |
 | `--rollout-top-k` | Top-k sampling threshold during rollout. `-1` means disabled. | `-1` | Type: int |
-| `--rollout-max-context-len` | The maximum context size for the inference engine during rollout. It should no exceed the `max_position_embeddings` in Huggingface model's `config.json`. | `None` | Type: int |
+| `--rollout-max-context-len` | The maximum context size for the inference engine during rollout. It should not exceed the `max_position_embeddings` in Huggingface model's `config.json`. | `None` | Type: int |
 | `--rollout-max-prompt-len` | Maximum length of the prompt. Longer prompts are filtered during dataset initialization. This is not recommended if the dataset is large. | `None` | Type: int |
 | `--rollout-max-response-len` | Maximum length of the response (`max_tokens` in SGLang). | `None` | Type: int |
 | `--rollout-skip-special-tokens` | Skip special tokens in the response. Useful when the response is used as a prompt for the next rollout. | `False` | bool flag (set to enable) |
@@ -152,7 +152,7 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--metadata-key` | When need to add tools during apply_chat_template, you should provide the key for the tools in the prompt dataset. | `"metadata"` | Type: str |
 | `--multimodal-keys` | JSON string for multimodal data mapping media types to data keys. Example: `'{"image": "image_file"}'` | `None` | Type: str |
 | `--tool-key` | JSON key for tool definitions in the prompt dataset (used when applying chat templates). | `"tools"` | Type: str |
-| `--apply-chat-template` | Whether to apply the chat template to the input prompt. The input should be the same structure as an openai message, e.g. `[{'role': 'user', 'content': 'blabla'}]`. | `False` | bool flag (set to enable) |
+| `--apply-chat-template` | Whether to apply the chat template to the input prompt. The input should be the same structure as an OpenAI message, e.g. `[{'role': 'user', 'content': 'blabla'}]`. | `False` | bool flag (set to enable) |
 | `--apply-chat-template-kwargs` | Extra arguments for the chat template processing (JSON string). | `"{}"` | Type: str |
 | `--rollout-batch-size` | Number of prompts per rollout batch. The total data returned should be `rollout_batch_size` * `n_samples_per_prompt`. | Required | Type: int |
 | `--n-samples-per-prompt` | Number of responses to generate for each prompt. | `1` | Type: int |
@@ -177,7 +177,7 @@ Arguments for configuring the evaluation process during training.
 | `--eval-prompt-data` | List of name and path pairs for evaluation datasets (e.g., `aime /path/to/aime.jsonl`). | `None` | Type: List[str] |
 | `--eval-config` | Path to an OmegaConf YAML/JSON file describing evaluation datasets (overrides `--eval-prompt-data`). | `None` | Type: str |
 | `--skip-eval-before-train` | Skip the evaluation step before training starts. | `False` | bool flag (set to enable) |
-| `--n-samples-per-eval-prompt` | Nnumber of responses for each prompt in generation. | `1` | Type: int |
+| `--n-samples-per-eval-prompt` | Number of responses for each prompt in generation. | `1` | Type: int |
 | `--eval-temperature` | Temperature for evaluation (defaults to rollout temperature if not set). | `None` | Type: float |
 | `--eval-top-p` | Top-p sampling threshold for evaluation (defaults to rollout top-p if not set). | `None` | Type: float |
 | `--eval-top-k` | Top-k sampling threshold for evaluation (defaults to rollout top-k if not set). | `None` | Type: int |
@@ -220,7 +220,7 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | :--- | :--- | :--- | :--- |
 | `--advantage-estimator` | Advantage estimator to use. | `"grpo"` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` |
 | `--loss-type` | Type of loss function to use. | `"policy_loss"` | `policy_loss`, `sft_loss`, `custom_loss` |
-| `--custom-loss-function-path` | Path to a custom loss calculation function (requires `--loss-type custom_loss`). see [customization](../get_started/customization.md#9-custom-loss-function---custom-loss-function-path) for more details. | `None` | Type: str |
+| `--custom-loss-function-path` | Path to a custom loss calculation function (requires `--loss-type custom_loss`). See [customization](../get_started/customization.md#9-custom-loss-function---custom-loss-function-path) for more details. | `None` | Type: str |
 | `--critic-lr` | Learning rate for the Critic. Defaults to `--lr`. | `None` | Type: float |
 | `--critic-lr-warmup-iters` | Number of iterations for Critic learning rate linear warmup. | `0` | Type: int |
 | `--num-critic-only-steps` | Number of initial steps dedicated to training only the Critic. | `0` | Type: int |
@@ -274,8 +274,8 @@ Arguments for WandB, Tensorboard, and general logging.
 | `--wandb-host` | WandB host address. | `None` | Type: str |
 | `--wandb-key` | WandB API key. | `None` | Type: str |
 | `--wandb-run-id` | Specific WandB run ID to resume. | `None` | Type: str |
-| `--wandb-dir` | Directory to store wandb logs. Default is ./wandb in current directory. | `None` | Type: str |
-| `--disable-wandb-random-suffix` | Disable adding a random suffix to the wandb run name. By default, we will add a random 6 length string with characters to the run name. | `False` | bool flag (set to enable) |
+| `--wandb-dir` | Directory to store WandB logs. Default is ./wandb in current directory. | `None` | Type: str |
+| `--disable-wandb-random-suffix` | Disable adding a random suffix to the WandB run name. By default, we will add a random 6 length string with characters to the run name. | `False` | bool flag (set to enable) |
 | `--wandb-always-use-train-step` | Use training steps instead of rollout steps for the x-axis. | `False` | bool flag (set to enable) |
 | `--use-tensorboard` | Enable Tensorboard logging. | `False` | bool flag (set to enable) |
 | `--tb-project-name` | Tensorboard project directory. | `None` | Type: str |
@@ -344,7 +344,7 @@ Arguments for managing the rollout data buffer.
 | `--disable-rollout-trim-samples` | Disable trim samples in rollout buffer when converting samples to train data. | `False` | bool flag (set to enable) |
 | `--use-dynamic-global-batch-size` | Enable dynamic global batch size, disable trim samples in rollout buffer when converting samples to train data. | `False` | bool flag (set to enable) |
 | `--rollout-task-type` | Type of task being performed. | `math` | Type: str |
-| `--loss-mask-type` | Selection of the token masking logic. | `"qwen"` | `qwen`, `qwen3`, `distill_qwen` |
+| `--loss-mask-type` | Selection of the token masking logic. | `qwen` | `qwen`, `qwen3`, `distill_qwen` |
 
 ---
 
