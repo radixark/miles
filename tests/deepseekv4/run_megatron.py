@@ -247,6 +247,7 @@ def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, app
     os.environ["MEGATRON_HACK_DUMP_LOGITS_POS"] = str(original_len - 1)
 
     input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
+    global_input_ids = input_ids.clone().unsqueeze(0)  # Save global input_ids [1, seq_len]
     actual_seq_length = input_ids.shape[0]
     position_ids = torch.arange(actual_seq_length, dtype=torch.long, device=device)
 
@@ -266,6 +267,7 @@ def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, app
     if batch_size > 1:
         input_ids = input_ids.repeat(batch_size, 1)
         position_ids = position_ids.repeat(batch_size, 1)
+        global_input_ids = global_input_ids.repeat(batch_size, 1)
 
     attention_mask = torch.ones(
         (batch_size, 1, actual_seq_length, actual_seq_length), dtype=torch.bool, device=device
@@ -279,6 +281,8 @@ def prepare_inputs(tokenizer, prompt: str, seq_length: int, batch_size: int, app
         "input_ids": input_ids,
         "position_ids": position_ids,
         "attention_mask": attention_mask,
+        "global_input_ids": global_input_ids,
+        "cp_size": cp_size,
     }
 
 
@@ -311,30 +315,34 @@ def run_forward_pass(model, inputs: dict, enable_grad: bool = False) -> torch.Te
     return logits
 
 
-def run_backward_pass(logits: torch.Tensor, input_ids: torch.Tensor, model: torch.nn.Module = None) -> None:
-    """Run backward pass with cross-entropy loss (next-token prediction).
-    
-    Args:
-        logits: Model output logits of shape [batch_size, seq_length, vocab_size]
-        input_ids: Input token IDs of shape [batch_size, seq_length], used as labels
-        model: Optional model to dump parameter gradients
-    """
+def run_backward_pass(
+    logits: torch.Tensor, input_ids: torch.Tensor, model: torch.nn.Module = None,
+    global_input_ids: torch.Tensor = None, cp_size: int = 1,
+    position_ids: torch.Tensor = None,
+) -> None:
+    """Run backward pass with cross-entropy loss (next-token prediction)."""
     from sglang.srt.debug_utils.dumper import dumper
 
     logger.info("Running backward pass...")
 
-    # Use cross-entropy loss
-    shift_logits = logits[:, :-1, :].contiguous()  # [batch, seq-1, vocab]
-    shift_labels = input_ids[:, 1:].contiguous()   # [batch, seq-1]
+    batch_size, seq_len, vocab_size = logits.shape
     
-    loss = torch.nn.functional.cross_entropy(
-        shift_logits.view(-1, shift_logits.size(-1)),  # [batch*(seq-1), vocab]
-        shift_labels.view(-1),                          # [batch*(seq-1)]
-        reduction='mean'
+    if cp_size > 1 and global_input_ids is not None and position_ids is not None:
+        global_seq_len = global_input_ids.shape[1]
+        valid_mask = position_ids < global_seq_len - 1  # positions that have a next token
+        next_pos = torch.where(valid_mask, position_ids + 1, torch.zeros_like(position_ids))
+        labels = global_input_ids.gather(1, next_pos)
+        labels = labels.masked_fill(~valid_mask, -100)
+        total_valid_tokens = global_seq_len - 1  # global count
+    else:
+        labels = torch.cat([input_ids[:, 1:], torch.full((batch_size, 1), -100, device=input_ids.device)], dim=1)
+        total_valid_tokens = (labels != -100).sum().item()
+    
+    loss_sum = torch.nn.functional.cross_entropy(
+        logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100, reduction='sum'
     )
-
-    print(f"Cross-entropy loss value: {loss.item():.6f}")
-
+    loss = loss_sum / total_valid_tokens
+    print(f"Cross-entropy loss: {loss.item():.6f} (total_valid_tokens={total_valid_tokens})")
     loss.backward()
 
     # Finalize gradients (all-reduce for sequence_parallel params, etc.)
@@ -455,7 +463,11 @@ def main():
 
     # Run backward pass if requested
     if run_backward:
-        run_backward_pass(logits, input_ids=inputs["input_ids"], model=model)
+        run_backward_pass(
+            logits, input_ids=inputs["input_ids"], model=model,
+            global_input_ids=inputs["global_input_ids"], cp_size=inputs["cp_size"],
+            position_ids=inputs["position_ids"],
+        )
 
     # Print results (all ranks, sequentially)
     top_k = getattr(args, "top_k", 5)
