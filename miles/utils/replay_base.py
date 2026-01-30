@@ -12,6 +12,10 @@ from sglang.srt.debug_utils.dumper import dumper
 import logging
 logger = logging.getLogger(__name__)
 
+# Hardcoded compress ratio for DSV4 indexer. Key seq_len = query seq_len / compress_ratio.
+# This is only applicable to DSV4 models with compressor.
+_INDEXER_COMPRESS_RATIO = 4
+
 def _get_rank():
     return dist.get_rank() if dist.is_initialized() else 0
 
@@ -140,8 +144,10 @@ class BaseReplayManager:
             if self.squeeze_batch_for_load_from_file:
                 indices_list = [t.squeeze(0) for t in indices_list]
             if self.convert_indices_to_zigzag and cp_size > 1:
-                seq_len = indices_list[0].shape[0]
-                indices_list = [natural_indices_to_zigzag(t, seq_len, cp_size) for t in indices_list]
+                query_seq_len = indices_list[0].shape[0]
+                key_seq_len, remainder = divmod(query_seq_len, _INDEXER_COMPRESS_RATIO)
+                assert remainder == 0
+                indices_list = [natural_indices_to_zigzag(t, key_seq_len, cp_size) for t in indices_list]
             if cp_size > 1:
                 indices_list = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in indices_list]
             if do_sp_slice:
