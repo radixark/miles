@@ -24,7 +24,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
     data_dir: str = "/root"
     model_dir: str = "/root/models"
-    model_local_dir: str = "/root/models"
+    model_local_dir: str = "/root/local_data"
     save_dir: str = "/root/models"
     megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
     enable_r3: bool = False
@@ -207,6 +207,16 @@ def train(args: ScriptArgs):
             "--expert-model-parallel-size 4 "
             "--expert-tensor-parallel-size 1 "
         )
+    elif args.num_nodes <= 6:
+        # 48 GPU (6 nodes x 8 GPUs) config
+        perf_args = (
+            "--tensor-model-parallel-size 4 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 1 "
+            "--context-parallel-size 2 "
+            "--expert-model-parallel-size 6 "
+            "--expert-tensor-parallel-size 1 "
+        )
     # TODO
     # elif args.num_nodes <= 4:
     #     # TODO remove this temp cfg
@@ -274,7 +284,7 @@ def train(args: ScriptArgs):
         f"--rollout-num-gpus-per-engine 4 "
 
         "--sglang-tp-size 4 "
-        "--sglang-dp-size 4 "
+        f"--sglang-dp-size {args.num_nodes} "
         "--sglang-enable-dp-attention "
 
         # TODO this will be default arguments
