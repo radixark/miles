@@ -14,7 +14,6 @@ import gc
 import json
 import os
 import shutil
-from typing import Tuple
 
 import safetensors
 import safetensors.torch
@@ -24,6 +23,8 @@ from tqdm import tqdm
 FP4_E2M1_MAX = 6.0
 FP8_E4M3_MAX = 448.0
 NVFP4_GROUP_SIZE = 16
+DEFAULT_KV_CACHE_SCHEME = {"dynamic": False, "num_bits": 8, "type": "float"}
+DEFAULT_KV_CACHE_QUANT_ALGO = "FP8"
 
 EXPERT_WEIGHT_SUFFIXES = (
     ".w1.weight",
@@ -60,8 +61,7 @@ def should_quantize(name: str, weight: torch.Tensor) -> bool:
         return False
     if weight.shape[-1] % NVFP4_GROUP_SIZE != 0:
         raise ValueError(
-            f"Last dim {weight.shape[-1]} must be divisible by {NVFP4_GROUP_SIZE} "
-            f"for NVFP4 quantization ({name})."
+            f"Last dim {weight.shape[-1]} must be divisible by {NVFP4_GROUP_SIZE} " f"for NVFP4 quantization ({name})."
         )
     return True
 
@@ -90,7 +90,7 @@ def cast_to_fp4x2(x: torch.Tensor) -> torch.Tensor:
     return result[:, ::2] + result[:, 1::2] * 16
 
 
-def _quantize_nvfp4_1d(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _quantize_nvfp4_1d(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     NVFP4 1D quantization (tile shape = 1x16), adapted from
     TransformerEngine NVFP4QuantizerRef._quantize_blockwise_reference.
@@ -103,9 +103,7 @@ def _quantize_nvfp4_1d(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor
     weight = weight.contiguous()
     m, n = weight.shape
     if n % NVFP4_GROUP_SIZE != 0:
-        raise ValueError(
-            f"NVFP4 requires K divisible by {NVFP4_GROUP_SIZE}, got {n}."
-        )
+        raise ValueError(f"NVFP4 requires K divisible by {NVFP4_GROUP_SIZE}, got {n}.")
 
     weight_f = weight.to(torch.float32)
     global_amax = torch.max(torch.abs(weight_f))
@@ -145,7 +143,7 @@ def _quantize_nvfp4_1d(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor
     return qweight, block_scale, global_decode_scale
 
 
-def quantize_nvfp4(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def quantize_nvfp4(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if weight.dim() == 2:
         return _quantize_nvfp4_1d(weight)
     if weight.dim() == 3:
@@ -171,13 +169,62 @@ class ConversionResult:
         self.total_size: int = 0
         self.modules_to_not_convert: list[str] = []
 
-    def add_result(
-        self, filename: str, q_weights: dict[str, torch.Tensor], module_names: list[str]
-    ) -> None:
+    def add_result(self, filename: str, q_weights: dict[str, torch.Tensor], module_names: list[str]) -> None:
         for key, tensor in q_weights.items():
             self.weight_map[key] = filename
             self.total_size += tensor.numel() * tensor.element_size()
         self.modules_to_not_convert.extend(module_names)
+
+
+def _update_quantization_config(cfg: dict, ignore_list: list[str]) -> None:
+    quant_cfg = cfg.get("quantization_config")
+    if not isinstance(quant_cfg, dict):
+        quant_cfg = {}
+
+    quant_cfg["quant_algo"] = "NVFP4"
+    quant_cfg["quant_method"] = "modelopt"
+    quant_cfg["group_size"] = NVFP4_GROUP_SIZE
+    quant_cfg["ignore"] = ignore_list
+    quant_cfg.setdefault("kv_cache_scheme", DEFAULT_KV_CACHE_SCHEME)
+
+    config_groups = quant_cfg.get("config_groups")
+    if isinstance(config_groups, dict):
+        for group in config_groups.values():
+            if not isinstance(group, dict):
+                continue
+            group.setdefault("targets", ["Linear"])
+            for key in ("input_activations", "weights"):
+                section = group.get(key)
+                if not isinstance(section, dict):
+                    continue
+                section.setdefault("dynamic", False)
+                section.setdefault("num_bits", 4)
+                section.setdefault("type", "float")
+                section["group_size"] = NVFP4_GROUP_SIZE
+
+    cfg["quantization_config"] = quant_cfg
+
+
+def _write_hf_quant_config(output_path: str, ignore_list: list[str], input_path: str) -> None:
+    hf_quant_path = os.path.join(input_path, "hf_quant_config.json")
+    if os.path.exists(hf_quant_path):
+        with open(hf_quant_path) as f:
+            hf_quant_cfg = json.load(f)
+    else:
+        hf_quant_cfg = {"producer": {"name": "modelopt"}}
+
+    quant_section = hf_quant_cfg.get("quantization")
+    if not isinstance(quant_section, dict):
+        quant_section = {}
+
+    quant_section["quant_algo"] = "NVFP4"
+    quant_section["kv_cache_quant_algo"] = DEFAULT_KV_CACHE_QUANT_ALGO
+    quant_section["group_size"] = NVFP4_GROUP_SIZE
+    quant_section["exclude_modules"] = ignore_list
+    hf_quant_cfg["quantization"] = quant_section
+
+    with open(os.path.join(output_path, "hf_quant_config.json"), "w") as f:
+        json.dump(hf_quant_cfg, f, indent=2)
 
 
 def process_file(
@@ -204,9 +251,7 @@ def process_file(
             q_weights[key] = qweight
             q_weights[key.replace(".weight", ".weight_scale")] = block_scale
             q_weights[key.replace(".weight", ".weight_scale_2")] = weight_scale_2
-            q_weights[key.replace(".weight", ".input_scale")] = torch.ones_like(
-                weight_scale_2, dtype=torch.float32
-            )
+            q_weights[key.replace(".weight", ".input_scale")] = torch.ones_like(weight_scale_2, dtype=torch.float32)
         else:
             if key.endswith(".weight"):
                 modules_to_not_convert.append(key.replace(".weight", ""))
@@ -234,18 +279,15 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    quantization_config = {
-        "quant_method": "modelopt_fp4",
-        "quant_algo": "NVFP4",
-        "group_size": NVFP4_GROUP_SIZE,
-        "ignore": sorted(set(result_collector.modules_to_not_convert)),
-    }
+    ignore_list = sorted(set(result_collector.modules_to_not_convert))
 
     config_path = os.path.join(input_path, "config.json")
     if os.path.exists(config_path):
         cfg = json.load(open(config_path))
-        cfg["quantization_config"] = quantization_config
+        _update_quantization_config(cfg, ignore_list)
         json.dump(cfg, open(os.path.join(output_path, "config.json"), "w"), indent=2)
+
+    _write_hf_quant_config(output_path, ignore_list, input_path)
 
     index_dict = {
         "weight_map": result_collector.weight_map,
