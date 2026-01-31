@@ -40,8 +40,10 @@ def convert_checkpoint(
     if multinode:
         # This variable can be provided via:
         # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
+        # or comma-separated: `export SLURM_JOB_HOSTNAMES=10.0.0.1,10.0.0.2`
         print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
-        job_hostnames = os.environ["SLURM_JOB_HOSTNAMES"].strip().split("\n")
+        hostnames_raw = os.environ["SLURM_JOB_HOSTNAMES"].strip()
+        job_hostnames = hostnames_raw.split(",") if "," in hostnames_raw else hostnames_raw.split("\n")
         master_addr = job_hostnames[0]
         nnodes = len(job_hostnames)
         node_rank = int(os.environ["SLURM_NODEID"])
