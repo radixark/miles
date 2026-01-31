@@ -1,0 +1,295 @@
+"""
+python tools/convert_hf_to_nvfp4.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR]
+                                   [--device DEVICE]
+
+Convert a BF16/FP16/FP32 HF safetensors checkpoint to NVFP4 (E2M1) for MoE
+expert GEMMs only. Dense linear layers are left unmodified.
+
+This follows the NVFP4 reference quantization in Transformer Engine and uses
+1D block scaling (NVTE_NVFP4_1D_SCALING, group size = 16).
+"""
+
+import argparse
+import gc
+import json
+import os
+import shutil
+from typing import Tuple
+
+import safetensors
+import safetensors.torch
+import torch
+from tqdm import tqdm
+
+FP4_E2M1_MAX = 6.0
+FP8_E4M3_MAX = 448.0
+NVFP4_GROUP_SIZE = 16
+
+EXPERT_WEIGHT_SUFFIXES = (
+    ".w1.weight",
+    ".w2.weight",
+    ".w3.weight",
+    ".gate_proj.weight",
+    ".up_proj.weight",
+    ".down_proj.weight",
+    ".gate_up_proj.weight",
+)
+
+EXPERT_NAME_MARKERS = (
+    ".experts.",
+    ".shared_experts.",
+    "block_sparse_moe.experts.",
+    ".moe.experts.",
+)
+
+
+def _is_moe_expert_weight_name(name: str) -> bool:
+    if not name.endswith(".weight"):
+        return False
+    if not any(marker in name for marker in EXPERT_NAME_MARKERS):
+        return False
+    return any(name.endswith(suffix) for suffix in EXPERT_WEIGHT_SUFFIXES)
+
+
+def should_quantize(name: str, weight: torch.Tensor) -> bool:
+    if not _is_moe_expert_weight_name(name):
+        return False
+    if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return False
+    if weight.dim() < 2:
+        return False
+    if weight.shape[-1] % NVFP4_GROUP_SIZE != 0:
+        raise ValueError(
+            f"Last dim {weight.shape[-1]} must be divisible by {NVFP4_GROUP_SIZE} "
+            f"for NVFP4 quantization ({name})."
+        )
+    return True
+
+
+def cast_to_fp4x2(x: torch.Tensor) -> torch.Tensor:
+    """Quantize a tensor to FP4 E2M1 and pack two values per byte."""
+    result = torch.zeros_like(x, dtype=torch.uint8)
+    result[(x >= 0.0) & (x <= 0.25)] = 0
+    result[(x > 0.25) & (x < 0.75)] = 1
+    result[(x >= 0.75) & (x <= 1.25)] = 2
+    result[(x > 1.25) & (x < 1.75)] = 3
+    result[(x >= 1.75) & (x <= 2.5)] = 4
+    result[(x > 2.5) & (x < 3.5)] = 5
+    result[(x >= 3.5) & (x <= 5.0)] = 6
+    result[x > 5.0] = 7
+
+    result[(x >= -0.25) & (x < -0.0)] = 8
+    result[(x < -0.25) & (x > -0.75)] = 9
+    result[(x <= -0.75) & (x >= -1.25)] = 10
+    result[(x < -1.25) & (x > -1.75)] = 11
+    result[(x <= -1.75) & (x >= -2.5)] = 12
+    result[(x < -2.5) & (x > -3.5)] = 13
+    result[(x <= -3.5) & (x >= -5.0)] = 14
+    result[x < -5.0] = 15
+
+    return result[:, ::2] + result[:, 1::2] * 16
+
+
+def _quantize_nvfp4_1d(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    NVFP4 1D quantization (tile shape = 1x16), adapted from
+    TransformerEngine NVFP4QuantizerRef._quantize_blockwise_reference.
+
+    Returns:
+      qweight: uint8 packed fp4, shape (M, K // 2)
+      block_scale: float8_e4m3fn, shape (M, K // 16)
+      global_scale: float32 scalar tensor
+    """
+    weight = weight.contiguous()
+    m, n = weight.shape
+    if n % NVFP4_GROUP_SIZE != 0:
+        raise ValueError(
+            f"NVFP4 requires K divisible by {NVFP4_GROUP_SIZE}, got {n}."
+        )
+
+    weight_f = weight.to(torch.float32)
+    global_amax = torch.max(torch.abs(weight_f))
+    if global_amax.item() == 0.0:
+        qweight = torch.zeros((m, n // 2), dtype=torch.uint8, device=weight.device)
+        block_scale = torch.zeros(
+            (m, n // NVFP4_GROUP_SIZE),
+            dtype=torch.float8_e4m3fn,
+            device=weight.device,
+        )
+        global_scale = torch.tensor(1.0, device=weight.device, dtype=torch.float32)
+        return qweight, block_scale, global_scale
+
+    fp4_max = torch.tensor(FP4_E2M1_MAX, device=weight.device, dtype=torch.float32)
+    fp8_max = torch.tensor(FP8_E4M3_MAX, device=weight.device, dtype=torch.float32)
+
+    global_encode_scale = torch.div(fp8_max * fp4_max, global_amax)
+    global_encode_scale = torch.min(
+        global_encode_scale,
+        torch.tensor(torch.finfo(torch.float32).max, device=weight.device, dtype=torch.float32),
+    )
+    if global_encode_scale.item() == 0.0:
+        global_encode_scale = torch.tensor(1.0, device=weight.device, dtype=torch.float32)
+    global_decode_scale = torch.div(1.0, global_encode_scale)
+
+    weight_blocks = weight_f.view(m, n // NVFP4_GROUP_SIZE, NVFP4_GROUP_SIZE)
+    vec_max = torch.amax(torch.abs(weight_blocks), dim=-1, keepdim=True)
+    decode_scale = torch.div(vec_max, fp4_max) * global_encode_scale
+    decode_scale = torch.clamp(decode_scale, min=-fp8_max, max=fp8_max).to(torch.float8_e4m3fn)
+
+    encode_scale = torch.div(1.0, decode_scale.to(torch.float32) * global_decode_scale)
+    scaled = weight_blocks * encode_scale
+    clipped = torch.clamp(scaled, -fp4_max, fp4_max).reshape(m, n)
+
+    qweight = cast_to_fp4x2(clipped)
+    block_scale = decode_scale.squeeze(-1)
+    return qweight, block_scale, global_decode_scale
+
+
+def quantize_nvfp4(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if weight.dim() == 2:
+        return _quantize_nvfp4_1d(weight)
+    if weight.dim() == 3:
+        qweights = []
+        block_scales = []
+        global_scales = []
+        for idx in range(weight.shape[0]):
+            qweight, block_scale, global_scale = _quantize_nvfp4_1d(weight[idx])
+            qweights.append(qweight)
+            block_scales.append(block_scale)
+            global_scales.append(global_scale)
+        return (
+            torch.stack(qweights, dim=0),
+            torch.stack(block_scales, dim=0),
+            torch.stack(global_scales, dim=0),
+        )
+    raise ValueError(f"Unsupported weight rank {weight.dim()} for NVFP4 quantization.")
+
+
+class ConversionResult:
+    def __init__(self) -> None:
+        self.weight_map: dict[str, str] = {}
+        self.total_size: int = 0
+        self.modules_to_not_convert: list[str] = []
+
+    def add_result(
+        self, filename: str, q_weights: dict[str, torch.Tensor], module_names: list[str]
+    ) -> None:
+        for key, tensor in q_weights.items():
+            self.weight_map[key] = filename
+            self.total_size += tensor.numel() * tensor.element_size()
+        self.modules_to_not_convert.extend(module_names)
+
+
+def process_file(
+    input_path: str,
+    output_path: str,
+    filename: str,
+    result_collector: ConversionResult,
+    device: str,
+) -> None:
+    if not filename.endswith(".safetensors"):
+        return
+
+    weights: dict[str, torch.Tensor] = {}
+    q_weights: dict[str, torch.Tensor] = {}
+
+    with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
+        for key in f.keys():
+            weights[key] = f.get_tensor(key)
+
+    modules_to_not_convert: list[str] = []
+    for key, tensor in weights.items():
+        if should_quantize(key, tensor):
+            qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor)
+            q_weights[key] = qweight
+            q_weights[key.replace(".weight", ".weight_scale")] = block_scale
+            q_weights[key.replace(".weight", ".weight_scale_2")] = weight_scale_2
+            q_weights[key.replace(".weight", ".input_scale")] = torch.ones_like(
+                weight_scale_2, dtype=torch.float32
+            )
+        else:
+            if key.endswith(".weight"):
+                modules_to_not_convert.append(key.replace(".weight", ""))
+            q_weights[key] = tensor
+
+    safetensors.torch.save_file(q_weights, os.path.join(output_path, filename), metadata={"format": "pt"})
+    result_collector.add_result(filename, q_weights, modules_to_not_convert)
+
+
+def convert_nvfp4(model_dir: str, save_dir: str, device: str) -> None:
+    input_path = os.path.abspath(model_dir)
+    output_path = os.path.abspath(save_dir)
+    os.makedirs(output_path, exist_ok=True)
+
+    for filename in os.listdir(input_path):
+        if not filename.endswith(".safetensors") and not os.path.isdir(os.path.join(input_path, filename)):
+            shutil.copyfile(os.path.join(input_path, filename), os.path.join(output_path, filename))
+
+    safetensors_files = [f for f in os.listdir(input_path) if f.endswith(".safetensors")]
+
+    result_collector = ConversionResult()
+    for filename in tqdm(safetensors_files, desc="Processing files"):
+        process_file(input_path, output_path, filename, result_collector, device)
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    quantization_config = {
+        "quant_method": "modelopt_fp4",
+        "quant_algo": "NVFP4",
+        "group_size": NVFP4_GROUP_SIZE,
+        "ignore": sorted(set(result_collector.modules_to_not_convert)),
+    }
+
+    config_path = os.path.join(input_path, "config.json")
+    if os.path.exists(config_path):
+        cfg = json.load(open(config_path))
+        cfg["quantization_config"] = quantization_config
+        json.dump(cfg, open(os.path.join(output_path, "config.json"), "w"), indent=2)
+
+    index_dict = {
+        "weight_map": result_collector.weight_map,
+        "metadata": {"total_size": result_collector.total_size},
+    }
+    json.dump(index_dict, open(os.path.join(output_path, "model.safetensors.index.json"), "w"), indent=2)
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-dir", type=str, required=True, help="Path to HF safetensors model.")
+    parser.add_argument("--save-dir", type=str, required=True, help="Path to save converted model.")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Torch device to run quantization on (default: cuda).",
+    )
+    args = parser.parse_args()
+
+    if isinstance(args.device, str) and args.device.isdigit():
+        device = torch.device(f"cuda:{args.device}")
+    else:
+        device = torch.device(args.device)
+
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available, cannot run NVFP4 quantization.")
+        if device.index is None:
+            device = torch.device("cuda:0")
+        torch.cuda.set_device(device)
+
+    if not os.path.exists(args.save_dir):
+        print(f"Creating directory {args.save_dir}")
+        os.makedirs(args.save_dir)
+    elif not os.path.isdir(args.save_dir):
+        raise ValueError("The save_dir should be a directory.")
+
+    convert_nvfp4(args.model_dir, args.save_dir, str(device))
+
+
+if __name__ == "__main__":
+    main()
