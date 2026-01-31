@@ -513,6 +513,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
             "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
             "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
             "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
