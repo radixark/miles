@@ -30,6 +30,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_r3: bool = False
     enable_rir: bool = False
     enable_pp: bool = False
+    optimizer_offload: bool = False
 
     @property
     def megatron_model_type(self):
@@ -276,11 +277,13 @@ def train(args: ScriptArgs):
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        # ------------
-        # "--optimizer-cpu-offload "
-        # "--overlap-cpu-optimizer-d2h-h2d "
-        # "--use-precision-aware-optimizer "
     )
+    if args.optimizer_offload:
+        optimizer_args += (
+            "--optimizer-cpu-offload "
+            "--overlap-cpu-optimizer-d2h-h2d "
+            "--use-precision-aware-optimizer "
+        )
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {args.num_gpus_per_node} "
