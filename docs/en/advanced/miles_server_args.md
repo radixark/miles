@@ -46,7 +46,7 @@ Arguments for configuring Ray cluster resources and GPU allocation.
 | `--rollout-num-gpus` | Total number of GPUs required for rollout (inference). In `--colocate` mode, this is ignored and set to `actor-num-gpus-per-node * actor-num-nodes` (and plus critic GPUs if enabled). | `None` | Type: int |
 | `--rollout-num-gpus-per-engine` | Number of GPUs per inference engine, same as `tp_size` in SGLang. For multi-node serving, this should be the total GPU count / `tp_size` for each SGLang instance. | `1` | Type: int |
 | `--num-gpus-per-node` | Total GPUs per node on the physical machine. This informs the Ray scheduler of the hardware capacity. In **Colocate mode**, it is required if the machine has fewer than 8 GPUs to calculate correct VRAM offsets. In **Disaggregated mode**, it ensures SGLang engines are distributed correctly across nodes without exceeding per-node GPU limits. | `8` | Type: int |
-| `--colocate` | Deploy training and rollout on the same GPUs. Enables `--offload-train` and `--offload-rollout`. | `False` | bool flag (set to enable) |
+| `--colocate` | Deploy training and rollout on the same GPUs. Enables `--offload-train` and `--offload-rollout`. **Tip:** When enabled, it is highly recommended to set `--sglang-mem-fraction-static` to `0.8` to ensure Megatron has enough memory to initialize before weights are offloaded to CPU. | `False` | bool flag (set to enable) |
 | `--prefill-num-servers` | Number of dedicated prefill servers for PD disaggregation. | `None` | Type: int |
 | `--distributed-backend` | Backend for distributed communication. | `nccl` | `nccl`, `gloo` |
 | `--distributed-timeout-minutes` | Timeout for distributed operations in minutes. | `10` | Type: int |
@@ -153,8 +153,8 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--num-epoch` | Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. **Note:** This argument takes precedence and will overwrite `--num-rollout` if both are specified. | `None` | Type: int |
 | `--rollout-batch-size` | Number of prompts per rollout batch. The total data returned should be `rollout_batch_size` * `n_samples_per_prompt`. | Required | Type: int |
 | `--n-samples-per-prompt` | Number of responses to generate for each prompt. | `1` | Type: int |
-| `--num-steps-per-rollout` | The number of training steps (optimizer updates) to perform using the data collected in a single rollout round. Setting this to **n** means the policy model will be updated **n** times using the same batch of rollout data. This parameter is used to automatically calculate the **Global Batch Size** using the formula: `(rollout_batch_size * n_samples_per_prompt) // num_steps_per_rollout`. | `None` | Type: int |
-| `--use-dynamic-batch-size` | Dynamically packs variable-length samples into micro-batches to maximize GPU utilization, ensuring the total token count per batch does not exceed `--max-tokens-per-gpu`. For example, with a 300-token limit, samples of lengths 100, 200, and 300 would be packed into two batches: `[100, 200]` and `[300]`. Ignores `micro_batch_size`. | `False` | bool flag (set to enable) |
+| `--num-steps-per-rollout` | The number of training steps (optimizer updates) to perform using the data collected in a single rollout round. Setting this to **n** means the policy model will be updated **n** times using the same batch of rollout data. This parameter is used to automatically calculate the **Global Batch Size** using the formula: `(rollout_batch_size * n_samples_per_prompt) // num_steps_per_rollout`. **Constraint:** The system ensures that `(rollout-batch-size * n-samples-per-prompt) = (global-batch-size * num-steps-per-rollout)`. | `None` | Type: int |
+| `--use-dynamic-batch-size` | Dynamically packs variable-length samples into micro-batches to maximize GPU utilization, ensuring the total token count per batch does not exceed `--max-tokens-per-gpu`. For example, with a 300-token limit, samples of lengths 100, 200, and 300 would be packed into two batches: `[100, 200]` and `[300]`. **Note:** Miles ensures that enabling this optimization does not affect the mathematical correctness of per-sample or per-token loss calculation. It is **strongly recommended** to enable this for maximum efficiency. | `False` | bool flag (set to enable) |
 | `--max-tokens-per-gpu` | The maximum number of tokens (Prompt + Response combined) per GPU for dynamic batch size. This parameter defines the total sequence length budget for packing samples into micro-batches during training. Note that when enabling context parallel (CP), the effective capacity is shared, so the value should be approximately `(Total_Sequence_Length) // cp_size`. | `None` | Type: int |
 | `--log-probs-max-tokens-per-gpu` | The maximum number of tokens per GPU for calculating log probs. This is used to calculate the log probs of the responses during rollout, and should be set to a larger value than `max_tokens_per_gpu` if you want better performance. | `None` | Type: int |
 | `--balance-data` | Balance the number of tokens between data parallel ranks with `karmarkar_karp` for verl. Note that this may allocate the different response of the same prompt into different training steps. | `False` | Type: bool |
@@ -439,6 +439,9 @@ Miles recognizes several environment variables for advanced configuration.
 | `TENSORBOARD_DIR` | Base directory for Tensorboard logs. |
 | `MILES_HOST_IP` | Overrides the host IP used for distributed communication. |
 | `PYTHONPATH` | Must include the path to your `Megatron-LM` installation when using the Megatron backend. |
+| `NCCL_SOCKET_IFNAME` | Specifies the network interface for NCCL communication (e.g., `eth0`, `bond0`). |
+| `GLOO_SOCKET_IFNAME` | Specifies the network interface for GLOO communication. |
+| `NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME` | Network interface for NVSHMEM bootstrap. |
 
 ---
 
