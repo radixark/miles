@@ -287,14 +287,14 @@ def train(args: ScriptArgs):
         # f"--sglang-dp-size {args.num_nodes} "  # can do it automatically
         "--sglang-enable-dp-attention "
 
-        # TODO this will be default arguments
+        # TODO some will be default arguments, some should be updated
         "--sglang-disable-radix-cache "
         "--sglang-attention-backend compressed "
         "--sglang-page-size 256 "
         "--sglang-max-running-requests 64 "
         "--sglang-chunked-prefill-size 8192 "
-        # temporary
-        "--sglang-max-total-tokens 200000 "
+        # TODO improve this
+        "--sglang-max-total-tokens 100000 "
 
         "--sglang-server-concurrency 1024 "
         "--router-health-success-threshold 1 "
