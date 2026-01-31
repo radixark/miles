@@ -281,10 +281,10 @@ def train(args: ScriptArgs):
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 4 "
+        f"--rollout-num-gpus-per-engine {args.num_gpus_per_node} "
 
-        "--sglang-tp-size 4 "
-        f"--sglang-dp-size {args.num_nodes} "
+        f"--sglang-tp-size {args.num_gpus_per_node} "
+        # f"--sglang-dp-size {args.num_nodes} "  # can do it automatically
         "--sglang-enable-dp-attention "
 
         # TODO this will be default arguments
