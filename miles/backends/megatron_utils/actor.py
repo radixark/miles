@@ -94,9 +94,11 @@ class MegatronTrainRayActor(TrainRayActor):
             for m in all_replay_managers:
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
 
+        print_memory("before initialize_model_and_optimizer")
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
+        print_memory("after initialize_model_and_optimizer")
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
