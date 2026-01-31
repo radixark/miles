@@ -104,8 +104,8 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 | `--rollout-max-prompt-len` | Maximum length of the prompt. Longer prompts are filtered during dataset initialization. This is not recommended if the dataset is large. **Note:** Defaults to `rollout-max-context-len - 1` if not set, ensuring at least one token can be generated. | `None` | Type: int |
 | `--rollout-max-response-len` | Maximum length of the response (`max_tokens` in SGLang). **Note:** Generation will stop when either this limit is reached or the total session length hits `rollout-max-context-len`. | `None` | Type: int |
 | `--rollout-skip-special-tokens` | Skip special tokens (e.g., `<|im_end|>`, `<|endoftext|>`) in the decoded response string. **Critical for Multi-Turn RL:** Ensures that when a response is appended to the conversation history for the next turn, it doesn't include terminal special tokens that would interfere with chat template formatting or cause early termination in subsequent turns. | `False` | bool flag (set to enable) |
-| `--rollout-stop` | Stop words for the inference engine. Can be a single string or a list of strings. It may be hard to pass special tokens in command line, in that case `--rollout-stop-token-ids` can be used. | `None` | Type: List[str] |
-| `--rollout-stop-token-ids` | Stop token IDs for the inference engine. | `None` | Type: List[int] |
+| `--rollout-stop` | A list of strings that trigger termination of generation if they appear in the output (e.g., `"\nUser:"`). | `None` | Type: List[str] |
+| `--rollout-stop-token-ids` | A list of numerical token IDs that trigger termination. This is the token-level equivalent of `--rollout-stop` and is preferred for special control tokens that are difficult to input as strings. | `None` | Type: List[int] |
 | `--rollout-shuffle` | Shuffle the prompts during rollout. | `False` | bool flag (set to enable) |
 | `--rollout-seed` | Seed for the random number generator during rollout (used for shuffling and sampling). | `42` | Type: int |
 | `--rollout-external` | Use external SGLang instances instead of launching them inside the framework. | `False` | bool flag (set to enable) |
@@ -139,8 +139,8 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
-| `--num-rollout` | Number of rollout steps. If not set, miles will calculate the number of rollout steps from the dataset size. | `None` | Type: int |
-| `--num-epoch` | Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. If both `--num-epoch` and `--num-rollout` are set, `--num-epoch` will be ignored. | `None` | Type: int |
+| `--num-rollout` | Number of rollout steps. If not set, miles will calculate the number of rollout steps from the dataset size. **Note:** This value will be overwritten if `--num-epoch` is also set. | `None` | Type: int |
+| `--num-epoch` | Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. **Note:** This argument takes precedence and will overwrite `--num-rollout` if both are specified. | `None` | Type: int |
 | `--prompt-data` | Path to the prompt dataset (JSONL format) and each line should contains `--input-key` and `--label-key` which will be used as the prompt and the label respectively. If you want to use a custom template, you can set `--apply-chat-template` to true | `None` | Type: str |
 | `--disable-rollout-global-dataset` | Disable the global dataset for rollout. If set, the rollout will use the `--prompt-data` as the prompt dataset, and the prompts for rollout will be sampled from the dataset. If not set, you need to manage the data by your self. | `False` | bool flag (set to disable) |
 | `--data-source-path` | Path to a custom Python class for the rollout data source. See [customization](../get_started/customization.md#15-data-source---data-source-path) for more details. | `miles.rollout.data_source.RolloutDataSourceWithBuffer` | Type: str |
