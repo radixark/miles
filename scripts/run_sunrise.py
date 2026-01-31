@@ -342,6 +342,9 @@ def train(args: ScriptArgs):
         "--qkv-format bshd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
+        # TODO is this ok?
+        "--rollout-health-check-interval 300 "
+        "--rollout-health-check-timeout 300 "
     )
 
     assert args.enable_r3 and args.enable_rir
