@@ -47,9 +47,6 @@ Arguments for configuring Ray cluster resources and GPU allocation.
 | `--rollout-num-gpus-per-engine` | Number of GPUs per inference engine, same as `tp_size` in SGLang. For multi-node serving, this should be the total GPU count / `tp_size` for each SGLang instance. | `1` | Type: int |
 | `--num-gpus-per-node` | Total GPUs per node on the machine. Specify if using fewer than 8 GPUs per node in colocate mode. | `8` | Type: int |
 | `--colocate` | Deploy training and rollout on the same GPUs. Enables `--offload-train` and `--offload-rollout`. | `False` | bool flag (set to enable) |
-| `--offload` | Equivalent to setting both `--offload-train` and `--offload-rollout` to true. | `False` | bool flag (set to enable) |
-| `--offload-train` | Offload the Actor to CPU during the rollout phase. Always enabled when `--colocate` is set. | `None` | bool flag (set to enable) |
-| `--offload-rollout` | Offload the rollout generator to CPU during the training phase. Always enabled when `--colocate` is set. | `None` | bool flag (set to enable) |
 | `--prefill-num-servers` | Number of dedicated prefill servers for PD disaggregation. | `None` | Type: int |
 | `--distributed-backend` | Backend for distributed communication. | `nccl` | `nccl`, `gloo` |
 | `--distributed-timeout-minutes` | Timeout for distributed operations in minutes. | `10` | Type: int |
