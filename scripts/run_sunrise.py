@@ -294,7 +294,7 @@ def train(args: ScriptArgs):
         "--sglang-max-running-requests 64 "
         "--sglang-chunked-prefill-size 8192 "
         # TODO improve this
-        "--sglang-max-total-tokens 100000 "
+        # "--sglang-max-total-tokens 100000 "
 
         "--sglang-server-concurrency 1024 "
         "--router-health-success-threshold 1 "
