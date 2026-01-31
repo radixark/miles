@@ -44,6 +44,12 @@ EXPERT_NAME_MARKERS = (
 )
 
 FUSED_QKV_SUFFIXES = (".q_proj", ".k_proj", ".v_proj")
+GATED_PAIR_SUFFIXES = {
+    ".gate_proj.weight": "gate",
+    ".up_proj.weight": "up",
+    ".w1.weight": "gate",
+    ".w3.weight": "up",
+}
 
 
 def _is_moe_expert_weight_name(name: str) -> bool:
@@ -148,7 +154,10 @@ def cast_to_fp4x2(x: torch.Tensor) -> torch.Tensor:
     return result[:, ::2] + result[:, 1::2] * 16
 
 
-def _quantize_nvfp4_1d(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _quantize_nvfp4_1d(
+    weight: torch.Tensor,
+    global_amax: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     NVFP4 1D quantization (tile shape = 1x16), adapted from
     TransformerEngine NVFP4QuantizerRef._quantize_blockwise_reference.
@@ -164,7 +173,10 @@ def _quantize_nvfp4_1d(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor
         raise ValueError(f"NVFP4 requires K divisible by {NVFP4_GROUP_SIZE}, got {n}.")
 
     weight_f = weight.to(torch.float32)
-    global_amax = torch.max(torch.abs(weight_f))
+    if global_amax is None:
+        global_amax = torch.max(torch.abs(weight_f))
+    else:
+        global_amax = global_amax.to(device=weight.device, dtype=torch.float32)
     if global_amax.item() == 0.0:
         qweight = torch.zeros((m, n // 2), dtype=torch.uint8, device=weight.device)
         block_scale = torch.zeros(
@@ -201,10 +213,15 @@ def _quantize_nvfp4_1d(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor
     return qweight, block_scale, global_decode_scale
 
 
-def quantize_nvfp4(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def quantize_nvfp4(
+    weight: torch.Tensor,
+    global_amax: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if weight.dim() == 2:
-        return _quantize_nvfp4_1d(weight)
+        return _quantize_nvfp4_1d(weight, global_amax=global_amax)
     if weight.dim() == 3:
+        if global_amax is not None:
+            raise ValueError("global_amax override is only supported for 2D weights.")
         qweights = []
         block_scales = []
         global_scales = []
@@ -298,6 +315,13 @@ def _augment_ignore_list(ignore_list: list[str]) -> list[str]:
     return sorted(ignore_set)
 
 
+def _split_gated_pair_name(name: str) -> tuple[str | None, str | None]:
+    for suffix, role in GATED_PAIR_SUFFIXES.items():
+        if name.endswith(suffix):
+            return name[: -len(suffix)], role
+    return None, None
+
+
 def process_file(
     input_path: str,
     output_path: str,
@@ -317,9 +341,24 @@ def process_file(
             weights[key] = f.get_tensor(key)
 
     modules_to_not_convert: list[str] = []
+    shared_global_amax: dict[str, torch.Tensor] = {}
+    gated_candidates: dict[str, dict[str, torch.Tensor]] = {}
+    for key, tensor in weights.items():
+        base, role = _split_gated_pair_name(key)
+        if base is None or role is None:
+            continue
+        if should_quantize(key, tensor, skip_layers):
+            gated_candidates.setdefault(base, {})[role] = tensor
+    for base, roles in gated_candidates.items():
+        if "gate" in roles and "up" in roles:
+            gate_amax = roles["gate"].abs().max().to(torch.float32)
+            up_amax = roles["up"].abs().max().to(torch.float32)
+            shared_global_amax[base] = torch.max(gate_amax, up_amax)
     for key, tensor in weights.items():
         if should_quantize(key, tensor, skip_layers):
-            qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor)
+            base, role = _split_gated_pair_name(key)
+            global_amax = shared_global_amax.get(base) if base else None
+            qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor, global_amax=global_amax)
             q_weights[key] = qweight
             q_weights[key.replace(".weight", ".weight_scale")] = block_scale
             q_weights[key.replace(".weight", ".weight_scale_2")] = weight_scale_2
