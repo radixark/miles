@@ -75,7 +75,7 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | `--true-on-policy-mode` | Strictly align SGLang's log probs and training engine's log probs to bit-wise equal. This parameter is only used for FSDP right now. [Ref](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/mismatch/blog-en.md#truly-on-policy-training) | `False` | bool flag (set to enable) |
 | `--train-env-vars` | Extra environment variables for training process, e.g., PyTorch memory management ones. | `{}` | Type: JSON / Dict |
 | `--train-memory-margin-bytes` | Reserved memory margin for training in bytes. Defaults to 1GB. | `1073741824` | Type: int |
-| `--disable-weights-backuper` | Disable weights backuper to save host memory. By default, this feature is enabled. | `False` | bool flag (set to disable) |
+| `--disable-weights-backuper` | Disables the system that backups model weights (Actor, Ref, Old Actor) to CPU RAM. Disabling saves significant host memory but prevents weight-swapping features like KL-divergence. | `False` | bool flag (set to disable) |
 | `--custom-model-provider-path` | Path to a custom function that replaces the default model provider. [Detail](../get_started/customization.md#20-model-provider---custom-model-provider-path) | `None` | Type: str |
 | `--recompute-loss-function` | Enable recomputing the loss function to save memory during training. | `False` | bool flag (set to enable) |
 | `--log-probs-chunk-size` | Specifies the chunk size for logprobs computation to reduce peak memory usage. Processing logits in smaller batches, it prevents CUDA OOM errors during long-context prefilling or re-computation. Set to `-1` to disable chunking. [Ref](https://github.com/sgl-project/sglang/pull/6318) | `-1` | Type: int |
