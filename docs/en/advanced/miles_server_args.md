@@ -100,9 +100,9 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 | `--rollout-temperature` | Sampling temperature for the inference engine during rollout. | `1.0` | Type: float |
 | `--rollout-top-p` | Top-p (nucleus) sampling threshold during rollout. | `1.0` | Type: float |
 | `--rollout-top-k` | Top-k sampling threshold during rollout. `-1` means disabled. | `-1` | Type: int |
-| `--rollout-max-context-len` | The maximum context size for the inference engine during rollout. It should not exceed the `max_position_embeddings` in Huggingface model's `config.json`. | `None` | Type: int |
-| `--rollout-max-prompt-len` | Maximum length of the prompt. Longer prompts are filtered during dataset initialization. This is not recommended if the dataset is large. | `None` | Type: int |
-| `--rollout-max-response-len` | Maximum length of the response (`max_tokens` in SGLang). | `None` | Type: int |
+| `--rollout-max-context-len` | The maximum context size for the inference engine during rollout. It should not exceed the `max_position_embeddings` in Huggingface model's `config.json`. **Note:** This acts as a hard cap for the total tokens (Prompt + Response). | `None` | Type: int |
+| `--rollout-max-prompt-len` | Maximum length of the prompt. Longer prompts are filtered during dataset initialization. This is not recommended if the dataset is large. **Note:** Defaults to `rollout-max-context-len - 1` if not set, ensuring at least one token can be generated. | `None` | Type: int |
+| `--rollout-max-response-len` | Maximum length of the response (`max_tokens` in SGLang). **Note:** Generation will stop when either this limit is reached or the total session length hits `rollout-max-context-len`. | `None` | Type: int |
 | `--rollout-skip-special-tokens` | Skip special tokens in the response. Useful when the response is used as a prompt for the next rollout. | `False` | bool flag (set to enable) |
 | `--rollout-stop` | Stop words for the inference engine. Can be a single string or a list of strings. It may be hard to pass special tokens in command line, in that case `--rollout-stop-token-ids` can be used. | `None` | Type: List[str] |
 | `--rollout-stop-token-ids` | Stop token IDs for the inference engine. | `None` | Type: List[int] |
