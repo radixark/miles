@@ -7,6 +7,15 @@ You can find all arguments by running:
 python3 train.py --help
 ```
 
+## Argument Naming Conventions
+
+Miles acts as an orchestrator that integrates multiple frameworks. To help identify where an argument is directed, we follow these prefix conventions:
+
+*   **`--sglang-*`**: Arguments passed directly to the **SGLang** inference engine.
+*   **`--router-*`**: Arguments directed to the **SGLang Model Gateway/Router**.
+*   **No Prefix**: Default arguments corresponding to **Megatron-LM** (when using the Megatron backend) or **Miles native** configuration.
+*   **`--fsdp-*`**: Specific arguments for the experimental **FSDP** backend.
+
 ## Table of Contents
 1. [Cluster and Resource Management](#cluster-and-resource-management)
 2. [Training Backend](#training-backend)
