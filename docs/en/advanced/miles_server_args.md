@@ -45,7 +45,7 @@ Arguments for configuring Ray cluster resources and GPU allocation.
 | `--critic-num-gpus-per-node` | Number of GPUs per node for the Critic. Defaults to `--actor-num-gpus-per-node`. | `None` | Type: int |
 | `--rollout-num-gpus` | Total number of GPUs required for rollout (inference). In `--colocate` mode, this is ignored and set to `actor-num-gpus-per-node * actor-num-nodes` (and plus critic GPUs if enabled). | `None` | Type: int |
 | `--rollout-num-gpus-per-engine` | Number of GPUs per inference engine, same as `tp_size` in SGLang. For multi-node serving, this should be the total GPU count / `tp_size` for each SGLang instance. | `1` | Type: int |
-| `--num-gpus-per-node` | Total GPUs per node on the machine. Specify if using fewer than 8 GPUs per node in colocate mode. | `8` | Type: int |
+| `--num-gpus-per-node` | Total GPUs per node on the physical machine. This informs the Ray scheduler of the hardware capacity. In **Colocate mode**, it is required if the machine has fewer than 8 GPUs to calculate correct VRAM offsets. In **Disaggregated mode**, it ensures SGLang engines are distributed correctly across nodes without exceeding per-node GPU limits. | `8` | Type: int |
 | `--colocate` | Deploy training and rollout on the same GPUs. Enables `--offload-train` and `--offload-rollout`. | `False` | bool flag (set to enable) |
 | `--prefill-num-servers` | Number of dedicated prefill servers for PD disaggregation. | `None` | Type: int |
 | `--distributed-backend` | Backend for distributed communication. | `nccl` | `nccl`, `gloo` |
