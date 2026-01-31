@@ -15,6 +15,7 @@ from urllib3.exceptions import NewConnectionError
 
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
+from miles.utils.memory_utils import print_memory
 
 logger = logging.getLogger(__name__)
 
