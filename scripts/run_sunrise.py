@@ -211,10 +211,12 @@ def train(args: ScriptArgs):
         perf_args = (
             "--tensor-model-parallel-size 8 "
             "--sequence-parallel "
-            "--pipeline-model-parallel-size 1 "
+            "--pipeline-model-parallel-size 6 "
+            "--decoder-first-pipeline-num-layers 8 "
+            "--decoder-last-pipeline-num-layers 7 "
             # NOTE: context-parallel is not supported yet
             "--context-parallel-size 1 "
-            "--expert-model-parallel-size 16 "
+            "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
     # TODO
