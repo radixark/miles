@@ -141,9 +141,9 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | :--- | :--- | :--- | :--- |
 | `--num-rollout` | Number of rollout steps. If not set, miles will calculate the number of rollout steps from the dataset size. | `None` | Type: int |
 | `--num-epoch` | Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. If both `--num-epoch` and `--num-rollout` are set, `--num-epoch` will be ignored. | `None` | Type: int |
+| `--prompt-data` | Path to the prompt dataset (JSONL format) and each line should contains `--input-key` and `--label-key` which will be used as the prompt and the label respectively. If you want to use a custom template, you can set `--apply-chat-template` to true | `None` | Type: str |
 | `--disable-rollout-global-dataset` | Disable the global dataset for rollout. If set, the rollout will use the `--prompt-data` as the prompt dataset, and the prompts for rollout will be sampled from the dataset. If not set, you need to manage the data by your self. | `False` | bool flag (set to disable) |
 | `--data-source-path` | Path to a custom Python class for the rollout data source. See [customization](../get_started/customization.md#15-data-source---data-source-path) for more details. | `miles.rollout.data_source.RolloutDataSourceWithBuffer` | Type: str |
-| `--prompt-data` | Path to the prompt dataset (JSONL format) and each line should contains `--input-key` and `--label-key` which will be used as the prompt and the label respectively. If you want to use a custom template, you can set `--apply-chat-template` to true | `None` | Type: str |
 | `--input-key` | Key in the JSONL data representing the user input/prompt. | `"input"` | Type: str |
 | `--label-key` | Key in the JSONL data representing the label/ground truth. | `None` | Type: str |
 | `--metadata-key` | When adding tools during `apply_chat_template`, provide the key for the tools to the prompt dataset. | `"metadata"` | Type: str |
