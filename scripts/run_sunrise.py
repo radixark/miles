@@ -347,7 +347,7 @@ def train(args: ScriptArgs):
         "--rollout-health-check-timeout 300 "
     )
 
-    assert args.enable_r3 and args.enable_rir
+    assert args.enable_r3 == args.enable_rir
     if args.enable_r3 and args.enable_rir:
         misc_args += (
             "--use-rollout-routing-replay "
