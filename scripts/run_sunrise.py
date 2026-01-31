@@ -21,7 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
-    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/local_data"
@@ -158,7 +158,7 @@ def train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
+                f"--rollout-max-response-len {150 if args.mode == 'debug_minimal' else 8192} "
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
