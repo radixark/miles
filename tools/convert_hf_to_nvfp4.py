@@ -43,6 +43,8 @@ EXPERT_NAME_MARKERS = (
     ".moe.experts.",
 )
 
+FUSED_QKV_SUFFIXES = (".q_proj", ".k_proj", ".v_proj")
+
 
 def _is_moe_expert_weight_name(name: str) -> bool:
     if not name.endswith(".weight"):
@@ -227,6 +229,19 @@ def _write_hf_quant_config(output_path: str, ignore_list: list[str], input_path:
         json.dump(hf_quant_cfg, f, indent=2)
 
 
+def _augment_ignore_list(ignore_list: list[str]) -> list[str]:
+    ignore_set = set(ignore_list)
+    extra = set()
+    for name in ignore_list:
+        if name.endswith(FUSED_QKV_SUFFIXES):
+            for suffix in FUSED_QKV_SUFFIXES:
+                if name.endswith(suffix):
+                    extra.add(name[: -len(suffix)] + ".qkv_proj")
+                    break
+    ignore_set.update(extra)
+    return sorted(ignore_set)
+
+
 def process_file(
     input_path: str,
     output_path: str,
@@ -279,7 +294,7 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    ignore_list = sorted(set(result_collector.modules_to_not_convert))
+    ignore_list = _augment_ignore_list(result_collector.modules_to_not_convert)
 
     config_path = os.path.join(input_path, "config.json")
     if os.path.exists(config_path):
