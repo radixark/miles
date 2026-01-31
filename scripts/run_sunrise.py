@@ -208,13 +208,13 @@ def train(args: ScriptArgs):
             "--expert-tensor-parallel-size 1 "
         )
     elif args.num_nodes <= 6:
-        # 48 GPU (6 nodes x 8 GPUs) config
         perf_args = (
-            "--tensor-model-parallel-size 4 "
+            "--tensor-model-parallel-size 8 "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 2 "
-            "--expert-model-parallel-size 6 "
+            # NOTE: context-parallel is not supported yet
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
         )
     # TODO
