@@ -335,9 +335,7 @@ class SGLangEngine(RayActor):
 
     def release_memory_occupation(self):
         self.flush_cache()
-        ans = self._make_request("release_memory_occupation")
-        print_memory("after SGLang release_memory_occupation")
-        return ans
+        return self._make_request("release_memory_occupation")
 
     def resume_memory_occupation(self, tags: list[str] = None):
         """
