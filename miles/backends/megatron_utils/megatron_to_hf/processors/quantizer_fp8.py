@@ -106,7 +106,8 @@ def _quantize_param(name, weight, weight_block_size, if_use_ue8m0_in_moe=True):
         # ):
         # sunrise use triton moe now, but use deep_gemm for attn projection
         is_moe = any(moe_keyword in name for moe_keyword in ['mlp', 'ffn'])
-        if not is_moe:
+        should_quant_ue8m0 = not is_moe
+        if should_quant_ue8m0:
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
