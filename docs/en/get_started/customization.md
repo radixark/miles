@@ -29,12 +29,19 @@ Below is a summary of all available customization interfaces and their purposes.
 | [`--custom-megatron-before-log-prob-hook-path`](#17-megatron-hooks) | Custom logic before log probability computation. |
 | [`--custom-megatron-before-train-step-hook-path`](#17-megatron-hooks) | Custom logic before each training step. |
 | [`--miles-router-middleware-paths`](#18-miles-router-middleware---miles-router-middleware-paths) | Add custom middleware to miles router. |
+| [`--custom-model-provider-path`](#20-model-provider---custom-model-provider-path) | Path to a custom function that replaces the default model provider. |
 
 ## Detailed Interface Reference
 
 ### 1. Rollout Function (`--rollout-function-path`)
 
-**Default**: `miles.rollout.sglang_rollout.generate_rollout`
+**Default**: 
+```python
+if enable_experimental_rollout_refactor():
+    miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
+else:
+    miles.rollout.sglang_rollout.generate_rollout
+```
 
 **Purpose**: Override the entire rollout generation logic.
 
@@ -416,4 +423,18 @@ Stabilize MoE RL training by recording and replaying expert routing decisions to
 | --- | --- |
 | `--use-routing-replay` | Forward-backward routing consistency in training. ([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) |
 | `--use-rollout-routing-replay` | R3: Replay routing from rollout during training. **Requires `--use-miles-router`**. ([arXiv:2510.11370](https://arxiv.org/abs/2510.11370)) |
+
+---
+
+### 20. Model Provider (`--custom-model-provider-path`)
+
+**Default**: `None`
+
+**Purpose**: Path to a custom function that replaces the default model provider (e.g., `'my_module.my_provider'`). The function must return a GPTModel.
+
+**Signature**:
+```python
+def custom_model_provider(pre_process: bool, post_process: bool, vp_stage: int | None = None) -> GPTModel
+```
+
 

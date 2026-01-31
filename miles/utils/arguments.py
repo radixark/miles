@@ -124,7 +124,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 choices=["thd", "bshd"],
                 default="thd",
-                help="The qkv layout for Megatron backend.",
+                help="The qkv layout.",
             )
             parser.add_argument(
                 "--true-on-policy-mode",
@@ -171,7 +171,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--recompute-loss-function",
                 action="store_true",
-                help="Whether to disable recompute loss function to save memory during training.",
+                help="Whether to enable recompute loss function to save memory during training.",
             )
             parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
@@ -875,7 +875,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-tis",
                 action="store_true",
                 default=False,
-                help="Enable TIS from https://fengyao.notion.site/off-policy-rl for off-policy importance sampling.",
+                help="Enable TIS from https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33.",
             )
             parser.add_argument(
                 "--tis-clip",
@@ -1029,7 +1029,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-correct-samples",
                 action="store_true",
                 default=False,
-                help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout.",
+                help="Explicitly log metrics for correct samples.",
             )
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
