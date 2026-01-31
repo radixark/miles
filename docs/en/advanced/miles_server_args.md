@@ -94,7 +94,7 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
-| `--hf-checkpoint` | Path to the Huggingface checkpoint used to initialize SGLang and provide the tokenizer. It must have the same architecture as the model being trained. It doesn't necessarily need to contain the most up-to-date parameters. | `None` | Type: str |
+| `--hf-checkpoint` | Path to the Huggingface checkpoint used to initialize SGLang and provide the tokenizer. | `None` | Type: str |
 | `--model-name` | The name of the model that is used to convert the Megatron weights into Huggingface format. If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as `model_name`. Providing this argument can also help in cases where transformers cannot find certain models. | `None` | Type: str |
 | `--rollout-function-path` | Path to the rollout generation function. Use this to inject custom logic (e.g., for multi-turn or tool use). For more details, see [customization](../get_started/customization.md#1-rollout-function---rollout-function-path). | `miles.rollout.sglang_rollout.generate_rollout` (or `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`) | Type: str |
 | `--rollout-temperature` | Sampling temperature for the inference engine during rollout. | `1.0` | Type: float |
