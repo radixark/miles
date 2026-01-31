@@ -79,7 +79,7 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | `--custom-model-provider-path` | Path to a custom function that replaces the default model provider. [Detail](../get_started/customization.md#20-model-provider---custom-model-provider-path) | `None` | Type: str |
 | `--recompute-loss-function` | Enable recomputing the loss function to save memory during training. | `False` | bool flag (set to enable) |
 | `--log-probs-chunk-size` | Specifies the chunk size for logprobs computation to reduce peak memory usage. Processing logits in smaller batches, it prevents CUDA OOM errors during long-context prefilling or re-computation. Set to `-1` to disable chunking. [Ref](https://github.com/sgl-project/sglang/pull/6318) | `-1` | Type: int |
-| `--keep-old-actor` | Keep the Actor model loaded during the training process. | `False` | bool flag (set to enable) |
+| `--keep-old-actor` | Maintains a "Model Queue" (Actor, Rollout Actor, Old Actor) to ensure importance sampling ratios are calculated against the exact policy version that generated the data. Essential for asynchronous RL or high-throughput scenarios where training and inference versions may diverge. **Trade-off:** Consumes additional Host Memory (~1x model size in System RAM). | `False` | bool flag (set to enable) |
 | `--update-weight-buffer-size` | Buffer size for updating weights, in bytes. [Ref](https://hebiao064.github.io/rl-weight-sync#42-optimizing-sglang-server-calls-with-tensor-bucketing-from-50s-to-30s) | `536870912` | Type: int |
 | `--update-weights-interval` | Interval (in rollout rounds) for syncing weights to inference engines. Set to `>1` for async RL. | `1` | Type: int |
 | `--fp16` | Enable FP16 mixed precision. | `False` | bool flag |
