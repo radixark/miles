@@ -40,6 +40,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 _RAW_HF_CKPT_PATH_DICT = {
+    "DeepSeek-V4-285B": "/data/weights/hello2026",
     "DeepSeek-V4-285B-5layer": "/data/weights/hello2026_5layer",
 }
 
@@ -54,8 +55,6 @@ def prepare_single(args: ScriptArgs):
             U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
-
-    assert args.megatron_model_type == "deepseek-v4-285B-5layer"
 
     U.fp8_cast_bf16(
         path_src=_RAW_HF_CKPT_PATH_DICT[args.model_name],
