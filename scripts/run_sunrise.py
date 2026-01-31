@@ -36,7 +36,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         return {
             "DeepSeek-V4-285B": "deepseek-v4-285B",
             "DeepSeek-V4-285B-5layer": "deepseek-v4-285B-5layer",
-        }
+        }[self.model_name]
 
 
 _RAW_HF_CKPT_PATH_DICT = {
