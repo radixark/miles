@@ -98,7 +98,7 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 | Argument | Description | Default | Options |
 | :--- | :--- | :--- | :--- |
 | `--hf-checkpoint` | Path to the Huggingface checkpoint used to initialize SGLang and provide the tokenizer. It must have the same architecture as the model being trained. It doesn't necessarily need to contain the most up-to-date parameters. | `None` | Type: str |
-| `--model-name` | The name of the model that is used to convert the Megatron weights into Huggingface format. If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as model_name. Providing this argument can also help in cases where transformers cannot find certain models. | `None` | Type: str |
+| `--model-name` | The name of the model that is used to convert the Megatron weights into Huggingface format. If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as `model_name`. Providing this argument can also help in cases where transformers cannot find certain models. | `None` | Type: str |
 | `--rollout-function-path` | Path to the rollout generation function. Use this to inject custom logic (e.g., for multi-turn or tool use). For more details, see [customization](../get_started/customization.md#1-rollout-function---rollout-function-path). | `miles.rollout.sglang_rollout.generate_rollout` (or `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`) | Type: str |
 | `--rollout-temperature` | Sampling temperature for the inference engine during rollout. | `1.0` | Type: float |
 | `--rollout-top-p` | Top-p (nucleus) sampling threshold during rollout. | `1.0` | Type: float |
@@ -149,7 +149,7 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--prompt-data` | Path to the prompt dataset (JSONL format) and each line should contains `--input-key` and `--label-key` which will be used as the prompt and the label respectively. If you want to use a custom template, you can set `--apply-chat-template` to true | `None` | Type: str |
 | `--input-key` | Key in the JSONL data representing the user input/prompt. | `"input"` | Type: str |
 | `--label-key` | Key in the JSONL data representing the label/ground truth. | `None` | Type: str |
-| `--metadata-key` | When need to add tools during apply_chat_template, you should provide the key for the tools in the prompt dataset. | `"metadata"` | Type: str |
+| `--metadata-key` | When adding tools during `apply_chat_template`, provide the key for the tools to the prompt dataset. | `"metadata"` | Type: str |
 | `--multimodal-keys` | JSON string for multimodal data mapping media types to data keys. Example: `'{"image": "image_file"}'` | `None` | Type: str |
 | `--tool-key` | JSON key for tool definitions in the prompt dataset (used when applying chat templates). | `"tools"` | Type: str |
 | `--apply-chat-template` | Whether to apply the chat template to the input prompt. The input should be the same structure as an OpenAI message, e.g. `[{'role': 'user', 'content': 'blabla'}]`. | `False` | bool flag (set to enable) |
