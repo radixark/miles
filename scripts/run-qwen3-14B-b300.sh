@@ -1,46 +1,59 @@
 #!/bin/bash
 
 # Qwen3-14B on B300 (sm_103a)
-# Tested on 8x B300 SXM6 275GB with fy121415/miles:b300
 # ref: https://github.com/radixark/miles/issues/530
 # ref: https://github.com/radixark/miles/issues/533
 
-# for rerun the task
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
-
 set -ex
 
-# will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+IMAGE=fy121415/miles:b300
+CONTAINER_NAME=qwen3-14b-b300
+DATA_DIR=${DATA_DIR:-/root}
 
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-if [ "$NVLINK_COUNT" -gt 0 ]; then
-    HAS_NVLINK=1
-else
-    HAS_NVLINK=0
-fi
-echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
+docker pull "$IMAGE"
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-14B.sh"
+docker run --rm \
+   --gpus all \
+   --ipc=host \
+   --network=host \
+   --name "$CONTAINER_NAME" \
+   -v "$DATA_DIR":/data \
+   "$IMAGE" \
+   bash -s <<'EOF'
+set -ex
+
+export PYTHONUNBUFFERED=1
+
+MODEL_ARGS=(
+   --swiglu
+   --num-layers 40
+   --hidden-size 5120
+   --ffn-hidden-size 17408
+   --num-attention-heads 40
+   --group-query-attention
+   --num-query-groups 8
+   --use-rotary-position-embeddings
+   --disable-bias-linear
+   --normalization "RMSNorm"
+   --norm-epsilon 1e-6
+   --rotary-base 1000000
+   --vocab-size 151936
+   --kv-channels 128
+   --qk-layernorm
+   --untie-embeddings-and-output-weights
+)
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-14B
-   --ref-load /root/Qwen3-14B_torch_dist
-   --load /root/Qwen3-14B_miles/
-   --save /root/Qwen3-14B_miles/
+   --hf-checkpoint /data/Qwen3-14B
+   --ref-load /data/Qwen3-14B_torch_dist
+   --load /data/Qwen3-14B_miles/
+   --save /data/Qwen3-14B_miles/
    --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /data/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -58,7 +71,7 @@ ROLLOUT_ARGS=(
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
+   --eval-prompt-data aime /data/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
@@ -114,30 +127,24 @@ SGLANG_ARGS=(
 )
 
 MISC_ARGS=(
-   # default dropout in megatron is 0.1
    --attention-dropout 0.0
    --hidden-dropout 0.0
-   # should be good for model performance
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
-   # need to comment this when using model with MLA
    --attention-backend flash
 )
 
-# launch the master node of ray in container
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
-# Build the runtime environment JSON with proper variable substitution
-# B300 workaround: disable TP memory imbalance check (#533)
-RUNTIME_ENV_JSON="{
-  \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK\": \"false\"
+RUNTIME_ENV_JSON='{
+  "env_vars": {
+    "PYTHONPATH": "/root/Megatron-LM/",
+    "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+    "NCCL_NVLS_ENABLE": "1",
+    "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"
   }
-}"
+}'
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
@@ -155,3 +162,4 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}
+EOF
