@@ -18,7 +18,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
     model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
-    megatron_model_type: Literal["deepseek-v4-285B", "deepseek-v4-285B-5layer"] = "deepseek-v4-285B"
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
@@ -31,6 +30,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_r3: bool = False
     enable_rir: bool = False
     enable_pp: bool = False
+
+    @property
+    def megatron_model_type(self):
+        return {
+            "DeepSeek-V4-285B": "deepseek-v4-285B",
+            "DeepSeek-V4-285B-5layer": "deepseek-v4-285B-5layer",
+        }
 
 
 _RAW_HF_CKPT_PATH_DICT = {
