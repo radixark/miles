@@ -148,7 +148,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--disable-weights-backuper",
                 action="store_false",
                 dest="enable_weights_backuper",
-                help="Whether to disable weights backuper to save host memory.",
+                help=(
+                    "Applies to `megatron` training backend only. "
+                    "Disables the system that backups model weights (Actor, Ref, Old Actor) to CPU RAM. "
+                    "Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing KL-divergence against a reference model. "
+                    "Note: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
+                ),
             )
             parser.add_argument(
                 "--megatron-to-hf-mode",
@@ -493,10 +498,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_false",
                 dest="rollout_global_dataset",
                 help=(
-                    "Whether to use a global dataset for rollout. "
-                    "If set, the rollout will use the `--prompt-data` as the prompt dataset, "
-                    "and the prompts for rollout will be sampled from the dataset. "
-                    "If not set, you need to manage the data by your self."
+                    "Disable the global dataset for rollout. By default, Miles loads `--prompt-data` into a global dataset and samples from it for rollout. "
+                    "Setting this flag turns off this behavior, Use this flag only when providing a custom `--rollout-function-path` (and usually a custom `--data-source-path`) that handles data loading independently."
                 ),
             )
 
@@ -513,9 +516,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The path to the prompt data. "
                     "Currently we only support jsonl format, and each line should contains --input-key and --label-key, "
-                    "which will be used as the prompt and the label respectively. "
-                    "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
-                    "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
+                    "which will be used as the prompt and the label respectively."
                 ),
             )
             parser.add_argument("--apply-chat-template", action="store_true", default=False)
@@ -585,8 +586,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Balance the number of tokens between data parallel ranks with `karmarkar_karp` for verl. "
-                    "Note that this may allocate the different response of the same prompt into different training steps."
+                    "Repartition each rollout batch so each data-parallel rank gets a similar total token count via Karmarkar-Karp method. "
+                    "It may be beneficial for training speed but changes per-rank sample grouping and adds a small CPU scheduling overhead."
                 ),
             )
 
