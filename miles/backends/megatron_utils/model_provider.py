@@ -196,6 +196,7 @@ def get_model_provider_func(
         if post_process and role == "critic":
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
 
+        print(f"hi [{torch.distributed.get_rank()}] model_provider.py {model=}")
         return model
 
     return model_provider
