@@ -609,6 +609,7 @@ def policy_loss_function(
         batch,
         loss_data=dict(
             pg_loss=pg_loss,
+            pg_clipfrac=pg_clipfrac,
             entropy=entropy,
             ppo_kl=ppo_kl,
             advantages=advantages,
