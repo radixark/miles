@@ -34,6 +34,7 @@ def save_debug_loss_data(args, batch: dict, loss_data: dict):
         microbatch_id=batch["debug_microbatch_offset"],
         rank=rank,
     ))
+    assert not path.exists(), f"Debug loss file already exists: {path}"
     logger.info(f"Save debug loss data to {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
 
