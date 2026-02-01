@@ -50,17 +50,19 @@ def _configure_dumper_for_stage(stage: str):
     if os.environ.get("MILES_TRAIN_DUMPER") != "1":
         return
     import shutil
+    from pathlib import Path
     from sglang.srt.debug_utils.dumper import dumper
     from miles.utils.distributed_utils import get_gloo_group
-    stage_dir = f"/tmp/miles_dump/{stage}"
+    dumper._base_dir = Path("/tmp/miles_dump")
+    dumper._partial_name = stage
+    stage_dir = dumper._base_dir / f"sglang_dump_{dumper._partial_name}"
     if dist.get_rank() == 0 and os.path.exists(stage_dir):
         shutil.rmtree(stage_dir)
         logger.info(f"[Dumper] Removed existing stage_dir={stage_dir}")
     dist.barrier(group=get_gloo_group())
-    dumper.set_base_dir(stage_dir)
     dumper.reset()
     dumper._enable = True
-    logger.info(f"[Dumper] Enabled and configured for stage '{stage}', base_dir={stage_dir}")
+    logger.info(f"[Dumper] Enabled and configured for stage '{stage}', output_dir={stage_dir}")
 
 
 def _disable_dumper():
