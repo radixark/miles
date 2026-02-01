@@ -9,10 +9,11 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
 import ray
 
-from miles.utils.typer_utils import dataclass_cli
 from miles.utils.misc import exec_command
+from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command, dataclass_cli
 

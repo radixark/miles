@@ -258,6 +258,7 @@ class UpdateWeightFromRemote:
 
         self._update_bucket_weights_from_remote(converted_hf_tensors, pbar)
 
+
 def post_process_weights(
     restore_weights_before_load: bool,
     post_process_quantization: bool,

@@ -9,13 +9,13 @@ import ray
 import torch
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
-from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt import server_args as server_args_module
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
 from sglang.srt.model_loader import get_model
+from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.model_loader.remote_instance_weight_loader_utils import register_memory_region_v2
 from sglang.srt.server_args import ServerArgs
 from tqdm import tqdm
@@ -159,7 +159,11 @@ class TransferBundle:
         transfer_ready_params = []
         for name, _ in converted_named_tensors:
             mapped_result = self.param_mapper.map(name)
-            mapped, num_shards, num_experts = mapped_result.sglang_name, mapped_result.num_shards, mapped_result.num_local_experts
+            mapped, num_shards, num_experts = (
+                mapped_result.sglang_name,
+                mapped_result.num_shards,
+                mapped_result.num_local_experts,
+            )
             if mapped not in self.params_dict:
                 logger.warning(f"Parameter {mapped} not found in model replica.")
                 continue
