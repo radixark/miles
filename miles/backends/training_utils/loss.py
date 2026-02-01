@@ -18,7 +18,7 @@ from miles.utils.ppo_utils import (
     get_reinforce_plus_plus_baseline_advantages,
     get_reinforce_plus_plus_returns,
 )
-from miles.utils.train_dump_utils import save_debug_loss_data
+from miles.utils.train_dump_utils import loss_data_dumper
 from miles.utils.types import RolloutBatch
 
 from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
@@ -604,7 +604,7 @@ def policy_loss_function(
     entropy = log_probs_and_entropy["entropy"]
     entropy = torch.cat(entropy, dim=0)
 
-    save_debug_loss_data(
+    loss_data_dumper.accumulate(
         args,
         batch,
         loss_data=dict(
