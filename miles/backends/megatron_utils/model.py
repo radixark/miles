@@ -588,6 +588,7 @@ def train(
             num_microbatches[step_id],
             parallel_state,
         )
+        logger.info(f"hi [rank={torch.distributed.get_rank()}] train_one_step {loss_dict=}")
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
