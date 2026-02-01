@@ -138,7 +138,7 @@ def train(args: ScriptArgs):
         "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         # ------------
-        "--num-steps-per-rollout 4 "
+        "--num-steps-per-rollout 1 "
         "--balance-data "
     )
 
