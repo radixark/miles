@@ -128,10 +128,8 @@ def train(args: ScriptArgs):
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         # TODO enable normal interval after fixing error-when-save issue
-        # "--save-interval 20 "
-        # "--save-retain-interval 20 "
-        "--save-interval 100 "
-        "--save-retain-interval 100 "
+        "--save-interval 20 "
+        "--save-retain-interval 20 "
     )
 
     rollout_args = (
