@@ -134,7 +134,7 @@ def train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 8 "
+        "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         # ------------
@@ -144,7 +144,7 @@ def train(args: ScriptArgs):
 
     if args.mode != "debug_minimal":
         rollout_args += (
-            "--over-sampling-batch-size 256 "
+            "--over-sampling-batch-size 512 "
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
 
@@ -285,18 +285,19 @@ def train(args: ScriptArgs):
             "--use-precision-aware-optimizer "
         )
 
+    sglang_world_size = args.num_gpus_per_node
     sglang_args = (
-        f"--rollout-num-gpus-per-engine {args.num_gpus_per_node} "
+        f"--rollout-num-gpus-per-engine {sglang_world_size} "
 
-        f"--sglang-tp-size {args.num_gpus_per_node} "
-        f"--sglang-dp-size {args.num_gpus_per_node} "
+        f"--sglang-tp-size {sglang_world_size} "
+        f"--sglang-dp-size {sglang_world_size} "
         "--sglang-enable-dp-attention "
 
         # TODO some will be default arguments, some should be updated
         "--sglang-disable-radix-cache "
         "--sglang-attention-backend compressed "
         "--sglang-page-size 256 "
-        "--sglang-max-running-requests 64 "
+        f"--sglang-max-running-requests {16 * sglang_world_size} "
         "--sglang-chunked-prefill-size 8192 "
         # TODO improve this
         # "--sglang-max-total-tokens 100000 "
