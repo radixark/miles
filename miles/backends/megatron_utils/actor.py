@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import socket
 from argparse import Namespace
@@ -43,6 +44,25 @@ from ...utils.transformers_patch import with_transformers_patch
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_dumper_for_stage(stage: str):
+    if os.environ.get("MILES_TRAIN_DUMPER") != "1":
+        return
+    import shutil
+    from sglang.srt.debug_utils.dumper import dumper
+    stage_dir = f"/tmp/miles_dump/{stage}"
+    if os.path.exists(stage_dir):
+        shutil.rmtree(stage_dir)
+        logger.info(f"[Dumper] Removed existing stage_dir={stage_dir}")
+    dumper.set_base_dir(stage_dir)
+    dumper.reset()
+    logger.info(f"[Dumper] Configured for stage '{stage}', base_dir={stage_dir}")
+
+
+def _maybe_exit_after_dump():
+    if os.environ.get("MILES_TRAIN_DUMPER") == "1":
+        raise RuntimeError("[Dumper] Intentional exit after step 0 dump completed")
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -357,6 +377,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with inverse_timer("train_wait"), timer("train"):
             if self.args.compute_advantages_and_returns:
+                _configure_dumper_for_stage("forward_only")
                 if "ref" in self.weights_backuper.backup_tags:
                     self._set_replay_stage("fallthrough")
                     self._switch_model("ref")
@@ -405,6 +426,7 @@ class MegatronTrainRayActor(TrainRayActor):
             log_rollout_data(rollout_id, self.args, rollout_data, self.parallel_state)
 
             # Train
+            _configure_dumper_for_stage("forward_backward")
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
                 train(
@@ -418,6 +440,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
             self.prof.step(rollout_id=rollout_id)
+            _maybe_exit_after_dump()
 
         train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
