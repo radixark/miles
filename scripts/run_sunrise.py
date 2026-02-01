@@ -158,16 +158,17 @@ def train(args: ScriptArgs):
 
     match args.task:
         case "dapo_aime":
-            rollout_args += (
-                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
-                "--input-key prompt "
-                f"--rollout-max-response-len {500 if args.mode == 'debug_minimal' else 8192} "
-            )
-            eval_args += (
-                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
-                "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 8192 "
-            )
+            raise NotImplementedError
+            # rollout_args += (
+            #     f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
+            #     "--input-key prompt "
+            #     f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
+            # )
+            # eval_args += (
+            #     f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+            #     "--n-samples-per-eval-prompt 8 "
+            #     "--eval-max-response-len 8192 "
+            # )
         case "gsm8k":
             rollout_args += (
                 f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
