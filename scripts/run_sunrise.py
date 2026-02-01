@@ -352,7 +352,7 @@ def train(args: ScriptArgs):
         misc_args += "--use-rollout-routing-replay "
     if args.enable_rir:
         misc_args += "--use-rollout-indexer-replay "
-    if args.enable_r3 and args.enable_rir:
+    if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
     train_args = (
