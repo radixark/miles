@@ -31,6 +31,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_rir: bool = False
     enable_pp: bool = False
     optimizer_offload: bool = False
+    debug_train_run_id: str | None = None
+    debug_train_rollout_id: str | None = None
 
     @property
     def megatron_model_type(self):
@@ -351,6 +353,13 @@ def train(args: ScriptArgs):
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+
+    if args.debug_train_run_id is not None:
+        if args.debug_train_rollout_id is None:
+            args.debug_train_rollout_id = 1
+        misc_args += f"--load-debug-rollout-data \
+            /root/shared_data/{args.debug_train_run_id}/dump_details/rollout_data/{args.debug_train_rollout_id}.pt "
+        misc_args += "--debug-train-only "
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
