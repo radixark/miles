@@ -100,6 +100,7 @@ class FunctionStepProfiler:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.start = start
         self.end = end
+        logger.info(f"Profiler initialization: { self.output_dir }")
 
     def wrap(self, fn):
         def _wrapped(*args, **kwargs):
