@@ -9,6 +9,7 @@ import ray
 import torch
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
+from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt import server_args as server_args_module
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
@@ -136,6 +137,7 @@ class TransferBundle:
     engine: TransferEngine
     weight_memory_registry: dict
     remote_weight_infos: list[RemoteWeightInfo]
+    param_mapper: ParameterMapper
     _cached_params_dict: dict = dataclasses.field(default_factory=dict)
     # Local buffer to check for parameter readiness before transfer
     _update_pending: dict[str, int] = dataclasses.field(default_factory=dict)
@@ -156,22 +158,15 @@ class TransferBundle:
     def get_transfer_ready_params(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> list[str]:
         transfer_ready_params = []
         for name, _ in converted_named_tensors:
-            mapped, shard, num_shards, expert, num_experts = self.model_replica.map_weight_name(name)
+            mapped_result = self.param_mapper.map(name)
+            mapped, num_shards, num_experts = mapped_result.sglang_name, mapped_result.num_shards, mapped_result.num_local_experts
             if mapped not in self.params_dict:
                 logger.warning(f"Parameter {mapped} not found in model replica.")
                 continue
 
-            # Calculate total expected contributions for this parameter
-            if num_experts > 0:
-                # Expert weight: need all experts * shard types
-                # For w13_weight (gate+up): shard is "w1" or "w3", multiplier = 2
-                # For w2_weight (down): shard is "w2", multiplier = 1
-                if shard in ("w1", "w3"):
-                    total_expected = num_experts * 2  # Both gate and up projections
-                else:  # "w2"
-                    total_expected = num_experts
+            if num_experts is not None and num_experts > 0:
+                total_expected = num_experts * num_shards
             else:
-                # Non-expert weight: just count shards
                 total_expected = num_shards
 
             if total_expected == 1:
@@ -337,12 +332,13 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                     model_replica = self._create_inference_replica(
                         parallelism_config, self.args.hf_checkpoint, self.session_id_to_server_args[session_id]
                     )
+                    param_mapper = ParameterMapper.from_model(model_replica)
                     print_memory(f"[RDMA] After model replica at {target.engine_rank}")
                     weight_memory_registry = self._register_replica_memory(
                         model_replica, self.remote_weight_infos_by_session_id[session_id][0], transfer_engine
                     )
                     self.engines[target.engine_rank] = TransferBundle(
-                        model_replica, transfer_engine, weight_memory_registry, [remote_info]
+                        model_replica, transfer_engine, weight_memory_registry, [remote_info], param_mapper
                     )
                 else:
                     self.engines[target.engine_rank].add_remote_session(remote_info)
