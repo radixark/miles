@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 
 import numpy as np
@@ -88,6 +89,11 @@ def init(args):
     if args.deterministic_mode:
         if args.rank == 0:
             logger.info("> running in deterministic mode")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=False)
+
+    if bool(int(os.environ.get("MILES_HACK_TRAIN_TORCH_DETERMINISTIC", "0"))):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True, warn_only=False)
