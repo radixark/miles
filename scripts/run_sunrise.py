@@ -347,13 +347,12 @@ def train(args: ScriptArgs):
         "--rollout-health-check-timeout 300 "
     )
 
-    assert args.enable_r3 == args.enable_rir
+    if args.enable_r3:
+        misc_args += "--use-rollout-routing-replay "
+    if args.enable_rir:
+        misc_args += "--use-rollout-indexer-replay "
     if args.enable_r3 and args.enable_rir:
-        misc_args += (
-            "--use-rollout-routing-replay "
-            "--use-rollout-indexer-replay "
-            "--use-miles-router "
-        )
+        misc_args += "--use-miles-router "
 
     train_args = (
         f"{ckpt_args} "
