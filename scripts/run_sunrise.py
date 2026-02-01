@@ -33,6 +33,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     optimizer_offload: bool = False
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
+    train_partial_deterministic: bool = False
 
     @property
     def megatron_model_type(self):
@@ -313,7 +314,7 @@ def train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
-    sglang_extra_env_vars = {
+    extra_env_vars = {
         # TODO this will be default arguments
         "SGLANG_HACK_V4_SET_K_AND_S_BACKEND": "triton",
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
@@ -368,6 +369,14 @@ def train(args: ScriptArgs):
     if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
+    if args.train_partial_deterministic:
+        extra_env_vars |= {
+            "MILES_HACK_TRAIN_TORCH_DETERMINISTIC": "1",
+            "NCCL_ALGO": "Ring",
+            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
+            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        }
+
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -387,7 +396,7 @@ def train(args: ScriptArgs):
         # TODO may get it from `config`
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        extra_env_vars={**sglang_extra_env_vars},
+        extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
     )
 
