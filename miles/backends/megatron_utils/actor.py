@@ -52,9 +52,10 @@ def _configure_dumper_for_stage(stage: str):
     import shutil
     from sglang.srt.debug_utils.dumper import dumper
     stage_dir = f"/tmp/miles_dump/{stage}"
-    if os.path.exists(stage_dir):
+    if dist.get_rank() == 0 and os.path.exists(stage_dir):
         shutil.rmtree(stage_dir)
         logger.info(f"[Dumper] Removed existing stage_dir={stage_dir}")
+    dist.barrier()
     dumper.set_base_dir(stage_dir)
     dumper.reset()
     dumper._enable = True
