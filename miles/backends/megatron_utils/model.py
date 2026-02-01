@@ -368,6 +368,8 @@ def train_one_step(
             args.data_pad_size_multiplier,
             args.qkv_format,
         )
+        batch["debug_rollout_id"] = rollout_id
+        batch["debug_step_id"] = step_id
 
         from miles.utils.replay_base import all_replay_managers
 

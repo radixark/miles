@@ -18,6 +18,7 @@ from miles.utils.ppo_utils import (
     get_reinforce_plus_plus_baseline_advantages,
     get_reinforce_plus_plus_returns,
 )
+from miles.utils.train_dump_utils import save_debug_loss_data
 from miles.utils.types import RolloutBatch
 
 from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
@@ -599,13 +600,26 @@ def policy_loss_function(
     else:
         pg_loss_reducer = sum_of_sample_mean
 
+    # entropy (cat before dump)
+    entropy = log_probs_and_entropy["entropy"]
+    entropy = torch.cat(entropy, dim=0)
+
+    save_debug_loss_data(
+        args,
+        batch,
+        loss_data=dict(
+            pg_loss=pg_loss,
+            entropy=entropy,
+            ppo_kl=ppo_kl,
+            advantages=advantages,
+            log_probs=log_probs,
+            old_log_probs=old_log_probs,
+        ),
+    )
+
     pg_loss = pg_loss_reducer(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
     ppo_kl = sum_of_sample_mean(ppo_kl)
-
-    # entropy loss
-    entropy = log_probs_and_entropy["entropy"]
-    entropy = torch.cat(entropy, dim=0)
     entropy_loss = sum_of_sample_mean(entropy)
 
     loss = pg_loss - args.entropy_coef * entropy_loss
