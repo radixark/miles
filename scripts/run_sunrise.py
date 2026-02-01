@@ -124,8 +124,9 @@ def train(args: ScriptArgs):
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
-        "--save-interval 20 "
-        "--save-retain-interval 20 "
+        # TODO enable this after fixing error-when-save issue
+        # "--save-interval 20 "
+        # "--save-retain-interval 20 "
     )
 
     rollout_args = (
