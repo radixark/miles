@@ -50,7 +50,7 @@ class _LossDataDumper:
         path_template = args.save_debug_loss_data
         path = Path(path_template.format(rollout_id=rollout_id, step_id=step_id, rank=rank))
         assert not path.exists(), f"Debug loss file already exists: {path}"
-        logger.info(f"Save debug loss data to {path} ({len(self._buffer)} microbatches)")
+        logger.info(f"Save debug loss data to {path} start ({len(self._buffer)} microbatches)")
         path.parent.mkdir(parents=True, exist_ok=True)
 
         torch.save(
@@ -58,6 +58,7 @@ class _LossDataDumper:
             path,
         )
         self._buffer.clear()
+        logger.info(f"Save debug loss data end")
 
 
 def _assert_all_equal(values: list):
