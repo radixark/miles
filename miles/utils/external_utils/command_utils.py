@@ -111,6 +111,9 @@ def execute_train(
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
+    print("HACK: disable RAY_DEDUP_LOGS")
+    os.environ["RAY_DEDUP_LOGS"] = "0"
+
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
