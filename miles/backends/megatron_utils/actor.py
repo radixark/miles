@@ -57,7 +57,16 @@ def _configure_dumper_for_stage(stage: str):
         logger.info(f"[Dumper] Removed existing stage_dir={stage_dir}")
     dumper.set_base_dir(stage_dir)
     dumper.reset()
-    logger.info(f"[Dumper] Configured for stage '{stage}', base_dir={stage_dir}")
+    dumper._enable = True
+    logger.info(f"[Dumper] Enabled and configured for stage '{stage}', base_dir={stage_dir}")
+
+
+def _disable_dumper():
+    if os.environ.get("MILES_TRAIN_DUMPER") != "1":
+        return
+    from sglang.srt.debug_utils.dumper import dumper
+    dumper._enable = False
+    logger.info("[Dumper] Disabled")
 
 
 def _maybe_exit_after_dump():
@@ -415,6 +424,8 @@ class MegatronTrainRayActor(TrainRayActor):
                     )
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
+
+                _disable_dumper()
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
                 # because we may need normalize the whole rollout.
