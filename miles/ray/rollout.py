@@ -233,12 +233,11 @@ class RolloutManager:
                 weights_only=False,
             )["samples"]
             data = [Sample.from_dict(sample) for sample in data]
-            if (ratio := self.args.load_debug_rollout_data_subsample) is not None:
-                original_num_rows = len(data)
-                rough_subsample_num_rows = int(original_num_rows * ratio)
-                data = data[: rough_subsample_num_rows // 2] + data[-rough_subsample_num_rows // 2 :]
+            if (subsample_value := self.args.load_debug_rollout_data_subsample) is not None:
+                assert subsample_value == "first"
+                data = data[:1]
                 logger.info(
-                    f"Subsample loaded debug rollout data using {ratio=} and change num rows {original_num_rows} -> {len(data)}"
+                    f"Subsample loaded debug rollout data using {subsample_value=} and change num rows -> {len(data)}"
                 )
             metrics = None
         else:
