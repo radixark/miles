@@ -57,6 +57,7 @@ class RayTrainGroup:
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
             **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
             **self.args.train_env_vars,
+            **({"SGLANG_ENABLE_DUMPER": "1"} if os.environ.get("MILES_TRAIN_DUMPER") == "1" else {}),
         }
 
         if self.args.offload_train and self.args.train_backend == "megatron":
