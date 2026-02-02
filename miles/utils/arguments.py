@@ -1149,6 +1149,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
             )
             parser.add_argument(
+                "--profile-activities",
+                type=str,
+                choices=["CPU", "GPU"],
+                default=["CPU", "GPU"],
+                nargs="+",
+                help="Activities to profile. Default: CPU GPU.",
+            )
+            parser.add_argument(
                 "--memory-recorder",
                 type=str,
                 choices=["torch", "memray"],
