@@ -226,6 +226,20 @@ def train(args: ScriptArgs):
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
+    elif args.num_nodes <= 8:
+        perf_args = (
+            "--tensor-model-parallel-size 8 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 8 "
+            "--decoder-first-pipeline-num-layers 8 "
+            "--decoder-last-pipeline-num-layers 5 "
+            # NOTE: context-parallel is not supported yet
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 8 "
+            "--expert-tensor-parallel-size 1 "
+        )
+    else:
+        raise NotImplementedError
     # TODO
     # elif args.num_nodes <= 4:
     #     # TODO remove this temp cfg
