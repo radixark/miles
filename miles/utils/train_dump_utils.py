@@ -1,4 +1,5 @@
 import logging
+import time
 from pathlib import Path
 
 import torch
@@ -49,7 +50,9 @@ class _LossDataDumper:
 
         path_template = args.save_debug_loss_data
         path = Path(path_template.format(rollout_id=rollout_id, step_id=step_id, rank=rank))
-        assert not path.exists(), f"Debug loss file already exists: {path}"
+        if path.exists():
+            moved_path = path.with_name(f"{path.name}.mv_at_{int(time.time() * 1000)}")
+            path.rename(moved_path)
         logger.info(f"Save debug loss data to {path} start ({len(self._buffer)} microbatches)")
         path.parent.mkdir(parents=True, exist_ok=True)
 
