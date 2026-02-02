@@ -386,6 +386,10 @@ def train(args: ScriptArgs):
     if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
+    extra_env_vars |= {
+        "MEGATRON_HACK_SKIP_SAVE_THEN_IMMEDIATE_LOAD_STATE_DICT": "1",
+    }
+
     if args.train_partial_deterministic:
         extra_env_vars |= {
             "MILES_HACK_TRAIN_TORCH_DETERMINISTIC": "1",
