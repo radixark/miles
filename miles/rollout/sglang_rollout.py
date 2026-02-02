@@ -2,6 +2,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import os
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -28,6 +29,39 @@ from .rm_hub import async_rm, batched_async_rm
 __all__ = ["generate_rollout"]
 
 logger = logging.getLogger(__name__)
+
+_INFERENCE_DUMPER_FIRST_ROLLOUT = True
+
+
+async def _maybe_reset_inference_dumper(args):
+    if os.environ.get("MILES_INFERENCE_DUMPER") != "1":
+        return
+
+    global _INFERENCE_DUMPER_FIRST_ROLLOUT
+    if not _INFERENCE_DUMPER_FIRST_ROLLOUT:
+        return
+    _INFERENCE_DUMPER_FIRST_ROLLOUT = False
+
+    urls = await _get_worker_urls(args)
+    dumper_urls = [_to_dumper_url(url) for url in urls]
+    logger.info(f"[InferenceDumper] Resetting dumper on {dumper_urls}")
+    await asyncio.gather(*[post(f"{url}/dumper", {"reset": True, "enable": True}) for url in dumper_urls])
+
+
+async def _get_worker_urls(args):
+    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
+        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
+        return response["urls"]
+    else:
+        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+        return [worker["url"] for worker in response["workers"]]
+
+
+def _to_dumper_url(worker_url: str) -> str:
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(worker_url)
+    return urlunparse(parsed._replace(port=40000))
 
 
 class GenerateState(metaclass=SingletonMeta):
@@ -347,6 +381,8 @@ async def generate_rollout_async(
             - aborted_samples: any partial groups collected during abort when partial_rollout is enabled
     """
     assert args.rollout_global_dataset
+
+    await _maybe_reset_inference_dumper(args)
 
     state = GenerateState(args)
 
