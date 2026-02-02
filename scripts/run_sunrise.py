@@ -307,7 +307,8 @@ def train(args: ScriptArgs):
         "--sglang-chunked-prefill-size 8192 "
         # TODO improve this
         # if not specify this will oom at single h200, not sure why
-        "--sglang-max-total-tokens 100000 "
+        # NOTE: *cannot* enable this on 48gpu H200, o/w get negative pool size
+        # "--sglang-max-total-tokens 100000 "
 
         "--sglang-server-concurrency 1024 "
         "--router-health-success-threshold 1 "
