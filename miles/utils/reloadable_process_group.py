@@ -141,14 +141,6 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
                     f"Process group already invalid/destroyed; skipping cleanup. Exception: {e}",
                     exc_info=True,
                 )
-                # On ROCm the PG would be missing from torch._world maps, which prevents 
-                # destroy_process_group from calling shutdown() and lead to memory leak.
-                # Call shutdown directly so communicators can still be torn down.
-                try:
-                    if hasattr(reloadable_group.group, "shutdown"):
-                        reloadable_group.group.shutdown()
-                except Exception:
-                    logger.exception("Fallback shutdown for process group failed; continuing cleanup.")
 
             del reloadable_group.group
             reloadable_group.group = None
