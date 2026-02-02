@@ -10,10 +10,8 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
-from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -206,11 +204,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-function-path",
                 type=str,
-                default=(
-                    "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-                    if enable_experimental_rollout_refactor()
-                    else "miles.rollout.sglang_rollout.generate_rollout"
-                ),
+                default="miles.rollout.sglang_rollout.generate_rollout",
                 help=(
                     "Path to the rollout generation function."
                     "You should use this model to create your own custom rollout function, "
@@ -1022,7 +1016,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Log statistics of the category of reward, such as why the reward function considers it as failed. "
-                    "Specify the key in the reward dict using this argument."
+                    "Specify the key in the reward dict using this argument.",
                 ),
             )
             parser.add_argument(
@@ -1350,20 +1344,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_user_provided_function_arguments(parser):
-            args_partial, _ = parser.parse_known_args()
-            for path in [
-                args_partial.rollout_function_path,
-                args_partial.custom_generate_function_path,
-            ]:
-                try:
-                    fn = load_function(path)
-                except (ModuleNotFoundError, ValueError):
-                    continue
-                if fn is not None and callable(getattr(fn, "add_arguments", None)):
-                    fn.add_arguments(parser)
-            return parser
-
         def add_sglang_tp_size():
             temp_parser = argparse.ArgumentParser(add_help=False)
             temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
@@ -1394,8 +1374,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
-        if enable_experimental_rollout_refactor():
-            parser = add_user_provided_function_arguments(parser)
         reset_arg(
             parser,
             "--custom-config-path",
@@ -1438,8 +1416,6 @@ def parse_args(add_custom_arguments=None):
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
-        assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
-
     miles_validate_args(args)
 
     if backend == "megatron":
@@ -1453,6 +1429,12 @@ def parse_args(add_custom_arguments=None):
                 "please use alltoall dispatcher instead."
             )
             args.moe_token_dispatcher_type = "alltoall"
+
+        if args.pipeline_model_parallel_size == 1:
+            assert args.decoder_first_pipeline_num_layers is None and args.decoder_last_pipeline_num_layers is None, (
+                "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
+                "pipeline_model_parallel_size is 1."
+            )
 
     sglang_validate_args(args)
 
