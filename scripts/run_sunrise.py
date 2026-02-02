@@ -31,6 +31,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_rir: bool = False
     enable_pp: bool = False
     optimizer_offload: bool = False
+    use_fault_tolerance: bool = True
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
     train_partial_deterministic: bool = False
@@ -341,7 +342,6 @@ def train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
         "--disable-weights-backuper "
         "--model-name deepseekv4 "  # for mbridge load
@@ -354,6 +354,9 @@ def train(args: ScriptArgs):
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+
+    if args.use_fault_tolerance:
+        misc_args += "--use-fault-tolerance "
 
     if args.debug_train_run_id is not None:
         if args.debug_train_rollout_id is None:
