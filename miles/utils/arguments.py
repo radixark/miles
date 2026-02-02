@@ -1084,7 +1084,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--load-debug-rollout-data-subsample",
-                type=str,
+                type=float,
                 default=None,
                 help="Subsample a portion of the debug rollout data for faster debugging.",
             )
