@@ -29,6 +29,7 @@ class TrainProfiler:
 
     def step(self, rollout_id: int):
         if self._torch_profiler_overall is not None:
+            print(f"hi [{torch.distributed.get_rank()}] call torch_profiler_overall.step")
             self._torch_profiler_overall.step()
 
         if (
@@ -46,14 +47,17 @@ class TrainProfiler:
 
 
 def _profile_simple_loop(iterator, args, name):
+    print(f"hi [{torch.distributed.get_rank()}] _profile_simple_loop {name=}")
     if not (args.use_pytorch_profiler and (name in args.profile_target)):
         yield from iterator
         return
 
+    print(f"hi [{torch.distributed.get_rank()}] _profile_simple_loop _create_torch_profiler")
     torch_profiler = _create_torch_profiler(args, name=name)
     torch_profiler.start()
     for item in iterator:
         yield item
+        print(f"hi [{torch.distributed.get_rank()}] _profile_simple_loop profiler.step")
         torch_profiler.step()
 
 
