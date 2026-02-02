@@ -322,6 +322,41 @@ def _split_gated_pair_name(name: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _collect_shared_global_amax(
+    *,
+    input_path: str,
+    safetensors_files: list[str],
+    device: str,
+    skip_layers: set[int],
+) -> dict[str, torch.Tensor]:
+    """Collect shared gate/up amax across all shards to keep w1/w3 scales equal."""
+    gate_amax: dict[str, torch.Tensor] = {}
+    up_amax: dict[str, torch.Tensor] = {}
+    for filename in safetensors_files:
+        with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
+            for key in f.keys():
+                tensor = f.get_tensor(key)
+                if not should_quantize(key, tensor, skip_layers):
+                    continue
+                base, role = _split_gated_pair_name(key)
+                if base is None or role is None:
+                    continue
+                amax = tensor.abs().max().to(torch.float32)
+                if role == "gate":
+                    prev = gate_amax.get(base)
+                    gate_amax[base] = amax if prev is None else torch.max(prev, amax)
+                elif role == "up":
+                    prev = up_amax.get(base)
+                    up_amax[base] = amax if prev is None else torch.max(prev, amax)
+                else:
+                    continue
+
+    shared_global_amax: dict[str, torch.Tensor] = {}
+    for base in gate_amax.keys() & up_amax.keys():
+        shared_global_amax[base] = torch.max(gate_amax[base], up_amax[base])
+    return shared_global_amax
+
+
 def process_file(
     input_path: str,
     output_path: str,
@@ -329,44 +364,31 @@ def process_file(
     result_collector: ConversionResult,
     device: str,
     skip_layers: set[int],
+    shared_global_amax: dict[str, torch.Tensor],
 ) -> None:
     if not filename.endswith(".safetensors"):
         return
 
-    weights: dict[str, torch.Tensor] = {}
+    modules_to_not_convert: list[str] = []
     q_weights: dict[str, torch.Tensor] = {}
 
     with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
         for key in f.keys():
-            weights[key] = f.get_tensor(key)
-
-    modules_to_not_convert: list[str] = []
-    shared_global_amax: dict[str, torch.Tensor] = {}
-    gated_candidates: dict[str, dict[str, torch.Tensor]] = {}
-    for key, tensor in weights.items():
-        base, role = _split_gated_pair_name(key)
-        if base is None or role is None:
-            continue
-        if should_quantize(key, tensor, skip_layers):
-            gated_candidates.setdefault(base, {})[role] = tensor
-    for base, roles in gated_candidates.items():
-        if "gate" in roles and "up" in roles:
-            gate_amax = roles["gate"].abs().max().to(torch.float32)
-            up_amax = roles["up"].abs().max().to(torch.float32)
-            shared_global_amax[base] = torch.max(gate_amax, up_amax)
-    for key, tensor in weights.items():
-        if should_quantize(key, tensor, skip_layers):
-            base, role = _split_gated_pair_name(key)
-            global_amax = shared_global_amax.get(base) if base else None
-            qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor, global_amax=global_amax)
-            q_weights[key] = qweight
-            q_weights[key.replace(".weight", ".weight_scale")] = block_scale
-            q_weights[key.replace(".weight", ".weight_scale_2")] = weight_scale_2
-            q_weights[key.replace(".weight", ".input_scale")] = torch.ones_like(weight_scale_2, dtype=torch.float32)
-        else:
-            if key.endswith(".weight"):
-                modules_to_not_convert.append(key.replace(".weight", ""))
-            q_weights[key] = tensor
+            tensor = f.get_tensor(key)
+            if should_quantize(key, tensor, skip_layers):
+                base, _role = _split_gated_pair_name(key)
+                global_amax = shared_global_amax.get(base) if base else None
+                qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor, global_amax=global_amax)
+                q_weights[key] = qweight
+                q_weights[key.replace(".weight", ".weight_scale")] = block_scale
+                q_weights[key.replace(".weight", ".weight_scale_2")] = weight_scale_2
+                q_weights[key.replace(".weight", ".input_scale")] = torch.ones_like(
+                    weight_scale_2, dtype=torch.float32
+                )
+            else:
+                if key.endswith(".weight"):
+                    modules_to_not_convert.append(key.replace(".weight", ""))
+                q_weights[key] = tensor
 
     safetensors.torch.save_file(q_weights, os.path.join(output_path, filename), metadata={"format": "pt"})
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
@@ -387,6 +409,12 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int) 
     skip_layers = _get_last_n_layer_ids(num_layers, keep_last_n)
     keep_last_ignore = _build_keep_last_n_ignore_list(num_layers, keep_last_n)
 
+    shared_global_amax = _collect_shared_global_amax(
+        input_path=input_path,
+        safetensors_files=safetensors_files,
+        device=device,
+        skip_layers=skip_layers,
+    )
     result_collector = ConversionResult()
     for filename in tqdm(safetensors_files, desc="Processing files"):
         process_file(
@@ -396,6 +424,7 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int) 
             result_collector,
             device,
             skip_layers,
+            shared_global_amax,
         )
         gc.collect()
         if torch.cuda.is_available():
