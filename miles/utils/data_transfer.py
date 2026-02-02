@@ -1,5 +1,7 @@
 import logging
 import pickle
+import ctypes
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -150,21 +152,79 @@ class MooncakeDataTransfer(DataTransferBackend):
             raise
 
     def put(self, data: Any) -> Any:
+        """
+        Store data using zero-copy put_from.
+        """
+        # Serialize data to bytes
         serialized_data = pickle.dumps(data)
+        data_size = len(serialized_data)
         
-        import uuid
+        # Generate unique key
         key = f"rollout_data_{uuid.uuid4().hex}"
         
-        self.store.put(key, serialized_data)
+        # Allocate buffer with some extra space for safety
+        buffer_size = data_size + 1024  # Extra 1KB padding
+        buffer = (ctypes.c_ubyte * buffer_size)()
+        buffer_ptr = ctypes.addressof(buffer)
+        
+        # Copy serialized data to buffer
+        ctypes.memmove(buffer, serialized_data, data_size)
+        
+        # Register buffer for zero-copy operations
+        result = self.store.register_buffer(buffer_ptr, buffer_size)
+        if result != 0:
+            raise RuntimeError(f"Failed to register buffer for put_from: {result}")
+        
+        try:
+            # Zero-copy put using put_from
+            result = self.store.put_from(key, buffer_ptr, data_size)
+            if result != 0:
+                raise RuntimeError(f"put_from failed with code: {result}")
+        finally:
+            # Unregister buffer
+            self.store.unregister_buffer(buffer_ptr)
+        
         return key
 
-    def get(self, handle: Any) -> Any:        
+    def get(self, handle: Any) -> Any:
+        """
+        Retrieve data using zero-copy get_into.
+        """
         key = handle
-        serialized_data = self.store.get(key)
-        if serialized_data is None:
-            raise ValueError(f"Data not found in Mooncake for key: {key}")
+        
+        # Get data size first
+        data_size = self.store.get_size(key)
+        if data_size < 0:
+            raise ValueError(f"Data not found in Mooncake for key: {key}, error code: {data_size}")
+        
+        # Allocate buffer with some extra space for safety
+        buffer_size = data_size + 1024  # Extra 1KB padding
+        buffer = (ctypes.c_ubyte * buffer_size)()
+        buffer_ptr = ctypes.addressof(buffer)
+        
+        # Register buffer for zero-copy operations
+        result = self.store.register_buffer(buffer_ptr, buffer_size)
+        if result != 0:
+            raise RuntimeError(f"Failed to register buffer for get_into: {result}")
+        
+        try:
+            # Zero-copy get using get_into
+            bytes_read = self.store.get_into(key, buffer_ptr, buffer_size)
+            if bytes_read < 0:
+                raise RuntimeError(f"get_into failed with code: {bytes_read}")
+            if bytes_read != data_size:
+                raise RuntimeError(
+                    f"Data size mismatch: expected {data_size} bytes, got {bytes_read} bytes"
+                )
             
-        return pickle.loads(serialized_data)
+            # Extract data from buffer
+            serialized_data = bytes(buffer[:bytes_read])
+            
+            # Deserialize and return
+            return pickle.loads(serialized_data)
+        finally:
+            # Unregister buffer
+            self.store.unregister_buffer(buffer_ptr)
 
     def clear(self) -> None:
         self.store.remove_all()
