@@ -58,10 +58,8 @@ async def _get_worker_urls(args):
 
 
 def _to_dumper_url(worker_url: str) -> str:
-    from urllib.parse import urlparse, urlunparse
-
-    parsed = urlparse(worker_url)
-    return urlunparse(parsed._replace(port=40000))
+    import re
+    return re.sub(r":\d+", ":40000", worker_url)
 
 
 class GenerateState(metaclass=SingletonMeta):
