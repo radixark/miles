@@ -34,6 +34,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
     train_partial_deterministic: bool = False
+    fp8_training: bool = False
 
     @property
     def megatron_model_type(self):
@@ -154,7 +155,7 @@ def train(args: ScriptArgs):
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
-    if args.enable_eval:
+    if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += "--eval-interval 20 " "--eval-top-p 0.7 "
 
     match args.task:
@@ -196,11 +197,11 @@ def train(args: ScriptArgs):
             )
         else:
             perf_args = (
-                "--tensor-model-parallel-size 4 "
+                f"--tensor-model-parallel-size {args.num_gpus_per_node} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
-                "--expert-model-parallel-size 4 "
+                f"--expert-model-parallel-size {args.num_gpus_per_node} "
                 "--expert-tensor-parallel-size 1 "
             )
     elif args.num_nodes <= 4:
@@ -305,7 +306,8 @@ def train(args: ScriptArgs):
         f"--sglang-max-running-requests {16 * sglang_world_size} "
         "--sglang-chunked-prefill-size 8192 "
         # TODO improve this
-        # "--sglang-max-total-tokens 100000 "
+        # if not specify this will oom at single h200, not sure why
+        "--sglang-max-total-tokens 100000 "
 
         "--sglang-server-concurrency 1024 "
         "--router-health-success-threshold 1 "
@@ -373,6 +375,17 @@ def train(args: ScriptArgs):
             "NCCL_ALGO": "Ring",
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        }
+    
+    if args.fp8_training:
+        misc_args += (
+            "--transformer-impl transformer_engine "
+            "--bf16 "
+            "--fp8-format e4m3 "
+            "--fp8-recipe blockwise "
+        )
+        extra_env_vars |= {
+            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
         }
 
     train_args = (
