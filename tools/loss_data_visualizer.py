@@ -1,3 +1,21 @@
+"""
+Loss data visualization tool for analyzing loss data (.pt files) saved during miles-sunrise RL training.
+
+CLI subcommands:
+
+1. info - View data file information
+   uv run python tools/loss_data_visualizer.py info <data_path> --rollout-id 0 --step-id 0 --rank 0
+
+2. distribution - Visualize loss distribution (histograms in linear + log scale)
+   uv run python tools/loss_data_visualizer.py distribution <data_path> --rollout-id 0 --step-id 0 --save-path metrics_distribution.png
+
+3. train_infer_diff - Compare training vs inference log prob differences
+   uv run python tools/loss_data_visualizer.py train_infer_diff <data_path> --rollout-id 0 --step-id 0 --save-path train_infer_diff.png
+
+Data file format:
+- Filename: {rollout_id}_{step_id}_{rank}.pt
+- Structure: {"microbatches": [{"microbatch_offset": int, "loss_data": {...}, "batch": {...}}, ...]}
+"""
 import glob
 import math
 import re
