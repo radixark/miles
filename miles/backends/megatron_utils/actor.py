@@ -55,7 +55,7 @@ def _configure_dumper_for_stage(stage: str):
     from pathlib import Path
     from sglang.srt.debug_utils.dumper import dumper
     from miles.utils.distributed_utils import get_gloo_group
-    dumper._base_dir = Path("/tmp/miles_dump")
+    dumper._base_dir = Path(os.environ.get("SGLANG_DUMPER_DIR", "/tmp/miles_dump"))
     dumper._partial_name = stage
     stage_dir = dumper._base_dir / f"sglang_dump_{dumper._partial_name}"
     if dist.get_rank() == 0 and os.path.exists(stage_dir):

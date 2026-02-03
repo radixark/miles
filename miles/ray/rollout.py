@@ -522,7 +522,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
         }
         if os.environ.get("MILES_INFERENCE_DUMPER") == "1":
             env_vars["SGLANG_DUMPER_SERVER_PORT"] = "40000"
-            env_vars["SGLANG_DUMPER_DIR"] = "/tmp/miles_dump"
+            env_vars["SGLANG_DUMPER_DIR"] = os.environ.get("SGLANG_DUMPER_DIR", "/tmp/miles_dump")
             env_vars["SGLANG_DUMPER_PARTIAL_NAME"] = "inference"
 
         worker_type = "regular"
