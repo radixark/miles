@@ -57,9 +57,17 @@ async def _get_worker_urls(args):
         return [worker["url"] for worker in response["workers"]]
 
 
+_DUMPER_PORT_OFFSET = 2000
+
+
 def _to_dumper_url(worker_url: str) -> str:
     import re
-    return re.sub(r":\d+", ":40000", worker_url)
+    match = re.search(r":(\d+)", worker_url)
+    if match:
+        server_port = int(match.group(1))
+        dumper_port = server_port + _DUMPER_PORT_OFFSET
+        return re.sub(r":\d+", f":{dumper_port}", worker_url)
+    return worker_url
 
 
 class GenerateState(metaclass=SingletonMeta):

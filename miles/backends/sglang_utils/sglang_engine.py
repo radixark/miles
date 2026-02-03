@@ -149,6 +149,10 @@ class SGLangEngine(RayActor):
         self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
 
+        if os.environ.get("MILES_INFERENCE_DUMPER") == "1":
+            from miles.rollout.sglang_rollout import _DUMPER_PORT_OFFSET
+            os.environ["SGLANG_DUMPER_SERVER_PORT"] = str(self.server_port + _DUMPER_PORT_OFFSET)
+
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
         else:
