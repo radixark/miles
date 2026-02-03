@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 def _configure_dumper_for_stage(stage: str):
     if os.environ.get("MILES_TRAIN_DUMPER") != "1":
         return
+    if stage == "forward_only" and os.environ.get("MILES_TRAIN_FORWARD_DUMPER") == "0":
+        return
     import shutil
     from pathlib import Path
     from sglang.srt.debug_utils.dumper import dumper
