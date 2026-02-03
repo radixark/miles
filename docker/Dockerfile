@@ -39,7 +39,7 @@ RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
 # TE does not have wheel on cuda 13 yet, thus need to install from source
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install nvidia-mathdx==26.6.0 && \
+      pip install nvidia-mathdx==25.6.0 && \
       pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.10; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
