@@ -199,14 +199,15 @@ def train_infer_diff(
 
     group_items = list(groups.items())[:max_groups]
     n_groups = len(group_items)
-    cols = min(3, n_groups)
-    rows = math.ceil(n_groups / cols)
+    group_cols = min(3, n_groups)
+    group_rows = math.ceil(n_groups / group_cols)
 
-    fig = plt.figure(figsize=(6 * cols, 4 * rows + 12))
-    gs = fig.add_gridspec(rows + 1, cols, height_ratios=[1] * rows + [3])
+    fig = plt.figure(figsize=(18, 4 * group_rows + 10))
+    gs = fig.add_gridspec(group_rows + 1, 2, height_ratios=[1] * group_rows + [2.5])
 
+    gs_groups = gs[:group_rows, :].subgridspec(group_rows, group_cols, hspace=0.3, wspace=0.3)
     for idx, (prompt, group) in enumerate(group_items):
-        ax = fig.add_subplot(gs[idx // cols, idx % cols])
+        ax = fig.add_subplot(gs_groups[idx // group_cols, idx % group_cols])
         for i, s in enumerate(group):
             diff = np.abs(s["log_probs"] - s["rollout_log_probs"])
             ax.plot(diff, alpha=0.7, label=f"sample {i}")
@@ -217,17 +218,19 @@ def train_infer_diff(
 
     all_train_logp = np.concatenate([s["log_probs"] for s in samples])
     all_rollout_logp = np.concatenate([s["rollout_log_probs"] for s in samples])
+    abs_diff = np.abs(all_train_logp - all_rollout_logp)
     axis_range = (-30, 0)
+    n_bins = 60
 
-    gs_joint = gs[rows, :].subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], hspace=0.05, wspace=0.05)
+    gs_scatter = gs[group_rows, 0].subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], hspace=0.05, wspace=0.05)
 
-    ax_hist_x = fig.add_subplot(gs_joint[0, 0])
-    ax_hist_x.hist(all_train_logp, bins=80, alpha=0.7, edgecolor='none', range=axis_range)
+    ax_hist_x = fig.add_subplot(gs_scatter[0, 0])
+    ax_hist_x.hist(all_train_logp, bins=n_bins, alpha=0.7, edgecolor='none', range=axis_range)
     ax_hist_x.set_xlim(axis_range)
     ax_hist_x.set_title(f"Train vs Rollout log prob (n={len(all_train_logp)})")
     ax_hist_x.tick_params(labelbottom=False)
 
-    ax_scatter = fig.add_subplot(gs_joint[1, 0])
+    ax_scatter = fig.add_subplot(gs_scatter[1, 0])
     ax_scatter.scatter(all_train_logp, all_rollout_logp, alpha=0.3, s=1)
     ax_scatter.plot(axis_range, axis_range, 'r--', linewidth=1, label='y=x')
     ax_scatter.set_xlim(axis_range)
@@ -237,10 +240,23 @@ def train_infer_diff(
     ax_scatter.legend()
     ax_scatter.set_aspect('equal', adjustable='box')
 
-    ax_hist_y = fig.add_subplot(gs_joint[1, 1])
-    ax_hist_y.hist(all_rollout_logp, bins=80, alpha=0.7, orientation='horizontal', edgecolor='none', range=axis_range)
+    ax_hist_y = fig.add_subplot(gs_scatter[1, 1])
+    ax_hist_y.hist(all_rollout_logp, bins=n_bins, alpha=0.7, orientation='horizontal', edgecolor='none', range=axis_range)
     ax_hist_y.set_ylim(axis_range)
     ax_hist_y.tick_params(labelleft=False)
+
+    ax_heatmap = fig.add_subplot(gs[group_rows, 1])
+    h, xedges, yedges = np.histogram2d(all_train_logp, all_rollout_logp, bins=n_bins, range=[axis_range, axis_range])
+    sum_diff, _, _ = np.histogram2d(all_train_logp, all_rollout_logp, bins=n_bins, range=[axis_range, axis_range], weights=abs_diff)
+    sum_diff_pct = sum_diff / abs_diff.sum() * 100
+    im = ax_heatmap.imshow(sum_diff_pct.T, origin='lower', extent=[*axis_range, *axis_range], aspect='equal', cmap='hot')
+    ax_heatmap.plot(axis_range, axis_range, 'c--', linewidth=1, label='y=x')
+    ax_heatmap.set_xlabel("Train log prob")
+    ax_heatmap.set_ylabel("Rollout log prob")
+    ax_heatmap.set_title(f"Sum |diff| contribution % (total={abs_diff.sum():.2f})")
+    ax_heatmap.legend()
+    cbar = fig.colorbar(im, ax=ax_heatmap, shrink=0.8)
+    cbar.set_label("% of total |diff|")
 
     plt.tight_layout()
     if save_path:
