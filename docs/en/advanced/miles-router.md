@@ -1,12 +1,12 @@
 # Miles Router
 
-miles includes an optional MilesRouter used during rollout / data generation. It is a lightweight HTTP router/proxy that sits in front of one or more SGLang worker servers and adds training-oriented capabilities that are not the main goal of serving-focused routers.
+miles includes an optional Miles Router used during rollout / data generation. It is a lightweight HTTP router/proxy that sits in front of one or more SGLang worker servers and adds training-oriented capabilities that are not the main goal of serving-focused routers.
 
 ---
 
-## 1. What is MilesRouter?
+## 1. What is Miles Router?
 
-MilesRouter is a small FastAPI service that:
+Miles Router is a small FastAPI service that:
 
 - Registers workers (SGLang HTTP servers) into a local pool
 - Routes requests to a selected worker (simple least-inflight load balancing)
@@ -20,14 +20,14 @@ In miles's architecture, the router is part of the rollout system ("SGLang + rou
 
 In distributed training, miles will start a router automatically when `--sglang-router-ip` is not provided:
 
-- If `--use-miles-router` is set, miles starts MilesRouter
+- If `--use-miles-router` is set, miles starts Miles Router
 - Otherwise, miles starts SGLang Model Gateway
 
 ---
 
-## 2. Why we need MilesRouter
+## 2. Why we need Miles Router
 
-Unlike production inference, RL rollout needs to capture additional metadata for training: token-level logprobs, loss masks, and (for MoE models) expert routing decisions. MilesRouter provides these capabilities through its middleware system and passthrough proxy design.
+Unlike production inference, RL rollout needs to capture additional metadata for training: token-level logprobs, loss masks, and (for MoE models) expert routing decisions. Miles Router provides these capabilities through its middleware system and passthrough proxy design.
 
 ### 2.1 Radix-tree cache (transparent token management)
 
@@ -68,19 +68,19 @@ miles consumes the routing data and replays it during training:
 - Training calls `fill_routing_replay()` to load routing data into `RoutingReplay` objects
 - During forward pass, recorded routing decisions are replayed instead of recomputed
 
-#### Why MilesRouter is needed
+#### Why Miles Router is needed
 
-We need MilesRouter because the SGLang worker returns routed experts in the response (`meta_info.routed_experts`) when the request sets `return_routed_experts=true`, and MilesRouter preserves this field end-to-end. SGLang Model Gateway may drop this extra metadata when it reconstructs responses with a fixed schema (see section 3).
+We need Miles Router because the SGLang worker returns routed experts in the response (`meta_info.routed_experts`) when the request sets `return_routed_experts=true`, and Miles Router preserves this field end-to-end. SGLang Model Gateway may drop this extra metadata when it reconstructs responses with a fixed schema (see section 3).
 
 ---
 
 ## 3. Differences vs SGLang Model Gateway
 
-MilesRouter and SGLang Model Gateway can both route requests to workers, but they are optimized for different goals.
+Miles Router and SGLang Model Gateway can both route requests to workers, but they are optimized for different goals.
 
 ### Key differences
 
-MilesRouter is a lightweight Python/FastAPI proxy that acts as a passthrough to SGLang workers. This passthrough design enables RL-specific features like radix-tree trajectory caching and R3 (which require preserving raw response metadata like `routed_experts`).
+Miles Router is a lightweight Python/FastAPI proxy that acts as a passthrough to SGLang workers. This passthrough design enables RL-specific features like radix-tree trajectory caching and R3 (which require preserving raw response metadata like `routed_experts`).
 
 SGLang Model Gateway is a high-performance Rust-based router optimized for large-scale inference: async non-blocking routing, advanced fault tolerance (retries, circuit breakers), multiple load balancing policies (including cache-aware routing), and PD disaggregation support. However, it reconstructs responses with a fixed schema, so it does not preserve the metadata needed for miles's R3 flow.
 
@@ -88,6 +88,6 @@ For more details on SGLang Model Gateway, see the [official documentation](https
 
 ### When to use which
 
-- Use MilesRouter when you need R3 or radix-tree caching
+- Use Miles Router when you need R3 or radix-tree caching
 - Use SGLang Model Gateway for everything else (recommended default)
 
