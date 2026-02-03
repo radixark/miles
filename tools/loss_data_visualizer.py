@@ -202,8 +202,8 @@ def train_infer_diff(
     cols = min(3, n_groups)
     rows = math.ceil(n_groups / cols)
 
-    fig = plt.figure(figsize=(6 * cols, 4 * rows + 14))
-    gs = fig.add_gridspec(rows + 1, cols, height_ratios=[1] * rows + [3.5])
+    fig = plt.figure(figsize=(6 * cols, 4 * rows + 12))
+    gs = fig.add_gridspec(rows + 1, cols, height_ratios=[1] * rows + [3])
 
     for idx, (prompt, group) in enumerate(group_items):
         ax = fig.add_subplot(gs[idx // cols, idx % cols])
@@ -217,17 +217,30 @@ def train_infer_diff(
 
     all_train_logp = np.concatenate([s["log_probs"] for s in samples])
     all_rollout_logp = np.concatenate([s["rollout_log_probs"] for s in samples])
+    axis_range = (-30, 0)
 
-    ax_scatter = fig.add_subplot(gs[rows, :])
+    gs_joint = gs[rows, :].subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], hspace=0.05, wspace=0.05)
+
+    ax_hist_x = fig.add_subplot(gs_joint[0, 0])
+    ax_hist_x.hist(all_train_logp, bins=80, alpha=0.7, edgecolor='none', range=axis_range)
+    ax_hist_x.set_xlim(axis_range)
+    ax_hist_x.set_title(f"Train vs Rollout log prob (n={len(all_train_logp)})")
+    ax_hist_x.tick_params(labelbottom=False)
+
+    ax_scatter = fig.add_subplot(gs_joint[1, 0])
     ax_scatter.scatter(all_train_logp, all_rollout_logp, alpha=0.3, s=1)
-    min_val = min(all_train_logp.min(), all_rollout_logp.min())
-    max_val = max(all_train_logp.max(), all_rollout_logp.max())
-    ax_scatter.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=1, label='y=x')
+    ax_scatter.plot(axis_range, axis_range, 'r--', linewidth=1, label='y=x')
+    ax_scatter.set_xlim(axis_range)
+    ax_scatter.set_ylim(axis_range)
     ax_scatter.set_xlabel("Train log prob")
     ax_scatter.set_ylabel("Rollout log prob")
-    ax_scatter.set_title(f"Train vs Rollout log prob (n={len(all_train_logp)})")
     ax_scatter.legend()
     ax_scatter.set_aspect('equal', adjustable='box')
+
+    ax_hist_y = fig.add_subplot(gs_joint[1, 1])
+    ax_hist_y.hist(all_rollout_logp, bins=80, alpha=0.7, orientation='horizontal', edgecolor='none', range=axis_range)
+    ax_hist_y.set_ylim(axis_range)
+    ax_hist_y.tick_params(labelleft=False)
 
     plt.tight_layout()
     if save_path:
