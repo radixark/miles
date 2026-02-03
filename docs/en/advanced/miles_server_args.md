@@ -214,7 +214,7 @@ Arguments for saving and loading model states.
 | `--ref-ckpt-step` | The checkpoint step for reference model. | `None` | Type: int | Miles Native |
 | `--critic-load` | Checkpoint to load for the critic model. | value of `--load` | Type: str | Miles Native |
 | `--critic-save` | Path to save the critic model. | `None` | Type: str | Miles Native |
-| `--start-rollout-id` | The starting rollout step, if not set, will try to load the step from `--load` when doing continue training, otherwise will be set to `0`, meaning training from start. | `None` | Type: int | Miles Native |
+| `--start-rollout-id` | The starting rollout step. If not set, it is inferred from the --load checkpoint when resuming training; otherwise, if training is not continuous, miles will start training from scratch | `None` | Type: int | Miles Native |
 
 ---
 
