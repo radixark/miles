@@ -405,6 +405,10 @@ def train(args: ScriptArgs):
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
         }
 
+    extra_env_vars |= {
+        "SGLANG_DUMPER_OUTPUT_DICT": "1",
+    }
+
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
