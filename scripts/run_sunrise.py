@@ -36,6 +36,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     debug_train_rollout_id: str | None = None
     train_partial_deterministic: bool = False
     fp8_training: bool = False
+    enable_mis: bool = False
 
     @property
     def megatron_model_type(self):
@@ -368,6 +369,13 @@ def train(args: ScriptArgs):
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+    
+    if args.enable_mis:
+        misc_args += (
+            "--use-tis "
+            "--custom-config-path examples/train_infer_mismatch_helper/mis.yaml "
+            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+        )
 
     if args.use_fault_tolerance:
         misc_args += "--use-fault-tolerance "

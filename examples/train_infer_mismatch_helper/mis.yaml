@@ -1,19 +1,19 @@
 # Enable importance sampling, details refer to the comments of compute_mis_weights in mis.py
-use_tis: true
+use_tis: false
 use_rs: true
 
 # Aggregation level for importance sampling weights: 
 # token: per-token
 # sequence: product over tokens
 # geometric: geometric mean
-tis_level: "token"
-rs_level: "token"
+tis_level: "sequence"
+rs_level: "sequence"
 
 # Handling mode for IS weights: 
 # truncate: cap to upper bound, TIS
 # mask: zero outside [lower, upper], MIS
 # clip: clip to [lower, upper], CIS
-tis_mode: "truncate"
+tis_mode: "mask"
 
 # For clip mode, the lower bound of the IS weights.
 # For truncate mode, it will not be used.
@@ -32,7 +32,7 @@ rs_upper_bound: null
 
 # Per-token veto threshold. If any token ratio < this, zero the entire sequence weight, the sequences won't have gradient
 # Note: float number must be written with dot e.g. 1.0e-4, not 1e-4
-rs_veto_threshold: 1.0e-4
+rs_veto_threshold: None
 
 # Batch normalization: normalize IS weights to mean=1.0 across entire batch
 # This reduces variance in gradient updates
