@@ -11,6 +11,7 @@ CLI subcommands:
 
 3. train_infer_diff - Compare training vs inference log prob differences
    uv run python tools/loss_data_visualizer.py train_infer_diff <data_path> --rollout-id 0 --step-id 0 --save-path train_infer_diff.png
+   Additional options: --detail-group 0 --detail-sample 0 (select which sample to show log prob curves)
 
 Data file format:
 - Filename: {rollout_id}_{step_id}_{rank}.pt
@@ -188,6 +189,8 @@ def train_infer_diff(
     rank: Optional[int] = None,
     save_path: Optional[str] = "train_infer_diff.png",
     max_groups: int = 6,
+    detail_group: int = 0,
+    detail_sample: int = 0,
 ):
     path = Path(data_path)
     rank = _get_rank(rank, path, rollout_id, step_id)
@@ -202,8 +205,8 @@ def train_infer_diff(
     group_cols = min(3, n_groups)
     group_rows = math.ceil(n_groups / group_cols)
 
-    fig = plt.figure(figsize=(18, 4 * group_rows + 10))
-    gs = fig.add_gridspec(group_rows + 1, 2, height_ratios=[1] * group_rows + [2.5])
+    fig = plt.figure(figsize=(18, 4 * group_rows + 14))
+    gs = fig.add_gridspec(group_rows + 2, 2, height_ratios=[1] * group_rows + [1, 2.5])
 
     gs_groups = gs[:group_rows, :].subgridspec(group_rows, group_cols, hspace=0.3, wspace=0.3)
     for idx, (prompt, group) in enumerate(group_items):
@@ -216,13 +219,28 @@ def train_infer_diff(
         ax.set_title(f"Group {idx} ({len(group)} samples)")
         ax.legend(fontsize=8)
 
+    if detail_group < len(group_items):
+        detail_samples = group_items[detail_group][1]
+        if detail_sample < len(detail_samples):
+            s = detail_samples[detail_sample]
+            abs_diff_detail = np.abs(s["log_probs"] - s["rollout_log_probs"])
+            ax_detail = fig.add_subplot(gs[group_rows, :])
+            ax_detail.plot(s["log_probs"], alpha=0.8, label="train log_prob", linewidth=1.5)
+            ax_detail.plot(s["rollout_log_probs"], alpha=0.8, label="sgl (rollout) log_prob", linewidth=1.5)
+            ax_detail.set_xlabel("Token Index")
+            ax_detail.set_ylabel("Log Probability")
+            title = f"Group {detail_group} Sample {detail_sample} (n={len(s['log_probs'])}, sum|diff|={abs_diff_detail.sum():.2f}, max|diff|={abs_diff_detail.max():.2f}, mean|diff|={abs_diff_detail.mean():.4f})"
+            ax_detail.set_title(title)
+            ax_detail.legend()
+            ax_detail.grid(True, alpha=0.3)
+
     all_train_logp = np.concatenate([s["log_probs"] for s in samples])
     all_rollout_logp = np.concatenate([s["rollout_log_probs"] for s in samples])
     abs_diff = np.abs(all_train_logp - all_rollout_logp)
     axis_range = (-30, 0)
     n_bins = 60
 
-    gs_scatter = gs[group_rows, 0].subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], hspace=0.05, wspace=0.05)
+    gs_scatter = gs[group_rows + 1, 0].subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], hspace=0.05, wspace=0.05)
 
     ax_hist_x = fig.add_subplot(gs_scatter[0, 0])
     ax_hist_x.hist(all_train_logp, bins=n_bins, alpha=0.7, edgecolor='none', range=axis_range)
@@ -245,7 +263,7 @@ def train_infer_diff(
     ax_hist_y.set_ylim(axis_range)
     ax_hist_y.tick_params(labelleft=False)
 
-    ax_heatmap = fig.add_subplot(gs[group_rows, 1])
+    ax_heatmap = fig.add_subplot(gs[group_rows + 1, 1])
     h, xedges, yedges = np.histogram2d(all_train_logp, all_rollout_logp, bins=n_bins, range=[axis_range, axis_range])
     sum_diff, _, _ = np.histogram2d(all_train_logp, all_rollout_logp, bins=n_bins, range=[axis_range, axis_range], weights=abs_diff)
     sum_diff_pct = sum_diff / abs_diff.sum() * 100
