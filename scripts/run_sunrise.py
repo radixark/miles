@@ -157,7 +157,7 @@ def train(args: ScriptArgs):
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
-    if (args.mode != "debug_minimal") and args.enable_eval:
+    if args.enable_eval:
         eval_args += "--eval-interval 20 " "--eval-top-p 0.7 "
 
     match args.task:
