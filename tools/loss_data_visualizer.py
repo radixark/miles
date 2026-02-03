@@ -187,6 +187,7 @@ def train_infer_diff(
     step_id: int = 0,
     rank: Optional[int] = None,
     save_path: Optional[str] = "train_infer_diff.png",
+    max_groups: int = 6,
 ):
     path = Path(data_path)
     rank = _get_rank(rank, path, rollout_id, step_id)
@@ -196,12 +197,16 @@ def train_infer_diff(
     groups = _group_by_prompt(samples)
     print(f"Found {len(samples)} samples in {len(groups)} prompt groups")
 
-    cols = min(3, len(groups))
-    rows = math.ceil(len(groups) / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4 * rows), squeeze=False)
+    group_items = list(groups.items())[:max_groups]
+    n_groups = len(group_items)
+    cols = min(3, n_groups)
+    rows = math.ceil(n_groups / cols)
 
-    for idx, (prompt, group) in enumerate(groups.items()):
-        ax = axes[idx // cols, idx % cols]
+    fig = plt.figure(figsize=(6 * cols, 4 * rows + 14))
+    gs = fig.add_gridspec(rows + 1, cols, height_ratios=[1] * rows + [3.5])
+
+    for idx, (prompt, group) in enumerate(group_items):
+        ax = fig.add_subplot(gs[idx // cols, idx % cols])
         for i, s in enumerate(group):
             diff = np.abs(s["log_probs"] - s["rollout_log_probs"])
             ax.plot(diff, alpha=0.7, label=f"sample {i}")
@@ -210,8 +215,19 @@ def train_infer_diff(
         ax.set_title(f"Group {idx} ({len(group)} samples)")
         ax.legend(fontsize=8)
 
-    for idx in range(len(groups), rows * cols):
-        axes[idx // cols, idx % cols].axis('off')
+    all_train_logp = np.concatenate([s["log_probs"] for s in samples])
+    all_rollout_logp = np.concatenate([s["rollout_log_probs"] for s in samples])
+
+    ax_scatter = fig.add_subplot(gs[rows, :])
+    ax_scatter.scatter(all_train_logp, all_rollout_logp, alpha=0.3, s=1)
+    min_val = min(all_train_logp.min(), all_rollout_logp.min())
+    max_val = max(all_train_logp.max(), all_rollout_logp.max())
+    ax_scatter.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=1, label='y=x')
+    ax_scatter.set_xlabel("Train log prob")
+    ax_scatter.set_ylabel("Rollout log prob")
+    ax_scatter.set_title(f"Train vs Rollout log prob (n={len(all_train_logp)})")
+    ax_scatter.legend()
+    ax_scatter.set_aspect('equal', adjustable='box')
 
     plt.tight_layout()
     if save_path:
