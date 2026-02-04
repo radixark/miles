@@ -21,7 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
-    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/local_data"
