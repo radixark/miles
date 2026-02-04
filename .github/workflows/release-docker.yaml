@@ -34,16 +34,18 @@ jobs:
           fi
 
       - name: Clone repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git clone --recursive https://github.com/fzyzcjy/megatron-sunrise megatron
+          git clone --recursive https://${{ github.token }}@github.com/fzyzcjy/megatron-sunrise megatron
           cd megatron && git checkout ${{ inputs.megatron_commit }} && git reset --hard ${{ inputs.megatron_commit }}
           cd ..
-          
-          git clone --recursive https://github.com/fzyzcjy/miles-sunrise miles
+
+          git clone --recursive https://${{ github.token }}@github.com/fzyzcjy/miles-sunrise miles
           cd miles && git checkout ${{ inputs.miles_commit }} && git reset --hard ${{ inputs.miles_commit }}
           cd ..
-          
-          git clone --recursive https://github.com/DarkSharpness/NightFall sglang
+
+          git clone --recursive https://${{ github.token }}@github.com/DarkSharpness/NightFall sglang
           cd sglang && git checkout ${{ inputs.sglang_commit }} && git reset --hard ${{ inputs.sglang_commit }}
           cd ..
 
