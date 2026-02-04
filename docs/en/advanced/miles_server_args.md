@@ -391,7 +391,7 @@ Arguments applicable when using `--train-backend megatron`.
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--megatron-to-hf-mode` | Method to convert Megatron weights to HuggingFace format for SGLang integration. | `raw` | `raw`, `bridge` | Megatron-LM |
+| `--megatron-to-hf-mode` | Method to convert Megatron weights to HuggingFace format for SGLang integration. | `raw` | `raw`, `bridge` | Miles Native |
 
 ---
 
