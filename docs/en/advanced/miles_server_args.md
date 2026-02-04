@@ -16,6 +16,9 @@ Miles acts as an orchestrator that integrates multiple frameworks. To help ident
 *   **No Prefix**: Default arguments corresponding to **Megatron-LM** (when using the Megatron backend) or **Miles native** configuration.
 *   **`--fsdp-*`**: Specific arguments for the experimental **FSDP** backend.
 
+**Note on Sources:**
+Arguments labeled as **Megatron-LM (Reset by Miles)** are native Megatron-LM parameters where Miles has modified the default value or behavior to better suit RL training workflows.
+
 ## Table of Contents
 1. [Cluster and Resource Management](#cluster-and-resource-management)
 2. [Training Backend](#training-backend)
@@ -57,8 +60,8 @@ Arguments for configuring Ray cluster resources and GPU allocation.
 | `--num-gpus-per-node` | Total GPUs per node on the physical machine. This informs the Ray scheduler of the hardware capacity. In **Colocate mode**, it is required if the machine has fewer than 8 GPUs to calculate correct VRAM offsets. In **Disaggregated mode**, it ensures SGLang engines are distributed correctly across nodes without exceeding per-node GPU limits. | `8` | Type: int | Miles Native |
 | `--colocate` | Deploy training and rollout on the same GPUs. This mode automatically enables `--offload-train` and `--offload-rollout` to facilitate weight-swapping between the training actor and inference engine. **Memory Tip:** When colocating, it is highly recommended to set `--sglang-mem-fraction-static` to **0.8** (especially on **NVIDIA Blackwell B200/B300** GPUs). This leaves sufficient VRAM (~20%) for Megatron to initialize its structures before the first weight offload to CPU occurs. On GB200, values up to 0.75 are safer for long-running jobs to prevent potential OOMs. | `False` | bool flag (set to enable) | Miles Native |
 | `--prefill-num-servers` | Number of dedicated prefill servers for PD disaggregation. | `None` | Type: int | Miles Native |
-| `--distributed-backend` | Backend for distributed communication. | `nccl` | `nccl`, `gloo` | Miles Native |
-| `--distributed-timeout-minutes` | Timeout for distributed operations in minutes. | `10` | Type: int | Miles Native |
+| `--distributed-backend` | Backend for distributed communication. | `nccl` | `nccl`, `gloo` | Megatron-LM (Reset by Miles) |
+| `--distributed-timeout-minutes` | Timeout for distributed operations in minutes. | `10` | Type: int | Megatron-LM (Reset by Miles) |
 
 ---
 
@@ -71,7 +74,7 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | `--train-backend` | The backend for training. Highly suggest Megatron for numerical stability and efficiency. | `"megatron"` | `megatron`, `fsdp` | Miles Native |
 | `--qkv-format` | The QKV layout. | `"thd"` | `thd`, `bshd` | Miles Native |
 | `--optimizer` | Optimizer type. | `adam` | `adam`, `sgd` | Megatron-LM & FSDP |
-| `--lr` | Learning rate for the Actor. | `1e-6` | Type: float | Megatron-LM & FSDP |
+| `--lr` | Learning rate for the Actor. | `1e-6` | Type: float | Megatron-LM (Reset by Miles) & FSDP |
 | `--lr-warmup-init` | Initial learning rate for warmup. | `0.0` | Type: float | Megatron-LM & FSDP |
 | `--min-lr` | Minimum learning rate after decay. | `0.0` | Type: float | Megatron-LM & FSDP |
 | `--lr-decay-style` | Learning rate decay style. | `constant`(FSDP), `linear`(Megatron) | Type: str | Megatron-LM & FSDP |
