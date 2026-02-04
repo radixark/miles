@@ -2,9 +2,9 @@
 
 ### 1. The Sunrise Model
 
-update: enable R3 and RolloutIndexerReplay
+update: enable R3, RolloutIndexerReplay, fp8 training
 ```bash
-MILES_CHECK_REPLAY_RESULT=1 python scripts/run_deepseek_v4.py train --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer --enable-r3 --enable-rir
+MILES_CHECK_REPLAY_RESULT=1 python scripts/run_sunrise.py train --model-name DeepSeek-V4-285B-5layer --enable-r3 --enable-rir --fp8-training
 ```
 
 ```bash
@@ -52,13 +52,13 @@ pip install --no-deps --force-reinstall -e /host_home/primary_synced/NightFall/p
 cd /host_home/primary_synced/miles-sunrise
 
 # run once
-python scripts/run_deepseek_v4.py prepare-single --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
+python scripts/run_sunrise.py prepare-single --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
 
 # run once
-python scripts/run_deepseek_v4.py prepare-spmd --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
+python scripts/run_sunrise.py prepare-spmd --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
 
 # launch training
-python scripts/run_deepseek_v4.py train --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
+python scripts/run_sunrise.py train --model-name DeepSeek-V4-285B-5layer --megatron-model-type deepseek-v4-285B-5layer
 ```
 
 ### 2. DeepSeek V3.2
