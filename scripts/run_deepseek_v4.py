@@ -18,6 +18,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
     model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
+    hf_checkpoint: Optional[str] = None
     num_gpus_per_node: int = 4
     enable_eval: bool = True
     extra_args: str = ""
@@ -46,12 +47,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         }[self.model_name]
 
 
-_RAW_HF_CKPT_PATH_DICT = {
-    "DeepSeek-V4-285B": "/data/weights/hello2026",
-    "DeepSeek-V4-285B-5layer": "/data/weights/hello2026_5layer",
-}
-
-
 @app.command()
 @U.dataclass_cli
 def prepare_single(args: ScriptArgs):
@@ -64,7 +59,7 @@ def prepare_single(args: ScriptArgs):
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
     U.fp8_cast_bf16(
-        path_src=_RAW_HF_CKPT_PATH_DICT[args.model_name],
+        path_src=args.hf_checkpoint,
         path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
 
@@ -123,7 +118,7 @@ def train(args: ScriptArgs):
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint {_RAW_HF_CKPT_PATH_DICT[args.model_name]} "
+        f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
