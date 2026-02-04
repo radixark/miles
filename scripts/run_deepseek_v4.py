@@ -27,14 +27,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_local_dir: str = "/root/local_data"
     save_dir: str = "/root/models"
     megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
-    enable_r3: bool = False
+    enable_r3: bool = True
     enable_rir: bool = False
     enable_pp: bool = False
     optimizer_offload: bool = False
     use_fault_tolerance: bool = True
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
-    train_partial_deterministic: bool = False
+    train_partial_deterministic: bool = True
     fp8_training: bool = False
     enable_mis: bool = False
 
