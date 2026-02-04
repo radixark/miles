@@ -520,9 +520,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
         }
-        if os.environ.get("MILES_INFERENCE_DUMPER") == "1":
-            env_vars["SGLANG_DUMPER_DIR"] = os.environ.get("SGLANG_DUMPER_DIR", "/tmp/miles_dump")
-            env_vars["SGLANG_DUMPER_PARTIAL_NAME"] = "inference"
 
         worker_type = "regular"
         if args.prefill_num_servers is not None:

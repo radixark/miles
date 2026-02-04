@@ -7,7 +7,6 @@ import torch.distributed as dist
 
 from megatron.core import mpu
 from megatron.core.transformer.deepseek_v4_cp_utils import natural_to_zigzag_slice
-from sglang.srt.debug_utils.dumper import dumper
 
 import logging
 logger = logging.getLogger(__name__)
@@ -232,8 +231,6 @@ class BaseReplayManager:
             logger.error(f"Rollout Replay Check Failed - Stage: {self.stage}, rank: {_get_rank()}")
             logger.error(f"original top_indices: {orig_top_indices}")
             logger.error(f"replay top_indices (padding removed): {top_indices}")
-            dumper.dump("orig_top_indices", orig_top_indices)
-            dumper.dump("replay_top_indices", top_indices)
             raise e
 
 

@@ -22,7 +22,6 @@ from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
 from miles.utils.memory_utils import clear_memory
-from miles.utils.train_dump_utils import loss_data_dumper
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
@@ -457,8 +456,6 @@ def train_one_step(
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
-
-    loss_data_dumper.flush(args)
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced, parallel_state)

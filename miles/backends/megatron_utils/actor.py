@@ -1,5 +1,4 @@
 import logging
-import os
 import random
 import socket
 from argparse import Namespace
@@ -44,40 +43,6 @@ from ...utils.transformers_patch import with_transformers_patch
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
-
-
-def _configure_dumper_for_stage(stage: str):
-    if os.environ.get("MILES_TRAIN_DUMPER") != "1":
-        return
-    if stage == "forward_only" and os.environ.get("MILES_TRAIN_FORWARD_DUMPER") == "0":
-        return
-    import shutil
-    from pathlib import Path
-    from sglang.srt.debug_utils.dumper import dumper
-    from miles.utils.distributed_utils import get_gloo_group
-    dumper._base_dir = Path(os.environ.get("SGLANG_DUMPER_DIR", "/tmp/miles_dump"))
-    dumper._partial_name = stage
-    stage_dir = dumper._base_dir / f"sglang_dump_{dumper._partial_name}"
-    if dist.get_rank() == 0 and os.path.exists(stage_dir):
-        shutil.rmtree(stage_dir)
-        logger.info(f"[Dumper] Removed existing stage_dir={stage_dir}")
-    dist.barrier(group=get_gloo_group())
-    dumper.reset()
-    dumper._enable = True
-    logger.info(f"[Dumper] Enabled and configured for stage '{stage}', output_dir={stage_dir}")
-
-
-def _disable_dumper():
-    if os.environ.get("MILES_TRAIN_DUMPER") != "1":
-        return
-    from sglang.srt.debug_utils.dumper import dumper
-    dumper._enable = False
-    logger.info("[Dumper] Disabled")
-
-
-def _maybe_exit_after_dump():
-    if os.environ.get("MILES_TRAIN_DUMPER") == "1":
-        raise RuntimeError("[Dumper] Intentional exit after step 0 dump completed")
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -392,7 +357,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with inverse_timer("train_wait"), timer("train"):
             if self.args.compute_advantages_and_returns:
-                _configure_dumper_for_stage("forward_only")
                 if "ref" in self.weights_backuper.backup_tags:
                     self._set_replay_stage("fallthrough")
                     self._switch_model("ref")
@@ -431,8 +395,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
 
-                _disable_dumper()
-
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
                 # because we may need normalize the whole rollout.
                 compute_advantages_and_returns(self.args, self.parallel_state, rollout_data)
@@ -443,7 +405,6 @@ class MegatronTrainRayActor(TrainRayActor):
             log_rollout_data(rollout_id, self.args, rollout_data, self.parallel_state)
 
             # Train
-            _configure_dumper_for_stage("forward_backward")
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
                 train(
@@ -457,7 +418,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
             self.prof.step(rollout_id=rollout_id)
-            _maybe_exit_after_dump()
 
         train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
