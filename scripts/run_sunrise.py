@@ -165,13 +165,13 @@ def train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 4096 "
+                f"--rollout-max-response-len 3072 "
                 """--apply-chat-template-kwargs '{"thinking":true}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 8192 "
+                "--eval-max-response-len 6144"
             )
         case "gsm8k":
             rollout_args += (
