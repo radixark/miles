@@ -4,7 +4,7 @@ This file is in preview, and will be further refined and optimized.
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -19,7 +19,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "deepseek-ai"
     model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
     hf_checkpoint: Optional[str] = None
-    num_gpus_per_node: int = 4
+    num_gpus_per_node: int = 8
     enable_eval: bool = True
     extra_args: str = ""
     task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
