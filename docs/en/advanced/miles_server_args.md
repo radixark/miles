@@ -171,8 +171,8 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--log-probs-max-tokens-per-gpu` | The maximum number of tokens per GPU for calculating log probs. This is used to calculate the log probs of the responses during rollout, and should be set to a larger value than `max_tokens_per_gpu` if you want better performance. | `None` | Type: int | Miles Native |
 | `--balance-data` | Repartition each rollout batch so each data-parallel rank gets a similar total token count via Karmarkar-Karp method. It may be beneficial for training speed but changes per-rank sample grouping and adds a small CPU scheduling overhead. | `False` | bool flag (set to enable) | Miles Native |
 | `--data-pad-size-multiplier` | Multiplier used to calculate the sequence padding boundary. Miles rounds sequence lengths up to a multiple of `tensor_parallel_size * data_pad_size_multiplier`. This optimization ensures that matrix dimensions are aligned with NVIDIA Tensor Core requirements, maximizing throughput and reducing VRAM fragmentation. | `128` | Type: int | Miles Native |
-| `--micro-batch-size` | Micro batch size per GPU. Ignored when `--use-dynamic-batch-size` is enabled. | `1` | Type: int | Megatron-LM |
-| `--global-batch-size` | Total samples per optimizer step. Automatically calculated if `num_steps_per_rollout` is set. | `None` | Type: int | Megatron-LM |
+| `--micro-batch-size` | Micro batch size per GPU. Ignored when `--use-dynamic-batch-size` is enabled. | `1` | Type: int | Megatron-LM (Reset by Miles) |
+| `--global-batch-size` | Total samples per optimizer step. Automatically calculated if `num_steps_per_rollout` is set. | `None` | Type: int | Megatron-LM (Reset by Miles) |
 
 ---
 
@@ -182,7 +182,7 @@ Arguments for configuring the evaluation process during training.
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--eval-interval` | Interval (in rollout steps) between evaluations. | `None` | Type: int | Megatron-LM |
+| `--eval-interval` | Interval (in rollout steps) between evaluations. | `None` | Type: int | Megatron-LM (Reset by Miles) |
 | `--eval-prompt-data` | List of name and path pairs for evaluation datasets (e.g., `aime /path/to/aime.jsonl`). | `None` | Type: List[str] | Miles Native |
 | `--eval-config` | Path to an OmegaConf YAML/JSON file describing evaluation datasets (overrides `--eval-prompt-data`). | `None` | Type: str | Miles Native |
 | `--skip-eval-before-train` | Skip the evaluation step before training starts. | `False` | bool flag (set to enable) | Miles Native |
@@ -207,12 +207,12 @@ Arguments for saving and loading model states.
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--load` | Path to the training model checkpoint to load. | `None` | Type: str | Megatron-LM |
-| `--save` | Path to save checkpoints. | `None` | Type: str | Megatron-LM |
-| `--save-interval` | Interval (in rollout steps) to save checkpoints. Requires `--save` to be set. | `None` | Type: int | Megatron-LM |
-| `--async-save` | Enable asynchronous checkpoint saving (Megatron backend only). | `False` | bool flag (set to enable) | Megatron-LM |
+| `--load` | Path to the training model checkpoint to load. | `None` | Type: str | Megatron-LM (Reset by Miles) |
+| `--save` | Path to save checkpoints. | `None` | Type: str | Megatron-LM (Reset by Miles) |
+| `--save-interval` | Interval (in rollout steps) to save checkpoints. Requires `--save` to be set. | `None` | Type: int | Megatron-LM (Reset by Miles) |
+| `--async-save` | Enable asynchronous checkpoint saving (Megatron backend only). | `False` | bool flag (set to enable) | Megatron-LM (Reset by Miles) |
 | `--save-hf` | Path to save the model in HuggingFace format when using Megatron backend. The model will be saved to `save_hf.format(rollout_id)`. | `None` | Type: str | Miles Native |
-| `--no-save-optim` | If set, optimizer state is not saved with checkpoints to reduce size, but prevents resumption of training. | `False` | bool flag (set to enable) | Miles Native |
+| `--no-save-optim` | If set, optimizer state is not saved with checkpoints to reduce size, but prevents resumption of training. | `False` | bool flag (set to enable) | Megatron-LM (Reset by Miles) |
 | `--ref-load` | Path to the reference model checkpoint. Used as initial checkpoint if `--load` is not set. | `None` | Type: str | Miles Native |
 | `--ref-ckpt-step` | The checkpoint step for reference model. | `None` | Type: int | Miles Native |
 | `--critic-load` | Checkpoint to load for the critic model. | value of `--load` | Type: str | Miles Native |
@@ -263,9 +263,9 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--disable-rewards-normalization` | Disable rewards normalization. | `False` | bool flag (set to enable) | Miles Native |
 | `--use-rollout-entropy` | Enable entropy calculation when calculating the logprobs from actor and reference model. This is useful for doing special loss mask. | `False` | bool flag (set to enable) | Miles Native |
 | `--use-rollout-logprobs` | Use rollout logprobs for importance sampling ratios, use the logprobs from the actor model if not set. | `False` | bool flag (set to enable) | Miles Native |
-| `--calculate-per-token-loss` | Calculate loss on a per-token basis. | `False` | bool flag (set to enable) | Miles Native |
-| `--seed` | Random seed for the training process. | `1234` | Type: int | Megatron-LM |
-| `--clip-grad` | Maximum gradient norm for gradient clipping. | `1.0` | Type: float | Megatron-LM |
+| `--calculate-per-token-loss` | Calculate loss on a per-token basis. | `False` | bool flag (set to enable) | Megatron-LM (Reset by Miles) |
+| `--seed` | Random seed for the training process. | `1234` | Type: int | Megatron-LM (Reset by Miles) |
+| `--clip-grad` | Maximum gradient norm for gradient clipping. | `1.0` | Type: float | Megatron-LM (Reset by Miles) |
 
 ---
 
@@ -277,7 +277,7 @@ Arguments for WandB, Tensorboard, and general logging.
 | :--- | :--- | :--- | :--- | :--- |
 | `--use-wandb` | Enable WandB logging. | `False` | bool flag (set to enable) | Miles Native |
 | `--wandb-mode` | WandB operating mode. Overrides `WANDB_MODE`. | `None` | `online`, `offline`, `disabled` | Miles Native |
-| `--wandb-project` | WandB project name. | `None` | Type: str | Miles Native |
+| `--wandb-project` | WandB project name. | `None` | Type: str | Megatron-LM (Reset by Miles) |
 | `--wandb-group` | WandB group name. | `None` | Type: str | Miles Native |
 | `--wandb-team` | WandB team name. | `None` | Type: str | Miles Native |
 | `--wandb-host` | WandB host address. | `None` | Type: str | Miles Native |
@@ -364,8 +364,8 @@ Arguments for MTP-based training.
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
 | `--enable-mtp-training` | Enable MTP layer parameter updates during training. | `False` | bool flag (set to enable) | Miles Native |
-| `--mtp-num-layers` | Number of MTP layers to include. | `None` | Type: int | Miles Native |
-| `--mtp-loss-scaling-factor` | Scaling factor applied to the MTP loss. | `0.2` | Type: float | Miles Native |
+| `--mtp-num-layers` | Number of MTP layers to include. | `None` | Type: int | Megatron-LM (Reset by Miles) |
+| `--mtp-loss-scaling-factor` | Scaling factor applied to the MTP loss. | `0.2` | Type: float | Megatron-LM (Reset by Miles) |
 
 ---
 
