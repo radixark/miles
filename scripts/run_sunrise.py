@@ -157,7 +157,7 @@ def train(args: ScriptArgs):
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
-    if args.enable_eval:
+    if args.enable_eval and (args.task != "dapo_aime"):
         eval_args += "--eval-interval 20 " "--eval-top-p 0.7 "
 
     match args.task:
@@ -165,7 +165,8 @@ def train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 8192 "
+                f"--rollout-max-response-len 4096 "
+                """--apply-chat-template-kwargs '{"thinking":true}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
