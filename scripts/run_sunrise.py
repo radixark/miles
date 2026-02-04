@@ -233,8 +233,8 @@ def train(args: ScriptArgs):
             "--tensor-model-parallel-size 8 "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 8 "
-            "--decoder-first-pipeline-num-layers 7 "
-            "--decoder-last-pipeline-num-layers 6 "
+            "--decoder-first-pipeline-num-layers 8 "
+            "--decoder-last-pipeline-num-layers 5 "
             # NOTE: context-parallel is not supported yet
             "--context-parallel-size 1 "
             "--expert-model-parallel-size 8 "
