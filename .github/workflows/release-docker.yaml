@@ -3,18 +3,30 @@ name: Build and Push Miles Docker Image
 on:
   workflow_dispatch:
     inputs:
+      megatron_repo:
+        description: 'Megatron repository (owner/repo)'
+        required: true
+        default: 'NVIDIA/Megatron-LM'
       megatron_commit:
-        description: 'Megatron commit SHA'
+        description: 'Megatron commit SHA (leave empty for latest)'
+        required: false
+        default: ''
+      miles_repo:
+        description: 'Miles repository (owner/repo)'
         required: true
-        default: '9ae668897363c2ce2ccdd0ac2c5db691d55fba54'
+        default: 'radixark/miles'
       miles_commit:
-        description: 'Miles commit SHA'
+        description: 'Miles commit SHA (leave empty for latest)'
+        required: false
+        default: ''
+      sglang_repo:
+        description: 'SGLang repository (owner/repo)'
         required: true
-        default: '913bdad727b3c400ed7ec6456f24b285b0129ace'
+        default: 'sgl-project/sglang'
       sglang_commit:
-        description: 'SGLang commit SHA'
-        required: true
-        default: '40c257639eab3def52e3b4856b420f1485b84ba5'
+        description: 'SGLang commit SHA (leave empty for latest)'
+        required: false
+        default: ''
       tag:
         description: 'Optional custom tag (leave empty for auto-generated)'
         required: false
@@ -24,30 +36,43 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
+      - name: Clone repositories
+        env:
+          # Use REPO_ACCESS_TOKEN if available, otherwise fall back to github.token
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+        run: |
+          git clone --recursive https://${{ secrets.REPO_ACCESS_TOKEN || github.token }}@github.com/${{ inputs.megatron_repo }} megatron
+          cd megatron
+          if [ -n "${{ inputs.megatron_commit }}" ]; then
+            git checkout ${{ inputs.megatron_commit }} && git reset --hard ${{ inputs.megatron_commit }}
+          fi
+          cd ..
+
+          git clone --recursive https://${{ secrets.REPO_ACCESS_TOKEN || github.token }}@github.com/${{ inputs.miles_repo }} miles
+          cd miles
+          if [ -n "${{ inputs.miles_commit }}" ]; then
+            git checkout ${{ inputs.miles_commit }} && git reset --hard ${{ inputs.miles_commit }}
+          fi
+          cd ..
+
+          git clone --recursive https://${{ secrets.REPO_ACCESS_TOKEN || github.token }}@github.com/${{ inputs.sglang_repo }} sglang
+          cd sglang
+          if [ -n "${{ inputs.sglang_commit }}" ]; then
+            git checkout ${{ inputs.sglang_commit }} && git reset --hard ${{ inputs.sglang_commit }}
+          fi
+          cd ..
+
       - name: Generate tag
         id: tag
         run: |
           if [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=megatron-${{ inputs.megatron_commit }}-miles-${{ inputs.miles_commit }}-sglang-${{ inputs.sglang_commit }}" >> $GITHUB_OUTPUT
+            MEGATRON_SHA=$(cd megatron && git rev-parse --short HEAD)
+            MILES_SHA=$(cd miles && git rev-parse --short HEAD)
+            SGLANG_SHA=$(cd sglang && git rev-parse --short HEAD)
+            echo "tag=megatron-${MEGATRON_SHA}-miles-${MILES_SHA}-sglang-${SGLANG_SHA}" >> $GITHUB_OUTPUT
           fi
-
-      - name: Clone repositories
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git clone --recursive https://${{ github.token }}@github.com/fzyzcjy/megatron-sunrise megatron
-          cd megatron && git checkout ${{ inputs.megatron_commit }} && git reset --hard ${{ inputs.megatron_commit }}
-          cd ..
-
-          git clone --recursive https://${{ github.token }}@github.com/fzyzcjy/miles-sunrise miles
-          cd miles && git checkout ${{ inputs.miles_commit }} && git reset --hard ${{ inputs.miles_commit }}
-          cd ..
-
-          git clone --recursive https://${{ github.token }}@github.com/DarkSharpness/NightFall sglang
-          cd sglang && git checkout ${{ inputs.sglang_commit }} && git reset --hard ${{ inputs.sglang_commit }}
-          cd ..
 
       - name: Write Dockerfile
         run: |
