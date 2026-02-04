@@ -3,6 +3,11 @@
 ```shell
 rm -rf /tmp/sglang_dump_megatron_1rank /tmp/routing_replay_tp1 && CUDA_VISIBLE_DEVICES=4,5,6,7 SGLANG_DUMPER_ENABLE=1 SGLANG_DUMPER_PARTIAL_NAME=megatron_1rank SGLANG_DUMPER_SERVER_PORT=-1 SGLANG_DUMPER_GRAD_DUMP=1 python tests/deepseekv4/test_forward_pass.py megatron-backward --hf-checkpoint /data/weights/hello2026_5layer --ref-load /root/models/DeepSeek-V4-285B-5layer_torch_dist --prompt-mode math --input-seq-len 4096 --tp-size 1 --routing-replay-dump-path /tmp/routing_replay_1rank --indexer-replay-dump-path /tmp/indexer_replay_1rank
 
+# ======= tilelang vs torch =======
+rm -rf /tmp/sglang_dump_megatron_tilelang_1rank && MEGATRON_USE_TILELANG_SPARSE_ATTN=tilelang CUDA_VISIBLE_DEVICES=4,5,6,7 SGLANG_DUMPER_ENABLE=1 SGLANG_DUMPER_PARTIAL_NAME=megatron_tilelang_1rank SGLANG_DUMPER_SERVER_PORT=-1 SGLANG_DUMPER_GRAD_DUMP=1 MILES_CHECK_REPLAY_RESULT=1 python tests/deepseekv4/test_forward_pass.py megatron-backward --hf-checkpoint /data/weights/hello2026_5layer --ref-load /root/models/DeepSeek-V4-285B-5layer_torch_dist --prompt-mode math --input-seq-len 4096 --tp-size 1 --routing-replay-load-path /tmp/routing_replay_1rank --indexer-replay-load-path /tmp/indexer_replay_1rank
+
+DUMP_COMPARATOR_UNIFY_MILES=1 CUDA_VISIBLE_DEVICES=4,5,6,7 python -m sglang.srt.debug_utils.dump_comparator --baseline-path /tmp/sglang_dump_megatron_1rank --target-path /tmp/sglang_dump_megatron_tilelang_1rank --tp-size 1
+
 # ======= tp2cp2 =======
 
 rm -rf /tmp/sglang_dump_megatron_tp2cp2 && CUDA_VISIBLE_DEVICES=4,5,6,7 SGLANG_DUMPER_ENABLE=1 SGLANG_DUMPER_PARTIAL_NAME=megatron_tp2cp2 SGLANG_DUMPER_SERVER_PORT=-1 SGLANG_DUMPER_GRAD_DUMP=1 MILES_CHECK_REPLAY_RESULT=1 python tests/deepseekv4/test_forward_pass.py megatron-backward --hf-checkpoint /data/weights/hello2026_5layer --ref-load /root/models/DeepSeek-V4-285B-5layer_torch_dist --prompt-mode math --input-seq-len 4096 --tp-size 2 --cp-size 2 --routing-replay-load-path /tmp/routing_replay_1rank --indexer-replay-load-path /tmp/indexer_replay_1rank
