@@ -1,0 +1,80 @@
+name: Build and Push Miles Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      megatron_commit:
+        description: 'Megatron commit SHA'
+        required: true
+        default: '9ae668897363c2ce2ccdd0ac2c5db691d55fba54'
+      miles_commit:
+        description: 'Miles commit SHA'
+        required: true
+        default: '913bdad727b3c400ed7ec6456f24b285b0129ace'
+      sglang_commit:
+        description: 'SGLang commit SHA'
+        required: true
+        default: '40c257639eab3def52e3b4856b420f1485b84ba5'
+      tag:
+        description: 'Optional custom tag (leave empty for auto-generated)'
+        required: false
+        default: ''
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=megatron-${{ inputs.megatron_commit }}-miles-${{ inputs.miles_commit }}-sglang-${{ inputs.sglang_commit }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Clone repositories
+        run: |
+          git clone --recursive https://github.com/fzyzcjy/megatron-sunrise megatron
+          cd megatron && git checkout ${{ inputs.megatron_commit }} && git reset --hard ${{ inputs.megatron_commit }}
+          cd ..
+          
+          git clone --recursive https://github.com/fzyzcjy/miles-sunrise miles
+          cd miles && git checkout ${{ inputs.miles_commit }} && git reset --hard ${{ inputs.miles_commit }}
+          cd ..
+          
+          git clone --recursive https://github.com/DarkSharpness/NightFall sglang
+          cd sglang && git checkout ${{ inputs.sglang_commit }} && git reset --hard ${{ inputs.sglang_commit }}
+          cd ..
+
+      - name: Write Dockerfile
+        run: |
+          cat << 'EOF' > Dockerfile
+          FROM radixark/miles@sha256:6e467519505da8407f8c33e3c5ec622c0cc4e6e0929102efe34f8415940caf06
+          RUN rm -rf /root/miles /root/Megatron-LM /sgl-workspace/sglang
+          RUN pip uninstall -y miles megatron sglang || true
+          RUN pip install flashinfer-jit-cache==0.6.2 --index-url https://flashinfer.ai/whl/cu129
+          RUN apt remove -y libgtest-dev || true
+          RUN pip install z3-solver cython
+          RUN cd /tmp && rm -rf tilelang && git clone https://github.com/tile-ai/tilelang.git && cd tilelang && pip install -e . -v --no-build-isolation
+          RUN cd /tmp && rm -rf fast-hadamard-transform && git clone https://github.com/Dao-AILab/fast-hadamard-transform.git && cd fast-hadamard-transform && pip install -e . -v --no-build-isolation
+          RUN cd /tmp && rm -rf flash-mla && git clone https://github.com/deepseek-ai/FlashMLA.git flash-mla && cd flash-mla && git submodule update --init --recursive && pip install --no-build-isolation -v .
+          COPY megatron /root/megatron
+          RUN cd /root/megatron && pip install -e .
+          COPY sglang /root/sglang
+          RUN cd /root/sglang/python && pip install -e .
+          COPY miles /root/miles
+          RUN cd /tmp && rm -rf transformers && git clone https://github.com/huggingface/transformers.git && cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc && git apply /root/miles/docker/deepseekv32/transformers.patch && pip install -e .
+          RUN cd /root/miles && pip install -e .
+          EOF
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Build and push
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/miles:${{ steps.tag.outputs.tag }} .
+          docker push ${{ secrets.DOCKER_USERNAME }}/miles:${{ steps.tag.outputs.tag }}
