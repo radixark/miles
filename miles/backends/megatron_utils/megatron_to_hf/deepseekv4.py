@@ -4,7 +4,6 @@ import torch
 
 
 def convert_deepseekv4_to_hf(args, name, param):
-    # Embedding and output
     if name == "module.module.embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
     if name == "module.module.output_layer.weight":
@@ -12,7 +11,6 @@ def convert_deepseekv4_to_hf(args, name, param):
     if name == "module.module.decoder.final_layernorm.weight":
         return [("model.norm.weight", param)]
 
-    # Block-level Hyper-Connection weights
     if name == "module.module.decoder.hc_head_params.hc_head_fn":
         return [("model.hc_head_fn", param)]
     if name == "module.module.decoder.hc_head_params.hc_head_base":
@@ -25,7 +23,6 @@ def convert_deepseekv4_to_hf(args, name, param):
     if match:
         layer_idx, rest = match.groups()
 
-        # Layer-level Hyper-Connection weights
         if rest == "hc_attn_fn":
             return [(f"model.layers.{layer_idx}.hc_attn_fn", param)]
         elif rest == "hc_attn_base":
@@ -39,7 +36,6 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "hc_ffn_scale":
             return [(f"model.layers.{layer_idx}.hc_ffn_scale", param)]
 
-        # Experts
         expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
         match = re.match(expert_pattern, rest)
         if match:
@@ -55,7 +51,6 @@ def convert_deepseekv4_to_hf(args, name, param):
             else:
                 raise ValueError(f"Unknown expert parameter name: {name}")
 
-        # Shared expert
         shared_expert_pattern = r"mlp.shared_experts\.(.+)"
         match = re.match(shared_expert_pattern, rest)
         if match:
@@ -71,7 +66,6 @@ def convert_deepseekv4_to_hf(args, name, param):
             else:
                 raise ValueError(f"Unknown shared expert parameter name: {name}")
 
-        # V4 Attention weights - use MQALayer param names directly
         if rest == "self_attention.wq_a.weight":
             return [(f"model.layers.{layer_idx}.self_attn.wq_a.weight", param)]
         elif rest == "self_attention.q_norm.weight":
@@ -89,7 +83,6 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "self_attention.attn_sink":
             return [(f"model.layers.{layer_idx}.self_attn.attn_sink", param)]
 
-        # Compressor weights
         elif rest == "self_attention.compressor.ape":
             return [(f"model.layers.{layer_idx}.self_attn.compressor.ape", param)]
         elif rest == "self_attention.compressor.wkv.weight":
@@ -99,7 +92,6 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "self_attention.compressor.norm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.compressor.norm.weight", param)]
 
-        # DSA Indexer weights
         elif rest == "self_attention.indexer.linear_wq_b.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.wq_b.weight", param)]
         elif rest == "self_attention.indexer.linear_wk.weight":
@@ -111,7 +103,6 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "self_attention.indexer.linear_weights_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.weights_proj.weight", param)]
 
-        # DSA Indexer's Compressor weights
         elif rest == "self_attention.indexer.compressor.ape":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.ape", param)]
         elif rest == "self_attention.indexer.compressor.wkv.weight":
@@ -121,13 +112,11 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "self_attention.indexer.compressor.norm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.norm.weight", param)]
 
-        # Layernorms
         elif rest == "input_layernorm.weight":
             return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
         elif rest == "pre_mlp_layernorm.weight":
             return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
 
-        # MoE router
         elif rest == "mlp.router.weight":
             return [(f"model.layers.{layer_idx}.mlp.gate.weight", param)]
         elif rest == "mlp.router.expert_bias":
@@ -135,7 +124,6 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "mlp.router.tid2eid":
             return [(f"model.layers.{layer_idx}.mlp.topk.tid2eid", param)]
 
-        # Dense MLP (if any layer is not MoE)
         elif rest == "mlp.linear_fc1.weight":
             gate_weight, up_weight = param.chunk(2, dim=0)
             return [

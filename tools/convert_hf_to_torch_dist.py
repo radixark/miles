@@ -134,7 +134,6 @@ def main():
     with with_transformers_patch():
         bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
     
-    # Patch to preserve FP32 precision for _keep_fp32 params
     patch_weight_to_mcore_format_preserve_fp32()
     
     bridge.load_weights(model, hf_model_path, memory_efficient=True)

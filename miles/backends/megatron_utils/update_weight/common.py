@@ -203,7 +203,6 @@ def _named_params_and_buffers_global(
                 yield f"module.module.mtp.layers.{layer_idx}.transformer_layer.mlp.experts.{rest}.weight{expert_idx}", param
                 continue
 
-            # TODO: a hacking here, need to be cleaner
             duplicated = [
                 "indexer.linear_weights_proj",
                 "indexer.linear_wk",
@@ -214,7 +213,6 @@ def _named_params_and_buffers_global(
             if any(dup in name for dup in duplicated):
                 param.parallel_mode = "duplicated"
 
-            # TODO: a hacking here, need to be cleaner
             if "attn_sink" in name:
                 param.tensor_model_parallel = True
                 param.partition_dim = 0

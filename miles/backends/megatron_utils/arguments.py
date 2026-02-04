@@ -13,7 +13,6 @@ def set_default_megatron_args(args):
     args.use_distributed_optimizer = True
     # TODO: maybe change this after megatron has good fp8 support
     args.bf16 = not args.fp16
-    # placeholders for variable_seq_lengths mode (actual seq_length comes from rollout data)
     if args.seq_length is None:
         args.seq_length = 4096
     if args.max_position_embeddings is None:

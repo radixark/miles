@@ -200,7 +200,6 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             dtype=np.int32,
         ).reshape(
             len(sample.tokens) - 1,
-            # TODO very hacky now
             sum(1 for r in args.dsv4_compress_ratios if r == 4),
             args.dsa_indexer_topk,
         )

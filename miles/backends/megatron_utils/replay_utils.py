@@ -5,7 +5,6 @@ from miles.utils.replay_base import RoutingReplayManager, IndexerReplayManager, 
 
 
 def _register_replay_list_moe(replay_list, replay_data, models):
-    # process moe_layer_freq
     layer_indices = []
     replay_idx = 0
     for vp_stage, model in enumerate(models):
@@ -22,14 +21,11 @@ def _register_replay_list_moe(replay_list, replay_data, models):
                     continue
             layer_indices.append(layer_id)
 
-            # replay_list[replay_idx].record(replay_data[:, layer_id])
-            # replay_idx = replay_idx + 1
 
     for replay_idx, layer_idx in enumerate(layer_indices):
         layer_data = replay_data[:, layer_idx]
         replay_list[replay_idx].record(layer_data)
 
-    # assert replay_idx == len(replay_list)
 
 
 def _register_replay_list_attention(replay_list, replay_data, models):

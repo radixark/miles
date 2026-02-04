@@ -72,7 +72,6 @@ def prepare_single(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
-    # TODO unify 5layer w/ 20layer, also maybe unify the whole script
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
     if args.num_nodes == 1 and args.model_name == "DeepSeek-V4-285B-5layer":
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
@@ -121,8 +120,6 @@ def _prepare_cp(args: ScriptArgs):
 @U.dataclass_cli
 def train(args: ScriptArgs):
     print("running on {args.num_nodes} nodes")
-    # ensure files are there is it was not synced before
-    # _prepare_cp(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
@@ -130,7 +127,6 @@ def train(args: ScriptArgs):
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
-        # TODO enable normal interval after fixing error-when-save issue
         "--save-interval 20 "
         "--save-retain-interval 20 "
     )
@@ -144,7 +140,6 @@ def train(args: ScriptArgs):
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
-        # ------------
         "--num-steps-per-rollout 1 "
         "--balance-data "
     )
@@ -155,7 +150,6 @@ def train(args: ScriptArgs):
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
 
-    # sometimes disable eval to speed up debugging
     eval_args = ""
     if args.enable_eval:
         eval_args += "--eval-interval 20 " "--eval-top-p 0.7 "
@@ -177,7 +171,6 @@ def train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
                 "--input-key messages "
-                # Deliberately make it very short for this easy task
                 "--rollout-max-response-len 256 "
             )
             eval_args += (
@@ -207,7 +200,6 @@ def train(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
     elif args.num_nodes <= 4:
-        # TODO remove this temp cfg
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
@@ -223,7 +215,6 @@ def train(args: ScriptArgs):
             "--pipeline-model-parallel-size 6 "
             "--decoder-first-pipeline-num-layers 8 "
             "--decoder-last-pipeline-num-layers 7 "
-            # NOTE: context-parallel is not supported yet
             "--context-parallel-size 1 "
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
@@ -235,61 +226,28 @@ def train(args: ScriptArgs):
             "--pipeline-model-parallel-size 8 "
             "--decoder-first-pipeline-num-layers 8 "
             "--decoder-last-pipeline-num-layers 5 "
-            # NOTE: context-parallel is not supported yet
             "--context-parallel-size 1 "
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
     else:
         raise NotImplementedError
-    # TODO
-    # elif args.num_nodes <= 4:
-    #     # TODO remove this temp cfg
-    #     perf_args = (
-    #         "--tensor-model-parallel-size 4 "
-    #         "--sequence-parallel "
-    #         "--pipeline-model-parallel-size 1 "
-    #         "--context-parallel-size 4 "
-    #         "--expert-model-parallel-size 4 "
-    #         "--expert-tensor-parallel-size 1 "
-    #     )
-    # else:
-    #     # TODO choose a good config (currently randomly change to suit 64gpu)
-    #     perf_args = (
-    #         "--tensor-model-parallel-size 8 "
-    #         "--sequence-parallel "
-    #         f"--pipeline-model-parallel-size {1 if args.model_name == 'DeepSeek-V4-285B-5layer' else 4} "
-    #         "--context-parallel-size 2 "
-    #         "--expert-model-parallel-size 16 "
-    #         "--expert-tensor-parallel-size 1 "
-    #     )
-    #     if re.search(r"(\d+)layer", args.model_name) is None:
-    #         perf_args += "--decoder-last-pipeline-num-layers 13 "
 
     perf_args += (
-        # ------------
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
-        # ------------
-        # "--use-dynamic-batch-size "
         "--micro-batch-size 1 "
-        # TODO temp use tiny value
         "--max-tokens-per-gpu 2048 "
-        # "--max-tokens-per-gpu 16384 "
     )
 
     grpo_args = (
         "--advantage-estimator grpo "
-        # TODO run-deepseek-r1.sh enables use-kl-loss but w/ coef 0. can we just disable it like this?
-        # "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
-        # "--use-miles-router "
-        # "--use-rollout-routing-replay "
     )
 
     optimizer_args = (
@@ -315,16 +273,11 @@ def train(args: ScriptArgs):
         f"--sglang-dp-size {sglang_world_size} "
         "--sglang-enable-dp-attention "
 
-        # TODO some will be default arguments, some should be updated
         "--sglang-disable-radix-cache "
         "--sglang-attention-backend compressed "
         "--sglang-page-size 256 "
         f"--sglang-max-running-requests {16 * sglang_world_size} "
         "--sglang-chunked-prefill-size 8192 "
-        # TODO improve this
-        # if not specify this will oom at single h200, not sure why
-        # NOTE: *cannot* enable this on 48gpu H200, o/w get negative pool size
-        # "--sglang-max-total-tokens 100000 "
 
         "--sglang-server-concurrency 1024 "
         "--router-health-success-threshold 1 "
@@ -332,27 +285,17 @@ def train(args: ScriptArgs):
         "--router-health-failure-threshold 40 "  # TODO improve
     )
     extra_env_vars = {
-        # TODO this will be default arguments
         "SGLANG_HACK_V4_SET_K_AND_S_BACKEND": "triton",
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_SKIP_SECOND_APT_CONVERT": "1",
     }
 
     misc_args = (
-        # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
-        # should be good for model performance
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        # need to comment this when using model with MLA
-        # "--attention-backend flash "
         f"--update-weight-buffer-size {4 * 1024 ** 3} "
-        # TODO maybe enable it
-        # use deepep for megatron
-        # "--moe-enable-deepep "
-        # "--moe-token-dispatcher-type flex "
-        # ------------
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
@@ -361,11 +304,9 @@ def train(args: ScriptArgs):
         "--disable-weights-backuper "
         "--model-name deepseekv4 "  # for mbridge load
         "--train-memory-margin-bytes 1073741824 "
-        # "--check-weight-update-equal "
         "--qkv-format bshd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
-        # TODO is this ok?
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
@@ -429,7 +370,6 @@ def train(args: ScriptArgs):
     U.execute_train(
         train_args=train_args,
         config=args,
-        # TODO may get it from `config`
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**extra_env_vars},

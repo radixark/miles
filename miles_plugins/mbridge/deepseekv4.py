@@ -8,38 +8,29 @@ from mbridge.models import DeepseekV3Bridge
 class DeepseekV4Bridge(DeepseekV3Bridge):
     _ATTENTION_MAPPING = DeepseekV3Bridge._ATTENTION_MAPPING.copy()
 
-    # Remove fused layernorm mappings (V4 uses separate layernorms)
     _ATTENTION_MAPPING.pop("self_attention.linear_q_up_proj.layer_norm_weight", None)
     _ATTENTION_MAPPING.pop("self_attention.linear_kv_up_proj.layer_norm_weight", None)
 
-    # V4 Attention uses different naming (wq_a, wkv, etc.)
     _ATTENTION_MAPPING.update(
         {
-            # Q projection
             "self_attention.wq_a.weight": ["model.layers.{layer_number}.self_attn.wq_a.weight"],
             "self_attention.q_norm.weight": ["model.layers.{layer_number}.self_attn.q_norm.weight"],
             "self_attention.wq_b.weight": ["model.layers.{layer_number}.self_attn.wq_b.weight"],
-            # KV projection
             "self_attention.wkv.weight": ["model.layers.{layer_number}.self_attn.wkv.weight"],
             "self_attention.kv_norm.weight": ["model.layers.{layer_number}.self_attn.kv_norm.weight"],
-            # O projection
             "self_attention.wo_a.weight": ["model.layers.{layer_number}.self_attn.wo_a.weight"],
             "self_attention.wo_b.weight": ["model.layers.{layer_number}.self_attn.wo_b.weight"],
-            # Attention sink
             "self_attention.attn_sink": ["model.layers.{layer_number}.self_attn.attn_sink"],
-            # Compressor
             "self_attention.compressor.ape": ["model.layers.{layer_number}.self_attn.compressor.ape"],
             "self_attention.compressor.wkv.weight": ["model.layers.{layer_number}.self_attn.compressor.wkv.weight"],
             "self_attention.compressor.wgate.weight": ["model.layers.{layer_number}.self_attn.compressor.wgate.weight"],
             "self_attention.compressor.norm.weight": ["model.layers.{layer_number}.self_attn.compressor.norm.weight"],
-            # DSA Indexer (V4 has indexer directly under self_attention)
             "self_attention.indexer.linear_wq_b.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.wq_b.weight"
             ],
             "self_attention.indexer.linear_weights_proj.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"
             ],
-            # Indexer's nested compressor
             "self_attention.indexer.compressor.ape": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.ape"
             ],
@@ -55,7 +46,6 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         }
     )
 
-    # Hyper-Connection (layer level, directly under layer, not self_attn)
     _OTHER_MAPPING = {
         "hc_attn_fn": ["model.layers.{layer_number}.hc_attn_fn"],
         "hc_attn_base": ["model.layers.{layer_number}.hc_attn_base"],
@@ -68,7 +58,6 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
     _MLP_MAPPING = DeepseekV3Bridge._MLP_MAPPING.copy()
     _MLP_MAPPING.update(
         {
-            # Hash routing tid2eid
             "mlp.router.tid2eid": ["model.layers.{layer_number}.mlp.topk.tid2eid"],
         }
     )
@@ -86,8 +75,6 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         try:
             return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
         except NotImplementedError:
-            # The parent class, DeepseekV3Bridge, does not handle OTHER_MAPPING and directly throw
-            # thus we override and handle
             return self._weight_name_mapping_other(mcore_weights_name)
 
     def _build_config(self):
@@ -95,22 +82,18 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
 
         config.attention_backend = AttnBackend.auto
 
-        # DSA Indexer config (same as V3.2)
         config.experimental_attention_variant = "dsv4"
         config.dsa_indexer_n_heads = getattr(self.hf_config, "index_n_heads", 64)
         config.dsa_indexer_head_dim = getattr(self.hf_config, "index_head_dim", 128)
         config.dsa_indexer_topk = getattr(self.hf_config, "index_topk", 512)
 
-        # V4 Hyper-Connection config
         config.dsv4_hc_mult = getattr(self.hf_config, "hc_mult", 4)
         config.dsv4_hc_sinkhorn_iters = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
         config.dsv4_hc_eps = getattr(self.hf_config, "hc_eps", 1e-6)
 
-        # V4 Compress config
         config.dsv4_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
         config.dsv4_compress_rope_theta = getattr(self.hf_config, "compress_rope_theta", 160000)
 
-        # V4 Attention config
         config.dsv4_o_groups = getattr(self.hf_config, "o_groups", 8)
         config.dsv4_o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
         config.dsv4_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)

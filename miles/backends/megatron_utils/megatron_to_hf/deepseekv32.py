@@ -22,7 +22,6 @@ def convert_deepseekv32_to_hf(args, name, param):
     if match:
         layer_idx, rest = match.groups()
 
-        # experts
         expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
         match = re.match(expert_pattern, rest)
         if match:
@@ -38,23 +37,10 @@ def convert_deepseekv32_to_hf(args, name, param):
                 outputs = [
                     (f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.down_proj.weight", param),
                 ]
-                # TODO: seems deprecated?
-                # if parse(sglang.__version__) < parse("0.4.9.post5") and args.sglang_enable_ep_moe:
-                #     outputs += [
-                #         (
-                #             f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.down_proj.input_scale",
-                #             torch.tensor(1.0, dtype=torch.float32, device=param.device),
-                #         ),
-                #         (
-                #             f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.down_proj.weight_scale",
-                #             torch.tensor(1.0, dtype=torch.float32, device=param.device),
-                #         ),
-                #     ]
                 return outputs
             else:
                 raise ValueError(f"Unknown expert parameter name: {name}")
 
-        # shared expert
         shared_expert_pattern = r"mlp.shared_experts\.(.+)"
         match = re.match(shared_expert_pattern, rest)
         if match:
@@ -115,7 +101,6 @@ def convert_deepseekv32_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.kv_b_proj.weight", param)]
         elif rest == "pre_mlp_layernorm.weight":
             return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
-        # DSA Indexer parameters
         elif rest == "self_attention.core_attention.indexer.linear_wq_b.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.wq_b.weight", param)]
         elif rest == "self_attention.core_attention.indexer.linear_wk.weight":

@@ -76,12 +76,10 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.linear_q_up_proj.weight",
         "self_attention.linear_kv_down_proj.weight",
         "self_attention.linear_kv_up_proj.weight",
-        # deepseek v4 attention (wo_a uses quant_config=None, so keep bf16)
         "self_attention.wq_a.weight",
         "self_attention.wq_b.weight",
         "self_attention.wkv.weight",
         "self_attention.wo_b.weight",
-        # dsa indexer
         "self_attention.indexer.linear_wq_b.weight",
         "self_attention.indexer.linear_wk.weight",
     ]:
@@ -100,23 +98,12 @@ def _quantize_param(name, weight, weight_block_size, if_use_ue8m0_in_moe=True):
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
     if weight_block_size is not None:
-        # if (
-        #     should_deepgemm_weight_requant_ue8m0
-        #     and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size)
-        #     and if_use_ue8m0_in_moe
-        # ):
-        # sunrise use triton moe now, but use deep_gemm for attn projection
         is_moe = any(moe_keyword in name for moe_keyword in ['mlp', 'ffn'])
-        # NOTE: hopper DeepGEMM do not have ue8m0 format
         should_quant_ue8m0 = (not is_moe) and is_blackwell_supported()
         if should_quant_ue8m0:
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
-            # sunrise: sglang use this per_block_cast_to_fp8, which may cause different scale because 
-            # per_block_cast_to_fp8 use ceil_to_ue8m0 for scale (2^n power),
-            # while blockwise_cast_to_fp8_triton use linear scale (absmax / 448)
-            # so use this quantization function to achieve exact match
             if True: # TODO: add a flag to choose quantize method
                 qweight, scale = per_block_cast_to_fp8(weight)
             else:

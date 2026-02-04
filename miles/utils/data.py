@@ -200,7 +200,6 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                ### DSV32
                 try:
                     prompt = tokenizer.apply_chat_template(
                         prompt,
@@ -214,7 +213,6 @@ class Dataset:
 
                     encode_config = dict(thinking_mode="thinking", drop_thinking=True, add_default_bos_token=True)
                     prompt = encode_messages(prompt, **encode_config)
-                ### DSV32
                 output_prompt = prompt
             else:
                 output_prompt = prompt

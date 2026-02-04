@@ -40,7 +40,6 @@ def convert_checkpoint(
     if multinode:
         # This variable can be provided via:
         # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
-        # or comma-separated: `export SLURM_JOB_HOSTNAMES=10.0.0.1,10.0.0.2`
         print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
         hostnames_raw = os.environ["SLURM_JOB_HOSTNAMES"].strip()
         job_hostnames = hostnames_raw.split(",") if "," in hostnames_raw else hostnames_raw.split("\n")
@@ -54,7 +53,6 @@ def convert_checkpoint(
 
     exec_command(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        # Use installed Megatron instead of hardcoded path
         f"PYTHONPATH={megatron_path} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
@@ -147,7 +145,6 @@ def execute_train(
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                # Use installed Megatron instead of hardcoded path
                 "PYTHONPATH": f"{megatron_path}",
                 # If setting this in FSDP, the computation communication overlapping may have issues
                 **(

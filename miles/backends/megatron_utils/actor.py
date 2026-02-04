@@ -239,7 +239,6 @@ class MegatronTrainRayActor(TrainRayActor):
             replay_data = [pad_func(r, 1) for r in replay_data]
             # TODO: maybe extract a common process function for here and get_batch?
 
-            # Handle qkv_format consistently with get_batch
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
                 replay_data = [

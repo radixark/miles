@@ -81,7 +81,6 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
             )
         ]
 
-    # TODO unify
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:

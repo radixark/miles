@@ -55,7 +55,6 @@ def main(fp8_path, bf16_path):
         DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(tensor_name): file_name
         for tensor_name, file_name in weight_map_raw.items()
     }
-    # print(f"{weight_map_renamed=}")
 
     # Cache for loaded safetensor files
     loaded_files = {}
@@ -86,7 +85,6 @@ def main(fp8_path, bf16_path):
 
         new_state_dict = {}
         for weight_name_raw, weight in current_state_dict.items():
-            # HACK, probably not need this when sunrise publishs final model
             weight_name = DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(weight_name_raw)
 
             if weight_name.endswith("_scale_inv"):
@@ -106,13 +104,9 @@ def main(fp8_path, bf16_path):
 
         for weight_name, weight in new_state_dict.items():
             if weight_name.endswith(".compressor.ape"):
-                # Only convert C4 (overlap=True) ape, not C128
-                # C4: shape = (4, 2*head_dim), C128: shape = (128, head_dim)
                 if weight.shape[0] == 4:
-                    # ----------------- ref code's conversion ----------------
                     ape = torch.chunk(weight, 2, dim=-1)
                     ape = torch.cat([ape[1], ape[0]], dim=-1)
-                    # --------------------------------------------------------
                     new_state_dict[weight_name] = ape
                     print(f"Converted APE (C4): {weight_name}")
                 else:

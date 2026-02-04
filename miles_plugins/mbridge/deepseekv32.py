@@ -8,7 +8,6 @@ from mbridge.models import DeepseekV3Bridge
 class DeepseekV32Bridge(DeepseekV3Bridge):
     _ATTENTION_MAPPING = DeepseekV3Bridge._ATTENTION_MAPPING.copy()
 
-    # Because the indexer needs the norm output, we cannot use the fused transformer engine impl and have to compute it separately.
     if "self_attention.linear_q_up_proj.layer_norm_weight" in _ATTENTION_MAPPING:
         del _ATTENTION_MAPPING["self_attention.linear_q_up_proj.layer_norm_weight"]
     if "self_attention.linear_kv_up_proj.layer_norm_weight" in _ATTENTION_MAPPING:
