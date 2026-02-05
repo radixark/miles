@@ -95,6 +95,8 @@ class DiffusionRouter:
                                 f"[diffusion-router] Worker {url} failed {threshold} consecutive checks. Marking DEAD."
                             )
                             self.dead_workers.add(url)
+                            # Dead workers are permanently excluded. Reconnecting them
+                            # would risk serving stale weights after training has moved on.
                     else:
                         self.worker_failure_counts[url] = 0
 

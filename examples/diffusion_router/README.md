@@ -25,7 +25,7 @@ curl -X POST 'http://localhost:30080/add_worker?url=http://localhost:10090'
 | `POST` | `/add_worker` | Register a diffusion worker (`?url=...` or JSON body) |
 | `GET` | `/list_workers` | List registered workers |
 | `POST` | `/update_weights_from_disk` | Broadcast weight reload to all workers |
-| `*` | `/{path}` | Catch-all proxy to least-loaded worker |
+| `GET, POST, PUT, DELETE` | `/{path}` | Catch-all proxy to least-loaded worker |
 
 ## Load Balancing
 
@@ -62,7 +62,7 @@ curl -X POST http://localhost:30080/update_weights_from_disk \
 --port                          Port (default: 30080)
 --worker-urls                   Initial worker URLs
 --max-connections               Max concurrent connections (default: 100)
---timeout                       Request timeout in seconds
+--timeout                       Request timeout in seconds for router-to-worker requests
 --health-check-interval         Seconds between health checks (default: 10)
 --health-check-failure-threshold  Failures before quarantine (default: 3)
 --verbose                       Enable verbose logging
