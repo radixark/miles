@@ -7,7 +7,7 @@ You can find all arguments by running:
 python3 train.py --help
 ```
 
-## Argument Naming Conventions
+## Argument Sources
 
 Miles acts as an orchestrator that integrates multiple frameworks. To help identify where an argument is directed, we follow these prefix conventions:
 
@@ -16,10 +16,10 @@ Miles acts as an orchestrator that integrates multiple frameworks. To help ident
 *   **No Prefix**: Default arguments corresponding to **Megatron-LM** (when using the Megatron backend) or **Miles native** configuration.
 *   **`--fsdp-*`**: Specific arguments for the experimental **FSDP** backend.
 
-**Note on Sources:**
-Arguments labeled as **Megatron-LM (Reset by Miles)** are native Megatron-LM parameters where Miles has modified the default value or behavior to better suit RL training workflows.
+**Note** that Arguments labeled as **Megatron-LM (Reset by Miles)** are native Megatron-LM parameters where Miles has modified the default value or behavior to better suit RL training workflows.
 
 ## Table of Contents
+
 1. [Cluster and Resource Management](#cluster-and-resource-management)
 2. [Training Backend](#training-backend)
 3. [Rollout Management](#rollout-management)
@@ -43,8 +43,6 @@ Arguments labeled as **Megatron-LM (Reset by Miles)** are native Megatron-LM par
 21. [Advanced Developer Hooks and CI](#advanced-developer-hooks-and-ci)
 22. [Miscellaneous and System](#miscellaneous-and-system)
 
----
-
 ## Cluster and Resource Management
 
 Arguments for configuring Ray cluster resources and GPU allocation.
@@ -63,7 +61,7 @@ Arguments for configuring Ray cluster resources and GPU allocation.
 | `--distributed-backend` | Backend for distributed communication. | `nccl` | `nccl`, `gloo` | Megatron-LM (Reset by Miles) |
 | `--distributed-timeout-minutes` | Timeout for distributed operations in minutes. | `10` | Type: int | Megatron-LM (Reset by Miles) |
 
----
+Note that most use cases do not need to consider offload parameters, including `--offload-rollout, --no-offload-rollout, --offload-training, --no-offload-training`. They are used only on AMD GPUs and will eventually be removed. [Please help me check this].
 
 ## Training Backend
 
