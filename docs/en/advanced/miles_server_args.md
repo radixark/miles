@@ -237,15 +237,15 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--eps-clip-high` | PPO clip upper range (defaults to `--eps-clip` if not set). | `None` | Type: float | Miles Native |
 | `--eps-clip-c` | Lower bound for [Dual-clip PPO](https://arxiv.org/pdf/1912.09729). | `None` | Type: float | Miles Native |
 | `--value-clip` | Clip range for value loss. | `0.2` | Type: float | Miles Native |
-| `--kl-coef` | KL penalty coefficient for reward shaping. This is applied to the reward signal before advantage calculation. | `0.00` | Type: float | Miles Native |
+| `--kl-coef` | KL penalty coefficient for reward shaping. This is applied to the reward signal before advantage calculation for PPO and REINFORCE-style estimator. | `0.00` | Type: float | Miles Native |
 | `--use-kl-loss` | Enable KL loss term in the final objective (as in GRPO). | `False` | bool flag (set to enable) | Miles Native |
 | `--kl-loss-coef` | Weight of the KL loss term in the final objective. | `0.0` | Type: float | Miles Native |
-| `--kl-loss-type` | Selection of the KL loss implementation. | `k1` | `k1`, `k2`, `k3`, `low_var_kl` | Miles Native |
-| `--use-unbiased-kl` | Enable unbiased KL estimation. | `False` | bool flag (set to enable) | Miles Native |
-| `--entropy-coef` | Coefficient for entropy regularization. | `0.0` | Type: float | Miles Native |
-| `--gamma` | PPO GAE gamma. | `1.0` | Type: float | Miles Native |
+| `--kl-loss-type` | Selection of the KL loss implementation. See [Approximating KL Divergence](http://joschu.net/blog/kl-approx.html) for more details. | `k1` | `k1`, `k2`, `k3`, `low_var_kl` | Miles Native |
+| `--use-unbiased-kl` | Apply Importance Sampling (IS) correction to the KL estimator. Reduces bias from distribution shift. | `False` | bool flag (set to enable) | Miles Native |
+| `--entropy-coef` | Coefficient for entropy regularization term. Penalizes low entropy to encourage exploration and prevent premature convergence. | `0.0` | Type: float | Miles Native |
+| `--gamma` | Discount factor for future rewards. Used in PPO (GAE) and REINFORCE++. | `1.0` | Type: float | Miles Native |
 | `--lambd` | PPO GAE lambda. | `1.0` | Type: float | Miles Native |
-| `--normalize-advantages` | Normalize advantages within each batch. | `False` | bool flag (set to enable) | Miles Native |
+| `--normalize-advantages` | Performs distributed masked whitening of advantages. Normalization statistics are computed globally across the Data-Parallel group, ignoring padding tokens. | `False` | bool flag (set to enable) | Miles Native |
 | `--disable-compute-advantages-and-returns` | Disables the calculation of advantages and returns. This is typically used for SFT or custom loss functions where value estimation is not required. | `False` | bool flag (set to enable) | Miles Native |
 | `--use-tis` | Enable Token-level Importance Sampling (TIS) from this [blog](https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33). | `False` | bool (set to enable) | Miles Native |
 | `--tis-clip` | Clipping threshold C for importance sampling ratios to control variance. | `2.0` | Type: float | Miles Native |
@@ -254,15 +254,15 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--custom-pg-loss-reducer-function-path` | Custom reducer function for policy gradient loss. See [customization](../get_started/customization.md#11-custom-pg-loss-reducer---custom-pg-loss-reducer-function-path) for more details. | `None` | Type: str | Miles Native |
 | `--use-routing-replay` | Enable [Routing Replay](https://arxiv.org/abs/2507.18071). | `False` | bool flag (set to enable) | Miles Native |
 | `--use-rollout-routing-replay` | Enable R3: [Rollout Routing Replay](https://arxiv.org/pdf/2510.11370). | `False` | bool flag (set to enable) | Miles Native |
-| `--use-opsm` | Enable Off-Policy Sequence Masking (OPSM). | `False` | bool flag (set to enable) | Miles Native |
+| `--use-opsm` | Enable Off-Policy Sequence Masking (OPSM). Filters sequences that have **BOTH** negative advantages (bad results) AND high KL divergence (stale data). This stabilizes training by preventing updates from unreliable, highly off-policy samples. | `False` | bool flag (set to enable) | Miles Native |
 | `--opsm-delta` | The threshold for Off-Policy Sequence Masking (OPSM). | `1e-4` | Type: float | Miles Native |
-| `--get-mismatch-metrics` | Whether to calculate the mismatch metrics. It will **only return mismatch metrics** but not change the loss in any way. | `False` | bool flag (set to enable) | Miles Native |
+| `--get-mismatch-metrics` | Calculate mismatch metrics. If it is set, you need to provide a custom TIS function via `--custom-tis-function-path`. | `False` | bool flag (set to enable) | Miles Native |
 | `--ref-update-interval` | Interval (in rollout steps) to update ref model from actor. If `None`, ref model is not updated. | `None` | Type: int | Miles Native |
 | `--reset-optimizer-states` | Resets the optimizer state after each rollout round. This clears the optimization history, which can improve stability or satisfy specific experimental requirements. | `False` | bool flag (set to enable) | Miles Native |
 | `--disable-grpo-std-normalization` | Disable standard deviation normalization for GRPO. From [Dr.GRPO](https://arxiv.org/pdf/2503.20783) | `False` | bool flag (set to enable) | Miles Native |
-| `--disable-rewards-normalization` | Disable rewards normalization. | `False` | bool flag (set to enable) | Miles Native |
-| `--use-rollout-entropy` | Enable entropy calculation when calculating the logprobs from actor and reference model. This is useful for doing special loss mask. | `False` | bool flag (set to enable) | Miles Native |
-| `--use-rollout-logprobs` | Use rollout logprobs for importance sampling ratios, use the logprobs from the actor model if not set. | `False` | bool flag (set to enable) | Miles Native |
+| `--disable-rewards-normalization` | Disable the default group-wise reward normalization for GRPO, GSPO, and REINFORCE++. This effectively skips the baseline subtraction step. | `False` | bool flag (set to enable) | Miles Native |
+| `--use-rollout-entropy` | Enable entropy calculation when calculating the logprobs from actor and reference model. This is useful for implementing custom entropy-based loss masking. | `False` | bool flag (set to enable) | Miles Native |
+| `--use-rollout-logprobs` | Use rollout logprobs for importance sampling ratios, use the logprobs from the actor model if not set. If `--get-mismatch-metrics` is set, the log probs will be recomputed by training engine, one more forward pass will be applied. | `False` | bool flag (set to enable) | Miles Native |
 | `--calculate-per-token-loss` | Calculate loss on a per-token basis. | `False` | bool flag (set to enable) | Megatron-LM (Reset by Miles) |
 | `--seed` | Random seed for the training process. | `1234` | Type: int | Megatron-LM (Reset by Miles) |
 | `--clip-grad` | Maximum gradient norm for gradient clipping. | `1.0` | Type: float | Megatron-LM (Reset by Miles) |
@@ -283,7 +283,7 @@ Arguments for WandB, Tensorboard, and general logging.
 | `--wandb-host` | WandB host address. | `None` | Type: str | Miles Native |
 | `--wandb-key` | WandB API key. | `None` | Type: str | Miles Native |
 | `--wandb-run-id` | Specific WandB run ID to resume. | `None` | Type: str | Miles Native |
-| `--wandb-dir` | Directory to store WandB logs. Default is ./wandb in current directory. | `None` | Type: str | Miles Native |
+| `--wandb-dir` | Directory to store WandB logs. Default is `./wandb` in current directory. | `None` | Type: str | Miles Native |
 | `--disable-wandb-random-suffix` | Disable adding a random suffix to the WandB run name. By default, we will add a random 6 length string with characters to the run name. | `False` | bool flag (set to enable) | Miles Native |
 | `--wandb-always-use-train-step` | Use training steps instead of rollout steps for the x-axis. | `False` | bool flag (set to enable) | Miles Native |
 | `--use-tensorboard` | Enable Tensorboard logging. | `False` | bool flag (set to enable) | Miles Native |
@@ -316,7 +316,7 @@ Arguments for the specialized Miles text-based router.
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--use-miles-router` | Use text-based routing instead of token-based routing. | `False` | bool fla (set to enable) | Miles Native |
+| `--use-miles-router` | Use text-based routing instead of token-based routing. | `False` | bool flag (set to enable) | Miles Native |
 | `--miles-router-middleware-paths` | Paths to custom MilesRouter middleware functions. See [customization](../get_started/customization.md#18-miles-router-middleware---miles-router-middleware-paths) for more details. | `""` | Type: List[str] | Miles Native |
 | `--miles-router-timeout` | Timeout for router HTTP requests in seconds. | `None` | Type: float | Miles Native |
 | `--miles-router-max-connections` | Max connections for MilesRouter HTTP client. | `None` | Type: int | Miles Native |
@@ -335,7 +335,7 @@ Arguments for configuring reward signals and post-processing.
 | `--reward-key` | JSON key to extract the numerical reward from a returned dictionary if reward model return a dict instead of a value. | `None` | Type: str | Miles Native |
 | `--eval-reward-key` | Evaluation variant for `--reward-key`. | `None` | Type: str | Miles Native |
 | `--custom-rm-path` | Path to a custom Python reward function. See [customization](../get_started/customization.md#3-reward-model---custom-rm-path) for more details. | `None` | Type: str | Miles Native |
-| `--group-rm` | Compute rewards for an entire group of samples at once. | `False` | bool flag (set to enable) | Miles Native |
+| `--group-rm` | Defer reward computation to process the entire group of samples (per-prompt) at once. Essential for comparative/ranking reward models and improves throughput. **Training only**. | `False` | bool flag (set to enable) | Miles Native |
 | `--custom-reward-post-process-path` | Path to a custom reward post-processor. See [customization](../get_started/customization.md#12-reward-post-processing---custom-reward-post-process-path) for more details. | `None` | Type: str | Miles Native |
 | `--custom-convert-samples-to-train-data-path` | Path to a custom data format converter. See [customization](../get_started/customization.md#13-samples-to-train-data-conversion---custom-convert-samples-to-train-data-path) for more details. | `None` | Type: str | Miles Native |
 
