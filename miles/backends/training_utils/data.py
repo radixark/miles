@@ -56,7 +56,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
     if "rollout_log_probs" in rollout_data:
-        if parallel_state.cp_comm_type == "allgather":
+        if parallel_state.uses_contiguous_cp:
             rollout_data["rollout_log_probs"] = [
                 torch.tensor(log_prob, device=torch.cuda.current_device(), dtype=torch.float32)
                 for log_prob in rollout_data["rollout_log_probs"]
@@ -133,9 +133,8 @@ def get_batch(
     batch["unconcat_tokens"] = tokens
 
     cp_size = parallel_state.cp_size
-    cp_comm_type = parallel_state.cp_comm_type
 
-    if cp_comm_type == "allgather":
+    if parallel_state.uses_contiguous_cp:
         assert qkv_format == "thd"
         cp_rank = parallel_state.cp_rank
         # Pack sequences

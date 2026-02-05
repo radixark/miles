@@ -76,8 +76,7 @@ def get_responses(
     logits = logits.div(args.rollout_temperature)
 
     cp_size = parallel_state.cp_size
-    cp_comm_type = parallel_state.cp_comm_type
-    if cp_comm_type == "allgather":
+    if parallel_state.uses_contiguous_cp:
         if cp_size == 1:
             end = 0
             for tokens, total_length, response_length in zip(
@@ -89,7 +88,7 @@ def get_responses(
                 tokens_chunk = tokens[-response_length:]
                 yield logits_chunk, tokens_chunk
         else:
-            # All-gather CP
+            # Contiguous slicing
             chunk_size = batch["chunk_size"]
             assert chunk_size == logits.size(0), f"{chunk_size} vs {logits.size(0)}"
 
@@ -99,16 +98,13 @@ def get_responses(
 
             for i, (tokens, offset) in enumerate(zip(unconcat_tokens, offsets, strict=False)):
                 if offset["local_logits_start"] >= 0:
-                    # Extract logits from local chunk
                     logits_chunk = logits[offset["local_logits_start"] : offset["local_logits_end"]]
 
-                    # Extract corresponding tokens
                     prompt_len = total_lengths[i] - response_lengths[i]
                     resp_start = offset["response_offset_start"]
                     resp_end = offset["response_offset_end"]
                     tokens_chunk = tokens[prompt_len + resp_start : prompt_len + resp_end]
                 else:
-                    # This sequence has no logits in local chunk
                     logits_chunk = logits.new_empty(0, logits.size(-1))
                     tokens_chunk = tokens.new_empty(0)
 

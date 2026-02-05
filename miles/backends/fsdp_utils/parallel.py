@@ -7,7 +7,7 @@ from torch.distributed.device_mesh import init_device_mesh
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from ..training_utils.parallel import ParallelState
+from ..training_utils.parallel import CPSlicing, ParallelState
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,10 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     # Setup Ring Flash Attention with CP group from mesh (only when cp_size > 1)
     if cp_size > 1:
         substitute_hf_flash_attn(mesh.get_group("cp"), heads_k_stride=1)
-        cp_comm_type = "allgather"
+        cp_slicing = CPSlicing.CONTIGUOUS
         logger.info(f"[Rank {rank}] CP initialized via device mesh")
     else:
-        cp_comm_type = None
+        cp_slicing = None
         logger.info(f"[Rank {rank}] Pure DP mode (cp_size=1)")
 
     parallel_state = ParallelState(
@@ -50,7 +50,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         dp_cp_group=dist.group.WORLD,
         dp_cp_group_gloo=get_gloo_group(),
         cp_group=mesh.get_group("cp"),
-        cp_comm_type=cp_comm_type,
+        cp_slicing=cp_slicing,
         tp_size=1,
         tp_rank=0,
         tp_group=dist.new_group([rank]),
