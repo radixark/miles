@@ -1,3 +1,8 @@
 .github/CODEOWNERS @fzyzcjy @Ying1123
 .github/workflows/ @yushengsu-thu
 /miles/ @fzyzcjy @yueming-yuan
+/miles/backends/ @maocheng23
+/miles/ray/ @maocheng23
+/miles/rollout/ @guapisolo
+/miles/router/ @guapisolo
+/miles/utils/ @guapisolo @maocheng23
