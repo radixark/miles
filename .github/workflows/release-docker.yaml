@@ -91,7 +91,7 @@ jobs:
           COPY sglang /root/sglang
           RUN cd /root/sglang/python && pip install -e .
           COPY miles /root/miles
-          RUN cd /tmp && rm -rf transformers && git clone https://github.com/huggingface/transformers.git && cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc && git apply /root/miles/docker/deepseekv32/transformers.patch && pip install -e .
+          RUN cd /tmp && rm -rf transformers && git clone https://github.com/huggingface/transformers.git && cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc && pip install -e .
           RUN cd /root/miles && pip install -e .
           EOF
 
