@@ -34,7 +34,7 @@ on:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest-8-core  # Try 8-core runner (fallback to ubuntu-latest if not available)
+    runs-on: ubuntu-latest-8-core  # What runners do we have available for miles?
     steps:
       - name: Clone repositories
         env:
