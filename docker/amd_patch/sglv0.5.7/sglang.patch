@@ -1,0 +1,36 @@
+diff --git a/python/sglang/srt/distributed/parallel_state.py b/python/sglang/srt/distributed/parallel_state.py
+index 8e3429dec..494a754b3 100644
+--- a/python/sglang/srt/distributed/parallel_state.py
++++ b/python/sglang/srt/distributed/parallel_state.py
+@@ -1849,7 +1849,10 @@ def get_tensor_model_parallel_world_size():
+ 
+ def get_tensor_model_parallel_rank():
+     """Return my rank for the tensor model parallel group."""
+-    return get_tp_group().rank_in_group
++    try:
++        return get_tp_group().rank_in_group
++    except Exception:
++        return 0
+ 
+ 
+ def get_pipeline_model_parallel_world_size():
+diff --git a/python/sglang/srt/models/qwen3_next.py b/python/sglang/srt/models/qwen3_next.py
+index b38a83d57..a492e3ef8 100644
+--- a/python/sglang/srt/models/qwen3_next.py
++++ b/python/sglang/srt/models/qwen3_next.py
+@@ -45,13 +45,14 @@ from sglang.srt.utils import (
+     LazyValue,
+     add_prefix,
+     is_cuda,
++    is_cuda_alike,
+     is_npu,
+     make_layers,
+     set_weight_attrs,
+ )
+ 
+ logger = logging.getLogger(__name__)
+-_is_cuda = is_cuda()
++_is_cuda = is_cuda_alike()
+ _is_npu = is_npu()
+ 
+ 
