@@ -8,7 +8,14 @@
     'unit-test': {
       'label': 'run-unit-test',
       'tests': [
-        {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 2}
+        {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 2} 
+      ],
+    },    
+    'e2e-test-sglang': {
+      'label': 'run-ci-sglang',
+      'test_executor': 'pytest',
+      'tests': [
+        {'test_file': 'e2e/sglang_patch/test_chat_input_ids_equivalence.py', 'num_gpus': 1},
       ],
     },
     'e2e-test-short': {
@@ -166,14 +173,4 @@ jobs:
       - name: Execute
         shell: bash
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- << config.test_executor | default('python') >> tests/${{ matrix.info.test_file }}
-
-      - name: Post-test cleanup
-        if: always()
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-
 <% endfor %>
