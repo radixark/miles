@@ -546,10 +546,13 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             args=args, num_engines=num_engines, rollout_engines=rollout_engines
         )
 
-    # TODO: don't ray.get here to overlap train actor init with rollout engine init.
-    # somehow if we don't sync here, the --debug-rollout-only mode will crash.
-    init_handles = [engine.init.remote(**(addr_and_ports[rank])) for rank, engine in rollout_engines]
-    ray.get(init_handles)
+    # Initialize engines sequentially to avoid transient GPU memory spikes from
+    # simultaneous CUDA context creation. When multiple engines start at once with
+    # RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1, each can briefly allocate memory
+    # on other GPUs during NCCL init, causing OOM on machines with tight memory margins.
+    for rank, engine in rollout_engines:
+        logger.info(f"Initializing rollout engine {rank}...")
+        ray.get(engine.init.remote(**(addr_and_ports[rank])))
 
     return num_new_engines
 

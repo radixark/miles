@@ -64,17 +64,44 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     _wait_server_healthy(
         base_url=server_args.url(),
         api_key=server_args.api_key,
-        is_process_alive=lambda: p.is_alive(),
+        process=p,
     )
 
     return p
 
 
-def _wait_server_healthy(base_url, api_key, is_process_alive):
+def _wait_server_healthy(base_url, api_key, process=None, is_process_alive=None):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {api_key}",
     }
+
+    if is_process_alive is None and process is not None:
+        is_process_alive = lambda: process.is_alive()
+    elif is_process_alive is None:
+        is_process_alive = lambda: True
+
+    start_time = time.time()
+
+    def _raise_terminated(phase):
+        elapsed = time.time() - start_time
+        exitcode = getattr(process, "exitcode", None) if process is not None else None
+        msg = (
+            f"Server process terminated unexpectedly during {phase}. "
+            f"exitcode={exitcode}, elapsed={elapsed:.1f}s, url={base_url}"
+        )
+        if exitcode is not None and exitcode < 0:
+            import signal
+
+            try:
+                sig_name = signal.Signals(-exitcode).name
+                msg += f" (killed by {sig_name})"
+            except (ValueError, AttributeError):
+                pass
+        if exitcode == -9:
+            msg += ". This is likely an OOM kill — check GPU memory availability."
+        logger.error(msg)
+        raise RuntimeError(msg)
 
     with requests.Session() as session:
         while True:
@@ -86,7 +113,7 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
                 pass
 
             if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
+                _raise_terminated("health_generate check")
 
             time.sleep(2)
 
@@ -101,7 +128,7 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
                 pass
 
             if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
+                _raise_terminated("flush_cache")
 
             time.sleep(2)
 
