@@ -14,10 +14,32 @@ GATED_PAIR_SUFFIXES = {
 }
 
 
+def _get_ignore_rules(quantization_config) -> list[str]:
+    ignore_rules = quantization_config.get("ignore", []) or []
+    if isinstance(ignore_rules, str):
+        ignore_rules = [ignore_rules]
+    exclude_rules = quantization_config.get("exclude_modules", []) or []
+    if isinstance(exclude_rules, str):
+        exclude_rules = [exclude_rules]
+    return list(ignore_rules) + [rule for rule in exclude_rules if rule not in ignore_rules]
+
+
+def _is_ignored(name: str, ignore_rules: list[str]) -> bool:
+    for rule in ignore_rules:
+        if rule.startswith("re:"):
+            if re.match(rule[3:], name):
+                return True
+            continue
+        if name == rule or name.startswith(f"{rule}."):
+            return True
+    return False
+
+
 def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
     group_size = _resolve_group_size(quantization_config)
+    ignore_rules = _get_ignore_rules(quantization_config)
 
     decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
     match = re.search(decoder_layers_pattern, megatron_name)
@@ -42,7 +64,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
             "linear_fc1",
             "linear_fc2",
         ]:
-            return _quantize_moe_params(converted_named_params, group_size)
+            return _quantize_moe_params(converted_named_params, group_size, ignore_rules)
 
     # shared expert
     shared_expert_pattern = r"mlp.shared_experts\.(.+)"
@@ -53,7 +75,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
             "linear_fc1.weight",
             "linear_fc2.weight",
         ]:
-            return _quantize_moe_params(converted_named_params, group_size)
+            return _quantize_moe_params(converted_named_params, group_size, ignore_rules)
 
     # for other parameters, we just return the original converted_named_params
     return converted_named_params
@@ -66,14 +88,14 @@ def _resolve_group_size(quantization_config):
     return group_size
 
 
-def _quantize_moe_params(converted_named_params, group_size):
+def _quantize_moe_params(converted_named_params, group_size, ignore_rules):
     shared_global_amax = {}
     gated_candidates = {}
     for converted_name, param in converted_named_params:
         base, role = _split_gated_pair_name(converted_name)
         if base is None or role is None:
             continue
-        if _should_quantize_param(converted_name, param, group_size):
+        if _should_quantize_param(converted_name, param, group_size, ignore_rules):
             gated_candidates.setdefault(base, {})[role] = param
 
     for base, roles in gated_candidates.items():
@@ -84,7 +106,7 @@ def _quantize_moe_params(converted_named_params, group_size):
 
     quantize_named_params = []
     for converted_name, param in converted_named_params:
-        if not _should_quantize_param(converted_name, param, group_size):
+        if not _should_quantize_param(converted_name, param, group_size, ignore_rules):
             quantize_named_params.append((converted_name, param))
             continue
         base, _role = _split_gated_pair_name(converted_name)
@@ -100,7 +122,9 @@ def _quantize_moe_params(converted_named_params, group_size):
     return quantize_named_params
 
 
-def _should_quantize_param(name, weight, group_size):
+def _should_quantize_param(name, weight, group_size, ignore_rules):
+    if ignore_rules and _is_ignored(name, ignore_rules):
+        return False
     if not name.endswith(".weight"):
         return False
     if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):

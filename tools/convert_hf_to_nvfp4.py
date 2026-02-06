@@ -1,6 +1,6 @@
 """
 python tools/convert_hf_to_nvfp4.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR]
-                                   [--device DEVICE] [--keep-last-n KEEP_LAST_N]
+                                   [--device DEVICE] [--keep-last-n KEEP_LAST_N] [--keep-first-n KEEP_FIRST_N]
 
 Convert a BF16/FP16/FP32 HF safetensors checkpoint to NVFP4 (E2M1) for MoE
 expert GEMMs only. Dense linear layers are left unmodified.
@@ -73,7 +73,7 @@ def _extract_layer_id(name: str) -> int | None:
 def _get_num_hidden_layers(model_dir: str) -> int:
     config_path = os.path.join(model_dir, "config.json")
     if not os.path.exists(config_path):
-        raise ValueError("config.json is required to use --keep-last-n.")
+        raise ValueError("config.json is required to use --keep-first-n or --keep-last-n.")
     cfg = json.load(open(config_path))
     num_layers = cfg.get("num_hidden_layers")
     if num_layers is None and isinstance(cfg.get("text_config"), dict):
@@ -90,12 +90,37 @@ def _get_last_n_layer_ids(num_layers: int, keep_last_n: int) -> set[int]:
     return set(range(start, num_layers))
 
 
+def _get_first_n_layer_ids(num_layers: int, keep_first_n: int) -> set[int]:
+    if keep_first_n <= 0:
+        return set()
+    end = min(num_layers, keep_first_n)
+    return set(range(0, end))
+
+
 def _build_keep_last_n_ignore_list(num_layers: int, keep_last_n: int) -> list[str]:
     if keep_last_n <= 0:
         return []
     start = max(0, num_layers - keep_last_n)
     ignore_list = []
     for layer_id in range(start, num_layers):
+        prefix = f"model.layers.{layer_id}"
+        ignore_list.extend(
+            [
+                f"{prefix}.self_attn.qkv_proj",
+                f"{prefix}.self_attn.o_proj",
+                f"{prefix}.mlp",
+                f"{prefix}.mlp.experts",
+            ]
+        )
+    return ignore_list
+
+
+def _build_keep_first_n_ignore_list(num_layers: int, keep_first_n: int) -> list[str]:
+    if keep_first_n <= 0:
+        return []
+    end = min(num_layers, keep_first_n)
+    ignore_list = []
+    for layer_id in range(0, end):
         prefix = f"model.layers.{layer_id}"
         ignore_list.extend(
             [
@@ -394,7 +419,7 @@ def process_file(
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
 
 
-def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int) -> None:
+def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int, keep_first_n: int) -> None:
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
     os.makedirs(output_path, exist_ok=True)
@@ -405,9 +430,10 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int) 
 
     safetensors_files = [f for f in os.listdir(input_path) if f.endswith(".safetensors")]
 
-    num_layers = _get_num_hidden_layers(input_path) if keep_last_n > 0 else 0
-    skip_layers = _get_last_n_layer_ids(num_layers, keep_last_n)
+    num_layers = _get_num_hidden_layers(input_path) if (keep_last_n > 0 or keep_first_n > 0) else 0
+    skip_layers = _get_last_n_layer_ids(num_layers, keep_last_n) | _get_first_n_layer_ids(num_layers, keep_first_n)
     keep_last_ignore = _build_keep_last_n_ignore_list(num_layers, keep_last_n)
+    keep_first_ignore = _build_keep_first_n_ignore_list(num_layers, keep_first_n)
 
     shared_global_amax = _collect_shared_global_amax(
         input_path=input_path,
@@ -430,7 +456,7 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int) 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    ignore_list = _augment_ignore_list(result_collector.modules_to_not_convert + keep_last_ignore)
+    ignore_list = _augment_ignore_list(result_collector.modules_to_not_convert + keep_last_ignore + keep_first_ignore)
 
     config_path = os.path.join(input_path, "config.json")
     if os.path.exists(config_path):
@@ -467,6 +493,12 @@ def main() -> None:
         default=0,
         help="Keep the last N transformer layers unquantized (BF16/FP16).",
     )
+    parser.add_argument(
+        "--keep-first-n",
+        type=int,
+        default=0,
+        help="Keep the first N transformer layers unquantized (BF16/FP16).",
+    )
     args = parser.parse_args()
 
     if isinstance(args.device, str) and args.device.isdigit():
@@ -487,7 +519,7 @@ def main() -> None:
     elif not os.path.isdir(args.save_dir):
         raise ValueError("The save_dir should be a directory.")
 
-    convert_nvfp4(args.model_dir, args.save_dir, str(device), args.keep_last_n)
+    convert_nvfp4(args.model_dir, args.save_dir, str(device), args.keep_last_n, args.keep_first_n)
 
 
 if __name__ == "__main__":
