@@ -344,8 +344,7 @@ def _send_lora_to_colocated_engine(
     # Use same serialize method as fsdp
     # FlattenedTensorBucket is not supported for sglang POST /load_lora_adapter_from_tensors 
     # TODO: better approach?
-    # currently lora tensors are managed by torch memory saver, which is not compatiable to CUDA IPC
-    # clone tensor to make it sharable through CUDA IPC
+    # currently lora tensors are managed by torch memory saver, which is not sharable through CUDA IPC
     lora_weights = {name: tensor.detach().clone() for name, tensor in lora_named_tensors}
     long_live_tensors.append(lora_weights)
     serialized_lora = MultiprocessingSerializer.serialize(lora_weights, output_str=True)
