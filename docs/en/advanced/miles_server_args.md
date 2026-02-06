@@ -96,8 +96,6 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | `--context-parallel-size` | Size of context parallelism. | `1` | Type: int | Megatron-LM & FSDP |
 | `--deterministic-mode` | Enable deterministic mode for reproducibility. [Ref](https://lmsys.org/blog/2025-09-22-sglang-deterministic/) | `False` | bool flag (set to enable) | Megatron-LM & FSDP |
 
----
-
 ## Rollout Management
 
 Arguments for configuring the rollout (inference) process and custom rollout logic.
@@ -124,8 +122,6 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 | `--custom-rollout-log-function-path` | Path to a custom function for logging training rollout data. See [customization](../get_started/customization.md#14-logging-functions) for more details. | `None` | Type: str | Miles Native |
 | `--custom-eval-rollout-log-function-path` | Path to a custom function for logging evaluation rollout data. See [customization](../get_started/customization.md#14-logging-functions) for more details. | `None` | Type: str | Miles Native |
 | `--rollout-data-postprocess-path` | Path to a function called after all rollout data (including log probs) is ready. See [customization](../get_started/customization.md#8-rollout-data-postprocess---rollout-data-postprocess-path) for more details. | `None` | Type: str | Miles Native |
-
----
 
 ## Sampling and Filtering
 
@@ -157,12 +153,12 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--metadata-key` | When adding tools during `apply_chat_template`, provide the key for the tools to the prompt dataset. | `"metadata"` | Type: str | Miles Native |
 | `--multimodal-keys` | JSON string for multimodal data mapping media types to data keys. Example: `'{"image": "image_file"}'` | `None` | Type: str | Miles Native |
 | `--tool-key` | JSON key for tool definitions in the prompt dataset (used when applying chat templates). | `"tools"` | Type: str | Miles Native |
-| `--apply-chat-template` | Whether to apply the chat template to the input prompt. The input should be the same structure as an OpenAI message, e.g. `[{'role': 'user', 'content': 'blabla'}]`. | `False` | bool flag (set to enable) | Miles Native |
+| `--apply-chat-template` | Whether to apply the chat template to the input prompt. The input should be the same structure as an OpenAI message, e.g., `[{'role': 'user', 'content': 'blabla'}]`. | `False` | bool flag (set to enable) | Miles Native |
 | `--apply-chat-template-kwargs` | Extra arguments for the chat template processing (JSON string). | `"{}"` | Type: str | Miles Native |
 | `--num-rollout` | Number of rollout steps. If not set, miles will calculate the number of rollout steps from the dataset size. **Note:** This value will be overwritten if `--num-epoch` is also set. | `None` | Type: int | Miles Native |
 | `--num-epoch` | Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. **Note:** This argument takes precedence and will overwrite `--num-rollout` if both are specified. | `None` | Type: int | Miles Native |
 | `--rollout-batch-size` | Number of prompts per rollout batch. The total data returned should be `rollout_batch_size` * `n_samples_per_prompt`. | Required | Type: int | Miles Native |
-| `--n-samples-per-prompt` | Number of responses to generate for each prompt. | `1` | Type: int | Miles Native |
+| `--n-samples-per-prompt` | Number of responses to generate for each prompt, e.g., the group size of GRPO. | `1` | Type: int | Miles Native |
 | `--num-steps-per-rollout` | The number of training steps to perform using the data collected in a single rollout round. Setting this to `n` means the policy model will be updated `n` times using the same batch of rollout data. This parameter will **override** the global batch size using the formula: `(rollout_batch_size * n_samples_per_prompt) // num_steps_per_rollout`. The system ensures that `(rollout-batch-size * n-samples-per-prompt) = (global-batch-size * num-steps-per-rollout)`. If this value is not provided, you have to set `--global-batch-size` explicitly. | `None` | Type: int | Miles Native |
 | `--use-dynamic-batch-size` | Dynamically packs variable-length samples into micro-batches to maximize GPU utilization, ensuring the total token count per batch does not exceed `--max-tokens-per-gpu`. For example, with a 300-token limit, samples of lengths 100, 200, and 300 would be packed into two batches: `[100, 200]` and `[300]`. **Note:** Miles ensures that enabling this optimization does not affect the mathematical correctness of per-sample or per-token loss calculation. It is **strongly recommended** to enable this for maximum efficiency. | `False` | bool flag (set to enable) | Miles Native |
 | `--max-tokens-per-gpu` | The maximum number of tokens (Prompt + Response combined) per GPU for dynamic batch size. This parameter defines the total sequence length budget for packing samples into micro-batches during training. Note that when enabling context parallel (CP), the effective capacity is shared, so the value should be approximately `(Total_Sequence_Length) // cp_size`. | `None` | Type: int | Miles Native |
