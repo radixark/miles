@@ -155,7 +155,7 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--tool-key` | JSON key for tool definitions in the prompt dataset (used when applying chat templates). | `"tools"` | Type: str | Miles Native |
 | `--apply-chat-template` | Whether to apply the chat template to the input prompt. The input should be the same structure as an OpenAI message, e.g., `[{'role': 'user', 'content': 'blabla'}]`. | `False` | bool flag (set to enable) | Miles Native |
 | `--apply-chat-template-kwargs` | Extra arguments for the chat template processing (JSON string). | `"{}"` | Type: str | Miles Native |
-| `--num-rollout` | Number of rollout steps. If not set, miles will calculate the number of rollout steps from the dataset size. **Note:** This value will be overwritten if `--num-epoch` is also set. | `None` | Type: int | Miles Native |
+| `--num-rollout` | Number of rollout steps. If not set, Miles will calculate the number of rollout steps from the dataset size. **Note:** This value will be overwritten if `--num-epoch` is also set. | `None` | Type: int | Miles Native |
 | `--num-epoch` | Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. **Note:** This argument takes precedence and will overwrite `--num-rollout` if both are specified. | `None` | Type: int | Miles Native |
 | `--rollout-batch-size` | Number of prompts per rollout batch. The total data returned should be `rollout_batch_size` * `n_samples_per_prompt`. | Required | Type: int | Miles Native |
 | `--n-samples-per-prompt` | Number of responses to generate for each prompt, e.g., the group size of GRPO. | `1` | Type: int | Miles Native |
@@ -209,7 +209,7 @@ Arguments for saving and loading model states.
 | `--ref-ckpt-step` | The checkpoint step for reference model. | `None` | Type: int | Miles Native |
 | `--critic-load` | Checkpoint to load for the critic model. | value of `--load` | Type: str | Miles Native |
 | `--critic-save` | Path to save the critic model. | `None` | Type: str | Miles Native |
-| `--start-rollout-id` | The starting rollout step. If not set, it is inferred from the --load checkpoint when resuming training. Otherwise, if training is not continuous, miles will start training from scratch | `None` | Type: int | Miles Native |
+| `--start-rollout-id` | The starting rollout step. If not set, it is inferred from the --load checkpoint when resuming training. Otherwise, if training is not continuous, Miles will start training from scratch | `None` | Type: int | Miles Native |
 
 ---
 
