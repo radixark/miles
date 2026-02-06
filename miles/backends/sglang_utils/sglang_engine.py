@@ -77,9 +77,14 @@ def _wait_server_healthy(base_url, api_key, process=None, is_process_alive=None)
     }
 
     if is_process_alive is None and process is not None:
-        is_process_alive = lambda: process.is_alive()
+
+        def is_process_alive():
+            return process.is_alive()
+
     elif is_process_alive is None:
-        is_process_alive = lambda: True
+
+        def is_process_alive():
+            return True
 
     start_time = time.time()
 
