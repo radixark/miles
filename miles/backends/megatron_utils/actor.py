@@ -557,6 +557,8 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         if self.args.offload_train:
+            if is_lora_enabled(self.args):
+                torch_memory_saver.resume()
             reload_process_groups()
 
         rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
@@ -591,6 +593,8 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("old_actor")
 
         if self.args.offload_train:
+            if is_lora_enabled(self.args):
+                torch_memory_saver.pause()
             destroy_process_groups()
     
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
