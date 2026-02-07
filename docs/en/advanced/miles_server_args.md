@@ -85,7 +85,7 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | `--true-on-policy-mode` | Strictly align SGLang's log probs and training engine's log probs to bit-wise equal. This parameter is only used for FSDP right now. [Ref](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/mismatch/blog-en.md#truly-on-policy-training) | `False` | bool flag (set to enable) | Miles Native |
 | `--train-env-vars` | Extra environment variables for training process, e.g., PyTorch memory management ones. | `{}` | Type: JSON / Dict | Miles Native |
 | `--train-memory-margin-bytes` | Reserved memory margin for training in bytes. Defaults to 1GB. | `1073741824` | Type: int | Miles Native |
-| `--disable-weights-backuper` | Applies to `megatron` training backend only. Disables the system that backs up model weights (Actor, Ref, Old Actor) to CPU RAM. Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing KL-divergence against a reference model. **Note**: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper. | `False` | bool flag (set to disable) | Miles Native |
+| `--disable-weights-backuper` | Applies to `megatron` training backend only. Disables the system that backs up model weights (Actor, Ref, Old Actor) to CPU RAM. Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing the KL-divergence against a reference model. **Note**: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper. | `False` | bool flag (set to disable) | Miles Native |
 | `--custom-model-provider-path` | Path to a custom function that replaces the default model provider. [Ref](../get_started/customization.md#20-model-provider---custom-model-provider-path) | `None` | Type: str | Miles Native |
 | `--recompute-loss-function` | Enable recomputing the loss function to save memory during training. | `False` | bool flag (set to enable) | Miles Native |
 | `--log-probs-chunk-size` | Specifies the chunk size for logprobs computation to reduce peak memory usage. Processing logits in smaller batches, it prevents CUDA OOM errors during long-context prefilling or re-computation. Set to `-1` to disable chunking. [Ref](https://github.com/sgl-project/sglang/pull/6318) | `-1` | Type: int | Miles Native |
@@ -184,12 +184,10 @@ Arguments for configuring the evaluation process during training.
 | `--eval-max-prompt-len` | Maximum prompt length for evaluation. | `None` | Type: int | Miles Native |
 | `--eval-min-new-tokens` | Minimum tokens to generate for evaluation responses (Not used). | `None` | Type: int | Miles Native |
 | `--eval-max-context-len` | Maximum context length for evaluation (defaults to rollout max context length if not set). | `None` | Type: int | Miles Native |
-| `--eval-function-path` | Path to a custom evaluation function. See [customization](../get_started/customization.md#16-evaluation-function---eval-function-path) for more details. | `None` | Type: str | Miles Native |
+| `--eval-function-path` | Path to a custom evaluation function. [Ref](../get_started/customization.md#16-evaluation-function---eval-function-path) | `None` | Type: str | Miles Native |
 | `--eval-input-key` | JSON key for input text in evaluation datasets. | `None` | Type: str | Miles Native |
 | `--eval-label-key` | JSON key for ground truth labels in evaluation datasets. | `None` | Type: str | Miles Native |
 | `--eval-tool-key` | JSON key for tool definitions in evaluation datasets. | `None` | Type: str | Miles Native |
-
----
 
 ## Checkpointing and Resuming
 
@@ -203,8 +201,8 @@ Arguments for saving and loading model states.
 | `--async-save` | Enable asynchronous checkpoint saving (Megatron backend only). | `False` | bool flag (set to enable) | Megatron-LM (Reset by Miles) |
 | `--save-hf` | Path to save the model in HuggingFace format when using Megatron backend. The model will be saved to `save_hf.format(rollout_id)`. | `None` | Type: str | Miles Native |
 | `--no-save-optim` | If set, optimizer state is not saved with checkpoints to reduce size, but prevents resumption of training. | `False` | bool flag (set to enable) | Megatron-LM (Reset by Miles) |
-| `--ref-load` | Path to the reference model checkpoint. Used as initial checkpoint if `--load` is not set. | `None` | Type: str | Miles Native |
-| `--ref-ckpt-step` | The checkpoint step for reference model. | `None` | Type: int | Miles Native |
+| `--ref-load` | Path to the reference model checkpoint. Used as an initial checkpoint if `--load` is not set. | `None` | Type: str | Miles Native |
+| `--ref-ckpt-step` | The checkpoint step for the reference model. | `None` | Type: int | Miles Native |
 | `--critic-load` | Checkpoint to load for the critic model. | value of `--load` | Type: str | Miles Native |
 | `--critic-save` | Path to save the critic model. | `None` | Type: str | Miles Native |
 | `--start-rollout-id` | The starting rollout step. If not set, it is inferred from the --load checkpoint when resuming training. Otherwise, if training is not continuous, Miles will start training from scratch | `None` | Type: int | Miles Native |
