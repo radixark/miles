@@ -104,7 +104,7 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 | :--- | :--- | :--- | :--- | :--- |
 | `--hf-checkpoint` | Path to the HuggingFace checkpoint used to initialize SGLang and provide the tokenizer. | `None` | Type: str | Miles Native |
 | `--model-name` | The name of the model that is used to convert the Megatron weights into HuggingFace format. If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as `model_name`. Providing this argument can also help in cases where transformers cannot find certain models. | `None` | Type: str | Miles Native |
-| `--rollout-function-path` | Path to the rollout generation function. Use this to inject custom logic (e.g., for multi-turn or tool use). For more details, see [customization](../get_started/customization.md#1-rollout-function---rollout-function-path). | `miles.rollout.sglang_rollout.generate_rollout` (or `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`) | Type: str | Miles Native |
+| `--rollout-function-path` | Path to the rollout generation function. Use this to inject custom logic (e.g., for multi-turn or tool use). [Ref](../get_started/customization.md#1-rollout-function---rollout-function-path) | `miles.rollout.sglang_rollout.generate_rollout` (or `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`) | Type: str | Miles Native |
 | `--rollout-temperature` | Sampling temperature for the inference engine during rollout. | `1.0` | Type: float | Miles Native |
 | `--rollout-top-p` | Top-p (nucleus) sampling threshold during rollout. | `1.0` | Type: float | Miles Native |
 | `--rollout-top-k` | Top-k sampling threshold during rollout. `-1` means disabled. | `-1` | Type: int | Miles Native |
@@ -118,10 +118,10 @@ Arguments for configuring the rollout (inference) process and custom rollout log
 | `--rollout-seed` | Seed for the random number generator during rollout (used for shuffling and sampling). | `42` | Type: int | Miles Native |
 | `--rollout-external` | Use external SGLang instances instead of launching them inside the framework. | `False` | bool flag (set to enable) | Miles Native |
 | `--rollout-external-engine-addrs` | Addresses and ports of the external engines. | `None` | Type: List[str] | Miles Native |
-| `--custom-generate-function-path` | Path to override only the `generate` step within the default rollout function. See [customization](../get_started/customization.md#2-custom-generate-function---custom-generate-function-path) for more details. | `None` | Type: str | Miles Native |
-| `--custom-rollout-log-function-path` | Path to a custom function for logging training rollout data. See [customization](../get_started/customization.md#14-logging-functions) for more details. | `None` | Type: str | Miles Native |
-| `--custom-eval-rollout-log-function-path` | Path to a custom function for logging evaluation rollout data. See [customization](../get_started/customization.md#14-logging-functions) for more details. | `None` | Type: str | Miles Native |
-| `--rollout-data-postprocess-path` | Path to a function called after all rollout data (including log probs) is ready. See [customization](../get_started/customization.md#8-rollout-data-postprocess---rollout-data-postprocess-path) for more details. | `None` | Type: str | Miles Native |
+| `--custom-generate-function-path` | Path to override only the `generate` step within the default rollout function. [Ref](../get_started/customization.md#2-custom-generate-function---custom-generate-function-path) | `None` | Type: str | Miles Native |
+| `--custom-rollout-log-function-path` | Path to a custom function for logging training rollout data. [Ref](../get_started/customization.md#14-logging-functions) | `None` | Type: str | Miles Native |
+| `--custom-eval-rollout-log-function-path` | Path to a custom function for logging evaluation rollout data. [Ref](../get_started/customization.md#14-logging-functions) | `None` | Type: str | Miles Native |
+| `--rollout-data-postprocess-path` | Path to a function called after all rollout data (including log probs) is ready. [Ref](../get_started/customization.md#8-rollout-data-postprocess---rollout-data-postprocess-path) | `None` | Type: str | Miles Native |
 
 ## Sampling and Filtering
 
@@ -129,10 +129,10 @@ Arguments for sampling strategies and data filtering during rollout and buffer m
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--over-sampling-batch-size` | Defines the granularity of the sampling batch in the rollout function. When the number of available samples falls below the target, a sampling operation of size `over_sampling_batch_size` will be triggered. Regardless of whether partial rollout is used or filters are applied, the sampling granularity is always determined by this value. If this value is `None`, `rollout_batch_size` will be used as the default `over_sampling_batch_size`. | `None` | Type: int | Miles Native |
+| `--over-sampling-batch-size` | Number of prompts requested in each **oversampling** round when **dynamic sampling** is enabled. Miles samples `over_sampling_batch_size` prompts, generates `--n-samples-per-prompt` responses per prompt asynchronously, and then keeps/discards each prompt group via `--dynamic-sampling-filter-path`. If filtering is strict and the remaining accepted batch size drops below the target `--rollout-batch-size`, Miles automatically triggers another oversampling round of the same size. If unset, defaults to `--rollout-batch-size`. See [Dynamic Sampling](../get_started/quick_start.md#dynamic-sampling). | `None` | Type: int | Miles Native |
 | `--dynamic-sampling-filter-path` | Path to the filter function for dynamic sampling. [Ref](../get_started/customization.md#4-dynamic-sampling-filter---dynamic-sampling-filter-path) | `None` | Type: str | Miles Native |
-| `--partial-rollout` | Enable partial rollout (unfinished samples during dynamic sampling will be recycled back to the data buffer). Useful for long responses. | `False` | bool flag (set to enable) | Miles Native |
-| `--mask-offpolicy-in-partial-rollout` | Mask previous generation in partial rollout. Ensures only on-policy generated tokens are used in training. | `False` | bool flag (set to enable) | Miles Native |
+| `--partial-rollout` | Enable partial rollout for **dynamic sampling**: cache partially generated (aborted/unfinished) samples and resume generation in later rollout steps, reducing wasted compute for long responses. Cached samples are stored in the rollout buffer and can be prioritized/selected via `--buffer-filter-path` (default FIFO behavior). See [Partial Rollout](../get_started/quick_start.md#partial-rollout). | `False` | bool flag (set to enable) | Miles Native |
+| `--mask-offpolicy-in-partial-rollout` | When using partial rollout, mask the previously generated (cached) response tokens so they do not contribute to the loss; only tokens generated after resuming are used for training. This helps avoid training on a cached prefix produced by an older policy version. See [Partial Rollout](../get_started/quick_start.md#partial-rollout). | `False` | bool flag (set to enable) | Miles Native |
 | `--buffer-filter-path` | Path to the function to filter or sort samples in the rollout buffer before training. [Ref](../get_started/customization.md#5-buffer-filter---buffer-filter-path) | `None` | Type: str | Miles Native |
 | `--rollout-sample-filter-path` | Path to the function that marks individual samples to be excluded from loss calculation. [Ref](../get_started/customization.md#6-rollout-sample-filter---rollout-sample-filter-path) | `None` | Type: str | Miles Native |
 | `--rollout-all-samples-process-path` | Path to the function to process all samples (including filtered ones) after rollout. [Ref](../get_started/customization.md#7-rollout-all-samples-process---rollout-all-samples-process-path) | `None` | Type: str | Miles Native |
@@ -145,7 +145,7 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | :--- | :--- | :--- | :--- | :--- |
 | `--prompt-data` | Path to the prompt dataset (JSONL format), and each line should contain `--input-key` and `--label-key`, which will be used as the prompt and the label, respectively. | `None` | Type: str | Miles Native |
 | `--disable-rollout-global-dataset` | Disable the global dataset for rollout. By default, Miles loads `--prompt-data` into a global dataset and samples from it for rollout. Setting this flag turns off this behavior. Use this flag only when providing a custom `--rollout-function-path` (and usually a custom `--data-source-path`) that handles data loading independently. | `False` | bool flag (set to disable) | Miles Native |
-| `--data-source-path` | Path to a custom Python class for the rollout data source. See [customization](../get_started/customization.md#15-data-source---data-source-path) for more details. | `miles.rollout.data_source.RolloutDataSourceWithBuffer` | Type: str | Miles Native |
+| `--data-source-path` | Path to a custom Python class for the rollout data source. [Ref](../get_started/customization.md#15-data-source---data-source-path) | `miles.rollout.data_source.RolloutDataSourceWithBuffer` | Type: str | Miles Native |
 | `--input-key` | Key in the JSONL data representing the user input/prompt. | `"input"` | Type: str | Miles Native |
 | `--label-key` | Key in the JSONL data representing the label/ground truth. | `None` | Type: str | Miles Native |
 | `--metadata-key` | When adding tools during `apply_chat_template`, provide the key for the tools to the prompt dataset. | `"metadata"` | Type: str | Miles Native |
@@ -217,7 +217,7 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | :--- | :--- | :--- | :--- | :--- |
 | `--advantage-estimator` | Advantage estimator to use. | `"grpo"` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` | Miles Native |
 | `--loss-type` | Type of loss function to use. | `"policy_loss"` | `policy_loss`, `sft_loss`, `custom_loss` | Miles Native |
-| `--custom-loss-function-path` | Path to a custom loss calculation function (requires `--loss-type custom_loss`). See [customization](../get_started/customization.md#9-custom-loss-function---custom-loss-function-path) for more details. | `None` | Type: str | Miles Native |
+| `--custom-loss-function-path` | Path to a custom loss calculation function (requires `--loss-type custom_loss`). [Ref](../get_started/customization.md#9-custom-loss-function---custom-loss-function-path) | `None` | Type: str | Miles Native |
 | `--critic-lr` | Learning rate for the Critic. Defaults to `--lr`. | `None` | Type: float | Miles Native |
 | `--critic-lr-warmup-iters` | Number of iterations for Critic learning rate linear warmup. | `0` | Type: int | Miles Native |
 | `--num-critic-only-steps` | Number of initial steps dedicated to training only the Critic. | `0` | Type: int | Miles Native |
@@ -238,8 +238,8 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--use-tis` | Enable Token-level Importance Sampling (TIS) from this [blog](https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33). | `False` | bool (set to enable) | Miles Native |
 | `--tis-clip` | Clipping threshold C for importance sampling ratios to control variance. | `2.0` | Type: float | Miles Native |
 | `--tis-clip-low` | Lower bound clipping threshold C for importance sampling ratios to control variance. | `0.0` | Type: float | Miles Native |
-| `--custom-tis-function-path` | Path to a custom TIS or MIS function. See [customization](../get_started/customization.md#10-custom-tisrs-function---custom-tis-function-path) for more details. | `None` | Type: str | Miles Native |
-| `--custom-pg-loss-reducer-function-path` | Custom reducer function for policy gradient loss. See [customization](../get_started/customization.md#11-custom-pg-loss-reducer---custom-pg-loss-reducer-function-path) for more details. | `None` | Type: str | Miles Native |
+| `--custom-tis-function-path` | Path to a custom TIS or MIS function. [Ref](../get_started/customization.md#10-custom-tisrs-function---custom-tis-function-path) | `None` | Type: str | Miles Native |
+| `--custom-pg-loss-reducer-function-path` | Custom reducer function for policy gradient loss. [Ref](../get_started/customization.md#11-custom-pg-loss-reducer---custom-pg-loss-reducer-function-path) | `None` | Type: str | Miles Native |
 | `--use-routing-replay` | Enable [Routing Replay](https://arxiv.org/abs/2507.18071). | `False` | bool flag (set to enable) | Miles Native |
 | `--use-rollout-routing-replay` | Enable R3: [Rollout Routing Replay](https://arxiv.org/pdf/2510.11370). | `False` | bool flag (set to enable) | Miles Native |
 | `--use-opsm` | Enable Off-Policy Sequence Masking (OPSM). Filters sequences that have **BOTH** negative advantages (bad results) AND high KL divergence (stale data). This stabilizes training by preventing updates from unreliable, highly off-policy samples. | `False` | bool flag (set to enable) | Miles Native |
@@ -305,7 +305,7 @@ Arguments for the specialized Miles text-based router.
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
 | `--use-miles-router` | Use text-based routing instead of token-based routing. | `False` | bool flag (set to enable) | Miles Native |
-| `--miles-router-middleware-paths` | Paths to custom MilesRouter middleware functions. See [customization](../get_started/customization.md#18-miles-router-middleware---miles-router-middleware-paths) for more details. | `""` | Type: List[str] | Miles Native |
+| `--miles-router-middleware-paths` | Paths to custom MilesRouter middleware functions. [Ref](../get_started/customization.md#18-miles-router-middleware---miles-router-middleware-paths) | `""` | Type: List[str] | Miles Native |
 | `--miles-router-timeout` | Timeout for router HTTP requests in seconds. | `None` | Type: float | Miles Native |
 | `--miles-router-max-connections` | Max connections for MilesRouter HTTP client. | `None` | Type: int | Miles Native |
 | `--miles-router-health-check-failure-threshold` | Number of consecutive failures before marking a worker as unhealthy. | `3` | Type: int | Miles Native |
@@ -322,10 +322,10 @@ Arguments for configuring reward signals and post-processing.
 | `--rm-url` | URL for the reward model service (used with `--rm-type remote_rm`). | `None` | Type: str | Miles Native |
 | `--reward-key` | JSON key to extract the numerical reward from a returned dictionary if reward model returns a dict instead of a value. | `None` | Type: str | Miles Native |
 | `--eval-reward-key` | Evaluation variant for `--reward-key`. | `None` | Type: str | Miles Native |
-| `--custom-rm-path` | Path to a custom Python reward function. See [customization](../get_started/customization.md#3-reward-model---custom-rm-path) for more details. | `None` | Type: str | Miles Native |
+| `--custom-rm-path` | Path to a custom Python reward function. [Ref](../get_started/customization.md#3-reward-model---custom-rm-path) | `None` | Type: str | Miles Native |
 | `--group-rm` | Defer reward computation to process the entire group of samples (per-prompt) at once. Essential for comparative/ranking reward models and improves throughput. **Training only**. | `False` | bool flag (set to enable) | Miles Native |
-| `--custom-reward-post-process-path` | Path to a custom reward post-processor. See [customization](../get_started/customization.md#12-reward-post-processing---custom-reward-post-process-path) for more details. | `None` | Type: str | Miles Native |
-| `--custom-convert-samples-to-train-data-path` | Path to a custom data format converter. See [customization](../get_started/customization.md#13-samples-to-train-data-conversion---custom-convert-samples-to-train-data-path) for more details. | `None` | Type: str | Miles Native |
+| `--custom-reward-post-process-path` | Path to a custom reward post-processor. [Ref](../get_started/customization.md#12-reward-post-processing---custom-reward-post-process-path) | `None` | Type: str | Miles Native |
+| `--custom-convert-samples-to-train-data-path` | Path to a custom data format converter. [Ref](../get_started/customization.md#13-samples-to-train-data-conversion---custom-convert-samples-to-train-data-path) | `None` | Type: str | Miles Native |
 
 ---
 
@@ -465,9 +465,9 @@ Hooks for custom logic and Continuous Integration testing flags.
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--custom-megatron-init-path` | Path to custom Megatron initialization logic. See [customization](../get_started/customization.md#17-megatron-hooks) for more details. | `None` | Type: str | Miles Native |
-| `--custom-megatron-before-log-prob-hook-path` | Hook called before calculating log probabilities. See [customization](../get_started/customization.md#17-megatron-hooks) for more details.| `None` | Type: str | Miles Native |
-| `--custom-megatron-before-train-step-hook-path` | Hook called before each training step. See [customization](../get_started/customization.md#17-megatron-hooks) for more details. | `None` | Type: str | Miles Native |
+| `--custom-megatron-init-path` | Path to custom Megatron initialization logic. [Ref](../get_started/customization.md#17-megatron-hooks) | `None` | Type: str | Miles Native |
+| `--custom-megatron-before-log-prob-hook-path` | Hook called before calculating log probabilities. [Ref](../get_started/customization.md#17-megatron-hooks) | `None` | Type: str | Miles Native |
+| `--custom-megatron-before-train-step-hook-path` | Hook called before each training step. [Ref](../get_started/customization.md#17-megatron-hooks) | `None` | Type: str | Miles Native |
 | `--ci-test` | Enable Continuous Integration testing mode. | `False` | bool flag (set to enable) | Miles Native |
 | `--ci-disable-kl-checker` | Disable KL divergence sanity checks in CI. | `False` | bool flag (set to enable) | Miles Native |
 | `--ci-metric-checker-key` | Metric key to monitor for pass/fail in CI. | `None` | Type: str | Miles Native |
