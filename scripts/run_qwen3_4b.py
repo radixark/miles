@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -44,12 +45,21 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
+    use_blackwell_fp8 = args.hardware in ("GB200", "GB300") and (args.rollout_fp8 or args.train_fp8)
+
     if args.multi_eval:
         U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
         U.hf_download_dataset("zyzshishui0627/IFBench")
 
-    if args.rollout_fp8:
+    if args.rollout_fp8 and not use_blackwell_fp8:
         U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8")
+
+    if use_blackwell_fp8:
+        mxfp8_path = f"/root/models/{args.model_name}-MXFP8"
+        if not os.path.isdir(mxfp8_path):
+            U.exec_command(
+                f"python tools/convert_hf_to_mxfp8.py --model-dir /root/models/{args.model_name} --save-dir {mxfp8_path}"
+            )
 
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
@@ -67,9 +77,16 @@ def execute(args: ScriptArgs):
     if args.train_backend == "megatron" and not args.enable_megatron_bridge:
         ref_load_path = f"/root/models/{args.model_name}_torch_dist"
 
+    use_blackwell_fp8 = args.hardware in ("GB200", "GB300") and (args.rollout_fp8 or args.train_fp8)
+    if use_blackwell_fp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-MXFP8"
+    elif args.rollout_fp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-FP8"
+    else:
+        hf_checkpoint = f"/root/models/{args.model_name}"
+
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name}{'-FP8' if args.rollout_fp8 else ''} "
-        f"--load {load_save_path} "
+        f"--hf-checkpoint {hf_checkpoint}/ "
         f"--ref-load {ref_load_path} "
         f"--save {load_save_path} "
         f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
@@ -215,16 +232,31 @@ eval:
         }
 
     if args.train_fp8:
-        misc_args += (
-            "--transformer-impl transformer_engine "
-            "--bf16 "
-            "--fp8-format e4m3 "
-            "--fp8-recipe blockwise "
-            "--fp8-param-gather "
-        )
-        misc_env_vars |= {
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        }
+        match (args.hardware):
+            case "H100":
+                misc_args += (
+                    "--transformer-impl transformer_engine "
+                    "--bf16 "
+                    "--fp8-format e4m3 "
+                    "--fp8-recipe blockwise "
+                    "--fp8-param-gather "
+                )
+                misc_env_vars |= {
+                    "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+                }
+            case "GB200" | "GB300":
+                misc_args += (
+                    "--transformer-impl transformer_engine "
+                    "--bf16 "
+                    "--fp8-format e4m3 "
+                    "--fp8-recipe mxfp8 "
+                    # TODO: --fp8-param-gather not supported yet
+                    # "--fp8-param-gather "
+                    # "--overlap-param-gather "
+                    # "--overlap-grad-reduce "
+                    # "--reuse-grad-buf-for-mxfp8-param-ag "
+                    # --moe-router-padding-for-quantization
+                )
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
