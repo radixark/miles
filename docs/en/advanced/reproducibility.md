@@ -1,8 +1,9 @@
 # Reproducibility
 
-Reproducibility is a bedrock of scientific progress. By combining the [deterministic inference](https://lmsys.org/blog/2025-09-22-sglang-deterministic/) of SGLang and the deterministic mode of Megatron-LM, miles supports bitwise experiment reproduction.
+Reproducibility is a bedrock of scientific progress. By combining SGLang's [deterministic inference](https://lmsys.org/blog/2025-09-22-sglang-deterministic/) with Megatron-LM's deterministic mode, miles can provide fully deterministic (bitwise) experiment reproducibility.
 
-To enable deterministic training, you need to first uninstall the flash attention 3 in the docker with `pip uninstall flash_attn_3 -y` and set:
+To enable deterministic training, you need to uninstall flash attention 3 via `pip uninstall flash_attn_3 -y` and set the following:
+
 ```bash
   # sglang config
   --sglang-enable-deterministic-inference
@@ -23,9 +24,9 @@ And set the following environment variables:
      }
 ```
 
-Here we provide the script to do RL training on Qwen2.5 0.5B model and GSM8K dataset with full deterministic.
+We provide a fully deterministic script for training GSM8K with Qwen2.5 0.5B.
 
-For data and checkpoint preparation, please run:
+You can initialize the training data and checkpoint with the following script:
 
 ```bash
 # download
@@ -42,10 +43,10 @@ PYTHONPATH=/root/Megatron-LM/ python \
    --save /root/Qwen2.5-0.5B-Instruct_torch_dist/
 ```
 
-And to run training,
+You can train with the following script:
 
 ```bash
-bash examples/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
+bash script/run-qwen2.5-0.5B-reproducibility.sh
 ```
 
-For screen shots of the wandb, please refer to [pull#370](https://github.com/THUDM/slime/pull/370).
+Wandb screenshots are recorded in this PR: [pull#370](https://github.com/THUDM/slime/pull/370).
