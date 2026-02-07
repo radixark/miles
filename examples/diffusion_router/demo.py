@@ -43,7 +43,8 @@ def main():
 
     # Pre-register any workers specified on the command line
     for url in args.worker_urls:
-        router.add_worker_sync(url)
+        router.worker_request_counts[url] = 0
+        router.worker_failure_counts[url] = 0
         if args.verbose:
             print(f"[demo] Pre-registered worker: {url}")
 
