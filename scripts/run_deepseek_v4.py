@@ -161,7 +161,7 @@ def train(args: ScriptArgs):
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 3072"
+                "--eval-max-response-len 3072 "
             )
         case "gsm8k":
             rollout_args += (
