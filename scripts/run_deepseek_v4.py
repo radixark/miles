@@ -38,6 +38,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_partial_deterministic: bool = True
     fp8_training: bool = False
     enable_mis: bool = False
+    gb300: bool = False
 
     @property
     def megatron_model_type(self):
@@ -160,7 +161,7 @@ def train(args: ScriptArgs):
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 6144"
+                "--eval-max-response-len 3072"
             )
         case "gsm8k":
             rollout_args += (
@@ -308,13 +309,17 @@ def train(args: ScriptArgs):
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
         "--disable-weights-backuper "
         "--model-name deepseekv4 "  # for mbridge load
-        "--train-memory-margin-bytes 1073741824 "
         "--qkv-format bshd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+
+    if args.gb300:
+        misc_args += "--train-memory-margin-bytes 3221225472 "
+    else:
+        misc_args += "--train-memory-margin-bytes 1073741824 "
     
     if args.enable_mis:
         misc_args += (
