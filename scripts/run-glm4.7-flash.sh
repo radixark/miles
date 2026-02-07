@@ -24,7 +24,7 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../scripts/models/glm4.7-30B-A3B.sh"
+source "${SCRIPT_DIR}/../scripts/models/glm4.7-flash.sh"
 
 BASE_DIR=/root
 
@@ -101,9 +101,9 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   --use-wandb
-   --wandb-project miles-test
-   --wandb-group glm4.7-flash
+   # --use-wandb
+   # --wandb-project miles-dev
+   # --wandb-group glm4.7-flash
 )
 
 SGLANG_ARGS=(
