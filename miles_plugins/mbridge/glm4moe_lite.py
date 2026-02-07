@@ -8,9 +8,12 @@ from mbridge.models import DeepseekV3Bridge
 class GLM4MoELiteBridge(DeepseekV3Bridge):
     """Bridge for GLM-4.7 MoE Lite models (e.g. GLM-4.7-Flash).
 
+    Here "runtime config" means the config object returned by
+    AutoConfig.from_pretrained(..., trust_remote_code=True).
+
     Glm4MoeLiteConfig differs from DeepseekV3Config:
-      - rope_theta is stored in rope_scaling['rope_theta'] instead of a top-level attribute.
-      - first_k_dense_replace is replaced by mlp_layer_types list (['dense', 'sparse', ...]).
+      - runtime config exposes rope_theta via rope_scaling['rope_theta'] (no top-level rope_theta).
+      - runtime config uses mlp_layer_types (raw JSON may still include first_k_dense_replace).
     """
 
     # NOTE: We cannot use DeepseekV3Bridge._build_config() directly because it
@@ -96,6 +99,7 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
         num_nextn_predict_layers = getattr(hf_config, "num_nextn_predict_layers", None)
         if num_nextn_predict_layers is not None:
             mtp_args["mtp_num_layers"] = num_nextn_predict_layers
+            mtp_args["mtp_loss_scaling_factor"] = 0.1
         base_config.update(mtp_args)
 
         return self._build_base_config(**base_config)
