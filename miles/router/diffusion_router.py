@@ -204,8 +204,16 @@ class DiffusionRouter:
     @staticmethod
     def _sanitize_response_headers(headers) -> dict:
         """Remove hop-by-hop and encoding headers that no longer match buffered content."""
-        hop_by_hop = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
-                      "transfer-encoding", "upgrade"}
+        hop_by_hop = {
+            "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailers",
+            "transfer-encoding",
+            "upgrade",
+        }
         dropped = {"content-length", "content-encoding"}
         return {k: v for k, v in headers.items() if k.lower() not in hop_by_hop | dropped}
 
@@ -233,12 +241,14 @@ class DiffusionRouter:
         """Per-worker health and load information."""
         workers = []
         for url, count in self.worker_request_counts.items():
-            workers.append({
-                "url": url,
-                "active_requests": count,
-                "is_dead": url in self.dead_workers,
-                "consecutive_failures": self.worker_failure_counts.get(url, 0),
-            })
+            workers.append(
+                {
+                    "url": url,
+                    "active_requests": count,
+                    "is_dead": url in self.dead_workers,
+                    "consecutive_failures": self.worker_failure_counts.get(url, 0),
+                }
+            )
         return JSONResponse(content={"workers": workers})
 
     async def update_weights_from_disk(self, request: Request):

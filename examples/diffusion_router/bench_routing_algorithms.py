@@ -37,13 +37,14 @@ def _require_non_empty_model(model: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Compare routing algorithms by running bench_router.py for each."
-    )
+    parser = argparse.ArgumentParser(description="Compare routing algorithms by running bench_router.py for each.")
     parser.add_argument("--model", type=str, required=True, help="Diffusion model HF ID or local path.")
     parser.add_argument(
-        "--algorithms", nargs="+", default=ALL_ALGORITHMS,
-        choices=ALL_ALGORITHMS, help="Algorithms to compare (default: all three).",
+        "--algorithms",
+        nargs="+",
+        default=ALL_ALGORITHMS,
+        choices=ALL_ALGORITHMS,
+        help="Algorithms to compare (default: all three).",
     )
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory for results.")
 
@@ -100,25 +101,44 @@ def main() -> int:
         out_file = output_dir / f"bench_{algo}.json"
 
         bench_cmd = [
-            py, "examples/diffusion_router/bench_router.py",
-            "--model", args.model,
-            "--routing-algorithm", algo,
-            "--num-workers", str(args.num_workers),
-            "--num-prompts", str(args.num_prompts),
-            "--max-concurrency", str(args.max_concurrency),
-            "--num-gpus-per-worker", str(args.num_gpus_per_worker),
-            "--worker-base-port", str(args.worker_base_port),
-            "--worker-port-stride", str(args.worker_port_stride),
-            "--worker-master-port-base", str(args.worker_master_port_base),
-            "--worker-scheduler-port-base", str(args.worker_scheduler_port_base),
-            "--worker-internal-port-stride", str(args.worker_internal_port_stride),
-            "--router-host", args.router_host,
-            "--router-port", str(args.router_port),
-            "--dataset", args.dataset,
-            "--request-rate", str(args.request_rate),
-            "--wait-timeout", str(args.wait_timeout),
-            "--log-level", args.log_level,
-            "--output-file", str(out_file),
+            py,
+            "examples/diffusion_router/bench_router.py",
+            "--model",
+            args.model,
+            "--routing-algorithm",
+            algo,
+            "--num-workers",
+            str(args.num_workers),
+            "--num-prompts",
+            str(args.num_prompts),
+            "--max-concurrency",
+            str(args.max_concurrency),
+            "--num-gpus-per-worker",
+            str(args.num_gpus_per_worker),
+            "--worker-base-port",
+            str(args.worker_base_port),
+            "--worker-port-stride",
+            str(args.worker_port_stride),
+            "--worker-master-port-base",
+            str(args.worker_master_port_base),
+            "--worker-scheduler-port-base",
+            str(args.worker_scheduler_port_base),
+            "--worker-internal-port-stride",
+            str(args.worker_internal_port_stride),
+            "--router-host",
+            args.router_host,
+            "--router-port",
+            str(args.router_port),
+            "--dataset",
+            args.dataset,
+            "--request-rate",
+            str(args.request_rate),
+            "--wait-timeout",
+            str(args.wait_timeout),
+            "--log-level",
+            args.log_level,
+            "--output-file",
+            str(out_file),
         ]
         if args.worker_urls:
             bench_cmd += ["--worker-urls", *args.worker_urls]
@@ -178,14 +198,23 @@ def main() -> int:
         data = results.get(algo, {})
         if "error" in data:
             parsed[algo] = None
-            csv_rows.append({
-                "algorithm": algo, "throughput_qps": "", "latency_mean": "",
-                "latency_median": "", "latency_p99": "", "duration": "",
-                "completed_requests": "", "failed_requests": "",
-                "throughput_qps_delta_pct": "", "latency_mean_delta_pct": "",
-                "latency_median_delta_pct": "", "latency_p99_delta_pct": "",
-                "error": data["error"],
-            })
+            csv_rows.append(
+                {
+                    "algorithm": algo,
+                    "throughput_qps": "",
+                    "latency_mean": "",
+                    "latency_median": "",
+                    "latency_p99": "",
+                    "duration": "",
+                    "completed_requests": "",
+                    "failed_requests": "",
+                    "throughput_qps_delta_pct": "",
+                    "latency_mean_delta_pct": "",
+                    "latency_median_delta_pct": "",
+                    "latency_p99_delta_pct": "",
+                    "error": data["error"],
+                }
+            )
             continue
 
         row = {
@@ -260,11 +289,19 @@ def main() -> int:
 
     csv_path = output_dir / "routing_algorithm_comparison.csv"
     fieldnames = [
-        "algorithm", "throughput_qps", "throughput_qps_delta_pct",
-        "latency_mean", "latency_mean_delta_pct",
-        "latency_median", "latency_median_delta_pct",
-        "latency_p99", "latency_p99_delta_pct",
-        "duration", "completed_requests", "failed_requests", "error",
+        "algorithm",
+        "throughput_qps",
+        "throughput_qps_delta_pct",
+        "latency_mean",
+        "latency_mean_delta_pct",
+        "latency_median",
+        "latency_median_delta_pct",
+        "latency_p99",
+        "latency_p99_delta_pct",
+        "duration",
+        "completed_requests",
+        "failed_requests",
+        "error",
     ]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")

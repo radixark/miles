@@ -21,8 +21,8 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import requests
 
@@ -39,7 +39,10 @@ def _require_non_empty_model(model: str) -> str:
 
 
 def _wait_for_health(
-    url: str, timeout: int, label: str, proc: subprocess.Popen | None = None,
+    url: str,
+    timeout: int,
+    label: str,
+    proc: subprocess.Popen | None = None,
 ) -> None:
     start = time.time()
     last_print = 0.0
@@ -106,10 +109,7 @@ def _reserve_available_port(host: str, preferred_port: int, used_ports: set[int]
             used_ports.add(port)
             return port
 
-    raise RuntimeError(
-        f"Unable to reserve a free port for host {host}. "
-        f"Preferred start={preferred_port}."
-    )
+    raise RuntimeError(f"Unable to reserve a free port for host {host}. " f"Preferred start={preferred_port}.")
 
 
 def _parse_gpu_id_list(raw: str) -> list[str]:
@@ -178,9 +178,13 @@ def main() -> int:
     parser.add_argument("--model", type=str, required=True, help="Diffusion model HF ID or local path.")
     parser.add_argument("--router-host", type=str, default="127.0.0.1", help="Router bind host.")
     parser.add_argument("--router-port", type=int, default=30080, help="Router port.")
-    parser.add_argument("--routing-algorithm", type=str, default="least-request",
-                        choices=["least-request", "round-robin", "random"],
-                        help="Load-balancing algorithm for the router.")
+    parser.add_argument(
+        "--routing-algorithm",
+        type=str,
+        default="least-request",
+        choices=["least-request", "round-robin", "random"],
+        help="Load-balancing algorithm for the router.",
+    )
     parser.add_argument("--router-verbose", action="store_true", help="Enable router verbose logging.")
     parser.add_argument("--router-extra-args", type=str, default="", help="Extra args for the router demo script.")
 
@@ -250,11 +254,10 @@ def main() -> int:
 
     try:
         import sglang  # noqa: F401
-    except ImportError:
+    except ImportError as exc:
         raise RuntimeError(
-            "sglang is not installed.\n"
-            "Install with:  uv pip install \"sglang[diffusion]\" --prerelease=allow"
-        )
+            "sglang is not installed.\n" 'Install with:  uv pip install "sglang[diffusion]" --prerelease=allow'
+        ) from exc
     env = dict(os.environ)
 
     worker_urls = list(args.worker_urls)
@@ -295,9 +298,7 @@ def main() -> int:
 
             for i, _ in enumerate(worker_urls):
                 preferred_master = args.worker_master_port_base + i * args.worker_internal_port_stride
-                preferred_scheduler = (
-                    args.worker_scheduler_port_base + i * args.worker_internal_port_stride
-                )
+                preferred_scheduler = args.worker_scheduler_port_base + i * args.worker_internal_port_stride
                 master_port = _reserve_available_port(args.worker_host, preferred_master, reserved_ports)
                 scheduler_port = _reserve_available_port(args.worker_host, preferred_scheduler, reserved_ports)
                 worker_internal_ports.append((master_port, scheduler_port))
@@ -371,7 +372,10 @@ def main() -> int:
                         flush=True,
                     )
 
-            print(f"[bench] Waiting for {len(worker_urls)} worker(s) to become healthy (this may take several minutes)...", flush=True)
+            print(
+                f"[bench] Waiting for {len(worker_urls)} worker(s) to become healthy (this may take several minutes)...",
+                flush=True,
+            )
             for i, url in enumerate(worker_urls):
                 _wait_for_health(url, args.wait_timeout, f"worker {url}", proc=processes[i])
 

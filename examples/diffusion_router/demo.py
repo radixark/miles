@@ -36,9 +36,13 @@ def main():
     parser.add_argument("--timeout", type=float, default=None, help="Request timeout in seconds")
     parser.add_argument("--health-check-interval", type=int, default=10, help="Seconds between health checks")
     parser.add_argument("--health-check-failure-threshold", type=int, default=3, help="Failures before quarantine")
-    parser.add_argument("--routing-algorithm", type=str, default="least-request",
-                        choices=["least-request", "round-robin", "random"],
-                        help="Load-balancing algorithm")
+    parser.add_argument(
+        "--routing-algorithm",
+        type=str,
+        default="least-request",
+        choices=["least-request", "round-robin", "random"],
+        help="Load-balancing algorithm",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
