@@ -1,8 +1,13 @@
 import json
+from copy import deepcopy
+from typing import Any
 
 from transformers import AutoTokenizer
 
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
+
+AGENTIC_MAX_TURNS: int | None = None
+from miles.utils.http_utils import post
 
 SAMPLE_TOOLS = [
     {
@@ -52,6 +57,56 @@ TOOL_EXECUTORS = {
 
 async def execute_tool_call(name: str, params: dict) -> str:
     return TOOL_EXECUTORS[name](params)
+
+
+async def run_agentic_tool_call(
+    base_url: str,
+    prompt: list[dict[str, Any]] | str,
+    request_kwargs: dict[str, Any] | None = None,
+    max_turns: int = 8,
+) -> None:
+    if AGENTIC_MAX_TURNS is not None:
+        max_turns = AGENTIC_MAX_TURNS
+    messages = deepcopy(prompt) if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
+    request_kwargs = request_kwargs or {}
+    model = request_kwargs.get("model", "default")
+    tools = request_kwargs.get("tools", SAMPLE_TOOLS)
+
+    for _ in range(max_turns):
+        payload = {"model": model, "messages": messages, "tools": tools}
+        response = await post(base_url + "/v1/chat/completions", payload)
+        choice = response["choices"][0]["message"]
+        tool_calls = choice.get("tool_calls") or []
+        if not tool_calls:
+            break
+
+        assistant_msg = {
+            "content": choice.get("content"),
+            "refusal": choice.get("refusal"),
+            "role": choice.get("role", "assistant"),
+            "annotations": choice.get("annotations"),
+            "audio": choice.get("audio"),
+            "function_call": choice.get("function_call"),
+            "tool_calls": tool_calls,
+        }
+        messages.append(assistant_msg)
+
+        for tool_call in tool_calls:
+            name = tool_call["function"]["name"]
+            raw_args = tool_call["function"].get("arguments") or "{}"
+            try:
+                params = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except json.JSONDecodeError:
+                params = {}
+            result = await execute_tool_call(name, params)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id"),
+                    "content": result,
+                    "name": name,
+                }
+            )
 
 
 _SYSTEM_PROMPT = (

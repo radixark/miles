@@ -19,6 +19,7 @@ from miles.router.router import MilesRouter
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
+from miles.utils.test_utils import mock_tools
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
@@ -45,18 +46,14 @@ def extra_argv_for_variant(
     generate_tool_specs_path: str = "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
     generate_tool_call_parser: str = "qwen25",
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
+    custom_agent_function_path: str = "miles.utils.test_utils.mock_tools.run_agentic_tool_call",
 ) -> list[str]:
     argv = [
         "--custom-generate-function-path",
         custom_generate_function_path or VARIANT_TO_GENERATE_FN_PATH[variant],
     ]
 
-    if variant in (
-        "multi_turn_single_sample",
-        "multi_turn_multi_samples",
-        "agentic_tool_call_single_sample",
-        "agentic_tool_call_multi_samples",
-    ):
+    if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
         argv += [
             "--generate-max-turns",
             str(generate_max_turns),
@@ -65,9 +62,12 @@ def extra_argv_for_variant(
             "--generate-execute-tool-function-path",
             generate_execute_tool_function_path,
         ]
-        if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
-            argv += ["--generate-tool-call-parser", generate_tool_call_parser]
-        if variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples"):
+        argv += ["--generate-tool-call-parser", generate_tool_call_parser]
+        if variant == "multi_turn_multi_samples":
+            argv.append("--generate-multi-samples")
+    elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
+        argv += ["--custom-agent-function-path", custom_agent_function_path]
+        if variant == "agentic_tool_call_multi_samples":
             argv.append("--generate-multi-samples")
 
     return argv
@@ -219,6 +219,7 @@ def with_miles_router(backend_url: str, model_name: str):
         miles_router_middleware_paths=[],
         rollout_health_check_interval=60,
         miles_router_health_check_failure_threshold=3,
+        miles_router_enable_token_input_for_chat_completions=False,
         hf_checkpoint=model_name,
     )
     router = MilesRouter(router_args)
@@ -269,6 +270,9 @@ def generation_env(request, variant):
                 custom_generate_function_path=custom_generate_function_path,
                 **other_args_kwargs,
             )
+            if variant.startswith("agentic_tool_call"):
+                mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
             yield GenerateEnv(args=args, mock_server=mock_server)
 
+    mock_tools.AGENTIC_MAX_TURNS = None
     SingletonMeta.clear_all_instances()
