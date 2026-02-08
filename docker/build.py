@@ -11,10 +11,12 @@ Usage:
     python docker/build.py --variant primary --dry-run
 """
 
-import argparse
 import os
 import subprocess
+from enum import Enum
 from pathlib import Path
+
+import typer
 
 CACHE_DIR = "/tmp/miles-docker-cache"
 
@@ -112,23 +114,19 @@ def build_and_push(variant: str, dry_run: bool) -> None:
     run(cmd, dry_run)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build and push Miles Docker images.")
-    parser.add_argument(
-        "--variant",
-        required=True,
-        choices=list(VARIANTS.keys()),
-        help="Build variant to use.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print commands without executing them.",
-    )
-    args = parser.parse_args()
+class Variant(str, Enum):
+    primary = "primary"
+    cu129_arm64 = "cu129-arm64"
+    cu13_arm64 = "cu13-arm64"
+    debug = "debug"
 
-    build_and_push(args.variant, args.dry_run)
+
+def main(
+    variant: Variant = typer.Option(..., help="Build variant to use."),
+    dry_run: bool = typer.Option(False, help="Print commands without executing them."),
+) -> None:
+    build_and_push(variant.value, dry_run)
 
 
 if __name__ == "__main__":
-    main()
+    typer.run(main)
