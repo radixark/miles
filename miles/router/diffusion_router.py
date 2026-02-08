@@ -137,9 +137,11 @@ class DiffusionRouter:
 
     def _finish_url(self, url):
         """Mark the request to the given URL as finished."""
-        assert url in self.worker_request_counts, f"URL {url} not recognized"
+        if url not in self.worker_request_counts:
+            raise ValueError(f"URL {url} not recognized")
         self.worker_request_counts[url] -= 1
-        assert self.worker_request_counts[url] >= 0, f"URL {url} count went negative"
+        if self.worker_request_counts[url] < 0:
+            raise RuntimeError(f"URL {url} count went negative")
 
     # ── Proxy helpers ────────────────────────────────────────────────
 
@@ -187,7 +189,11 @@ class DiffusionRouter:
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
             content = await response.aread()
-        finally:
+        except Exception as exc:
+            self._finish_url(worker_url)
+            logger.error(f"[diffusion-router] Failed to forward request to {worker_url}: {exc}")
+            return JSONResponse(status_code=502, content={"error": f"Worker request failed: {exc}"})
+        else:
             self._finish_url(worker_url)
 
         resp_headers = self._sanitize_response_headers(response.headers)

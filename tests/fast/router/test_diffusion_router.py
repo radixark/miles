@@ -50,6 +50,15 @@ class TestLeastRequest:
         assert selected == "http://w2:8000"
         assert router.worker_request_counts["http://w2:8000"] == 3
 
+    def test_excludes_dead_workers(self, router_factory):
+        router = router_factory(
+            {"http://w1:8000": 5, "http://w2:8000": 2, "http://w3:8000": 8},
+            dead={"http://w2:8000"},
+        )
+        selected = router._use_url()
+        assert selected == "http://w1:8000"
+        assert router.worker_request_counts["http://w1:8000"] == 6
+
 
 # ── Round-robin ──────────────────────────────────────────────────
 
