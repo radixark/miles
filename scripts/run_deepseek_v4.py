@@ -155,13 +155,13 @@ def train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 3072 "
+                f"--rollout-max-response-len 8192 "
                 """--apply-chat-template-kwargs '{"thinking":true}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 3072 "
+                "--eval-max-response-len 8192 "
             )
         case "gsm8k":
             rollout_args += (
@@ -227,12 +227,12 @@ def train(args: ScriptArgs):
         )
     elif args.num_nodes <= 8:
         perf_args = (
-            "--tensor-model-parallel-size 8 "
+            "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 8 "
-            "--decoder-first-pipeline-num-layers 8 "
-            "--decoder-last-pipeline-num-layers 5 "
-            "--context-parallel-size 1 "
+            "--decoder-first-pipeline-num-layers 4 "
+            "--decoder-last-pipeline-num-layers 3 "
+            "--context-parallel-size 2 "
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
@@ -301,7 +301,8 @@ def train(args: ScriptArgs):
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        f"--update-weight-buffer-size {4 * 1024 ** 3} "
+        # when use tp=4, 4GB will cause wgate and wkv not in same bucket, so change to 8GB
+        f"--update-weight-buffer-size {8 * 1024 ** 3} " 
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
@@ -342,6 +343,7 @@ def train(args: ScriptArgs):
         misc_args += "--use-rollout-routing-replay "
     if args.enable_rir:
         misc_args += "--use-rollout-indexer-replay "
+        misc_args += "--sglang-mem-fraction-static 0.6 "
     if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
