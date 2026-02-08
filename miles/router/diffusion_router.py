@@ -251,6 +251,7 @@ class DiffusionRouter:
             )
         return JSONResponse(content={"workers": workers})
 
+    # TODO: integrate with https://github.com/sgl-project/sglang/pull/18306 when it gets merged.
     async def update_weights_from_disk(self, request: Request):
         """Broadcast weight reload to all healthy workers."""
         body = await request.body()
