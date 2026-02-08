@@ -241,7 +241,7 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--custom-tis-function-path` | Path to a custom TIS or MIS function. [Ref](../get_started/customization.md#10-custom-tisrs-function---custom-tis-function-path) | `None` | Type: str | Miles Native |
 | `--custom-pg-loss-reducer-function-path` | Custom reducer function for policy gradient loss. [Ref](../get_started/customization.md#11-custom-pg-loss-reducer---custom-pg-loss-reducer-function-path) | `None` | Type: str | Miles Native |
 | `--use-routing-replay` | Enable [Routing Replay](https://arxiv.org/abs/2507.18071). | `False` | bool flag (set to enable) | Miles Native |
-| `--use-rollout-routing-replay` | Enable R3: [Rollout Routing Replay](https://arxiv.org/pdf/2510.11370). | `False` | bool flag (set to enable) | Miles Native |
+| `--use-rollout-routing-replay` | Enable R3 (Rollout Routing Replay) for MoE: record expert routing decisions during rollout and replay them during training. **Requires `--use-miles-router`**. [Paper](https://arxiv.org/abs/2510.11370) [Ref](miles-router.md#22-rollout-routing-replay-r3-for-moe) | `False` | bool flag (set to enable) | Miles Native |
 | `--use-opsm` | Enable Off-Policy Sequence Masking (OPSM). Filters sequences that have **BOTH** negative advantages (bad results) AND high KL divergence (stale data). This stabilizes training by preventing updates from unreliable, highly off-policy samples. | `False` | bool flag (set to enable) | Miles Native |
 | `--opsm-delta` | The threshold for Off-Policy Sequence Masking (OPSM). | `1e-4` | Type: float | Miles Native |
 | `--get-mismatch-metrics` | Calculate mismatch metrics. If it is set, you need to provide a custom TIS function via `--custom-tis-function-path`. | `False` | bool flag (set to enable) | Miles Native |
@@ -304,7 +304,7 @@ Arguments for the specialized Miles text-based router.
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--use-miles-router` | Use text-based routing instead of token-based routing. | `False` | bool flag (set to enable) | Miles Native |
+| `--use-miles-router` | Use Miles Router (FastAPI passthrough proxy) instead of SGLang Model Gateway for rollout routing. Required for features that depend on preserving extra rollout metadata (e.g., R3). [Ref](miles-router.md) | `False` | bool flag (set to enable) | Miles Native |
 | `--miles-router-middleware-paths` | Paths to custom MilesRouter middleware functions. [Ref](../get_started/customization.md#18-miles-router-middleware---miles-router-middleware-paths) | `""` | Type: List[str] | Miles Native |
 | `--miles-router-timeout` | Timeout for router HTTP requests in seconds. | `None` | Type: float | Miles Native |
 | `--miles-router-max-connections` | Max connections for MilesRouter HTTP client. | `None` | Type: int | Miles Native |
