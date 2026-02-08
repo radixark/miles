@@ -1,9 +1,9 @@
-ARG SGLANG_IMAGE_TAG=nightly-dev-20260103-24c91001
+ARG SGLANG_IMAGE_TAG=v0.5.8
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
 
-ARG PATCH_VERSION=latest
+ARG PATCH_VERSION=v0.5.8
 ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
 
 ARG ENABLE_CUDA_13=0
@@ -34,12 +34,12 @@ RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.4.0
+RUN pip install flash-linear-attention==0.4.1
 RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
 # TE does not have wheel on cuda 13 yet, thus need to install from source
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install nvidia-mathdx==25.6.0 && \
+      pip install nvidia-mathdx==26.6.0 && \
       pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.10; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
@@ -78,7 +78,6 @@ RUN pip install nvidia-cudnn-cu12==9.16.0.29
 # reinstall numpy 1.x for megatron
 RUN pip install "numpy<2"
 
-RUN rm /root/.tmux.conf
 RUN rm -rf /root/.cache/pip /root/flash-attention
 
 # ====================================== Patches ============================================
@@ -110,8 +109,12 @@ fi
 # ====================================== Install main package ============================================
 
 # TODO may improve
+ARG CACHE_BUST=1
 ARG MILES_COMMIT=main
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
+
+RUN cd /root/miles/miles/backends/megatron_utils/kernels/int4_qat && \
+    pip install . --no-build-isolation
