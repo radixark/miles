@@ -31,7 +31,12 @@ curl -X POST 'http://localhost:30080/add_worker?url=http://localhost:10090'
 
 The router uses a **least-request** strategy: each incoming request is forwarded to the worker with the fewest in-flight requests. This is workload-aware and avoids hot-spotting compared to round-robin. When a request completes, the worker's count is decremented, keeping the load state accurate in real time.
 
-Workers that fail consecutive health checks (default: 3) are quarantined and excluded from the routing pool. A background loop pings each worker's `GET /health` endpoint at a configurable interval (default: 10s).
+Workers that fail consecutive health checks (default: 3) are quarantined and excluded from the routing pool and will not be added back to avoid stale weights(See [discussion](https://github.com/radixark/miles/pull/260#discussion_r2654274449)). A background loop pings each worker's `GET /health` endpoint at a configurable interval (default: 10s).
+
+## Benchmark script(under examples/diffusion_router/):
+- examples/diffusion_router/bench_routing_algorithms.py — top-level comparison runner
+- examples/diffusion_router/bench_router.py — single-algorithm benchmark (spawned per algorithm)
+- examples/diffusion_router/demo.py — router process (spawned by bench_router.py)
 
 ## Notes
 
