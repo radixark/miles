@@ -19,7 +19,7 @@ curl -X POST 'http://localhost:30080/add_worker?url=http://localhost:10090'
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/generate` | Image generation (forwards to `/v1/images/generations`) |
-| `POST` | `/generate_video` | Video generation (forwards to `/v1/videos/generations`) |
+| `POST` | `/generate_video` | Video generation (forwards to `/v1/videos`) |
 | `GET` | `/health` | Aggregated router health |
 | `GET` | `/health_workers` | Per-worker health and load info |
 | `POST` | `/add_worker` | Register a diffusion worker (`?url=...` or JSON body) |

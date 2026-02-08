@@ -446,7 +446,9 @@ def main() -> int:
         if args.bench_extra_args:
             bench_cmd += shlex.split(args.bench_extra_args)
 
-        return subprocess.call(bench_cmd, env=env)
+        bench_proc = subprocess.Popen(bench_cmd, env=env, start_new_session=True)
+        processes.append(bench_proc)
+        return bench_proc.wait()
     finally:
         _terminate_all(reversed(processes))
 
