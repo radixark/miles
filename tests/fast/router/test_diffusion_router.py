@@ -37,9 +37,6 @@ def router_factory():
     return _create
 
 
-# ── Least-request ────────────────────────────────────────────────
-
-
 @pytest.mark.unit
 class TestLeastRequest:
     """Test the least-request (default) load-balancing algorithm."""
@@ -58,9 +55,6 @@ class TestLeastRequest:
         selected = router._use_url()
         assert selected == "http://w1:8000"
         assert router.worker_request_counts["http://w1:8000"] == 6
-
-
-# ── Round-robin ──────────────────────────────────────────────────
 
 
 @pytest.mark.unit
@@ -88,9 +82,6 @@ class TestRoundRobin:
         results = [router._use_url() for _ in range(4)]
         assert "http://w2:8000" not in results
         assert all(url in ("http://w1:8000", "http://w3:8000") for url in results)
-
-
-# ── Random ───────────────────────────────────────────────────────
 
 
 @pytest.mark.unit
@@ -122,9 +113,6 @@ class TestRandom:
             router.worker_request_counts[url] -= 1  # reset increment
 
 
-# ── Error cases ──────────────────────────────────────────────────
-
-
 @pytest.mark.unit
 class TestErrorCases:
     """Test error handling across all routing algorithms."""
@@ -146,9 +134,6 @@ class TestErrorCases:
             router._use_url()
 
 
-# ── Count management ─────────────────────────────────────────────
-
-
 @pytest.mark.unit
 class TestCountManagement:
     """Test that _use_url / _finish_url correctly track active request counts."""
@@ -160,9 +145,6 @@ class TestCountManagement:
         assert router.worker_request_counts[url] == 1
         router._finish_url(url)
         assert router.worker_request_counts[url] == 0
-
-
-# ── Default algorithm ────────────────────────────────────────────
 
 
 @pytest.mark.unit

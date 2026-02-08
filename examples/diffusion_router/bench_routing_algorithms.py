@@ -169,7 +169,6 @@ def main() -> int:
             print(f"[warn] Output file not found: {out_file}", flush=True)
             results[algo] = {"error": "output_file_missing"}
 
-    # ── Collect per-algorithm metrics ────────────────────────────
     BASELINE = "random"
     metric_keys = ["throughput_qps", "latency_mean", "latency_median", "latency_p99"]
 
@@ -203,7 +202,6 @@ def main() -> int:
         parsed[algo] = row
         csv_rows.append(row)
 
-    # ── Compute deltas vs baseline ───────────────────────────────
     baseline_row = parsed.get(BASELINE)
     for row in csv_rows:
         if row.get("error"):
@@ -217,7 +215,6 @@ def main() -> int:
             else:
                 row[delta_key] = ""
 
-    # ── Print comparison table ───────────────────────────────────
     print(f"\n{'='*100}", flush=True)
     print(f"  Routing Algorithm Comparison  (baseline: {BASELINE})", flush=True)
     print(f"{'='*100}", flush=True)
@@ -261,7 +258,6 @@ def main() -> int:
             flush=True,
         )
 
-    # ── Write CSV ────────────────────────────────────────────────
     csv_path = output_dir / "routing_algorithm_comparison.csv"
     fieldnames = [
         "algorithm", "throughput_qps", "throughput_qps_delta_pct",
