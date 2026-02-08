@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from argparse import Namespace
 
 import torch
@@ -10,6 +11,7 @@ from diffusers import StableDiffusion3Pipeline
 
 from flow_grpo.diffusers_patch.sd3_sde_with_logprob import sde_step_with_logprob
 from flow_grpo.stat_tracking import PerPromptStatTracker
+from flow_grpo.ema import EMAModuleWrapper
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
@@ -81,6 +83,16 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
         self.global_step = 0
+        self.ema = None
+        self.ema_parameters = None
+        if getattr(self.args, "diffusion_ema", False):
+            self.ema_parameters = [p for p in self.model.parameters() if p.requires_grad]
+            self.ema = EMAModuleWrapper(
+                self.ema_parameters,
+                decay=getattr(self.args, "diffusion_ema_decay", 0.9),
+                update_step_interval=getattr(self.args, "diffusion_ema_update_interval", 8),
+                device=torch.cuda.current_device(),
+            )
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
@@ -192,7 +204,9 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
         if hasattr(self.pipeline.scheduler, "sigmas") and self.pipeline.scheduler.sigmas is not None:
             self.pipeline.scheduler.sigmas = self.pipeline.scheduler.sigmas.to(device)
         if hasattr(self.pipeline.scheduler, "timesteps") and self.pipeline.scheduler.timesteps is not None:
-            timesteps = timesteps.to(device=device, dtype=self.pipeline.scheduler.timesteps.dtype)
+            # Use scheduler timesteps to avoid float-mismatch/index lookup failures.
+            sched_ts = self.pipeline.scheduler.timesteps[:steps].to(device)
+            timesteps = sched_ts.unsqueeze(0).expand(latents.shape[0], -1)
 
         # Recompute per-step log_prob under the current model parameters.
         log_probs = []
@@ -255,29 +269,32 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
         return float(zero_std_ratio), float(prompt_std_devs.mean())
 
     def _compute_per_prompt_advantages(
-        self, prompts: list[str], rewards: torch.Tensor
+        self, prompts: list[str], rewards: torch.Tensor, num_train_timesteps: int
     ) -> tuple[torch.Tensor, dict[str, float]]:
         use_per_prompt = not getattr(self.args, "diffusion_disable_per_prompt_stat_tracking", False)
+        rewards_1d = rewards.detach().float()
+        rewards_bt = rewards_1d.unsqueeze(1).repeat(1, num_train_timesteps)
         if not use_per_prompt:
+            advantages = (rewards_bt - rewards_bt.mean()) / (rewards_bt.std() + 1e-4)
             stats = {
                 "group_size": 0.0,
                 "trained_prompt_num": 0.0,
                 "zero_std_ratio": 0.0,
                 "reward_std_mean": 0.0,
             }
-            return rewards, stats
+            return advantages, stats
 
         # Gather prompts and rewards across ranks to match Flow-GRPO global grouping.
         group = self.parallel_state.dp_cp_group_gloo
         local_payload = {
             "prompts": prompts,
-            "rewards": rewards.detach().float().cpu().tolist(),
+            "rewards": rewards_bt.detach().float().cpu().tolist(),
         }
         gathered = [None] * self.parallel_state.dp_cp_size
         dist.all_gather_object(gathered, local_payload, group=group)
 
         all_prompts: list[str] = []
-        all_rewards: list[float] = []
+        all_rewards: list[list[float]] = []
         lengths: list[int] = []
         for item in gathered:
             all_prompts.extend(item["prompts"])
@@ -315,6 +332,16 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
             self.wake_up()
 
         with timer("train"):
+            if self.parallel_state.dp_rank == 0 and not getattr(self, "_env_logged", False):
+                logger.info(
+                    "env CUDA_VISIBLE_DEVICES=%s current_device=%s device_count=%s dp_rank=%s dp_size=%s",
+                    os.environ.get("CUDA_VISIBLE_DEVICES"),
+                    torch.cuda.current_device() if torch.cuda.is_available() else "cpu",
+                    torch.cuda.device_count() if torch.cuda.is_available() else 0,
+                    self.parallel_state.dp_rank,
+                    self.parallel_state.dp_size,
+                )
+                self._env_logged = True
             # Fetch rollout data for this DP rank; metadata carries diffusion trajectories.
             rollout_data = process_rollout_data(
                 self.args,
@@ -327,14 +354,24 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 raise ValueError("Diffusion training requires rollout metadata.")
 
             prompts = rollout_data.get("prompt", [""] * len(rollout_data["metadata"]))
-            rewards = torch.tensor(rollout_data["rewards"], device=torch.cuda.current_device(), dtype=torch.float32)
+            rewards = torch.tensor(
+                rollout_data["rewards"], device=torch.cuda.current_device(), dtype=torch.float32
+            )
+            raw_rewards = rollout_data.get("raw_reward", rollout_data.get("rewards", []))
+            reward_ocr = rollout_data.get("reward_ocr", None)
 
             batch_size = len(rollout_data["metadata"])
             micro_batch = self.args.diffusion_train_batch_size
             if micro_batch is None or micro_batch <= 0:
                 micro_batch = batch_size
 
-            advantages_1d, per_prompt_stats = self._compute_per_prompt_advantages(prompts, rewards)
+            total_steps = rollout_data["metadata"][0]["timesteps"].shape[0] if batch_size > 0 else 0
+            fraction = float(getattr(self.args, "diffusion_timestep_fraction", 1.0))
+            num_train_timesteps = max(1, int(total_steps * fraction)) if total_steps else 1
+
+            advantages_all, per_prompt_stats = self._compute_per_prompt_advantages(
+                prompts, rewards, num_train_timesteps
+            )
             accum_steps = max(1, int(getattr(self.args, "diffusion_grad_accum_steps", 1)))
             accum_counter = 0
 
@@ -347,6 +384,10 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 "clipfrac_gt_one": [],
                 "clipfrac_lt_one": [],
                 "reward_avg": [],
+                "reward_ori_avg": [],
+                "reward_ocr": [],
+                "raw_reward_min": [],
+                "raw_reward_max": [],
             }
 
             for start in range(0, batch_size, micro_batch):
@@ -354,7 +395,16 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 batch_meta = rollout_data["metadata"][start:end]
                 batch_prompts = prompts[start:end]
                 batch_rewards = rewards[start:end]
-                batch_advantages = advantages_1d[start:end]
+                batch_advantages = advantages_all[start:end]
+                batch_raw_rewards = torch.as_tensor(
+                    raw_rewards[start:end], device=torch.cuda.current_device(), dtype=torch.float32
+                )
+                if reward_ocr is not None:
+                    batch_reward_ocr = torch.as_tensor(
+                        reward_ocr[start:end], device=torch.cuda.current_device(), dtype=torch.float32
+                    )
+                else:
+                    batch_reward_ocr = torch.zeros_like(batch_rewards)
 
                 timesteps = torch.stack([m["timesteps"] for m in batch_meta]).to(
                     torch.cuda.current_device(), dtype=torch.float32
@@ -369,23 +419,37 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                     torch.cuda.current_device(), dtype=torch.float32
                 )
 
-                # Broadcast per-sample reward into per-timestep advantage.
-                advantage = broadcast_advantage(batch_advantages, timesteps)
-                prompt_embeds, pooled_prompt_embeds = self._encode_prompt(batch_prompts)
+                # Optional: train on a fraction of timesteps.
+                if fraction < 1.0:
+                    timesteps = timesteps[:, :num_train_timesteps]
+                    latents = latents[:, :num_train_timesteps]
+                    next_latents = next_latents[:, :num_train_timesteps]
+                    log_prob_old = log_prob_old[:, :num_train_timesteps]
 
-                log_prob_new = self._compute_log_prob_new(
-                    latents, next_latents, timesteps, prompt_embeds, pooled_prompt_embeds
-                )
+                # Broadcast per-sample reward into per-timestep advantage if needed.
+                if batch_advantages.ndim == 2:
+                    advantage = batch_advantages
+                    if advantage.shape[1] != timesteps.shape[1]:
+                        advantage = advantage[:, : timesteps.shape[1]]
+                else:
+                    advantage = broadcast_advantage(batch_advantages, timesteps)
+                with torch.no_grad():
+                    prompt_embeds, pooled_prompt_embeds = self._encode_prompt(batch_prompts)
+                prompt_embeds = prompt_embeds.detach()
+                pooled_prompt_embeds = pooled_prompt_embeds.detach()
 
-                errors = validate_train_inputs(
-                    {
-                        "log_prob_old": log_prob_old,
-                        "log_prob_new": log_prob_new,
-                        "advantage": advantage,
-                    }
-                )
-                if errors:
-                    raise ValueError(f"Invalid diffusion train inputs: {errors}")
+                # Prepare scheduler timesteps on the same device (once per micro-batch).
+                device = timesteps.device
+                steps = timesteps.shape[1]
+                if hasattr(self.pipeline.scheduler, "set_timesteps"):
+                    self.pipeline.scheduler.set_timesteps(steps, device=device)
+                if hasattr(self.pipeline.scheduler, "timesteps") and self.pipeline.scheduler.timesteps is not None:
+                    self.pipeline.scheduler.timesteps = self.pipeline.scheduler.timesteps.to(device)
+                if hasattr(self.pipeline.scheduler, "sigmas") and self.pipeline.scheduler.sigmas is not None:
+                    self.pipeline.scheduler.sigmas = self.pipeline.scheduler.sigmas.to(device)
+                if hasattr(self.pipeline.scheduler, "timesteps") and self.pipeline.scheduler.timesteps is not None:
+                    sched_ts = self.pipeline.scheduler.timesteps[:steps].to(device)
+                    timesteps = sched_ts.unsqueeze(0).expand(latents.shape[0], -1)
 
                 advantages = torch.clamp(
                     advantage,
@@ -398,7 +462,40 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 self.optimizer.zero_grad(set_to_none=True)
                 effective_accum = accum_steps * num_timesteps
                 for j in range(num_timesteps):
-                    ratio = torch.exp(log_prob_new[:, j] - log_prob_old[:, j])
+                    # Compute log_prob_new for this timestep only to avoid retaining graphs for all steps.
+                    if self.args.diffusion_cfg:
+                        latent_model_input = torch.cat([latents[:, j]] * 2)
+                        timestep = torch.cat([timesteps[:, j]] * 2)
+                        noise_pred = self.model(
+                            hidden_states=latent_model_input,
+                            timestep=timestep,
+                            encoder_hidden_states=prompt_embeds,
+                            pooled_projections=pooled_prompt_embeds,
+                            return_dict=False,
+                        )[0]
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + self.args.diffusion_guidance_scale * (
+                            noise_pred_text - noise_pred_uncond
+                        )
+                    else:
+                        noise_pred = self.model(
+                            hidden_states=latents[:, j],
+                            timestep=timesteps[:, j],
+                            encoder_hidden_states=prompt_embeds,
+                            pooled_projections=pooled_prompt_embeds,
+                            return_dict=False,
+                        )[0]
+
+                    _, log_prob_new_j, _, _ = sde_step_with_logprob(
+                        self.pipeline.scheduler,
+                        noise_pred.float(),
+                        timesteps[:, j],
+                        latents[:, j].float(),
+                        prev_sample=next_latents[:, j].float(),
+                        noise_level=self.args.diffusion_noise_level,
+                    )
+
+                    ratio = torch.exp(log_prob_new_j - log_prob_old[:, j])
                     unclipped = -advantages[:, j] * ratio
                     clipped = -advantages[:, j] * torch.clamp(
                         ratio, 1.0 - self.args.diffusion_clip_range, 1.0 + self.args.diffusion_clip_range
@@ -414,7 +511,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                     log_stats["policy_loss"].append(policy_loss.detach().float())
                     log_stats["kl_loss"].append(kl_loss.detach().float())
                     log_stats["approx_kl"].append(
-                        0.5 * torch.mean((log_prob_new[:, j] - log_prob_old[:, j]) ** 2).detach().float()
+                        0.5 * torch.mean((log_prob_new_j - log_prob_old[:, j]) ** 2).detach().float()
                     )
                     log_stats["clipfrac"].append(
                         torch.mean((torch.abs(ratio - 1.0) > self.args.diffusion_clip_range).float()).detach().float()
@@ -426,11 +523,17 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                         torch.mean((1.0 - ratio > self.args.diffusion_clip_range).float()).detach().float()
                     )
                     log_stats["reward_avg"].append(batch_rewards.mean().detach().float())
+                    log_stats["reward_ori_avg"].append(batch_raw_rewards.mean().detach().float())
+                    log_stats["reward_ocr"].append(batch_reward_ocr.mean().detach().float())
+                    log_stats["raw_reward_min"].append(batch_raw_rewards.min().detach().float())
+                    log_stats["raw_reward_max"].append(batch_raw_rewards.max().detach().float())
 
                     if accum_counter % effective_accum == 0:
                         self.optimizer.step()
                         self.lr_scheduler.step()
                         self.global_step += 1
+                        if self.ema is not None and self.ema_parameters is not None:
+                            self.ema.step(self.ema_parameters, self.global_step)
                         self.optimizer.zero_grad(set_to_none=True)
 
                         reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
@@ -443,6 +546,8 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 self.optimizer.step()
                 self.lr_scheduler.step()
                 self.global_step += 1
+                if self.ema is not None and self.ema_parameters is not None:
+                    self.ema.step(self.ema_parameters, self.global_step)
                 self.optimizer.zero_grad(set_to_none=True)
 
                 if log_stats["loss"]:

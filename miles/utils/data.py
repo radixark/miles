@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import logging
 import re
 
 import numpy as np
@@ -269,15 +270,27 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     return len(batches)
 
 
+logger = logging.getLogger(__name__)
+
+
 def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
     assert len(rollout_data_ref) == dp_size
     rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
 
     partition = rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]
+    logger.info(
+        "rollout partition dp_rank=%s len=%s total=%s",
+        dp_rank,
+        len(partition),
+        len(total_lengths),
+    )
 
     # save the seqlen of the whole rollout batch
     Timer().seq_lens = total_lengths
     rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+    if "raw_reward" in rollout_data:
+        raw_reward = rollout_data["raw_reward"]
+        rollout_data["raw_reward"] = [raw_reward[i] for i in partition]
 
     return rollout_data

@@ -167,6 +167,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="KL coefficient for diffusion training (0 disables KL).",
             )
             parser.add_argument(
+                "--diffusion-ema",
+                action="store_true",
+                default=False,
+                help="Enable EMA for diffusion transformer parameters.",
+            )
+            parser.add_argument(
+                "--diffusion-ema-decay",
+                type=float,
+                default=0.9,
+                help="EMA decay for diffusion training.",
+            )
+            parser.add_argument(
+                "--diffusion-ema-update-interval",
+                type=int,
+                default=8,
+                help="EMA update interval (in optimizer steps) for diffusion training.",
+            )
+            parser.add_argument(
+                "--diffusion-timestep-fraction",
+                type=float,
+                default=1.0,
+                help="Fraction of diffusion timesteps to train on (e.g. 0.99).",
+            )
+            parser.add_argument(
                 "--diffusion-cfg",
                 action="store_true",
                 default=False,

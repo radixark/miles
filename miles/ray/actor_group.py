@@ -55,9 +55,12 @@ class RayTrainGroup:
             # we need also set it to 0 to prevent nccl error.
             "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-            **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
             **self.args.train_env_vars,
         }
+        # For diffusion training, let Ray set CUDA_VISIBLE_DEVICES per actor
+        # to avoid all ranks sharing GPU0.
+        if not self.args.diffusion_train:
+            env_vars.update({name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST})
 
         if self.args.offload_train and self.args.train_backend == "megatron":
             import torch_memory_saver

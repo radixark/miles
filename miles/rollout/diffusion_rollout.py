@@ -6,6 +6,7 @@ from argparse import Namespace
 from typing import Any
 
 import torch
+import ray
 from diffusers import StableDiffusion3Pipeline
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
 import numpy as np
@@ -19,6 +20,8 @@ from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.diffusion_protocol import validate_rollout_metadata
 from miles.utils import tracking_utils
 from miles.utils.types import Sample
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from ray.util.placement_group import PlacementGroup
 
 __all__ = ["generate_rollout"]
 __all__.extend(["offload_rollout", "onload_rollout"])
@@ -30,12 +33,69 @@ _REWARD_FN = None
 _LOGGED_ROLLOUT_IDS: set[int] = set()
 _STAT_TRACKER: PerPromptStatTracker | None = None
 _REWARD_SPEC = None
+_ROLLOUT_PG = None
+_ROLLOUT_WORKERS = None
+
+
+def set_rollout_pg(pg) -> None:
+    """Provide rollout placement group info for multi-GPU diffusion rollout."""
+    global _ROLLOUT_PG
+    _ROLLOUT_PG = pg
+
+
+@ray.remote(num_gpus=1)
+class DiffusionRolloutWorker:
+    def __init__(self, args: Namespace) -> None:
+        self.args = args
+
+    def run_group(self, rollout_id: int, group: list[Sample], evaluation: bool = False) -> list[Sample]:
+        return _run_rollout_group(self.args, rollout_id, group, evaluation)
+
+
+def _get_rollout_workers(args: Namespace):
+    global _ROLLOUT_WORKERS
+    if getattr(args, "rollout_num_gpus", 1) <= 1:
+        return None
+    if _ROLLOUT_WORKERS is not None:
+        return _ROLLOUT_WORKERS
+
+    num_workers = int(args.rollout_num_gpus)
+    workers = []
+    scheduling_strategy = None
+    if _ROLLOUT_PG is not None:
+        if isinstance(_ROLLOUT_PG, PlacementGroup):
+            pg = _ROLLOUT_PG
+            reordered_bundle_indices = list(range(num_workers))
+        else:
+            pg, reordered_bundle_indices, _ = _ROLLOUT_PG
+        for i in range(num_workers):
+            bundle_index = reordered_bundle_indices[i] if i < len(reordered_bundle_indices) else 0
+            scheduling_strategy = PlacementGroupSchedulingStrategy(
+                placement_group=pg,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=bundle_index,
+            )
+            workers.append(
+                DiffusionRolloutWorker.options(scheduling_strategy=scheduling_strategy).remote(args)
+            )
+    else:
+        for _ in range(num_workers):
+            workers.append(DiffusionRolloutWorker.remote(args))
+
+    _ROLLOUT_WORKERS = workers
+    return _ROLLOUT_WORKERS
 
 
 def _get_device(args: Namespace) -> torch.device:
     if getattr(args, "diffusion_device", None):
-        return torch.device(args.diffusion_device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        requested = str(args.diffusion_device)
+        if requested == "cuda":
+            return torch.device("cuda:0")
+        return torch.device(requested)
+    if torch.cuda.is_available():
+        # Ensure an explicit device index for torch.cuda.set_device in Ray actors.
+        return torch.device("cuda:0")
+    return torch.device("cpu")
 
 
 def _get_dtype(args: Namespace) -> torch.dtype:
@@ -198,6 +258,8 @@ def _log_wandb_images_if_enabled(
         _LOGGED_ROLLOUT_IDS.add(rollout_id)
 
     import wandb
+    if wandb.run is None:
+        return
 
     log_images = []
     for idx, (img, sample, reward) in enumerate(zip(images, group, rewards, strict=False)):
@@ -215,11 +277,14 @@ def _log_wandb_images_if_enabled(
     }
     wandb.log(metrics)
 
+
 def _run_rollout_group(
     args: Namespace, rollout_id: int, group: list[Sample], evaluation: bool
 ) -> list[Sample]:
-    pipeline = _get_pipeline(args)
     device = _get_device(args)
+    pipeline = _get_pipeline(args)
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
 
     # Each group is multiple samples of the same prompt.
     prompts = [sample.prompt for sample in group]
@@ -258,7 +323,7 @@ def _run_rollout_group(
         all_prev_latents_mean = None
 
     # Reconstruct timesteps from scheduler so training can recompute log_prob_new.
-    timesteps, _ = retrieve_timesteps(pipeline.scheduler, num_steps, device)
+    timesteps, _ = retrieve_timesteps(pipeline.scheduler, num_steps, torch.device("cpu"))
 
     # Convert list trajectories into (B, T, C, H, W) tensors.
     latents = torch.stack(all_latents[:-1], dim=1)
@@ -302,10 +367,18 @@ def generate_rollout(
         num_batches = 1
 
     output_groups = []
+    workers = _get_rollout_workers(args)
     for _ in range(num_batches):
         groups = data_source.get_samples(args.rollout_batch_size)
-        for group in groups:
-            output_groups.append(_run_rollout_group(args, rollout_id, group, evaluation=evaluation))
+        if workers:
+            tasks = []
+            for idx, group in enumerate(groups):
+                worker = workers[idx % len(workers)]
+                tasks.append(worker.run_group.remote(rollout_id, group, evaluation))
+            output_groups.extend(ray.get(tasks))
+        else:
+            for group in groups:
+                output_groups.append(_run_rollout_group(args, rollout_id, group, evaluation=evaluation))
 
     flat = [sample for group in output_groups for sample in group]
     prompts = [sample.prompt for sample in flat]

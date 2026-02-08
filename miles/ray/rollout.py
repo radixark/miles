@@ -69,11 +69,16 @@ class RolloutManager:
 
         use_diffusion_rollout = "diffusion_rollout" in self.args.rollout_function_path
         self.use_diffusion_rollout = use_diffusion_rollout
+        logger.info("RolloutManager rollout_num_gpus=%s", getattr(self.args, "rollout_num_gpus", None))
         self._diffusion_offload_fn = None
         self._diffusion_onload_fn = None
+        self._diffusion_set_pg_fn = None
         if use_diffusion_rollout:
             self._diffusion_offload_fn = load_function("miles.rollout.diffusion_rollout.offload_rollout")
             self._diffusion_onload_fn = load_function("miles.rollout.diffusion_rollout.onload_rollout")
+            self._diffusion_set_pg_fn = load_function("miles.rollout.diffusion_rollout.set_rollout_pg")
+            if self._diffusion_set_pg_fn is not None:
+                self._diffusion_set_pg_fn(pg)
         if self.args.debug_train_only or use_diffusion_rollout:
             # Diffusion rollout runs locally and does not need sglang engines.
             self.all_rollout_engines = []
@@ -370,6 +375,9 @@ class RolloutManager:
             "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
             "sample_indices": [sample.index for sample in samples],
         }
+        if any(getattr(sample, "reward", None) is None or "ocr" not in sample.reward for sample in samples):
+            raise ValueError("Missing OCR reward in rollout samples; expected reward['ocr'] for all samples.")
+        train_data["reward_ocr"] = [sample.reward["ocr"] for sample in samples]
         # Pass prompt text for diffusion training to recompute embeddings.
         train_data["prompt"] = [sample.prompt for sample in samples]
 
