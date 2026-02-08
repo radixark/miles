@@ -38,46 +38,6 @@ def _require_non_empty_model(model: str) -> str:
     return normalized
 
 
-def _default_sglang_root() -> Path:
-    # Repo layout: miles/examples/diffusion_router/bench_router.py -> miles/ (parents[2])
-    return Path(__file__).resolve().parents[2].parent / "sglang"
-
-
-def _resolve_sglang_root(path: str | None) -> Path | None:
-    if path:
-        root = Path(path).expanduser().resolve()
-        sglang_pkg = root / "python" / "sglang"
-        if not sglang_pkg.exists():
-            raise FileNotFoundError(f"sglang source not found at {root}. Expected {sglang_pkg}.")
-        return root
-    default = _default_sglang_root()
-    if (default / "python" / "sglang").exists():
-        return default
-    # No source repo found — fall back to pip-installed sglang
-    return None
-
-
-def _with_pythonpath(env: dict[str, str], extra_path: Path) -> dict[str, str]:
-    env = dict(env)
-    existing = env.get("PYTHONPATH")
-    extra = str(extra_path)
-    env["PYTHONPATH"] = f"{extra}{os.pathsep}{existing}" if existing else extra
-    return env
-
-
-def _build_sglang_cli_cmd() -> list[str]:
-    """
-    Build a command prefix that invokes the `sglang` CLI from the current
-    Python environment.
-    """
-    sglang_bin = Path(sys.executable).resolve().parent / "sglang"
-    if sglang_bin.exists():
-        return [str(sglang_bin)]
-
-    # Fallback when the console script is missing.
-    return [sys.executable, "-c", "from sglang.cli.main import main; main()"]
-
-
 def _wait_for_health(
     url: str, timeout: int, label: str, proc: subprocess.Popen | None = None,
 ) -> None:
@@ -216,8 +176,6 @@ def _terminate_all(processes: Iterable[subprocess.Popen]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark Miles DiffusionRouter with sglang bench_serving.")
     parser.add_argument("--model", type=str, required=True, help="Diffusion model HF ID or local path.")
-    parser.add_argument("--sglang-root", type=str, default=None, help="Path to sglang repo (default: ../sglang).")
-
     parser.add_argument("--router-host", type=str, default="127.0.0.1", help="Router bind host.")
     parser.add_argument("--router-port", type=int, default=30080, help="Router port.")
     parser.add_argument("--routing-algorithm", type=str, default="least-request",
@@ -290,21 +248,14 @@ def main() -> int:
     args = parser.parse_args()
     args.model = _require_non_empty_model(args.model)
 
-    sglang_root = _resolve_sglang_root(args.sglang_root)
-    if sglang_root is not None:
-        sglang_python = sglang_root / "python"
-        env = _with_pythonpath(os.environ, sglang_python)
-    else:
-        # Verify pip-installed sglang is importable
-        try:
-            import sglang  # noqa: F401
-        except ImportError:
-            raise RuntimeError(
-                "sglang is not installed and no source repo found at ../sglang.\n"
-                "Install with:  uv pip install \"sglang[diffusion]\" --prerelease=allow\n"
-                "Or point to the source repo with:  --sglang-root /path/to/sglang"
-            )
-        env = dict(os.environ)
+    try:
+        import sglang  # noqa: F401
+    except ImportError:
+        raise RuntimeError(
+            "sglang is not installed.\n"
+            "Install with:  uv pip install \"sglang[diffusion]\" --prerelease=allow"
+        )
+    env = dict(os.environ)
 
     worker_urls = list(args.worker_urls)
     if not worker_urls:
@@ -357,7 +308,11 @@ def main() -> int:
                         flush=True,
                     )
 
-            sglang_cli_cmd = _build_sglang_cli_cmd()
+            sglang_bin = Path(sys.executable).resolve().parent / "sglang"
+            if sglang_bin.exists():
+                sglang_cli_cmd = [str(sglang_bin)]
+            else:
+                sglang_cli_cmd = [sys.executable, "-c", "from sglang.cli.main import main; main()"]
             gpu_pool = _resolve_gpu_pool(args, env)
             total_gpus_needed = len(worker_urls) * args.num_gpus_per_worker
             if gpu_pool is not None and len(gpu_pool) < total_gpus_needed:

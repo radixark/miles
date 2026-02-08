@@ -48,7 +48,6 @@ def main() -> int:
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory for results.")
 
     # Pass-through args for bench_router.py
-    parser.add_argument("--sglang-root", type=str, default=None)
     parser.add_argument("--router-host", type=str, default="127.0.0.1")
     parser.add_argument("--router-port", type=int, default=30080)
     parser.add_argument("--router-verbose", action="store_true")
@@ -121,8 +120,6 @@ def main() -> int:
             "--log-level", args.log_level,
             "--output-file", str(out_file),
         ]
-        if args.sglang_root:
-            bench_cmd += ["--sglang-root", args.sglang_root]
         if args.worker_urls:
             bench_cmd += ["--worker-urls", *args.worker_urls]
         if args.worker_gpu_ids:
