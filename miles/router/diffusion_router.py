@@ -52,8 +52,6 @@ class DiffusionRouter:
         # Catch-all route for proxying — must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
-    # ── Health checks ────────────────────────────────────────────────
-
     async def _start_background_health_check(self):
         asyncio.create_task(self._health_check_loop())
 
@@ -105,8 +103,6 @@ class DiffusionRouter:
                 logger.error(f"[diffusion-router] Unexpected error in health check loop: {e}", exc_info=True)
                 await asyncio.sleep(5)
 
-    # ── Load balancing ───────────────────────────────────────────────
-
     def _use_url(self):
         """Select a worker URL based on the configured routing algorithm."""
         if not self.worker_request_counts:
@@ -134,8 +130,6 @@ class DiffusionRouter:
         self.worker_request_counts[url] -= 1
         if self.worker_request_counts[url] < 0:
             raise RuntimeError(f"URL {url} count went negative")
-
-    # ── Proxy helpers ────────────────────────────────────────────────
 
     def _build_proxy_response(self, content: bytes, status_code: int, headers: dict) -> Response:
         """
@@ -214,8 +208,6 @@ class DiffusionRouter:
                       "transfer-encoding", "upgrade"}
         dropped = {"content-length", "content-encoding"}
         return {k: v for k, v in headers.items() if k.lower() not in hop_by_hop | dropped}
-
-    # ── Route handlers ───────────────────────────────────────────────
 
     async def generate(self, request: Request):
         """Route image generation to the least-loaded worker via /v1/images/generations."""
