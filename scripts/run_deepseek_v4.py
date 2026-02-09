@@ -30,7 +30,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
     enable_r3: bool = True
     enable_rir: bool = False
-    enable_pp: bool = False
+    test_pp_single_node: bool = False
+    test_cp_single_node: bool = False
     optimizer_offload: bool = False
     use_fault_tolerance: bool = True
     debug_train_run_id: str | None = None
@@ -176,7 +177,7 @@ def train(args: ScriptArgs):
             )
 
     if args.num_nodes <= 2:
-        if args.enable_pp:
+        if args.test_pp_single_node:
             perf_args = (
                 "--tensor-model-parallel-size 2 "
                 "--sequence-parallel "
@@ -186,6 +187,15 @@ def train(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
                 "--pipeline-model-parallel-layout 'E,t*2\\|t*3,L' " # TODO: temporarily for pp=2
             )
+        elif args.test_cp_single_node:
+            perf_args = (
+                "--tensor-model-parallel-size 2 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 1 "
+                "--context-parallel-size 2 "
+                "--expert-model-parallel-size 4 "
+                "--expert-tensor-parallel-size 1 "
+            ) 
         else:
             perf_args = (
                 f"--tensor-model-parallel-size {args.num_gpus_per_node} "
