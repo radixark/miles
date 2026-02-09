@@ -23,17 +23,15 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
             "self_attention.attn_sink": ["model.layers.{layer_number}.self_attn.attn_sink"],
             "self_attention.compressor.ape": ["model.layers.{layer_number}.self_attn.compressor.ape"],
             "self_attention.compressor.wkv.weight": ["model.layers.{layer_number}.self_attn.compressor.wkv.weight"],
-            "self_attention.compressor.wgate.weight": ["model.layers.{layer_number}.self_attn.compressor.wgate.weight"],
-            "self_attention.compressor.norm.weight": ["model.layers.{layer_number}.self_attn.compressor.norm.weight"],
-            "self_attention.indexer.linear_wq_b.weight": [
-                "model.layers.{layer_number}.self_attn.indexer.wq_b.weight"
+            "self_attention.compressor.wgate.weight": [
+                "model.layers.{layer_number}.self_attn.compressor.wgate.weight"
             ],
+            "self_attention.compressor.norm.weight": ["model.layers.{layer_number}.self_attn.compressor.norm.weight"],
+            "self_attention.indexer.linear_wq_b.weight": ["model.layers.{layer_number}.self_attn.indexer.wq_b.weight"],
             "self_attention.indexer.linear_weights_proj.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"
             ],
-            "self_attention.indexer.compressor.ape": [
-                "model.layers.{layer_number}.self_attn.indexer.compressor.ape"
-            ],
+            "self_attention.indexer.compressor.ape": ["model.layers.{layer_number}.self_attn.indexer.compressor.ape"],
             "self_attention.indexer.compressor.wkv.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.wkv.weight"
             ],

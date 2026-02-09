@@ -138,14 +138,19 @@ def _print_summary(label: str, step_rewards: dict[int, list[float]]):
 
 def main():
     parser = argparse.ArgumentParser(description="Plot eval scores from dumped eval data")
-    parser.add_argument("--eval_path", type=str, required=True,
-                        help="Path to the rollout_data directory containing eval_*.pt files")
-    parser.add_argument("--output", type=str, default=None,
-                        help="Output image path (default: eval_scores.png)")
-    parser.add_argument("--hf_checkpoint", type=str, default=None,
-                        help="HF model checkpoint path (required for --truncate_length)")
-    parser.add_argument("--truncate_length", type=int, default=None,
-                        help="Truncate response to this many tokens and re-score (e.g. 3000)")
+    parser.add_argument(
+        "--eval_path", type=str, required=True, help="Path to the rollout_data directory containing eval_*.pt files"
+    )
+    parser.add_argument("--output", type=str, default=None, help="Output image path (default: eval_scores.png)")
+    parser.add_argument(
+        "--hf_checkpoint", type=str, default=None, help="HF model checkpoint path (required for --truncate_length)"
+    )
+    parser.add_argument(
+        "--truncate_length",
+        type=int,
+        default=None,
+        help="Truncate response to this many tokens and re-score (e.g. 3000)",
+    )
     args = parser.parse_args()
 
     step_rewards_orig = load_eval_data(args.eval_path)
@@ -158,6 +163,7 @@ def main():
     if args.truncate_length is not None:
         assert args.hf_checkpoint is not None, "--hf_checkpoint is required when using --truncate_length"
         from transformers import AutoTokenizer
+
         tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
         step_rewards_trunc = load_eval_data_truncated(args.eval_path, tokenizer, args.truncate_length)

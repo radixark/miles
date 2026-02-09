@@ -1,11 +1,11 @@
 import re
 
 import torch
+from sglang.srt.utils import is_blackwell_supported
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
-from sglang.srt.utils import is_blackwell_supported
-from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0, per_block_cast_to_fp8
+from ...sglang import per_block_cast_to_fp8, quant_weight_ue8m0, transform_scale_ue8m0
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -98,13 +98,13 @@ def _quantize_param(name, weight, weight_block_size, if_use_ue8m0_in_moe=True):
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
     if weight_block_size is not None:
-        is_moe = any(moe_keyword in name for moe_keyword in ['mlp', 'ffn'])
+        is_moe = any(moe_keyword in name for moe_keyword in ["mlp", "ffn"])
         should_quant_ue8m0 = (not is_moe) and is_blackwell_supported()
         if should_quant_ue8m0:
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
-            if True: # TODO: add a flag to choose quantize method
+            if True:  # TODO: add a flag to choose quantize method
                 qweight, scale = per_block_cast_to_fp8(weight)
             else:
                 qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)

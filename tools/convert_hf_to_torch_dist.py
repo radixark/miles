@@ -24,17 +24,17 @@ from miles.utils.transformers_patch import with_transformers_patch
 def patch_weight_to_mcore_format_preserve_fp32():
 
     original_method = Bridge._weight_to_mcore_format
-    
+
     @wraps(original_method)
     def patched_method(self, mcore_weights_name, hf_weights):
-        original_dtype = getattr(self, 'dtype', None)
+        original_dtype = getattr(self, "dtype", None)
         self.dtype = None
         try:
             result = original_method(self, mcore_weights_name, hf_weights)
         finally:
             self.dtype = original_dtype
         return result
-    
+
     Bridge._weight_to_mcore_format = patched_method
     print("[Patch] Applied patch to preserve FP32 precision in _weight_to_mcore_format")
 
@@ -133,9 +133,9 @@ def main():
     hf_model_path = args.hf_checkpoint
     with with_transformers_patch():
         bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
-    
+
     patch_weight_to_mcore_format_preserve_fp32()
-    
+
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
 

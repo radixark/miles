@@ -343,8 +343,12 @@ def compute_mis_weights_with_cp(
     # Gather cp slice from other cp ranks
     full_rollout_log_probs = [
         all_gather_with_cp(
-            log_prob, total_length, response_length, parallel_state,
-            qkv_format, max_seq_lens[i] if max_seq_lens is not None else None,
+            log_prob,
+            total_length,
+            response_length,
+            parallel_state,
+            qkv_format,
+            max_seq_lens[i] if max_seq_lens is not None else None,
         )
         for i, (log_prob, total_length, response_length) in enumerate(
             zip(rollout_log_probs, total_lengths, response_lengths, strict=False)
@@ -352,8 +356,12 @@ def compute_mis_weights_with_cp(
     ]
     full_old_log_probs = [
         all_gather_with_cp(
-            old_log_prob, total_length, response_length, parallel_state,
-            qkv_format, max_seq_lens[i] if max_seq_lens is not None else None,
+            old_log_prob,
+            total_length,
+            response_length,
+            parallel_state,
+            qkv_format,
+            max_seq_lens[i] if max_seq_lens is not None else None,
         )
         for i, (old_log_prob, total_length, response_length) in enumerate(
             zip(train_log_probs, total_lengths, response_lengths, strict=False)
@@ -374,8 +382,12 @@ def compute_mis_weights_with_cp(
     ) -> torch.Tensor:
         values = [
             slice_log_prob_with_cp(
-                values[i], total_lengths[i], response_lengths[i], parallel_state,
-                qkv_format, max_seq_lens[i] if max_seq_lens is not None else None,
+                values[i],
+                total_lengths[i],
+                response_lengths[i],
+                parallel_state,
+                qkv_format,
+                max_seq_lens[i] if max_seq_lens is not None else None,
             )
             for i in range(len(values))
         ]

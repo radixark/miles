@@ -1,7 +1,6 @@
 import itertools
 import logging
 import multiprocessing
-import os
 import random
 import time
 from pathlib import Path

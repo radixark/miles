@@ -30,9 +30,7 @@ def apply_transformers_patch():
     def _patched_from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         from transformers.configuration_utils import PretrainedConfig
 
-        config_dict, _ = PretrainedConfig.get_config_dict(
-            pretrained_model_name_or_path, **kwargs
-        )
+        config_dict, _ = PretrainedConfig.get_config_dict(pretrained_model_name_or_path, **kwargs)
         if config_dict.get("model_type") in ("deepseek_v4", "deepseek_ref"):
             return _load_deepseek_temp_model(
                 pretrained_model_name_or_path,
@@ -41,9 +39,7 @@ def apply_transformers_patch():
                 **kwargs,
             )
 
-        return _original_from_pretrained.__func__(
-            cls, pretrained_model_name_or_path, **kwargs
-        )
+        return _original_from_pretrained.__func__(cls, pretrained_model_name_or_path, **kwargs)
 
     AutoConfig.from_pretrained = _patched_from_pretrained
 

@@ -1,7 +1,5 @@
 import re
 
-import torch
-
 
 def convert_deepseekv4_to_hf(args, name, param):
     if name == "module.module.embedding.word_embeddings.weight":

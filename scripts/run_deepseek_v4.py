@@ -2,9 +2,8 @@
 This file is in preview, and will be further refined and optimized.
 """
 
-import re
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -18,7 +17,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
     model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
-    hf_checkpoint: Optional[str] = None
+    hf_checkpoint: str | None = None
     num_gpus_per_node: int = 8
     enable_eval: bool = True
     extra_args: str = ""
@@ -185,7 +184,7 @@ def train(args: ScriptArgs):
                 "--context-parallel-size 1 "
                 "--expert-model-parallel-size 2 "
                 "--expert-tensor-parallel-size 1 "
-                "--pipeline-model-parallel-layout 'E,t*2\\|t*3,L' " # TODO: temporarily for pp=2
+                "--pipeline-model-parallel-layout 'E,t*2\\|t*3,L' "  # TODO: temporarily for pp=2
             )
         elif args.test_cp_single_node:
             perf_args = (
@@ -195,7 +194,7 @@ def train(args: ScriptArgs):
                 "--context-parallel-size 2 "
                 "--expert-model-parallel-size 4 "
                 "--expert-tensor-parallel-size 1 "
-            ) 
+            )
         else:
             perf_args = (
                 f"--tensor-model-parallel-size {args.num_gpus_per_node} "
@@ -276,25 +275,20 @@ def train(args: ScriptArgs):
     )
     if args.optimizer_offload:
         optimizer_args += (
-            "--optimizer-cpu-offload "
-            "--overlap-cpu-optimizer-d2h-h2d "
-            "--use-precision-aware-optimizer "
+            "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
         )
 
     sglang_world_size = args.num_gpus_per_node
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-
         f"--sglang-tp-size {sglang_world_size} "
         f"--sglang-dp-size {sglang_world_size} "
         "--sglang-enable-dp-attention "
-
         "--sglang-disable-radix-cache "
         "--sglang-attention-backend compressed "
         "--sglang-page-size 256 "
         f"--sglang-max-running-requests {16 * sglang_world_size} "
         "--sglang-chunked-prefill-size 8192 "
-
         "--sglang-server-concurrency 1024 "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
@@ -312,7 +306,7 @@ def train(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         # when use tp=4, 4GB will cause wgate and wkv not in same bucket, so change to 8GB
-        f"--update-weight-buffer-size {4 * 1024 ** 3} " 
+        f"--update-weight-buffer-size {4 * 1024 ** 3} "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
@@ -331,7 +325,7 @@ def train(args: ScriptArgs):
         misc_args += "--train-memory-margin-bytes 3221225472 "
     else:
         misc_args += "--train-memory-margin-bytes 1073741824 "
-    
+
     if args.enable_mis:
         misc_args += (
             "--use-tis "
@@ -353,7 +347,7 @@ def train(args: ScriptArgs):
         misc_args += "--use-rollout-routing-replay "
     if args.enable_rir:
         misc_args += "--use-rollout-indexer-replay "
-        misc_args += "--sglang-mem-fraction-static 0.6 " # rir may cause cpu oom, so try smaller mem fraction
+        misc_args += "--sglang-mem-fraction-static 0.6 "  # rir may cause cpu oom, so try smaller mem fraction
     if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
@@ -364,14 +358,9 @@ def train(args: ScriptArgs):
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
-    
+
     if args.fp8_training:
-        misc_args += (
-            "--transformer-impl transformer_engine "
-            "--bf16 "
-            "--fp8-format e4m3 "
-            "--fp8-recipe blockwise "
-        )
+        misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
         extra_env_vars |= {
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
             "MEGATRON_USE_KV_QAT": "1",

@@ -405,7 +405,7 @@ def train_one_step(
 
             output_tensor = model(**forward_kwargs)
 
-        for m, old_stage in zip(all_replay_managers, old_stages):
+        for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
         return output_tensor, partial(

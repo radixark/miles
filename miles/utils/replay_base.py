@@ -1,15 +1,15 @@
-import os
 import atexit
+import logging
+import os
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
-
 from megatron.core import mpu
 from megatron.core.transformer.deepseek_v4_cp_utils import natural_to_zigzag_slice
 
-import logging
 logger = logging.getLogger(__name__)
+
 
 def _get_rank():
     return dist.get_rank() if dist.is_initialized() else 0
@@ -28,7 +28,9 @@ class Replay:
 
     def pop_forward(self) -> torch.Tensor:
         if self.forward_index >= len(self.top_indices_list):
-            shapes = [t.shape if isinstance(t, torch.Tensor) else f"non-tensor({type(t)})" for t in self.top_indices_list]
+            shapes = [
+                t.shape if isinstance(t, torch.Tensor) else f"non-tensor({type(t)})" for t in self.top_indices_list
+            ]
             raise IndexError(
                 f"pop_forward out of range: forward_index={self.forward_index}, "
                 f"len(top_indices_list)={len(self.top_indices_list)}, shapes={shapes}"
@@ -104,23 +106,29 @@ class BaseReplayManager:
 
         do_sp_slice = sequence_parallel and self.if_sp_region and tp_size > 1
 
-        for replay_idx, (replay, indices_list) in enumerate(zip(self.replays, data)):
+        for replay_idx, (replay, indices_list) in enumerate(zip(self.replays, data, strict=True)):
             shapes_before = [t.shape if isinstance(t, torch.Tensor) else torch.tensor(t).shape for t in indices_list]
             if self.squeeze_batch_for_load_from_file:
                 indices_list = [t.squeeze(0) for t in indices_list]
             if cp_size > 1:
-                indices_list = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in indices_list]
+                indices_list = [
+                    natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in indices_list
+                ]
             if do_sp_slice:
+
                 def sp_slice(t):
                     seqlen = t.size(0)
                     assert seqlen % tp_size == 0, f"seqlen {seqlen} not divisible by tp_size {tp_size}"
                     start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
                     return t[start:end]
+
                 indices_list = [sp_slice(t) for t in indices_list]
             shapes_after = [t.shape if isinstance(t, torch.Tensor) else torch.tensor(t).shape for t in indices_list]
-            print(f"[{self.__class__.__name__}] replay[{replay_idx}]: cp_size={cp_size}, cp_rank={cp_rank}, "
-                  f"tp_size={tp_size}, tp_rank={tp_rank}, sp={sequence_parallel}, if_sp_region={self.if_sp_region}, "
-                  f"n_tensors={len(indices_list)}, shapes_before={shapes_before}, shapes_after={shapes_after}")
+            print(
+                f"[{self.__class__.__name__}] replay[{replay_idx}]: cp_size={cp_size}, cp_rank={cp_rank}, "
+                f"tp_size={tp_size}, tp_rank={tp_rank}, sp={sequence_parallel}, if_sp_region={self.if_sp_region}, "
+                f"n_tensors={len(indices_list)}, shapes_before={shapes_before}, shapes_after={shapes_after}"
+            )
             replay.top_indices_list = indices_list
             replay.forward_index = 0
             replay.backward_index = 0
@@ -219,13 +227,15 @@ class BaseReplayManager:
         try:
             orig_flat = orig_top_indices.view(-1, orig_top_indices.shape[-1])
             replay_flat = top_indices.view(-1, top_indices.shape[-1])
-            for i, (orig_idx, replay_idx) in enumerate(zip(orig_flat, replay_flat)):
+            for i, (orig_idx, replay_idx) in enumerate(zip(orig_flat, replay_flat, strict=True)):
                 orig_set = set(orig_idx.tolist()) - {-1}
                 replay_set = set(replay_idx.tolist()) - {-1}
                 if len(replay_set) == 0:
                     continue
                 if len(orig_set & replay_set) < len(replay_set) * self.thresh_check_replay_result:
-                    raise AssertionError(f"token {i} failed replay check, {len(orig_set & replay_set)=} {len(replay_set)=}")
+                    raise AssertionError(
+                        f"token {i} failed replay check, {len(orig_set & replay_set)=} {len(replay_set)=}"
+                    )
         except Exception as e:
             logger.error(f"Rollout Replay Check Failed - Stage: {self.stage}, rank: {_get_rank()}")
             logger.error(f"original top_indices: {orig_top_indices}")
