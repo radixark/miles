@@ -1,3 +1,4 @@
+import torch
 from megatron.core.transformer.enums import AttnBackend
 
 from mbridge.core import register_model
@@ -19,6 +20,7 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
     # NOTE: We cannot use DeepseekV3Bridge._build_config() directly because it
     # reads hf_config.rope_theta, which is not present in Glm4MoeLiteConfig.
     # GLM-4.7 MoE Lite stores this value under hf_config.rope_scaling['rope_theta'].
+    _EXPECTED_NUM_LAYERS = 47
 
     @property
     def rope_theta(self):
@@ -111,3 +113,50 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
             position_embedding_type="rope",
             rotary_base=self.rope_theta,
         )
+
+    def _convert_mtp_param(self, name: str) -> tuple[list[str]]:
+        assert self.config.mtp_num_layers == 1, "only support one mtp layer for now"
+        assert (
+            self.config.num_layers == self._EXPECTED_NUM_LAYERS
+        ), f"glm4_moe_lite only supports {self._EXPECTED_NUM_LAYERS} layers for now"
+
+        mtp_layer_id = self.config.num_layers
+        direct_name_mapping = {
+            "mtp.layers.0.enorm.weight": f"model.layers.{mtp_layer_id}.enorm.weight",
+            "mtp.layers.0.hnorm.weight": f"model.layers.{mtp_layer_id}.hnorm.weight",
+            "mtp.layers.0.eh_proj.weight": f"model.layers.{mtp_layer_id}.eh_proj.weight",
+            "mtp.layers.0.final_layernorm.weight": f"model.layers.{mtp_layer_id}.shared_head.norm.weight",
+        }
+        if name in direct_name_mapping:
+            return [direct_name_mapping[name]]
+
+        assert "mtp.layers.0.transformer_layer" in name, "mtp not found"
+        proxy_name = name.replace("mtp.layers.0.transformer_layer", f"decoder.layers.{mtp_layer_id}")
+        if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
+            return self._weight_name_mapping_attention(proxy_name)
+        if "mlp" in proxy_name:
+            return self._weight_name_mapping_mlp(proxy_name)
+        raise NotImplementedError(f"Unsupported parameter name: {name}")
+
+    def _weight_to_hf_format(
+        self, mcore_weights_name: str, mcore_weights: torch.Tensor
+    ) -> tuple[list[str], list[torch.Tensor]]:
+        if self.config.mtp_num_layers == 1:
+            assert (
+                self.config.num_layers == self._EXPECTED_NUM_LAYERS
+            ), f"glm4_moe_lite only supports {self._EXPECTED_NUM_LAYERS} layers for now"
+            mtp_layer_id = self.config.num_layers
+            shared_state_dict_mapping = {
+                "embedding.word_embeddings.weight": [
+                    "model.embed_tokens.weight",
+                    f"model.layers.{mtp_layer_id}.embed_tokens.weight",
+                ],
+                "output_layer.weight": [
+                    "lm_head.weight",
+                    f"model.layers.{mtp_layer_id}.shared_head.head.weight",
+                ],
+            }
+            if mcore_weights_name in shared_state_dict_mapping:
+                hf_names = shared_state_dict_mapping[mcore_weights_name]
+                return hf_names, [mcore_weights] * len(hf_names)
+        return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
