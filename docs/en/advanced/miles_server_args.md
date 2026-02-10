@@ -7,6 +7,8 @@ You can find all arguments by running:
 python3 train.py --help
 ```
 
+Note that this document is based on commit `a93d484` and was last updated on 02/09/2026. We try our best to ensure the quality and accuracy of these documents. Even so, it's hard to accurately describe all the hundreds of parameters' effect on such complex RL scenarios. This doc is for reference and may contain some tiny errors.
+
 ## Argument Sources
 
 Miles acts as an orchestrator that integrates multiple frameworks. To help identify where an argument is directed, we follow these prefix conventions:
