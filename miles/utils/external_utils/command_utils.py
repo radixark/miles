@@ -148,7 +148,9 @@ def execute_train(
                         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                     }
                 ),
-                "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                # Let NCCL auto-detect NVLS support. Force-enabling NVLS on systems
+                # with NVLink but without IMEX daemon causes CUDA error 401.
+                **({"NCCL_NVLS_ENABLE": "0"} if not check_has_nvlink() else {}),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
