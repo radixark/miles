@@ -517,6 +517,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The path to the prompt data. "
                     "Currently we only support jsonl format, and each line should contains --input-key and --label-key, "
                     "which will be used as the prompt and the label respectively."
+                    "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
+                    "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
                 ),
             )
             parser.add_argument("--apply-chat-template", action="store_true", default=False)

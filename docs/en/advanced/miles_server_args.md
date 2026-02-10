@@ -72,7 +72,7 @@ Arguments for configuring the training engine (Megatron or FSDP).
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
 | `--train-backend` | The backend for training. Highly suggest Megatron for numerical stability and efficiency. | `"megatron"` | `megatron`, `fsdp` | Miles Native |
-| `--qkv-format` | The QKV layout. | `"thd"` | `thd`, `bshd` | Miles Native |
+| `--qkv-format` | Whether to pack variable-length sequences into the token dimension for training. `thd` (T-H-D, a.k.a. varlen / packed sequence) concatenates sequences and uses `cu_seqlens` to avoid padding; it is the default and is usually faster by reducing padding overhead. `bshd` (B-S-H-D) uses fixed-shape padded batches; use it for newer models with novel attention architectures (e.g., sparse attention, attention sink) where the training backend does not support `thd`. | `"thd"` | `thd`, `bshd` | Miles Native |
 | `--optimizer` | Optimizer type. | `adam` | `adam`, `sgd` | Megatron-LM & FSDP |
 | `--lr` | Learning rate for the Actor. | `1e-6` | Type: float | Megatron-LM (Reset by Miles) & FSDP |
 | `--lr-warmup-init` | Initial learning rate for warmup. | `0.0` | Type: float | Megatron-LM & FSDP |
@@ -158,15 +158,15 @@ Arguments for dataset configuration, prompt mapping, and training batch sizes.
 | `--num-rollout` | Number of rollout steps. If not set, Miles will calculate the number of rollout steps from the dataset size. **Note:** This value will be overwritten if `--num-epoch` is also set. | `None` | Type: int | Miles Native |
 | `--num-epoch` | Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. **Note:** This argument takes precedence and will overwrite `--num-rollout` if both are specified. | `None` | Type: int | Miles Native |
 | `--rollout-batch-size` | Number of prompts per rollout batch. The total data returned should be `rollout_batch_size` * `n_samples_per_prompt`. | Required | Type: int | Miles Native |
-| `--n-samples-per-prompt` | Number of responses to generate for each prompt, e.g., the group size of GRPO. | `1` | Type: int | Miles Native |
+| `--n-samples-per-prompt` | Number of responses to generate for each prompt, e.g., the group size of GRPO. **Note:** the default rollout pipeline expects each prompt group to contain exactly `n_samples_per_prompt` samples; if you use a custom generate function that returns `list[Sample]` (multi-sample), you must also provide a compatible rollout function. | `1` | Type: int | Miles Native |
 | `--global-batch-size` | Total samples per optimizer step. Automatically calculated or **overridden** if `num_steps_per_rollout` is set. | `None` | Type: int | Megatron-LM (Reset by Miles) |
 | `--num-steps-per-rollout` | The number of training steps to perform using the data collected in a single rollout round. Setting this to `n` means the policy model will be updated `n` times using the same batch of rollout data. Miles ensures that `(rollout-batch-size * n-samples-per-prompt) = (global-batch-size * num-steps-per-rollout)`. If this value is not provided, you have to set `--global-batch-size` explicitly. If both are provided, `--num-steps-per-rollout`  will **override** the global batch size with `num_steps_per_rollout = (rollout_batch_size * n_samples_per_prompt) // num_steps_per_rollout`. | `None` | Type: int | Miles Native |
-| `--use-dynamic-batch-size` | Dynamically packs variable-length samples into micro-batches to maximize GPU utilization, ensuring the total token count per batch does not exceed `--max-tokens-per-gpu`. For example, with a 300-token limit, samples of lengths 100, 200, and 300 would be packed into two batches: `[100, 200]` and `[300]`. **Note:** Miles ensures that enabling this optimization does not affect the mathematical correctness of per-sample or per-token loss calculation. It is **strongly recommended** to enable this for maximum efficiency. | `False` | bool flag (set to enable) | Miles Native |
+| `--use-dynamic-batch-size` | Dynamically packs variable-length samples into micro-batches to maximize GPU utilization, ensuring the total token count per batch does not exceed `--max-tokens-per-gpu`. For example, with a 300-token limit, samples of lengths 100, 200, and 300 would be packed into two batches: `[100, 200]` and `[300]`. **Note:** Miles ensures that enabling this optimization does not affect the mathematical correctness of per-sample or per-token loss calculation. It is **strongly recommended** to enable this for maximum efficiency. **Compatibility:** only supported when `--qkv-format` is `thd` (does not work for `bshd`). | `False` | bool flag (set to enable) | Miles Native |
 | `--max-tokens-per-gpu` | The maximum number of tokens (Prompt + Response combined) per GPU for dynamic batch size. This parameter defines the total sequence length budget for packing samples into micro-batches during training. Note that when enabling context parallel (CP), the effective capacity is shared, so the value should be approximately `(Total_Sequence_Length) // cp_size`. | `None` | Type: int | Miles Native |
 | `--log-probs-max-tokens-per-gpu` | The maximum number of tokens per GPU for calculating log probs. This is used to calculate the log probs of the responses during rollout, and should be set to a larger value than `max_tokens_per_gpu` if you want better performance. | `None` | Type: int | Miles Native |
 | `--balance-data` | Repartition each rollout batch so each data-parallel rank gets a similar total token count via the Karmarkar-Karp method. It may be beneficial for training speed, but changes per-rank sample grouping and adds a small CPU scheduling overhead. | `False` | bool flag (set to enable) | Miles Native |
-| `--data-pad-size-multiplier` | Multiplier used to calculate the sequence padding boundary. Miles rounds sequence lengths up to a multiple of `tensor_parallel_size * data_pad_size_multiplier`. This optimization ensures that matrix dimensions are aligned with NVIDIA Tensor Core requirements, maximizing throughput and reducing VRAM fragmentation. | `128` | Type: int | Miles Native |
-| `--micro-batch-size` | Micro batch size per GPU. Ignored when `--use-dynamic-batch-size` is enabled. | `1` | Type: int | Megatron-LM (Reset by Miles) |
+| `--data-pad-size-multiplier` | Multiplier used to calculate the sequence padding boundary. Miles rounds sequence lengths up to a multiple of `tensor_parallel_size * data_pad_size_multiplier`. This optimization ensures that matrix dimensions are aligned with NVIDIA Tensor Core requirements, maximizing throughput and reducing VRAM fragmentation. **Note:** better not change this; values `<128` may trigger accuracy loss under `--qkv-format thd` when `TP>=4`. | `128` | Type: int | Miles Native |
+| `--micro-batch-size` | Micro batch size per GPU. Ignored when `--use-dynamic-batch-size` is enabled. Works for both `--qkv-format thd` and `--qkv-format bshd` (and is required for `bshd` because dynamic batch size is unsupported). | `1` | Type: int | Megatron-LM (Reset by Miles) |
 
 ## Evaluation Arguments
 
@@ -242,7 +242,7 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--tis-clip-low` | Lower bound clipping threshold C for importance sampling ratios to control variance. | `0.0` | Type: float | Miles Native |
 | `--custom-tis-function-path` | Path to a custom TIS or MIS function. [Ref](../get_started/customization.md#10-custom-tisrs-function---custom-tis-function-path) | `None` | Type: str | Miles Native |
 | `--custom-pg-loss-reducer-function-path` | Custom reducer function for policy gradient loss. [Ref](../get_started/customization.md#11-custom-pg-loss-reducer---custom-pg-loss-reducer-function-path) | `None` | Type: str | Miles Native |
-| `--use-routing-replay` | Enable [Routing Replay](https://arxiv.org/abs/2507.18071). | `False` | bool flag (set to enable) | Miles Native |
+| `--use-routing-replay` | Enable R2 (Routing Replay) for MoE: record expert routing decisions during forward and replay them during backward. [Paper](https://arxiv.org/abs/2507.18071) **Note:** automatically set to `True` when `--use-rollout-routing-replay` is enabled. | `False` | bool flag (set to enable) | Miles Native |
 | `--use-rollout-routing-replay` | Enable R3 (Rollout Routing Replay) for MoE: record expert routing decisions during rollout and replay them during training. **Requires `--use-miles-router`**. [Paper](https://arxiv.org/abs/2510.11370) [Ref](miles-router.md#22-rollout-routing-replay-r3-for-moe) | `False` | bool flag (set to enable) | Miles Native |
 | `--use-opsm` | Enable Off-Policy Sequence Masking (OPSM). Filters sequences that have **BOTH** negative advantages (bad results) AND high KL divergence (stale data). This stabilizes training by preventing updates from unreliable, highly off-policy samples. | `False` | bool flag (set to enable) | Miles Native |
 | `--opsm-delta` | The threshold for Off-Policy Sequence Masking (OPSM). | `1e-4` | Type: float | Miles Native |
@@ -252,9 +252,9 @@ Arguments for reinforcement learning algorithms and loss calculation.
 | `--disable-grpo-std-normalization` | Disable standard deviation normalization for GRPO. From [Dr.GRPO](https://arxiv.org/pdf/2503.20783) | `False` | bool flag (set to enable) | Miles Native |
 | `--disable-rewards-normalization` | Disable the default group-wise reward normalization for GRPO, GSPO, and REINFORCE++. This effectively skips the baseline subtraction step. | `False` | bool flag (set to enable) | Miles Native |
 | `--use-rollout-entropy` | Enable entropy calculation when calculating the logprobs from actor and reference model. This is useful for implementing custom entropy-based loss masking. | `False` | bool flag (set to enable) | Miles Native |
-| `--use-rollout-logprobs` | Use rollout logprobs for importance sampling ratios, use the logprobs from the actor model if not set. If `--get-mismatch-metrics` is set, the log probs will be recomputed by training engine, one more forward pass will be applied. | `False` | bool flag (set to enable) | Miles Native |
+| `--use-rollout-logprobs` | Use rollout logprobs as the old-policy logprobs when computing importance sampling ratios / PPO-style KL in GRPO/GSPO/PPO. If not set, Miles recomputes old-policy logprobs with the training actor (e.g., `old_actor` or `actor`, depending on configuration). If `--get-mismatch-metrics` is set, the log probs will still be recomputed by the training engine (one more forward pass will be applied). | `False` | bool flag (set to enable) | Miles Native |
 | `--calculate-per-token-loss` | Calculate loss on a per-token basis. | `False` | bool flag (set to enable) | Megatron-LM (Reset by Miles) |
-| `--seed` | Random seed for the training process. | `1234` | Type: int | Megatron-LM (Reset by Miles) |
+| `--seed` | Random seed for the training process. **Also passed to SGLang servers as `random_seed`** (Miles uses `seed + engine_rank` so each engine has a distinct but reproducible seed). | `1234` | Type: int | Megatron-LM (Reset by Miles) |
 | `--clip-grad` | Maximum gradient norm for gradient clipping. | `1.0` | Type: float | Megatron-LM (Reset by Miles) |
 
 ---
@@ -369,8 +369,8 @@ Commonly used arguments:
 | :--- | :--- | :--- | :--- | :--- |
 | `--sglang-mem-fraction-static` | Fraction of GPU memory to reserve for SGLang KV cache. | `0.9` | Type: float | SGLang |
 | `--sglang-server-concurrency` | Maximum number of concurrent requests. | `512` | Type: int | SGLang |
-| `--sglang-router-ip` | IP address of the SGLang router. | `None` | Type: str | SGLang Gateway |
-| `--sglang-router-port` | Port of the SGLang router. | `None` | Type: int | SGLang Gateway |
+| `--sglang-router-ip` | IP address of the SGLang router and Miles Router. | `None` | Type: str | SGLang Gateway & Miles Router |
+| `--sglang-router-port` | Port of the SGLang router and Miles Router. | `None` | Type: int | SGLang Gateway & Miles Router |
 | `--sglang-router-request-timeout-secs` | Timeout for requests to the SGLang router. | `14400` | Type: int | SGLang Gateway |
 
 ---
@@ -382,6 +382,7 @@ Arguments applicable when using `--train-backend megatron`.
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
 | `--megatron-to-hf-mode` | Method to convert Megatron weights to HuggingFace format for SGLang integration. | `raw` | `raw`, `bridge` | Miles Native |
+| `--seq-length` | Megatron’s “maximum sequence length” parameter. **In miles training, this parameter has no effect in most setups**: miles uses varlen/packed samples (no truncation based on `seq_length`), forces variable sequence lengths for PP communication buffers, and uses all-to-all token dispatch for MoE. This parameter mainly matters in Megatron’s dataset pipeline. | `None` | Type: int | Megatron-LM |
 
 ---
 
@@ -413,12 +414,12 @@ Arguments applicable when using `--train-backend fsdp`. **Note: The FSDP backend
 
 | Argument | Description | Default | Options | Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `--check-weight-update-equal` | Verify that weight updates are equal across ranks. | `False` | bool flag (set to enable) | Miles Native |
-| `--save-debug-rollout-data` | Path to save rollout data for offline analysis. | `None` | Type: str | Miles Native |
-| `--load-debug-rollout-data` | Path to load debug rollout data (bypasses SGLang). | `None` | Type: str | Miles Native |
-| `--load-debug-rollout-data-subsample` | Percentage of debug data to load (0.0 to 1.0). | `None` | Type: float | Miles Native |
-| `--debug-rollout-only` | Run the rollout phase only without training. | `False` | bool flag (set to enable) | Miles Native |
-| `--debug-train-only` | Run the training phase only without launching SGLang servers. | `False` | bool flag (set to enable) | Miles Native |
+| `--check-weight-update-equal` | Use SGLang's weight checker to check and ensure that the loaded weight from HF checkpoint and received from Megatron are bit-wise equal. | `False` | bool flag (set to enable) | Miles Native |
+| `--save-debug-rollout-data` | Path to save rollout data for offline analysis. [Ref](../developer_guide/debug.md) | `None` | Type: str | Miles Native |
+| `--load-debug-rollout-data` | Path to load debug rollout data (bypasses SGLang). [Ref](../developer_guide/debug.md) | `None` | Type: str | Miles Native |
+| `--load-debug-rollout-data-subsample` | Percentage of debug data to load (0.0 to 1.0). [Ref](../developer_guide/debug.md) | `None` | Type: float | Miles Native |
+| `--debug-rollout-only` | Run the rollout phase only without training. [Ref](../developer_guide/debug.md) | `False` | bool flag (set to enable) | Miles Native |
+| `--debug-train-only` | Run the training phase only without launching SGLang servers. [Ref](../developer_guide/debug.md) | `False` | bool flag (set to enable) | Miles Native |
 | `--save-debug-train-data` | Path to save training batches for offline math debugging. | `None` | Type: str | Miles Native |
 | `--dump-details` | Dump exhaustive training details for post-hoc visualization. | `None` | Type: str | Miles Native |
 | `--memory-snapshot-path` | Path to save memory snapshots. | `snapshot.pickle` | Type: str | Miles Native |
