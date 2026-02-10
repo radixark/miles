@@ -136,7 +136,15 @@ def log_rollout_data(
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
-                    if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
+                    if key in [
+                        "log_probs",
+                        "ref_log_probs",
+                        "rollout_log_probs",
+                        "returns",
+                        "advantages",
+                        "values",
+                        "entropy",
+                    ]:
                         sum_of_sample_mean = get_sum_of_sample_mean(
                             total_lengths,
                             response_lengths,
