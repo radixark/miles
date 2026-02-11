@@ -4,7 +4,7 @@ import miles.utils.external_utils.command_utils as U
 MODEL_NAME = "Qwen3-0.6B"
 
 
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 
 
 def prepare():

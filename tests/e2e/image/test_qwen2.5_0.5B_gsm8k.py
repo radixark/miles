@@ -2,7 +2,7 @@ import os
 import miles.utils.external_utils.command_utils as U
 
 
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
