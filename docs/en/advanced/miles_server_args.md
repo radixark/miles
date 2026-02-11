@@ -325,7 +325,7 @@ Arguments for configuring reward signals and post-processing.
 | `--reward-key` | JSON key to extract the numerical reward from a returned dictionary if reward model returns a dict instead of a value. | `None` | Type: str | Miles Native |
 | `--eval-reward-key` | Evaluation variant for `--reward-key`. | `None` | Type: str | Miles Native |
 | `--custom-rm-path` | Path to a custom Python reward function. [Ref](../get_started/customization.md#3-reward-model---custom-rm-path) | `None` | Type: str | Miles Native |
-| `--group-rm` | Defer reward computation to process the entire group of samples (per-prompt) at once. Essential for comparative/ranking reward models and improves throughput. **Training only**. | `False` | bool flag (set to enable) | Miles Native |
+| `--group-rm` | Defer reward computation to process the entire group of samples (per-prompt) at once. Essential for comparative/ranking reward models and improves throughput. **Not supported in eval**. | `False` | bool flag (set to enable) | Miles Native |
 | `--custom-reward-post-process-path` | Path to a custom reward post-processor. [Ref](../get_started/customization.md#12-reward-post-processing---custom-reward-post-process-path) | `None` | Type: str | Miles Native |
 | `--custom-convert-samples-to-train-data-path` | Path to a custom data format converter. [Ref](../get_started/customization.md#13-samples-to-train-data-conversion---custom-convert-samples-to-train-data-path) | `None` | Type: str | Miles Native |
 
