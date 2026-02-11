@@ -329,7 +329,7 @@ class SGLangEngine(RayActor):
         if self.node_rank != 0:
             return
         # New SGLang use /model_info instead of /get_weight_version
-        # Will decrepate in the future
+        # Will decrepate /get_weight_version in the future
         url = f"http://{self.server_host}:{self.server_port}/model_info"
         response = requests.get(url)
         if response.status_code == 200:
