@@ -220,6 +220,7 @@ def forward_only(
             parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
+            pad_token_id=args.pad_token_id,
         )
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
@@ -368,6 +369,7 @@ def train_one_step(
             parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
+            pad_token_id=args.pad_token_id,
         )
 
         if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":

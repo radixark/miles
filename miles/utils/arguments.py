@@ -176,6 +176,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
+            parser.add_argument(
+                "--pad-token-id",
+                type=int,
+                default=0,
+                help="The pad token id for the tokens during training.",
+            )
 
             return parser
 
