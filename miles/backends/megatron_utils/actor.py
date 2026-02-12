@@ -92,9 +92,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.lr = self.args.critic_lr
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
 
-        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
-            args, role
-        )
+        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(args, role)
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
@@ -190,9 +188,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def fill_routing_replay(self, data_iterator, num_microbatches, rollout_data):
         if "rollout_routed_experts" not in rollout_data:
-            raise ValueError(
-                "rollout_routed_experts is required in rollout_data when use_rollout_routing_replay is set."
-            )
+            raise ValueError("rollout_routed_experts is required in rollout_data when use_rollout_routing_replay is set.")
 
         from megatron.core.transformer.transformer_block import get_num_layers_to_build
         from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
@@ -272,7 +268,6 @@ class MegatronTrainRayActor(TrainRayActor):
         num_microbatches: list[int],
         store_prefix: str = "",
     ) -> dict[str, list[torch.Tensor]]:
-
         with timer(f"{store_prefix}log_probs"):
             return forward_only(
                 get_log_probs_and_entropy,
@@ -409,11 +404,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self.weights_backuper.backup("actor")
 
         # Update ref model if needed
-        if (
-            self.args.ref_update_interval is not None
-            and (rollout_id + 1) % self.args.ref_update_interval == 0
-            and "ref" in self.weights_backuper.backup_tags
-        ):
+        if self.args.ref_update_interval is not None and (rollout_id + 1) % self.args.ref_update_interval == 0 and "ref" in self.weights_backuper.backup_tags:
             with timer("ref_model_update"):
                 if is_megatron_main_rank():
                     logger.info(f"Updating ref model at rollout_id {rollout_id}")
@@ -458,9 +449,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.recover_rollout_engines.remote())
             dist.barrier(group=get_gloo_group())
 
-        rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
-            self.rollout_manager.get_rollout_engines_and_lock.remote()
-        )
+        rollout_engines, rollout_engine_lock, num_new_engines = ray.get(self.rollout_manager.get_rollout_engines_and_lock.remote())
 
         if self.args.offload_train:
             reload_process_groups()
@@ -480,9 +469,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 engine = random.choice(rollout_engines)
                 engine_version = ray.get(engine.get_weight_version.remote())
                 if str(engine_version) != str(self.weight_updater.weight_version):
-                    raise RuntimeError(
-                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                    )
+                    raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}")
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:

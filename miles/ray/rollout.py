@@ -74,9 +74,7 @@ class RolloutManager:
             self.custom_reward_post_process_func = load_function(self.args.custom_reward_post_process_path)
         self.custom_convert_samples_to_train_data_func = None
         if self.args.custom_convert_samples_to_train_data_path is not None:
-            self.custom_convert_samples_to_train_data_func = load_function(
-                self.args.custom_convert_samples_to_train_data_path
-            )
+            self.custom_convert_samples_to_train_data_func = load_function(self.args.custom_convert_samples_to_train_data_path)
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
@@ -161,9 +159,7 @@ class RolloutManager:
         if self.use_experimental_refactor:
             result = call_rollout_function(self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id))
         else:
-            result = call_rollout_fn(
-                self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
-            )
+            result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
@@ -178,18 +174,10 @@ class RolloutManager:
 
     def offload(self):
         self.health_monitoring_pause()
-        return ray.get(
-            [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
-        )
+        return ray.get([engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None])
 
     def onload(self, tags: list[str] | None = None):
-        return ray.get(
-            [
-                engine.resume_memory_occupation.remote(tags=tags)
-                for engine in self.rollout_engines
-                if engine is not None
-            ]
-        )
+        return ray.get([engine.resume_memory_occupation.remote(tags=tags) for engine in self.rollout_engines if engine is not None])
 
     def onload_weights(self):
         self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
@@ -240,17 +228,13 @@ class RolloutManager:
                 original_num_rows = len(data)
                 rough_subsample_num_rows = int(original_num_rows * ratio)
                 data = data[: rough_subsample_num_rows // 2] + data[-rough_subsample_num_rows // 2 :]
-                logger.info(
-                    f"Subsample loaded debug rollout data using {ratio=} and change num rows {original_num_rows} -> {len(data)}"
-                )
+                logger.info(f"Subsample loaded debug rollout data using {ratio=} and change num rows {original_num_rows} -> {len(data)}")
             metrics = None
         else:
             if self.use_experimental_refactor:
                 data = call_rollout_function(self.generate_rollout, RolloutFnTrainInput(rollout_id=rollout_id))
             else:
-                data = call_rollout_fn(
-                    self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
-                )
+                data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
             metrics = data.metrics
             data = data.samples
             # flatten the data if it is a list of lists
@@ -297,11 +281,7 @@ class RolloutManager:
         wasted = num_samples - dynamic_gbs
 
         if dynamic_gbs != original_gbs or wasted > 0:
-            logger.info(
-                f"Dynamic global_batch_size: {original_gbs} -> {dynamic_gbs} "
-                f"(num_samples={num_samples}, dp_size={dp_size}, "
-                f"num_steps=1, wasted={wasted})"
-            )
+            logger.info(f"Dynamic global_batch_size: {original_gbs} -> {dynamic_gbs} (num_samples={num_samples}, dp_size={dp_size}, num_steps=1, wasted={wasted})")
 
         return dynamic_gbs
 
@@ -314,9 +294,7 @@ class RolloutManager:
 
             # TODO may improve the format
             if evaluation:
-                dump_data = dict(
-                    samples=[sample.to_dict() for dataset_name, info in data.items() for sample in info["samples"]]
-                )
+                dump_data = dict(samples=[sample.to_dict() for dataset_name, info in data.items() for sample in info["samples"]])
             else:
                 dump_data = dict(
                     samples=[sample.to_dict() for sample in data],
@@ -329,10 +307,7 @@ class RolloutManager:
             return self.custom_reward_post_process_func(self.args, samples)
 
         raw_rewards = [sample.get_reward_value(self.args) for sample in samples]
-        if (
-            self.args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"]
-            and self.args.rewards_normalization
-        ):
+        if self.args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and self.args.rewards_normalization:
             # group norm
             rewards = torch.tensor(raw_rewards, dtype=torch.float)
             if rewards.shape[-1] == self.args.n_samples_per_prompt * self.args.rollout_batch_size:
@@ -382,9 +357,7 @@ class RolloutManager:
             if sample.loss_mask is None:
                 sample.loss_mask = [1] * sample.response_length
 
-            assert (
-                len(sample.loss_mask) == sample.response_length
-            ), f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
+            assert len(sample.loss_mask) == sample.response_length, f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
             if sample.remove_sample:
                 sample.loss_mask = [0] * sample.response_length
             loss_masks.append(sample.loss_mask)
@@ -482,9 +455,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     assert len(all_rollout_engines) == num_engines
     if args.prefill_num_servers is not None:
         prefill_num_servers = args.prefill_num_servers * args.rollout_num_gpus_per_engine // num_gpu_per_engine
-        assert (
-            num_engines > prefill_num_servers
-        ), f"num_engines {num_engines} should be larger than prefill_num_servers {prefill_num_servers}"
+        assert num_engines > prefill_num_servers, f"num_engines {num_engines} should be larger than prefill_num_servers {prefill_num_servers}"
 
     pg, reordered_bundle_indices, reordered_gpu_ids = pg
 
@@ -545,9 +516,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     if args.rollout_external:
         addr_and_ports = _allocate_rollout_engine_addr_and_ports_external(args=args, rollout_engines=rollout_engines)
     else:
-        addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
-            args=args, num_engines=num_engines, rollout_engines=rollout_engines
-        )
+        addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(args=args, num_engines=num_engines, rollout_engines=rollout_engines)
 
     # TODO: don't ray.get here to overlap train actor init with rollout engine init.
     # somehow if we don't sync here, the --debug-rollout-only mode will crash.
@@ -580,9 +549,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
     # 2. nccl port
     # 3. dist_init_addr port
     # 4. other ports for dp_attention, which is of size 4 + dp_size
-    num_engines_per_node = max(
-        1, min(args.num_gpus_per_node, args.rollout_num_gpus) // args.rollout_num_gpus_per_engine
-    )
+    num_engines_per_node = max(1, min(args.num_gpus_per_node, args.rollout_num_gpus) // args.rollout_num_gpus_per_engine)
     addr_and_ports = [{} for _ in range(num_engines)]
 
     # Calculate prefill limit to identify prefill engines
@@ -776,15 +743,11 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
         if max(non_generation_time) == 0:
             return
 
-        non_generation_time = [
-            t for t, length in zip(non_generation_time, response_lengths, strict=True) if length == max_response_length
-        ]
+        non_generation_time = [t for t, length in zip(non_generation_time, response_lengths, strict=True) if length == max_response_length]
         mean_non_generation_time = sum(non_generation_time) / len(non_generation_time)
 
         log_dict[f"longest_{key}sample_non_generation_time"] = mean_non_generation_time
-        log_dict[f"longest_{key}sample_tokens_per_sec_without_non_generation"] = max_response_length / (
-            rollout_time - mean_non_generation_time
-        )
+        log_dict[f"longest_{key}sample_tokens_per_sec_without_non_generation"] = max_response_length / (rollout_time - mean_non_generation_time)
 
     token_perf([sample.response_length for sample in samples], non_generation_time, key="")
     token_perf([sample.effective_response_length for sample in samples], non_generation_time, key="effective_")

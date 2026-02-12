@@ -121,9 +121,9 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
-export MOONCAKE_TE_META_DATA_SERVER="http://127.0.0.1:8080/metadata" 
-export MOONCAKE_MASTER=127.0.0.1:50051 
-export MOONCAKE_PROTOCOL="tcp" 
+export MOONCAKE_TE_META_DATA_SERVER="http://127.0.0.1:8080/metadata"
+export MOONCAKE_MASTER=127.0.0.1:50051
+export MOONCAKE_PROTOCOL="tcp"
 export MOONCAKE_GLOBAL_SEGMENT_SIZE=16gb
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}

@@ -61,7 +61,6 @@ def read_file(path):
         raise ValueError(f"Unsupported file format: {path}. Supported formats are .jsonl and .parquet.")
 
     if row_slice is not None:
-
         logger.info("read_file path=%s applying slice row_slice=%s", path, row_slice)
         reader = itertools.islice(reader, row_slice.start, row_slice.stop, row_slice.step)
 
@@ -83,9 +82,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
         return False
 
     if not isinstance(origin_samples[0].prompt, str):
-        logger.warning(
-            "Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering."
-        )
+        logger.warning("Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering.")
         return False
 
     if processor:
@@ -101,11 +98,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
     else:
         prompts = [sample.prompt for sample in origin_samples]
         input_ids_list = tokenizer(prompts, add_special_tokens=False)["input_ids"]
-        filtered_samples = [
-            sample
-            for sample, input_ids in zip(origin_samples, input_ids_list, strict=True)
-            if len(input_ids) <= max_length
-        ]
+        filtered_samples = [sample for sample, input_ids in zip(origin_samples, input_ids_list, strict=True) if len(input_ids) <= max_length]
 
     logger.info(f"Filtered {len(origin_samples) - len(filtered_samples)} samples longer than max_length={max_length}.")
 
@@ -158,9 +151,7 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
                 logger.warning("message['content'] is a list of dicts, no processing will be done.")
                 continue
             else:
-                raise ValueError(
-                    f"Unsupported content type: {type(message['content'])}, expected str or list of dicts"
-                )
+                raise ValueError(f"Unsupported content type: {type(message['content'])}, expected str or list of dicts")
 
     return prompt
 
@@ -213,9 +204,7 @@ class Dataset:
             if processor:
                 from miles.utils.processing_utils import process_vision_info
 
-                assert isinstance(
-                    prompt, list
-                ), f"prompt must be a list when processor is not None, got {type(prompt)} instead"
+                assert isinstance(prompt, list), f"prompt must be a list when processor is not None, got {type(prompt)} instead"
                 multimodal_inputs = process_vision_info(prompt, processor)
             else:
                 multimodal_inputs = None
