@@ -1,3 +1,4 @@
+<% set default_image = 'radixark/miles:dev-20260212' %>
 <% set jobs = {
     'fast': {
       'test_executor': 'pytest',
@@ -71,7 +72,6 @@
     },
     'e2e-test-image': {
       'label': 'run-ci-image',
-      'image': 'radixark/miles:latest',
       'tests': [
         {'test_file': 'e2e/image/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
         {'test_file': 'e2e/image/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
@@ -120,7 +120,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request<% if config.label %> && contains(github.event.pull_request.labels.*.name, '<< config.label >>')<% endif %>)
     runs-on: self-hosted
     container:
-      image: << config.image if config.image else 'radixark/miles:latest' >>
+      image: << config.image if config.image else default_image >>
       options: >
         --gpus all
         --ipc=host
