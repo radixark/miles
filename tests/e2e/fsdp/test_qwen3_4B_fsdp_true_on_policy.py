@@ -2,7 +2,7 @@ import os
 import miles.utils.external_utils.command_utils as U
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-NUM_GPUS = 2
+NUM_GPUS = 4
 
 MODEL_NAME = "Qwen3-4B"
 
