@@ -9,7 +9,6 @@ from miles.utils.distributed_utils import distributed_masked_whiten
 from miles.utils.misc import load_function
 from miles.utils.ppo_utils import (
     calculate_log_probs_and_entropy,
-    calculate_log_probs_and_entropy_for_true_on_policy,
     compute_approx_kl,
     compute_gspo_kl,
     compute_opsm_mask,
@@ -156,20 +155,14 @@ def get_log_probs_and_entropy(
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
     ):
-        if args.true_on_policy_mode:
-            log_prob, entropy = calculate_log_probs_and_entropy_for_true_on_policy(
-                logits_chunk,
-                tokens_chunk,
-                with_entropy=with_entropy,
-            )
-        else:
-            log_prob, entropy = calculate_log_probs_and_entropy(
-                logits_chunk,
-                tokens_chunk,
-                parallel_state.tp_group,
-                with_entropy=with_entropy,
-                chunk_size=args.log_probs_chunk_size,
-            )
+        log_prob, entropy = calculate_log_probs_and_entropy(
+            logits_chunk,
+            tokens_chunk,
+            parallel_state.tp_group,
+            with_entropy=with_entropy,
+            chunk_size=args.log_probs_chunk_size,
+            true_on_policy=args.true_on_policy_mode,
+        )
 
         log_probs_list.append(log_prob.squeeze(-1))
         entropy_list.append(entropy)

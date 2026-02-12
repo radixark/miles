@@ -649,7 +649,12 @@ def chunked_gae(
     return advantages, returns
 
 
-def calculate_log_probs_and_entropy(logits, tokens, tp_group, with_entropy: bool = False, chunk_size: int = -1):
+def calculate_log_probs_and_entropy(
+    logits, tokens, tp_group, with_entropy: bool = False, chunk_size: int = -1, true_on_policy: bool = False
+):
+    if true_on_policy:
+        return _calculate_log_probs_and_entropy_true_on_policy(logits, tokens, with_entropy=with_entropy)
+
     logits = logits.contiguous()
     # TODO: not sure why we need to clone the logits here.
     # Without the clone, the backward will trigger inplace edit error.
@@ -683,7 +688,7 @@ def calculate_log_probs_and_entropy(logits, tokens, tp_group, with_entropy: bool
     return log_prob, entropy
 
 
-def calculate_log_probs_and_entropy_for_true_on_policy(
+def _calculate_log_probs_and_entropy_true_on_policy(
     logits: torch.Tensor,
     tokens: torch.Tensor,
     with_entropy: bool = False,
