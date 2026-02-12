@@ -12,11 +12,10 @@ MODEL_ARGS=(
    --kv-channels 64
 
    # Positional embeddings
-   --position-embedding-type rope
+   --use-rotary-position-embeddings
    --rotary-percent 1.0
    --rotary-base 150000
    # Train with a 4k context, but keep max positions aligned with the HF checkpoint (YaRN scaling).
-   --seq-length 4096
    --max-position-embeddings 131072
 
    # Normalization

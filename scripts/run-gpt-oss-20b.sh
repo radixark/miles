@@ -20,15 +20,18 @@ export HF_HOME=/workspace/hf_cache
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/gpt-oss-20b.sh"
 
+BASE_DIR=/root/shared
+
 CKPT_ARGS=(
-   --hf-checkpoint /root/shared/gpt-oss-20b-BF16
+   --hf-checkpoint $BASE_DIR/gpt-oss-20b
+   # --hf-checkpoint $BASE_DIR/gpt-oss-20b-BF16
    --megatron-to-hf-mode bridge
-#    --save /root/shared/gpt-oss-20b-BF16
-#    --save-interval 50
+   # --save $BASE_DIR/gpt-oss-20b-BF16
+   # --save-interval 50
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/shared/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -65,10 +68,11 @@ PERF_ARGS=(
 
 GRPO_ARGS=(
    --advantage-estimator grpo
+   # TODO: need gpt oss ckpt conversion.
    # --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --kl-coef 0.00
+   # --kl-loss-coef 0.00
+   # --kl-loss-type low_var_kl
+   # --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
@@ -96,10 +100,10 @@ SGLANG_ARGS=(
 )
 
 WANDB_ARGS=(
-   --use-wandb
-   --wandb-project miles-mgt-oss
-   --wandb-group "20b-bf16"
-   --wandb-key ${WANDB_API_KEY}
+   # --use-wandb
+   # --wandb-project miles-gpt-oss
+   # --wandb-group "20b-bf16"
+   # --wandb-key ${WANDB_API_KEY}
 )
 
 MISC_ARGS=(
