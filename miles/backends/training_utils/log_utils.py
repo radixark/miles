@@ -180,10 +180,10 @@ def log_rollout_data(
                 assert 0 < reduced_log_dict["rollout/entropy"] < 0.7
 
         if args.ci_test and args.true_on_policy_mode:
-            assert log_dict["rollout/log_probs"] == log_dict["rollout/rollout_log_probs"], (
+            assert log_dict["log_probs"] == log_dict["rollout_log_probs"], (
                 f"CI check failed: true_on_policy_mode is enabled, but log_probs "
-                f"({log_dict['rollout/log_probs']}) != rollout_log_probs "
-                f"({log_dict['rollout/rollout_log_probs']})"
+                f"({log_dict['log_probs']}) != rollout_log_probs "
+                f"({log_dict['rollout_log_probs']})"
             )
 
     if args.log_multi_turn:
