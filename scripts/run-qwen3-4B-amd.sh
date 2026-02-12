@@ -114,6 +114,9 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
+   # (AMD) Required when offload is enabled (by default) because AITER custom all-reduce uses IPC shared 
+   # GPU memory with fixed addresses, which conflicts with torch_memory_saver's offload/reload that
+   # changes GPU virtual addresses, causing a driver-level deadlock during CUDA graph capture.
    --sglang-disable-custom-all-reduce
 )
 
