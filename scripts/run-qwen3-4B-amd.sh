@@ -56,7 +56,6 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 1
-
    --global-batch-size 256
    --balance-data
 )
@@ -115,6 +114,10 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
+   # (AMD) Required when offload is enabled (by default) because AITER custom all-reduce uses IPC shared 
+   # GPU memory with fixed addresses, which conflicts with torch_memory_saver's offload/reload that
+   # changes GPU virtual addresses, causing a driver-level deadlock during CUDA graph capture.
+   --sglang-disable-custom-all-reduce
 )
 
 MISC_ARGS=(
@@ -126,9 +129,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   ### AMD Support ###
-   # disable gradient accumulation fusion: Need to add apex to enable this
-   --no-gradient-accumulation-fusion
    ###################
 )
 
@@ -153,8 +153,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 8 \
    --colocate \
-   --no-offload-train \
-   --no-offload-rollout \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
