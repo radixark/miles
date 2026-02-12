@@ -42,21 +42,21 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 3000
-   --rollout-batch-size 32
-   --n-samples-per-prompt 8
-   --rollout-max-response-len 8192
+   --num-rollout 300
+   --rollout-batch-size 8
+   --n-samples-per-prompt 2
+   --rollout-max-response-len 2048
    --rollout-temperature 1
 
-   --global-batch-size 256
+   --global-batch-size 16
    --balance-data
 )
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
+   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl@[0:10]
+   --n-samples-per-eval-prompt 4
+   --eval-max-response-len 2048
    --eval-top-p 1
 )
 
@@ -72,9 +72,9 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
 
-   # --micro-batch-size 1
+   --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 1024
 )
 
 GRPO_ARGS=(
@@ -104,8 +104,10 @@ WANDB_ARGS=(
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.7
+   --rollout-num-gpus-per-engine 8
+   --sglang-mem-fraction-static 0.4
+   --sglang-chunked-prefill-size 2048
+   --sglang-max-running-requests 64
 )
 
 MISC_ARGS=(
@@ -125,7 +127,7 @@ export MOONCAKE_PROTOCOL="tcp"
 export MOONCAKE_GLOBAL_SEGMENT_SIZE=16gb
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
@@ -140,8 +142,9 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 4 \
+   --actor-num-gpus-per-node 8 \
    --colocate \
+   --megatron-to-hf-mode bridge \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
