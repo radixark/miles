@@ -10,6 +10,7 @@ import argparse
 import gc
 import json
 import os
+import re
 import shutil
 
 import safetensors
@@ -37,10 +38,14 @@ SKIP_WEIGHT_SUBSTRINGS = (
 )
 
 
-def should_quantize(name: str, weight: torch.Tensor) -> bool:
+def should_quantize(
+    name: str,
+    weight: torch.Tensor,
+    skip_weight_substrings=SKIP_WEIGHT_SUBSTRINGS,
+) -> bool:
     if not name.endswith(".weight"):
         return False
-    if any(substr in name for substr in SKIP_WEIGHT_SUBSTRINGS):
+    if any(substr in name for substr in skip_weight_substrings):
         return False
     if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return False
@@ -94,6 +99,8 @@ def process_file(
     filename: str,
     result_collector: ConversionResult,
     device: str,
+    num_hidden_layers: int,
+    num_layers_at_end_in_bf16: int,
 ) -> None:
     if not filename.endswith(".safetensors"):
         return
@@ -106,8 +113,23 @@ def process_file(
             weights[key] = f.get_tensor(key)
 
     modules_to_not_convert: list[str] = []
+    tail_start_idx = max(0, num_hidden_layers - num_layers_at_end_in_bf16)
+    num_maybe_mtp_layers = 1
+    dynamic_skip_layer_prefixes: set[str] = {
+        f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers + num_maybe_mtp_layers)
+    }
+
+    dynamic_skip_substrings = (
+        *SKIP_WEIGHT_SUBSTRINGS,
+        *sorted(dynamic_skip_layer_prefixes),
+    )
+
     for key, tensor in weights.items():
-        if should_quantize(key, tensor):
+        if should_quantize(
+            key,
+            tensor,
+            skip_weight_substrings=dynamic_skip_substrings,
+        ):
             qweight, scale = quantize_mxfp8(tensor)
             q_weights[key] = qweight
             q_weights[key.replace(".weight", ".weight_scale_inv")] = scale
@@ -120,10 +142,19 @@ def process_file(
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
 
 
-def convert_mxfp8(model_dir: str, save_dir: str, device: str) -> None:
+def convert_mxfp8(
+    model_dir: str,
+    save_dir: str,
+    device: str,
+    num_layers_at_end_in_bf16: int = 0,
+) -> None:
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
     os.makedirs(output_path, exist_ok=True)
+    config_path = os.path.join(input_path, "config.json")
+    with open(config_path) as f:
+        cfg = json.load(f)
+    num_hidden_layers = int(cfg["num_hidden_layers"])
 
     for filename in os.listdir(input_path):
         if not filename.endswith(".safetensors") and not os.path.isdir(os.path.join(input_path, filename)):
@@ -133,7 +164,15 @@ def convert_mxfp8(model_dir: str, save_dir: str, device: str) -> None:
 
     result_collector = ConversionResult()
     for filename in tqdm(safetensors_files, desc="Processing files"):
-        process_file(input_path, output_path, filename, result_collector, device)
+        process_file(
+            input_path,
+            output_path,
+            filename,
+            result_collector,
+            device,
+            num_hidden_layers,
+            num_layers_at_end_in_bf16,
+        )
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -146,7 +185,13 @@ def convert_mxfp8(model_dir: str, save_dir: str, device: str) -> None:
         "scale_fmt": "ue8m0",
     }
     if len(result_collector.modules_to_not_convert) > 0:
-        quantization_config["modules_to_not_convert"] = list(set(result_collector.modules_to_not_convert))
+
+        def natural_key(s):
+            return [int(t) if t.isdigit() else t for t in re.findall(r"\d+|\D+", s)]
+
+        quantization_config["modules_to_not_convert"] = sorted(
+            list(set(result_collector.modules_to_not_convert)), key=natural_key
+        )
 
     config_path = os.path.join(input_path, "config.json")
     if os.path.exists(config_path):
@@ -175,6 +220,12 @@ def main() -> None:
         default="cuda",
         help="Torch device to run quantization on (default: cuda).",
     )
+    parser.add_argument(
+        "--num-layers-at-end-in-bf16",
+        type=int,
+        default=0,
+        help="Keep last N decoder layers in BF16 and do not quantize them.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -198,7 +249,12 @@ def main() -> None:
     elif not os.path.isdir(args.save_dir):
         raise ValueError("The save_dir should be a directory.")
 
-    convert_mxfp8(args.model_dir, args.save_dir, str(device))
+    convert_mxfp8(
+        args.model_dir,
+        args.save_dir,
+        str(device),
+        num_layers_at_end_in_bf16=args.num_layers_at_end_in_bf16,
+    )
 
 
 if __name__ == "__main__":
