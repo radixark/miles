@@ -1,8 +1,23 @@
 #### Use the base image for ROCm 7 / gfx950 (MI355)
 
-# The Docker image built with this Dockerfile:
+# =====================================================================
+# Docker Image Version Information (Updated: Feb 5, 2026)
+# =====================================================================
 # Base image: ROCm 7 with vllm pre-built for gfx950
 # Target GPU: MI355 (gfx950)
+#
+# Key Dependencies:
+# - sglang: v0.5.7
+# - sgl_kernel: 0.3.20 (built from sglang v0.5.7)
+# - Megatron-LM: commit 3714d81d418c9f1bca4594fc35f9e8289f652862
+# - TransformerEngine: commit 90c04bcdc3c109505b318f40a39680263af55edf
+# - aiter: v0.1.7.post2
+# - Ray: 2.47.1
+#
+# Patches: amd_patch/sglv0.5.7/
+#   - sglang.patch
+#   - megatron.patch, amd_megatron_fused_kernels_init.patch
+# =====================================================================
 
 
 FROM rocm/sgl-dev:rocm7-vllm-20250904
@@ -70,7 +85,7 @@ RUN pip uninstall -y megatron-core || true
 RUN rm -rf Megatron-LM
 RUN git clone https://github.com/NVIDIA/Megatron-LM \
     && cd Megatron-LM \
-    && git checkout 48406695c4efcf1026a7ed70bb390793918dd97b \
+    && git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862 \
     && pip install -e .
 #########################################
 #########################################
@@ -99,7 +114,7 @@ RUN pip install "ray[data,train,tune,serve]==2.47.1"
 #########################################
 ###6. Install torch_memory_saver#########
 #########################################
-RUN pip install torch_memory_saver
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@64a92e1d7fb822ea4af5579c8cebb162692c531c --no-cache-dir --force-reinstall
 #########################################
 #########################################
 
@@ -167,7 +182,7 @@ RUN pip uninstall -y sgl_kernel sglang || true
 RUN rm -rf sglang
 RUN git clone https://github.com/sgl-project/sglang.git \
     && cd sglang \
-    && git checkout v0.5.6
+    && git checkout v0.5.7
 
 # Build sgl-kernel for gfx950
 RUN cd sglang/sgl-kernel \
@@ -194,8 +209,8 @@ RUN python -m pip cache purge
 #### APPLY PATCHES (gfx950/MI355) #########
 ###########################################
 
-# Copy patches from miles repo
-COPY amd_patch/latest /app/patch
+# Copy patches from miles repo (sglang v0.5.7 specific)
+COPY amd_patch/sglv0.5.7 /app/patch
 
 # Apply Megatron patches
 RUN cd /app/Megatron-LM \
@@ -209,7 +224,7 @@ RUN cd /app/Megatron-LM \
 
 # Apply SGLang patch
 RUN cd /app/sglang \
-    && git apply /app/patch/sglang.patch || echo "Check patch compatibility with v0.5.6" \
+    && git apply /app/patch/sglang.patch \
     && if grep -R -n '^<<<<<<< ' .; then \
         echo "Patch failed to apply cleanly. Please resolve conflicts." && \
         exit 1; \

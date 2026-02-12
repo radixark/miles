@@ -649,7 +649,12 @@ def chunked_gae(
     return advantages, returns
 
 
-def calculate_log_probs_and_entropy(logits, tokens, tp_group, with_entropy: bool = False, chunk_size: int = -1):
+def calculate_log_probs_and_entropy(
+    logits, tokens, tp_group, with_entropy: bool = False, chunk_size: int = -1, true_on_policy: bool = False
+):
+    if true_on_policy:
+        return _calculate_log_probs_and_entropy_true_on_policy(logits, tokens, with_entropy=with_entropy)
+
     logits = logits.contiguous()
     # TODO: not sure why we need to clone the logits here.
     # Without the clone, the backward will trigger inplace edit error.
@@ -679,5 +684,38 @@ def calculate_log_probs_and_entropy(logits, tokens, tp_group, with_entropy: bool
         log_prob = logits.new_zeros((0,))
         if with_entropy:
             entropy = logits.new_zeros((0,))
+
+    return log_prob, entropy
+
+
+def _calculate_log_probs_and_entropy_true_on_policy(
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    with_entropy: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Simple log-prob and entropy computation matching SGLang's inference path.
+
+    Args:
+        logits: Aligned logits of shape ``[R, V]`` (already response-sliced
+            and temperature-scaled by ``get_responses``).
+        tokens: Target tokens of shape ``[R]``.
+        with_entropy: If True, also compute entropy.
+
+    Returns:
+        Tuple of ``(log_probs, entropy)`` where *log_probs* has shape ``[R]``
+        and *entropy* has shape ``[R]`` or is ``None``.
+    """
+    if logits.size(0) == 0:
+        log_prob = logits.new_zeros((0,))
+        entropy = logits.new_zeros((0,)) if with_entropy else None
+        return log_prob, entropy
+
+    log_probs_full = torch.log_softmax(logits, dim=-1)
+    log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+
+    entropy = None
+    if with_entropy:
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -(probs * log_probs_full).sum(dim=-1)
 
     return log_prob, entropy
