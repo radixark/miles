@@ -329,6 +329,7 @@ class SGLangEngine(RayActor):
         if self.node_rank != 0:
             return
         base = f"http://{self.server_host}:{self.server_port}"
+        # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
             response = requests.get(f"{base}{endpoint}")
             if response.status_code == 200:
