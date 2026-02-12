@@ -1,8 +1,9 @@
 import os
 import miles.utils.external_utils.command_utils as U
 
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-NUM_GPUS = 4
+NUM_GPUS = 4 if FEW_GPU else 8
 
 MODEL_NAME = "Qwen3-4B"
 
