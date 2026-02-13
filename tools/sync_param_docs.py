@@ -73,7 +73,7 @@ class ValidationResult:
 def _literal_str(node: ast.AST) -> str | None:
     try:
         value = ast.literal_eval(node)
-    except Exception:
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
         return None
     if isinstance(value, str):
         return value
