@@ -147,6 +147,10 @@ class RolloutManager:
         self.rollout_id = rollout_id
         self.health_monitoring_resume()
         logger.info("RolloutManager generate start: rollout_id=%s", rollout_id)
+        if self.use_diffusion_rollout and self.args.colocate and getattr(self.args, "diffusion_train", False):
+            data = self._get_diffusion_prompt_train_data(rollout_id=rollout_id)
+            logger.info("RolloutManager generate done (prompt-only colocate): rollout_id=%s", rollout_id)
+            return self._split_prompt_data_by_dp(data, self.train_parallel_config["dp_size"])
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metrics = self._get_rollout_data(rollout_id=rollout_id)
@@ -487,6 +491,46 @@ class RolloutManager:
                     continue
                 rollout_data[key] = data[key]
             # Pass dynamic global_batch_size to training side
+            if hasattr(self, "_dynamic_global_batch_size"):
+                rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
+            rollout_data_refs.append(Box(ray.put(rollout_data)))
+        return rollout_data_refs
+
+    def _get_diffusion_prompt_train_data(self, rollout_id: int) -> dict[str, Any]:
+        num_batches = getattr(self.args, "diffusion_num_batches_per_epoch", 1)
+        if num_batches is None or num_batches <= 0:
+            num_batches = 1
+        groups = []
+        for _ in range(num_batches):
+            groups.extend(self.data_source.get_samples(self.args.rollout_batch_size))
+        flat = [sample for group in groups for sample in group]
+        prompts = [sample.prompt for sample in flat]
+        sample_indices = [sample.index for sample in flat]
+        total_lengths = [0] * len(flat)
+        logger.info(
+            "diffusion colocate prompt-only rollout_id=%s groups=%s samples=%s",
+            rollout_id,
+            len(groups),
+            len(flat),
+        )
+        return {
+            "prompt": prompts,
+            "sample_indices": sample_indices,
+            "total_lengths": total_lengths,
+        }
+
+    def _split_prompt_data_by_dp(self, data: dict[str, Any], dp_size: int):
+        total = len(data["prompt"])
+        partitions = [range(i, total, dp_size) for i in range(dp_size)]
+        rollout_data_refs = []
+        for i in range(dp_size):
+            partition = list(partitions[i])
+            rollout_data = {
+                "partition": partition,
+                "prompt": [data["prompt"][j] for j in partition],
+                "sample_indices": [data["sample_indices"][j] for j in partition],
+                "total_lengths": data["total_lengths"],
+            }
             if hasattr(self, "_dynamic_global_batch_size"):
                 rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
             rollout_data_refs.append(Box(ray.put(rollout_data)))

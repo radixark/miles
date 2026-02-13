@@ -9,7 +9,10 @@ import torch
 import torch.distributed as dist
 import numpy as np
 from diffusers import StableDiffusion3Pipeline
+from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
 
+from flow_grpo import rewards as flow_rewards
+from flow_grpo.diffusers_patch.sd3_pipeline_with_logprob import pipeline_with_logprob
 from flow_grpo.diffusers_patch.sd3_sde_with_logprob import sde_step_with_logprob
 from flow_grpo.stat_tracking import PerPromptStatTracker
 from flow_grpo.ema import EMAModuleWrapper
@@ -127,6 +130,11 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
         logger.warning("DiffusionFSDPTrainRayActor save_model is not implemented; skipping checkpoint save.")
 
     def update_weights(self) -> None:  # type: ignore[override]
+        if self.args.colocate and getattr(self.args, "diffusion_train", False):
+            dist.barrier(group=get_gloo_group())
+            logger.info("update_weights skipped in colocate diffusion mode (same-process rollout uses latest weights)")
+            return
+
         # Diffusion rollout uses a local pipeline; sync weights via disk.
         rank = dist.get_rank()
         logger.info("update_weights start (rank=%s)", rank)
@@ -227,6 +235,25 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 dst=self.parallel_state.dp_src_rank,
                 group=self.parallel_state.dp_cp_group_gloo,
             )
+
+    def _log_local_step_metrics(self, rollout_id: int, reduced: dict[str, float], step: int) -> None:
+        """Always emit a local rank0 train-step line for easier debugging in colocate mode."""
+        if self.parallel_state.dp_rank != 0:
+            return
+        logger.info(
+            "local train step=%s rollout_id=%s loss=%.6f policy_loss=%.6f clipfrac=%.6f "
+            "clipfrac_gt_one=%.6f clipfrac_lt_one=%.6f reward_avg=%.6f reward_ocr=%.6f reward_ocr_zero_ratio=%.6f",
+            int(step),
+            int(rollout_id),
+            float(reduced.get("loss", 0.0)),
+            float(reduced.get("policy_loss", 0.0)),
+            float(reduced.get("clipfrac", 0.0)),
+            float(reduced.get("clipfrac_gt_one", 0.0)),
+            float(reduced.get("clipfrac_lt_one", 0.0)),
+            float(reduced.get("reward_avg", 0.0)),
+            float(reduced.get("reward_ocr", 0.0)),
+            float(reduced.get("reward_ocr_zero_ratio", 0.0)),
+        )
 
     def _encode_prompt(self, prompts: list[str]):
         # Encode prompts into embeddings on the training device.
@@ -333,6 +360,113 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
         return torch.tensor(local_adv, device=torch.cuda.current_device(), dtype=torch.float32), stats
 
+    def _parse_reward_spec(self) -> dict[str, float]:
+        spec = getattr(self.args, "diffusion_reward", "pickscore")
+        if isinstance(spec, dict):
+            return spec
+        if isinstance(spec, str):
+            text = spec.strip()
+            if text.startswith("{"):
+                return json.loads(text)
+            if ":" in text:
+                reward_dict: dict[str, float] = {}
+                for pair in [p for p in text.split(",") if p]:
+                    name, weight = pair.split(":")
+                    reward_dict[name.strip()] = float(weight)
+                return reward_dict
+            return {text: 1.0}
+        return {"pickscore": 1.0}
+
+    def _get_local_reward_fn(self):
+        if not hasattr(self, "_local_reward_fn") or self._local_reward_fn is None:
+            device = str(torch.device(f"cuda:{torch.cuda.current_device()}"))
+            self._local_reward_fn = flow_rewards.multi_score(device, self._parse_reward_spec())
+        return self._local_reward_fn
+
+    def _make_generators(self, prompts: list[str], rollout_id: int) -> list[torch.Generator]:
+        base_seed = int(getattr(self.args, "rollout_seed", 0))
+        seed_offset = rollout_id * 1000 + self.parallel_state.dp_rank * 100000
+        generators = []
+        for idx, _ in enumerate(prompts):
+            seed = (base_seed + seed_offset + idx) % (2**31)
+            generators.append(torch.Generator().manual_seed(seed))
+        return generators
+
+    def _run_local_rollout(self, rollout_id: int, prompts: list[str]) -> dict:
+        if len(prompts) == 0:
+            return {"metadata": [], "rewards": [], "raw_reward": [], "reward_ocr": []}
+
+        num_steps = int(getattr(self.args, "diffusion_num_steps", 10))
+        guidance_scale = float(getattr(self.args, "diffusion_guidance_scale", 4.5))
+        noise_level = float(getattr(self.args, "diffusion_noise_level", 0.7))
+        height = int(getattr(self.args, "diffusion_height", 512))
+        width = int(getattr(self.args, "diffusion_width", 512))
+        generators = self._make_generators(prompts, rollout_id)
+
+        was_training = self.pipeline.transformer.training
+        self.pipeline.transformer.eval()
+        with torch.no_grad():
+            images, all_latents, all_log_probs = pipeline_with_logprob(
+                self.pipeline,
+                prompt=prompts,
+                height=height,
+                width=width,
+                num_inference_steps=num_steps,
+                guidance_scale=guidance_scale,
+                generator=generators,
+                output_type="pil",
+                noise_level=noise_level,
+            )
+        if was_training:
+            self.pipeline.transformer.train()
+
+        timesteps, _ = retrieve_timesteps(self.pipeline.scheduler, num_steps, torch.device("cpu"))
+        sigmas = getattr(self.pipeline.scheduler, "sigmas", None)
+        if sigmas is None:
+            raise ValueError("Scheduler missing sigmas in local diffusion rollout.")
+        sigmas = torch.as_tensor(sigmas).cpu()
+
+        latents = torch.stack(all_latents[:-1], dim=1)
+        next_latents = torch.stack(all_latents[1:], dim=1)
+        log_prob_old = torch.stack(all_log_probs, dim=1)
+
+        metadata = []
+        timesteps_cpu = timesteps.cpu()
+        for i in range(len(prompts)):
+            metadata.append(
+                {
+                    "timesteps": timesteps_cpu.clone(),
+                    "sigmas": sigmas.clone(),
+                    "latents": latents[i].detach().cpu().clone(),
+                    "next_latents": next_latents[i].detach().cpu().clone(),
+                    "log_prob_old": log_prob_old[i].detach().cpu().clone(),
+                }
+            )
+
+        reward_fn = self._get_local_reward_fn()
+        reward_dict, _ = reward_fn(images, prompts, [{} for _ in range(len(prompts))])
+        reward_dict = {k: np.asarray(v, dtype=np.float64).tolist() for k, v in reward_dict.items()}
+        rewards_avg = reward_dict.get("avg", reward_dict.get("ocr", []))
+        if not rewards_avg:
+            rewards_avg = [0.0] * len(prompts)
+        reward_ocr = reward_dict.get("ocr", [0.0] * len(prompts))
+        if reward_ocr:
+            zero_ratio = float(np.mean([1.0 if r == 0.0 else 0.0 for r in reward_ocr]))
+            logger.info(
+                "local rollout reward_ocr stats: n=%d min=%.6f max=%.6f zero_ratio=%.6f",
+                len(reward_ocr),
+                float(min(reward_ocr)),
+                float(max(reward_ocr)),
+                zero_ratio,
+            )
+
+        return {
+            "metadata": metadata,
+            "rewards": rewards_avg,
+            "raw_reward": rewards_avg,
+            "reward_ocr": reward_ocr,
+        }
+
     def train(self, rollout_id: int, rollout_data_ref):  # type: ignore[override]
         if self.args.offload_train:
             self.wake_up()
@@ -356,8 +490,20 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 self.parallel_state.dp_size,
             )
 
+            fallback_n = len(rollout_data.get("metadata", []))
+            prompts = rollout_data.get("prompt", [""] * fallback_n)
             if "metadata" not in rollout_data:
-                raise ValueError("Diffusion training requires rollout metadata.")
+                if self.args.colocate and getattr(self.args, "diffusion_train", False):
+                    logger.info(
+                        "train rank=%s using local diffusion rollout for colocate (rollout_id=%s, prompts=%s)",
+                        self.parallel_state.dp_rank,
+                        rollout_id,
+                        len(prompts),
+                    )
+                    rollout_data.update(self._run_local_rollout(rollout_id, prompts))
+                    dist.barrier(group=get_gloo_group())
+                else:
+                    raise ValueError("Diffusion training requires rollout metadata.")
 
             prompts = rollout_data.get("prompt", [""] * len(rollout_data["metadata"]))
             rewards = torch.tensor(
@@ -588,6 +734,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
                         reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
                         reduced.update(per_prompt_stats)
+                        self._log_local_step_metrics(rollout_id, reduced, step=self.global_step)
                         self._gather_and_log_metrics(rollout_id, reduced, step=self.global_step)
                         log_stats = {k: [] for k in log_stats}
 
@@ -603,6 +750,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 if log_stats["loss"]:
                     reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
                     reduced.update(per_prompt_stats)
+                    self._log_local_step_metrics(rollout_id, reduced, step=self.global_step)
                     self._gather_and_log_metrics(rollout_id, reduced, step=self.global_step)
 
         if self.args.offload_train:
