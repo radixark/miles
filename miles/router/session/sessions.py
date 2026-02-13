@@ -74,7 +74,19 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         for item in logprobs_content:
             if "token_id" not in item:
-                raise RuntimeError("token_id must be in item")
+                token = item.get("token")
+                if token is None:
+                    raise RuntimeError("token_id must be in item")
+
+                token_id = tokenizer.convert_tokens_to_ids(token)
+                if token_id is None or (tokenizer.unk_token_id is not None and token_id == tokenizer.unk_token_id):
+                    token_ids = tokenizer(token, add_special_tokens=False)["input_ids"]
+                    if len(token_ids) != 1:
+                        raise RuntimeError(
+                            f"token_id missing and cannot infer stable single token id from token={token!r}"
+                        )
+                    token_id = token_ids[0]
+                item["token_id"] = int(token_id)
         record = SessionRecord(
             timestamp=time.time(),
             method=request.method,

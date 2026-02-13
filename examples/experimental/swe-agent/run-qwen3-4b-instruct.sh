@@ -14,6 +14,7 @@ set -ex
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=1
+export MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -118,13 +119,15 @@ MISC_ARGS=(
     --attention-softmax-in-fp32
     # need to comment this when using model with MLA
     --attention-backend flash
+    --use-miles-router
+    --miles-router-enable-token-input-for-chat-completions
 )
 
 CUSTOM_ARGS=(
     --custom-generate-function-path generate_with_swe_agent.generate
     --custom-rm-path generate_with_swe_agent.reward_func
-    --rollout-function-path generate_with_swe_agent.generate_rollout
     --dynamic-sampling-filter-path generate_with_swe_agent.dynamic_filter
+    --custom-rollout-log-function-path generate_with_swe_agent.log_rollout_data
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
