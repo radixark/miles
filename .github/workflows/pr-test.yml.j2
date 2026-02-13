@@ -169,7 +169,9 @@ jobs:
 
       - name: Install
         shell: bash
-        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+        run: |
+          cd /sgl-workspace/sglang && git fetch origin sglang-miles && git checkout sglang-miles && pip install -e python --no-deps --break-system-packages
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Execute
         shell: bash
