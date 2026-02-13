@@ -63,7 +63,7 @@ Arguments for configuring Ray cluster resources and GPU allocation.
 | `--distributed-backend` | Backend for distributed communication. | `nccl` | `nccl`, `gloo` | Megatron-LM (Reset by Miles) |
 | `--distributed-timeout-minutes` | Timeout for distributed operations in minutes. | `10` | Type: int | Megatron-LM (Reset by Miles) |
 
-Note that most use cases do not need to consider offload parameters, including `--offload-rollout, --no-offload-rollout, --offload-train, --no-offload-train`. They are used only on AMD GPUs and will eventually be removed.
+Note that most use cases do not need to consider offload parameters, including `--offload-rollout, --no-offload-rollout, --offload-train, --no-offload-train`.
 
 ## Training Backend
 

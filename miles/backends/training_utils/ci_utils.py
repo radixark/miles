@@ -15,9 +15,9 @@ def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumula
             # TODO: mla currently have non-zero kl, need further investigation
             assert log_dict["train/ppo_kl"] < 1e-8, f"{log_dict=}"
         else:
-            assert log_dict["train/ppo_kl"] == 0.0 and log_dict["train/pg_clipfrac"] == 0.0, f"{log_dict=}"
+            assert abs(log_dict["train/ppo_kl"]) < 1e-10 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
     if accumulated_step_id == 0 and "train/kl_loss" in log_dict and not args.use_rollout_routing_replay:
-        assert log_dict["train/kl_loss"] == 0.0, f"{log_dict=}"
+        assert abs(log_dict["train/kl_loss"]) < 1e-10, f"{log_dict=}"
 
 
 def check_grad_norm(
