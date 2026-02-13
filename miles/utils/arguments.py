@@ -1437,12 +1437,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_sglang_tp_size():
             temp_parser = argparse.ArgumentParser(add_help=False)
-            temp_parser.add_argument(
-                "--rollout-num-gpus-per-engine",
-                type=int,
-                default=1,
-                help="Number of GPUs per inference engine, same as `tp_size` in SGLang. For multi-node serving, this should be the total GPU count / `tp_size` for each SGLang instance.",
-            )
+            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
             temp_args, _ = temp_parser.parse_known_args()
             sglang_tp_size = temp_args.rollout_num_gpus_per_engine
             return sglang_tp_size
