@@ -118,7 +118,9 @@ def train(args: ScriptArgs):
     assert args.hardware != "H100", "H100 is not yet supported in this script"
 
     hf_checkpoint = (
-        f"{args.model_local_dir}/{args.model_name}-FP8" if args.rollout_fp8 else f"{args.model_local_dir}/{args.model_name}"
+        f"{args.model_local_dir}/{args.model_name}-FP8"
+        if args.rollout_fp8
+        else f"{args.model_local_dir}/{args.model_name}"
     )
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
