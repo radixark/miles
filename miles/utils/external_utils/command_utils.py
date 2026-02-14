@@ -69,12 +69,8 @@ def convert_checkpoint(
 
 @ray.remote(num_cpus=0.001)
 def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
-    import os
-
-    from miles.utils.misc import exec_command as _exec_command
-
     os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-    return _exec_command(cmd, capture_output=capture_output)
+    return exec_command(cmd, capture_output=capture_output)
 
 
 def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[str | None]:
