@@ -133,7 +133,7 @@ def _execute_train(args: ScriptArgs):
         "--rollout-stop-token-ids 151329 151336 151338 "
     )
 
-    if args.dynamic_sampling and (args.mode != "debug_minimal"):
+    if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
         rollout_args += (
             "--over-sampling-batch-size 256 "
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
