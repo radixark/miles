@@ -13,11 +13,6 @@ import miles.utils.external_utils.command_utils as U
 app = typer.Typer()
 
 
-@app.callback()
-def _callback() -> None:
-    pass
-
-
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
@@ -311,6 +306,11 @@ def train(args: ScriptArgs):
         extra_env_vars={**sglang_extra_env_vars},
         megatron_path=args.megatron_path,
     )
+
+
+@app.callback()
+def _callback() -> None:
+    pass
 
 
 if __name__ == "__main__":

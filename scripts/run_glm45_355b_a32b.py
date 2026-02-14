@@ -13,11 +13,6 @@ import miles.utils.external_utils.command_utils as U
 app = typer.Typer()
 
 
-@app.callback()
-def _callback() -> None:
-    pass
-
-
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
@@ -390,6 +385,11 @@ tis_batch_normalize: true
             # "OMPI_MCA_btl_tcp_if_include": "${MLP_SOCKET_IFNAME}",
         },
     )
+
+
+@app.callback()
+def _callback() -> None:
+    pass
 
 
 if __name__ == "__main__":
