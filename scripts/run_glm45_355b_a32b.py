@@ -275,7 +275,6 @@ def train(args: ScriptArgs):
             "--sglang-speculative-num-steps 1 "
             "--sglang-speculative-eagle-topk 1 "
             "--sglang-speculative-num-draft-tokens 2 "
-            "--sglang-enable-draft-weights-cpu-backup "
         )
         sglang_extra_env_vars |= {
             "SGLANG_ENABLE_SPEC_V2": "1",
