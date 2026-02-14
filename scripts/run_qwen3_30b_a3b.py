@@ -211,7 +211,7 @@ def execute(args: ScriptArgs):
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
-                "--expert-model-parallel-size 4 "
+                f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
