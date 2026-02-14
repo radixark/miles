@@ -96,14 +96,7 @@ def _prepare_cp(args: ScriptArgs):
     )
 
 
-@app.command()
-@U.dataclass_cli
-def train(args: ScriptArgs):
-    _prepare_download(args)
-    _prepare_bf16_ckpt(args)
-    _prepare_megatron_ckpt(args)
-    _prepare_cp(args)
-
+def _execute_train(args: ScriptArgs):
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
@@ -306,6 +299,16 @@ def train(args: ScriptArgs):
         extra_env_vars={**sglang_extra_env_vars},
         megatron_path=args.megatron_path,
     )
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    _prepare_download(args)
+    _prepare_bf16_ckpt(args)
+    _prepare_megatron_ckpt(args)
+    _prepare_cp(args)
+    _execute_train(args)
 
 
 @app.callback()
