@@ -44,7 +44,7 @@ def convert_checkpoint(
 
     exec_command_all_ray_node(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        f"PYTHONPATH={megatron_path} "
+        f"FLASHINFER_DISABLE_VERSION_CHECK=1 PYTHONPATH={megatron_path} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
