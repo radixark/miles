@@ -65,13 +65,10 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
     num_layers = _get_num_layers_from_name(args.model_name)
 
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
-    if num_layers is not None and num_layers <= 5 and args.num_nodes == 1:
+    if num_layers is not None:
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
-    elif num_layers is not None:
-        extra_args += (
-            "--pipeline-model-parallel-size 1 "
-            "--expert-model-parallel-size 4 "
-        )
+        convert_gpus = 1
+        use_multinode = False
     else:
         extra_args += (
             "--pipeline-model-parallel-size 8 "
@@ -79,14 +76,14 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
             "--decoder-first-pipeline-num-layers 7 "
             "--decoder-last-pipeline-num-layers 6 "
         )
-
-    use_multinode = num_layers is None or num_layers >= args.num_nodes * args.num_gpus_per_node
+        convert_gpus = args.num_gpus_per_node
+        use_multinode = True
 
     U.convert_checkpoint(
         model_name=args.model_name,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.num_gpus_per_node,
+        num_gpus_per_node=convert_gpus,
         multinode=use_multinode,
         extra_args=extra_args,
         dir_dst=args.model_dir,
