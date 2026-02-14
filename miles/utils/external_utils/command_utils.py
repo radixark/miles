@@ -48,7 +48,7 @@ def convert_checkpoint(
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
-        f"tools/convert_hf_to_torch_dist.py "
+        f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
         f"--hf-checkpoint {hf_checkpoint} "
         f"--save {path_dst} "
@@ -71,7 +71,9 @@ def fp8_cast_bf16(path_src, path_dst):
         return
 
     exec_command(
-        "python tools/fp8_cast_bf16.py " f"--input-fp8-hf-path {path_src} " f"--output-bf16-hf-path {path_dst} "
+        f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
+        f"--input-fp8-hf-path {path_src} "
+        f"--output-bf16-hf-path {path_dst} "
     )
 
 
