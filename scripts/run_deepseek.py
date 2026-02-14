@@ -69,8 +69,8 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
     elif num_layers is not None:
         extra_args += (
+            "--pipeline-model-parallel-size 1 "
             "--expert-model-parallel-size 4 "
-            # PP info will be auto determined by converter script
         )
     else:
         extra_args += (
