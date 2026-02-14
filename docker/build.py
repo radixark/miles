@@ -67,7 +67,7 @@ def run(cmd: list[str], dry_run: bool) -> None:
     subprocess.run(cmd, check=True)
 
 
-def build_and_push(variant: str, dry_run: bool) -> None:
+def build_and_push(variant: str, dry_run: bool, dockerfile: str) -> None:
     config = VARIANTS[variant]
     repo_root = Path(__file__).resolve().parent.parent
 
@@ -81,10 +81,10 @@ def build_and_push(variant: str, dry_run: bool) -> None:
     # Build command using buildx with cache and --push
     cmd = [
         "docker", "buildx", "build",
-        "-f", "docker/Dockerfile",
-        "--cache-from", f"type=local,src={cache_key}",
-        "--cache-to", f"type=local,dest={cache_key},mode=max",
-        "--push",
+        "-f", dockerfile,
+        # "--cache-from", f"type=local,src={cache_key}",
+        # "--cache-to", f"type=local,dest={cache_key},mode=max",
+        # "--push",
     ]
 
     # Proxy args (pass through if set in environment)
@@ -123,9 +123,10 @@ class Variant(str, Enum):
 
 def main(
     variant: Variant = typer.Option(..., help="Build variant to use."),
+    dockerfile: str = typer.Option("docker/Dockerfile", help="Path to the Dockerfile."),
     dry_run: bool = typer.Option(False, help="Print commands without executing them."),
 ) -> None:
-    build_and_push(variant.value, dry_run)
+    build_and_push(variant.value, dry_run, dockerfile)
 
 
 if __name__ == "__main__":
