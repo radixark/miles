@@ -49,26 +49,6 @@ index 5a1ea308d..aa701237f 100644
              ),
          )
  
-diff --git a/megatron/core/distributed/__init__.py b/megatron/core/distributed/__init__.py
-index fe26e8b43..4451f2776 100644
---- a/megatron/core/distributed/__init__.py
-+++ b/megatron/core/distributed/__init__.py
-@@ -11,3 +11,15 @@ from .finalize_model_grads import finalize_model_grads
- from .fsdp.mcore_fsdp_adapter import FullyShardedDataParallel
- from .torch_fully_sharded_data_parallel import TorchFullyShardedDataParallel
- from .torch_fully_sharded_data_parallel_config import TorchFullyShardedDataParallelConfig
-+
-+# Backward compatibility patch for FSDP module reorganization
-+import sys
-+import importlib.util
-+
-+spec = importlib.util.find_spec('megatron.core.distributed.fsdp.src.megatron_fsdp')
-+if spec:
-+    custom_fsdp = importlib.util.module_from_spec(spec)
-+    spec.loader.exec_module(custom_fsdp)
-+    sys.modules['megatron.core.distributed.custom_fsdp'] = custom_fsdp
-+    if hasattr(custom_fsdp, 'MegatronFSDP'):
-+        custom_fsdp.FullyShardedDataParallel = custom_fsdp.MegatronFSDP
 diff --git a/megatron/core/extensions/transformer_engine.py b/megatron/core/extensions/transformer_engine.py
 index acb93ef78..d239db4ab 100644
 --- a/megatron/core/extensions/transformer_engine.py
@@ -532,7 +512,7 @@ index ac839c21f..f18309217 100644
          ops.append(recv_next_op)
      if len(ops) > 0:
 diff --git a/megatron/core/transformer/moe/moe_utils.py b/megatron/core/transformer/moe/moe_utils.py
-index 28cff06f5..48c9c1a25 100644
+index 28cff06f5..58dc4bb70 100644
 --- a/megatron/core/transformer/moe/moe_utils.py
 +++ b/megatron/core/transformer/moe/moe_utils.py
 @@ -587,6 +587,9 @@ def topk_routing_with_score_function(
@@ -546,7 +526,7 @@ index 28cff06f5..48c9c1a25 100644
          if use_pre_softmax:
              scores = torch.softmax(logits, dim=-1, dtype=torch.float32).type_as(logits)
 diff --git a/megatron/core/transformer/moe/router.py b/megatron/core/transformer/moe/router.py
-index 16fc9d9af..3e95858a6 100644
+index 16fc9d9af..517944f25 100644
 --- a/megatron/core/transformer/moe/router.py
 +++ b/megatron/core/transformer/moe/router.py
 @@ -201,6 +201,9 @@ class TopKRouter(Router):

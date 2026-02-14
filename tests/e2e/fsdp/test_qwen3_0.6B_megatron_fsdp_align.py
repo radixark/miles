@@ -2,9 +2,11 @@ import os
 
 import miles.utils.external_utils.command_utils as U
 
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
+
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"
-NUM_GPUS = 4
+NUM_GPUS = 4 if FEW_GPU else 8
 CP_SIZE = 1
 MEGATRON_TP_SIZE = 1
 MEGATRON_PP_SIZE = 1
