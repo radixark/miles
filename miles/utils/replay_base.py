@@ -81,26 +81,27 @@ class BaseReplayManager:
     def get_topk_fn(self, old_topk_fn, return_probs):
         manager = self
 
-        def shape_sanity_check(replay_top_indices, scores, topk):
-            n_replay_tokens, n_actual_tokens = replay_top_indices[..., 0].numel(), scores[..., 0].numel()
+        def _get_replay_result(top_indices, scores, topk, *args, **kwargs):
             assert (
-                n_replay_tokens == n_actual_tokens
-            ), f"rank {_get_rank()}: replay n_tokens {n_replay_tokens} does not match scores n_tokens {n_actual_tokens}"
+                top_indices.shape[0] == scores.shape[0]
+            ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"
 
             assert (
-                replay_top_indices.shape[1] >= topk
-            ), f"not enough topk indices in replay, got {replay_top_indices.shape[1]}, expected at least {topk}"
+                top_indices.shape[1] == topk
+            ), f"replay topk does not match expected topk, replay topk {top_indices.shape[1]}, topk {topk}"
+
+            if self.enable_check_replay_result:
+                self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
+
+            if return_probs:
+                if -1 in top_indices:
+                    return old_topk_fn(scores, topk, *args, **kwargs)
+                else:
+                    return scores.gather(1, top_indices), top_indices
+            else:
+                return top_indices
 
         def new_topk_fn(scores, topk, *args, **kwargs):
-            def get_probs_and_top_indices(top_indices, return_probs):
-                if return_probs:
-                    if -1 in top_indices:
-                        return old_topk_fn(scores, topk, *args, **kwargs)
-                    else:
-                        return scores.gather(1, top_indices), top_indices
-                else:
-                    return top_indices
-
             if not manager.enabled:
                 return old_topk_fn(scores, topk, *args, **kwargs)
 
@@ -120,24 +121,11 @@ class BaseReplayManager:
                 return result
 
             elif stage == "replay_forward":
-                replay_top_indices = replay.pop_forward()
-
-                shape_sanity_check(replay_top_indices, scores, topk)
-                top_indices = replay_top_indices[..., :topk].view(scores.shape[:-1] + (topk,))
-
-                self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
-
-                return get_probs_and_top_indices(top_indices, return_probs)
+                return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":
-                replay_top_indices = replay.pop_backward()
+                return _get_replay_result(replay.pop_backward(), scores, topk, *args, **kwargs)
 
-                shape_sanity_check(replay_top_indices, scores, topk)
-                top_indices = replay_top_indices[..., :topk].view(scores.shape[:-1] + (topk,))
-
-                self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
-
-                return get_probs_and_top_indices(top_indices, return_probs)
             else:
                 return old_topk_fn(scores, topk, *args, **kwargs)
 
@@ -156,9 +144,6 @@ class BaseReplayManager:
         module.register_forward_pre_hook(pre_forward_hook)
 
     def check_replay_result(self, old_topk_fn, scores, topk, top_indices, **kwargs):
-        if os.environ.get("MILES_CHECK_REPLAY_RESULT", "0") == "0":
-            return
-
         orig_top_indices = old_topk_fn(scores, topk, **kwargs)
         if isinstance(orig_top_indices, tuple):
             _, orig_top_indices = orig_top_indices
@@ -187,6 +172,7 @@ class RoutingReplayManager(BaseReplayManager):
     filename = "routing_replay.pt"
     data_key = "rollout_routed_experts"
     if_sp_region = True
+    enable_check_replay_result = False
     thresh_check_replay_result = 0.5
 
 
