@@ -13,6 +13,11 @@ import miles.utils.external_utils.command_utils as U
 app = typer.Typer()
 
 
+@app.callback()
+def _callback() -> None:
+    pass
+
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
