@@ -81,7 +81,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
 
     U.convert_checkpoint(
         model_name=args.model_name,
-        hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
+        hf_checkpoint=f"{args.model_dir}/{args.model_name}",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=convert_gpus,
         multinode=use_multinode,
