@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,12 +14,19 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
+    actor_num_gpus_per_node: int | None = 4
+    rollout_num_gpus: int | None = 4
+    colocate: bool = False
     hardware: Literal["H100", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    rollout_nvfp4: bool = False
+    nvfp4_keep_first_n: int = 0
+    nvfp4_keep_last_n: int = 0
     rollout_attn_fp8: bool = False
     train_fp8: bool = False
+    train_nvfp4: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
@@ -26,6 +34,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        if not self.colocate:
+            self.actor_num_gpus_per_node = self.num_gpus_per_node // 2
+            self.rollout_num_gpus = self.num_gpus_per_node // 2
+        if (self.rollout_nvfp4 or self.train_nvfp4) and (self.rollout_fp8 or self.train_fp8):
+            raise ValueError("nvfp4 and fp8 modes are mutually exclusive.")
+        if (self.rollout_nvfp4 or self.train_nvfp4) and self.hardware not in ("GB200", "GB300"):
+            raise NotImplementedError("nvfp4 is only supported on Blackwell (GB200/GB300).")
 
 
 def prepare(args: ScriptArgs):
@@ -34,16 +49,35 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    if args.rollout_fp8:
+    use_blackwell_fp8 = args.hardware in ("GB200", "GB300") and (args.rollout_fp8 or args.train_fp8)
+    use_nvfp4 = args.rollout_nvfp4
+
+    if args.rollout_fp8 and not use_blackwell_fp8:
         U.exec_command(
             f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8"
         )
+
+    if use_blackwell_fp8:
+        mxfp8_path = f"/root/models/{args.model_name}-MXFP8"
+        if not os.path.isdir(mxfp8_path):
+            U.exec_command(
+                f"python tools/convert_hf_to_mxfp8.py --model-dir /root/models/{args.model_name} --save-dir {mxfp8_path}"
+            )
+
+    if use_nvfp4:
+        nvfp4_path = f"/root/models/{args.model_name}-NVFP4"
+        if not os.path.isdir(nvfp4_path):
+            keep_first_arg = f" --keep-first-n {args.nvfp4_keep_first_n}" if args.nvfp4_keep_first_n > 0 else ""
+            keep_last_arg = f" --keep-last-n {args.nvfp4_keep_last_n}" if args.nvfp4_keep_last_n > 0 else ""
+            U.exec_command(
+                f"python tools/convert_hf_to_nvfp4.py --model-dir /root/models/{args.model_name} --save-dir {nvfp4_path}{keep_first_arg}{keep_last_arg}"
+            )
 
     if not args.enable_megatron_bridge:
         U.convert_checkpoint(
             model_name=args.model_name,
             megatron_model_type=args.megatron_model_type,
-            num_gpus_per_node=args.num_gpus_per_node,
+            num_gpus_per_node=args.actor_num_gpus_per_node,
             # To support multi-node training, for simplicity, we put model into shared folder
             dir_dst="/root/models",
         )
@@ -57,8 +91,18 @@ def execute(args: ScriptArgs):
         else f"/root/models/{args.model_name}_torch_dist"
     )
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+    use_blackwell_fp8 = args.hardware in ("GB200", "GB300") and (args.rollout_fp8 or args.train_fp8)
+    use_nvfp4 = args.rollout_nvfp4
+    if use_nvfp4:
+        hf_checkpoint = f"/root/models/{args.model_name}-NVFP4"
+    elif use_blackwell_fp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-MXFP8"
+    elif args.rollout_fp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-FP8"
+    else:
+        hf_checkpoint = f"/root/models/{args.model_name}"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name}{'-FP8' if args.rollout_fp8 else ''}/ "
+        f"--hf-checkpoint {hf_checkpoint}/ "
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
@@ -130,27 +174,30 @@ def execute(args: ScriptArgs):
         # need to comment this when using model with MLA
         "--attention-backend flash "
         f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--colocate "
+        f"--rollout-num-gpus {args.rollout_num_gpus} "
         "--use-fault-tolerance "
         f"--dump-details /root/shared_data/{args.run_id}/dump_details "
     )
+    if args.colocate:
+        misc_args += "--colocate "
     misc_env_vars = {}
 
     if args.train_fp8:
         match args.hardware:
             case "GB200" | "GB300":
-                # It can run but accuracy is incorrect currently
-                raise NotImplementedError
                 # ref: Megatron-MoE-ModelZoo
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
                     "--fp8-format e4m3 "
                     "--fp8-recipe mxfp8 "
-                    "--fp8-param-gather "
-                    "--reuse-grad-buf-for-mxfp8-param-ag "
+                    # TODO: --fp8-param-gather not supported yet
+                    # "--fp8-param-gather "
+                    # "--overlap-param-gather "
+                    # "--overlap-grad-reduce "
+                    # "--reuse-grad-buf-for-mxfp8-param-ag "
                     # --moe-router-padding-for-quantization
                 )
             case "H100" | "H200":
@@ -165,6 +212,48 @@ def execute(args: ScriptArgs):
                 misc_env_vars |= {
                     "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
                 }
+    elif args.train_nvfp4:
+        nvfp4_te_config = """
+configs:
+  nvfp4_expert:
+    transformer_engine_config_type: TEQuantizationParams
+    training_recipe:
+      fp4_quantization_recipe: nvfp4
+      override_nonquantized_autocast: true
+  bf16:
+    transformer_engine_config_type: TEQuantizationParams
+    training_recipe: {}
+matchers:
+  moe_fc1:
+    type: glob
+    enabled: true
+    pattern: "*mlp.experts*linear_fc1*"
+    config: nvfp4_expert
+  moe_fc2:
+    type: glob
+    enabled: true
+    pattern: "*mlp.experts*linear_fc2*"
+    config: nvfp4_expert
+  default:
+    type: glob
+    enabled: true
+    pattern: "*"
+    config: bf16
+""".strip()
+        misc_args += (
+            "--transformer-impl transformer_engine "
+            "--bf16 "
+            "--fp4-format e2m1 "
+            "--fp4-recipe nvfp4 "
+            f"--te-precision-config-file {U.save_to_temp_file(nvfp4_te_config, 'yaml')} "
+        )
+        misc_env_vars |= {
+            "NVTE_KEEP_BACKWARD_UNQUANTIZED": "1",
+            "NVTE_NVFP4_1D_SCALING": "1",
+            "NVTE_NVFP4_DISABLE_2D_QUANTIZATION": "1",
+            "NVTE_NVFP4_DISABLE_RHT": "1",
+            "NVTE_NVFP4_DISABLE_STOCHASTIC_ROUNDING": "1",
+        }
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
@@ -193,26 +282,44 @@ def execute(args: ScriptArgs):
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
-                "--expert-model-parallel-size 4 "
+                f"--expert-model-parallel-size {args.actor_num_gpus_per_node} "
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
+                f"--rollout-num-gpus-per-engine {1 if args.rollout_fp8 or args.rollout_nvfp4 else 4} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-attention-backend trtllm_mha "
             )
             if args.rollout_fp8:
-                sglang_world_size = 2
-                sglang_attn_tp_size = 2
+                sglang_world_size = 1
+                sglang_attn_tp_size = 1
                 sglang_decode_max_bs = 256
                 sglang_args += (
-                    f"--sglang-ep-size {sglang_world_size} "
-                    "--sglang-moe-runner-backend deep_gemm "
-                    "--sglang-moe-a2a-backend deepep "
+                    # f"--sglang-ep-size {sglang_world_size} "
+                    "--sglang-fp8-gemm-backend triton "
+                    "--sglang-moe-runner-backend cutlass "
+                    # "--sglang-moe-a2a-backend deepep "
                     f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
                 )
+            elif args.rollout_nvfp4:
+                sglang_world_size = 1
+                sglang_attn_tp_size = 1
+                sglang_decode_max_bs = 256
+                sglang_args += (
+                    # f"--sglang-ep-size {sglang_world_size} "
+                    # "--sglang-fp8-gemm-backend triton "
+                    # "--sglang-moe-runner-backend cutlass "
+                    # "--sglang-moe-a2a-backend deepep "
+                    "--sglang-kv-cache-dtype bf16 "
+                    f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+                    f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                )
+                misc_env_vars |= {
+                    "SGLANG_NVFP4_ONLINE_SCALE": "1",
+                }
             else:
                 sglang_args += "--sglang-cuda-graph-max-bs 512 "
         case _:

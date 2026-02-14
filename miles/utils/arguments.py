@@ -1418,6 +1418,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             help="Path to the YAML config for custom function arguments.",
         )
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
+        reset_arg(
+            parser,
+            "--te-precision-config-file",
+            type=str,
+            default=None,
+            help="Configuration file to select per-module precision overrides. See TransformerEngineMixedPrecision.md",
+        )
 
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser

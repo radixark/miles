@@ -51,6 +51,22 @@ class LinearForLastLayer(torch.nn.Linear):
         return logits, None
 
 
+def _apply_te_precision_config(args: argparse.Namespace, config: TransformerConfig) -> None:
+    te_precision_config_file = getattr(args, "te_precision_config_file", None)
+    if not te_precision_config_file:
+        return
+
+    if getattr(args, "kitchen_config_file", None) or getattr(args, "kitchen_recipe_number", None):
+        raise AssertionError("Quantization recipe already configured.")
+
+    if getattr(config, "quant_recipe", None) is not None:
+        return
+
+    from megatron.core.quantization.utils import load_quantization_recipe
+
+    config.quant_recipe = load_quantization_recipe(te_precision_config_file)
+
+
 def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
@@ -108,6 +124,7 @@ def get_model_provider_func(
 
         # Experimental loading arguments from yaml
         config: TransformerConfig = core_transformer_config_from_args(args)
+        _apply_te_precision_config(args, config)
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
