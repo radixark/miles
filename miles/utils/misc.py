@@ -111,7 +111,11 @@ def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[st
         {{master_addr}} - NodeManagerAddress of the first node
         {{node_ip}}     - NodeManagerAddress of the current node
     """
-    nodes = [n for n in ray.nodes() if n.get("Alive")]
+    current_ip = get_current_node_ip()
+    nodes = sorted(
+        [n for n in ray.nodes() if n.get("Alive")],
+        key=lambda n: (n["NodeManagerAddress"] != current_ip, n["NodeManagerAddress"]),
+    )
     assert len(nodes) > 0
 
     master_addr = nodes[0]["NodeManagerAddress"]
