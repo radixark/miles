@@ -118,7 +118,7 @@ def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[st
     )
     assert len(nodes) > 0
 
-    master_addr = nodes[0]["NodeManagerAddress"]
+    master_addr = current_ip
     nnodes = str(len(nodes))
 
     refs = []
