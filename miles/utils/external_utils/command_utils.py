@@ -39,10 +39,7 @@ def convert_checkpoint(
     multinode_args = ""
     if multinode:
         multinode_args = (
-            "--master-addr {{master_addr}} "
-            "--master-port 23456 "
-            "--nnodes={{nnodes}} "
-            "--node-rank {{node_rank}} "
+            "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
     exec_command_all_ray_node(
