@@ -1,0 +1,42 @@
+name: Docker Build & Push
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'Build variant'
+        required: true
+        type: choice
+        options:
+          - primary
+          - cu129-arm64
+          - cu13-arm64
+          - debug
+      dockerfile:
+        description: 'Path to dockerfile (e.g. docker/Dockerfile.dev)'
+        required: false
+        default: 'docker/Dockerfile'
+        type: string
+
+jobs:
+  build-and-push:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        run: python docker/build.py --variant ${{ inputs.variant }} --dockerfile ${{ inputs.dockerfile }}
