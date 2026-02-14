@@ -32,6 +32,9 @@ def convert_checkpoint(
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
     path_dst = f"{dir_dst}/{model_name}_torch_dist"
+    if Path(path_dst).exists():
+        print(f"convert_checkpoint skip {path_dst} since exists")
+        return
 
     multinode_args = ""
     if multinode:
@@ -39,7 +42,7 @@ def convert_checkpoint(
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
-    convert_cmd = (
+    cmd = (
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"FLASHINFER_DISABLE_VERSION_CHECK=1 PYTHONPATH={megatron_path} "
         f"torchrun "
@@ -52,13 +55,10 @@ def convert_checkpoint(
         f"{extra_args}"
     )
 
-    cmd = (
-        f"if [ -d {path_dst} ]; then "
-        f"echo 'convert_checkpoint skip {path_dst} since exists'; "
-        f"else {convert_cmd}; fi"
-    )
-
-    exec_command_all_ray_node(cmd)
+    if multinode:
+        exec_command_all_ray_node(cmd)
+    else:
+        exec_command(cmd)
 
 
 def rsync_simple(path_src: str, path_dst: str):
@@ -86,7 +86,7 @@ class ExecuteTrainConfig:
     cuda_core_dump: bool = False
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
-    output_dir: str = "/root/shared_data"
+    output_dir: str = os.environ.get("MILES_SCRIPT_OUTPUT_DIR", "/root/shared_data")
 
 
 def execute_train(
