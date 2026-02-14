@@ -1,9 +1,11 @@
 import asyncio
 import importlib
+import os
 import subprocess
 from contextlib import contextmanager
 
 import ray
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from miles.utils.http_utils import is_port_available
 
@@ -92,6 +94,28 @@ def exec_command(cmd: str, capture_output: bool = False) -> str | None:
     if capture_output:
         print(f"Captured stdout={result.stdout} stderr={result.stderr}")
         return result.stdout
+
+
+@ray.remote(num_cpus=0.001)
+def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    return exec_command(cmd, capture_output=capture_output)
+
+
+def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[str | None]:
+    nodes = [n for n in ray.nodes() if n.get("Alive")]
+    assert len(nodes) > 0
+
+    refs = [
+        _exec_command_on_node.options(
+            scheduling_strategy=NodeAffinitySchedulingStrategy(
+                node_id=node["NodeID"],
+                soft=False,
+            ),
+        ).remote(cmd, capture_output)
+        for node in nodes
+    ]
+    return ray.get(refs)
 
 
 def get_current_node_ip():

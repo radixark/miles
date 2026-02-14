@@ -10,13 +10,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import ray
-from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-
-from miles.utils.misc import exec_command
+from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
-_ = exec_command, dataclass_cli
+_ = exec_command, exec_command_all_ray_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
@@ -67,28 +64,6 @@ def convert_checkpoint(
         f"--save {path_dst}"
         f"{extra_args}"
     )
-
-
-@ray.remote(num_cpus=0.001)
-def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
-    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-    return exec_command(cmd, capture_output=capture_output)
-
-
-def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[str | None]:
-    nodes = [n for n in ray.nodes() if n.get("Alive")]
-    assert len(nodes) > 0
-
-    refs = [
-        _exec_command_on_node.options(
-            scheduling_strategy=NodeAffinitySchedulingStrategy(
-                node_id=node["NodeID"],
-                soft=False,
-            ),
-        ).remote(cmd, capture_output)
-        for node in nodes
-    ]
-    return ray.get(refs)
 
 
 def rsync_simple(path_src: str, path_dst: str):
