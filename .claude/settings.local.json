@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python docker/build.py:*)",
-      "Bash(docker system:*)"
-    ]
-  }
-}
