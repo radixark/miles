@@ -18,7 +18,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    save_dir: str = "/root/shared_data"
     megatron_path: str = "/root/Megatron-LM"
     rollout_fp8: bool = False
     rollout_attn_fp8: bool = False
@@ -61,7 +60,7 @@ def execute(args: ScriptArgs):
         if args.enable_megatron_bridge
         else f"{args.model_dir}/{args.model_name}_torch_dist"
     )
-    load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name}{'-FP8' if args.rollout_fp8 else ''}/ "
         f"--ref-load {ref_load_path} "
@@ -139,7 +138,7 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details {args.save_dir}/{args.run_id}/dump_details "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
 

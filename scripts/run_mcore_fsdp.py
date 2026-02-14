@@ -24,7 +24,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    save_dir: str = "/root/shared_data"
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
@@ -56,7 +55,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
-    load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
@@ -207,7 +206,7 @@ eval:
     if args.train_backend == "fsdp":
         misc_args += """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
 
-    misc_args += "--use-fault-tolerance " f"--dump-details {args.save_dir}/{args.run_id}/dump_details "
+    misc_args += "--use-fault-tolerance " f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
 
     misc_env_vars = {}
 
