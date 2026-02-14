@@ -17,8 +17,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
+    rollout_mxfp8: bool = False
     rollout_attn_fp8: bool = False
     train_fp8: bool = False
+    train_mxfp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
@@ -26,6 +28,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        if self.rollout_mxfp8:
+            assert not self.rollout_fp8, "rollout_mxfp8 and rollout_fp8 cannot be enabled at the same time"
+            assert self.hardware in ("GB200", "GB300"), "rollout_mxfp8 only supports GB200 and GB300"
+        if self.train_mxfp8:
+            assert not self.train_fp8, "train_mxfp8 and train_fp8 cannot be enabled at the same time"
+            assert self.hardware in ("GB200", "GB300"), "train_mxfp8 only supports GB200 and GB300"
+            assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8 to be enabled"
 
 
 def prepare(args: ScriptArgs):
@@ -37,6 +46,11 @@ def prepare(args: ScriptArgs):
     if args.rollout_fp8:
         U.exec_command(
             f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8"
+        )
+
+    if args.rollout_mxfp8:
+        U.exec_command(
+            f"python tools/convert_hf_to_mxfp8.py --model-dir /root/models/{args.model_name} --save-dir /root/models/{args.model_name}-MXFP8"
         )
 
     if not args.enable_megatron_bridge:
@@ -57,8 +71,15 @@ def execute(args: ScriptArgs):
         else f"/root/models/{args.model_name}_torch_dist"
     )
     load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+
+    if args.rollout_fp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-FP8"
+    elif args.train_mxfp8:
+        hf_checkpoint = f"/root/models/{args.model_name}-MXFP8"
+    else:
+        hf_checkpoint = f"/root/models/{args.model_name}"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name}{'-FP8' if args.rollout_fp8 else ''}/ "
+        f"--hf-checkpoint {hf_checkpoint}/ "
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
@@ -138,19 +159,16 @@ def execute(args: ScriptArgs):
     )
     misc_env_vars = {}
 
-    if args.train_fp8:
+    if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
             case "GB200" | "GB300":
-                # It can run but accuracy is incorrect currently
-                raise NotImplementedError
-                # ref: Megatron-MoE-ModelZoo
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
                     "--fp8-format e4m3 "
                     "--fp8-recipe mxfp8 "
-                    "--fp8-param-gather "
-                    "--reuse-grad-buf-for-mxfp8-param-ag "
+                    # "--fp8-param-gather "
+                    # "--reuse-grad-buf-for-mxfp8-param-ag "
                     # --moe-router-padding-for-quantization
                 )
             case "H100" | "H200":
@@ -193,19 +211,16 @@ def execute(args: ScriptArgs):
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
-                "--expert-model-parallel-size 4 "
+                f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
                 "--expert-tensor-parallel-size 1 "
             )
-            sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 4} "
-                "--sglang-mem-fraction-static 0.7 "
-                "--sglang-attention-backend trtllm_mha "
-            )
+            sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
             if args.rollout_fp8:
                 sglang_world_size = 2
                 sglang_attn_tp_size = 2
                 sglang_decode_max_bs = 256
                 sglang_args += (
+                    f"--rollout-num-gpus-per-engine 2 "
                     f"--sglang-ep-size {sglang_world_size} "
                     "--sglang-moe-runner-backend deep_gemm "
                     "--sglang-moe-a2a-backend deepep "
@@ -213,8 +228,24 @@ def execute(args: ScriptArgs):
                     f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
                 )
+            elif args.rollout_mxfp8:
+                sglang_world_size = 1
+                sglang_attn_tp_size = 1
+                sglang_decode_max_bs = 256
+                sglang_args += (
+                    f"--rollout-num-gpus-per-engine 1 "
+                    "--sglang-fp8-gemm-backend triton "
+                    # Currently, only cutlass moe runner is supported in sglang for mxfp8, which does not support ep
+                    # f"--sglang-ep-size {sglang_world_size} "
+                    "--sglang-moe-runner-backend cutlass "
+                    # TODO: mxfp8 deepep and deepgemm is not supported in sglang yet
+                    # "--sglang-moe-a2a-backend deepep "
+                    f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+                    f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                )
             else:
-                sglang_args += "--sglang-cuda-graph-max-bs 512 "
+                sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
         case _:
             raise NotImplementedError
 
