@@ -35,10 +35,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.megatron_model_type = f"deepseek-v3-{m.group(1)}layer"
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_single(args: ScriptArgs):
-    """This script only needs to be executed on one node."""
+def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
@@ -50,15 +47,15 @@ def prepare_single(args: ScriptArgs):
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
+
+def _prepare_bf16_ckpt(args: ScriptArgs):
     U.fp8_cast_bf16(
         path_src=f"{args.model_dir}/{args.model_name}",
         path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_spmd(args: ScriptArgs):
+def _prepare_megatron_ckpt(args: ScriptArgs):
     # TODO unify 5layer w/ 20layer, also maybe unify the whole script
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
     if args.num_nodes == 1 and args.model_name == "DeepSeek-V3-0324-5layer":
@@ -88,12 +85,6 @@ def prepare_spmd(args: ScriptArgs):
     )
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    _prepare_cp(args)
-
-
 def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
         path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
@@ -108,7 +99,9 @@ def _prepare_cp(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
-    # ensure files are there is it was not synced before
+    _prepare_download(args)
+    _prepare_bf16_ckpt(args)
+    _prepare_megatron_ckpt(args)
     _prepare_cp(args)
 
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
