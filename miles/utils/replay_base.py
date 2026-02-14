@@ -155,7 +155,7 @@ class BaseReplayManager:
                 replay_set = set(replay_idx.tolist()) - {-1}
                 if len(replay_set) == 0:
                     continue
-                if len(orig_set & replay_set) < len(replay_set) * self.thresh_check_replay_result:
+                if len(orig_set & replay_set) == 0:
                     raise AssertionError(
                         f"token {i} failed replay check, {len(orig_set & replay_set)=} {len(replay_set)=}"
                     )
