@@ -314,7 +314,6 @@ def _execute_train(args: ScriptArgs):
 @U.dataclass_cli
 def train(args: ScriptArgs):
     _prepare_download(args)
-    _prepare_bf16_ckpt(args)
     _prepare_megatron_ckpt(args)
     _prepare_cp(args)
     _execute_train(args)
