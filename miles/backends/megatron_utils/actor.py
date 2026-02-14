@@ -91,6 +91,7 @@ class MegatronTrainRayActor(TrainRayActor):
         else:
             for m in all_replay_managers:
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
+                m.enable_check_replay_result = m.enabled and self.args.ci_test
 
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
