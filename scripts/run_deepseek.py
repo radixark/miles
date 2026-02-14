@@ -54,7 +54,8 @@ def _prepare_bf16_ckpt(args: ScriptArgs):
     U.exec_command_all_ray_node(
         f"if [ -d {path_dst} ]; then "
         f"echo 'fp8_cast_bf16 skip {path_dst} since exists'; "
-        f"else python tools/fp8_cast_bf16.py --input-fp8-hf-path {path_src} --output-bf16-hf-path {path_dst}; fi"
+        f"else python {U.repo_base_dir}/tools/fp8_cast_bf16.py "
+        f"--input-fp8-hf-path {path_src} --output-bf16-hf-path {path_dst}; fi"
     )
 
 
@@ -84,7 +85,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
 
     U.convert_checkpoint(
         model_name=args.model_name,
-        hf_checkpoint=f"{args.model_dir}/{args.model_name}",
+        hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=convert_gpus,
         multinode=use_multinode,
@@ -100,15 +101,15 @@ def _prepare_cp(args: ScriptArgs):
         path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
     )
     U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
+        path_src=f"{args.model_dir}/{args.model_name}-bf16",
+        path_dst=f"{args.model_local_dir}/{args.model_name}-bf16",
     )
 
 
 def _execute_train(args: ScriptArgs):
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
+        f"--hf-checkpoint {args.model_local_dir}/{args.model_name}-bf16 "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
@@ -314,6 +315,7 @@ def _execute_train(args: ScriptArgs):
 @U.dataclass_cli
 def train(args: ScriptArgs):
     _prepare_download(args)
+    _prepare_bf16_ckpt(args)
     _prepare_megatron_ckpt(args)
     _prepare_cp(args)
     _execute_train(args)
