@@ -90,7 +90,7 @@ def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[st
 
 
 def rsync_simple(path_src: str, path_dst: str):
-    exec_command(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
+    exec_command_all_ray_node(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
 
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
