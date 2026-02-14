@@ -2,7 +2,6 @@
 This file is in preview, and will be further refined and optimized.
 """
 
-import os
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -25,9 +24,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-    data_dir: str = os.environ.get("MILES_SCRIPT_DATA_DIR", "/root/datasets")
-    model_dir: str = os.environ.get("MILES_SCRIPT_MODEL_DIR", "/root/models")
-    model_local_dir: str = os.environ.get("MILES_SCRIPT_MODEL_LOCAL_DIR", "/root/local_data")
+    data_dir: str = "/root/datasets"
+    model_dir: str = "/root/models"
+    model_local_dir: str = "/root/local_data"
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
@@ -37,22 +36,25 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(
+    U.exec_command_all_ray_node(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_all_ray_node(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
     match args.task:
         case "dapo_aime":
-            U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
-            U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+            U.exec_command(f"hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir {args.data_dir}/dapo-math-17k")
+            U.exec_command(f"hf download --repo-type dataset zhuzilin/aime-2024 --local-dir {args.data_dir}/aime-2024")
         case "gsm8k":
-            U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
+            U.exec_command(f"hf download --repo-type dataset zhuzilin/gsm8k --local-dir {args.data_dir}/gsm8k")
 
 
 def _prepare_bf16_ckpt(args: ScriptArgs):
-    U.fp8_cast_bf16(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
+    path_src = f"{args.model_dir}/{args.model_name}"
+    path_dst = f"{args.model_dir}/{args.model_name}-bf16/"
+    U.exec_command_all_ray_node(
+        f"if [ -d {path_dst} ]; then "
+        f"echo 'fp8_cast_bf16 skip {path_dst} since exists'; "
+        f"else python tools/fp8_cast_bf16.py --input-fp8-hf-path {path_src} --output-bf16-hf-path {path_dst}; fi"
     )
 
 
