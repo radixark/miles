@@ -131,7 +131,7 @@ def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[st
                     node_id=node["NodeID"],
                     soft=False,
                 ),
-            ).remote(node_cmd, capture_output)
+            ).remote(node_cmd, capture_output=capture_output)
         )
     return ray.get(refs)
 
