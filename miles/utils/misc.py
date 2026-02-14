@@ -103,18 +103,36 @@ def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
 
 
 def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[str | None]:
+    """Execute a shell command on every alive Ray node in parallel.
+
+    Supported placeholders in `cmd` (replaced per-node before execution):
+        {{node_rank}}   - 0-based index of the node
+        {{nnodes}}      - total number of alive nodes
+        {{master_addr}} - NodeManagerAddress of the first node
+        {{node_ip}}     - NodeManagerAddress of the current node
+    """
     nodes = [n for n in ray.nodes() if n.get("Alive")]
     assert len(nodes) > 0
 
-    refs = [
-        _exec_command_on_node.options(
-            scheduling_strategy=NodeAffinitySchedulingStrategy(
-                node_id=node["NodeID"],
-                soft=False,
-            ),
-        ).remote(cmd, capture_output)
-        for node in nodes
-    ]
+    master_addr = nodes[0]["NodeManagerAddress"]
+    nnodes = str(len(nodes))
+
+    refs = []
+    for rank, node in enumerate(nodes):
+        node_cmd = (
+            cmd.replace("{{node_rank}}", str(rank))
+            .replace("{{nnodes}}", nnodes)
+            .replace("{{master_addr}}", master_addr)
+            .replace("{{node_ip}}", node["NodeManagerAddress"])
+        )
+        refs.append(
+            _exec_command_on_node.options(
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node_id=node["NodeID"],
+                    soft=False,
+                ),
+            ).remote(node_cmd, capture_output)
+        )
     return ray.get(refs)
 
 
