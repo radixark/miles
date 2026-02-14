@@ -12,6 +12,11 @@ on:
           - cu129-arm64
           - cu13-arm64
           - debug
+      dockerfile:
+        description: 'Path to dockerfile (e.g. docker/Dockerfile.dev)'
+        required: false
+        default: 'docker/Dockerfile'
+        type: string
 
 jobs:
   build-and-push:
@@ -34,4 +39,4 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        run: python docker/build.py --variant ${{ inputs.variant }}
+        run: python docker/build.py --variant ${{ inputs.variant }} --dockerfile ${{ inputs.dockerfile }}
