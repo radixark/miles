@@ -97,13 +97,7 @@ def _prepare_cp(args: ScriptArgs):
         )
 
 
-@app.command()
-@U.dataclass_cli
-def train(args: ScriptArgs):
-    _prepare_download(args)
-    _prepare_megatron_ckpt(args)
-    _prepare_cp(args)
-
+def _execute_train(args: ScriptArgs):
     assert args.hardware != "H100", "H100 is not yet supported in this script"
 
     hf_checkpoint = (
@@ -385,6 +379,15 @@ tis_batch_normalize: true
             # "OMPI_MCA_btl_tcp_if_include": "${MLP_SOCKET_IFNAME}",
         },
     )
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    _prepare_download(args)
+    _prepare_megatron_ckpt(args)
+    _prepare_cp(args)
+    _execute_train(args)
 
 
 @app.callback()
