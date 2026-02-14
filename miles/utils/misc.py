@@ -110,38 +110,42 @@ def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[st
         {{master_addr}} - NodeManagerAddress of the first node
         {{node_ip}}     - NodeManagerAddress of the current node
     """
-    current_ip = get_current_node_ip()
-    nodes = sorted(
-        [n for n in ray.nodes() if n.get("Alive")],
-        key=lambda n: (n["NodeManagerAddress"] != current_ip, n["NodeManagerAddress"]),
-    )
-    assert len(nodes) > 0
-
-    master_addr = nodes[0]["NodeManagerAddress"]
-    nnodes = str(len(nodes))
-
-    placeholder_pattern = re.compile(
-        "|".join(map(re.escape, ["{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}"]))
-    )
-
-    refs = []
-    for rank, node in enumerate(nodes):
-        substitutions = {
-            "{{node_rank}}": str(rank),
-            "{{nnodes}}": nnodes,
-            "{{master_addr}}": master_addr,
-            "{{node_ip}}": node["NodeManagerAddress"],
-        }
-        node_cmd = placeholder_pattern.sub(lambda m, s=substitutions: s[m.group(0)], cmd)
-        refs.append(
-            _exec_command_on_node.options(
-                scheduling_strategy=NodeAffinitySchedulingStrategy(
-                    node_id=node["NodeID"],
-                    soft=False,
-                ),
-            ).remote(node_cmd, capture_output=capture_output)
+    ray.init(address="auto")
+    try:
+        current_ip = get_current_node_ip()
+        nodes = sorted(
+            [n for n in ray.nodes() if n.get("Alive")],
+            key=lambda n: (n["NodeManagerAddress"] != current_ip, n["NodeManagerAddress"]),
         )
-    return ray.get(refs)
+        assert len(nodes) > 0
+
+        master_addr = nodes[0]["NodeManagerAddress"]
+        nnodes = str(len(nodes))
+
+        placeholder_pattern = re.compile(
+            "|".join(map(re.escape, ["{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}"]))
+        )
+
+        refs = []
+        for rank, node in enumerate(nodes):
+            substitutions = {
+                "{{node_rank}}": str(rank),
+                "{{nnodes}}": nnodes,
+                "{{master_addr}}": master_addr,
+                "{{node_ip}}": node["NodeManagerAddress"],
+            }
+            node_cmd = placeholder_pattern.sub(lambda m, s=substitutions: s[m.group(0)], cmd)
+            refs.append(
+                _exec_command_on_node.options(
+                    scheduling_strategy=NodeAffinitySchedulingStrategy(
+                        node_id=node["NodeID"],
+                        soft=False,
+                    ),
+                ).remote(node_cmd, capture_output=capture_output)
+            )
+        return ray.get(refs)
+    finally:
+        ray.shutdown()
 
 
 def get_current_node_ip():
