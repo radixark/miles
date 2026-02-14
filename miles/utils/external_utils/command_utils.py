@@ -42,7 +42,7 @@ def convert_checkpoint(
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
-    exec_command_all_ray_node(
+    cmd = (
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"FLASHINFER_DISABLE_VERSION_CHECK=1 PYTHONPATH={megatron_path} "
         f"torchrun "
@@ -54,6 +54,11 @@ def convert_checkpoint(
         f"--save {path_dst} "
         f"{extra_args}"
     )
+
+    if multinode:
+        exec_command_all_ray_node(cmd)
+    else:
+        exec_command(cmd)
 
 
 def rsync_simple(path_src: str, path_dst: str):

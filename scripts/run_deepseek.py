@@ -80,12 +80,14 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
             "--decoder-last-pipeline-num-layers 6 "
         )
 
+    use_multinode = num_layers is None or num_layers >= args.num_nodes * args.num_gpus_per_node
+
     U.convert_checkpoint(
         model_name=args.model_name,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
-        multinode=True,
+        multinode=use_multinode,
         extra_args=extra_args,
         dir_dst=args.model_dir,
         megatron_path=args.megatron_path,
