@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import os
+import re
 import subprocess
 from contextlib import contextmanager
 
@@ -122,12 +123,14 @@ def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[st
 
     refs = []
     for rank, node in enumerate(nodes):
-        node_cmd = (
-            cmd.replace("{{node_rank}}", str(rank))
-            .replace("{{nnodes}}", nnodes)
-            .replace("{{master_addr}}", master_addr)
-            .replace("{{node_ip}}", node["NodeManagerAddress"])
-        )
+        substitutions = {
+            "{{node_rank}}": str(rank),
+            "{{nnodes}}": nnodes,
+            "{{master_addr}}": master_addr,
+            "{{node_ip}}": node["NodeManagerAddress"],
+        }
+        pattern = re.compile("|".join(map(re.escape, substitutions.keys())))
+        node_cmd = pattern.sub(lambda m: substitutions[m.group(0)], cmd)
         refs.append(
             _exec_command_on_node.options(
                 scheduling_strategy=NodeAffinitySchedulingStrategy(
