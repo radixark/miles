@@ -90,6 +90,7 @@ def get_batch(
     pad_multiplier: int = 128,
     qkv_format: str = "thd",
     get_position_ids: bool = False,
+    pad_token_id: int = 0,
 ) -> dict[str, torch.Tensor | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -104,6 +105,7 @@ def get_batch(
         data_iterator: Iterator providing micro-batch data.
         keys: List of keys to fetch from the iterator.
         pad_multiplier: Multiplier for padding size calculation (default: 128).
+        pad_token_id: Token id used when padding token sequences.
 
     Returns a dict including:
     - "tokens": torch.LongTensor of shape [1, T_padded] on the current CUDA device
@@ -119,8 +121,6 @@ def get_batch(
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
 
     tokens = batch["tokens"]
-    # use 0 as the pad token id should be fine?
-    pad_token_id = 0
     pad_size = parallel_state.tp_size * pad_multiplier
 
     # for cp, we need all tokens to calculate logprob
