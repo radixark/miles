@@ -247,7 +247,7 @@ class MegatronTrainRayActor(TrainRayActor):
             else:
                 replay_data = [slice_with_cp(r, pad_func, self.parallel_state, qkv_format) for r in replay_data]
                 replay_data = torch.cat(replay_data, dim=0)
-                pad_size = self.parallel_state.dp_size * self.args.data_pad_size_multiplier
+                pad_size = self.parallel_state.tp_size * self.args.data_pad_size_multiplier
                 pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
                 if pad != 0:
                     replay_data = pad_func(replay_data, pad)
