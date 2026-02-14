@@ -38,18 +38,11 @@ def convert_checkpoint(
 
     multinode_args = ""
     if multinode:
-        # This variable can be provided via:
-        # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
-        print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
-        job_hostnames = os.environ["SLURM_JOB_HOSTNAMES"].strip().split("\n")
-        master_addr = job_hostnames[0]
-        nnodes = len(job_hostnames)
-
         multinode_args = (
-            f"--master-addr {master_addr} "
+            "--master-addr {{master_addr}} "
             "--master-port 23456 "
-            f"--nnodes={nnodes} "
-            '--node-rank "$SLURM_NODEID" '
+            "--nnodes={{nnodes}} "
+            "--node-rank {{node_rank}} "
         )
 
     exec_command_all_ray_node(
