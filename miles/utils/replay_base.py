@@ -173,7 +173,7 @@ class RoutingReplayManager(BaseReplayManager):
     data_key = "rollout_routed_experts"
     if_sp_region = True
     enable_check_replay_result = False
-    thresh_check_replay_result = 0.5
+    thresh_check_replay_result = 0.3
 
 
 routing_replay_manager = RoutingReplayManager()
