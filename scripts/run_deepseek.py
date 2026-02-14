@@ -55,12 +55,19 @@ def _prepare_bf16_ckpt(args: ScriptArgs):
     )
 
 
+def _get_num_layers_from_name(model_name: str) -> int | None:
+    if (m := re.search(r"(\d+)layer", model_name)) is not None:
+        return int(m.group(1))
+    return None
+
+
 def _prepare_megatron_ckpt(args: ScriptArgs):
-    # TODO unify 5layer w/ 20layer, also maybe unify the whole script
+    num_layers = _get_num_layers_from_name(args.model_name)
+
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
-    if args.num_nodes == 1 and args.model_name == "DeepSeek-V3-0324-5layer":
+    if num_layers is not None and num_layers <= 5 and args.num_nodes == 1:
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
-    elif args.model_name == "DeepSeek-V3-0324-20layer":
+    elif num_layers is not None:
         extra_args += (
             "--expert-model-parallel-size 4 "
             # PP info will be auto determined by converter script
