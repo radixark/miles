@@ -13,6 +13,11 @@ import miles.utils.external_utils.command_utils as U
 app = typer.Typer()
 
 
+@app.callback()
+def _callback() -> None:
+    pass
+
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
@@ -39,10 +44,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_single(args: ScriptArgs):
-    """This script only needs to be executed on one node."""
+def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
@@ -73,9 +75,7 @@ def _convert_hf_to_fp8(args: ScriptArgs):
     )
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_spmd(args: ScriptArgs):
+def _prepare_megatron_ckpt(args: ScriptArgs):
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -84,12 +84,6 @@ def prepare_spmd(args: ScriptArgs):
         dir_dst=args.model_dir,
         megatron_path=args.megatron_path,
     )
-
-
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    _prepare_cp(args)
 
 
 def _prepare_cp(args: ScriptArgs):
@@ -111,7 +105,8 @@ def _prepare_cp(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
-    # ensure files are there is it was not synced before
+    _prepare_download(args)
+    _prepare_megatron_ckpt(args)
     _prepare_cp(args)
 
     assert args.hardware != "H100", "H100 is not yet supported in this script"
