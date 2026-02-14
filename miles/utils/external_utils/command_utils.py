@@ -35,9 +35,6 @@ def convert_checkpoint(
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
     path_dst = f"{dir_dst}/{model_name}_torch_dist"
-    if Path(path_dst).exists():
-        print(f"convert_checkpoint skip {path_dst} since exists")
-        return
 
     multinode_args = ""
     if multinode:
@@ -47,13 +44,16 @@ def convert_checkpoint(
         job_hostnames = os.environ["SLURM_JOB_HOSTNAMES"].strip().split("\n")
         master_addr = job_hostnames[0]
         nnodes = len(job_hostnames)
-        node_rank = int(os.environ["SLURM_NODEID"])
 
         multinode_args = (
-            f"--master-addr {master_addr} " "--master-port 23456 " f"--nnodes={nnodes} " f"--node-rank {node_rank} "
+            f"--master-addr {master_addr} "
+            "--master-port 23456 "
+            f"--nnodes={nnodes} "
+            '--node-rank "$SLURM_NODEID" '
         )
 
-    exec_command(
+    exec_command_all_ray_node(
+        f'[ -d "{path_dst}" ] && echo "convert_checkpoint skip {path_dst} since exists" && exit 0; '
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH={megatron_path} "
         f"torchrun "
