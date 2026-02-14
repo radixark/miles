@@ -32,6 +32,9 @@ def convert_checkpoint(
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
     path_dst = f"{dir_dst}/{model_name}_torch_dist"
+    if Path(path_dst).exists():
+        print(f"convert_checkpoint skip {path_dst} since exists")
+        return
 
     multinode_args = ""
     if multinode:
@@ -39,26 +42,18 @@ def convert_checkpoint(
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
-    convert_cmd = (
+    exec_command_all_ray_node(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        f"FLASHINFER_DISABLE_VERSION_CHECK=1 PYTHONPATH={megatron_path} "
+        f"PYTHONPATH={megatron_path} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
-        f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
+        f"tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
         f"--hf-checkpoint {hf_checkpoint} "
         f"--save {path_dst} "
         f"{extra_args}"
     )
-
-    cmd = (
-        f"if [ -d {path_dst} ]; then "
-        f"echo 'convert_checkpoint skip {path_dst} since exists'; "
-        f"else {convert_cmd}; fi"
-    )
-
-    exec_command_all_ray_node(cmd)
 
 
 def rsync_simple(path_src: str, path_dst: str):

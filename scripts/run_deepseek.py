@@ -36,43 +36,35 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command_all_ray_node(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command_all_ray_node(
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
     match args.task:
         case "dapo_aime":
-            U.exec_command(f"hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir {args.data_dir}/dapo-math-17k")
-            U.exec_command(f"hf download --repo-type dataset zhuzilin/aime-2024 --local-dir {args.data_dir}/aime-2024")
+            U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+            U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
         case "gsm8k":
-            U.exec_command(f"hf download --repo-type dataset zhuzilin/gsm8k --local-dir {args.data_dir}/gsm8k")
+            U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
 
 def _prepare_bf16_ckpt(args: ScriptArgs):
-    path_src = f"{args.model_dir}/{args.model_name}"
-    path_dst = f"{args.model_dir}/{args.model_name}-bf16/"
-    U.exec_command_all_ray_node(
-        f"if [ -d {path_dst} ]; then "
-        f"echo 'fp8_cast_bf16 skip {path_dst} since exists'; "
-        f"else python {U.repo_base_dir}/tools/fp8_cast_bf16.py "
-        f"--input-fp8-hf-path {path_src} --output-bf16-hf-path {path_dst}; fi"
+    U.fp8_cast_bf16(
+        path_src=f"{args.model_dir}/{args.model_name}",
+        path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
 
 
-def _get_num_layers_from_name(model_name: str) -> int | None:
-    if (m := re.search(r"(\d+)layer", model_name)) is not None:
-        return int(m.group(1))
-    return None
-
-
 def _prepare_megatron_ckpt(args: ScriptArgs):
-    num_layers = _get_num_layers_from_name(args.model_name)
-
+    # TODO unify 5layer w/ 20layer, also maybe unify the whole script
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
-    if num_layers is not None:
+    if args.num_nodes == 1 and args.model_name == "DeepSeek-V3-0324-5layer":
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
-        convert_gpus = 1
-        use_multinode = False
+    elif args.model_name == "DeepSeek-V3-0324-20layer":
+        extra_args += (
+            "--expert-model-parallel-size 4 "
+            # PP info will be auto determined by converter script
+        )
     else:
         extra_args += (
             "--pipeline-model-parallel-size 8 "
@@ -80,15 +72,13 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
             "--decoder-first-pipeline-num-layers 7 "
             "--decoder-last-pipeline-num-layers 6 "
         )
-        convert_gpus = args.num_gpus_per_node
-        use_multinode = True
 
     U.convert_checkpoint(
         model_name=args.model_name,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=convert_gpus,
-        multinode=use_multinode,
+        num_gpus_per_node=args.num_gpus_per_node,
+        multinode=True,
         extra_args=extra_args,
         dir_dst=args.model_dir,
         megatron_path=args.megatron_path,
@@ -101,15 +91,15 @@ def _prepare_cp(args: ScriptArgs):
         path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
     )
     U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}-bf16",
-        path_dst=f"{args.model_local_dir}/{args.model_name}-bf16",
+        path_src=f"{args.model_dir}/{args.model_name}",
+        path_dst=f"{args.model_local_dir}/{args.model_name}",
     )
 
 
 def _execute_train(args: ScriptArgs):
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint {args.model_local_dir}/{args.model_name}-bf16 "
+        f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
