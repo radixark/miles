@@ -27,7 +27,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/local_data"
-    save_dir: str = "/root/shared_data"
     megatron_path: str = "/root/Megatron-LM"
     rollout_fp8: bool = False
     rollout_attn_fp8: bool = False
@@ -123,7 +122,7 @@ def train(args: ScriptArgs):
         else f"{args.model_local_dir}/{args.model_name}"
     )
 
-    load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
@@ -310,7 +309,7 @@ def train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details {args.save_dir}/{args.run_id}/dump_details "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
         "--disable-weights-backuper "
         # TODO if good, also configure to other scripts
         "--router-health-success-threshold 1 "

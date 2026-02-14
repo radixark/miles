@@ -17,7 +17,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    save_dir: str = "/root/shared_data"
     megatron_path: str = "/root/Megatron-LM"
     multi_eval: bool = False
     true_on_policy: bool = False
@@ -66,7 +65,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
-    load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     ref_load_path = f"{args.model_dir}/{args.model_name}"
     if args.train_backend == "megatron" and not args.enable_megatron_bridge:
@@ -209,7 +208,7 @@ eval:
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details {args.save_dir}/{args.run_id}/dump_details "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
 
