@@ -58,12 +58,8 @@ def _prepare_bf16_ckpt(args: ScriptArgs):
 def _prepare_megatron_ckpt(args: ScriptArgs):
     # TODO unify 5layer w/ 20layer, also maybe unify the whole script
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
-    num_gpus_per_node = args.num_gpus_per_node
-    multinode = True
-    if args.model_name == "DeepSeek-V3-0324-5layer":
+    if args.num_nodes == 1 and args.model_name == "DeepSeek-V3-0324-5layer":
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
-        num_gpus_per_node = min(4, num_gpus_per_node)
-        multinode = False
     elif args.model_name == "DeepSeek-V3-0324-20layer":
         extra_args += (
             "--expert-model-parallel-size 4 "
@@ -81,8 +77,8 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         model_name=args.model_name,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=num_gpus_per_node,
-        multinode=multinode,
+        num_gpus_per_node=args.num_gpus_per_node,
+        multinode=True,
         extra_args=extra_args,
         dir_dst=args.model_dir,
         megatron_path=args.megatron_path,
