@@ -32,8 +32,9 @@ def convert_checkpoint(
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
     path_dst = f"{dir_dst}/{model_name}_torch_dist"
-    if Path(path_dst).exists():
-        print(f"convert_checkpoint skip {path_dst} since exists")
+    tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
+    if tracker.exists() and tracker.read_text().strip() == "release":
+        print(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
         return
 
     multinode_args = ""
@@ -67,8 +68,9 @@ def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
 
 
 def fp8_cast_bf16(path_src, path_dst):
-    if Path(path_dst).exists():
-        print(f"fp8_cast_bf16 skip {path_dst} since exists")
+    sentinel = Path(path_dst) / "model.safetensors.index.json"
+    if sentinel.exists():
+        print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
         return
 
     exec_command(
