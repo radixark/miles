@@ -146,16 +146,19 @@ def main():
     save_checkpoint(1, model, None, None, 0)
 
     if dist.get_rank() == 0:
-        # Rename checkpoint directory first, then write tracker as the final step
-        # so that tracker content "release" reliably indicates full completion
         source_dir = get_checkpoint_name(args.save, 1, False, return_base_dir=True)
         target_dir = get_checkpoint_name(args.save, -1, True, return_base_dir=True)
         shutil.move(source_dir, target_dir)
 
+    # Barrier before writing tracker: ensures all ranks finished save_checkpoint
+    # successfully. If any rank crashed, barrier will fail and we won't write "release".
+    dist.barrier()
+
+    if dist.get_rank() == 0:
         tracker_filename = get_checkpoint_tracker_filename(args.save)
         with open(tracker_filename, "w") as f:
             f.write("release")
-    dist.barrier()
+
     dist.destroy_process_group()
 
 
