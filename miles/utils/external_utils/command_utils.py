@@ -42,7 +42,8 @@ def convert_checkpoint(
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
-    exec_command_all_ray_node(
+    run_command = exec_command_all_ray_node if multinode else exec_command
+    run_command(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH={megatron_path} "
         f"torchrun "
