@@ -104,7 +104,7 @@ def execute_train(
         train_script = f"{repo_base_dir}/{train_script}"
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-    need_multinode_restart = not external_ray and config.num_nodes > 1
+    need_multinode_restart = config.num_nodes > 1
 
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
