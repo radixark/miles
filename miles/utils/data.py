@@ -200,13 +200,22 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                output_prompt = tokenizer.apply_chat_template(
-                    prompt,
-                    tools=tools,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    **(apply_chat_template_kwargs or {}),
-                )
+                ### DSV32
+                try:
+                    prompt = tokenizer.apply_chat_template(
+                        prompt,
+                        tools,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        **apply_chat_template_kwargs,
+                    )
+                except Exception:
+                    from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+
+                    encode_config = dict(thinking_mode="thinking", drop_thinking=True, add_default_bos_token=True)
+                    prompt = encode_messages(prompt, **encode_config)
+                ### DSV32
+                output_prompt = prompt
             else:
                 output_prompt = prompt
 
