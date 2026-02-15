@@ -66,8 +66,8 @@ def execute():
 
     misc_args = (
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {1 if FEW_GPU else 2} "
+        f"--actor-num-gpus-per-node {1 if FEW_GPU else 4} "
+        f"--rollout-num-gpus {1 if FEW_GPU else 4} "
         "--train-backend fsdp "
     )
 
@@ -92,7 +92,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=2 if FEW_GPU else 4,
+        num_gpus_per_node=2 if FEW_GPU else 8,
         megatron_model_type=None,
         train_script="train_async.py",
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},

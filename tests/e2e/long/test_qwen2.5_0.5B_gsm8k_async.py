@@ -6,7 +6,7 @@ TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 2 if FEW_GPU else 4
+NUM_GPUS = 2 if FEW_GPU else 8
 
 
 def prepare():
@@ -97,8 +97,8 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {1 if FEW_GPU else 2} "
+        f"--actor-num-gpus-per-node {1 if FEW_GPU else 4} "
+        f"--rollout-num-gpus {1 if FEW_GPU else 4} "
         "--megatron-to-hf-mode bridge "
     )
 

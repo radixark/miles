@@ -144,12 +144,17 @@ class MockSGLangServer:
         prompt_str = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, tools=tools
         )
+        prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
 
         process_result = self.process_fn(prompt_str)
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
 
         logprobs_content = [
-            {"token": self.tokenizer.convert_ids_to_tokens(tid), "logprob": -1 / 128 * i}
+            {
+                "token": self.tokenizer.convert_ids_to_tokens(tid),
+                "token_id": tid,
+                "logprob": -1 / 128 * i,
+            }
             for i, tid in enumerate(output_ids)
         ]
 
@@ -188,6 +193,7 @@ class MockSGLangServer:
                         "tool_calls": tool_calls,
                     },
                     "logprobs": {"content": logprobs_content},
+                    "input_token_ids": prompt_ids,
                     "finish_reason": finish_reason,
                 }
             ],
