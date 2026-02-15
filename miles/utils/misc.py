@@ -125,9 +125,7 @@ def exec_command_all_ray_node(
         assert len(nodes) > 0
 
         if num_nodes is not None:
-            assert num_nodes <= len(nodes), (
-                f"Requested {num_nodes} nodes but only {len(nodes)} alive nodes available."
-            )
+            assert num_nodes <= len(nodes), f"Requested {num_nodes} nodes but only {len(nodes)} alive nodes available."
             nodes = nodes[:num_nodes]
 
         master_addr = nodes[0]["NodeManagerAddress"]
