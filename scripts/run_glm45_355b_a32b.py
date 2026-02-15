@@ -24,6 +24,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hardware: Literal["H100", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
+    data_dir: str = "/root/datasets"
+    model_dir: str = "/root/models"
+    model_local_dir: str = "/root/local_data"
+    megatron_path: str = "/root/Megatron-LM"
     rollout_fp8: bool = False
     rollout_attn_fp8: bool = False
     enable_mtp: bool = False  # TODO enable by default
@@ -39,30 +43,30 @@ class ScriptArgs(U.ExecuteTrainConfig):
 @U.dataclass_cli
 def prepare_single(args: ScriptArgs):
     """This script only needs to be executed on one node."""
-    U.exec_command("mkdir -p /root/models /root/datasets")
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(
-        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir /root/models/{args.model_name}"
+        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
     match args.task:
         case "dapo_aime":
-            U.hf_download_dataset("zhuzilin/dapo-math-17k")
-            U.hf_download_dataset("zhuzilin/aime-2024")
-            U.hf_download_dataset("zhuzilin/aime-2025")
+            U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+            U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+            U.hf_download_dataset("zhuzilin/aime-2025", data_dir=args.data_dir)
         case "gsm8k":
-            U.hf_download_dataset("zhuzilin/gsm8k")
+            U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
     if args.rollout_fp8:
         _convert_hf_to_fp8(args)
 
 
 def _convert_hf_to_fp8(args: ScriptArgs):
-    path_output = f"/root/models/{args.model_name}-FP8/"
+    path_output = f"{args.model_dir}/{args.model_name}-FP8/"
     if Path(path_output).exists():
         return
 
     U.exec_command(
         "python tools/convert_hf_to_fp8.py "
-        f"--model-dir /root/models/{args.model_name} "
+        f"--model-dir {args.model_dir}/{args.model_name} "
         f"--save-dir {path_output} "
         "--strategy block --block-size 128 128 "
         "--max-workers 4"
@@ -77,7 +81,8 @@ def prepare_spmd(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         multinode=True,
-        dir_dst="/root/models",
+        dir_dst=args.model_dir,
+        megatron_path=args.megatron_path,
     )
 
 
@@ -89,17 +94,17 @@ def prepare_cp(args: ScriptArgs):
 
 def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
-        path_src=f"/root/models/{args.model_name}_torch_dist",
-        path_dst=f"/root/local_data/{args.model_name}_torch_dist",
+        path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
+        path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
     )
     U.rsync_simple(
-        path_src=f"/root/models/{args.model_name}",
-        path_dst=f"/root/local_data/{args.model_name}",
+        path_src=f"{args.model_dir}/{args.model_name}",
+        path_dst=f"{args.model_local_dir}/{args.model_name}",
     )
     if args.rollout_fp8:
         U.rsync_simple(
-            path_src=f"/root/models/{args.model_name}-FP8",
-            path_dst=f"/root/local_data/{args.model_name}-FP8",
+            path_src=f"{args.model_dir}/{args.model_name}-FP8",
+            path_dst=f"{args.model_local_dir}/{args.model_name}-FP8",
         )
 
 
@@ -112,13 +117,15 @@ def train(args: ScriptArgs):
     assert args.hardware != "H100", "H100 is not yet supported in this script"
 
     hf_checkpoint = (
-        f"/root/local_data/{args.model_name}-FP8" if args.rollout_fp8 else f"/root/local_data/{args.model_name}"
+        f"{args.model_local_dir}/{args.model_name}-FP8"
+        if args.rollout_fp8
+        else f"{args.model_local_dir}/{args.model_name}"
     )
 
-    load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint} "
-        f"--ref-load /root/local_data/{args.model_name}_torch_dist "
+        f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         f"--save-interval {2 if args.mode == 'debug_minimal' else 10} "
@@ -156,24 +163,24 @@ def train(args: ScriptArgs):
     match args.task:
         case "dapo_aime":
             rollout_args += (
-                "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
             )
             eval_args += (
-                "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
                 "--eval-max-response-len 8192 "
             )
         case "gsm8k":
             rollout_args += (
-                "--prompt-data /root/datasets/gsm8k/train.parquet "
+                f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
                 "--input-key messages "
                 # Deliberately make it very short for this easy task
                 "--rollout-max-response-len 256 "
             )
             eval_args += (
-                "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
+                f"--eval-prompt-data gsm8k {args.data_dir}/gsm8k/test.parquet "
                 "--n-samples-per-eval-prompt 1 "
                 "--eval-max-response-len 256 "
             )
@@ -302,7 +309,7 @@ def train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details /root/shared_data/{args.run_id}/dump_details "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
         "--disable-weights-backuper "
         # TODO if good, also configure to other scripts
         "--router-health-success-threshold 1 "
@@ -361,6 +368,7 @@ tis_batch_normalize: true
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
+        megatron_path=args.megatron_path,
         extra_env_vars={
             **sglang_extra_env_vars,
             # TODO handle these

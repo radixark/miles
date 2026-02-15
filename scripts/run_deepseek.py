@@ -24,6 +24,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     extra_args: str = ""
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    data_dir: str = "/root/datasets"
+    model_dir: str = "/root/models"
+    model_local_dir: str = "/root/local_data"
+    megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
@@ -35,20 +39,20 @@ class ScriptArgs(U.ExecuteTrainConfig):
 @U.dataclass_cli
 def prepare_single(args: ScriptArgs):
     """This script only needs to be executed on one node."""
-    U.exec_command("mkdir -p /root/models /root/datasets")
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(
-        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir /root/models/{args.model_name}"
+        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
     match args.task:
         case "dapo_aime":
-            U.hf_download_dataset("zhuzilin/dapo-math-17k")
-            U.hf_download_dataset("zhuzilin/aime-2024")
+            U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+            U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
         case "gsm8k":
-            U.hf_download_dataset("zhuzilin/gsm8k")
+            U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
     U.fp8_cast_bf16(
-        path_src=f"/root/models/{args.model_name}",
-        path_dst=f"/root/models/{args.model_name}-bf16/",
+        path_src=f"{args.model_dir}/{args.model_name}",
+        path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
 
 
@@ -74,12 +78,13 @@ def prepare_spmd(args: ScriptArgs):
 
     U.convert_checkpoint(
         model_name=args.model_name,
-        hf_checkpoint=f"/root/models/{args.model_name}-bf16",
+        hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         multinode=True,
         extra_args=extra_args,
-        dir_dst="/root/models",
+        dir_dst=args.model_dir,
+        megatron_path=args.megatron_path,
     )
 
 
@@ -91,12 +96,12 @@ def prepare_cp(args: ScriptArgs):
 
 def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
-        path_src=f"/root/models/{args.model_name}_torch_dist",
-        path_dst=f"/root/local_data/{args.model_name}_torch_dist",
+        path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
+        path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
     )
     U.rsync_simple(
-        path_src=f"/root/models/{args.model_name}",
-        path_dst=f"/root/local_data/{args.model_name}",
+        path_src=f"{args.model_dir}/{args.model_name}",
+        path_dst=f"{args.model_local_dir}/{args.model_name}",
     )
 
 
@@ -106,10 +111,10 @@ def train(args: ScriptArgs):
     # ensure files are there is it was not synced before
     _prepare_cp(args)
 
-    load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint /root/local_data/{args.model_name} "
-        f"--ref-load /root/local_data/{args.model_name}_torch_dist "
+        f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
+        f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
@@ -144,24 +149,24 @@ def train(args: ScriptArgs):
     match args.task:
         case "dapo_aime":
             rollout_args += (
-                "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
             )
             eval_args += (
-                "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
                 "--eval-max-response-len 32768 "
             )
         case "gsm8k":
             rollout_args += (
-                "--prompt-data /root/datasets/gsm8k/train.parquet "
+                f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
                 "--input-key messages "
                 # Deliberately make it very short for this easy task
                 "--rollout-max-response-len 256 "
             )
             eval_args += (
-                "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
+                f"--eval-prompt-data gsm8k {args.data_dir}/gsm8k/test.parquet "
                 "--n-samples-per-eval-prompt 1 "
                 "--eval-max-response-len 256 "
             )
@@ -282,7 +287,7 @@ def train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details /root/shared_data/{args.run_id}/dump_details "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
         "--disable-weights-backuper "
     )
 
@@ -306,6 +311,7 @@ def train(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**sglang_extra_env_vars},
+        megatron_path=args.megatron_path,
     )
 
 

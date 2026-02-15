@@ -26,6 +26,7 @@ def convert_checkpoint(
     extra_args: str = "",
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
+    megatron_path: str = "/root/Megatron-LM",
 ):
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
@@ -51,7 +52,7 @@ def convert_checkpoint(
 
     exec_command(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        f"PYTHONPATH=/root/Megatron-LM "
+        f"PYTHONPATH={megatron_path} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
@@ -67,9 +68,9 @@ def rsync_simple(path_src: str, path_dst: str):
     exec_command(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
 
 
-def hf_download_dataset(full_name: str):
+def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
-    exec_command(f"hf download --repo-type dataset {full_name} --local-dir /root/datasets/{partial_name}")
+    exec_command(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
 def fp8_cast_bf16(path_src, path_dst):
@@ -88,6 +89,7 @@ class ExecuteTrainConfig:
     cuda_core_dump: bool = False
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
+    output_dir: str = "/root/shared_data"
 
 
 def execute_train(
@@ -98,6 +100,7 @@ def execute_train(
     before_ray_job_submit=None,
     extra_env_vars=None,
     config: ExecuteTrainConfig | None = None,
+    megatron_path: str = "/root/Megatron-LM",
 ):
     if extra_env_vars is None:
         extra_env_vars = {}
@@ -139,7 +142,7 @@ def execute_train(
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": "/root/Megatron-LM/",
+                "PYTHONPATH": megatron_path,
                 # If setting this in FSDP, the computation communication overlapping may have issues
                 **(
                     {}
@@ -157,7 +160,7 @@ def execute_train(
                         "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
                         "CUDA_COREDUMP_SHOW_PROGRESS": "1",
                         "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
-                        "CUDA_COREDUMP_FILE": "/root/shared_data/cuda_coredump_%h.%p.%t",
+                        "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
                     }
                     if config.cuda_core_dump
                     else {}
