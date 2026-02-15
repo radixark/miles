@@ -60,6 +60,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
     num_gpus_per_node = args.num_gpus_per_node
     multinode = True
+    num_nodes = None
     if args.model_name == "DeepSeek-V3-0324-5layer":
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         num_gpus_per_node = min(4, num_gpus_per_node)
@@ -69,6 +70,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
             "--expert-model-parallel-size 4 "
             # PP info will be auto determined by converter script
         )
+        num_nodes = 2
     else:
         extra_args += (
             "--pipeline-model-parallel-size 8 "
@@ -83,6 +85,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=num_gpus_per_node,
         multinode=multinode,
+        num_nodes=num_nodes,
         extra_args=extra_args,
         dir_dst=args.model_dir,
         megatron_path=args.megatron_path,

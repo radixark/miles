@@ -101,14 +101,19 @@ def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
     return exec_command(f"unset CUDA_VISIBLE_DEVICES; {cmd}", capture_output=capture_output)
 
 
-def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[str | None]:
+def exec_command_all_ray_node(
+    cmd: str, capture_output: bool = False, num_nodes: int | None = None
+) -> list[str | None]:
     """Execute a shell command on every alive Ray node in parallel.
 
     Supported placeholders in `cmd` (replaced per-node before execution):
         {{node_rank}}   - 0-based index of the node
-        {{nnodes}}      - total number of alive nodes
+        {{nnodes}}      - total number of alive nodes (or num_nodes if specified)
         {{master_addr}} - NodeManagerAddress of the first node
         {{node_ip}}     - NodeManagerAddress of the current node
+
+    Args:
+        num_nodes: If set, only use the first `num_nodes` nodes instead of all alive nodes.
     """
     ray.init(address="auto")
     try:
@@ -118,6 +123,12 @@ def exec_command_all_ray_node(cmd: str, capture_output: bool = False) -> list[st
             key=lambda n: (n["NodeManagerAddress"] != current_ip, n["NodeManagerAddress"]),
         )
         assert len(nodes) > 0
+
+        if num_nodes is not None:
+            assert num_nodes <= len(nodes), (
+                f"Requested {num_nodes} nodes but only {len(nodes)} alive nodes available."
+            )
+            nodes = nodes[:num_nodes]
 
         master_addr = nodes[0]["NodeManagerAddress"]
         nnodes = str(len(nodes))
