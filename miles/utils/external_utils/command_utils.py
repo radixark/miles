@@ -105,7 +105,6 @@ def execute_train(
         train_script = f"{repo_base_dir}/{train_script}"
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-    need_multinode_restart = config.num_nodes > 1
 
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
@@ -113,24 +112,21 @@ def execute_train(
     exec_command(
         "pkill -9 sglang; "
         "sleep 3; "
-        # For multi-node, don't stop Ray yet — we need the msc cluster to coordinate restart.
-        f"{'' if (external_ray or need_multinode_restart) else 'ray stop --force; '}"
-        f"{'' if (external_ray or need_multinode_restart) else 'pkill -9 ray; '}"
+        f"{'' if external_ray else 'ray stop --force; '}"
+        f"{'' if external_ray else 'pkill -9 ray; '}"
         # cannot be run in CI, o/w kill the parent script
         # TODO: do we really need this kill? (or can we instead kill miles)
         # "pkill -9 python; "
         "pkill -9 miles; "
         "sleep 3; "
-        f"{'' if (external_ray or need_multinode_restart) else 'pkill -9 ray; '}"
+        f"{'' if external_ray else 'pkill -9 ray; '}"
         # "pkill -9 python; "
         "pkill -9 miles; "
         "pkill -9 redis; "
         "true; "
     )
 
-    if need_multinode_restart:
-        _restart_ray_multinode(num_gpus_per_node=num_gpus_per_node)
-    elif not external_ray:
+    if not external_ray:
         exec_command(
             # will prevent ray from buffering stdout/stderr
             f"export PYTHONBUFFERED=16 && "
@@ -187,30 +183,6 @@ def execute_train(
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
             f"{train_args}"
         )
-
-
-def _restart_ray_multinode(num_gpus_per_node: int) -> None:
-    """Restart Ray on all nodes with GPU resources for multi-node training.
-
-    Uses the msc Ray cluster (--num-gpus 0) to dispatch background restart
-    commands. Each node stops its old Ray instance, then starts a new one
-    with GPUs. The head node (rank 0) starts first; workers wait and join.
-    """
-    exec_command_all_ray_node(
-        f"nohup sh -c '"
-        f"pkill -9 sglang 2>/dev/null; pkill -9 miles 2>/dev/null; "
-        f"ray stop --force 2>/dev/null || true; sleep 3; "
-        f'if [ "{{{{node_rank}}}}" = "0" ]; then '
-        f"ray start --head --node-ip-address {{{{node_ip}}}} "
-        f"--num-gpus {num_gpus_per_node} --disable-usage-stats; "
-        f"else sleep 8; "
-        f"ray start --address={{{{master_addr}}}}:6379 "
-        f"--num-gpus {num_gpus_per_node} "
-        f"--node-ip-address {{{{node_ip}}}} --disable-usage-stats; "
-        f"fi"
-        f"' > /tmp/ray_gpu_restart.log 2>&1 &"
-    )
-    time.sleep(25)
 
 
 def _parse_extra_env_vars(text: str):
