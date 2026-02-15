@@ -10,10 +10,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.utils.misc import exec_command
+from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
-_ = exec_command, dataclass_cli
+_ = exec_command, exec_command_all_ray_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
@@ -38,19 +38,12 @@ def convert_checkpoint(
 
     multinode_args = ""
     if multinode:
-        # This variable can be provided via:
-        # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
-        print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
-        job_hostnames = os.environ["SLURM_JOB_HOSTNAMES"].strip().split("\n")
-        master_addr = job_hostnames[0]
-        nnodes = len(job_hostnames)
-        node_rank = int(os.environ["SLURM_NODEID"])
-
         multinode_args = (
-            f"--master-addr {master_addr} " "--master-port 23456 " f"--nnodes={nnodes} " f"--node-rank {node_rank} "
+            "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
-    exec_command(
+    fn = exec_command_all_ray_node if multinode else exec_command
+    fn(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH={megatron_path} "
         f"torchrun "
@@ -59,13 +52,13 @@ def convert_checkpoint(
         f"tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
         f"--hf-checkpoint {hf_checkpoint} "
-        f"--save {path_dst}"
+        f"--save {path_dst} "
         f"{extra_args}"
     )
 
 
 def rsync_simple(path_src: str, path_dst: str):
-    exec_command(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
+    exec_command_all_ray_node(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
 
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
