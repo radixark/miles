@@ -8,6 +8,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from miles.utils.misc import exec_command, exec_command_all_ray_node
@@ -23,6 +24,7 @@ def convert_checkpoint(
     megatron_model_type,
     num_gpus_per_node: int,
     multinode: bool = False,
+    num_nodes: int | None = None,
     extra_args: str = "",
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
@@ -43,7 +45,10 @@ def convert_checkpoint(
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
-    fn = exec_command_all_ray_node if multinode else exec_command
+    if multinode:
+        fn = partial(exec_command_all_ray_node, num_nodes=num_nodes)
+    else:
+        fn = exec_command
     fn(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH={megatron_path} "
