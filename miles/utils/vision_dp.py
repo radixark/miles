@@ -24,9 +24,13 @@ Key design choices:
 Adapted from verl PR #5230 (https://github.com/verl-project/verl/pull/5230).
 """
 
+import logging
+
 import torch
 import torch.distributed as dist
 from torch.autograd import Function
+
+logger = logging.getLogger(__name__)
 
 
 def get_image_patch_counts(grid_thw: torch.Tensor) -> list[int]:
@@ -417,7 +421,7 @@ def apply_vision_dp_patch(cp_group, cp_size, cp_rank):
 
         original = Qwen2VisionTransformerPretrainedModel.forward
         Qwen2VisionTransformerPretrainedModel.forward = create_dp_vision_forward(original, cp_group, cp_size, cp_rank)
-        print(f"[Vision DP] Patched Qwen2VisionTransformerPretrainedModel.forward (cp_size={cp_size})")
+        logger.info(f"[Vision DP] Patched Qwen2VisionTransformerPretrainedModel.forward (cp_size={cp_size})")
     except ImportError:
         pass
 
@@ -429,7 +433,7 @@ def apply_vision_dp_patch(cp_group, cp_size, cp_rank):
         Qwen2_5_VisionTransformerPretrainedModel.forward = create_dp_vision_forward(
             original, cp_group, cp_size, cp_rank
         )
-        print(f"[Vision DP] Patched Qwen2_5_VisionTransformerPretrainedModel.forward (cp_size={cp_size})")
+        logger.info(f"[Vision DP] Patched Qwen2_5_VisionTransformerPretrainedModel.forward (cp_size={cp_size})")
     except ImportError:
         pass
 
@@ -439,7 +443,7 @@ def apply_vision_dp_patch(cp_group, cp_size, cp_rank):
 
         original = Qwen3VLVisionModel.forward
         Qwen3VLVisionModel.forward = create_dp_vision_forward(original, cp_group, cp_size, cp_rank)
-        print(f"[Vision DP] Patched Qwen3VLVisionModel.forward (cp_size={cp_size})")
+        logger.info(f"[Vision DP] Patched Qwen3VLVisionModel.forward (cp_size={cp_size})")
     except ImportError:
         pass
 
@@ -449,6 +453,40 @@ def apply_vision_dp_patch(cp_group, cp_size, cp_rank):
 
         original = Qwen3VLMoeVisionModel.forward
         Qwen3VLMoeVisionModel.forward = create_dp_vision_forward(original, cp_group, cp_size, cp_rank)
-        print(f"[Vision DP] Patched Qwen3VLMoeVisionModel.forward (cp_size={cp_size})")
+        logger.info(f"[Vision DP] Patched Qwen3VLMoeVisionModel.forward (cp_size={cp_size})")
     except ImportError:
         pass
+
+
+def sync_vision_grads_across_cp(model, cp_group):
+    """
+    All-reduce vision tower parameter gradients across the CP group.
+
+    Required because Vision DP distributes different images to each CP rank,
+    producing different ViT parameter gradients. FSDP only reduces across the
+    dp_mesh (orthogonal to CP), so without this sync, ViT weights would diverge
+    across CP ranks.
+
+    The GatherVisionEmbeddings backward already scales output gradients by cp_size,
+    so the ViT param gradients on each rank are: cp_size * partial_grad.
+    After AVG reduction across CP:
+        mean(cp_size * partial_grad_k) = cp_size * total_grad / cp_size = total_grad
+
+    Must be called after backward (all micro-batches) and before optimizer.step().
+
+    Args:
+        model: The FSDP-wrapped model (e.g., Qwen2VLForConditionalGeneration)
+        cp_group: Context Parallel process group
+    """
+    vision_tower = getattr(model, "visual", None)
+    if vision_tower is None:
+        return
+
+    for param in vision_tower.parameters():
+        if param.grad is not None:
+            grad_data = param.grad
+            # FSDP2 uses DTensors; access the local shard for all-reduce
+            if hasattr(grad_data, "_local_tensor"):
+                dist.all_reduce(grad_data._local_tensor, op=dist.ReduceOp.AVG, group=cp_group)
+            else:
+                dist.all_reduce(grad_data, op=dist.ReduceOp.AVG, group=cp_group)

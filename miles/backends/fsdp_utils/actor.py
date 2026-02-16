@@ -478,6 +478,13 @@ class FSDPTrainRayActor(TrainRayActor):
                     )
                     losses_reduced.append(log_dict)
 
+                # Sync vision tower gradients across CP ranks (Vision DP produces
+                # different ViT gradients per rank since each processes different images)
+                if self.parallel_state.cp_size > 1 and hasattr(self.hf_config, "vision_config"):
+                    from miles.utils.vision_dp import sync_vision_grads_across_cp
+
+                    sync_vision_grads_across_cp(self.model, self.parallel_state.cp_group)
+
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                 grad_norm = grad_norm.full_tensor().item()
 
