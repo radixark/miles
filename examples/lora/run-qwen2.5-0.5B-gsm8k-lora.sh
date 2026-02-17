@@ -1,9 +1,8 @@
 #!/bin/bash
-
-# Debug this:
-#   "--offload-rollout-level kv_cache weight "
-
 export FLASHINFER_DISABLE_VERSION_CHECK=1
+export GPUS_PER_NODE=8
+# will prevent ray from buffering stdout/stderr
+export PYTHONBUFFERED=16
 
 # for rerun the task
 pkill -9 sglang
@@ -17,74 +16,20 @@ pkill -9 python
 
 set -ex
 
-# will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/../../scripts/models/qwen2.5-0.5B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen2.5-0.5B-Instruct/
-   # --ref-load /root/Qwen2.5-0.5B-Instruct_torch_dist/
-   # Uncomment to save checkpoints (required for LoRA)
-   #### train
-   # --save /root/checkpoints/qwen2.5-0.5B-lora-megatron/
-   # --save-interval 100
-   ###
 )
 
-# target-module only support: linear (the proj_ need to be supported in future: in Megatron-Bridge/src/megatron/bridge/models/conversion/peft_bridge.py -  build_adapter_conversion_tasks) 
-# example: if one module have two lora: (linear_proj): LoRALinear(), (linear_fc2): LoRALinear()
-
-# LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-"['linear_qkv','linear_proj','linear_fc1','linear_fc2']"}. It will broken
-
-##############################
-###########lora###############
-##############################
 LORA_ARGS=(
    --lora-rank 32                    # LoRA rank (typical values: 8, 16, 32, 64)
    --lora-alpha 32                   # LoRA alpha (usually 2x rank)
    --lora-dropout 0.0                # LoRA dropout (0.0 for RL training)
-   # Target modules - use Megatron naming or HF naming
-   # Megatron: linear_qkv, linear_proj, linear_fc1, linear_fc2
-   # Need this PR: Update LoRA Weights via Tensor sgl-project/sglang#16226
-   # --lora-sync-from-tensor           # Use tensor-based sync (more efficient)
-   # # Uncomment to share base model between actor and ref (saves memory)
-   # --share-ref-base-model
-
    --target-modules "all-linear"
-   # --target-modules "o_proj,down_proj,k_proj,gate_proj,q_proj,v_proj,up_proj"
-   # --target-modules "q_proj,k_proj,v_proj,o_proj"
-   ##############################
-   ##############################
-   # # Debug
-   #### inference
-   # --debug-rollout-only
-   ### --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/lora_adapter.pt
-   # --lora-adapter-path lewtun/Qwen2.5-0.5B-SFT-LoRA
-   ## --lora-adapter-path /root/checkpoints/qwen2.5-0.5B-lora-megatron/
-   ###
-
-   #### train
-   # --debug-train-only
-   # --load-debug-rollout-data /root/debug_data/rollout_data.pt
-   ## --save /root/checkpoints/qwen2.5-0.5B-lora-megatron/
-
-   # --save-debug-rollout-data /root/debug_data/rollout_data.pt
-   ###
-   ##############################
-   ##############################
-   # --no-use-distributed-optimizer  # if open it will has error: /home/radixark/yushengsu/miles-pr/miles/miles/utils/arguments.py: 
-   #def set_default_megatron_args(args): (error) # optimizer cannot distributed to other gpus (enable)
-
    --megatron-to-hf-mode bridge
-   # Disable gradient accumulation fusion for LoRA training
-
-   # --no-gradient-accumulation-fusion #Root cause: When training with LoRA, the base model’s parameters are frozen (requires_grad=False). However, Megatron-LM’s tensor-parallel layers use gradient-accumulation fusion during the backward pass, and that fusion path checks weight.main_grad.dtype. For frozen parameters, main_grad is never allocated (it remains None), which triggers the error. (enable)
-
-   #### debug
-   # --no-offload-train 
-   # --no-offload-rollout 
 )
 ##############################
 ##############################
@@ -151,15 +96,6 @@ OPTIMIZER_ARGS=(
    --adam-beta2 0.98
 )
 
-# WANDB_ARGS=(
-#    --use-wandb
-#    --wandb-host https://wandb.ai/
-#    --wandb-team glm-zero
-#    --wandb-project miles-dev
-#    --wandb-group qwen2.5-0.5B-gsm8k-deterministic
-# )
-
-
 WANDB_ARGS=(
    --use-wandb
    --wandb-host https://wandb.ai/
@@ -191,18 +127,6 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
-
-##############################
-###########lora###############
-##############################
-######## Note: Need to set export CUDA_VISIBLE_DEVICES= , or it will fail and have cuda error
-# export GPUS_PER_NODE=1
-# export GPUS_PER_NODE=2
-export GPUS_PER_NODE=4
-# export GPUS_PER_NODE=8
-##############################
-##############################
-##############################
 
 # launch the master node of ray in container
 ray start --head --node-ip-address 127.0.0.1 --num-gpus $GPUS_PER_NODE --disable-usage-stats

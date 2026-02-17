@@ -17,7 +17,7 @@ set -ex
 
 SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"miles-openai-model"}
 
-
+export GPUS_PER_NODE=4
 export PYTHONBUFFERED=16
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -40,10 +40,6 @@ EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/miles/examples/eval/sc
 CKPT_ARGS=(
    # --hf-checkpoint /root/Qwen3-4B
    --hf-checkpoint /root/models/Qwen3-4B
-   # --ref-load /root/Qwen3-4B_torch_dist
-   # --load /root/Qwen3-4B_miles/
-   # --save /root/Qwen3-4B_miles/
-   # --save-interval 20
 )
 
 
@@ -53,9 +49,6 @@ LORA_ARGS=(
    --lora-dropout 0.0                # LoRA dropout (0.0 for RL training)
    --target-modules "all-linear"
    --megatron-to-hf-mode bridge
-   #### debug
-   # --no-offload-train 
-   # --no-offload-rollout 
 )
 
 
@@ -165,7 +158,7 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 # Set Up Your GPUs for Training
 
 # export GPUS_PER_NODE=2 #default
-export GPUS_PER_NODE=4
+
 
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPUS_PER_NODE --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
