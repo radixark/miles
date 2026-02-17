@@ -598,6 +598,7 @@ def _compute_server_args(
         "random_seed": args.seed + rank,
         # memory
         "enable_memory_saver": args.offload_rollout,
+        "enable_weights_cpu_backup": args.offload_rollout,
         # distributed
         "host": host,
         "port": port,
