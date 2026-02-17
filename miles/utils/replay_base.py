@@ -182,9 +182,7 @@ class BaseReplayManager:
             )
 
         if mismatch_count > mismatch_threshold:
-            raise AssertionError(
-                f"R3 mismatch tokens ({mismatch_count}) > threshold ({mismatch_threshold:.0f})"
-            )
+            raise AssertionError(f"R3 mismatch tokens ({mismatch_count}) > threshold ({mismatch_threshold:.0f})")
 
 
 class RoutingReplayManager(BaseReplayManager):
