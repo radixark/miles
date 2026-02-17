@@ -54,8 +54,8 @@ LORA_ARGS=(
    --target-modules "all-linear"
    --megatron-to-hf-mode bridge
    #### debug
-   --no-offload-train 
-   --no-offload-rollout 
+   # --no-offload-train 
+   # --no-offload-rollout 
 )
 
 
@@ -143,8 +143,8 @@ WANDB_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
-   # --sglang-mem-fraction-static 0.7
-   --sglang-mem-fraction-static 0.4
+   --sglang-mem-fraction-static 0.7
+   # --sglang-mem-fraction-static 0.4
 
    --sglang-enable-deterministic-inference
    --sglang-attention-backend flashinfer

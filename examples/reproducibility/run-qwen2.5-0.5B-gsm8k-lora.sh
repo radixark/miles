@@ -83,8 +83,8 @@ LORA_ARGS=(
    # --no-gradient-accumulation-fusion #Root cause: When training with LoRA, the base model’s parameters are frozen (requires_grad=False). However, Megatron-LM’s tensor-parallel layers use gradient-accumulation fusion during the backward pass, and that fusion path checks weight.main_grad.dtype. For frozen parameters, main_grad is never allocated (it remains None), which triggers the error. (enable)
 
    #### debug
-   --no-offload-train 
-   --no-offload-rollout 
+   # --no-offload-train 
+   # --no-offload-rollout 
 )
 ##############################
 ##############################
