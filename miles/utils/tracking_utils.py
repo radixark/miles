@@ -1,21 +1,16 @@
-import wandb
-from miles.utils.tensorboard_utils import _TensorboardAdapter
+from .tracking import TrackingManager
 
-from . import wandb_utils
+_manager = TrackingManager()
 
 
 def init_tracking(args, primary: bool = True, **kwargs):
-    if primary:
-        wandb_utils.init_wandb_primary(args, **kwargs)
-    else:
-        wandb_utils.init_wandb_secondary(args, **kwargs)
+    _manager.init(args, primary=primary, **kwargs)
 
 
-# TODO further refactor, e.g. put TensorBoard init to the "init" part
 def log(args, metrics, step_key: str):
-    if args.use_wandb:
-        wandb.log(metrics)
+    step = metrics.get(step_key)
+    _manager.log(metrics, step=step)
 
-    if args.use_tensorboard:
-        metrics_except_step = {k: v for k, v in metrics.items() if k != step_key}
-        _TensorboardAdapter(args).log(data=metrics_except_step, step=metrics[step_key])
+
+def finish_tracking():
+    _manager.finish()
