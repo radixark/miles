@@ -13,7 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["H100", "GB200", "GB300"] = "H100"
+    hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
     rollout_fp8: bool = False
@@ -30,10 +30,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.rollout_mxfp8:
             assert not self.rollout_fp8, "rollout_mxfp8 and rollout_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("GB200", "GB300"), "rollout_mxfp8 only supports GB200 and GB300"
+            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "rollout_mxfp8 only supports Blackwell GPUs"
         if self.train_mxfp8:
             assert not self.train_fp8, "train_mxfp8 and train_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("GB200", "GB300"), "train_mxfp8 only supports GB200 and GB300"
+            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "train_mxfp8 only supports Blackwell GPUs"
             assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8 to be enabled"
 
 
@@ -161,7 +161,7 @@ def execute(args: ScriptArgs):
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
-            case "GB200" | "GB300":
+            case "B200" | "B300" | "GB200" | "GB300":
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
@@ -205,7 +205,7 @@ def execute(args: ScriptArgs):
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
-        case ("GB200", 1) | ("GB300", 1) | ("GB200", 2) | ("GB300", 2) | ("GB200", 4) | ("GB300", 4):
+        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4):
             perf_args += (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
