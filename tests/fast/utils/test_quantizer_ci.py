@@ -20,9 +20,7 @@ CONFIG = {
 def _quantize_names(name, ignore_rules):
     """Run quantization on a single 2D weight and return output names."""
     config = {**CONFIG, "ignore": ignore_rules}
-    results = quantize_params_compressed_tensors(
-        [(name, torch.randn(256, 256))], config
-    )
+    results = quantize_params_compressed_tensors([(name, torch.randn(256, 256))], config)
     return [r[0] for r in results]
 
 
