@@ -10,25 +10,11 @@ from megatron.training.global_vars import get_args
 
 from miles.utils import megatron_bridge_utils
 
-##############################
-###########lora###############
-##############################
-from miles.backends.megatron_utils.lora_utils import is_lora_model, save_lora_checkpoint, load_lora_checkpoint
-##############################
-##############################
-##############################
+from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
 
 logger = logging.getLogger(__name__)
 
-##############################
-###########lora###############
-##############################
-# __all__ = ["save_checkpoint"]
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
-##############################
-##############################
-##############################
-
 
 
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
@@ -40,38 +26,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         load_path
     ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
-    ##############################
-    ###########lora###############
-    ##############################
-    # # Check for LoRA adapter first
-    # ## Not correct - need to check the saving format and name
-    # if is_lora_model(ddp_model):
-    #     lora_path = Path(load_path) / "adapter"
-    #     if lora_path.exists():
-    #         logger.info(f"Loading LoRA checkpoint from {lora_path}")
-    #         iteration = load_lora_checkpoint(ddp_model, args, str(lora_path))
-    #         num_floating_point_operations_so_far = 0
-    #         return iteration, num_floating_point_operations_so_far
-    #     else:
-    #         logger.info(f"Not Found LoRA checkpoint from {lora_path}. Use the random initial weight.")
-    ##############################
-    ##############################
-    ##############################
-
-
-    ##############################
-    ###########lora###############
-    ##############################  
-    # (to-do): yusheng- Also add lora weight loading in `_load_checkpoint_megatron` and `_load_checkpoint_hf` 
-    # if no lora weight - random initalization 
-    ##############################  
-    ##############################  
-    ##############################  
-    ##############################  
-    
-        
     if _is_megatron_checkpoint(load_path):
-        return _load_checkpoint_megatron(
+        result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
             opt_param_scheduler=opt_param_scheduler,
@@ -79,31 +35,41 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
             skip_load_to_model_and_opt=skip_load_to_model_and_opt,
         )
     else:
-        return _load_checkpoint_hf(
+        result = _load_checkpoint_hf(
             ddp_model=ddp_model,
             optimizer=optimizer,
             args=args,
             load_path=load_path,
         )
 
-##############################
-###########lora###############
-##############################
+    # Load LoRA adapter weights if available
+    if is_lora_enabled(args):
+        adapter_path = getattr(args, "lora_adapter_path", None)
+        if adapter_path is not None:
+            loaded = load_lora_adapter(ddp_model, adapter_path)
+            if loaded:
+                logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")
+            else:
+                logger.warning(
+                    f"LoRA is enabled and --lora-adapter-path={adapter_path} was specified, "
+                    f"but adapter weights could not be loaded. "
+                    f"Training will start with freshly initialized adapter weights."
+                )
+
+    return result
+
+
 def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
     """Extended save that handles LoRA adapters separately."""
     args = get_args()
-    
+
     if is_lora_model(model):
-        # Save only LoRA adapter weights
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
         save_lora_checkpoint(model, args, str(save_dir))
     else:
-        # Use standard Megatron save
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
-##############################
-##############################
-##############################
+
 
 def _is_megatron_checkpoint(path: str | Path) -> bool:
     return (Path(path) / "latest_checkpointed_iteration.txt").is_file() or bool(

@@ -37,19 +37,8 @@ from .model import forward_only, initialize_model_and_optimizer, save, train
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
-##############################
-###########lora###############
-##############################
-from .lora_utils import (
-    is_lora_enabled,
-    is_lora_model,
-    # apply_lora_to_megatron_model,
-    # get_lora_weights_and_config,
-    freeze_base_model,
-)
-##############################
-##############################
-##############################
+from .lora_utils import is_lora_enabled, is_lora_model, freeze_base_model
+
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -124,20 +113,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         self._active_model_tag: str | None = "actor"
         self.weights_backuper.backup("actor")
-        #actor already include lora now - You can use self.weights_backuper.get("actor") to check 
 
-        # ###############
-        # print("=======")
-        # actor_weights = self.weights_backuper.get("actor")
-
-        # for name, weight in actor_weights.items():
-        #     print(f"{name}: shape={weight.shape}, sum={weight.float().sum().item()}, requires_grad: {weight.requires_grad}")
-        # actor_weights = self.weights_backuper.get("actor")
-        # print("=======")
-        # exit()
-        # and then it will update_weight (sync) to sglang - so it does not need requires_grad. 
-        # ###############
-        
 
         if with_ref:
             self.load_other_checkpoint("ref", args.ref_load)
@@ -159,13 +135,7 @@ class MegatronTrainRayActor(TrainRayActor):
             weights_getter=lambda: self.weights_backuper.get("actor"),
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
-            ##############################
-            ###########lora###############
-            ##############################
             is_lora=is_lora_enabled(args),
-            ##############################
-            ##############################
-            ##############################
         )
 
         # empty cache after initialization
@@ -283,17 +253,6 @@ class MegatronTrainRayActor(TrainRayActor):
         self.weights_backuper.restore(target_tag)
         self._active_model_tag = target_tag
 
-        ##############################
-        ###########lora###############
-        ##############################
-        # # Restore requires_grad after weight restoration
-        # # For LoRA training: only adapter params should be trainable, base model frozen
-        # if is_lora_enabled(self.args):
-        #     freeze_base_model(self.model)
-        #     # Note: ref model uses forward_only (@torch.no_grad), so requires_grad doesn't matter
-        ##############################
-        ##############################
-        ##############################
 
     def fill_routing_replay(self, data_iterator, num_microbatches, rollout_data):
         if "rollout_routed_experts" not in rollout_data:
@@ -645,75 +604,3 @@ class MegatronTrainRayActor(TrainRayActor):
             rank=0 if self.role == "actor" else 1,
             group_name=group_name,
         )
-
-
-
- 
-    ##############################
-    ###########lora###############
-    ##############################
-    ###########
-    def check_lora_status(self):
-        """check LoRA module"""
-        from megatron.bridge.peft.lora_layers import LoRALinear
-        from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
-        
-        results = {
-            "lora_modules": [],
-            "trainable_params": 0,
-            "frozen_params": 0,
-            "total_params": 0,
-        }
-        
-        model = self.model[0] if isinstance(self.model, list) else self.model
-        
-        # travel all module 
-        for name, module in model.named_modules():
-            if isinstance(module, (LoRALinear, AdapterWrapper)):
-                results["lora_modules"].append(name)
-                
-                # check adapter weight
-                if hasattr(module, 'adapter'):
-                    adapter = module.adapter
-                    if hasattr(adapter, 'linear_in'):
-                        lora_a_shape = tuple(adapter.linear_in.weight.shape)
-                        lora_b_shape = tuple(adapter.linear_out.weight.shape)
-                        print(adapter.linear_in.weight.shape)
-                        # print(adapter.linear_in.weight)
-                        # print(adapter.linear_in.weight.detach().cpu().clone())
-                        print(adapter.linear_out.weight.shape)
-                        # print(adapter.linear_out.weight)
-                        # print(adapter.linear_out.weight.detach().cpu().clone())
-                        print(f"  {name}: lora_A={lora_a_shape}, lora_B={lora_b_shape}, requires_grad={adapter.linear_in.requires_grad}")
-            else:
-                for param_name, param in module.named_parameters(recurse=False):
-                    # print(f"  {name}.{param_name}: shape={tuple(param.shape)}", param)
-                    # print(f"  {name}.{param_name}: shape={tuple(param.shape)}", param.float().sum().item())
-                    print(f"  {name}.{param_name}: shape={tuple(param.shape)}")
-                        
-        
-        # account parms
-        for p in model.parameters():
-            results["total_params"] += p.numel()
-            if p.requires_grad:
-                results["trainable_params"] += p.numel()
-            else:
-                results["frozen_params"] += p.numel()
-        
-        print(f"LoRA Check Results:")
-        print(f"  - LoRA modules found: {len(results['lora_modules'])}")
-        print(f"  - Trainable params: {results['trainable_params']:,}")
-        print(f"  - Frozen params: {results['frozen_params']:,}")
-        print(f"  - Trainable ratio: {results['trainable_params']/results['total_params']*100:.2f}%")
-        
-        return results
-    ##############################
-    ##############################
-    ##############################
-
-    # │  print(tensor.shape)  ✓                                        │
-    # │  └── only read metadata（do not need GPU memory）                    │
-    # │                                                                │
-    # │  print(tensor)  ✗                                              │
-    # │  └── PyTorch __repr__ will read the actual tensor values               │
-    # │  └── When GPU try to read the data, it has cudaErrorIllegalAddress  

@@ -234,8 +234,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]} \
-   ${ROLLOUT_ARGS[@]} \
-   ${LORA_ARGS[@]} 
+   ${ROLLOUT_ARGS[@]}
 
 
 # colocate : update from tesnor

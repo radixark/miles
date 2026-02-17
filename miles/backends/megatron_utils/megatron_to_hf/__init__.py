@@ -84,50 +84,47 @@ def _convert_to_hf_core(args, model_name, name, param):
                 converted_named_tensors.append((converted_name, converted_param))
     return converted_named_tensors
 
-##############################
-###########lora###############
-##############################
-### This might be model specific --> make it more general
+
 def convert_lora_to_hf(args, model_name, name, param):
-    """
-    Convert Megatron LoRA parameter to HuggingFace PEFT format.
-    
+    """Convert Megatron LoRA parameter to HuggingFace PEFT format.
+
+    .. deprecated::
+        This function uses hardcoded string replacements that do NOT correctly
+        handle fused layers (e.g. linear_qkv -> q/k/v_proj, linear_fc1 ->
+        gate/up_proj). Use ``AutoBridge.export_adapter_weights`` instead, which
+        properly splits fused adapter weights and handles TP gathering.
+
     Megatron format: module.module.decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight
     HF PEFT format:  base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight
     """
-    # Determine if this is lora_A (linear_in) or lora_B (linear_out)
+    import warnings
+    warnings.warn(
+        "convert_lora_to_hf uses incorrect hardcoded name mapping for fused layers. "
+        "Use AutoBridge.export_adapter_weights instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    # Determine lora_A vs lora_B
     if ".linear_in." in name or ".lora_A." in name:
         lora_suffix = "lora_A.weight"
     elif ".linear_out." in name or ".lora_B." in name:
         lora_suffix = "lora_B.weight"
     else:
-        # Fallback - return as is
         return [(name, param)]
-    
+
     # Convert Megatron naming to HF PEFT naming
     hf_name = name
-    
-    # Remove Megatron wrapper prefixes
     hf_name = hf_name.replace("module.module.", "base_model.model.")
-    
-    # Convert layer path
     hf_name = hf_name.replace(".decoder.layers.", ".model.layers.")
-    
-    # Convert attention modules
     hf_name = hf_name.replace(".self_attention.linear_qkv", ".self_attn.q_proj")
     hf_name = hf_name.replace(".self_attention.linear_proj", ".self_attn.o_proj")
-    
-    # Convert MLP modules  
     hf_name = hf_name.replace(".mlp.linear_fc1", ".mlp.gate_proj")
     hf_name = hf_name.replace(".mlp.linear_fc2", ".mlp.down_proj")
-    
-    # Replace adapter naming with lora naming
+
     hf_name = hf_name.replace(".adapter.linear_in.weight", f".{lora_suffix}")
     hf_name = hf_name.replace(".adapter.linear_out.weight", f".{lora_suffix}")
     hf_name = hf_name.replace(".lora_A.weight", f".{lora_suffix}")
     hf_name = hf_name.replace(".lora_B.weight", f".{lora_suffix}")
-    
+
     return [(hf_name, param)]
-##############################
-##############################
-##############################

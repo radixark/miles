@@ -19,24 +19,23 @@ from .update_weight_from_distributed import (
     update_weights_from_distributed,
 )
 
-##############################
-###########lora###############
-##############################
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import (
+    LORA_ADAPTER_NAME,
+    build_lora_sync_config,
+    is_lora_enabled,
+    is_lora_weight_name,
+)
 
-def _is_lora_weight(name: str) -> bool:
-    """Check if a weight name is a LoRA adapter weight."""
-    return ".lora_A." in name or ".lora_B." in name
-##############################
-##############################
-##############################
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class UpdateWeightFromTensor:
     """
     Update rollout engines from tensor dict:
-    load(dict→GPU) → broadcast PP/EP(GPU NCCL) → gather TP(GPU NCCL) → convert HF(GPU) → send.
-    Colocated: GPU→CPU serialize → gather_object(Gloo CPU, collects from rollout_num_gpus_per_engine ranks) → Ray IPC to engine.
+    load(dict->GPU) -> broadcast PP/EP(GPU NCCL) -> gather TP(GPU NCCL) -> convert HF(GPU) -> send.
+    Colocated: GPU->CPU serialize -> gather_object(Gloo CPU) -> Ray IPC to engine.
     Distributed: GPU NCCL broadcast to remote engines.
     """
 
@@ -48,13 +47,7 @@ class UpdateWeightFromTensor:
         *,
         model_name: str,
         quantization_config: dict[str, int | str | list[str]] | None,
-        ##############################
-        ###########lora###############
-        ##############################
         is_lora: bool = False,
-        ##############################
-        ##############################
-        ##############################
     ) -> None:
         """
         Compute param buckets, create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
@@ -65,46 +58,19 @@ class UpdateWeightFromTensor:
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.weight_version = 0
-        ##############################
-        ###########lora###############
-        ##############################
         self.is_lora = is_lora
-        # self._lora_loaded = False
-        self._base_synced = True
-        # self._base_synced = False
 
-        # self._hf_weight_iterator = HfWeightIteratorBase.create(
-        #     args=args, model=model, model_name=model_name, quantization_config=quantization_config
-        # )
-
-        
         self._hf_weight_iterator = HfWeightIteratorBase.create(
-            args=args, model=model, model_name=model_name, quantization_config=quantization_config,
+            args=args,
+            model=model,
+            model_name=model_name,
+            quantization_config=quantization_config,
             is_lora=self.is_lora,
-            _base_synced=self._base_synced, 
         )
 
-        
-        # Store LoRA config for weight sync (from tensor) - why this - let me think think
-        if self.is_lora:
-            from miles.backends.sglang_utils.sglang_engine import convert_target_modules_to_hf
-            self._lora_config = {
-                "peft_type": "LORA",
-                "r": args.lora_rank,
-                "lora_alpha": args.lora_alpha,
-                "target_modules": convert_target_modules_to_hf(list(args.target_modules)) if args.target_modules else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-                "lora_dropout": args.lora_dropout,
-                "bias": "none",
-                "task_type": "CAUSAL_LM",
-            }
-        else:
-            self._lora_config = None
-        ##############################
-        ##############################
-        ##############################
+        self._lora_config = build_lora_sync_config(args) if self.is_lora else None
 
-    
-        # create the group within megatron.
+        # Create IPC gather groups within megatron.
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = start_rank + self.args.rollout_num_gpus_per_engine
             group_ranks = list(range(start_rank, end_rank))
@@ -114,7 +80,6 @@ class UpdateWeightFromTensor:
                 self._ipc_gather_src = start_rank
 
         self._model_update_groups = None
-
 
     def connect_rollout_engines(
         self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
@@ -143,7 +108,6 @@ class UpdateWeightFromTensor:
                     disconnect_rollout_engines_from_distributed(
                         self.args, self._group_name, self._model_update_groups, self.distributed_rollout_engines
                     )
-
                 self._model_update_groups = connect_rollout_engines_from_distributed(
                     self.args, self._group_name, self.distributed_rollout_engines
                 )
@@ -168,8 +132,7 @@ class UpdateWeightFromTensor:
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-        megatron_local_weights = self.weights_getter() 
-
+        megatron_local_weights = self.weights_getter()
 
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
@@ -177,51 +140,18 @@ class UpdateWeightFromTensor:
             del long_lived_tensors
         dist.barrier(group=get_gloo_group())
 
-
-    ##############################
-    ###########lora###############
-    ##############################
-    # def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
-        
-    #     all_refs = []
-
-    #     refs_colocated, long_lived_tensors = _send_to_colocated_engine(
-    #         hf_named_tensors,
-    #         ipc_engine=self._ipc_engine,
-    #         ipc_gather_src=self._ipc_gather_src,
-    #         ipc_gather_group=self._ipc_gather_group,
-    #         weight_version=self.weight_version,
-    #     )
-    #     all_refs.extend(refs_colocated)
-
-    #     if self.use_distribute and self._is_distributed_src_rank:
-    #         refs_distributed = update_weights_from_distributed(
-    #             self._group_name,
-    #             self._model_update_groups,
-    #             self.weight_version,
-    #             self.distributed_rollout_engines,
-    #             hf_named_tensors,
-    #         )
-    #         if refs_distributed:
-    #             all_refs.extend(refs_distributed)
-
-    #     return all_refs, long_lived_tensors
-
-    ##############
-    
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
-
         all_refs = []
-        
+
         # Separate LoRA weights from base weights
         if self.is_lora:
-            base_tensors = [(n, t) for n, t in hf_named_tensors if not _is_lora_weight(n)]
-            lora_tensors = [(n, t) for n, t in hf_named_tensors if _is_lora_weight(n)]
+            base_tensors = [(n, t) for n, t in hf_named_tensors if not is_lora_weight_name(n)]
+            lora_tensors = [(n, t) for n, t in hf_named_tensors if is_lora_weight_name(n)]
         else:
             base_tensors = hf_named_tensors
             lora_tensors = []
 
-        # Send base model weights via update_weights_from_tensor
+        # Send base model weights
         long_lived_tensors = []
         if base_tensors:
             refs_colocated, long_lived_tensors = _send_to_colocated_engine(
@@ -243,7 +173,7 @@ class UpdateWeightFromTensor:
                 )
                 if refs_distributed:
                     all_refs.extend(refs_distributed)
-        
+
         # Send LoRA weights via load_lora_adapter_from_tensors
         if lora_tensors and self._lora_config is not None:
             refs_lora, lora_long_lived = _send_lora_to_colocated_engine(
@@ -258,10 +188,6 @@ class UpdateWeightFromTensor:
             long_lived_tensors.extend(lora_long_lived)
 
         return all_refs, long_lived_tensors
-    
-    ##############################
-    ##############################
-    ##############################
 
 
 def _send_to_colocated_engine(
@@ -284,7 +210,7 @@ def _send_to_colocated_engine(
             if dtype not in converted_named_tensors_by_dtypes:
                 converted_named_tensors_by_dtypes[dtype] = []
             converted_named_tensors_by_dtypes[dtype].append((name, tensor))
-    
+
     serialized_tensors = []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
@@ -321,12 +247,6 @@ def _send_to_colocated_engine(
     return refs, long_live_tensors
 
 
-
-
-
-##############################
-###########lora###############
-##############################
 def _send_lora_to_colocated_engine(
     lora_named_tensors: list[tuple[str, torch.Tensor]],
     *,
@@ -336,19 +256,15 @@ def _send_lora_to_colocated_engine(
     lora_config: dict,
     lora_name: str,
 ) -> tuple[list[ObjectRef], Any]:
-    """Send LoRA weights to colocated engine via load_lora_adapter_from_tensors.
-    """
-    
+    """Send LoRA weights to colocated engine via load_lora_adapter_from_tensors."""
     long_live_tensors = []
 
-    # Use same serialize method as fsdp
-    # FlattenedTensorBucket is not supported for sglang POST /load_lora_adapter_from_tensors 
-    # TODO: better approach?
-    # currently lora tensors are managed by torch memory saver, which is not sharable through CUDA IPC
+    # LoRA tensors managed by torch memory saver are not sharable through CUDA IPC,
+    # so we detach and clone them.
     lora_weights = {name: tensor.detach().clone() for name, tensor in lora_named_tensors}
     long_live_tensors.append(lora_weights)
     serialized_lora = MultiprocessingSerializer.serialize(lora_weights, output_str=True)
-    
+
     # Gather from all ranks in the group
     serialized_lora_gathered = (
         [None] * dist.get_world_size(ipc_gather_group) if ipc_gather_src == dist.get_rank() else None
@@ -359,33 +275,19 @@ def _send_lora_to_colocated_engine(
         dst=ipc_gather_src,
         group=ipc_gather_group,
     )
-    
-    # refs = []
-    # if dist.get_rank() == ipc_gather_src:
-    #     # Send LoRA via the same mechanism as base weights, but use a special endpoint
-    #     refs.append(ipc_engine.load_lora_adapter_from_tensors.remote(
-    #         lora_name=lora_name,
-    #         serialized_tensors=serialized_lora_gathered[0],  # FlattenedTensorBucket format
-    #         config_dict=lora_config,
-    #         load_format="flattened_bucket",  # Add this to indicate the format
-    #     ))
 
     refs = []
     if dist.get_rank() == ipc_gather_src:
-        # First, unload the existing LoRA adapter (if any)
+        # Unload existing adapter before loading new weights
         try:
             ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
         except Exception:
-            pass  # Ignore error if adapter was not loaded
-        
-        # Then load the new LoRA weights
+            logger.debug(f"No existing LoRA adapter '{lora_name}' to unload (this is expected on first sync)")
+
         refs.append(ipc_engine.load_lora_adapter_from_tensors.remote(
             lora_name=lora_name,
-            serialized_tensors=serialized_lora_gathered[0],  # FlattenedTensorBucket format
-            config_dict=lora_config
+            serialized_tensors=serialized_lora_gathered[0],
+            config_dict=lora_config,
         ))
-    
+
     return refs, long_live_tensors
-##############################
-##############################
-##############################

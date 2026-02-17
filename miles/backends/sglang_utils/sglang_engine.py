@@ -15,51 +15,11 @@ from urllib3.exceptions import NewConnectionError
 
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
-
-##############################
-###########lora###############
-##############################
-from argparse import Namespace
-
-def is_lora_enabled(args: Namespace) -> bool:
-    """Check if LoRA is enabled."""
-    return args.lora_rank > 0 or args.lora_adapter_path is not None
-
-
-def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
-    """Convert Megatron LoRA target module names to HuggingFace format.
-    
-    Megatron: linear_qkv, linear_proj, linear_fc1, linear_fc2
-    HF: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
-    """
-
-    # If "all-linear" was converted to the standard Megatron list, just return "all"
-    # This allows SGLang to accept any LoRA adapter regardless of its target modules
-    # standard_all_linear = ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
-    # if set(megatron_modules) == set(standard_all_linear):
-    #     return "all"
-    
-    # This mapping should match your specific model architecture
-    replacements = {
-        "linear_qkv": ["q_proj", "k_proj", "v_proj"],
-        "linear_proj": ["o_proj"],
-        "linear_fc1": ["gate_proj", "up_proj"],
-        "linear_fc2": ["down_proj"],
-    }
-    
-    hf_modules = []
-    for module in megatron_modules:
-        if module in replacements:
-            hf_modules.extend(replacements[module])
-        else:
-            # Keep as-is if not in mapping (might already be HF format)
-            hf_modules.append(module)
-    
-    return hf_modules
-
-##############################
-##############################
-##############################
+from miles.backends.megatron_utils.lora_utils import (
+    LORA_ADAPTER_NAME,
+    convert_target_modules_to_hf,
+    is_lora_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,20 +61,6 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
 
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
-    ##############################
-    ###########lora###############
-    ##############################
-    # for debugging - can be removed
-    # Add logging to see what args are being passed
-    logger.info(f"Launching SGLang server with args:")
-    logger.info(f"  enable_lora={getattr(server_args, 'enable_lora', None)}")
-    logger.info(f"  max_lora_rank={getattr(server_args, 'max_lora_rank', None)}")
-    logger.info(f"  max_loras_per_batch={getattr(server_args, 'max_loras_per_batch', None)}")
-    logger.info(f"  lora_target_modules={getattr(server_args, 'lora_target_modules', None)}")
-    logger.info(f"  base_gpu_id={server_args.base_gpu_id}")
-    ##############################
-    ##############################
-    ##############################
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
@@ -332,21 +278,16 @@ class SGLangEngine(RayActor):
             payload,
         )
     
-    ##############################
-    ###########lora###############
-    ##############################
     def load_lora_adapter_from_tensors(
         self,
         lora_name: str,
         serialized_tensors: str,
         config_dict: dict,
-        load_format: str | None = None,  # Add this parameter
+        load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
     ):
-        """
-        Load a LoRA adapter from serialized tensor data.
-        """
+        """Load a LoRA adapter from serialized tensor data."""
         payload = {
             "lora_name": lora_name,
             "serialized_tensors": serialized_tensors,
@@ -357,14 +298,11 @@ class SGLangEngine(RayActor):
             payload["load_format"] = load_format
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
-            
+
         return self._make_request(
             "load_lora_adapter_from_tensors",
             payload,
         )
-    ##############################
-    ##############################
-    ##############################
 
     def flush_cache(self):
         """Flush the cache of the server."""
@@ -427,53 +365,20 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response.json()["weight_version"]
 
-    ##############################
-    ###########lora###############
-    ##############################
-    # def load_lora_adapter(self, lora_name: str, lora_path: str):
-    #     """Load LoRA adapter from disk."""
-    #     return self._make_request(
-    #         "load_lora_adapter",
-    #         {"lora_name": lora_name, "lora_path": lora_path},
-    #     )
-
-    # def load_lora_adapter_from_tensors(self, lora_name: str, serialized_tensors: str, config_dict: dict):
-    #     """Load LoRA adapter from serialized tensors."""
-    #     return self._make_request(
-    #         "load_lora_adapter_from_tensors",
-    #         {"lora_name": lora_name, "serialized_tensors": serialized_tensors, "config_dict": config_dict},
-    #     )
-
     def unload_lora_adapter(self, lora_name: str):
         """Unload LoRA adapter."""
         return self._make_request(
             "unload_lora_adapter",
             {"lora_name": lora_name},
         )
-    ##############################
-    ##############################
-    ##############################
-
-
-    ##############################
-    ###########lora###############
-    ##############################
-    # def release_memory_occupation(self):
-    #     self.flush_cache()
-    #     return self._make_request("release_memory_occupation")
 
     def release_memory_occupation(self, tags: list[str] = None):
-        """
-        Available tags for multi-stage release: weights, kv_cache
-        """
+        """Release memory occupation. Available tags: weights, kv_cache."""
         self.flush_cache()
         return self._make_request(
             "release_memory_occupation",
             {"tags": tags},
         )
-    ##############################
-    ##############################
-    ##############################
 
     
 
@@ -636,59 +541,16 @@ def _compute_server_args(
         kwargs["dtype"] = "float16"
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
-    ##############################
-    ###########lora###############
-    ##############################
-    # if is_lora_enabled(args):
-    #     kwargs["enable_lora"] = True
-    #     kwargs["max_lora_rank"] = args.lora_rank
-    #     kwargs["max_loras_per_batch"] = 1
-    #     # NOTE: lora_target_modules might not be supported by your SGLang version
-    #     # Comment out this line if SGLang doesn't support it:
-    #     # kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
-    #     # Log for debugging
-    #     kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
-    #     # kwargs["lora_target_modules_list"] = convert_target_modules_to_hf(args.target_modules)
-    #     # print(1111111111)
-    #     # print(kwargs["lora_target_modules"])
-    #     # print(2222222222)
-    #     # exit()
-
-    # if is_lora_enabled(args):
-    if args.lora_rank > 0 or args.lora_adapter_path is not None:
+    if is_lora_enabled(args):
         kwargs["enable_lora"] = True
-        kwargs["max_loras_per_batch"] = 1  #!!!!!!!!
-        # kwargs["max_lora_rank"] = args.lora_rank
-        # Ensure a valid positive LoRA rank is passed to the SGLang engine.
-        # If LoRA is enabled via adapter path but lora_rank is not set to a
-        # positive value, default to rank 1 to avoid an invalid configuration.
-        if getattr(args, "lora_rank", None) and args.lora_rank > 0:
-            max_lora_rank = args.lora_rank
-        else:
-            max_lora_rank = 1
-        kwargs["max_lora_rank"] = max_lora_rank
-        # kwargs["lora_target_modules"] = args.target_modules
+        kwargs["max_loras_per_batch"] = 1
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
         kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
-        ##### For rollout debug mode to add:
-        if args.debug_rollout_only:
-            from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME
-            # SGLang lora_paths Format: {"adapter_name": "path_to_adapter"}
+        if args.lora_adapter_path is not None:
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
-
-        if args.lora_adapter_path is None: 
-            # raise ValueError("lora_adapter_path must be provided")
-            # raise ValueError("lora_adapter_path must be provided")
-            # pass
-            logger.info("Did not provide pre-trained LoRA adapter_path, will use random initial weights")
         else:
-            from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME
-            # SGLang lora_paths Format: {"adapter_name": "path_to_adapter"}
-            kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
-             
-    ##############################
-    ##############################
-    ##############################
+            logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):

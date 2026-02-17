@@ -25,13 +25,7 @@ from miles.utils.types import Sample
 
 from .rm_hub import async_rm, batched_async_rm
 
-##############################
-###########lora###############
-##############################
-from miles.backends.sglang_utils.sglang_engine import is_lora_enabled
-##############################
-##############################
-##############################
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
 
 __all__ = ["generate_rollout"]
 
@@ -144,15 +138,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "return_logprob": True,
     }
 
-    ##############################
-    ###########lora###############
-    ##############################
     if is_lora_enabled(args):
-        from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME
         payload["lora_path"] = LORA_ADAPTER_NAME
-    ##############################
-    ##############################
-    ##############################
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True

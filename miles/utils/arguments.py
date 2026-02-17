@@ -104,9 +104,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
-            ##############################
-            ###########lora###############
-            ##############################
             parser.add_argument(
                 "--offload-rollout-level",
                 type=str,
@@ -118,9 +115,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Example: --offload-rollout-level kv_cache weight"
                 ),
             )
-            ##############################
-            ##############################
-            ##############################
             
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
@@ -930,9 +924,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
         
-        ##############################
-        ###########lora###############
-        ##############################
         def add_lora_arguments(parser):
             """Add LoRA-related arguments for Megatron backend."""
             parser.add_argument(
@@ -952,6 +943,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=0.0,
                 help="LoRA dropout rate (default: 0.0)",
+            )
+            parser.add_argument(
+                "--lora-type",
+                type=str,
+                default="lora",
+                choices=["lora", "canonical_lora"],
+                help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
             )
             parser.add_argument(
                 "--target-modules",
@@ -978,25 +976,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
             )
-            # parser.add_argument(
-            #     "--share-ref-base-model",
-            #     action="store_true",
-            #     default=False,
-            #     help="Share base model between actor and reference model (saves memory for LoRA)",
-            # )
-
-            # parser.add_argument(
-            #     "--no-use-distributed-optimizer",
-            #     action="store_false",
-            #     default=True,
-            #     dest="Use distributed optimizer (ZeRO)",
-            #     help="Use distributed optimizer (ZeRO). Disable for LoRA training. (default: True)",
-            # )
-            
             return parser
-        ##############################
-        ##############################
-        ##############################
 
         def add_router_arguments(parser):
             parser.add_argument(
@@ -1438,13 +1418,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
-        ##############################
-        ###########lora###############
-        ##############################
         parser = add_lora_arguments(parser)
-        ##############################
-        ##############################
-        ##############################
         parser = add_wandb_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_router_arguments(parser)
@@ -1609,14 +1583,10 @@ def miles_validate_args(args):
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
 
-    ##############################
-    ###########lora###############
-    ##############################
+    # Parse LoRA target modules
     if args.lora_rank > 0:
-        # assert args.save is not None, "'--save' is required when LoRA is enabled."
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
-        # (to-do) yusheng: hf->mg; mg->hf 
         if args.target_modules == "all-linear":
             modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         elif "," in args.target_modules:
@@ -1633,9 +1603,6 @@ def miles_validate_args(args):
             modules = [m for m in modules if m not in exclude_set]
 
         args.target_modules = modules
-    ##############################
-    ##############################
-    ##############################
     
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

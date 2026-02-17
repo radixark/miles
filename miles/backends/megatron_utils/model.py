@@ -5,6 +5,7 @@ import math
 import os
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
+from megatron.core.utils import get_attr_wrapped_model
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
@@ -25,55 +27,33 @@ from megatron.training.training import get_model
 from miles.utils import tracking_utils
 from miles.utils.memory_utils import clear_memory
 
-##############################
-###########lora###############
-##############################
-# from .checkpoint import load_checkpoint, save_checkpoint
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
-from .lora_utils import is_lora_model
-# from miles.backends.megatron_utils.lora_utils import is_lora_enabled
-# from miles.backends.megatron_utils.lora_utils import is_lora_enabled, apply_lora_to_megatron_model
-from miles.backends.megatron_utils.lora_utils import is_lora_enabled, convert_target_modules_to_megatron
-##############################
-##############################
-##############################
-
 from .data import DataIterator, get_batch
+from .lora_utils import create_lora_instance, is_lora_enabled, is_lora_model
 from .loss import loss_function
 from .model_provider import get_model_provider_func
 
 logger = logging.getLogger(__name__)
 
 
-##############################
-###########lora###############
-##############################
-from dataclasses import dataclass
+# ---------------------------------------------------------------------------
+# Bridge / LoRA model setup helpers
+# ---------------------------------------------------------------------------
+
 @dataclass
-class McoreModuleWrapperConfig:
-    """Configuration for Mcore module wrapper."""
+class _BridgeWrapperConfig:
+    """Configuration for Megatron-Bridge module wrapping."""
     is_value_model: bool = False
-    share_embeddings_and_output_weights: bool = False
     wrap_with_ddp: bool = True
     use_distributed_optimizer: bool = True
 
-    
+
 def _ensure_model_list(model):
-    return model if isinstance(model, list) else [model]   
+    return model if isinstance(model, list) else [model]
 
-# Get from: verl/verl/models/mcore/bridge.py
-def make_value_model(hidden_size, sequence_parallel):
-    """Creates a pre-wrap hook that replace the output layer with a value head.
 
-    Args:
-        hidden_size (int): The hidden size of the model's transformer layers.
-        sequence_parallel (bool): Whether sequence parallelism is enabled.
-
-    Returns:
-        A hook function that can be used as a `pre_wrap_hook` in Megatron-Bridge.
-        The hook itself takes the model as input and prepares it for value head activation.
-    """
-
+def _make_value_model_hook(hidden_size: int, sequence_parallel: bool):
+    """Create a pre-wrap hook that replaces the output layer with a value head."""
     from megatron.core import parallel_state
     from .model_provider import LinearForLastLayer
 
@@ -94,7 +74,6 @@ def make_value_model(hidden_size, sequence_parallel):
         for index, model_chunk in enumerate(model_list):
             if not model_post_process[index]:
                 continue
-
             model_chunk.output_layer = LinearForLastLayer(
                 input_size=hidden_size,
                 output_size=1,
@@ -103,14 +82,81 @@ def make_value_model(hidden_size, sequence_parallel):
 
     return hook
 
-    
-from megatron.core.utils import get_attr_wrapped_model
-def get_model_config(model):
-    return get_attr_wrapped_model(model, "config", allow_none=False)
-##############################
-##############################
-##############################
 
+def _get_model_config_from_wrapped(model):
+    return get_attr_wrapped_model(model, "config", allow_none=False)
+
+
+def _setup_lora_model_via_bridge(args: Namespace) -> list:
+    """Build Megatron model with LoRA using Megatron-Bridge.
+
+    This handles:
+    1. Creating the Bridge and Provider
+    2. Creating and registering the LoRA pre-wrap hook
+    3. Registering value-model hooks if needed
+    4. Building the DDP-wrapped model
+
+    Args:
+        args: Training arguments.
+
+    Returns:
+        List of DDP-wrapped model chunks with LoRA applied.
+    """
+    from megatron.bridge import AutoBridge
+    from megatron.bridge.training.config import DistributedDataParallelConfig
+    from transformers import AutoConfig
+
+    # Build Bridge and Provider
+    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    provider = bridge.to_megatron_provider(load_weights=False)
+
+    # Set parallel configs on the provider
+    provider.tensor_model_parallel_size = args.tensor_model_parallel_size
+    provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
+    provider.expert_model_parallel_size = args.expert_model_parallel_size
+    provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
+    provider.sequence_parallel = args.sequence_parallel
+    provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
+    provider.context_parallel_size = args.context_parallel_size
+    provider.variable_seq_lengths = True
+    provider.moe_token_dispatcher_type = "alltoall"
+    provider.moe_router_load_balancing_type = "none"
+    provider.finalize()
+
+    # Create and register LoRA hook (must be applied BEFORE DDP wrapping so that
+    # DDP and the distributed optimizer only track trainable adapter parameters)
+    lora = create_lora_instance(args)
+
+    def apply_lora_hook(model_chunks):
+        transformed = lora(model_chunks, training=True)
+        lora.set_params_to_save(transformed)
+        return transformed
+
+    provider.register_pre_wrap_hook(apply_lora_hook)
+
+    # Register value-model hook if needed
+    is_value_model = (
+        "ForTokenClassification" in hf_config.architectures[0]
+        or "ForSequenceClassification" in hf_config.architectures[0]
+    )
+    if is_value_model:
+        hidden_size = (
+            hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
+        )
+        provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
+
+    # Build DDP config and create model
+    ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=True)
+    ddp_config.finalize()
+
+    model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
+    return model
+
+
+# ---------------------------------------------------------------------------
+# Optimizer / Scheduler
+# ---------------------------------------------------------------------------
 
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
     """Create and configure the optimizer learning-rate/weight-decay scheduler.
@@ -160,6 +206,10 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
     return opt_param_scheduler
 
 
+# ---------------------------------------------------------------------------
+# Model + Optimizer setup
+# ---------------------------------------------------------------------------
+
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -169,11 +219,6 @@ def setup_model_and_optimizer(
     Args:
         args (Namespace): Training/runtime arguments (argparse namespace).
         role (str): Logical role of the model (e.g., "actor", "critic").
-        no_wd_decay_cond (Callable[..., bool] | None): Predicate to exclude
-            parameters from weight decay.
-        scale_lr_cond (Callable[..., bool] | None): Predicate to scale LR for
-            selected parameter groups.
-        lr_mult (float): Global learning-rate multiplier for the optimizer.
 
     Returns:
         tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler]:
@@ -184,245 +229,10 @@ def setup_model_and_optimizer(
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
 
-    ##############################
-    ###########lora###############
-    ############################## 
- 
-    
-    # This part can be moved to `lora_utils.py` def apply_lora_to_megatron_model
     if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
-        ######
-        # refer to: verl/verl/workers/engine/megatron/transformer_impl.py
-        ######
-        
-        # if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
-        # The below written as: get_model_provider_func() usage
-        # from megatron.core.distributed import DistributedDataParallelConfig
-        from megatron.bridge.models.model_provider import get_model as bridge_get_model
-        from megatron.bridge import AutoBridge
-        from megatron.bridge.peft.lora import LoRA
-        from megatron.bridge.peft.canonical_lora import CanonicalLoRA
-        import torch
-         
-        
-        # bridge : start 
-        # hf config:
-        from transformers import AutoConfig
-        hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        
-        # bridge: hf --> mg config
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        # bridge : done 
-        ##!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        # provider: start 
-        # I can also use bridge_get_model() method
-        provider = bridge.to_megatron_provider(load_weights=False) # should be True???
-        # provider = bridge.to_megatron_provider(load_weights=True) # different from full model training - in the training script, I need to load tuned base model weight and initial lora weights. Need to carefully check and optimize - where to load the base model? (but why in `model_provider.py` using: provider = bridge.to_megatron_provider(load_weights=False))
-        
-        # Set parallel configs on the provider
-        provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-        provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-        provider.expert_model_parallel_size = args.expert_model_parallel_size
-        provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-        provider.sequence_parallel = args.sequence_parallel
-        #####
-        provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
-        provider.context_parallel_size = args.context_parallel_size
-        provider.variable_seq_lengths = True
-        provider.moe_token_dispatcher_type = "alltoall"
-        provider.moe_router_load_balancing_type = "none"
-        # provider: done 
-        provider.finalize()
-        #####
-    
-        ###########
-        ########### lora part
-        ###########
-        
-        # peft_cls: start 
-        # need: args.hf_checkpoint, bridge, provider, self.param_dtype: lora_dtype
-
-        # Determine lora_dtype
-        if hasattr(args, 'bf16') and args.bf16:
-            lora_dtype = torch.bfloat16
-        elif hasattr(args, 'fp16') and args.fp16:
-            lora_dtype = torch.float16
-        else:
-            # !!!!!!!!!!!!!!!!!!!!!!
-            # lora_dtype = None
-            lora_dtype = torch.float16
-        
-        # (to-do) yusheng - lora_type - can be input arg, the default is LoRA
-        # Get exclude_modules as list
-        exclude_modules = []
-        if hasattr(args, 'exclude_modules') and args.exclude_modules:
-            if isinstance(args.exclude_modules, str):
-                exclude_modules = [m.strip() for m in args.exclude_modules.split(",")]
-            else:
-                exclude_modules = list(args.exclude_modules)
-            # Convert HF module names to Megatron format
-            # exclude_modules = convert_target_modules_to_megatron(exclude_modules)
-            exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=LoRA)
-            # exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=CanonicalLoRA)
-       
-        # print("========") 
-        # Create LoRA config
-        # (to-do) yusheng set - lora_type - the default is LoRA: should support all lora
-        lora = LoRA(
-        # lora = CanonicalLoRA(
-            target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=LoRA),
-            # target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=CanonicalLoRA),
-            # lora_dtype=lora_dtype,
-            exclude_modules=exclude_modules,
-            dim=args.lora_rank,
-            alpha=args.lora_alpha,
-            dropout=args.lora_dropout,
-            ##Below for Lora
-            # dropout_position=getattr(args, 'lora_dropout_position', 'pre'),
-            lora_A_init_method=getattr(args, 'lora_A_init_method', 'xavier'),
-            lora_B_init_method=getattr(args, 'lora_B_init_method', 'zero'),
-            # a2a_experimental=getattr(args, 'lora_a2a_experimental', False),
-        )
-
-        
-
-        # peft_cls: done
-        ################ --------------------#################
-        # ----- Above:
-        # self.bridge: init hf model          --> load hf weight
-        # self.provider: init megatron model  --> load megatron weight
-        # self.peft_cls: init load module     --> load lora weight
-        
-
-        # When using PEFT with Megatron-Bridge, we must apply PEFT transformation
-        # BEFORE wrapping the model in DDP. This is required because:
-        # 1. PEFT freezes base model parameters (requires_grad=False)
-        # 2. DDP must be aware of which parameters are trainable when building gradient buckets
-        # 3. The distributed optimizer must only track trainable (adapter) parameters
-        # See Megatron-Bridge docs: training/peft.md
-        
-
-        # # Define pre_wrap_hook to apply LoRA before DDP wrapping
-        def apply_lora_hook(model_chunks):
-            transformed = lora(model_chunks, training=True)
-            lora.set_params_to_save(transformed)
-            # Load adapter weights if adapter_path is specified
-            # adapter_path = getattr(peft_config, "adapter_path", None)
-            # if adapter_path is not None and adapter_path:
-            #     print(f"Loading adapter weights from: {adapter_path}")
-            #     load_adapter_checkpoint(transformed_model, adapter_path)
-            
-            # Print PEFT statistics
-            # if torch.distributed.get_rank() == 0:
-            #     print_adapter_info(transformed)
-
-            return transformed
-
-
-        # Register the hook
-        provider.register_pre_wrap_hook(apply_lora_hook)
-        # provider.finalize()
-
-
-        #### ------------------- #####
-        #### ------------------- #####
-        #### ------------------- #####
-        
-
-        # TODO: add more cases
-        is_value_model = (
-            "ForTokenClassification" in hf_config.architectures[0]
-            or "ForSequenceClassification" in hf_config.architectures[0]
-        ) 
-
-        
-        wrap_config = McoreModuleWrapperConfig(
-            is_value_model=is_value_model,  # here is False # actor is not value model
-            # share_embeddings_and_output_weights=hf_config.share_embeddings_and_output_weights,
-            # wrap_with_ddp=wrap_with_ddp, #default is True
-            # use_distributed_optimizer=self.engine_config.use_distributed_optimizer, #default is True
-        )
-
-        # Register post-creation callbacks (make_value_model, freeze_moe_router) as pre-wrap hooks
-        post_model_creation_callbacks = []
-        if wrap_config.is_value_model:
-            hidden_size = (
-                hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
-            )
-            value_model_hook = make_value_model(hidden_size, provider.sequence_parallel)
-            post_model_creation_callbacks.append(value_model_hook)
-        # if override_model_config.get("moe_config", {}).get("freeze_moe_router", False):
-        #     post_model_creation_callbacks.append(freeze_moe_router)
-
-        # Register post-creation callbacks (make_value_model, freeze_moe_router) as pre-wrap hooks
-        for callback in post_model_creation_callbacks:
-            provider.register_pre_wrap_hook(callback)
-
-         
-        if wrap_config.wrap_with_ddp:
-            from megatron.bridge.training.config import DistributedDataParallelConfig
-            ddp_config_dict = {
-                "use_distributed_optimizer": wrap_config.use_distributed_optimizer,
-            }
-            # Apply any DDP config overrides
-            # if override_ddp_config is not None:
-            #     ddp_config_dict.update(override_ddp_config)
-            ddp_config = DistributedDataParallelConfig(**ddp_config_dict)
-            ddp_config.finalize()
-
-        # Now call provide_distributed_model with all hooks registered
-        # Hooks will be applied automatically before DDP wrapping
-        model = provider.provide_distributed_model(
-            wrap_with_ddp=wrap_config.wrap_with_ddp,
-            ddp_config=ddp_config,
-        )
-        ## Use:
-        # model = bridge_get_model(...) seems more simple
-
-
-        # Extract TransformerConfig from the created model
-        tf_config = get_model_config(model[0] if isinstance(model, list) else model)
-
-        #############
-        # # Build DDP config - config 
-        # ddp_config = DistributedDataParallelConfig(
-        #     grad_reduce_in_fp32=getattr(args, 'grad_reduce_in_fp32', False),
-        #     check_for_nan_in_grad=getattr(args, 'check_for_nan_in_grad', False),
-        #     overlap_grad_reduce=getattr(args, 'overlap_grad_reduce', False),
-        #     overlap_param_gather=getattr(args, 'overlap_param_gather', False),
-        #     average_in_collective=getattr(args, 'average_in_collective', False),
-        #     use_distributed_optimizer=getattr(args, 'use_distributed_optimizer', False),
-        # )
-        
-        # good method 
-        # # Use Bridge's get_model with the provider (which now has LoRA hook registered)
-        # model = bridge_get_model( # this function eqaul get_model() in megatron-core for base model
-        #     model_provider=provider,
-        #     ddp_config=ddp_config,
-        #     model_type=ModelType.encoder_or_decoder,
-        #     wrap_with_ddp=True,
-        #     use_cpu_initialization=False,
-        #     bf16=getattr(args, 'bf16', False),
-        #     fp16=getattr(args, 'fp16', False),
-        #     pre_wrap_hook=provider.pre_wrap_hook,
-        # )
-
-        
-        # ???? the below can be remove ??? or it's tag to jude the model is (base) or (base + lora)  
-        # Store lora instance for later use (e.g., checkpoint saving)
-        # You may want to attach this to the model or args for later access
-        # if hasattr(args, '_lora_instance'):
-        #     args._lora_instance = lora
-        #############
-
-        
+        model = _setup_lora_model_via_bridge(args)
     else:
-        # Original non-LoRA path or non-bridge mode
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
-
-    ############################## 
-    ############################## 
-    ############################## 
 
     # Optimizer
     kwargs = {}
@@ -439,6 +249,10 @@ def setup_model_and_optimizer(
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 
+
+# ---------------------------------------------------------------------------
+# Forward pre-hook helpers
+# ---------------------------------------------------------------------------
 
 def enable_forward_pre_hook(model_chunks: Sequence[DDP]) -> None:
     """Enable forward pre-hooks for provided DDP-wrapped model chunks.
@@ -463,6 +277,15 @@ def disable_forward_pre_hook(model_chunks: Sequence[DDP], param_sync: bool = Tru
         model_chunk.disable_forward_pre_hook(param_sync=param_sync)
 
 
+def should_disable_forward_pre_hook(args: Namespace) -> bool:
+    """Block forward pre-hook for certain configurations."""
+    return args.use_distributed_optimizer and args.overlap_param_gather
+
+
+# ---------------------------------------------------------------------------
+# Forward-only inference
+# ---------------------------------------------------------------------------
+
 @torch.no_grad()
 def forward_only(
     f: Callable[..., dict[str, list[torch.Tensor]]],
@@ -478,23 +301,16 @@ def forward_only(
     executed, and relevant outputs are aggregated and returned.
 
     Args:
-        f (Callable[..., dict[str, list[torch.Tensor]]]): Post-forward callback used to
-            compute and package outputs to collect. This should accept a logits
-            tensor as its first positional argument and additional keyword-only
-            arguments; see ``get_log_probs_and_entropy``/``get_values`` in
-            ``megatron_utils.loss`` for examples. It will be partially applied
-            so that the callable returned from the internal forward step only
-            requires the logits tensor.
-        args (Namespace): Runtime arguments.
-        model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
-        data_iterator (Sequence[DataIterator]): Iterable(s) yielding batches for inference.
-        num_microbatches (Sequence[int]): Number of microbatches per rollout step.
-        store_prefix (str): Prefix to prepend to stored output keys.
+        f: Post-forward callback used to compute and package outputs to collect.
+        args: Runtime arguments.
+        model: Sequence of DDP-wrapped model chunks.
+        data_iterator: Iterable(s) yielding batches for inference.
+        num_microbatches: Number of microbatches per rollout step.
+        store_prefix: Prefix to prepend to stored output keys.
 
     Returns:
-        dict[str, list[torch.Tensor]]: Aggregated outputs keyed by ``store_prefix + key``.
+        Aggregated outputs keyed by ``store_prefix + key``.
     """
-
     # reset data iterator
     for iterator in data_iterator:
         iterator.reset()
@@ -611,6 +427,10 @@ def forward_only(
     return rollout_data
 
 
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -627,18 +447,17 @@ def train_one_step(
     one scheduler step when gradients are valid.
 
     Args:
-        args (Namespace): Runtime arguments.
-        rollout_id (int): Rollout identifier.
-        step_id (int): Step index within the current rollout.
-        data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
-        model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
-        optimizer (MegatronOptimizer): Optimizer instance.
-        opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
-        num_microbatches (int): Number of microbatches to process.
+        args: Runtime arguments.
+        rollout_id: Rollout identifier.
+        step_id: Step index within the current rollout.
+        data_iterator: Iterable(s) yielding training batches.
+        model: Sequence of DDP-wrapped model chunks.
+        optimizer: Optimizer instance.
+        opt_param_scheduler: LR/WD scheduler.
+        num_microbatches: Number of microbatches to process.
 
     Returns:
-        tuple[dict[str, float], float]: Reduced loss dictionary (last stage only)
-        and gradient norm for logging.
+        Reduced loss dictionary (last stage only) and gradient norm for logging.
     """
     args = get_args()
 
@@ -794,13 +613,7 @@ def train_one_step(
     return {}, grad_norm
 
 
-def should_disable_forward_pre_hook(args: Namespace) -> bool:
-    """Block forward pre-hook for certain configurations."""
-    return args.use_distributed_optimizer and args.overlap_param_gather
-
-
 def finalize_model_grads_with_empty_cache(*args, **kwargs):
-    # trigger empty cache when there are less than 10% free memory before the final reduce scatter.
     # TODO: this is an ad-hoc method and we should figure out why the oom happens in the first place.
     device = torch.cuda.current_device()
     free, total = torch.cuda.mem_get_info(device)
@@ -971,7 +784,6 @@ def train(
             if args.ci_test and not args.ci_disable_kl_checker:
                 if step_id == 0 and "train/ppo_kl" in log_dict and "train/pg_clipfrac" in log_dict:
                     if args.multi_latent_attention:
-                        # TODO: mla currently have non-zero kl, need further investigation
                         assert log_dict["train/ppo_kl"] < 1e-8, f"{log_dict=}"
                     else:
                         assert log_dict["train/ppo_kl"] == 0.0 and log_dict["train/pg_clipfrac"] == 0.0, f"{log_dict=}"
@@ -1000,10 +812,15 @@ def train(
                     rel_tol=0.01,
                     abs_tol=0.01,
                 ), f"grad norm mismatch: {grad_norm} != {expected_grad_norm}"
+
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
     if pre_hook_enabled:
         disable_forward_pre_hook(model)
 
+
+# ---------------------------------------------------------------------------
+# Checkpoint save
+# ---------------------------------------------------------------------------
 
 def save(
     iteration: int, model: Sequence[DDP], optimizer: MegatronOptimizer, opt_param_scheduler: OptimizerParamScheduler
@@ -1020,27 +837,8 @@ def save(
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
-    ##############################
-    ###########lora###############
-    ##############################
-    # save_checkpoint(
-    #     iteration,
-    #     model,
-    #     optimizer,
-    #     opt_param_scheduler,
-    #     num_floating_point_operations_so_far=0,
-    #     checkpointing_context=None,
-    #     train_data_iterator=None,
-    #     preprocess_common_state_dict_fn=None,
-    # )
-
     if is_lora_model(model):
-            save_checkpoint_with_lora(
-            iteration,
-            model,
-            optimizer,
-            opt_param_scheduler,
-        )
+        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler)
     else:
         save_checkpoint(
             iteration,
@@ -1051,11 +849,7 @@ def save(
             checkpointing_context=None,
             train_data_iterator=None,
             preprocess_common_state_dict_fn=None,
-        ) 
-
-    ##############################
-    ##############################
-    ##############################
+        )
 
     if should_disable_forward_pre_hook(args):
         enable_forward_pre_hook(model)
@@ -1064,10 +858,21 @@ def save(
 def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
     """Save Megatron model in HuggingFace format.
 
+    For LoRA models this saves both:
+    - A **merged** HF model (adapter weights folded into base) at ``{path}/``
+      so it can be loaded directly with ``AutoModelForCausalLM.from_pretrained``.
+    - An **adapter-only** HF PEFT checkpoint at ``{path}/adapter/``
+      so it can be loaded with ``PeftModel.from_pretrained``.
+
+    This function is collective — all ranks must call it.
+
     Args:
+        args: Runtime arguments.
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
     """
+    from .lora_utils import is_lora_model, save_lora_checkpoint
+
     should_log = (
         mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
     )
@@ -1086,26 +891,33 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
         with patch_megatron_model(model):
-            bridge.save_hf_pretrained(
-                model,
-                path=path,
-            )
+            # For LoRA models, merge_adapter_weights=True (default) merges
+            # adapter weights into base weights for a standalone HF model.
+            bridge.save_hf_pretrained(model, path=path)
 
         if should_log:
-            logger.info(f"Successfully saved HuggingFace model to {path}")
+            logger.info(f"Successfully saved merged HuggingFace model to {path}")
     except Exception as e:
         if should_log:
             logger.error(f"Failed to save HuggingFace format: {e}")
 
-        
-    ##############################
-    ###########lora###############
-    ##############################
-    # to-do: also need to impl lora saving  
-    ##############################
-    ##############################
-    ##############################
+    # Additionally save adapter-only checkpoint for LoRA models
+    if is_lora_model(model):
+        try:
+            adapter_path = Path(args.save_hf.format(rollout_id=rollout_id)) / "adapter"
+            if should_log:
+                logger.info(f"Saving LoRA adapter (HF PEFT format) to {adapter_path}")
+            save_lora_checkpoint(model, args, str(adapter_path))
+            if should_log:
+                logger.info(f"Successfully saved LoRA adapter to {adapter_path}")
+        except Exception as e:
+            if should_log:
+                logger.error(f"Failed to save LoRA adapter: {e}")
 
+
+# ---------------------------------------------------------------------------
+# Initialization
+# ---------------------------------------------------------------------------
 
 def initialize_model_and_optimizer(
     args: Namespace, role: str = "actor"
@@ -1120,7 +932,6 @@ def initialize_model_and_optimizer(
         tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
             DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
     """
-
     if torch.version.hip:
         import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
         from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
