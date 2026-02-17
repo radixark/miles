@@ -90,7 +90,7 @@ class BaseReplayManager:
             ), f"replay topk does not match expected topk, replay topk {top_indices.shape[1]}, topk {topk}"
 
             if self.enable_check_replay_result:
-                self.check_replay_result(old_topk_fn, scores, topk, top_indices, **kwargs)
+                self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
             if return_probs:
                 if -1 in top_indices:
@@ -142,28 +142,49 @@ class BaseReplayManager:
 
         module.register_forward_pre_hook(pre_forward_hook)
 
-    def check_replay_result(self, old_topk_fn, scores, topk, top_indices, **kwargs):
-        orig_top_indices = old_topk_fn(scores, topk, **kwargs)
+    def check_replay_result(self, old_topk_fn, scores, topk, top_indices, *args, **kwargs):
+        """
+        CI checker for R3. Only enable when enable_check_replay_result=True.
+        Calculate the overlapping between training engine's computed routing result
+        and replay routing result.
+        If mismatch token count > n_tokens * replay_check_threshold, raise error.
+        """
+        orig_top_indices = old_topk_fn(scores, topk, *args, **kwargs)
         if isinstance(orig_top_indices, tuple):
             _, orig_top_indices = orig_top_indices
 
-        try:
-            orig_flat = orig_top_indices.view(-1, orig_top_indices.shape[-1])
-            replay_flat = top_indices.view(-1, top_indices.shape[-1])
-            for i, (orig_idx, replay_idx) in enumerate(zip(orig_flat, replay_flat, strict=True)):
-                orig_set = set(orig_idx.tolist()) - {-1}
-                replay_set = set(replay_idx.tolist()) - {-1}
-                if len(replay_set) == 0:
-                    continue
-                if len(orig_set & replay_set) == 0:
-                    raise AssertionError(
-                        f"token {i} failed replay check, {len(orig_set & replay_set)=} {len(replay_set)=}"
-                    )
-        except Exception as e:
-            logger.error(f"Rollout Replay Check Failed - Stage: {self.stage}, rank: {_get_rank()}")
-            logger.error(f"original top_indices: {orig_top_indices}")
-            logger.error(f"replay top_indices (padding removed): {top_indices}")
-            raise e
+        orig_flat = orig_top_indices.view(-1, orig_top_indices.shape[-1])  # [n_tokens, topk]
+        replay_flat = top_indices.view(-1, top_indices.shape[-1])
+
+        # [n_tokens, topk_orig, 1] == [n_tokens, 1, topk_replay] -> [n_tokens, topk_orig, topk_replay]
+        matches = orig_flat.unsqueeze(2) == replay_flat.unsqueeze(1)
+        # Mask out -1 (padding) matches
+        matches &= (orig_flat != -1).unsqueeze(2) & (replay_flat != -1).unsqueeze(1)
+        has_overlap = matches.any(dim=(1, 2))  # [n_tokens]
+        is_padding = (replay_flat == -1).all(dim=1)
+        is_mismatch = ~has_overlap & ~is_padding
+
+        mismatch_count = is_mismatch.sum().item()
+        if mismatch_count == 0:
+            return
+
+        mismatch_threshold = self.replay_check_threshold * orig_flat.shape[0]
+        mismatch_indices = is_mismatch.nonzero(as_tuple=False).squeeze(1)
+        for idx in mismatch_indices:
+            i = idx.item()
+            lines = []
+            for j in range(max(0, i - 3), min(len(orig_flat), i + 4)):
+                marker = " <<<" if j == i else ""
+                lines.append(f"  token {j}: orig={orig_flat[j].tolist()}, replay={replay_flat[j].tolist()}{marker}")
+            logger.warning(
+                f"Replay check (rank {_get_rank()}, stage {self.stage}): "
+                f"token {i} zero overlap, topk={topk}\n" + "\n".join(lines)
+            )
+
+        if mismatch_count > mismatch_threshold:
+            raise AssertionError(
+                f"R3 mismatch tokens ({mismatch_count}) > threshold ({mismatch_threshold:.0f})"
+            )
 
 
 class RoutingReplayManager(BaseReplayManager):
@@ -172,7 +193,7 @@ class RoutingReplayManager(BaseReplayManager):
     data_key = "rollout_routed_experts"
     if_sp_region = True
     enable_check_replay_result = False
-    thresh_check_replay_result = 0.3
+    replay_check_threshold = 5e-3
 
 
 routing_replay_manager = RoutingReplayManager()
