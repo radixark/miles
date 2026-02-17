@@ -56,7 +56,6 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 1
-
    --global-batch-size 256
    --balance-data
 )
@@ -115,6 +114,10 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
+   # (AMD) Required when offload is enabled (by default) because AITER custom all-reduce uses IPC shared 
+   # GPU memory with fixed addresses, which conflicts with torch_memory_saver's offload/reload that
+   # changes GPU virtual addresses, causing a driver-level deadlock during CUDA graph capture.
+   --sglang-disable-custom-all-reduce
 )
 
 MISC_ARGS=(
@@ -126,9 +129,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   ### AMD Support ###
-   # disable gradient accumulation fusion: Need to add apex to enable this
-   --no-gradient-accumulation-fusion
    ###################
 )
 
@@ -139,22 +139,20 @@ NUM_GPUS=$(echo ${HIP_VISIBLE_DEVICES} | tr ',' '\n' | wc -l)
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 
-# "PYTHONPATH": "/workspace/Megatron-LM/",
-MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
+# Dynamically detect Megatron-LM installation path
+MEGATRON_LM_PATH=$(python3 -c "import megatron; import os; print(os.path.dirname(os.path.dirname(megatron.__file__)))" 2>/dev/null || echo "/app/Megatron-LM")
 
 ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{
-     "env_vars": {
-        "PYTHONPATH": "/workspace/Megatron-LM/",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1"
+   --runtime-env-json="{
+     \"env_vars\": {
+        \"PYTHONPATH\": \"${MEGATRON_LM_PATH}/\",
+        \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
      }
-   }' \
+   }" \
    -- python3 train.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 8 \
    --colocate \
-   --no-offload-train \
-   --no-offload-rollout \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \

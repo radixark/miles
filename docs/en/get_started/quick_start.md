@@ -45,7 +45,7 @@ miles is already installed in the docker image. To update to the latest verison,
 # Path can be adjusted according to actual situation
 cd /root/miles
 git pull
-pip install -e .
+pip install -e . --no-deps
 ```
 
 ## Model and Dataset Download

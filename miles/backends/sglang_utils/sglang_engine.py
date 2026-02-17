@@ -360,10 +360,13 @@ class SGLangEngine(RayActor):
     def get_weight_version(self):
         if self.node_rank != 0:
             return
-        url = f"http://{self.server_host}:{self.server_port}/get_weight_version"
-        response = requests.get(url)
+        base = f"http://{self.server_host}:{self.server_port}"
+        # new sglang change api from /get_weight_version to /model_info
+        for endpoint in ("/model_info", "/get_weight_version"):
+            response = requests.get(f"{base}{endpoint}")
+            if response.status_code == 200:
+                return response.json()["weight_version"]
         response.raise_for_status()
-        return response.json()["weight_version"]
 
     def unload_lora_adapter(self, lora_name: str):
         """Unload LoRA adapter."""
@@ -447,6 +450,25 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
+    def post_process_weights(
+        self,
+        restore_weights_before_load: bool = False,
+        post_process_quantization: bool = False,
+    ):
+        """
+        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
+        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
+        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
+        """
+
+        return self._make_request(
+            "post_process_weights",
+            {
+                "restore_weights_before_load": restore_weights_before_load,
+                "post_process_quantization": post_process_quantization,
+            },
+        )
+
     def start_profile(
         self,
         # The output directory
@@ -480,6 +502,17 @@ class SGLangEngine(RayActor):
         response = requests.post(f"http://{self.server_host}:{self.server_port}/stop_profile", json={})
         response.raise_for_status()
         return response
+
+    def simulate_crash(self):
+        if self.args.rollout_external or not getattr(self, "process", None):
+            logger.info(
+                "simulate_crash called but no local engine process exists (rollout_external=%s); skip kill",
+                self.args.rollout_external,
+            )
+            return
+
+        logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
+        self.shutdown()
 
 
 def _compute_server_args(
