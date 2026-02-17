@@ -133,6 +133,11 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
 )
 
+# AMD: disable custom all-reduce to prevent driver-level deadlocks with offload enabled
+if [ "$GPU_VENDOR" = "amd" ]; then
+    SGLANG_ARGS+=(--sglang-disable-custom-all-reduce)
+fi
+
 MISC_ARGS=(
    # default dropout in megatron is 0.1
    --attention-dropout 0.0
