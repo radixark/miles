@@ -36,9 +36,13 @@ if [ "$GPU_VENDOR" = "amd" ]; then
     HAS_NVLINK=0
 else
     NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-    if [ "$NVLINK_COUNT" -gt 0 ]; then HAS_NVLINK=1; else HAS_NVLINK=0; fi
+    if [ "$NVLINK_COUNT" -gt 0 ]; then
+        HAS_NVLINK=1
+    else
+        HAS_NVLINK=0
+    fi
     echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
-    NUM_GPUS=8
+    NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
 fi
 
 # will prevent ray from buffering stdout/stderr
@@ -140,15 +144,6 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
-# ==================== Platform-Specific Args ====================
-PLATFORM_TRAIN_ARGS=()
-if [ "$GPU_VENDOR" = "amd" ]; then
-    # Apex not available on ROCm
-    MISC_ARGS+=(--no-gradient-accumulation-fusion)
-    # Disable offloading (torch_memory_saver may not support ROCm; MI300X has 192GB HBM)
-    PLATFORM_TRAIN_ARGS+=(--no-offload-train --no-offload-rollout)
-fi
-
 # ==================== Launch Ray ====================
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
@@ -171,7 +166,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node ${NUM_GPUS} \
    --colocate \
-   ${PLATFORM_TRAIN_ARGS[@]+"${PLATFORM_TRAIN_ARGS[@]}"} \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
