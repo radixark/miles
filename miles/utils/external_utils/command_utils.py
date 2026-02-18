@@ -8,12 +8,13 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
-from miles.utils.misc import exec_command
+from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
-_ = exec_command, dataclass_cli
+_ = exec_command, exec_command_all_ray_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
@@ -23,62 +24,64 @@ def convert_checkpoint(
     megatron_model_type,
     num_gpus_per_node: int,
     multinode: bool = False,
+    num_nodes: int | None = None,
     extra_args: str = "",
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
+    megatron_path: str = "/root/Megatron-LM",
 ):
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
     path_dst = f"{dir_dst}/{model_name}_torch_dist"
-    if Path(path_dst).exists():
-        print(f"convert_checkpoint skip {path_dst} since exists")
+    tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
+    if tracker.exists() and tracker.read_text().strip() == "release":
+        print(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
         return
 
     multinode_args = ""
     if multinode:
-        # This variable can be provided via:
-        # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
-        print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
-        job_hostnames = os.environ["SLURM_JOB_HOSTNAMES"].strip().split("\n")
-        master_addr = job_hostnames[0]
-        nnodes = len(job_hostnames)
-        node_rank = int(os.environ["SLURM_NODEID"])
-
         multinode_args = (
-            f"--master-addr {master_addr} " "--master-port 23456 " f"--nnodes={nnodes} " f"--node-rank {node_rank} "
+            "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
-    exec_command(
+    if multinode:
+        fn = partial(exec_command_all_ray_node, num_nodes=num_nodes)
+    else:
+        fn = exec_command
+    fn(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        f"PYTHONPATH=/root/Megatron-LM "
+        f"PYTHONPATH={megatron_path} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
-        f"tools/convert_hf_to_torch_dist.py "
+        f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "
         f"--hf-checkpoint {hf_checkpoint} "
-        f"--save {path_dst}"
+        f"--save {path_dst} "
         f"{extra_args}"
     )
 
 
 def rsync_simple(path_src: str, path_dst: str):
-    exec_command(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
+    exec_command_all_ray_node(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
 
 
-def hf_download_dataset(full_name: str):
+def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
-    exec_command(f"hf download --repo-type dataset {full_name} --local-dir /root/datasets/{partial_name}")
+    exec_command(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
 def fp8_cast_bf16(path_src, path_dst):
-    if Path(path_dst).exists():
-        print(f"fp8_cast_bf16 skip {path_dst} since exists")
+    sentinel = Path(path_dst) / "model.safetensors.index.json"
+    if sentinel.exists():
+        print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
         return
 
     exec_command(
-        "python tools/fp8_cast_bf16.py " f"--input-fp8-hf-path {path_src} " f"--output-bf16-hf-path {path_dst} "
+        f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
+        f"--input-fp8-hf-path {path_src} "
+        f"--output-bf16-hf-path {path_dst} "
     )
 
 
@@ -88,6 +91,7 @@ class ExecuteTrainConfig:
     cuda_core_dump: bool = False
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
+    output_dir: str = "/root/shared_data"
 
 
 def execute_train(
@@ -98,11 +102,14 @@ def execute_train(
     before_ray_job_submit=None,
     extra_env_vars=None,
     config: ExecuteTrainConfig | None = None,
+    megatron_path: str = "/root/Megatron-LM",
 ):
     if extra_env_vars is None:
         extra_env_vars = {}
     if config is None:
         config = ExecuteTrainConfig()
+    if not os.path.isabs(train_script):
+        train_script = f"{repo_base_dir}/{train_script}"
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
@@ -139,7 +146,7 @@ def execute_train(
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": "/root/Megatron-LM/",
+                "PYTHONPATH": megatron_path,
                 # If setting this in FSDP, the computation communication overlapping may have issues
                 **(
                     {}
@@ -157,7 +164,7 @@ def execute_train(
                         "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
                         "CUDA_COREDUMP_SHOW_PROGRESS": "1",
                         "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
-                        "CUDA_COREDUMP_FILE": "/root/shared_data/cuda_coredump_%h.%p.%t",
+                        "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
                     }
                     if config.cuda_core_dump
                     else {}
