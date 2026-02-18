@@ -34,8 +34,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source /root/miles/scripts/models/qwen3-4B.sh
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/models/Qwen3-4B
-   --save /root/models/Qwen3-4B-lora-ckpt
+   --hf-checkpoint /root/Qwen3-4B
+   --save /root/Qwen3-4B-lora-ckpt
    --save-interval 50
 )
 
@@ -47,7 +47,7 @@ LORA_ARGS=(
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -59,14 +59,12 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    --rollout-max-response-len 4096
    --rollout-temperature 1
-   # --over-sampling-batch-size 64
-   # --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
    --global-batch-size 64
 )
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl
+   --eval-prompt-data aime24 /root/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
@@ -92,10 +90,10 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   --use-wandb
-   --wandb-project miles-lora-test
-   --wandb-group qwen3-4B-megatron-lora-dapo-lr${LR}
-   --disable-wandb-random-suffix
+   # --use-wandb
+   # --wandb-project miles-lora-test
+   # --wandb-group qwen3-4B-megatron-lora-dapo-lr${LR}
+   # --disable-wandb-random-suffix
 )
 
 SGLANG_ARGS=(
@@ -108,8 +106,8 @@ SGLANG_ARGS=(
 )
 
 MEGATRON_ARGS=(
-   --no-offload-train
-   --no-offload-rollout
+   # --no-offload-train
+   # --no-offload-rollout
    --megatron-to-hf-mode bridge
    # --offload-rollout-level kv_cache weight  # -fsdp: not supported in megatron
    # --train-backend fsdp  # -fsdp: use megatron instead
