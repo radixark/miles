@@ -123,8 +123,8 @@ RUN cd /sgl-workspace/sglang && \
     fi && \
     pip install -e "python[all]" --no-deps
 
-# Current sglang require "flashinfer_python>=0.6.2"
-pip install "flashinfer_python>=0.6.2" --no-deps
+# Current sglang requires "flashinfer_python>=0.6.2"
+RUN pip install "flashinfer_python>=0.6.2" --no-deps
 
 # ====================================== Install main package ============================================
 
