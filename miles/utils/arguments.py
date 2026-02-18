@@ -124,7 +124,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 choices=["thd", "bshd"],
                 default="thd",
-                help="The qkv layout for Megatron backend.",
+                help="The qkv layout.",
             )
             parser.add_argument(
                 "--true-on-policy-mode",
@@ -148,7 +148,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--disable-weights-backuper",
                 action="store_false",
                 dest="enable_weights_backuper",
-                help="Whether to disable weights backuper to save host memory.",
+                help=(
+                    "Applies to `megatron` training backend only. "
+                    "Disables the system that backups model weights (Actor, Ref, Old Actor) to CPU RAM. "
+                    "Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing KL-divergence against a reference model. "
+                    "Note: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
+                ),
             )
             parser.add_argument(
                 "--megatron-to-hf-mode",
@@ -171,7 +176,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--recompute-loss-function",
                 action="store_true",
-                help="Whether to disable recompute loss function to save memory during training.",
+                help="Whether to enable recompute loss function to save memory during training.",
             )
             parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
@@ -493,10 +498,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_false",
                 dest="rollout_global_dataset",
                 help=(
-                    "Whether to use a global dataset for rollout. "
-                    "If set, the rollout will use the `--prompt-data` as the prompt dataset, "
-                    "and the prompts for rollout will be sampled from the dataset. "
-                    "If not set, you need to manage the data by your self."
+                    "Disable the global dataset for rollout. By default, Miles loads `--prompt-data` into a global dataset and samples from it for rollout. "
+                    "Setting this flag turns off this behavior, Use this flag only when providing a custom `--rollout-function-path` (and usually a custom `--data-source-path`) that handles data loading independently."
                 ),
             )
 
@@ -513,7 +516,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The path to the prompt data. "
                     "Currently we only support jsonl format, and each line should contains --input-key and --label-key, "
-                    "which will be used as the prompt and the label respectively. "
+                    "which will be used as the prompt and the label respectively."
                     "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
                     "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
                 ),
@@ -585,8 +588,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Balance the number of tokens between data parallel ranks with `karmarkar_karp` for verl. "
-                    "Note that this may allocate the different response of the same prompt into different training steps."
+                    "Repartition each rollout batch so each data-parallel rank gets a similar total token count via Karmarkar-Karp method. "
+                    "It may be beneficial for training speed but changes per-rank sample grouping and adds a small CPU scheduling overhead."
                 ),
             )
 
@@ -875,7 +878,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-tis",
                 action="store_true",
                 default=False,
-                help="Enable TIS from https://fengyao.notion.site/off-policy-rl for off-policy importance sampling.",
+                help="Enable TIS from https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33.",
             )
             parser.add_argument(
                 "--tis-clip",
@@ -1040,7 +1043,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-correct-samples",
                 action="store_true",
                 default=False,
-                help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout.",
+                help="Explicitly log metrics for correct samples.",
             )
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser

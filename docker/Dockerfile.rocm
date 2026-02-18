@@ -263,7 +263,7 @@ COPY amd_patch/sglv0.5.0rc0 /workspace/patch
 RUN pip uninstall -y megatron-core && \
     git clone https://github.com/NVIDIA/Megatron-LM && \
     cd Megatron-LM && \
-    git checkout 48406695c4efcf1026a7ed70bb390793918dd97b && \
+    git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862 && \
     git apply /workspace/patch/amd_megatron_fused_kernels_init.patch && \
     pip install -vvv -e . && \
     cd /workspace/

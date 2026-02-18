@@ -3,6 +3,8 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-0.6B"
 
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -74,7 +76,12 @@ def execute():
         "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step
     )
 
-    misc_args = "--actor-num-nodes 1 " "--actor-num-gpus-per-node 2 " "--colocate " "--train-backend fsdp "
+    misc_args = (
+        "--actor-num-nodes 1 "
+        f"--actor-num-gpus-per-node {2 if FEW_GPU else 8} "
+        "--colocate "
+        "--train-backend fsdp "
+    )
 
     train_args = (
         f"{ckpt_args} "
@@ -91,7 +98,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=2,
+        num_gpus_per_node=2 if FEW_GPU else 8,
         megatron_model_type=None,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )

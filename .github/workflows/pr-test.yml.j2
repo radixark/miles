@@ -1,3 +1,43 @@
+<% set default_image = 'radixark/miles:dev' %>
+
+<% set fsdp_tests = [
+    {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8},
+    {'test_file': 'e2e/fsdp/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
+    {'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 8},
+    {'test_file': 'e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 8},
+] %>
+
+<% set megatron_tests = [
+    {'test_file': 'e2e/megatron/test_quick_start_glm4_9B.py', 'num_gpus': 8},
+    {'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1'},
+    {'test_file': 'e2e/megatron/test_qwen3_30B_A3B_r3.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1', 'enable_eval': '0'},
+    {'test_file': 'e2e/megatron/test_qwen3_30B_A3B_r3.py', 'num_gpus': 8, 'enable_eval': '0'},
+    {'test_file': 'e2e/megatron/test_qwen3_4B_ppo.py', 'num_gpus': 8},
+    {'test_file': 'e2e/megatron/test_moonlight_16B_A3B.py', 'num_gpus': 8},
+    {'test_file': 'e2e/megatron/test_moonlight_16B_A3B_r3.py', 'num_gpus': 8, 'enable_eval': '0'},
+    {'test_file': 'e2e/megatron/test_mimo_7B_mtp_only_grad.py', 'num_gpus': 8},
+] %>
+
+<% set short_tests = [
+    {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
+    {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
+    {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
+] %>
+
+<% set precision_tests = [
+    {'test_file': 'e2e/precision/test_qwen3_0.6B_parallel_check.py', 'num_gpus': 8},
+] %>
+
+<% set ckpt_tests = [
+    {'test_file': 'e2e/ckpt/test_qwen3_4B_ckpt.py', 'num_gpus': 8},
+    {'test_file': 'e2e/ckpt/test_qwen3_4B_ckpt.py --async-save', 'num_gpus': 8},
+] %>
+
+<% set long_tests = [
+    {'test_file': 'e2e/long/test_qwen2.5_0.5B_gsm8k.py', 'num_gpus': 8},
+    {'test_file': 'e2e/long/test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 8},
+] %>
+
 <% set jobs = {
     'fast': {
       'test_executor': 'pytest',
@@ -8,9 +48,9 @@
     'unit-test': {
       'label': 'run-unit-test',
       'tests': [
-        {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 2} 
+        {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8}
       ],
-    },    
+    },
     'e2e-test-sglang': {
       'label': 'run-ci-sglang',
       'test_executor': 'pytest',
@@ -20,77 +60,31 @@
     },
     'e2e-test-short': {
       'label': 'run-ci-short',
-      'tests': [
-        {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 4},
-        {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 4},
-        {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 2},
-      ],
+      'tests': short_tests,
     },
     'e2e-test-fsdp': {
       'label': 'run-ci-fsdp',
-      'tests': [
-        {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 2},
-        {'test_file': 'e2e/fsdp/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
-        {'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 2},
-        {'test_file': 'e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 4},
-      ],
+      'tests': fsdp_tests,
     },
     'e2e-test-megatron': {
       'label': 'run-ci-megatron',
-      'tests': [
-        {'test_file': 'e2e/megatron/test_quick_start_glm4_9B.py', 'num_gpus': 8},
-        {'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1'},
-        {'test_file': 'e2e/megatron/test_qwen3_30B_A3B_r3.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1', 'enable_eval': '0'},
-        {'test_file': 'e2e/megatron/test_qwen3_30B_A3B_r3.py', 'num_gpus': 8, 'enable_eval': '0'},
-        {'test_file': 'e2e/megatron/test_qwen3_4B_ppo.py', 'num_gpus': 8},
-        {'test_file': 'e2e/megatron/test_moonlight_16B_A3B.py', 'num_gpus': 8},
-        {'test_file': 'e2e/megatron/test_moonlight_16B_A3B_r3.py', 'num_gpus': 8, 'enable_eval': '0'},
-        {'test_file': 'e2e/megatron/test_mimo_7B_mtp_only_grad.py', 'num_gpus': 8},
-      ],
+      'tests': megatron_tests,
     },
     'e2e-test-precision': {
       'label': 'run-ci-precision',
-      'tests': [
-        {'test_file': 'e2e/precision/test_qwen3_0.6B_parallel_check.py', 'num_gpus': 8},
-        {'test_file': 'e2e/precision/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 4},
-      ],
+      'tests': precision_tests,
     },
     'e2e-test-ckpt': {
       'label': 'run-ci-ckpt',
-      'tests': [
-        {'test_file': 'e2e/ckpt/test_qwen3_4B_ckpt.py', 'num_gpus': 8},
-        {'test_file': 'e2e/ckpt/test_qwen3_4B_ckpt.py --async-save', 'num_gpus': 8},
-      ],
+      'tests': ckpt_tests,
     },
     'e2e-test-long': {
       'label': 'run-ci-long',
-      'tests': [
-        {'test_file': 'e2e/long/test_qwen2.5_0.5B_gsm8k.py', 'num_gpus': 2},
-        {'test_file': 'e2e/long/test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 2},
-      ],
+      'tests': long_tests,
     },
     'e2e-test-image': {
       'label': 'run-ci-image',
-      'image': 'radixark/miles:latest',
-      'tests': [
-        {'test_file': 'e2e/image/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 4},
-        {'test_file': 'e2e/image/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 4},
-        {'test_file': 'e2e/image/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 2},
-        {'test_file': 'e2e/image/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 2},
-        {'test_file': 'e2e/image/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 2},
-        {'test_file': 'e2e/image/test_quick_start_glm4_9B.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_qwen3_30B_A3B.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_qwen3_4B_ppo.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_moonlight_16B_A3B.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_mimo_7B_mtp_only_grad.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_qwen3_0.6B_parallel_check.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 4},
-        {'test_file': 'e2e/image/test_qwen3_4B_ckpt.py', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_qwen3_4B_ckpt.py --async-save', 'num_gpus': 8},
-        {'test_file': 'e2e/image/test_qwen2.5_0.5B_gsm8k.py', 'num_gpus': 2},
-        {'test_file': 'e2e/image/test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 2},
-      ],
+      'tests': fsdp_tests + megatron_tests + short_tests + precision_tests + ckpt_tests + long_tests,
     },
 } %>
 name: PR Test
@@ -120,7 +114,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request<% if config.label %> && contains(github.event.pull_request.labels.*.name, '<< config.label >>')<% endif %>)
     runs-on: self-hosted
     container:
-      image: << config.image if config.image else 'radixark/miles:latest' >>
+      image: << config.image if config.image else default_image >>
       options: >
         --gpus all
         --ipc=host
@@ -149,6 +143,7 @@ jobs:
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      MILES_TEST_FEW_GPU: '0'
 
     steps:
       - name: Checkout repository
@@ -168,7 +163,10 @@ jobs:
 
       - name: Install
         shell: bash
-        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+        run: |
+          cd /sgl-workspace/sglang && git fetch origin sglang-miles && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd /root/Megatron-LM && git reset --hard HEAD && git log --oneline -1 && git apply $GITHUB_WORKSPACE/docker/patch/dev/megatron.patch && pip install -e . --no-deps --break-system-packages
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Execute
         shell: bash
