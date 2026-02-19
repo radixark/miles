@@ -103,12 +103,12 @@ on:
         required: false
         type: boolean
         default: false
-      megatron_ref:
+      ci_megatron_pr:
         description: 'Megatron-LM branch/commit (default: miles-main)'
         required: false
         type: string
         default: 'miles-main'
-      sglang_ref:
+      ci_sglang_pr:
         description: 'SGLang branch/commit (default: sglang-miles)'
         required: false
         type: string
@@ -176,37 +176,49 @@ jobs:
         shell: bash
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_REF: ${{ github.event.inputs.megatron_ref || '' }}
-          INPUT_SGLANG_REF: ${{ github.event.inputs.sglang_ref || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
         run: |
           # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_REF="${INPUT_MEGATRON_REF}"
-          SGLANG_REF="${INPUT_SGLANG_REF}"
+          MEGATRON_PR="${INPUT_MEGATRON_PR}"
+          SGLANG_PR="${INPUT_SGLANG_PR}"
 
-          # Parse PR description for "megatron-ref:" and "sglang-ref:"
+          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
           if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_REF=$(echo "$PR_BODY" | grep -oP '(?<=megatron-ref:\s)\S+' || true)
-            PR_SGLANG_REF=$(echo "$PR_BODY" | grep -oP '(?<=sglang-ref:\s)\S+' || true)
-            [ -z "$MEGATRON_REF" ] && [ -n "$PR_MEGATRON_REF" ] && MEGATRON_REF="$PR_MEGATRON_REF"
-            [ -z "$SGLANG_REF" ] && [ -n "$PR_SGLANG_REF" ] && SGLANG_REF="$PR_SGLANG_REF"
+            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
+            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
+            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
           fi
 
           # Defaults
-          [ -z "$MEGATRON_REF" ] && MEGATRON_REF="miles-main"
-          [ -z "$SGLANG_REF" ] && SGLANG_REF="sglang-miles"
+          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
-          echo "megatron_ref=$MEGATRON_REF" >> $GITHUB_OUTPUT
-          echo "sglang_ref=$SGLANG_REF" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_REF, sglang=$SGLANG_REF"
+          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
+          resolve_fetch_ref() {
+            local ref="$1"
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+              echo "pull/${BASH_REMATCH[1]}/head"
+            else
+              echo "$ref"
+            fi
+          }
+          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
+          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+
+          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
+          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
+          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
 
       - name: Install
         shell: bash
         env:
-          MEGATRON_REF: ${{ steps.resolve-refs.outputs.megatron_ref }}
-          SGLANG_REF: ${{ steps.resolve-refs.outputs.sglang_ref }}
+          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
+          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
         run: |
-          cd /sgl-workspace/sglang && git fetch origin "$SGLANG_REF" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git fetch origin "$MEGATRON_REF" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
+          cd /sgl-workspace/sglang && git fetch origin "$SGLANG_PR" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd /root/Megatron-LM && git fetch origin "$MEGATRON_PR" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Execute
