@@ -12,7 +12,7 @@ NHEADS=64
 
 MODEL_ARGS=(
    --spec "slime_plugins.models.glm5.glm5" "get_glm5_spec"
-    --moe-layer-freq [0]*$N_DENSE_LAYERS+[1]*$N_MOE_LAYERS
+    --moe-layer-freq "[0]*${N_DENSE_LAYERS}+[1]*${N_MOE_LAYERS}"
     --num-experts $MOE_ROUTED_EXPERTS
     --moe-shared-expert-intermediate-size $MOE_SHARED_EXPERT_INTERMEDIATE_SIZE
     --moe-router-topk $MOE_ACTIVE_ROUTED_EXPERTS
