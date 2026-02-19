@@ -16,6 +16,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
+    data_dir: str = "/root/datasets"
+    model_dir: str = "/root/models"
+    megatron_path: str = "/root/Megatron-LM"
     rollout_fp8: bool = False
     rollout_mxfp8: bool = False
     rollout_attn_fp8: bool = False
@@ -38,19 +41,19 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir /root/models/{args.model_name}")
-    U.hf_download_dataset("zhuzilin/dapo-math-17k")
-    U.hf_download_dataset("zhuzilin/aime-2024")
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+    U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_fp8:
         U.exec_command(
-            f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8"
+            f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
         )
 
     if args.rollout_mxfp8:
         U.exec_command(
-            f"python tools/convert_hf_to_mxfp8.py --model-dir /root/models/{args.model_name} --save-dir /root/models/{args.model_name}-MXFP8"
+            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-MXFP8"
         )
 
     if not args.enable_megatron_bridge:
@@ -59,25 +62,26 @@ def prepare(args: ScriptArgs):
             megatron_model_type=args.megatron_model_type,
             num_gpus_per_node=args.num_gpus_per_node,
             # To support multi-node training, for simplicity, we put model into shared folder
-            dir_dst="/root/models",
+            dir_dst=args.model_dir,
+            megatron_path=args.megatron_path,
         )
 
 
 # TODO improve layering: split algorithm vs infra
 def execute(args: ScriptArgs):
     ref_load_path = (
-        f"/root/models/{args.model_name}/"
+        f"{args.model_dir}/{args.model_name}/"
         if args.enable_megatron_bridge
-        else f"/root/models/{args.model_name}_torch_dist"
+        else f"{args.model_dir}/{args.model_name}_torch_dist"
     )
-    load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     if args.rollout_fp8:
-        hf_checkpoint = f"/root/models/{args.model_name}-FP8"
+        hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
     elif args.train_mxfp8:
-        hf_checkpoint = f"/root/models/{args.model_name}-MXFP8"
+        hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
     else:
-        hf_checkpoint = f"/root/models/{args.model_name}"
+        hf_checkpoint = f"{args.model_dir}/{args.model_name}"
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint}/ "
         f"--ref-load {ref_load_path} "
@@ -88,7 +92,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
@@ -107,7 +111,7 @@ def execute(args: ScriptArgs):
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += (
             "--eval-interval 20 "
-            "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+            f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
             "--n-samples-per-eval-prompt 16 "
             "--eval-max-response-len 16384 "
             "--eval-top-p 1 "
@@ -155,7 +159,7 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details /root/shared_data/{args.run_id}/dump_details "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
 
@@ -289,6 +293,7 @@ tis_batch_normalize: true
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},
+        megatron_path=args.megatron_path,
     )
 
 
