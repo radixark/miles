@@ -103,6 +103,16 @@ on:
         required: false
         type: boolean
         default: false
+      megatron_ref:
+        description: 'Megatron-LM branch/commit (default: miles-main)'
+        required: false
+        type: string
+        default: 'miles-main'
+      sglang_ref:
+        description: 'SGLang branch/commit (default: sglang-miles)'
+        required: false
+        type: string
+        default: 'sglang-miles'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -161,11 +171,42 @@ jobs:
           rm -rf /tmp/ray/* 2>/dev/null || true
           sleep 3
 
+      - name: Resolve dependency refs
+        id: resolve-refs
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_REF: ${{ github.event.inputs.megatron_ref || '' }}
+          INPUT_SGLANG_REF: ${{ github.event.inputs.sglang_ref || '' }}
+        run: |
+          # Priority: workflow_dispatch input > PR description > default
+          MEGATRON_REF="${INPUT_MEGATRON_REF}"
+          SGLANG_REF="${INPUT_SGLANG_REF}"
+
+          # Parse PR description for "megatron-ref:" and "sglang-ref:"
+          if [ -n "$PR_BODY" ]; then
+            PR_MEGATRON_REF=$(echo "$PR_BODY" | grep -oP '(?<=megatron-ref:\s)\S+' || true)
+            PR_SGLANG_REF=$(echo "$PR_BODY" | grep -oP '(?<=sglang-ref:\s)\S+' || true)
+            [ -z "$MEGATRON_REF" ] && [ -n "$PR_MEGATRON_REF" ] && MEGATRON_REF="$PR_MEGATRON_REF"
+            [ -z "$SGLANG_REF" ] && [ -n "$PR_SGLANG_REF" ] && SGLANG_REF="$PR_SGLANG_REF"
+          fi
+
+          # Defaults
+          [ -z "$MEGATRON_REF" ] && MEGATRON_REF="miles-main"
+          [ -z "$SGLANG_REF" ] && SGLANG_REF="sglang-miles"
+
+          echo "megatron_ref=$MEGATRON_REF" >> $GITHUB_OUTPUT
+          echo "sglang_ref=$SGLANG_REF" >> $GITHUB_OUTPUT
+          echo "Resolved: megatron=$MEGATRON_REF, sglang=$SGLANG_REF"
+
       - name: Install
         shell: bash
+        env:
+          MEGATRON_REF: ${{ steps.resolve-refs.outputs.megatron_ref }}
+          SGLANG_REF: ${{ steps.resolve-refs.outputs.sglang_ref }}
         run: |
-          cd /sgl-workspace/sglang && git fetch origin sglang-miles && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git log --oneline -1 && git apply $GITHUB_WORKSPACE/docker/patch/dev/megatron.patch && pip install -e . --no-deps --break-system-packages
+          cd /sgl-workspace/sglang && git fetch origin "$SGLANG_REF" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd /root/Megatron-LM && git fetch origin "$MEGATRON_REF" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Execute
