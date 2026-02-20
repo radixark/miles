@@ -63,8 +63,13 @@ class TestConvertTargetModulesToMegatron:
     def test_all_linear_string_canonical(self, shorthand):
         result = convert_target_modules_to_megatron(shorthand, lora_type=None)
         assert result == [
-            "linear_q", "linear_k", "linear_v", "linear_proj",
-            "linear_fc1_up", "linear_fc1_gate", "linear_fc2",
+            "linear_q",
+            "linear_k",
+            "linear_v",
+            "linear_proj",
+            "linear_fc1_up",
+            "linear_fc1_gate",
+            "linear_fc2",
         ]
 
     @pytest.mark.parametrize("shorthand", ["all", "all-linear", "all_linear"])
@@ -94,15 +99,11 @@ class TestConvertTargetModulesToMegatron:
     # --- HF -> Megatron conversion (CanonicalLoRA) ----------------------------
 
     def test_hf_to_megatron_canonical_split(self):
-        result = convert_target_modules_to_megatron(
-            ["q_proj", "k_proj", "v_proj"], lora_type=None
-        )
+        result = convert_target_modules_to_megatron(["q_proj", "k_proj", "v_proj"], lora_type=None)
         assert result == ["linear_q", "linear_k", "linear_v"]
 
     def test_hf_to_megatron_canonical_gate_up(self):
-        result = convert_target_modules_to_megatron(
-            ["gate_proj", "up_proj"], lora_type=None
-        )
+        result = convert_target_modules_to_megatron(["gate_proj", "up_proj"], lora_type=None)
         assert result == ["linear_fc1_gate", "linear_fc1_up"]
 
     # --- Already in Megatron format -------------------------------------------
@@ -199,39 +200,51 @@ class TestIsLoraEnabled:
 
 
 class TestIsLoraWeightName:
-    @pytest.mark.parametrize("name", [
-        "model.layers.0.self_attn.q_proj.lora_A.weight",
-        "model.layers.0.self_attn.q_proj.lora_B.weight",
-        "base_model.model.layers.5.mlp.gate_proj.lora_A.default.weight",
-        "base_model.model.layers.5.mlp.gate_proj.lora_B.default.weight",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "model.layers.0.self_attn.q_proj.lora_A.weight",
+            "model.layers.0.self_attn.q_proj.lora_B.weight",
+            "base_model.model.layers.5.mlp.gate_proj.lora_A.default.weight",
+            "base_model.model.layers.5.mlp.gate_proj.lora_B.default.weight",
+        ],
+    )
     def test_positive(self, name):
         assert is_lora_weight_name(name) is True
 
-    @pytest.mark.parametrize("name", [
-        "model.layers.0.self_attn.q_proj.weight",
-        "model.embed_tokens.weight",
-        "lm_head.weight",
-        "model.layers.0.mlp.gate_proj.weight",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.embed_tokens.weight",
+            "lm_head.weight",
+            "model.layers.0.mlp.gate_proj.weight",
+        ],
+    )
     def test_negative(self, name):
         assert is_lora_weight_name(name) is False
 
 
 class TestIsAdapterParamName:
-    @pytest.mark.parametrize("name", [
-        "module.decoder.layers.0.self_attention.linear_qkv.lora_A.weight",
-        "module.decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight",
-        "module.decoder.layers.0.self_attention.linear_qkv.adapter.linear_out.weight",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "module.decoder.layers.0.self_attention.linear_qkv.lora_A.weight",
+            "module.decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight",
+            "module.decoder.layers.0.self_attention.linear_qkv.adapter.linear_out.weight",
+        ],
+    )
     def test_positive(self, name):
         assert _is_adapter_param_name(name) is True
 
-    @pytest.mark.parametrize("name", [
-        "module.decoder.layers.0.self_attention.linear_qkv.weight",
-        "module.decoder.layers.0.mlp.linear_fc1.weight",
-        "module.embedding.word_embeddings.weight",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "module.decoder.layers.0.self_attention.linear_qkv.weight",
+            "module.decoder.layers.0.mlp.linear_fc1.weight",
+            "module.embedding.word_embeddings.weight",
+        ],
+    )
     def test_negative(self, name):
         assert _is_adapter_param_name(name) is False
 
@@ -287,7 +300,13 @@ class TestBuildLoraSyncConfig:
         assert config["bias"] == "none"
         assert config["task_type"] == "CAUSAL_LM"
         assert set(config["target_modules"]) == {
-            "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
         }
 
     def test_no_target_modules_uses_default(self):

@@ -5,9 +5,7 @@ route to LoRA-specific code paths depending on configuration — without GPU.
 """
 
 from argparse import Namespace
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------

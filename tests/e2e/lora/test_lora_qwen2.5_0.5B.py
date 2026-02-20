@@ -25,23 +25,13 @@ NUM_GPUS = 8
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command(
-        "hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k"
-    )
+    U.exec_command("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
 
 
 def execute():
-    ckpt_args = (
-        f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
-        "--megatron-to-hf-mode bridge "
-    )
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " "--megatron-to-hf-mode bridge "
 
-    lora_args = (
-        "--lora-rank 32 "
-        "--lora-alpha 32 "
-        "--lora-dropout 0.0 "
-        '--target-modules "all-linear" '
-    )
+    lora_args = "--lora-rank 32 " "--lora-alpha 32 " "--lora-dropout 0.0 " '--target-modules "all-linear" '
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -96,17 +86,11 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        "--sglang-mem-fraction-static 0.4 "
-    )
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.4 "
 
     ci_args = "--ci-test "
 
-    save_args = (
-        "--save-interval 2 "
-        "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
-    )
+    save_args = "--save-interval 2 " "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
 
     misc_args = (
         "--attention-dropout 0.0 "

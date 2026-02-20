@@ -31,11 +31,9 @@ class TestHfWeightIteratorFactory:
     @patch(f"{_BASE_MODULE}.HfWeightIteratorBase.__init__", return_value=None)
     def test_bridge_mode_creates_bridge_iterator(self, mock_init):
         """Factory should select HfWeightIteratorBridge for 'bridge' mode."""
-        from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import (
-            HfWeightIteratorBridge,
-        )
+        from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
 
-        with patch.object(HfWeightIteratorBridge, "__init__", return_value=None) as mock_bridge_init:
+        with patch.object(HfWeightIteratorBridge, "__init__", return_value=None):
             args = self._make_args("bridge")
             iterator = HfWeightIteratorBase.create(
                 args=args, model=[MagicMock()], is_lora=True, model_name="qwen", quantization_config=None
@@ -45,11 +43,9 @@ class TestHfWeightIteratorFactory:
     @patch(f"{_BASE_MODULE}.HfWeightIteratorBase.__init__", return_value=None)
     def test_raw_mode_creates_direct_iterator(self, mock_init):
         """Factory should select HfWeightIteratorDirect for 'raw' mode."""
-        from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import (
-            HfWeightIteratorDirect,
-        )
+        from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 
-        with patch.object(HfWeightIteratorDirect, "__init__", return_value=None) as mock_direct_init:
+        with patch.object(HfWeightIteratorDirect, "__init__", return_value=None):
             args = self._make_args("raw")
             iterator = HfWeightIteratorBase.create(
                 args=args, model=[MagicMock()], is_lora=False, model_name="qwen", quantization_config=None

@@ -46,9 +46,7 @@ class TestLoraTargetModuleParsing:
     def test_all_linear_expands_to_seven_modules(self):
         args = Namespace(lora_rank=32, target_modules="all-linear", exclude_modules=None)
         result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == [
-            "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"
-        ]
+        assert result.target_modules == ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
     def test_comma_separated_split(self):
         args = Namespace(lora_rank=16, target_modules="q_proj, k_proj, v_proj", exclude_modules=None)

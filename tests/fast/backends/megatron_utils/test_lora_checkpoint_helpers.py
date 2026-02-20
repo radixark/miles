@@ -5,22 +5,15 @@ save_checkpoint_with_lora / load_checkpoint — the latter using mocks to avoid
 GPU / distributed requirements.
 """
 
-import os
-import tempfile
+import sys
 from argparse import Namespace
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-import sys
 sys.path.insert(0, "/root/Megatron-LM")
 
-from miles.backends.megatron_utils.checkpoint import (
-    _is_megatron_checkpoint,
-    save_checkpoint_with_lora,
-)
-
+from miles.backends.megatron_utils.checkpoint import _is_megatron_checkpoint, save_checkpoint_with_lora
 
 # ---------------------------------------------------------------------------
 # _is_megatron_checkpoint
@@ -45,22 +38,28 @@ class TestIsMegatronCheckpoint:
         (tmp_path / "model.safetensors").write_text("")
         assert _is_megatron_checkpoint(tmp_path) is False
 
-    @pytest.mark.parametrize("name", [
-        "iter_0000001",
-        "iter_0000000",
-        "iter_9999999",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "iter_0000001",
+            "iter_0000000",
+            "iter_9999999",
+        ],
+    )
     def test_valid_iter_patterns(self, tmp_path, name):
         d = tmp_path / name
         d.mkdir()
         assert _is_megatron_checkpoint(d) is True
 
-    @pytest.mark.parametrize("name", [
-        "iter_123",       # too short
-        "iter_00000001",  # too long
-        "iteration_0000001",
-        "checkpoint",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "iter_123",  # too short
+            "iter_00000001",  # too long
+            "iteration_0000001",
+            "checkpoint",
+        ],
+    )
     def test_invalid_iter_patterns(self, tmp_path, name):
         d = tmp_path / name
         d.mkdir()
