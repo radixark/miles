@@ -71,6 +71,8 @@ def execute():
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
+        "--expert-model-parallel-size 1 "
+        "--expert-tensor-parallel-size 1 "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 4096 "
     )
@@ -82,6 +84,7 @@ def execute():
         "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
+        "--eps-clip-high 0.28 "
     )
 
     optimizer_args = (
@@ -111,6 +114,8 @@ def execute():
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
+        "--calculate-per-token-loss "
+        "--use-miles-router "
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
