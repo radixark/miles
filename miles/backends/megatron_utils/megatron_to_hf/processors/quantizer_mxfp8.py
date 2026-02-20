@@ -1,6 +1,9 @@
 import re
 
-from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
+try:
+    from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
+except:
+    mxfp8_group_quantize = None
 
 
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
