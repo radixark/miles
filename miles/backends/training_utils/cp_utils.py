@@ -7,6 +7,66 @@ import torch.nn.functional as F
 from .parallel import ParallelState
 
 
+def get_packed_batch_offsets_with_allgather_cp(
+    total_lengths: list[int],
+    response_lengths: list[int],
+    parallel_state: ParallelState,
+    chunk_size: int,
+) -> list[dict]:
+    """
+    Calculate per-sequence offsets within a packed batch for all-gather CP.
+
+    Returns a list of dicts, one per sequence, with:
+    - 'local_logits_start': start of valid logits within local chunk (or -1 if none)
+    - 'local_logits_end': end of valid logits within local chunk (or -1 if none)
+    - 'response_offset_start': offset within response for local logits
+    - 'response_offset_end': offset within response for local logits
+    """
+    cp_rank = parallel_state.cp_rank
+
+    local_start = cp_rank * chunk_size
+    local_end = (cp_rank + 1) * chunk_size
+
+    results = []
+    seq_start = 0
+
+    for total_length, response_length in zip(total_lengths, response_lengths, strict=True):
+        seq_end = seq_start + total_length
+        prompt_length = total_length - response_length
+
+        # Global logits positions for this sequence
+        logits_global_start = seq_start + prompt_length - 1
+        logits_global_end = seq_start + total_length - 1
+
+        local_logits_start = max(logits_global_start, local_start)
+        local_logits_end = min(logits_global_end, local_end)
+
+        if local_logits_start < local_logits_end:
+            local_logits_start_rel = local_logits_start - local_start
+            local_logits_end_rel = local_logits_end - local_start
+
+            resp_offset_start = local_logits_start - logits_global_start
+            resp_offset_end = local_logits_end - logits_global_start
+        else:
+            local_logits_start_rel = -1
+            local_logits_end_rel = -1
+            resp_offset_start = -1
+            resp_offset_end = -1
+
+        results.append(
+            {
+                "local_logits_start": local_logits_start_rel,
+                "local_logits_end": local_logits_end_rel,
+                "response_offset_start": resp_offset_start,
+                "response_offset_end": resp_offset_end,
+            }
+        )
+
+        seq_start = seq_end
+
+    return results
+
+
 def get_logits_and_tokens_offset_with_cp(
     total_length: int,
     response_length: int,
@@ -60,6 +120,7 @@ def get_sum_of_sample_mean(
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    chunk_size: int | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """
     Calculate correct sample mean for CP
@@ -82,6 +143,58 @@ def get_sum_of_sample_mean(
                     for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
                 ]
             )
+
+    elif parallel_state.uses_contiguous_cp:
+        if chunk_size is None:
+            total_packed_len = sum(total_lengths)
+            chunk_size = (total_packed_len + cp_size - 1) // cp_size
+
+        offsets = get_packed_batch_offsets_with_allgather_cp(
+            total_lengths, response_lengths, parallel_state, chunk_size
+        )
+
+        local_chunk_info = []
+        for offset, loss_mask in zip(offsets, loss_masks, strict=False):
+            if offset["local_logits_start"] >= 0:
+                start = offset["response_offset_start"]
+                end = offset["response_offset_end"]
+                local_mask = loss_mask[start:end]
+                local_len = offset["local_logits_end"] - offset["local_logits_start"]
+            else:
+                local_mask = torch.tensor([], device=loss_mask.device, dtype=loss_mask.dtype)
+                local_len = 0
+
+            local_chunk_info.append(
+                {
+                    "local_len": local_len,
+                    "local_mask": local_mask,
+                    "full_mask": loss_mask,
+                }
+            )
+
+        def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
+            # Continue the gradient flow when the result is zero.
+            total = 0.0 * x.sum()
+            offset = 0
+            for info in local_chunk_info:
+                if info["local_len"] > 0:
+                    x_chunk = x[offset : offset + info["local_len"]]
+                    local_mask = info["local_mask"]
+                    full_mask = info["full_mask"]
+                    total = total + (x_chunk * local_mask).sum() / torch.clamp_min(full_mask.sum(), 1)
+                    offset += info["local_len"]
+            return total
+
+        def sum_of_token(x: torch.Tensor) -> torch.Tensor:
+            total = 0.0 * x.sum()
+            offset = 0
+            for info in local_chunk_info:
+                if info["local_len"] > 0:
+                    x_chunk = x[offset : offset + info["local_len"]]
+                    local_mask = info["local_mask"]
+                    total = total + (x_chunk * local_mask).sum()
+                    offset += info["local_len"]
+            return total
 
     else:
         cp_chunk_lengths = []
@@ -248,3 +361,50 @@ def slice_log_prob_with_cp(
         return chunk_1 + chunk_2
     else:
         return torch.cat([chunk_1, chunk_2], dim=0)
+
+
+def slice_packed_log_probs(
+    rollout_log_probs: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    parallel_state: ParallelState,
+    chunk_size: int,
+) -> list[torch.Tensor]:
+    """
+    Slice per-sequence log_probs based on packed batch layout for all-gather CP.
+    """
+    cp_size = parallel_state.cp_size
+    cp_rank = parallel_state.cp_rank
+
+    if cp_size == 1:
+        return rollout_log_probs
+
+    # Local chunk boundaries in packed space
+    local_start = cp_rank * chunk_size
+    local_end = (cp_rank + 1) * chunk_size
+
+    sliced_log_probs = []
+    seq_start = 0  # Start position of current sequence in packed space
+
+    for total_length, response_length, log_prob in zip(
+        total_lengths, response_lengths, rollout_log_probs, strict=False
+    ):
+        seq_end = seq_start + total_length
+        prompt_length = total_length - response_length
+
+        logits_global_start = seq_start + prompt_length - 1
+        logits_global_end = seq_start + total_length - 1
+
+        intersect_start = max(logits_global_start, local_start)
+        intersect_end = min(logits_global_end, local_end)
+
+        if intersect_start < intersect_end:
+            lp_start = intersect_start - logits_global_start
+            lp_end = intersect_end - logits_global_start
+            sliced_log_probs.append(log_prob[lp_start:lp_end])
+        else:
+            sliced_log_probs.append(log_prob.new_empty(0))
+
+        seq_start = seq_end
+
+    return sliced_log_probs
