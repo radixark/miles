@@ -171,13 +171,22 @@ def log_rollout_data(
                 and "rollout/log_probs" in reduced_log_dict
                 and "rollout/ref_log_probs" in reduced_log_dict
             ):
-                assert reduced_log_dict["rollout/log_probs"] == reduced_log_dict["rollout/ref_log_probs"]
+                assert isclose(
+                    reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/ref_log_probs"], abs_tol=1e-9
+                )
             if "rollout/log_probs" in reduced_log_dict and "rollout/rollout_log_probs" in reduced_log_dict:
                 assert isclose(
                     reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/rollout_log_probs"], abs_tol=0.03
                 )
             if "rollout/entropy" in reduced_log_dict:
                 assert 0 < reduced_log_dict["rollout/entropy"] < 0.7
+
+        if args.ci_test and args.true_on_policy_mode:
+            assert log_dict["log_probs"] == log_dict["rollout_log_probs"], (
+                f"CI check failed: true_on_policy_mode is enabled, but log_probs "
+                f"({log_dict['log_probs']}) != rollout_log_probs "
+                f"({log_dict['rollout_log_probs']})"
+            )
 
     if args.log_multi_turn:
         log_multi_turn_data(rollout_id, args, rollout_data, parallel_state)

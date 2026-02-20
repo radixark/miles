@@ -1,6 +1,7 @@
 # Adapt from https://github.com/NVIDIA/Megatron-LM/blob/b1efb3c7126ef7615e8c333432d76e08038e17ff/pretrain_gpt.py
 import argparse
 import inspect
+import logging
 from contextlib import nullcontext
 from typing import Literal
 
@@ -17,6 +18,9 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.utils.misc import load_function
+from miles.utils.replay_base import routing_replay_manager
+
+logger = logging.getLogger(__name__)
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -187,8 +191,17 @@ def get_model_provider_func(
             if vp_stage is not None:
                 mtp_kwargs["vp_stage"] = vp_stage
 
+            # hard code here to skip r3 registration for mtp layers
+            # getattr is required to avoid ckpt conversion errors
+            if getattr(args, "use_rollout_routing_replay", False):
+                routing_replay_manager.enabled = False
+                logger.warning(
+                    "Rollout routing replay is not applicable for MTP modules, so skipped replay registration"
+                )
             mtp_block_spec = get_gpt_mtp_block_spec(config, transformer_layer_spec, **mtp_kwargs)
             kwargs["mtp_block_spec"] = mtp_block_spec
+            if getattr(args, "use_rollout_routing_replay", False):
+                routing_replay_manager.enabled = True
 
         with build_model_context(**build_model_context_args):
             model = GPTModel(**kwargs)
