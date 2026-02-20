@@ -31,6 +31,7 @@ class UpdateWeightFromDistributed:
         *,
         model_name: str,
         quantization_config: dict[str, int | str | list[str]] | None,
+        is_lora: bool = False
     ) -> None:
         """
         Initialize. Groups created in connect_rollout_engines.
