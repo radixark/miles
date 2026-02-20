@@ -1753,6 +1753,10 @@ def hf_validate_args(args, hf_config):
     if hasattr(hf_config, "text_config"):
         hf_config = hf_config.text_config
 
+    if hasattr(hf_config, "rope_parameters") and isinstance(hf_config.rope_parameters, dict):
+        if "rope_theta" in hf_config.rope_parameters:
+            hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
+
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
