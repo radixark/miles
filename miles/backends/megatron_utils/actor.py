@@ -350,7 +350,11 @@ class MegatronTrainRayActor(TrainRayActor):
         with inverse_timer("train_wait"), timer("train"):
             if self.args.compute_advantages_and_returns:
                 if "ref" in self.weights_backuper.backup_tags:
-                    self._set_replay_stage("fallthrough")
+                    for m in all_replay_managers:
+                        if self._use_rollout_replay(m):
+                            m.stage = "replay_forward"
+                        else:
+                            m.stage = "fallthrough"
                     self._switch_model("ref")
                     rollout_data.update(
                         self.compute_log_prob(
@@ -359,6 +363,9 @@ class MegatronTrainRayActor(TrainRayActor):
                             store_prefix="ref_",
                         )
                     )
+                    for m in all_replay_managers:
+                        if self._use_rollout_replay(m):
+                            m.clear_all_forward()
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
                 if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
                     for m in all_replay_managers:
