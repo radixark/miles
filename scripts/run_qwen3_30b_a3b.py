@@ -26,6 +26,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_mxfp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
+    num_layers_at_end_in_bf16: int = 0
     # TODO improve, should be able to override more easily
     tis_use_rs: bool = True
 
@@ -38,6 +39,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             assert not self.train_fp8, "train_mxfp8 and train_fp8 cannot be enabled at the same time"
             assert self.hardware in ("B200", "B300", "GB200", "GB300"), "train_mxfp8 only supports Blackwell GPUs"
             assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8 to be enabled"
+        if self.num_layers_at_end_in_bf16 > 0:
+            assert self.rollout_mxfp8, "num_layers_at_end_in_bf16 is only supported when rollout_mxfp8 is enabled"
 
 
 def prepare(args: ScriptArgs):
@@ -53,7 +56,7 @@ def prepare(args: ScriptArgs):
 
     if args.rollout_mxfp8:
         U.exec_command(
-            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-MXFP8"
+            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-MXFP8 --num-layers-at-end-in-bf16 {args.num_layers_at_end_in_bf16}"
         )
 
     if not args.enable_megatron_bridge:
@@ -187,6 +190,13 @@ def execute(args: ScriptArgs):
                 misc_env_vars |= {
                     "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
                 }
+
+    if (args.train_fp8 or args.train_mxfp8) and args.num_layers_at_end_in_bf16 > 0:
+        misc_args += (
+            "--first-last-layers-bf16 "
+            "--num-layers-at-start-in-bf16 0 "
+            f"--num-layers-at-end-in-bf16 {args.num_layers_at_end_in_bf16} "
+        )
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
