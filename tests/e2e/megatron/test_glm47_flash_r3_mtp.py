@@ -15,7 +15,7 @@ def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     # GLM-4.7-Flash requires a newer transformers version
     U.exec_command(
-        "pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa"
+        "pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa --no-deps --break-system-packages"
     )
     U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
