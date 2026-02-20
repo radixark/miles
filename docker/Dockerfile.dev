@@ -123,6 +123,10 @@ RUN cd /sgl-workspace/sglang && \
     fi && \
     pip install -e "python[all]" --no-deps
 
+# Current sglang requires "flashinfer_python>=0.6.2"
+RUN pip uninstall flashinfer-jit-cache -y
+RUN pip install "flashinfer_python>=0.6.2" --no-deps
+
 # ====================================== Install main package ============================================
 
 ARG MILES_COMMIT=main
