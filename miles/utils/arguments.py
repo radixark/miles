@@ -1036,7 +1036,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Log statistics of the category of reward, such as why the reward function considers it as failed. "
-                    "Specify the key in the reward dict using this argument."
+                    "Specify the key in the reward dict using this argument.",
                 ),
             )
             parser.add_argument(
@@ -1467,6 +1467,12 @@ def parse_args(add_custom_arguments=None):
                 "please use alltoall dispatcher instead."
             )
             args.moe_token_dispatcher_type = "alltoall"
+
+        if args.pipeline_model_parallel_size == 1:
+            assert args.decoder_first_pipeline_num_layers is None and args.decoder_last_pipeline_num_layers is None, (
+                "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
+                "pipeline_model_parallel_size is 1."
+            )
 
     sglang_validate_args(args)
 
