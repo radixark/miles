@@ -41,6 +41,8 @@ class UpdateWeightFromDistributed:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self._debug_first_weight_sync = None
+        self._debug_first_weight_sync_done = False
 
     def connect_rollout_engines(
         self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
@@ -76,6 +78,17 @@ class UpdateWeightFromDistributed:
         Pause → flush → non-expert (TP) → expert (EP) → continue. Progress on PP source.
         """
         self.weight_version += 1
+        debug_first_weight_sync = (
+            self.args.debug_first_weight_sync and not self._debug_first_weight_sync_done and self.weight_version == 1
+        )
+        if debug_first_weight_sync:
+            from miles.utils.hf_checkpoint_debug import DebugFirstWeightSync
+
+            self._debug_first_weight_sync = DebugFirstWeightSync(
+                output_dir=self.args.debug_first_weight_sync,
+                source_checkpoint=self.args.hf_checkpoint,
+                write_rank=getattr(self, "_is_pp_src_rank", False),
+            )
 
         if dist.get_rank() == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
@@ -131,6 +144,11 @@ class UpdateWeightFromDistributed:
                     rollout_engines=self.rollout_engines,
                 )
         dist.barrier(group=get_gloo_group())
+        if debug_first_weight_sync and self._debug_first_weight_sync is not None:
+            self._debug_first_weight_sync.finalize_and_compare(group=get_gloo_group())
+            self._debug_first_weight_sync_done = True
+            self._debug_first_weight_sync = None
+            raise RuntimeError("debug-first-weight-sync complete; terminating as requested.")
 
     def _update_weight_from_distributed(
         self,
@@ -224,6 +242,8 @@ class UpdateWeightFromDistributed:
         """
         Lock → broadcast → clear → unlock → pbar++. Lock prevents NCCL deadlock.
         """
+        if self._debug_first_weight_sync is not None:
+            self._debug_first_weight_sync.write_chunk(converted_named_tensors)
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)

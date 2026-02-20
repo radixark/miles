@@ -1108,6 +1108,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--debug-first-weight-sync",
+                type=str,
+                default=None,
+                help=(
+                    "If set, save the first Megatron->SGLang HF weight sync to this directory, then compare it with --hf-checkpoint and report mismatched layers."
+                ),
+            )
+            parser.add_argument(
                 "--save-debug-train-data",
                 type=str,
                 default=None,
@@ -1637,6 +1645,11 @@ def miles_validate_args(args):
     assert not (args.debug_rollout_only and args.debug_train_only), (
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
+
+    if args.debug_first_weight_sync and args.hf_checkpoint is None:
+        logger.warning("--debug-first-weight-sync set without --hf-checkpoint; compare will be skipped.")
+    if args.debug_first_weight_sync and (args.debug_rollout_only or args.debug_train_only):
+        logger.warning("--debug-first-weight-sync is set but weight sync is disabled in debug-only modes.")
 
     # always true on offload for colocate at the moment.
     if args.colocate:
