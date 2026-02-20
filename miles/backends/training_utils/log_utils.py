@@ -407,7 +407,7 @@ def log_train_step(
         f"train/{role_tag}{key}": val.mean().item() if isinstance(val, torch.Tensor) else val
         for key, val in loss_dict.items()
     }
-    log_dict_out[f"train/{role_tag}grad_norm"] = float(grad_norm)
+    log_dict_out[f"train/{role_tag}grad_norm"] = float(grad_norm) if grad_norm is not None else 0.0
 
     if extra_metrics:
         for key, val in extra_metrics.items():
