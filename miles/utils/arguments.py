@@ -1122,6 +1122,40 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=("Dump all details of training for post-hoc analysis and visualization."),
             )
+            parser.add_argument(
+                "--dumper-enable",
+                action="store_true",
+                default=False,
+                help="Enable sglang dumper for all three phases (sglang inference, "
+                "megatron forward-only, megatron forward-backward). "
+                "Per-phase --dumper-sglang/fwd-only/fwd-bwd can override.",
+            )
+            parser.add_argument(
+                "--dumper-dir",
+                type=str,
+                default="/tmp/dumper",
+                help="Base output directory for sglang dumper. Three subdirs are created: "
+                "sglang_inference/, megatron_forward_only/, megatron_forward_backward/.",
+            )
+            parser.add_argument(
+                "--dumper-sglang",
+                nargs="*",
+                default=None,
+                help="SGLang inference phase dumper config as key=value pairs. "
+                "Keys map to _DumperConfig fields (e.g. enable=true filter='layer_id=[0-3]').",
+            )
+            parser.add_argument(
+                "--dumper-fwd-only",
+                nargs="*",
+                default=None,
+                help="Megatron forward-only phase dumper config as key=value pairs.",
+            )
+            parser.add_argument(
+                "--dumper-fwd-bwd",
+                nargs="*",
+                default=None,
+                help="Megatron forward-backward phase dumper config as key=value pairs.",
+            )
             # use together with --record-memory-history and --memory-snapshot-path (defined in Megatron)
             parser.add_argument(
                 "--memory-snapshot-dir",
@@ -1599,6 +1633,8 @@ def miles_validate_args(args):
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
+        args.dumper_enable = True
+        args.dumper_dir = f"{args.dump_details}/dumper"
 
     if args.load_debug_rollout_data is not None:
         logger.info(
