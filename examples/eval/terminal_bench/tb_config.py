@@ -12,12 +12,14 @@ class TerminalBenchConfig(EvalEnvConfig):
     """Environment configuration shared by the Terminal Bench client/server."""
 
     model_name: str = "qwen3-8b"
+    agent_name: str = "terminus-2"
     api_base: str = "http://127.0.1.1:30001/v1"
-    dataset_path: str | None = None
-    n_tasks: int | None = None
-    task_ids: list[str] = field(default_factory=list)
-    n_attempts: int | None = None
+    runner: str = "harbor"
+    dataset_name: str = "terminal-bench"
+    dataset_version: str = "2.0"
+    output_path: str | None = None
     n_concurrent: int = 8
+    runner_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def parse(cls, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]) -> TerminalBenchConfig:
@@ -27,11 +29,13 @@ class TerminalBenchConfig(EvalEnvConfig):
 
         field_casts = {
             "model_name": str,
+            "agent_name": str,
             "api_base": str,
-            "n_attempts": int,
-            "n_tasks": int,
+            "runner": str,
+            "dataset_name": lambda v: str(v).strip(),
+            "dataset_version": lambda v: str(v).strip(),
+            "output_path": lambda v: str(v).strip(),
             "n_concurrent": int,
-            "dataset_path": str,
         }
 
         for key, caster in field_casts.items():
@@ -39,11 +43,9 @@ class TerminalBenchConfig(EvalEnvConfig):
             if value is not None:
                 setattr(base_cfg, key, caster(value))
 
-        task_ids = clean_raw.get("task_ids")
-        if isinstance(task_ids, (list, tuple)):
-            base_cfg.task_ids = [str(item) for item in task_ids if item]
-        elif task_ids is not None:
-            raise ValueError("task_ids must be a list")
+        runner_kwargs = clean_raw.get("runner_kwargs")
+        if runner_kwargs is not None:
+            base_cfg.runner_kwargs = dict(runner_kwargs)
 
         return base_cfg
 
