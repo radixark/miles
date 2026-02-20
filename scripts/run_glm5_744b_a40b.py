@@ -1,5 +1,51 @@
+"""
+GLM-5 744B-A40B Training Script
+
+Args:
+  --model-name: Model variant to use.
+      GLM-5         Full 744B model (requires >=16 nodes)
+      GLM-5_4layer  4-layer pruned model (single-node testing)
+      GLM-5_20layer 20-layer pruned model (multi-node testing)
+  --num-nodes: Number of nodes for training. Determines parallelism config:
+      1  -> for GLM-5_4layer minimal test
+      6  -> for GLM-5_20layer multi-node test
+      16+-> for full GLM-5 model
+  --num-gpus-per-node: GPUs per node (default: 8)
+  --mode: "normal" or "debug_minimal" (shorter response length for quick testing)
+  --fp8-rollout: Enable FP8 rollout (not yet implemented)
+  --enable-eval: Enable evaluation every 20 steps
+  --enable-mtp: Enable multi-token prediction (EAGLE speculative decoding)
+  --enable-optimizer-offload: Offload optimizer to CPU
+  --data-dir: Directory for datasets (default: /root/datasets, shared NFS)
+  --model-dir: Directory for model weights and converted checkpoints (default: /root/models, shared NFS)
+  --model-local-dir: Node-local directory for model copies (default: /root/local_data, local disk)
+
+
+Usage for single node minimal test:
+  `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1`
+
+Usage for multi node:
+
+  1. Setup containers on all nodes
+
+  2. Start Ray cluster on all nodes
+
+  3. Download model/data + patch checkpoint + convert to megatron.
+     Run on **head node**; megatron conversion uses Ray to coordinate multi-node work.
+       `python scripts/run_glm5_744b_a40b.py prepare --model-name GLM-5_20layer --num-nodes 6`
+
+  4. (Optional) Copy model from shared NFS to local disk on each node.
+     Run independently on every node.
+       python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5_20layer --num-nodes 6
+
+  5. Run training. Execute on head node; uses Ray internally for distributed training.
+       python scripts/run_glm5_744b_a40b.py train --model-name GLM-5_20layer --num-nodes 6
+"""
+
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import typer
@@ -20,7 +66,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_rollout: bool = False
     enable_eval: bool = False
     enable_mtp: bool = False
-    enable_pd: bool = False
     enable_optimizer_offload: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -30,12 +75,49 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         assert not self.fp8_rollout, "fp8 recipe not implemented"
+
+        self.enable_pd = (self.num_nodes > 1)
+        print(f"enable_pd={self.enable_pd}, num_nodes={self.num_nodes}")
+
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.megatron_model_type = f"glm5-744B-A40B_{m.group(1)}layer"
+
+        if self.model_name == "GLM-5":
+            self.model_org = "zai-org"
+        elif self.model_name in ["GLM-5_4layer", "GLM-5_20layer"]:
+            self.model_org = "Pinaster"
+        else:
+            raise NotImplementedError(f"{self.model_name} is not supported")
 
 
 def _is_pruned(args: ScriptArgs):
     return re.search(r"(\d+)layer", args.model_name) is not None
+
+
+def _process_glm_checkpoint(args: ScriptArgs):
+    """Patch config.json to use DeepseekV32 architecture if not already patched."""
+    config_path = Path(args.model_dir) / args.model_name / "config.json"
+    if not config_path.exists():
+        print(f"Warning: {config_path} not found, skipping checkpoint processing")
+        return
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    if config.get("model_type") == "deepseek_v32":
+        print(f"Checkpoint already patched, skipping")
+        return
+
+    config["architectures"] = ["DeepseekV32ForCausalLM"]
+    config["auto_map"] = {
+        "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
+        "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
+    }
+    config["model_type"] = "deepseek_v32"
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    print(f"Patched {config_path}")
 
 
 def _prepare_download(args: ScriptArgs):
@@ -115,7 +197,7 @@ def _execute_train(args: ScriptArgs):
         "--num-rollout 3000 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else (2048 if args.enable_pd else 32768)} "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else (2048 if not args.enable_pd else 32768)} "
         "--rollout-temperature 1 "
         "--global-batch-size 64 "
     )
@@ -124,16 +206,26 @@ def _execute_train(args: ScriptArgs):
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += "--eval-interval 20 " "--eval-top-p 1 "
 
-    if args.num_nodes == 1:
+    if args.num_nodes == 1: # minimal test for 4 layers model
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 2 "
+            "--context-parallel-size 1 "
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
-    elif args.num_nodes >= 16: # slime's setting
+    elif args.num_nodes == 6: # for 20 layers model, to test multi-node
+       perf_args = (
+            "--tensor-model-parallel-size 4 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 3 "
+            "--decoder-last-pipeline-num-layers 23 "
+            "--context-parallel-size 2 "
+            "--expert-model-parallel-size 16 "
+            "--expert-tensor-parallel-size 1 "
+        ) 
+    elif args.num_nodes >= 16: # slime's setting for full model
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
@@ -185,7 +277,7 @@ def _execute_train(args: ScriptArgs):
 
     if args.enable_pd:
         sglang_decode_max_bs = 8
-        sglang_world_size = 64
+        sglang_world_size = max(args.num_gpus_per_node * args.num_nodes, 64)
     else:
         sglang_decode_max_bs = 256
         sglang_world_size = 8
@@ -283,10 +375,35 @@ def _execute_train(args: ScriptArgs):
 
 @app.command()
 @U.dataclass_cli
-def train(args: ScriptArgs):
+def full_train(args: ScriptArgs):
+    """Full pipeline: download, convert, copy, train."""
     _prepare_download(args)
+    _process_glm_checkpoint(args)
     _prepare_megatron_ckpt(args)
     _prepare_cp(args)
+    _execute_train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare(args: ScriptArgs):
+    """Download model/data and convert to megatron checkpoint (run on head node)."""
+    _prepare_download(args)
+    _process_glm_checkpoint(args)
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_cp(args: ScriptArgs):
+    """Copy model to local storage (run on all nodes via run_spmd)."""
+    _prepare_cp(args)
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    """Run training only (assumes data is prepared)."""
     _execute_train(args)
 
 
