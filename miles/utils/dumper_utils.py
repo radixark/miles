@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from sglang.srt.debug_utils.dumper import _DumperConfig, dumper
+from sglang.srt.debug_utils.dumper import DumperConfig, dumper
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +37,11 @@ async def configure_for_sglang(args: Namespace) -> None:
 
     worker_urls = await get_worker_urls(args)
     overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
-    dumper_dir = str(_get_dir(args))
-
     coros = []
     for i, url in enumerate(worker_urls):
         body = {
             "enable": True,
-            "dir": dumper_dir,
+            "dir": str(_get_dir(args)),
             "exp_name": f"engine_{i}",
             "cleanup_previous": True,
             **overrides,
@@ -51,7 +49,7 @@ async def configure_for_sglang(args: Namespace) -> None:
         coros.append(post(f"{url}/dumper/configure", body))
 
     await asyncio.gather(*coros)
-    logger.info("Configured dumper on %d SGLang engines (dir=%s)", len(worker_urls), dumper_dir)
+    logger.info("Configured dumper on %d SGLang engines", len(worker_urls))
 
 
 class DumperMegatronPhaseUtil:
@@ -86,7 +84,7 @@ class DumperMegatronPhaseUtil:
             **overrides,
         }
 
-        full_config = _DumperConfig(**merged)
+        full_config = DumperConfig(**merged)
         dumper.reset()
         dumper.configure(**dataclasses.asdict(full_config))
         return True
@@ -107,7 +105,7 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
 
 def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
     raw = getattr(args, f"dumper_{phase.value}")
-    overrides = _DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
+    overrides = DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
 
     if "enable" not in overrides and args.dumper_enable:
         overrides["enable"] = True

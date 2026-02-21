@@ -1142,7 +1142,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="*",
                 default=None,
                 help="SGLang inference phase dumper config as key=value pairs. "
-                "Keys map to _DumperConfig fields (e.g. enable=true filter=whatever).",
+                "Keys map to DumperConfig fields (e.g. enable=true filter=whatever).",
             )
             parser.add_argument(
                 "--dumper-fwd-only",
