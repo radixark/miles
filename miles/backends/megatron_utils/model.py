@@ -21,7 +21,7 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
-from miles.utils.dumper_utils import DumperPhase, dumper_phase_scope
+from miles.utils.dumper_utils import DumperPhase, configure_dumper_for_phase, finalize_dumper_phase
 from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -183,109 +183,113 @@ def forward_only(
         dict[str, list[torch.Tensor]]: Aggregated outputs keyed by ``store_prefix + key``.
     """
 
-    with dumper_phase_scope(args, DumperPhase.FWD_ONLY, model[0]):
-        # reset data iterator
-        for iterator in data_iterator:
-            iterator.reset()
+    dumper_enabled = configure_dumper_for_phase(args, DumperPhase.FWD_ONLY)
 
-        config = get_model_config(model[0])
+    # reset data iterator
+    for iterator in data_iterator:
+        iterator.reset()
 
-        def forward_step(
-            data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False
-        ) -> tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
-            """Forward step used by Megatron's pipeline engine.
+    config = get_model_config(model[0])
 
-            Args:
-                data_iterator (DataIterator): Input data iterator.
-                model (GPTModel): The GPT model chunk to execute.
+    def forward_step(
+        data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False
+    ) -> tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
+        """Forward step used by Megatron's pipeline engine.
 
-            Returns:
-                tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
-                Output tensor(s) and a callable that computes and packages results
-                to be collected by the engine.
-            """
+        Args:
+            data_iterator (DataIterator): Input data iterator.
+            model (GPTModel): The GPT model chunk to execute.
 
-            assert not return_schedule_plan, "forward_only step should never return schedule plan"
+        Returns:
+            tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
+            Output tensor(s) and a callable that computes and packages results
+            to be collected by the engine.
+        """
 
-            # Get the batch.
-            batch = get_batch(
-                data_iterator,
-                [
-                    "tokens",
-                    "loss_masks",
-                    "multimodal_train_inputs",
-                    "total_lengths",
-                    "response_lengths",
-                    "max_seq_lens",
-                ],
-                parallel_state,
-                args.data_pad_size_multiplier,
-                args.qkv_format,
-            )
-            unconcat_tokens = batch["unconcat_tokens"]
-            tokens = batch["tokens"]
-            packed_seq_params = get_packed_seq_params(batch, args)
-            total_lengths = batch["total_lengths"]
-            response_lengths = batch["response_lengths"]
-            output_tensor = model(
-                input_ids=tokens,
-                position_ids=None,
-                attention_mask=None,
-                labels=None,
-                packed_seq_params=packed_seq_params,
-                loss_mask=batch["full_loss_masks"],
-                **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
-            )
+        assert not return_schedule_plan, "forward_only step should never return schedule plan"
 
-            return output_tensor, partial(
-                f,
-                args=args,
-                parallel_state=parallel_state,
-                unconcat_tokens=unconcat_tokens,
-                total_lengths=total_lengths,
-                response_lengths=response_lengths,
-                with_entropy=args.use_rollout_entropy,
-                max_seq_lens=batch.get("max_seq_lens", None),
-            )
+        # Get the batch.
+        batch = get_batch(
+            data_iterator,
+            [
+                "tokens",
+                "loss_masks",
+                "multimodal_train_inputs",
+                "total_lengths",
+                "response_lengths",
+                "max_seq_lens",
+            ],
+            parallel_state,
+            args.data_pad_size_multiplier,
+            args.qkv_format,
+        )
+        unconcat_tokens = batch["unconcat_tokens"]
+        tokens = batch["tokens"]
+        packed_seq_params = get_packed_seq_params(batch, args)
+        total_lengths = batch["total_lengths"]
+        response_lengths = batch["response_lengths"]
+        output_tensor = model(
+            input_ids=tokens,
+            position_ids=None,
+            attention_mask=None,
+            labels=None,
+            packed_seq_params=packed_seq_params,
+            loss_mask=batch["full_loss_masks"],
+            **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+        )
 
-        # Turn on evaluation mode which disables dropout.
-        for model_module in model:
-            model_module.eval()
+        return output_tensor, partial(
+            f,
+            args=args,
+            parallel_state=parallel_state,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=args.use_rollout_entropy,
+            max_seq_lens=batch.get("max_seq_lens", None),
+        )
 
-        if args.custom_megatron_before_log_prob_hook_path:
-            from miles.utils.misc import load_function
+    # Turn on evaluation mode which disables dropout.
+    for model_module in model:
+        model_module.eval()
 
-            custom_before_log_prob_hook = load_function(args.custom_megatron_before_log_prob_hook_path)
-            custom_before_log_prob_hook(args, model, store_prefix)
+    if args.custom_megatron_before_log_prob_hook_path:
+        from miles.utils.misc import load_function
 
-        forward_backward_func = get_forward_backward_func()
-        # Don't care about timing during evaluation
-        config.timers = None
-        forward_data_store = []
-        num_steps_per_rollout = len(num_microbatches)
-        for step_id in range(num_steps_per_rollout):
-            # collect_non_loss_data
-            forward_data_store += forward_backward_func(
-                forward_step_func=forward_step,
-                data_iterator=data_iterator,
-                model=model,
-                num_microbatches=num_microbatches[step_id],
-                seq_length=args.seq_length,
-                micro_batch_size=args.micro_batch_size,
-                forward_only=True,
-                collect_non_loss_data=True,
-            )
+        custom_before_log_prob_hook = load_function(args.custom_megatron_before_log_prob_hook_path)
+        custom_before_log_prob_hook(args, model, store_prefix)
 
-        # Move model back to the train mode.
-        for model_module in model:
-            model_module.train()
+    forward_backward_func = get_forward_backward_func()
+    # Don't care about timing during evaluation
+    config.timers = None
+    forward_data_store = []
+    num_steps_per_rollout = len(num_microbatches)
+    for step_id in range(num_steps_per_rollout):
+        # collect_non_loss_data
+        forward_data_store += forward_backward_func(
+            forward_step_func=forward_step,
+            data_iterator=data_iterator,
+            model=model,
+            num_microbatches=num_microbatches[step_id],
+            seq_length=args.seq_length,
+            micro_batch_size=args.micro_batch_size,
+            forward_only=True,
+            collect_non_loss_data=True,
+        )
 
-        rollout_data = {}
-        # Store the results on the last stage
-        if mpu.is_pipeline_last_stage():
-            aggregated = aggregate_forward_results(forward_data_store, data_iterator[0], args, store_prefix="")
-            for key, value in aggregated.items():
-                rollout_data[f"{store_prefix}{key}"] = value
+    # Move model back to the train mode.
+    for model_module in model:
+        model_module.train()
+
+    if dumper_enabled:
+        finalize_dumper_phase(model[0])
+
+    rollout_data = {}
+    # Store the results on the last stage
+    if mpu.is_pipeline_last_stage():
+        aggregated = aggregate_forward_results(forward_data_store, data_iterator[0], args, store_prefix="")
+        for key, value in aggregated.items():
+            rollout_data[f"{store_prefix}{key}"] = value
 
     return rollout_data
 
@@ -321,143 +325,146 @@ def train_one_step(
         and gradient norm for logging.
     """
     args = get_args()
+    dumper_enabled = configure_dumper_for_phase(args, DumperPhase.FWD_BWD)
 
-    with dumper_phase_scope(args, DumperPhase.FWD_BWD, model[0]):
-        # Set grad to zero.
-        for model_chunk in model:
-            model_chunk.zero_grad_buffer()
-        optimizer.zero_grad()
+    # Set grad to zero.
+    for model_chunk in model:
+        model_chunk.zero_grad_buffer()
+    optimizer.zero_grad()
 
-        if args.custom_megatron_before_train_step_hook_path:
-            from miles.utils.misc import load_function
+    if args.custom_megatron_before_train_step_hook_path:
+        from miles.utils.misc import load_function
 
-            custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
-            custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
+        custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
+        custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
 
-        def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
-            torch.Tensor,
-            Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]],
-        ]:
-            """Forward step used by Megatron's pipeline engine during training.
+    def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
+        torch.Tensor,
+        Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]],
+    ]:
+        """Forward step used by Megatron's pipeline engine during training.
 
-            Args:
-                data_iterator (DataIterator): Input data iterator.
-                model (GPTModel): The GPT model chunk to execute.
+        Args:
+            data_iterator (DataIterator): Input data iterator.
+            model (GPTModel): The GPT model chunk to execute.
 
-            Returns:
-                tuple[torch.Tensor, Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]]]:
-                Output tensor(s) and the loss function, which returns
-                (loss, num_elems, {"keys": list[str], "values": torch.Tensor}).
-            """
+        Returns:
+            tuple[torch.Tensor, Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]]]:
+            Output tensor(s) and the loss function, which returns
+            (loss, num_elems, {"keys": list[str], "values": torch.Tensor}).
+        """
 
-            # Get the batch.
-            batch = get_batch(
-                data_iterator,
-                [
-                    "tokens",
-                    "multimodal_train_inputs",
-                    "packed_seq_params",
-                    "total_lengths",
-                    "response_lengths",
-                    "loss_masks",
-                    "log_probs",
-                    "ref_log_probs",
-                    "values",
-                    "advantages",
-                    "returns",
-                    "rollout_log_probs",
-                    "max_seq_lens",
-                ],
-                parallel_state,
-                args.data_pad_size_multiplier,
-                args.qkv_format,
-            )
-
-            from miles.utils.replay_base import all_replay_managers
-
-            old_stages = [m.stage for m in all_replay_managers]
-            for m in all_replay_managers:
-                m.stage = "replay_forward"
-
-            if return_schedule_plan:
-                assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
-                output_tensor = model.build_schedule_plan(
-                    input_ids=batch["tokens"],
-                    position_ids=None,
-                    attention_mask=None,
-                    labels=None,
-                    packed_seq_params=get_packed_seq_params(batch, args),
-                    loss_mask=batch["full_loss_masks"],
-                )
-            else:
-                forward_kwargs = {
-                    "input_ids": batch["tokens"],
-                    "position_ids": None,
-                    "attention_mask": None,
-                    "labels": None,
-                    "packed_seq_params": get_packed_seq_params(batch, args),
-                    "loss_mask": batch["full_loss_masks"],
-                }
-
-                if args.enable_mtp_training:
-                    forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
-
-                if batch["multimodal_train_inputs"] is not None:
-                    forward_kwargs.update(batch["multimodal_train_inputs"])
-
-                output_tensor = model(**forward_kwargs)
-
-            for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
-                m.stage = old_stage
-
-            return output_tensor, partial(
-                loss_function, args, parallel_state, batch, num_microbatches, apply_megatron_loss_scaling=True
-            )
-
-        # Forward pass.
-        forward_backward_func = get_forward_backward_func()
-        losses_reduced = forward_backward_func(
-            forward_step_func=forward_step,
-            data_iterator=data_iterator,
-            model=model,
-            num_microbatches=num_microbatches,
-            seq_length=args.seq_length,
-            micro_batch_size=args.micro_batch_size,
-            decoder_seq_length=args.decoder_seq_length,
-            forward_only=False,
+        # Get the batch.
+        batch = get_batch(
+            data_iterator,
+            [
+                "tokens",
+                "multimodal_train_inputs",
+                "packed_seq_params",
+                "total_lengths",
+                "response_lengths",
+                "loss_masks",
+                "log_probs",
+                "ref_log_probs",
+                "values",
+                "advantages",
+                "returns",
+                "rollout_log_probs",
+                "max_seq_lens",
+            ],
+            parallel_state,
+            args.data_pad_size_multiplier,
+            args.qkv_format,
         )
 
-        valid_step = True
-        if not getattr(args, "check_for_nan_in_loss_and_grad", True):
-            found_inf_flag = optimizer.prepare_grads()
-            if found_inf_flag:
-                valid_step = False
+        from miles.utils.replay_base import all_replay_managers
+
+        old_stages = [m.stage for m in all_replay_managers]
+        for m in all_replay_managers:
+            m.stage = "replay_forward"
+
+        if return_schedule_plan:
+            assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
+            output_tensor = model.build_schedule_plan(
+                input_ids=batch["tokens"],
+                position_ids=None,
+                attention_mask=None,
+                labels=None,
+                packed_seq_params=get_packed_seq_params(batch, args),
+                loss_mask=batch["full_loss_masks"],
+            )
+        else:
+            forward_kwargs = {
+                "input_ids": batch["tokens"],
+                "position_ids": None,
+                "attention_mask": None,
+                "labels": None,
+                "packed_seq_params": get_packed_seq_params(batch, args),
+                "loss_mask": batch["full_loss_masks"],
+            }
+
+            if args.enable_mtp_training:
+                forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
+
+            if batch["multimodal_train_inputs"] is not None:
+                forward_kwargs.update(batch["multimodal_train_inputs"])
+
+            output_tensor = model(**forward_kwargs)
+
+        for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
+            m.stage = old_stage
+
+        return output_tensor, partial(
+            loss_function, args, parallel_state, batch, num_microbatches, apply_megatron_loss_scaling=True
+        )
+
+    # Forward pass.
+    forward_backward_func = get_forward_backward_func()
+    losses_reduced = forward_backward_func(
+        forward_step_func=forward_step,
+        data_iterator=data_iterator,
+        model=model,
+        num_microbatches=num_microbatches,
+        seq_length=args.seq_length,
+        micro_batch_size=args.micro_batch_size,
+        decoder_seq_length=args.decoder_seq_length,
+        forward_only=False,
+    )
+
+    valid_step = True
+    if not getattr(args, "check_for_nan_in_loss_and_grad", True):
+        found_inf_flag = optimizer.prepare_grads()
+        if found_inf_flag:
+            valid_step = False
+        else:
+            grad_norm = optimizer.get_grad_norm()
+            if isinstance(grad_norm, torch.Tensor):
+                valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
-                grad_norm = optimizer.get_grad_norm()
-                if isinstance(grad_norm, torch.Tensor):
-                    valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
-                else:
-                    valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+                valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
 
-        # CI check: verify only MTP parameters have non-zero gradients when truncation happens
-        # This check must happen before optimizer.step() as gradients may be modified during step
-        if args.ci_test and args.enable_mtp_training:
-            from miles.backends.megatron_utils.ci_utils import check_mtp_only_grad
+    # CI check: verify only MTP parameters have non-zero gradients when truncation happens
+    # This check must happen before optimizer.step() as gradients may be modified during step
+    if args.ci_test and args.enable_mtp_training:
+        from miles.backends.megatron_utils.ci_utils import check_mtp_only_grad
 
-            check_mtp_only_grad(model, step_id)
+        check_mtp_only_grad(model, step_id)
 
-        if valid_step:
-            # Update parameters.
-            update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+    if valid_step:
+        # Update parameters.
+        update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
-            # Update learning rate.
-            assert update_successful
-            opt_param_scheduler.step(increment=args.global_batch_size)
+        # Update learning rate.
+        assert update_successful
+        opt_param_scheduler.step(increment=args.global_batch_size)
 
-        # release grad
-        for model_chunk in model:
-            model_chunk.zero_grad_buffer()
-        optimizer.zero_grad()
+    # release grad
+    for model_chunk in model:
+        model_chunk.zero_grad_buffer()
+    optimizer.zero_grad()
+
+    if dumper_enabled:
+        finalize_dumper_phase(model[0])
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced, parallel_state)

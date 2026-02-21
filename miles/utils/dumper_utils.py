@@ -4,8 +4,6 @@ import dataclasses
 import enum
 import logging
 from argparse import Namespace
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -84,28 +82,11 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     return True
 
 
-@contextmanager
-def dumper_phase_scope(
-    args: Namespace,
-    phase: DumperPhase,
-    model: torch.nn.Module,
-) -> Generator[bool, None, None]:
-    """Context manager wrapping the full dumper lifecycle for a Megatron phase.
-
-    On entry: configure + step() (if enabled).
-    On exit: dump_model (if enabled).
-    """
-    enabled = configure_dumper_for_phase(args, phase)
-
-    if enabled:
-        dumper.step()
-
-    try:
-        yield enabled
-    finally:
-        if enabled:
-            dumper.dump_model(model)
-            dumper.configure(enable=False)
+def finalize_dumper_phase(model: torch.nn.Module) -> None:
+    """Finalize a dumper phase: dump model weights/grads, advance step, then disable."""
+    dumper.dump_model(model)
+    dumper.step()
+    dumper.configure(enable=False)
 
 
 def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
