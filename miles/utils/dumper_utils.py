@@ -78,7 +78,6 @@ class DumperMegatronPhaseUtil:
 
         merged = {
             "dir": str(_get_dir(args)),
-            "enable_http_server": False,
             "exp_name": phase.value,
             "cleanup_previous": True,
             **overrides,
