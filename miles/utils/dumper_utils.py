@@ -115,7 +115,7 @@ def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
     raw = getattr(args, f"dumper_{phase.value}", None)
     overrides = _DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
 
-    if "enable" not in overrides and getattr(args, "dumper_enable", False):
+    if "enable" not in overrides and args.dumper_enable:
         overrides["enable"] = True
 
     return overrides
