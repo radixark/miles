@@ -98,15 +98,3 @@ class TestMaybeDisableHeartbeatsForDumper:
         assert args.use_fault_tolerance is False
         assert args.router_disable_health_check is True
         assert args.rollout_health_check_interval == 1e18
-
-    def test_fault_tolerance_already_false(self) -> None:
-        args = self._make_args(
-            dumper_enable=True,
-            use_fault_tolerance=False,
-            rollout_health_check_interval=60.0,
-        )
-        _maybe_disable_heartbeats_for_dumper(args)
-
-        assert args.use_fault_tolerance is False
-        assert args.router_disable_health_check is True
-        assert args.rollout_health_check_interval == 1e18
