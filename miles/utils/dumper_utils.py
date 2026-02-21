@@ -75,7 +75,8 @@ class DumperMegatronUtil:
         assert (
             len(model) == 1
         ), f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
-        dumper.dump_model(model[0])
+        dumper.dump_model(model[0], save=False)
+        _dump_model_summary(model[0])
         dumper.step()
         dumper.configure(enable=False)
 
@@ -96,6 +97,18 @@ class DumperMegatronUtil:
         dumper.reset()
         dumper.configure(**dataclasses.asdict(full_config))
         return True
+
+
+def _dump_model_summary(model: torch.nn.Module) -> None:
+    summary = {
+        name: {
+            "shape": list(param.shape),
+            "dtype": str(param.dtype),
+            "device": str(param.device),
+        }
+        for name, param in model.named_parameters()
+    }
+    dumper.dump("model_summary", summary)
 
 
 def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
