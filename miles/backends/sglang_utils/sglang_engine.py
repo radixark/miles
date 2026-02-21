@@ -14,7 +14,6 @@ from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
 from miles.ray.ray_actor import RayActor
-from miles.utils.dumper_utils import get_dumper_env_for_sglang
 from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
@@ -51,33 +50,12 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
-def _launch_server_with_env(
-    extra_env: dict[str, str],
-    server_args: "ServerArgs",
-) -> None:
-    """Target for multiprocessing.Process: set extra env vars then start the server."""
-    os.environ.update(extra_env)
-    from sglang.srt.entrypoints.http_server import launch_server
-
-    launch_server(server_args)
-
-
-def launch_server_process(
-    server_args: ServerArgs,
-    extra_env: dict[str, str] | None = None,
-) -> multiprocessing.Process:
+def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
-
-    if extra_env:
-        p = multiprocessing.Process(
-            target=_launch_server_with_env,
-            args=(extra_env, server_args),
-        )
-    else:
-        p = multiprocessing.Process(target=launch_server, args=(server_args,))
+    p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
     if server_args.node_rank != 0:
@@ -203,14 +181,7 @@ class SGLangEngine(RayActor):
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
 
-        dumper_env = get_dumper_env_for_sglang(self.args, engine_rank=self.rank)
-        if dumper_env:
-            logger.info(f"Dumper enabled for inference phase (engine_rank={self.rank})")
-
-        self.process = launch_server_process(
-            ServerArgs(**server_args_dict),
-            extra_env=dumper_env or None,
-        )
+        self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
