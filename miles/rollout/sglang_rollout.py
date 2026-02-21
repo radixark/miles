@@ -31,15 +31,6 @@ __all__ = ["generate_rollout"]
 logger = logging.getLogger(__name__)
 
 
-async def _get_worker_urls(args: Namespace) -> list[str]:
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        return response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        return [worker["url"] for worker in response["workers"]]
-
-
 class GenerateState(metaclass=SingletonMeta):
     """
     The global state for the generation process.
@@ -296,7 +287,13 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
-    urls = await _get_worker_urls(args)
+    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
+        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
+        urls = response["urls"]
+    else:
+        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+        urls = [worker["url"] for worker in response["workers"]]
+
     logger.info(f"Abort request for {urls}")
     await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
 

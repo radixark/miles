@@ -81,8 +81,9 @@ async def configure_dumper_for_sglang(args: Namespace) -> None:
             "enable": True,
             "dir": dumper_dir,
             "exp_name": f"engine_{i}",
+            "cleanup_previous": True,
         }
-        skip_keys = {"enable", "dir", "exp_name"}
+        skip_keys = {"enable", "dir", "exp_name", "cleanup_previous"}
         for key, value in overrides.items():
             if key not in skip_keys:
                 body[key] = value
@@ -106,6 +107,7 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     overrides["dir"] = str(get_dumper_dir(args, phase))
     overrides.setdefault("enable_http_server", False)
     overrides.setdefault("exp_name", phase.value)
+    overrides.setdefault("cleanup_previous", True)
 
     full_config = _DumperConfig(**overrides)
     dumper.reset()
