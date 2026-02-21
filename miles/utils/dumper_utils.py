@@ -25,8 +25,8 @@ def is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
     return bool(overrides.get("enable", False))
 
 
-def get_dumper_dir(args: Namespace, phase: DumperPhase) -> Path:
-    return Path(args.dumper_dir) / phase.value
+def get_dumper_dir(args: Namespace) -> Path:
+    return Path(args.dumper_dir)
 
 
 def get_dumper_env_for_sglang(args: Namespace) -> dict[str, str]:
@@ -44,7 +44,7 @@ async def configure_dumper_for_sglang(args: Namespace) -> None:
 
     worker_urls = await get_worker_urls(args)
     overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
-    dumper_dir = str(get_dumper_dir(args, DumperPhase.INFERENCE))
+    dumper_dir = str(get_dumper_dir(args))
 
     coros = []
     for i, url in enumerate(worker_urls):
@@ -70,7 +70,7 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     if not overrides.get("enable", False):
         return False
 
-    overrides["dir"] = str(get_dumper_dir(args, phase))
+    overrides["dir"] = str(get_dumper_dir(args))
     overrides.setdefault("enable_http_server", False)
     overrides.setdefault("exp_name", phase.value)
     overrides.setdefault("cleanup_previous", True)

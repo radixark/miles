@@ -10,11 +10,7 @@ MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
 DUMP_DIR = "/tmp/test_miles_dumper"
 
-PHASES = {
-    "inference": "engine_*",
-    "fwd_only": "fwd_only",
-    "fwd_bwd": "fwd_bwd",
-}
+EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
 
 def prepare():
@@ -85,8 +81,8 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str) -> None:
 def verify():
     base = Path(DUMP_DIR)
 
-    for phase, exp_pattern in PHASES.items():
-        _check_dump_dir(base / phase, exp_pattern)
+    for pattern in EXP_PATTERNS:
+        _check_dump_dir(base, pattern)
 
     print("All dump verifications passed!")
 
