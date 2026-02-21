@@ -1,10 +1,11 @@
 import argparse
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from miles.utils.arguments import get_miles_extra_args_provider
+from miles.utils.arguments import _maybe_disable_heartbeats_for_dumper, get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -56,3 +57,56 @@ class TestAddArgumentsSupport:
         ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
+
+
+class TestMaybeDisableHeartbeatsForDumper:
+    def _make_args(
+        self,
+        *,
+        dumper_enable: bool = False,
+        use_fault_tolerance: bool = False,
+        router_disable_health_check: bool = False,
+        rollout_health_check_interval: float = 30.0,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            dumper_enable=dumper_enable,
+            use_fault_tolerance=use_fault_tolerance,
+            router_disable_health_check=router_disable_health_check,
+            rollout_health_check_interval=rollout_health_check_interval,
+        )
+
+    def test_noop_when_dumper_disabled(self) -> None:
+        args = self._make_args(
+            dumper_enable=False,
+            use_fault_tolerance=True,
+            rollout_health_check_interval=30.0,
+        )
+        _maybe_disable_heartbeats_for_dumper(args)
+
+        assert args.use_fault_tolerance is True
+        assert args.router_disable_health_check is False
+        assert args.rollout_health_check_interval == 30.0
+
+    def test_disables_all_heartbeats(self) -> None:
+        args = self._make_args(
+            dumper_enable=True,
+            use_fault_tolerance=True,
+            rollout_health_check_interval=30.0,
+        )
+        _maybe_disable_heartbeats_for_dumper(args)
+
+        assert args.use_fault_tolerance is False
+        assert args.router_disable_health_check is True
+        assert args.rollout_health_check_interval == 1e18
+
+    def test_fault_tolerance_already_false(self) -> None:
+        args = self._make_args(
+            dumper_enable=True,
+            use_fault_tolerance=False,
+            rollout_health_check_interval=60.0,
+        )
+        _maybe_disable_heartbeats_for_dumper(args)
+
+        assert args.use_fault_tolerance is False
+        assert args.router_disable_health_check is True
+        assert args.rollout_health_check_interval == 1e18
