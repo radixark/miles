@@ -72,9 +72,9 @@ class DumperMegatronUtil:
         if not self.enabled:
             return
 
-        assert len(model) == 1, (
-            f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
-        )
+        assert (
+            len(model) == 1
+        ), f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
         dumper.dump_model(model[0])
         dumper.step()
         dumper.configure(enable=False)
