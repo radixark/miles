@@ -59,18 +59,21 @@ def get_dumper_env_for_sglang(args: Namespace) -> dict[str, str]:
     return {"DUMPER_SERVER_PORT": "reuse"}
 
 
-async def configure_dumper_for_sglang(args: Namespace, worker_urls: list[str]) -> None:
+async def configure_dumper_for_sglang(args: Namespace) -> None:
     """Configure and enable the dumper on all SGLang engines via HTTP.
 
-    Each engine gets its own subdirectory via exp_name=engine_{i}.
+    Discovers engine URLs from the router, then sends /dumper/configure to
+    each engine.  Each engine gets its own subdirectory via exp_name=engine_{i}.
     """
     if not is_phase_enabled(args, DumperPhase.INFERENCE):
         return
 
+    from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
+    from miles.utils.http_utils import post
+
+    worker_urls = await get_worker_urls(args)
     overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
     dumper_dir = str(get_dumper_dir(args, DumperPhase.INFERENCE))
-
-    from miles.utils.http_utils import post
 
     coros = []
     for i, url in enumerate(worker_urls):
@@ -88,13 +91,6 @@ async def configure_dumper_for_sglang(args: Namespace, worker_urls: list[str]) -
 
     await asyncio.gather(*coros)
     logger.info("Configured dumper on %d SGLang engines (dir=%s)", len(worker_urls), dumper_dir)
-
-
-async def reset_dumper_for_sglang(worker_urls: list[str]) -> None:
-    """Reset the dumper on all SGLang engines via HTTP."""
-    from miles.utils.http_utils import post
-
-    await asyncio.gather(*[post(f"{url}/dumper/reset", {}) for url in worker_urls])
 
 
 # ---------------------------------------------------------------------------

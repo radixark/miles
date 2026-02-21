@@ -340,8 +340,7 @@ async def generate_rollout_async(
     """
     assert args.rollout_global_dataset
 
-    worker_urls = await _get_worker_urls(args)
-    await configure_dumper_for_sglang(args, worker_urls)
+    await configure_dumper_for_sglang(args)
 
     state = GenerateState(args)
 
