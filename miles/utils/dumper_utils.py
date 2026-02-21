@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from sglang.srt.debug_utils.dumper import _DumperConfig, _FrozenConfig, dumper
+from sglang.srt.debug_utils.dumper import _DumperConfig, dumper
 
 logger = logging.getLogger(__name__)
 
@@ -21,34 +21,9 @@ class DumperPhase(enum.Enum):
     FWD_BWD = "fwd_bwd"
 
 
-def parse_dumper_config(pairs: list[str] | None) -> dict[str, Any]:
-    """Parse key=value pairs into a dict suitable for dumper.configure().
-
-    Values are coerced based on the target field's type in _DumperConfig
-    (bool fields: 'true'/'1' -> True; int fields: parsed as int; str fields: kept as-is).
-    Keys are validated against _DumperConfig fields.
-    """
-    if not pairs:
-        return {}
-
-    valid_fields = {f.name: f for f in dataclasses.fields(_DumperConfig)}
-    config: dict[str, Any] = {}
-
-    for pair in pairs:
-        key, sep, value = pair.partition("=")
-        if not sep:
-            raise ValueError(f"Invalid dumper config pair (missing '='): {pair!r}")
-        if key not in valid_fields:
-            raise ValueError(f"Unknown dumper config key {key!r}. Valid keys: {sorted(valid_fields)}")
-
-        config[key] = _FrozenConfig._parse_env_value(value, valid_fields[key].default)
-
-    return config
-
-
 def is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
-    config = _get_phase_config(args, phase)
-    return bool(config.get("enable", False))
+    overrides = _get_phase_overrides(args, phase)
+    return bool(overrides.get("enable", False))
 
 
 def get_dumper_dir(args: Namespace, phase: DumperPhase) -> Path:
@@ -60,9 +35,11 @@ def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, st
 
     Returns an empty dict if the inference phase is not enabled.
     Each engine gets its own subdirectory via DUMPER_EXP_NAME=engine_{rank}.
+    Only explicitly-set user overrides are exported — unset fields let the
+    SGLang server use its own defaults.
     """
-    config = _get_phase_config(args, DumperPhase.INFERENCE)
-    if not config.get("enable", False):
+    overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
+    if not overrides.get("enable", False):
         return {}
 
     dumper_dir = get_dumper_dir(args, DumperPhase.INFERENCE)
@@ -77,9 +54,9 @@ def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, st
     for field in dataclasses.fields(_DumperConfig):
         if field.name in skip_keys:
             continue
-        if field.name in config:
+        if field.name in overrides:
             env_name = _DumperConfig._env_name(field.name)
-            raw_value = config[field.name]
+            raw_value = overrides[field.name]
             if raw_value is True:
                 env[env_name] = "1"
             elif raw_value is False:
@@ -93,22 +70,17 @@ def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, st
 
 def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     """Configure the dumper singleton for a Megatron phase. Returns True if enabled."""
-    config = _get_phase_config(args, phase)
-    if not config.get("enable", False):
+    overrides = _get_phase_overrides(args, phase)
+    if not overrides.get("enable", False):
         return False
 
-    defaults = {f.name: f.default for f in dataclasses.fields(_DumperConfig)}
-    configure_kwargs = {**defaults}
-    configure_kwargs.update({k: v for k, v in config.items() if k != "enable"})
-    configure_kwargs["enable"] = True
-    configure_kwargs["dir"] = str(get_dumper_dir(args, phase))
-    if "enable_http_server" not in config:
-        configure_kwargs["enable_http_server"] = False
-    if "exp_name" not in config:
-        configure_kwargs["exp_name"] = phase.value
+    overrides["dir"] = str(get_dumper_dir(args, phase))
+    overrides.setdefault("enable_http_server", False)
+    overrides.setdefault("exp_name", phase.value)
 
+    full_config = _DumperConfig(**overrides)
     dumper.reset()
-    dumper.configure(**configure_kwargs)
+    dumper.configure(**dataclasses.asdict(full_config))
     return True
 
 
@@ -136,11 +108,12 @@ def dumper_phase_scope(
             dumper.configure(enable=False)
 
 
-def _get_phase_config(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
+def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
+    """Return only the explicitly-set dumper field overrides for *phase*."""
     raw = getattr(args, f"dumper_{phase.value}", None)
-    config = parse_dumper_config(raw) if isinstance(raw, list) else (raw or {})
+    overrides = _DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
 
-    if "enable" not in config and getattr(args, "dumper_enable", False):
-        config["enable"] = True
+    if "enable" not in overrides and getattr(args, "dumper_enable", False):
+        overrides["enable"] = True
 
-    return config
+    return overrides
