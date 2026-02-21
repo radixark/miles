@@ -78,12 +78,15 @@ class DumperMegatronPhaseUtil:
         if not overrides.get("enable", False):
             return False
 
-        overrides["dir"] = str(_get_dir(args))
-        overrides.setdefault("enable_http_server", False)
-        overrides.setdefault("exp_name", phase.value)
-        overrides.setdefault("cleanup_previous", True)
+        merged = {
+            "enable_http_server": False,
+            "exp_name": phase.value,
+            "cleanup_previous": True,
+            **overrides,
+            "dir": str(_get_dir(args)),
+        }
 
-        full_config = _DumperConfig(**overrides)
+        full_config = _DumperConfig(**merged)
         dumper.reset()
         dumper.configure(**dataclasses.asdict(full_config))
         return True
