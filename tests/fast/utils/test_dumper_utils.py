@@ -1,14 +1,14 @@
 from unittest.mock import MagicMock, patch
 
+from miles.utils import dumper_utils
 
-class TestWrapForwardStepWithDumperStepping:
+
+class TestWrapForwardStepWithStepping:
     """Test that the wrapper calls dumper.step() between microbatches but not before the first one."""
 
     def test_first_call_does_not_step(self) -> None:
-        from miles.utils.dumper_utils import wrap_forward_step_with_dumper_stepping
-
         inner = MagicMock(return_value=("output", "loss_fn"))
-        wrapped = wrap_forward_step_with_dumper_stepping(inner)
+        wrapped = dumper_utils.wrap_forward_step_with_stepping(inner)
 
         mock_dumper = MagicMock()
         with patch("miles.utils.dumper_utils.dumper", mock_dumper):
@@ -17,10 +17,8 @@ class TestWrapForwardStepWithDumperStepping:
         mock_dumper.step.assert_not_called()
 
     def test_second_call_steps_once(self) -> None:
-        from miles.utils.dumper_utils import wrap_forward_step_with_dumper_stepping
-
         inner = MagicMock(return_value=("output", "loss_fn"))
-        wrapped = wrap_forward_step_with_dumper_stepping(inner)
+        wrapped = dumper_utils.wrap_forward_step_with_stepping(inner)
 
         mock_dumper = MagicMock()
         with patch("miles.utils.dumper_utils.dumper", mock_dumper):
@@ -30,10 +28,8 @@ class TestWrapForwardStepWithDumperStepping:
         mock_dumper.step.assert_called_once()
 
     def test_n_calls_step_n_minus_1_times(self) -> None:
-        from miles.utils.dumper_utils import wrap_forward_step_with_dumper_stepping
-
         inner = MagicMock(return_value=("output", "loss_fn"))
-        wrapped = wrap_forward_step_with_dumper_stepping(inner)
+        wrapped = dumper_utils.wrap_forward_step_with_stepping(inner)
 
         mock_dumper = MagicMock()
         with patch("miles.utils.dumper_utils.dumper", mock_dumper):
@@ -43,10 +39,8 @@ class TestWrapForwardStepWithDumperStepping:
         assert mock_dumper.step.call_count == 4
 
     def test_passes_args_and_kwargs_through(self) -> None:
-        from miles.utils.dumper_utils import wrap_forward_step_with_dumper_stepping
-
         inner = MagicMock(return_value=("output", "loss_fn"))
-        wrapped = wrap_forward_step_with_dumper_stepping(inner)
+        wrapped = dumper_utils.wrap_forward_step_with_stepping(inner)
 
         mock_dumper = MagicMock()
         with patch("miles.utils.dumper_utils.dumper", mock_dumper):
@@ -56,11 +50,9 @@ class TestWrapForwardStepWithDumperStepping:
         assert result == ("output", "loss_fn")
 
     def test_returns_inner_result(self) -> None:
-        from miles.utils.dumper_utils import wrap_forward_step_with_dumper_stepping
-
         sentinel = object()
         inner = MagicMock(return_value=sentinel)
-        wrapped = wrap_forward_step_with_dumper_stepping(inner)
+        wrapped = dumper_utils.wrap_forward_step_with_stepping(inner)
 
         mock_dumper = MagicMock()
         with patch("miles.utils.dumper_utils.dumper", mock_dumper):

@@ -17,7 +17,7 @@ from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
-from miles.utils.dumper_utils import configure_dumper_for_sglang
+from miles.utils import dumper_utils
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.misc import SingletonMeta, load_function
@@ -337,7 +337,7 @@ async def generate_rollout_async(
     """
     assert args.rollout_global_dataset
 
-    await configure_dumper_for_sglang(args)
+    await dumper_utils.configure_for_sglang(args)
 
     state = GenerateState(args)
 

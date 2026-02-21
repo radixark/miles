@@ -26,17 +26,17 @@ def is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
     return bool(overrides.get("enable", False))
 
 
-def get_dumper_dir(args: Namespace) -> Path:
+def get_dir(args: Namespace) -> Path:
     return Path(args.dumper_dir)
 
 
-def get_dumper_env_for_sglang(args: Namespace) -> dict[str, str]:
+def get_env_for_sglang(args: Namespace) -> dict[str, str]:
     if not is_phase_enabled(args, DumperPhase.INFERENCE):
         return {}
     return {"DUMPER_SERVER_PORT": "reuse"}
 
 
-async def configure_dumper_for_sglang(args: Namespace) -> None:
+async def configure_for_sglang(args: Namespace) -> None:
     if not is_phase_enabled(args, DumperPhase.INFERENCE):
         return
 
@@ -45,7 +45,7 @@ async def configure_dumper_for_sglang(args: Namespace) -> None:
 
     worker_urls = await get_worker_urls(args)
     overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
-    dumper_dir = str(get_dumper_dir(args))
+    dumper_dir = str(get_dir(args))
 
     coros = []
     for i, url in enumerate(worker_urls):
@@ -62,12 +62,12 @@ async def configure_dumper_for_sglang(args: Namespace) -> None:
     logger.info("Configured dumper on %d SGLang engines (dir=%s)", len(worker_urls), dumper_dir)
 
 
-def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
+def configure_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     overrides = _get_phase_overrides(args, phase)
     if not overrides.get("enable", False):
         return False
 
-    overrides["dir"] = str(get_dumper_dir(args))
+    overrides["dir"] = str(get_dir(args))
     overrides.setdefault("enable_http_server", False)
     overrides.setdefault("exp_name", phase.value)
     overrides.setdefault("cleanup_previous", True)
@@ -78,13 +78,13 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     return True
 
 
-def finalize_dumper_phase(model: torch.nn.Module) -> None:
+def finalize_phase(model: torch.nn.Module) -> None:
     dumper.dump_model(model)
     dumper.step()
     dumper.configure(enable=False)
 
 
-def wrap_forward_step_with_dumper_stepping(forward_step_func: Callable) -> Callable:
+def wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
     """Wrap a Megatron ``forward_step`` so that ``dumper.step()`` is called
     between microbatches.
 

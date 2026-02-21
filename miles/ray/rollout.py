@@ -29,7 +29,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
-from miles.utils.dumper_utils import get_dumper_env_for_sglang
+from miles.utils import dumper_utils
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.tracking_utils import init_tracking
@@ -516,7 +516,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
         }
-        env_vars.update(get_dumper_env_for_sglang(args))
+        env_vars.update(dumper_utils.get_env_for_sglang(args))
 
         worker_type = "regular"
         if args.prefill_num_servers is not None:
