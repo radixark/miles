@@ -219,6 +219,7 @@ def forward_only(
             parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
+            pad_token_id=args.pad_token_id,
         )
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
@@ -367,6 +368,7 @@ def train_one_step(
             parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
+            pad_token_id=args.pad_token_id,
         )
 
         from miles.utils.replay_base import all_replay_managers

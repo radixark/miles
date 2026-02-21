@@ -346,6 +346,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             self.args.data_pad_size_multiplier,
                             self.args.qkv_format,
                             get_position_ids=True,
+                            pad_token_id=self.args.pad_token_id,
                         )
 
                         model_args = self._get_model_inputs_args(batch)
@@ -459,6 +460,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,
                         get_position_ids=True,
+                        pad_token_id=self.args.pad_token_id,
                     )
 
                     log_dict = self._train_step(
