@@ -3,12 +3,13 @@ from __future__ import annotations
 import dataclasses
 import logging
 from argparse import Namespace
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generator, Literal
+from typing import Any, Literal
 
-if TYPE_CHECKING:
-    import torch
+import torch
+from sglang.srt.debug_utils.dumper import _DumperConfig, dumper
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,6 @@ _PHASE_ATTR_MAP: dict[DumperPhase, str] = {
 
 
 def _get_valid_dumper_keys() -> set[str]:
-    from sglang.srt.debug_utils.dumper import _DumperConfig
-
     return {f.name for f in dataclasses.fields(_DumperConfig)}
 
 
@@ -48,9 +47,7 @@ def parse_dumper_config(pairs: list[str] | None) -> dict[str, Any]:
         if not sep:
             raise ValueError(f"Invalid dumper config pair (missing '='): {pair!r}")
         if key not in valid_keys:
-            raise ValueError(
-                f"Unknown dumper config key {key!r}. Valid keys: {sorted(valid_keys)}"
-            )
+            raise ValueError(f"Unknown dumper config key {key!r}. Valid keys: {sorted(valid_keys)}")
 
         if value.lower() in ("true", "1"):
             config[key] = True
@@ -92,8 +89,6 @@ def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, st
         "DUMPER_SERVER_PORT": "reuse",
     }
 
-    from sglang.srt.debug_utils.dumper import _DumperConfig
-
     skip_keys = {"enable", "dir", "server_port", "exp_name"}
     for field in dataclasses.fields(_DumperConfig):
         if field.name in skip_keys:
@@ -117,8 +112,6 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     config = _get_phase_config(args, phase)
     if not config.get("enable", False):
         return False
-
-    from sglang.srt.debug_utils.dumper import dumper
 
     configure_kwargs = {k: v for k, v in config.items() if k != "enable"}
     configure_kwargs["enable"] = True
@@ -144,16 +137,12 @@ def dumper_phase_scope(
     enabled = configure_dumper_for_phase(args, phase)
 
     if enabled:
-        from sglang.srt.debug_utils.dumper import dumper
-
         dumper.step()
 
     try:
         yield enabled
     finally:
         if enabled:
-            from sglang.srt.debug_utils.dumper import dumper
-
             dumper.dump_model(model)
 
 

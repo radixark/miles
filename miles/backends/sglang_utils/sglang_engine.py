@@ -14,6 +14,7 @@ from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
 from miles.ray.ray_actor import RayActor
+from miles.utils.dumper_utils import get_dumper_env_for_sglang
 from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
@@ -180,8 +181,6 @@ class SGLangEngine(RayActor):
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
-
-        from miles.utils.dumper_utils import get_dumper_env_for_sglang
 
         dumper_env = get_dumper_env_for_sglang(self.args, engine_rank=self.rank)
         if dumper_env:

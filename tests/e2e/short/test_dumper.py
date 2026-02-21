@@ -18,9 +18,7 @@ MEGATRON_PHASES = {
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(
-        f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}"
-    )
+    U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
     U.exec_command(f"rm -rf {DUMP_DIR}")
 
@@ -49,16 +47,21 @@ def execute():
 
     dumper_args = f"--dumper-enable --dumper-dir {DUMP_DIR} "
 
-    misc_args = (
-        f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
-        "--megatron-to-hf-mode bridge "
-    )
+    misc_args = f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate " "--megatron-to-hf-mode bridge "
 
-    train_args = " ".join([
-        ckpt_args, rollout_args, optimizer_args, grpo_args, perf_args,
-        sglang_args, dumper_args, misc_args,
-        U.get_default_wandb_args(__file__),
-    ])
+    train_args = " ".join(
+        [
+            ckpt_args,
+            rollout_args,
+            optimizer_args,
+            grpo_args,
+            perf_args,
+            sglang_args,
+            dumper_args,
+            misc_args,
+            U.get_default_wandb_args(__file__),
+        ]
+    )
 
     U.execute_train(
         train_args=train_args,
