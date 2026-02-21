@@ -24,6 +24,7 @@ class DumperPhase(enum.Enum):
 def get_env_for_sglang(args: Namespace) -> dict[str, str]:
     if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return {}
+
     return {"DUMPER_SERVER_PORT": "reuse"}
 
 
