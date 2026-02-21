@@ -112,9 +112,7 @@ def verify(dump_subdir: str) -> None:
 
 
 def _select_configs() -> dict[str, str]:
-    selected = os.environ.get("MILES_TEST_DUMPER_CONFIG", "")
-    if not selected:
-        return CONFIGS
+    selected = os.environ["MILES_TEST_DUMPER_CONFIG"]
     if selected not in CONFIGS:
         raise ValueError(
             f"Unknown MILES_TEST_DUMPER_CONFIG={selected!r}, "
