@@ -1775,7 +1775,7 @@ def miles_validate_args(args):
 
 
 def _maybe_disable_heartbeats_for_dumper(args) -> None:
-    if not getattr(args, "dumper_enable", False):
+    if not args.dumper_enable:
         return
     if args.use_fault_tolerance:
         logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
