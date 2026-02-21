@@ -55,12 +55,6 @@ async def configure_for_sglang(args: Namespace) -> None:
 
 
 class DumperMegatronPhaseUtil:
-    """Manages dumper configuration for a single Megatron phase.
-
-    All methods are no-ops when the phase is disabled, so callers never need
-    to guard with ``if enabled:``.
-    """
-
     def __init__(self, args: Namespace, phase: DumperPhase) -> None:
         self.enabled = self._configure(args, phase)
 
