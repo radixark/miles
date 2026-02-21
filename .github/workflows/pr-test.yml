@@ -43,7 +43,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     runs-on: self-hosted
     container:
-      image: radixark/miles:dev
+      image: radixark/miles:dev-test
       options: >
         --gpus all
         --ipc=host
