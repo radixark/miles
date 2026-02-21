@@ -337,7 +337,7 @@ async def generate_rollout_async(
     """
     assert args.rollout_global_dataset
 
-    await dumper_utils.configure_for_sglang(args)
+    await dumper_utils.configure_sglang(args)
 
     state = GenerateState(args)
 

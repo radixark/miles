@@ -21,14 +21,14 @@ class DumperPhase(enum.Enum):
     FWD_BWD = "fwd_bwd"
 
 
-def get_env_for_sglang(args: Namespace) -> dict[str, str]:
+def get_sglang_env(args: Namespace) -> dict[str, str]:
     if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return {}
 
     return {"DUMPER_SERVER_PORT": "reuse"}
 
 
-async def configure_for_sglang(args: Namespace) -> None:
+async def configure_sglang(args: Namespace) -> None:
     if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return
 

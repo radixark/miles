@@ -76,7 +76,7 @@ async def generate_rollout_async(
     args = state.args
     assert args.rollout_global_dataset
 
-    await dumper_utils.configure_for_sglang(args)
+    await dumper_utils.configure_sglang(args)
 
     # instantiate data filters
     dynamic_filter = load_function(args.dynamic_sampling_filter_path)

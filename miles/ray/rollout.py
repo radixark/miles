@@ -516,7 +516,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
         }
-        env_vars.update(dumper_utils.get_env_for_sglang(args))
+        env_vars.update(dumper_utils.get_sglang_env(args))
 
         worker_type = "regular"
         if args.prefill_num_servers is not None:
