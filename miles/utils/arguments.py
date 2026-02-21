@@ -1135,10 +1135,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default="/tmp/dumper",
                 help="Base output directory for sglang dumper. Three subdirs are created: "
-                "sglang_inference/, megatron_forward_only/, megatron_forward_backward/.",
+                "inference/, fwd_only/, fwd_bwd/.",
             )
             parser.add_argument(
-                "--dumper-sglang",
+                "--dumper-inference",
                 nargs="*",
                 default=None,
                 help="SGLang inference phase dumper config as key=value pairs. "

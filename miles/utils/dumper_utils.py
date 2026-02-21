@@ -13,17 +13,13 @@ from sglang.srt.debug_utils.dumper import _DumperConfig, dumper
 
 logger = logging.getLogger(__name__)
 
-DumperPhase = Literal["sglang_inference", "megatron_forward_only", "megatron_forward_backward"]
+DumperPhase = Literal["inference", "fwd_only", "fwd_bwd"]
 
-PHASE_SGLANG_INFERENCE: DumperPhase = "sglang_inference"
-PHASE_MEGATRON_FORWARD_ONLY: DumperPhase = "megatron_forward_only"
-PHASE_MEGATRON_FORWARD_BACKWARD: DumperPhase = "megatron_forward_backward"
+PHASE_INFERENCE: DumperPhase = "inference"
+PHASE_FWD_ONLY: DumperPhase = "fwd_only"
+PHASE_FWD_BWD: DumperPhase = "fwd_bwd"
 
-_PHASE_ATTR_MAP: dict[DumperPhase, str] = {
-    PHASE_SGLANG_INFERENCE: "dumper_sglang",
-    PHASE_MEGATRON_FORWARD_ONLY: "dumper_fwd_only",
-    PHASE_MEGATRON_FORWARD_BACKWARD: "dumper_fwd_bwd",
-}
+_ALL_PHASES: tuple[DumperPhase, ...] = ("inference", "fwd_only", "fwd_bwd")
 
 
 def _get_valid_dumper_keys() -> set[str]:
@@ -74,14 +70,14 @@ def get_dumper_dir(args: Namespace, phase: DumperPhase) -> Path:
 def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, str]:
     """Build DUMPER_* env vars dict for the SGLang server subprocess.
 
-    Returns an empty dict if the sglang_inference phase is not enabled.
+    Returns an empty dict if the inference phase is not enabled.
     Each engine gets its own subdirectory via DUMPER_EXP_NAME=engine_{rank}.
     """
-    config = _get_phase_config(args, PHASE_SGLANG_INFERENCE)
+    config = _get_phase_config(args, PHASE_INFERENCE)
     if not config.get("enable", False):
         return {}
 
-    dumper_dir = get_dumper_dir(args, PHASE_SGLANG_INFERENCE)
+    dumper_dir = get_dumper_dir(args, PHASE_INFERENCE)
     env: dict[str, str] = {
         "DUMPER_ENABLE": "1",
         "DUMPER_DIR": str(dumper_dir),
@@ -147,10 +143,10 @@ def dumper_phase_scope(
 
 
 def _get_phase_config(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
-    if phase not in _PHASE_ATTR_MAP:
-        raise ValueError(f"Unknown dumper phase {phase!r}. Valid: {list(_PHASE_ATTR_MAP)}")
+    if phase not in _ALL_PHASES:
+        raise ValueError(f"Unknown dumper phase {phase!r}. Valid: {list(_ALL_PHASES)}")
 
-    raw = getattr(args, _PHASE_ATTR_MAP[phase], None)
+    raw = getattr(args, f"dumper_{phase}", None)
     config = parse_dumper_config(raw) if isinstance(raw, list) else (raw or {})
 
     if "enable" not in config and getattr(args, "dumper_enable", False):

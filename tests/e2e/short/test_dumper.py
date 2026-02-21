@@ -11,8 +11,8 @@ NUM_GPUS = 4
 DUMP_DIR = "/tmp/test_miles_dumper"
 
 MEGATRON_PHASES = {
-    "megatron_forward_only": "megatron_forward_only",
-    "megatron_forward_backward": "megatron_forward_backward",
+    "fwd_only": "fwd_only",
+    "fwd_bwd": "fwd_bwd",
 }
 
 
@@ -84,8 +84,8 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str) -> None:
 def verify():
     base = Path(DUMP_DIR)
 
-    sglang_dir = base / "sglang_inference"
-    assert sglang_dir.exists(), "Missing sglang_inference dir"
+    sglang_dir = base / "inference"
+    assert sglang_dir.exists(), "Missing inference dir"
     engine_dirs = sorted(sglang_dir.glob("engine_*"))
     assert len(engine_dirs) > 0, f"No engine_* subdirs in {sglang_dir}"
     for engine_dir in engine_dirs:

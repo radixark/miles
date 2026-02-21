@@ -185,7 +185,7 @@ class SGLangEngine(RayActor):
         dumper_env = get_dumper_env_for_sglang(self.args, engine_rank=self.rank)
         if dumper_env:
             os.environ.update(dumper_env)
-            logger.info(f"Applied dumper env vars for sglang_inference phase (engine_rank={self.rank})")
+            logger.info(f"Applied dumper env vars for inference phase (engine_rank={self.rank})")
 
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
