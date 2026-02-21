@@ -16,7 +16,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
-from miles.utils.dumper_utils import PHASE_FWD_BWD, PHASE_FWD_ONLY, get_dumper_dir, is_phase_enabled
+from miles.utils.dumper_utils import DumperPhase, get_dumper_dir, is_phase_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -98,10 +98,10 @@ class MegatronTrainRayActor(TrainRayActor):
             args, role
         )
 
-        if is_phase_enabled(self.args, PHASE_FWD_ONLY):
-            logger.info(f"Dumper enabled for fwd_only, dir={get_dumper_dir(self.args, PHASE_FWD_ONLY)}")
-        if is_phase_enabled(self.args, PHASE_FWD_BWD):
-            logger.info(f"Dumper enabled for fwd_bwd, dir={get_dumper_dir(self.args, PHASE_FWD_BWD)}")
+        if is_phase_enabled(self.args, DumperPhase.FWD_ONLY):
+            logger.info(f"Dumper enabled for fwd_only, dir={get_dumper_dir(self.args, DumperPhase.FWD_ONLY)}")
+        if is_phase_enabled(self.args, DumperPhase.FWD_BWD):
+            logger.info(f"Dumper enabled for fwd_bwd, dir={get_dumper_dir(self.args, DumperPhase.FWD_BWD)}")
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 

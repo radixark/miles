@@ -1,25 +1,24 @@
 from __future__ import annotations
 
 import dataclasses
+import enum
 import logging
 from argparse import Namespace
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import torch
 from sglang.srt.debug_utils.dumper import _DumperConfig, dumper
 
 logger = logging.getLogger(__name__)
 
-DumperPhase = Literal["inference", "fwd_only", "fwd_bwd"]
 
-PHASE_INFERENCE: DumperPhase = "inference"
-PHASE_FWD_ONLY: DumperPhase = "fwd_only"
-PHASE_FWD_BWD: DumperPhase = "fwd_bwd"
-
-_ALL_PHASES: tuple[DumperPhase, ...] = ("inference", "fwd_only", "fwd_bwd")
+class DumperPhase(enum.Enum):
+    INFERENCE = "inference"
+    FWD_ONLY = "fwd_only"
+    FWD_BWD = "fwd_bwd"
 
 
 def _get_valid_dumper_keys() -> set[str]:
@@ -64,7 +63,7 @@ def is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
 
 
 def get_dumper_dir(args: Namespace, phase: DumperPhase) -> Path:
-    return Path(args.dumper_dir) / phase
+    return Path(args.dumper_dir) / phase.value
 
 
 def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, str]:
@@ -73,11 +72,11 @@ def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, st
     Returns an empty dict if the inference phase is not enabled.
     Each engine gets its own subdirectory via DUMPER_EXP_NAME=engine_{rank}.
     """
-    config = _get_phase_config(args, PHASE_INFERENCE)
+    config = _get_phase_config(args, DumperPhase.INFERENCE)
     if not config.get("enable", False):
         return {}
 
-    dumper_dir = get_dumper_dir(args, PHASE_INFERENCE)
+    dumper_dir = get_dumper_dir(args, DumperPhase.INFERENCE)
     env: dict[str, str] = {
         "DUMPER_ENABLE": "1",
         "DUMPER_DIR": str(dumper_dir),
@@ -113,7 +112,7 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     configure_kwargs["enable"] = True
     configure_kwargs["dir"] = str(get_dumper_dir(args, phase))
     configure_kwargs.setdefault("enable_http_server", False)
-    configure_kwargs.setdefault("exp_name", phase)
+    configure_kwargs.setdefault("exp_name", phase.value)
 
     dumper.configure(**configure_kwargs)
     return True
@@ -143,10 +142,7 @@ def dumper_phase_scope(
 
 
 def _get_phase_config(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
-    if phase not in _ALL_PHASES:
-        raise ValueError(f"Unknown dumper phase {phase!r}. Valid: {list(_ALL_PHASES)}")
-
-    raw = getattr(args, f"dumper_{phase}", None)
+    raw = getattr(args, f"dumper_{phase.value}", None)
     config = parse_dumper_config(raw) if isinstance(raw, list) else (raw or {})
 
     if "enable" not in config and getattr(args, "dumper_enable", False):
