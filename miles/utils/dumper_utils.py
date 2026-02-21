@@ -113,11 +113,7 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
     raw = getattr(args, f"dumper_{phase.value}")
-    overrides = DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
-
-    overrides.setdefault("enable", args.dumper_enable)
-
-    return overrides
+    return {"enable": args.dumper_enable, **DumperConfig._kv_pairs_to_dict(raw)}
 
 
 def _is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
@@ -126,4 +122,3 @@ def _is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
 
 def _get_dir(args: Namespace) -> Path:
     return Path(args.dumper_dir)
-
