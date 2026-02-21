@@ -135,10 +135,9 @@ def _convert_to_fp8(args: ScriptArgs):
 def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Skip model download for pruned variants (assumed to already exist in model_dir)
-    if not _is_pruned(args):
-        U.exec_command(
-            f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
-        )
+    U.exec_command(
+        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
