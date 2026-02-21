@@ -10,6 +10,7 @@ from tqdm import tqdm
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.utils.dumper_utils import configure_dumper_for_sglang
 from miles.utils.http_utils import get, post
 from miles.utils.misc import as_completed_async, load_function
 from miles.utils.types import Sample
@@ -74,6 +75,9 @@ async def generate_rollout_async(
 ) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
     args = state.args
     assert args.rollout_global_dataset
+
+    worker_urls = await get_worker_urls(args)
+    await configure_dumper_for_sglang(args, worker_urls)
 
     # instantiate data filters
     dynamic_filter = load_function(args.dynamic_sampling_filter_path)
