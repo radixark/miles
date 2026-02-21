@@ -1633,8 +1633,6 @@ def miles_validate_args(args):
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
-        args.dumper_enable = True
-        args.dumper_dir = f"{args.dump_details}/dumper"
 
     if args.load_debug_rollout_data is not None:
         logger.info(
