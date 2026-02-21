@@ -17,6 +17,7 @@ from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
+from miles.utils.dumper_utils import configure_dumper_for_sglang
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.misc import SingletonMeta, load_function
@@ -28,6 +29,15 @@ from .rm_hub import async_rm, batched_async_rm
 __all__ = ["generate_rollout"]
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_worker_urls(args: Namespace) -> list[str]:
+    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
+        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
+        return response["urls"]
+    else:
+        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+        return [worker["url"] for worker in response["workers"]]
 
 
 class GenerateState(metaclass=SingletonMeta):
@@ -286,13 +296,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        urls = response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
-
+    urls = await _get_worker_urls(args)
     logger.info(f"Abort request for {urls}")
     await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
 
@@ -335,6 +339,9 @@ async def generate_rollout_async(
             - aborted_samples: any partial groups collected during abort when partial_rollout is enabled
     """
     assert args.rollout_global_dataset
+
+    worker_urls = await _get_worker_urls(args)
+    await configure_dumper_for_sglang(args, worker_urls)
 
     state = GenerateState(args)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import enum
 import logging
@@ -19,6 +20,10 @@ class DumperPhase(enum.Enum):
     FWD_BWD = "fwd_bwd"
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
 def is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
     overrides = _get_phase_overrides(args, phase)
     return bool(overrides.get("enable", False))
@@ -28,37 +33,76 @@ def get_dumper_dir(args: Namespace, phase: DumperPhase) -> Path:
     return Path(args.dumper_dir) / phase.value
 
 
-def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, str]:
-    overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
-    if not overrides.get("enable", False):
+def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
+    raw = getattr(args, f"dumper_{phase.value}", None)
+    overrides = _DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
+
+    if "enable" not in overrides and getattr(args, "dumper_enable", False):
+        overrides["enable"] = True
+
+    return overrides
+
+
+# ---------------------------------------------------------------------------
+# SGLang inference — env vars (actor creation) + HTTP (runtime control)
+# ---------------------------------------------------------------------------
+
+def get_dumper_env_for_sglang(args: Namespace) -> dict[str, str]:
+    """Return env vars to set when creating SGLang Ray actors.
+
+    Only registers the HTTP endpoint (DUMPER_SERVER_PORT=reuse) so we can
+    configure the dumper at runtime via HTTP.  The dumper starts disabled;
+    actual enable/configure happens via ``configure_dumper_for_sglang``.
+    """
+    if not is_phase_enabled(args, DumperPhase.INFERENCE):
         return {}
+    return {"DUMPER_SERVER_PORT": "reuse"}
 
-    dumper_dir = get_dumper_dir(args, DumperPhase.INFERENCE)
-    env: dict[str, str] = {
-        "DUMPER_DIR": str(dumper_dir),
-        "DUMPER_EXP_NAME": f"engine_{engine_rank}",
-        "DUMPER_SERVER_PORT": "reuse",
-    }
 
-    skip_keys = {"enable", "dir", "server_port", "exp_name"}
-    for field in dataclasses.fields(_DumperConfig):
-        if field.name in skip_keys:
-            continue
-        if field.name in overrides:
-            env_name = _DumperConfig._env_name(field.name)
-            raw_value = overrides[field.name]
-            if raw_value is True:
-                env[env_name] = "1"
-            elif raw_value is False:
-                env[env_name] = "0"
-            else:
-                env[env_name] = str(raw_value)
+async def configure_dumper_for_sglang(args: Namespace, worker_urls: list[str]) -> None:
+    """Configure and enable the dumper on all SGLang engines via HTTP.
 
-    logger.info(f"Built DUMPER_* env vars for engine_rank={engine_rank}: dir={dumper_dir}")
-    return env
+    Each engine gets its own subdirectory via exp_name=engine_{i}.
+    """
+    if not is_phase_enabled(args, DumperPhase.INFERENCE):
+        return
 
+    overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
+    dumper_dir = str(get_dumper_dir(args, DumperPhase.INFERENCE))
+
+    from miles.utils.http_utils import post
+
+    coros = []
+    for i, url in enumerate(worker_urls):
+        body: dict[str, Any] = {
+            "enable": True,
+            "dir": dumper_dir,
+            "exp_name": f"engine_{i}",
+        }
+        skip_keys = {"enable", "dir", "exp_name"}
+        for key, value in overrides.items():
+            if key not in skip_keys:
+                body[key] = value
+
+        coros.append(post(f"{url}/dumper/configure", body))
+
+    await asyncio.gather(*coros)
+    logger.info("Configured dumper on %d SGLang engines (dir=%s)", len(worker_urls), dumper_dir)
+
+
+async def reset_dumper_for_sglang(worker_urls: list[str]) -> None:
+    """Reset the dumper on all SGLang engines via HTTP."""
+    from miles.utils.http_utils import post
+
+    await asyncio.gather(*[post(f"{url}/dumper/reset", {}) for url in worker_urls])
+
+
+# ---------------------------------------------------------------------------
+# Megatron phases — in-process dumper singleton
+# ---------------------------------------------------------------------------
 
 def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
+    """Configure the dumper singleton for a Megatron phase. Returns True if enabled."""
     overrides = _get_phase_overrides(args, phase)
     if not overrides.get("enable", False):
         return False
@@ -74,16 +118,7 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
 
 
 def finalize_dumper_phase(model: torch.nn.Module) -> None:
+    """Finalize a dumper phase: dump model weights/grads, advance step, then disable."""
     dumper.dump_model(model)
     dumper.step()
     dumper.configure(enable=False)
-
-
-def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
-    raw = getattr(args, f"dumper_{phase.value}", None)
-    overrides = _DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
-
-    if "enable" not in overrides and getattr(args, "dumper_enable", False):
-        overrides["enable"] = True
-
-    return overrides
