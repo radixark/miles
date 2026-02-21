@@ -12,7 +12,7 @@ Args:
       16+-> for full GLM-5 model
   --num-gpus-per-node: GPUs per node (default: 8)
   --mode: "normal" or "debug_minimal" (shorter response length for quick testing)
-  --fp8-rollout: Enable FP8 rollout (not yet implemented)
+  --fp8-rollout: Enable FP8 rollout (converts HF checkpoint to FP8 block quant for sglang; megatron still uses bf16)
   --enable-eval: Enable evaluation every 20 steps
   --enable-mtp: Enable multi-token prediction (EAGLE speculative decoding)
   --enable-optimizer-offload: Offload optimizer to CPU
@@ -22,6 +22,7 @@ Args:
 
 
 Usage for single node minimal test:
+  `ray stop --force && pkill -9 -f sglang || true && sleep 3 && ray start --head --port=6378 --dashboard-port=8266`
   `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1`
 
 Usage for multi node:
@@ -66,6 +67,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_rollout: bool = False
     enable_eval: bool = False
     enable_mtp: bool = False
+    enable_pd: bool = True
     enable_optimizer_offload: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -74,10 +76,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
-        assert not self.fp8_rollout, "fp8 recipe not implemented"
-
-        self.enable_pd = (self.num_nodes > 1)
-        print(f"enable_pd={self.enable_pd}, num_nodes={self.num_nodes}")
+        if self.num_nodes == 1:
+            self.enable_pd = False
 
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.megatron_model_type = f"glm5-744B-A40B_{m.group(1)}layer"
@@ -118,6 +118,17 @@ def _process_glm_checkpoint(args: ScriptArgs):
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
     print(f"Patched {config_path}")
+
+
+def _convert_to_fp8(args: ScriptArgs):
+    """Convert HF checkpoint to FP8 (block quantization). Megatron still uses bf16."""
+    src = f"{args.model_dir}/{args.model_name}"
+    dst = f"{args.model_dir}/{args.model_name}_fp8"
+    U.exec_command(
+        f"python tools/convert_hf_to_fp8.py "
+        f"--model-dir {src} --save-dir {dst} "
+        f"--strategy block --block-size 128 128"
+    )
 
 
 def _prepare_download(args: ScriptArgs):
@@ -166,21 +177,27 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
     )
 
 
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
-        path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
-    )
+def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
+    torch_dist_dst = f"{args.model_local_dir}/{args.model_name}_torch_dist"
+    if not (skip_existing and Path(torch_dist_dst).exists()):
+        U.rsync_simple(
+            path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
+            path_dst=torch_dist_dst,
+        )
+    hf_name = f"{args.model_name}_fp8" if args.fp8_rollout else args.model_name
+    hf_dst = f"{args.model_local_dir}/{hf_name}"
+    if not (skip_existing and Path(hf_dst).exists()):
+        U.rsync_simple(
+            path_src=f"{args.model_dir}/{hf_name}",
+            path_dst=hf_dst,
+        )
 
 
 def _execute_train(args: ScriptArgs):
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
+    hf_name = f"{args.model_name}_fp8" if args.fp8_rollout else args.model_name
     ckpt_args = (
-        f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
+        f"--hf-checkpoint {args.model_local_dir}/{hf_name} "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
@@ -220,8 +237,8 @@ def _execute_train(args: ScriptArgs):
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 3 "
-            "--decoder-last-pipeline-num-layers 23 "
-            "--context-parallel-size 2 "
+            "--decoder-last-pipeline-num-layers 6 "
+            "--context-parallel-size 1 "
             "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
         ) 
@@ -277,7 +294,11 @@ def _execute_train(args: ScriptArgs):
 
     if args.enable_pd:
         sglang_decode_max_bs = 8
-        sglang_world_size = max(args.num_gpus_per_node * args.num_nodes, 64)
+        if args.num_nodes < 16:
+            sglang_world_size = 16
+        else:
+            sglang_world_size = 64
+
     else:
         sglang_decode_max_bs = 256
         sglang_world_size = 8
@@ -313,12 +334,12 @@ def _execute_train(args: ScriptArgs):
         "--sglang-attention-backend nsa "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # concurrency
-        f"--sglang-max-running-requests {512 if args.enable_pd else sglang_world_size * sglang_decode_max_bs} "
-        f"--sglang-chunked-prefill-size {131072 if args.enable_pd else sglang_world_size * sglang_decode_max_bs} "
+        f"--sglang-max-running-requests 512 "
+        f"--sglang-chunked-prefill-size {2048 * sglang_world_size} "
         "--sglang-watchdog-timeout 3600 "
     )
     sglang_extra_env_vars = {
-        "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{32 if args.enable_pd else sglang_decode_max_bs}",
+        "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{32 if args.enable_pd else 256}",
     }
 
     misc_args = (
@@ -379,8 +400,10 @@ def full_train(args: ScriptArgs):
     """Full pipeline: download, convert, copy, train."""
     _prepare_download(args)
     _process_glm_checkpoint(args)
+    if args.fp8_rollout:
+        _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
-    _prepare_cp(args)
+    _prepare_cp(args, skip_existing=True)
     _execute_train(args)
 
 
@@ -390,6 +413,8 @@ def prepare(args: ScriptArgs):
     """Download model/data and convert to megatron checkpoint (run on head node)."""
     _prepare_download(args)
     _process_glm_checkpoint(args)
+    if args.fp8_rollout:
+        _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
 
 
