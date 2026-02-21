@@ -282,7 +282,7 @@ def forward_only(
     for model_module in model:
         model_module.train()
 
-    dumper_phase_util.finalize(model[0])
+    dumper_phase_util.finalize(model)
 
     rollout_data = {}
     # Store the results on the last stage
@@ -463,7 +463,7 @@ def train_one_step(
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
 
-    dumper_phase_util.finalize(model[0])
+    dumper_phase_util.finalize(model)
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced, parallel_state)

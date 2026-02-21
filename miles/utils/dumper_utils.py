@@ -5,7 +5,7 @@ import dataclasses
 import enum
 import logging
 from argparse import Namespace
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -68,11 +68,14 @@ class DumperMegatronUtil:
 
         return _wrap_forward_step_with_stepping(forward_step_func)
 
-    def finalize(self, model: torch.nn.Module) -> None:
+    def finalize(self, model: Sequence[torch.nn.Module]) -> None:
         if not self.enabled:
             return
 
-        dumper.dump_model(model)
+        assert len(model) == 1, (
+            f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
+        )
+        dumper.dump_model(model[0])
         dumper.step()
         dumper.configure(enable=False)
 
