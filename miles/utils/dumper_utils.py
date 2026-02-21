@@ -42,11 +42,11 @@ async def configure_for_sglang(args: Namespace) -> None:
     coros = []
     for i, url in enumerate(worker_urls):
         body = {
-            **overrides,
             "enable": True,
             "dir": dumper_dir,
             "exp_name": f"engine_{i}",
             "cleanup_previous": True,
+            **overrides,
         }
         coros.append(post(f"{url}/dumper/configure", body))
 
