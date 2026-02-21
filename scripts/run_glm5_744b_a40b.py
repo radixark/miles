@@ -1,6 +1,8 @@
 """
 GLM-5 744B-A40B Training Script
 
+=====================
+
 Args:
   --model-name: Model variant to use.
       GLM-5         Full 744B model (requires >=16 nodes)
@@ -20,12 +22,15 @@ Args:
   --model-dir: Directory for model weights and converted checkpoints (default: /root/models, shared NFS)
   --model-local-dir: Node-local directory for model copies (default: /root/local_data, local disk)
 
+=====================
 
-Usage for single node minimal test:
+I. Usage for single node minimal test:
   `ray stop --force && pkill -9 -f sglang || true && sleep 3 && ray start --head --port=6378 --dashboard-port=8266`
   `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1`
 
-Usage for multi node:
+=====================
+
+II. Usage for multi node (20 layers, 6 nodes as an example):
 
   1. Setup containers on all nodes
 
