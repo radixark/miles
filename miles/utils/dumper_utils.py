@@ -36,7 +36,7 @@ async def configure_sglang(args: Namespace) -> None:
     from miles.utils.http_utils import post
 
     worker_urls = await get_worker_urls(args)
-    overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
+    overrides = _get_phase_override_configs(args, DumperPhase.INFERENCE)
     coros = []
     for i, url in enumerate(worker_urls):
         body = {
@@ -72,7 +72,7 @@ class DumperMegatronUtil:
 
     @staticmethod
     def _configure(args: Namespace, phase: DumperPhase) -> bool:
-        overrides = _get_phase_overrides(args, phase)
+        overrides = _get_phase_override_configs(args, phase)
         if not overrides.get("enable"):
             return False
 
@@ -102,7 +102,7 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
     return _wrapped
 
 
-def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
+def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
     raw = getattr(args, f"dumper_{phase.value}")
     overrides = DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
 
@@ -112,8 +112,7 @@ def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
 
 
 def _is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
-    overrides = _get_phase_overrides(args, phase)
-    return overrides.get("enable", False)
+    return _get_phase_override_configs(args, phase).get("enable", False)
 
 
 def _get_dir(args: Namespace) -> Path:
