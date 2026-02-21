@@ -13,6 +13,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.async_utils import run
@@ -135,6 +136,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+
+    if is_lora_enabled(args):
+        payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
