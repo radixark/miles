@@ -43,10 +43,7 @@ def prepare() -> None:
 def _execute(perf_args: str, dump_subdir: str) -> None:
     dump_dir = f"{DUMP_DIR}/{dump_subdir}"
 
-    ckpt_args = (
-        f"--hf-checkpoint /root/models/{MODEL_NAME} "
-        f"--ref-load /root/{MODEL_NAME}_torch_dist "
-    )
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -57,17 +54,11 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
         "--global-batch-size 8 "
     )
 
-    optimizer_args = (
-        "--optimizer adam --lr 1e-6 --lr-decay-style constant "
-        "--optimizer-cpu-offload "
-    )
+    optimizer_args = "--optimizer adam --lr 1e-6 --lr-decay-style constant " "--optimizer-cpu-offload "
 
     grpo_args = "--advantage-estimator grpo --eps-clip 0.2 "
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
-        "--sglang-mem-fraction-static 0.6 "
-    )
+    sglang_args = "--rollout-num-gpus-per-engine 8 " "--sglang-mem-fraction-static 0.6 "
 
     dumper_args = f"--dumper-enable --dumper-dir {dump_dir} "
 
@@ -80,11 +71,19 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
         "--moe-token-dispatcher-type alltoall "
     )
 
-    train_args = " ".join([
-        ckpt_args, rollout_args, optimizer_args, grpo_args,
-        perf_args, sglang_args, dumper_args, misc_args,
-        U.get_default_wandb_args(__file__),
-    ])
+    train_args = " ".join(
+        [
+            ckpt_args,
+            rollout_args,
+            optimizer_args,
+            grpo_args,
+            perf_args,
+            sglang_args,
+            dumper_args,
+            misc_args,
+            U.get_default_wandb_args(__file__),
+        ]
+    )
 
     U.execute_train(
         train_args=train_args,
@@ -114,10 +113,7 @@ def verify(dump_subdir: str) -> None:
 def _select_configs() -> dict[str, str]:
     selected = os.environ["MILES_TEST_DUMPER_CONFIG"]
     if selected not in CONFIGS:
-        raise ValueError(
-            f"Unknown MILES_TEST_DUMPER_CONFIG={selected!r}, "
-            f"valid values: {list(CONFIGS.keys())}"
-        )
+        raise ValueError(f"Unknown MILES_TEST_DUMPER_CONFIG={selected!r}, " f"valid values: {list(CONFIGS.keys())}")
     return {selected: CONFIGS[selected]}
 
 
