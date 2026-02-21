@@ -5,23 +5,48 @@ import torch
 
 import miles.utils.external_utils.command_utils as U
 
-MODEL_NAME = "Qwen2.5-0.5B-Instruct"
-MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4
+MODEL_NAME = "Qwen3-30B-A3B"
+MODEL_TYPE = "qwen3-30B-A3B"
+NUM_GPUS = 8
 DUMP_DIR = "/tmp/test_miles_dumper"
 
 EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
+# Two configs that together cover all parallelism dimensions:
+#   Config A: TP=2, SP, PP=2, EP=2, DP=2            → covers DP
+#   Config B: TP=2, SP, PP=2, CP=2, EP=2, eTP=2     → covers CP, expert_TP
+CONFIGS: dict[str, str] = {
+    "tp2_pp2_ep2_dp2": (
+        "--tensor-model-parallel-size 2 --sequence-parallel "
+        "--pipeline-model-parallel-size 2 "
+        "--expert-model-parallel-size 2 --expert-tensor-parallel-size 1 "
+        "--use-dynamic-batch-size --max-tokens-per-gpu 2048 "
+    ),
+    "tp2_pp2_cp2_ep2_etp2": (
+        "--tensor-model-parallel-size 2 --sequence-parallel "
+        "--pipeline-model-parallel-size 2 "
+        "--context-parallel-size 2 "
+        "--expert-model-parallel-size 2 --expert-tensor-parallel-size 2 "
+        "--use-dynamic-batch-size --max-tokens-per-gpu 2048 "
+    ),
+}
 
-def prepare():
+
+def prepare() -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
+    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
     U.exec_command(f"rm -rf {DUMP_DIR}")
 
 
-def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
+def _execute(perf_args: str, dump_subdir: str) -> None:
+    dump_dir = f"{DUMP_DIR}/{dump_subdir}"
+
+    ckpt_args = (
+        f"--hf-checkpoint /root/models/{MODEL_NAME} "
+        f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    )
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -32,33 +57,34 @@ def execute():
         "--global-batch-size 8 "
     )
 
-    optimizer_args = "--optimizer adam --lr 1e-6 --lr-decay-style constant "
+    optimizer_args = (
+        "--optimizer adam --lr 1e-6 --lr-decay-style constant "
+        "--optimizer-cpu-offload "
+    )
+
     grpo_args = "--advantage-estimator grpo --eps-clip 0.2 "
 
-    perf_args = (
-        "--tensor-model-parallel-size 1 --pipeline-model-parallel-size 1 "
-        "--use-dynamic-batch-size --max-tokens-per-gpu 2048 "
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 8 "
+        "--sglang-mem-fraction-static 0.6 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.6 "
+    dumper_args = f"--dumper-enable --dumper-dir {dump_dir} "
 
-    dumper_args = f"--dumper-enable --dumper-dir {DUMP_DIR} "
-
-    misc_args = f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate " "--megatron-to-hf-mode bridge "
-
-    train_args = " ".join(
-        [
-            ckpt_args,
-            rollout_args,
-            optimizer_args,
-            grpo_args,
-            perf_args,
-            sglang_args,
-            dumper_args,
-            misc_args,
-            U.get_default_wandb_args(__file__),
-        ]
+    misc_args = (
+        "--attention-dropout 0.0 --hidden-dropout 0.0 "
+        "--accumulate-allreduce-grads-in-fp32 "
+        "--attention-softmax-in-fp32 "
+        "--attention-backend flash "
+        f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
+        "--moe-token-dispatcher-type alltoall "
     )
+
+    train_args = " ".join([
+        ckpt_args, rollout_args, optimizer_args, grpo_args,
+        perf_args, sglang_args, dumper_args, misc_args,
+        U.get_default_wandb_args(__file__),
+    ])
 
     U.execute_train(
         train_args=train_args,
@@ -78,18 +104,18 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str) -> None:
     assert "value" in sample and "meta" in sample, f"Missing keys: {sample.keys()}"
 
 
-def verify():
-    base = Path(DUMP_DIR)
-
+def verify(dump_subdir: str) -> None:
+    base = Path(f"{DUMP_DIR}/{dump_subdir}")
     for pattern in EXP_PATTERNS:
         _check_dump_dir(base, pattern)
-
-    print("All dump verifications passed!")
+    print(f"All dump verifications passed for {dump_subdir}!")
 
 
 if __name__ == "__main__":
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
-    verify()
+
+    for config_name, perf_args in CONFIGS.items():
+        _execute(perf_args=perf_args, dump_subdir=config_name)
+        verify(config_name)
