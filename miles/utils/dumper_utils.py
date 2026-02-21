@@ -61,11 +61,13 @@ class DumperMegatronPhaseUtil:
     def wrap_forward_step(self, forward_step_func: Callable) -> Callable:
         if not self.enabled:
             return forward_step_func
+
         return _wrap_forward_step_with_stepping(forward_step_func)
 
     def finalize(self, model: torch.nn.Module) -> None:
         if not self.enabled:
             return
+
         dumper.dump_model(model)
         dumper.step()
         dumper.configure(enable=False)
