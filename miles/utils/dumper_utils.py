@@ -106,15 +106,14 @@ def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
     raw = getattr(args, f"dumper_{phase.value}")
     overrides = DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
 
-    if "enable" not in overrides and args.dumper_enable:
-        overrides["enable"] = True
+    overrides.setdefault("enable", args.dumper_enable)
 
     return overrides
 
 
 def _is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
     overrides = _get_phase_overrides(args, phase)
-    return bool(overrides.get("enable", False))
+    return overrides.get("enable", False)
 
 
 def _get_dir(args: Namespace) -> Path:
