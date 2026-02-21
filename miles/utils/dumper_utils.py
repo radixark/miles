@@ -48,17 +48,13 @@ async def configure_dumper_for_sglang(args: Namespace) -> None:
 
     coros = []
     for i, url in enumerate(worker_urls):
-        body: dict[str, Any] = {
+        body = {
+            **overrides,
             "enable": True,
             "dir": dumper_dir,
             "exp_name": f"engine_{i}",
             "cleanup_previous": True,
         }
-        skip_keys = {"enable", "dir", "exp_name", "cleanup_previous"}
-        for key, value in overrides.items():
-            if key not in skip_keys:
-                body[key] = value
-
         coros.append(post(f"{url}/dumper/configure", body))
 
     await asyncio.gather(*coros)
