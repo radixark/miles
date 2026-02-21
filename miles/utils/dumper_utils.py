@@ -79,11 +79,11 @@ class DumperMegatronPhaseUtil:
             return False
 
         merged = {
+            "dir": str(_get_dir(args)),
             "enable_http_server": False,
             "exp_name": phase.value,
             "cleanup_previous": True,
             **overrides,
-            "dir": str(_get_dir(args)),
         }
 
         full_config = _DumperConfig(**merged)
