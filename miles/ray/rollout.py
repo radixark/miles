@@ -193,12 +193,12 @@ class RolloutManager:
         )
 
     def health_monitoring_pause(self):
-        if self.args.use_fault_tolerance and hasattr(self, "_health_monitor"):
-            self._health_monitor.stop()
+        if self.args.use_fault_tolerance and self._health_monitor is not None:
+            self._health_monitor.pause()
 
     def health_monitoring_resume(self):
-        if self.args.use_fault_tolerance and hasattr(self, "_health_monitor"):
-            self._health_monitor.start()
+        if self.args.use_fault_tolerance and self._health_monitor is not None:
+            self._health_monitor.resume()
 
     def onload_weights(self):
         self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
