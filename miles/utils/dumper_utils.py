@@ -62,7 +62,7 @@ async def configure_for_sglang(args: Namespace) -> None:
     logger.info("Configured dumper on %d SGLang engines (dir=%s)", len(worker_urls), dumper_dir)
 
 
-class DumperPhaseContext:
+class DumperPhaseUtil:
     """Manages dumper configuration for a single Megatron phase.
 
     All methods are no-ops when the phase is disabled, so callers never need
