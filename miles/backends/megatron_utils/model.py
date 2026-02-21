@@ -290,7 +290,6 @@ def forward_only(
         aggregated = aggregate_forward_results(forward_data_store, data_iterator[0], args, store_prefix="")
         for key, value in aggregated.items():
             rollout_data[f"{store_prefix}{key}"] = value
-
     return rollout_data
 
 
