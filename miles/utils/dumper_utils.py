@@ -5,6 +5,7 @@ import dataclasses
 import enum
 import logging
 from argparse import Namespace
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,28 @@ def finalize_dumper_phase(model: torch.nn.Module) -> None:
     dumper.dump_model(model)
     dumper.step()
     dumper.configure(enable=False)
+
+
+def wrap_forward_step_with_dumper_stepping(forward_step_func: Callable) -> Callable:
+    """Wrap a Megatron ``forward_step`` so that ``dumper.step()`` is called
+    between microbatches.
+
+    The wrapper calls ``dumper.step()`` before every invocation of
+    *forward_step_func* **except** the first one.  This ensures that each
+    microbatch's forward (and the subsequent loss computation callback) lands
+    in its own dumper step, while avoiding an off-by-one empty step at the
+    beginning.
+    """
+    is_first_call = True
+
+    def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        nonlocal is_first_call
+        if not is_first_call:
+            dumper.step()
+        is_first_call = False
+        return forward_step_func(*args, **kwargs)
+
+    return _wrapped
 
 
 def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:

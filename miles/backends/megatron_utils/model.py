@@ -21,7 +21,12 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
-from miles.utils.dumper_utils import DumperPhase, configure_dumper_for_phase, finalize_dumper_phase
+from miles.utils.dumper_utils import (
+    DumperPhase,
+    configure_dumper_for_phase,
+    finalize_dumper_phase,
+    wrap_forward_step_with_dumper_stepping,
+)
 from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -262,6 +267,8 @@ def forward_only(
     forward_backward_func = get_forward_backward_func()
     # Don't care about timing during evaluation
     config.timers = None
+    if dumper_enabled:
+        forward_step = wrap_forward_step_with_dumper_stepping(forward_step)
     forward_data_store = []
     num_steps_per_rollout = len(num_microbatches)
     for step_id in range(num_steps_per_rollout):
@@ -420,6 +427,8 @@ def train_one_step(
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
+    if dumper_enabled:
+        forward_step = wrap_forward_step_with_dumper_stepping(forward_step)
     losses_reduced = forward_backward_func(
         forward_step_func=forward_step,
         data_iterator=data_iterator,
