@@ -1128,7 +1128,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Enable sglang dumper for all three phases (sglang inference, "
                 "megatron forward-only, megatron forward-backward). "
-                "Per-phase --dumper-sglang/fwd-only/fwd-bwd can override.",
+                "Per-phase --dumper-inference/--dumper-fwd-only/--dumper-fwd-bwd can override.",
             )
             parser.add_argument(
                 "--dumper-dir",

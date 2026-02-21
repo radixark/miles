@@ -189,6 +189,10 @@ class SGLangEngine(RayActor):
 
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
+        if dumper_env:
+            for key in dumper_env:
+                os.environ.pop(key, None)
+
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
                 assert (

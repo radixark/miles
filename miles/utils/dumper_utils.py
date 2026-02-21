@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from sglang.srt.debug_utils.dumper import _DumperConfig, dumper
+from sglang.srt.debug_utils.dumper import _DumperConfig, _FrozenConfig, dumper
 
 logger = logging.getLogger(__name__)
 
@@ -21,38 +21,27 @@ class DumperPhase(enum.Enum):
     FWD_BWD = "fwd_bwd"
 
 
-def _get_valid_dumper_keys() -> set[str]:
-    return {f.name for f in dataclasses.fields(_DumperConfig)}
-
-
 def parse_dumper_config(pairs: list[str] | None) -> dict[str, Any]:
     """Parse key=value pairs into a dict suitable for dumper.configure().
 
-    Values are auto-converted: 'true'/'1' -> True, 'false'/'0' -> False,
-    numeric strings -> int. Keys are validated against _DumperConfig fields.
+    Values are coerced based on the target field's type in _DumperConfig
+    (bool fields: 'true'/'1' -> True; int fields: parsed as int; str fields: kept as-is).
+    Keys are validated against _DumperConfig fields.
     """
     if not pairs:
         return {}
 
-    valid_keys = _get_valid_dumper_keys()
+    valid_fields = {f.name: f for f in dataclasses.fields(_DumperConfig)}
     config: dict[str, Any] = {}
 
     for pair in pairs:
         key, sep, value = pair.partition("=")
         if not sep:
             raise ValueError(f"Invalid dumper config pair (missing '='): {pair!r}")
-        if key not in valid_keys:
-            raise ValueError(f"Unknown dumper config key {key!r}. Valid keys: {sorted(valid_keys)}")
+        if key not in valid_fields:
+            raise ValueError(f"Unknown dumper config key {key!r}. Valid keys: {sorted(valid_fields)}")
 
-        if value.lower() in ("true", "1"):
-            config[key] = True
-        elif value.lower() in ("false", "0"):
-            config[key] = False
-        else:
-            try:
-                config[key] = int(value)
-            except ValueError:
-                config[key] = value
+        config[key] = _FrozenConfig._parse_env_value(value, valid_fields[key].default)
 
     return config
 
@@ -108,12 +97,17 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     if not config.get("enable", False):
         return False
 
-    configure_kwargs = {k: v for k, v in config.items() if k != "enable"}
+    defaults = {f.name: f.default for f in dataclasses.fields(_DumperConfig)}
+    configure_kwargs = {**defaults}
+    configure_kwargs.update({k: v for k, v in config.items() if k != "enable"})
     configure_kwargs["enable"] = True
     configure_kwargs["dir"] = str(get_dumper_dir(args, phase))
-    configure_kwargs.setdefault("enable_http_server", False)
-    configure_kwargs.setdefault("exp_name", phase.value)
+    if "enable_http_server" not in config:
+        configure_kwargs["enable_http_server"] = False
+    if "exp_name" not in config:
+        configure_kwargs["exp_name"] = phase.value
 
+    dumper.reset()
     dumper.configure(**configure_kwargs)
     return True
 
@@ -139,6 +133,7 @@ def dumper_phase_scope(
     finally:
         if enabled:
             dumper.dump_model(model)
+            dumper.configure(enable=False)
 
 
 def _get_phase_config(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
