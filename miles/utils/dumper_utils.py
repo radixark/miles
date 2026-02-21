@@ -62,30 +62,46 @@ async def configure_for_sglang(args: Namespace) -> None:
     logger.info("Configured dumper on %d SGLang engines (dir=%s)", len(worker_urls), dumper_dir)
 
 
-def configure_for_phase(args: Namespace, phase: DumperPhase) -> bool:
-    """Configure the dumper singleton for a Megatron phase. Returns True if enabled."""
-    overrides = _get_phase_overrides(args, phase)
-    if not overrides.get("enable", False):
-        return False
+class DumperPhaseContext:
+    """Manages dumper configuration for a single Megatron phase.
 
-    overrides["dir"] = str(get_dir(args))
-    overrides.setdefault("enable_http_server", False)
-    overrides.setdefault("exp_name", phase.value)
-    overrides.setdefault("cleanup_previous", True)
+    All methods are no-ops when the phase is disabled, so callers never need
+    to guard with ``if enabled:``.
+    """
 
-    full_config = _DumperConfig(**overrides)
-    dumper.reset()
-    dumper.configure(**dataclasses.asdict(full_config))
-    return True
+    def __init__(self, args: Namespace, phase: DumperPhase) -> None:
+        self.enabled = self._configure(args, phase)
+
+    def wrap_forward_step(self, forward_step_func: Callable) -> Callable:
+        if not self.enabled:
+            return forward_step_func
+        return _wrap_forward_step_with_stepping(forward_step_func)
+
+    def finalize(self, model: torch.nn.Module) -> None:
+        if not self.enabled:
+            return
+        dumper.dump_model(model)
+        dumper.step()
+        dumper.configure(enable=False)
+
+    @staticmethod
+    def _configure(args: Namespace, phase: DumperPhase) -> bool:
+        overrides = _get_phase_overrides(args, phase)
+        if not overrides.get("enable", False):
+            return False
+
+        overrides["dir"] = str(get_dir(args))
+        overrides.setdefault("enable_http_server", False)
+        overrides.setdefault("exp_name", phase.value)
+        overrides.setdefault("cleanup_previous", True)
+
+        full_config = _DumperConfig(**overrides)
+        dumper.reset()
+        dumper.configure(**dataclasses.asdict(full_config))
+        return True
 
 
-def finalize_phase(model: torch.nn.Module) -> None:
-    dumper.dump_model(model)
-    dumper.step()
-    dumper.configure(enable=False)
-
-
-def wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
+def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
     """Wrap a Megatron ``forward_step`` so that ``dumper.step()`` is called
     between microbatches.
 

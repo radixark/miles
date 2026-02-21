@@ -21,8 +21,7 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
-from miles.utils import dumper_utils
-from miles.utils.dumper_utils import DumperPhase
+from miles.utils.dumper_utils import DumperPhase, DumperPhaseContext
 from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -184,7 +183,7 @@ def forward_only(
         dict[str, list[torch.Tensor]]: Aggregated outputs keyed by ``store_prefix + key``.
     """
 
-    dumper_enabled = dumper_utils.configure_for_phase(args, DumperPhase.FWD_ONLY)
+    dumper_phase = DumperPhaseContext(args, DumperPhase.FWD_ONLY)
 
     # reset data iterator
     for iterator in data_iterator:
@@ -263,8 +262,7 @@ def forward_only(
     forward_backward_func = get_forward_backward_func()
     # Don't care about timing during evaluation
     config.timers = None
-    if dumper_enabled:
-        forward_step = dumper_utils.wrap_forward_step_with_stepping(forward_step)
+    forward_step = dumper_phase.wrap_forward_step(forward_step)
     forward_data_store = []
     num_steps_per_rollout = len(num_microbatches)
     for step_id in range(num_steps_per_rollout):
@@ -284,8 +282,7 @@ def forward_only(
     for model_module in model:
         model_module.train()
 
-    if dumper_enabled:
-        dumper_utils.finalize_phase(model[0])
+    dumper_phase.finalize(model[0])
 
     rollout_data = {}
     # Store the results on the last stage
@@ -328,7 +325,7 @@ def train_one_step(
         and gradient norm for logging.
     """
     args = get_args()
-    dumper_enabled = dumper_utils.configure_for_phase(args, DumperPhase.FWD_BWD)
+    dumper_phase = DumperPhaseContext(args, DumperPhase.FWD_BWD)
 
     # Set grad to zero.
     for model_chunk in model:
@@ -423,8 +420,7 @@ def train_one_step(
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    if dumper_enabled:
-        forward_step = dumper_utils.wrap_forward_step_with_stepping(forward_step)
+    forward_step = dumper_phase.wrap_forward_step(forward_step)
     losses_reduced = forward_backward_func(
         forward_step_func=forward_step,
         data_iterator=data_iterator,
@@ -468,8 +464,7 @@ def train_one_step(
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
 
-    if dumper_enabled:
-        dumper_utils.finalize_phase(model[0])
+    dumper_phase.finalize(model[0])
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced, parallel_state)
