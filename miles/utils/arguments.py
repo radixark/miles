@@ -1781,14 +1781,15 @@ def _maybe_apply_dumper_overrides(args) -> None:
     if args.use_fault_tolerance:
         logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
         args.use_fault_tolerance = False
+
+    logger.info("Dumper mode: all heartbeat mechanisms disabled")
     args.router_disable_health_check = True
     args.rollout_health_check_interval = 1e18
-    logger.info("Dumper mode: all heartbeat mechanisms disabled")
 
+    logger.info("Dumper mode: forced num_rollout=%d, disabled eval and save", args.num_rollout)
     args.num_rollout = (args.start_rollout_id or 0) + 1
     args.eval_interval = None
     args.save_interval = None
-    logger.info("Dumper mode: forced num_rollout=%d, disabled eval and save", args.num_rollout)
 
 
 def hf_validate_args(args, hf_config):
