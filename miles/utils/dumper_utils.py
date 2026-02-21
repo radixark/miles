@@ -4,17 +4,13 @@ import asyncio
 import dataclasses
 import enum
 import logging
-import shutil
 from argparse import Namespace
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
-import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import _DumperConfig, dumper
-
-from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +63,7 @@ async def configure_for_sglang(args: Namespace) -> None:
 
 
 def configure_for_phase(args: Namespace, phase: DumperPhase) -> bool:
-    """Configure the dumper singleton for a Megatron phase. Returns True if enabled.
-
-    Rank 0 removes the previous stage directory (if any) before all ranks
-    proceed, so every rank starts from a clean slate.
-    """
+    """Configure the dumper singleton for a Megatron phase. Returns True if enabled."""
     overrides = _get_phase_overrides(args, phase)
     if not overrides.get("enable", False):
         return False
@@ -79,17 +71,9 @@ def configure_for_phase(args: Namespace, phase: DumperPhase) -> bool:
     overrides["dir"] = str(get_dir(args))
     overrides.setdefault("enable_http_server", False)
     overrides.setdefault("exp_name", phase.value)
-
-    overrides["cleanup_previous"] = False
+    overrides.setdefault("cleanup_previous", True)
 
     full_config = _DumperConfig(**overrides)
-
-    stage_dir = Path(overrides["dir"]) / f"sglang_dump_{overrides['exp_name']}"
-    if dist.get_rank() == 0 and stage_dir.exists():
-        shutil.rmtree(stage_dir)
-        logger.info("Removed existing stage_dir=%s", stage_dir)
-    dist.barrier(group=get_gloo_group())
-
     dumper.reset()
     dumper.configure(**dataclasses.asdict(full_config))
     return True
