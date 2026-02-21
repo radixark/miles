@@ -111,11 +111,24 @@ def verify(dump_subdir: str) -> None:
     print(f"All dump verifications passed for {dump_subdir}!")
 
 
+def _select_configs() -> dict[str, str]:
+    selected = os.environ.get("MILES_TEST_DUMPER_CONFIG", "")
+    if not selected:
+        return CONFIGS
+    if selected not in CONFIGS:
+        raise ValueError(
+            f"Unknown MILES_TEST_DUMPER_CONFIG={selected!r}, "
+            f"valid values: {list(CONFIGS.keys())}"
+        )
+    return {selected: CONFIGS[selected]}
+
+
 if __name__ == "__main__":
+    configs = _select_configs()
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
 
-    for config_name, perf_args in CONFIGS.items():
+    for config_name, perf_args in configs.items():
         _execute(perf_args=perf_args, dump_subdir=config_name)
         verify(config_name)
