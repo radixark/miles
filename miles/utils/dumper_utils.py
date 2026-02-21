@@ -73,7 +73,7 @@ class DumperMegatronUtil:
     @staticmethod
     def _configure(args: Namespace, phase: DumperPhase) -> bool:
         overrides = _get_phase_overrides(args, phase)
-        if not overrides.get("enable", False):
+        if not overrides.get("enable"):
             return False
 
         merged = {
