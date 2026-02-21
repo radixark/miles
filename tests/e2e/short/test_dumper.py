@@ -10,7 +10,8 @@ MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
 DUMP_DIR = "/tmp/test_miles_dumper"
 
-MEGATRON_PHASES = {
+PHASES = {
+    "inference": "engine_*",
     "fwd_only": "fwd_only",
     "fwd_bwd": "fwd_bwd",
 }
@@ -84,15 +85,7 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str) -> None:
 def verify():
     base = Path(DUMP_DIR)
 
-    sglang_dir = base / "inference"
-    assert sglang_dir.exists(), "Missing inference dir"
-    engine_dirs = sorted(sglang_dir.glob("engine_*"))
-    assert len(engine_dirs) > 0, f"No engine_* subdirs in {sglang_dir}"
-    for engine_dir in engine_dirs:
-        dump_files = list(engine_dir.glob("*.pt"))
-        assert len(dump_files) > 0, f"No .pt files in {engine_dir}"
-
-    for phase, exp_pattern in MEGATRON_PHASES.items():
+    for phase, exp_pattern in PHASES.items():
         _check_dump_dir(base / phase, exp_pattern)
 
     print("All dump verifications passed!")
