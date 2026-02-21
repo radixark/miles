@@ -52,7 +52,7 @@ async def configure_sglang(args: Namespace) -> None:
     logger.info("Configured dumper on %d SGLang engines", len(worker_urls))
 
 
-class DumperMegatronPhaseUtil:
+class DumperMegatronUtil:
     def __init__(self, args: Namespace, phase: DumperPhase) -> None:
         self.enabled = self._configure(args, phase)
 

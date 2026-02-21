@@ -21,7 +21,7 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
-from miles.utils.dumper_utils import DumperMegatronPhaseUtil, DumperPhase
+from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -183,7 +183,7 @@ def forward_only(
         dict[str, list[torch.Tensor]]: Aggregated outputs keyed by ``store_prefix + key``.
     """
 
-    dumper_phase_util = DumperMegatronPhaseUtil(args, DumperPhase.FWD_ONLY)
+    dumper_phase_util = DumperMegatronUtil(args, DumperPhase.FWD_ONLY)
 
     # reset data iterator
     for iterator in data_iterator:
@@ -324,7 +324,7 @@ def train_one_step(
         and gradient norm for logging.
     """
     args = get_args()
-    dumper_phase_util = DumperMegatronPhaseUtil(args, DumperPhase.FWD_BWD)
+    dumper_phase_util = DumperMegatronUtil(args, DumperPhase.FWD_BWD)
 
     # Set grad to zero.
     for model_chunk in model:
