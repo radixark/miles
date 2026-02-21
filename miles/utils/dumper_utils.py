@@ -90,15 +90,6 @@ class DumperMegatronPhaseUtil:
 
 
 def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
-    """Wrap a Megatron ``forward_step`` so that ``dumper.step()`` is called
-    between microbatches.
-
-    The wrapper calls ``dumper.step()`` before every invocation of
-    *forward_step_func* **except** the first one.  This ensures that each
-    microbatch's forward (and the subsequent loss computation callback) lands
-    in its own dumper step, while avoiding an off-by-one empty step at the
-    beginning.
-    """
     is_first_call = True
 
     def _wrapped(*args: Any, **kwargs: Any) -> Any:
