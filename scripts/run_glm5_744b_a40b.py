@@ -78,6 +78,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.num_nodes == 1:
             self.enable_pd = False
+            self.mode = "debug_minimal"
 
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.megatron_model_type = f"glm5-744B-A40B_{m.group(1)}layer"
@@ -214,7 +215,7 @@ def _execute_train(args: ScriptArgs):
         "--num-rollout 3000 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else (2048 if not args.enable_pd else 32768)} "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
         "--rollout-temperature 1 "
         "--global-batch-size 64 "
     )
