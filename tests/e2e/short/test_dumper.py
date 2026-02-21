@@ -54,7 +54,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
         "--global-batch-size 8 "
     )
 
-    optimizer_args = "--optimizer adam --lr 1e-6 --lr-decay-style constant " "--optimizer-cpu-offload "
+    optimizer_args = "--optimizer adam --lr 1e-6 --lr-decay-style constant " "--optimizer-cpu-offload --use-precision-aware-optimizer "
 
     grpo_args = "--advantage-estimator grpo --eps-clip 0.2 "
 
