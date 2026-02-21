@@ -21,23 +21,14 @@ class DumperPhase(enum.Enum):
     FWD_BWD = "fwd_bwd"
 
 
-def is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
-    overrides = _get_phase_overrides(args, phase)
-    return bool(overrides.get("enable", False))
-
-
-def get_dir(args: Namespace) -> Path:
-    return Path(args.dumper_dir)
-
-
 def get_env_for_sglang(args: Namespace) -> dict[str, str]:
-    if not is_phase_enabled(args, DumperPhase.INFERENCE):
+    if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return {}
     return {"DUMPER_SERVER_PORT": "reuse"}
 
 
 async def configure_for_sglang(args: Namespace) -> None:
-    if not is_phase_enabled(args, DumperPhase.INFERENCE):
+    if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return
 
     from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
@@ -45,7 +36,7 @@ async def configure_for_sglang(args: Namespace) -> None:
 
     worker_urls = await get_worker_urls(args)
     overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
-    dumper_dir = str(get_dir(args))
+    dumper_dir = str(_get_dir(args))
 
     coros = []
     for i, url in enumerate(worker_urls):
@@ -90,7 +81,7 @@ class DumperMegatronPhaseUtil:
         if not overrides.get("enable", False):
             return False
 
-        overrides["dir"] = str(get_dir(args))
+        overrides["dir"] = str(_get_dir(args))
         overrides.setdefault("enable_http_server", False)
         overrides.setdefault("exp_name", phase.value)
         overrides.setdefault("cleanup_previous", True)
@@ -131,3 +122,13 @@ def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
         overrides["enable"] = True
 
     return overrides
+
+
+def _is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:
+    overrides = _get_phase_overrides(args, phase)
+    return bool(overrides.get("enable", False))
+
+
+def _get_dir(args: Namespace) -> Path:
+    return Path(args.dumper_dir)
+
