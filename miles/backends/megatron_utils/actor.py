@@ -97,6 +97,18 @@ class MegatronTrainRayActor(TrainRayActor):
             args, role
         )
 
+        from miles.utils.dumper_utils import (
+            PHASE_MEGATRON_FORWARD_BACKWARD,
+            PHASE_MEGATRON_FORWARD_ONLY,
+            get_dumper_dir,
+            is_phase_enabled,
+        )
+
+        if is_phase_enabled(self.args, PHASE_MEGATRON_FORWARD_ONLY):
+            logger.info(f"Dumper enabled for megatron_forward_only, dir={get_dumper_dir(self.args, PHASE_MEGATRON_FORWARD_ONLY)}")
+        if is_phase_enabled(self.args, PHASE_MEGATRON_FORWARD_BACKWARD):
+            logger.info(f"Dumper enabled for megatron_forward_backward, dir={get_dumper_dir(self.args, PHASE_MEGATRON_FORWARD_BACKWARD)}")
+
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
         if role == "critic":
