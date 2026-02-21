@@ -29,20 +29,12 @@ def get_dumper_dir(args: Namespace, phase: DumperPhase) -> Path:
 
 
 def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, str]:
-    """Build DUMPER_* env vars dict for the SGLang server subprocess.
-
-    Returns an empty dict if the inference phase is not enabled.
-    Each engine gets its own subdirectory via DUMPER_EXP_NAME=engine_{rank}.
-    Only explicitly-set user overrides are exported — unset fields let the
-    SGLang server use its own defaults.
-    """
     overrides = _get_phase_overrides(args, DumperPhase.INFERENCE)
     if not overrides.get("enable", False):
         return {}
 
     dumper_dir = get_dumper_dir(args, DumperPhase.INFERENCE)
     env: dict[str, str] = {
-        "DUMPER_ENABLE": "1",
         "DUMPER_DIR": str(dumper_dir),
         "DUMPER_EXP_NAME": f"engine_{engine_rank}",
         "DUMPER_SERVER_PORT": "reuse",
@@ -67,7 +59,6 @@ def get_dumper_env_for_sglang(args: Namespace, engine_rank: int) -> dict[str, st
 
 
 def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
-    """Configure the dumper singleton for a Megatron phase. Returns True if enabled."""
     overrides = _get_phase_overrides(args, phase)
     if not overrides.get("enable", False):
         return False
@@ -83,14 +74,12 @@ def configure_dumper_for_phase(args: Namespace, phase: DumperPhase) -> bool:
 
 
 def finalize_dumper_phase(model: torch.nn.Module) -> None:
-    """Finalize a dumper phase: dump model weights/grads, advance step, then disable."""
     dumper.dump_model(model)
     dumper.step()
     dumper.configure(enable=False)
 
 
 def _get_phase_overrides(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
-    """Return only the explicitly-set dumper field overrides for *phase*."""
     raw = getattr(args, f"dumper_{phase.value}", None)
     overrides = _DumperConfig._kv_pairs_to_dict(raw) if isinstance(raw, list) else {}
 
