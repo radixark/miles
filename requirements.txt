@@ -7,6 +7,7 @@ memray  # needed for debugging (but is lightweight), we can put it to dev mode w
 omegaconf
 peft
 pillow
+pybase64
 pylatexenc
 pyyaml
 qwen_vl_utils # for VLM

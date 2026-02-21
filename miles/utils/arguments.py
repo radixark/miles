@@ -10,8 +10,10 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +135,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 choices=["thd", "bshd"],
                 default="thd",
-                help="The qkv layout for Megatron backend.",
+                help="The qkv layout.",
             )
             parser.add_argument(
                 "--true-on-policy-mode",
@@ -157,7 +159,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--disable-weights-backuper",
                 action="store_false",
                 dest="enable_weights_backuper",
-                help="Whether to disable weights backuper to save host memory.",
+                help=(
+                    "Applies to `megatron` training backend only. "
+                    "Disables the system that backups model weights (Actor, Ref, Old Actor) to CPU RAM. "
+                    "Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing KL-divergence against a reference model. "
+                    "Note: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
+                ),
             )
             parser.add_argument(
                 "--megatron-to-hf-mode",
@@ -180,7 +187,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--recompute-loss-function",
                 action="store_true",
-                help="Whether to disable recompute loss function to save memory during training.",
+                help="Whether to enable recompute loss function to save memory during training.",
             )
             parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
@@ -215,7 +222,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-function-path",
                 type=str,
-                default="miles.rollout.sglang_rollout.generate_rollout",
+                default=(
+                    "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+                    if enable_experimental_rollout_refactor()
+                    else "miles.rollout.sglang_rollout.generate_rollout"
+                ),
                 help=(
                     "Path to the rollout generation function."
                     "You should use this model to create your own custom rollout function, "
@@ -498,10 +509,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_false",
                 dest="rollout_global_dataset",
                 help=(
-                    "Whether to use a global dataset for rollout. "
-                    "If set, the rollout will use the `--prompt-data` as the prompt dataset, "
-                    "and the prompts for rollout will be sampled from the dataset. "
-                    "If not set, you need to manage the data by your self."
+                    "Disable the global dataset for rollout. By default, Miles loads `--prompt-data` into a global dataset and samples from it for rollout. "
+                    "Setting this flag turns off this behavior, Use this flag only when providing a custom `--rollout-function-path` (and usually a custom `--data-source-path`) that handles data loading independently."
                 ),
             )
 
@@ -518,7 +527,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The path to the prompt data. "
                     "Currently we only support jsonl format, and each line should contains --input-key and --label-key, "
-                    "which will be used as the prompt and the label respectively. "
+                    "which will be used as the prompt and the label respectively."
                     "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
                     "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
                 ),
@@ -590,8 +599,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Balance the number of tokens between data parallel ranks with `karmarkar_karp` for verl. "
-                    "Note that this may allocate the different response of the same prompt into different training steps."
+                    "Repartition each rollout batch so each data-parallel rank gets a similar total token count via Karmarkar-Karp method. "
+                    "It may be beneficial for training speed but changes per-rank sample grouping and adds a small CPU scheduling overhead."
                 ),
             )
 
@@ -880,7 +889,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-tis",
                 action="store_true",
                 default=False,
-                help="Enable TIS from https://fengyao.notion.site/off-policy-rl for off-policy importance sampling.",
+                help="Enable TIS from https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33.",
             )
             parser.add_argument(
                 "--tis-clip",
@@ -1005,6 +1014,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=3,
                 help="Number of consecutive failures before marking a worker as unhealthy.",
             )
+            parser.add_argument(
+                "--miles-router-enable-token-input-for-chat-completions",
+                action="store_true",
+                default=False,
+                help=(
+                    "This is an experimental feature, and only supports for text model."
+                    "Whether to enable token input for chat completions. If set, we will calculate "
+                    "the input_ids for the prompt part inside miles and add it to the request body."
+                    "This is reserved for cross turn token in under OAI format."
+                ),
+            )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
 
@@ -1068,14 +1088,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Log statistics of the category of reward, such as why the reward function considers it as failed. "
-                    "Specify the key in the reward dict using this argument.",
+                    "Specify the key in the reward dict using this argument."
                 ),
             )
             parser.add_argument(
                 "--log-correct-samples",
                 action="store_true",
                 default=False,
-                help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout.",
+                help="Explicitly log metrics for correct samples.",
             )
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
@@ -1396,6 +1416,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_user_provided_function_arguments(parser):
+            args_partial, _ = parser.parse_known_args()
+            for path in [
+                args_partial.rollout_function_path,
+                args_partial.custom_generate_function_path,
+            ]:
+                try:
+                    fn = load_function(path)
+                except (ModuleNotFoundError, ValueError):
+                    continue
+                if fn is not None and callable(getattr(fn, "add_arguments", None)):
+                    fn.add_arguments(parser)
+            return parser
+
         def add_sglang_tp_size():
             temp_parser = argparse.ArgumentParser(add_help=False)
             temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
@@ -1426,6 +1460,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
+        if enable_experimental_rollout_refactor():
+            parser = add_user_provided_function_arguments(parser)
         reset_arg(
             parser,
             "--custom-config-path",
