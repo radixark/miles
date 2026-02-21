@@ -1771,6 +1771,14 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
+    if getattr(args, "dumper_enable", False):
+        if args.use_fault_tolerance:
+            logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
+            args.use_fault_tolerance = False
+        args.router_disable_health_check = True
+        args.rollout_health_check_interval = 1e18
+        logger.info("Dumper mode: all heartbeat mechanisms disabled")
+
 
 def hf_validate_args(args, hf_config):
     def equal(x, y):
