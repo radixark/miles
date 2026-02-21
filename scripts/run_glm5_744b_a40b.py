@@ -106,7 +106,7 @@ def _process_glm_checkpoint(args: ScriptArgs):
         config = json.load(f)
 
     if config.get("model_type") == "deepseek_v32":
-        print(f"Checkpoint already patched, skipping")
+        print("Checkpoint already patched, skipping")
         return
 
     config["architectures"] = ["DeepseekV32ForCausalLM"]
@@ -150,10 +150,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
 
     num_layers_match = re.search(r"(\d+)layer", args.model_name)
     if num_layers_match and int(num_layers_match.group(1)) <= 4:
-        extra_args += (
-            "--pipeline-model-parallel-size 1 "
-            "--expert-model-parallel-size 1 "
-        )
+        extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         num_gpus_per_node = min(4, num_gpus_per_node)
         multinode = False
     elif num_layers_match:
@@ -224,7 +221,7 @@ def _execute_train(args: ScriptArgs):
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += "--eval-interval 20 " "--eval-top-p 1 "
 
-    if args.num_nodes == 1: # minimal test for 4 layers model
+    if args.num_nodes == 1:  # minimal test for 4 layers model
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
@@ -233,8 +230,8 @@ def _execute_train(args: ScriptArgs):
             "--expert-model-parallel-size 8 "
             "--expert-tensor-parallel-size 1 "
         )
-    elif args.num_nodes == 6: # for 20 layers model, to test multi-node
-       perf_args = (
+    elif args.num_nodes == 6:  # for 20 layers model, to test multi-node
+        perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 3 "
@@ -242,8 +239,8 @@ def _execute_train(args: ScriptArgs):
             "--context-parallel-size 1 "
             "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
-        ) 
-    elif args.num_nodes >= 16: # slime's setting for full model
+        )
+    elif args.num_nodes >= 16:  # slime's setting for full model
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
@@ -288,9 +285,7 @@ def _execute_train(args: ScriptArgs):
     )
     if args.enable_optimizer_offload:
         optimizer_args += (
-            "--optimizer-cpu-offload "
-            "--overlap-cpu-optimizer-d2h-h2d "
-            "--use-precision-aware-optimizer "
+            "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
         )
 
     if args.enable_pd:
@@ -314,10 +309,7 @@ def _execute_train(args: ScriptArgs):
         "--sglang-enable-dp-lm-head "
     )
     if args.fp8_rollout:
-        sglang_args += (
-            "--sglang-moe-a2a-backend deepep "
-            "--sglang-deepep-mode auto "
-        )
+        sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
     if args.enable_mtp:
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
@@ -362,7 +354,6 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-
         "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
         "--disable-weights-backuper "

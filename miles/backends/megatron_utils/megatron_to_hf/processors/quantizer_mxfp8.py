@@ -2,7 +2,7 @@ import re
 
 try:
     from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
-except:
+except Exception:
     mxfp8_group_quantize = None
 
 
