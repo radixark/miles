@@ -21,6 +21,9 @@ class DumperPhase(enum.Enum):
     FWD_BWD = "fwd_bwd"
 
 
+# ------------------------------- SGLang -------------------------------------
+
+
 def get_sglang_env(args: Namespace) -> dict[str, str]:
     if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return {}
@@ -50,6 +53,9 @@ async def configure_sglang(args: Namespace) -> None:
 
     await asyncio.gather(*coros)
     logger.info("Configured dumper on %d SGLang engines", len(worker_urls))
+
+
+# ------------------------------- Megatron -------------------------------------
 
 
 class DumperMegatronUtil:
@@ -100,6 +106,9 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
         return forward_step_func(*args, **kwargs)
 
     return _wrapped
+
+
+# ------------------------------- Common -------------------------------------
 
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
