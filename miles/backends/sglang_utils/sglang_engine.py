@@ -180,6 +180,14 @@ class SGLangEngine(RayActor):
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
+
+        from miles.utils.dumper_utils import get_dumper_env_for_sglang
+
+        dumper_env = get_dumper_env_for_sglang(self.args, engine_rank=self.rank)
+        if dumper_env:
+            os.environ.update(dumper_env)
+            logger.info(f"Applied dumper env vars for sglang_inference phase (engine_rank={self.rank})")
+
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
