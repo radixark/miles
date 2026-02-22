@@ -25,10 +25,8 @@ def prepare():
 
 
 def execute():
-    # Hard code replay_check_threshold to 5e-2 for GLM-4.7-Flash with MTP
-    from miles.utils.replay_base import routing_replay_manager
-
-    routing_replay_manager.replay_check_threshold = 1e-1
+    # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
+    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
 
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
