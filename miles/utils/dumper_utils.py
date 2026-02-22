@@ -96,7 +96,6 @@ class DumperMegatronUtil:
             "exp_name": phase.value,
             **overrides,
         }
-        merged.pop("cleanup_previous", None)
 
         full_config = DumperConfig(**merged)
         dumper.reset()
