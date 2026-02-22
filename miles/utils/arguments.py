@@ -65,21 +65,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Total number of GPUs required for rollout (inference). In `--colocate` mode, this is ignored and set to `actor-num-gpus-per-node * actor-num-nodes` (plus critic GPUs if enabled)."
+                    "Total number of GPUs required for rollout (inference). "
+                    "In `--colocate` mode, this is ignored and set to `actor-num-gpus-per-node * actor-num-nodes` (plus critic GPUs if enabled)."
                 ),
             )
             parser.add_argument(
                 "--rollout-num-gpus-per-engine",
                 type=int,
                 default=1,
-                help="Number of GPUs per inference engine, same as `tp_size` in SGLang. For multi-node serving, this should be the total GPU count / `tp_size` for each SGLang instance.",
+                help=(
+                    "Number of GPUs per inference engine, same as `tp_size` in SGLang. "
+                    "For multi-node serving, this should be the total GPU count / `tp_size` for each SGLang instance."
+                ),
             )
             parser.add_argument(
                 "--num-gpus-per-node",
                 type=int,
                 default=8,
                 help=(
-                    "Total GPUs per node on the physical machine. This informs the Ray scheduler of the hardware capacity. In **Colocate mode**, it is required that the machine has fewer than 8 GPUs to calculate correct VRAM offsets. In **Disaggregated mode**, it ensures SGLang engines are distributed correctly across nodes without exceeding per-node GPU limits."
+                    "Total GPUs per node on the physical machine. "
+                    "This informs the Ray scheduler of the hardware capacity. "
+                    "In **Colocate mode**, it is required that the machine has fewer than 8 GPUs to calculate correct VRAM offsets. "
+                    "In **Disaggregated mode**, it ensures SGLang engines are distributed correctly across nodes without exceeding per-node GPU limits."
                 ),
             )
             parser.add_argument(
@@ -87,30 +94,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Deploy training and rollout on the same GPUs. This mode automatically enables `--offload-train` and `--offload-rollout` to facilitate weight-swapping between the training actor and inference engine. **Note:** The offload parameters are currently only used for AMD GPUs and will be removed soon. **Memory Tip:** When colocating, it is highly recommended to set `--sglang-mem-fraction-static` to **0.8** (especially on **NVIDIA Blackwell B200/B300** GPUs). This leaves sufficient VRAM (~20%) for Megatron to initialize its structures before the first weight offload to CPU occurs. On GB200/GB300, values up to 0.75 are safer for long-running jobs to prevent potential OOMs. #TODO: Verify optimal fraction for Blackwell in production"
+                    "Deploy training and rollout on the same GPUs. "
+                    "This mode automatically enables `--offload-train` and `--offload-rollout` to facilitate weight-swapping between the training actor and inference engine. "
+                    "**Note:** The offload parameters are currently only used for AMD GPUs and will be removed soon. "
+                    "**Memory Tip:** When colocating, it is highly recommended to set `--sglang-mem-fraction-static` to **0.8** (especially on **NVIDIA Blackwell B200/B300** GPUs). "
+                    "This leaves sufficient VRAM (~20%) for Megatron to initialize its structures before the first weight offload to CPU occurs. "
+                    "On GB200/GB300, values up to 0.75 are safer for long-running jobs to prevent potential OOMs. "
+                    "#TODO: Verify optimal fraction for Blackwell in production"
                 ),
             )
             parser.add_argument(
                 "--offload",
                 action="store_true",
                 default=False,
-                help=("Equivalent to --offload-train + --offload-rollout. "),
+                help="Equivalent to --offload-train + --offload-rollout. ",
             )
             parser.add_argument(
                 "--offload-train",
                 action=argparse.BooleanOptionalAction,
-                help=(
-                    "Whether to offload the training actor to CPU during training. "
-                    "This will always be true when --colocate is set."
-                ),
+                help="Whether to offload the training actor to CPU during training. This will always be true when --colocate is set.",
             )
             parser.add_argument(
                 "--offload-rollout",
                 action=argparse.BooleanOptionalAction,
-                help=(
-                    "Whether to offload the rollout generator to CPU during training. "
-                    "This will always be true when --colocate is set."
-                ),
+                help="Whether to offload the rollout generator to CPU during training. This will always be true when --colocate is set.",
             )
 
             reset_arg(
@@ -143,13 +150,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 choices=["thd", "bshd"],
                 default="thd",
-                help="Whether to pack variable-length sequences into the token dimension for training. `thd` (T-H-D, a.k.a. varlen / packed sequence) concatenates sequences and uses `cu_seqlens` to avoid padding; it is the default and is usually faster by reducing padding overhead. `bshd` (B-S-H-D) uses fixed-shape padded batches; use it for newer models with novel attention architectures (e.g., sparse attention, attention sink) where the training backend does not support `thd`.",
+                help=(
+                    "Whether to pack variable-length sequences into the token dimension for training. "
+                    "`thd` (T-H-D, a.k.a. varlen / packed sequence) concatenates sequences and uses `cu_seqlens` to avoid padding; it is the default and is usually faster by reducing padding overhead. "
+                    "`bshd` (B-S-H-D) uses fixed-shape padded batches; use it for newer models with novel attention architectures (e.g., sparse attention, attention sink) where the training backend does not support `thd`."
+                ),
             )
             parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,
-                help="Strictly align SGLang's log probs and training engine's log probs to bit-wise equal. This parameter is only used for FSDP right now. [Ref](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/mismatch/blog-en.md#truly-on-policy-training)",
+                help=(
+                    "Strictly align SGLang's log probs and training engine's log probs to bit-wise equal. "
+                    "This parameter is only used for FSDP right now. "
+                    "[Ref](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/mismatch/blog-en.md#truly-on-policy-training)"
+                ),
             )
             parser.add_argument(
                 "--train-env-vars",
@@ -168,7 +183,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_false",
                 dest="enable_weights_backuper",
                 help=(
-                    "Applies to `megatron` training backend only. Disables the system that backs up model weights (Actor, Ref, Old Actor) to CPU RAM. Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing the KL-divergence against a reference model. **Note**: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
+                    "Applies to `megatron` training backend only. "
+                    "Disables the system that backs up model weights (Actor, Ref, Old Actor) to CPU RAM. "
+                    "Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing the KL-divergence against a reference model. "
+                    "**Note**: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
                 ),
             )
             parser.add_argument(
@@ -182,7 +200,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom function that replaces the default model provider. [Ref](../get_started/customization.md#20-model-provider---custom-model-provider-path)"
+                    "Path to a custom function that replaces the default model provider. "
+                    "[Ref](../get_started/customization.md#20-model-provider---custom-model-provider-path)"
                 ),
             )
             parser.add_argument(
@@ -194,7 +213,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-probs-chunk-size",
                 type=int,
                 default=-1,
-                help="Specifies the chunk size for logprobs computation to reduce peak memory usage. Processing logits in smaller batches, it prevents CUDA OOM errors during long-context prefilling or re-computation. Set to `-1` to disable chunking. [Ref](https://github.com/sgl-project/sglang/pull/6318)",
+                help=(
+                    "Specifies the chunk size for logprobs computation to reduce peak memory usage. "
+                    "Processing logits in smaller batches, it prevents CUDA OOM errors during long-context prefilling or re-computation. "
+                    "Set to `-1` to disable chunking. "
+                    "[Ref](https://github.com/sgl-project/sglang/pull/6318)"
+                ),
             )
 
             return parser
@@ -205,14 +229,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--hf-checkpoint",
                 type=str,
                 default=None,
-                help=("Path to the HuggingFace checkpoint used to initialize SGLang and provide the tokenizer."),
+                help="Path to the HuggingFace checkpoint used to initialize SGLang and provide the tokenizer.",
             )
             parser.add_argument(
                 "--model-name",
                 type=str,
                 default=None,
                 help=(
-                    "The name of the model that is used to convert the Megatron weights into HuggingFace format. If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as `model_name`. Providing this argument can also help in cases where transformers cannot find certain models."
+                    "The name of the model that is used to convert the Megatron weights into HuggingFace format. "
+                    "If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as `model_name`. "
+                    "Providing this argument can also help in cases where transformers cannot find certain models."
                 ),
             )
             parser.add_argument(
@@ -224,7 +250,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     else "miles.rollout.sglang_rollout.generate_rollout"
                 ),
                 help=(
-                    "Path to the rollout generation function. Use this to inject custom logic (e.g., for multi-turn or tool use). [Ref](../get_started/customization.md#1-rollout-function---rollout-function-path)"
+                    "Path to the rollout generation function. "
+                    "Use this to inject custom logic (e.g., for multi-turn or tool use). "
+                    "[Ref](../get_started/customization.md#1-rollout-function---rollout-function-path)"
                 ),
             )
             parser.add_argument(
@@ -247,7 +275,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "The maximum context size for the inference engine during rollout. It should not exceed the `max_position_embeddings` in the HuggingFace model's `config.json`. **Note:** This acts as a hard cap for the total tokens (Prompt + Response)."
+                    "The maximum context size for the inference engine during rollout. "
+                    "It should not exceed the `max_position_embeddings` in the HuggingFace model's `config.json`. "
+                    "**Note:** This acts as a hard cap for the total tokens (Prompt + Response)."
                 ),
             )
             parser.add_argument(
@@ -255,7 +285,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Maximum length of the prompt. Longer prompts are filtered during dataset initialization. This is not recommended if the dataset is large. **Note:** Defaults to `rollout-max-context-len - 1` if not set, ensuring at least one token can be generated."
+                    "Maximum length of the prompt. "
+                    "Longer prompts are filtered during dataset initialization. "
+                    "This is not recommended if the dataset is large. "
+                    "**Note:** Defaults to `rollout-max-context-len - 1` if not set, ensuring at least one token can be generated."
                 ),
             )
             parser.add_argument(
@@ -263,7 +296,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Maximum length of the response (`max_tokens` in SGLang). **Note:** Generation will stop when either this limit is reached or the total session length hits `rollout-max-context-len`."
+                    "Maximum length of the response (`max_tokens` in SGLang). "
+                    "**Note:** Generation will stop when either this limit is reached or the total session length hits `rollout-max-context-len`."
                 ),
             )
             parser.add_argument(
@@ -271,7 +305,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Skip special tokens (e.g., `<\\|im_end\\|>`, `<\\|endoftext\\|>`) in the decoded response string. **Critical for Multi-Turn RL:** Ensures that when a response is appended to the conversation history for the next turn, it doesn't include terminal special tokens that would interfere with chat template formatting or cause early termination in subsequent turns."
+                    "Skip special tokens (e.g., `<\\|im_end\\|>`, `<\\|endoftext\\|>`) in the decoded response string. "
+                    "**Critical for Multi-Turn RL:** Ensures that when a response is appended to the conversation history for the next turn, it doesn't include terminal special tokens that would interfere with chat template formatting or cause early termination in subsequent turns."
                 ),
             )
             parser.add_argument(
@@ -279,9 +314,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 nargs="+",
                 default=None,
-                help=(
-                    'A list of strings that trigger termination of generation if they appear in the output (e.g., `"\\nUser:"`).'
-                ),
+                help='A list of strings that trigger termination of generation if they appear in the output (e.g., `"\\nUser:"`).',
             )
             parser.add_argument(
                 "--rollout-stop-token-ids",
@@ -289,20 +322,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
                 default=None,
                 help=(
-                    "A list of numerical token IDs that trigger termination. This is the token-level equivalent of `--rollout-stop` and is preferred for special control tokens that are difficult to input as strings."
+                    "A list of numerical token IDs that trigger termination. "
+                    "This is the token-level equivalent of `--rollout-stop` and is preferred for special control tokens that are difficult to input as strings."
                 ),
             )
             parser.add_argument(
                 "--rollout-shuffle",
                 action="store_true",
                 default=False,
-                help=("Shuffle the prompts during rollout."),
+                help="Shuffle the prompts during rollout.",
             )
             parser.add_argument(
                 "--rollout-seed",
                 type=int,
                 default=42,
-                help=("Seed for the random number generator during rollout (used for shuffling and sampling)."),
+                help="Seed for the random number generator during rollout (used for shuffling and sampling).",
             )
 
             # sampling
@@ -311,7 +345,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Number of prompts requested in each **oversampling** round when **dynamic sampling** is enabled. Miles samples `over_sampling_batch_size` prompts, generates `--n-samples-per-prompt` responses per prompt asynchronously, and then keeps/discards each prompt group via `--dynamic-sampling-filter-path`. If filtering is strict and the remaining accepted batch size drops below the target `--rollout-batch-size`, Miles automatically triggers another oversampling round of the same size. If unset, defaults to `--rollout-batch-size`. See [Dynamic Sampling](../get_started/quick_start.md#dynamic-sampling)."
+                    "Number of prompts requested in each **oversampling** round when **dynamic sampling** is enabled. "
+                    "Miles samples `over_sampling_batch_size` prompts, generates `--n-samples-per-prompt` responses per prompt asynchronously, and then keeps/discards each prompt group via `--dynamic-sampling-filter-path`. "
+                    "If filtering is strict and the remaining accepted batch size drops below the target `--rollout-batch-size`, Miles automatically triggers another oversampling round of the same size. "
+                    "If unset, defaults to `--rollout-batch-size`. "
+                    "See [Dynamic Sampling](../get_started/quick_start.md#dynamic-sampling)."
                 ),
             )
             parser.add_argument(
@@ -319,7 +357,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to the filter function for dynamic sampling. [Ref](../get_started/customization.md#4-dynamic-sampling-filter---dynamic-sampling-filter-path)"
+                    "Path to the filter function for dynamic sampling. "
+                    "[Ref](../get_started/customization.md#4-dynamic-sampling-filter---dynamic-sampling-filter-path)"
                 ),
             )
 
@@ -329,7 +368,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Enable partial rollout for **dynamic sampling**: cache partially generated (aborted/unfinished) samples and resume generation in later rollout steps, reducing wasted compute for long responses. Cached samples are stored in the rollout buffer and can be prioritized/selected via `--buffer-filter-path` (default FIFO behavior). See [Partial Rollout](../get_started/quick_start.md#partial-rollout)."
+                    "Enable partial rollout for **dynamic sampling**: cache partially generated (aborted/unfinished) samples and resume generation in later rollout steps, reducing wasted compute for long responses. "
+                    "Cached samples are stored in the rollout buffer and can be prioritized/selected via `--buffer-filter-path` (default FIFO behavior). "
+                    "See [Partial Rollout](../get_started/quick_start.md#partial-rollout)."
                 ),
             )
             parser.add_argument(
@@ -337,7 +378,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "When using partial rollout, mask the previously generated (cached) response tokens so they do not contribute to the loss; only tokens generated after resuming are used for training. This helps avoid training on a cached prefix produced by an older policy version. See [Partial Rollout](../get_started/quick_start.md#partial-rollout)."
+                    "When using partial rollout, mask the previously generated (cached) response tokens so they do not contribute to the loss; only tokens generated after resuming are used for training. "
+                    "This helps avoid training on a cached prefix produced by an older policy version. "
+                    "See [Partial Rollout](../get_started/quick_start.md#partial-rollout)."
                 ),
             )
             parser.add_argument(
@@ -345,7 +388,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to override only the `generate` step within the default rollout function. If your custom `generate` returns `list[Sample]` (multi-sample), make sure your rollout pipeline can handle it; the default rollout expects a flat `list[Sample]` of length `--n-samples-per-prompt` for each prompt group. [Ref](../get_started/customization.md#2-custom-generate-function---custom-generate-function-path)"
+                    "Path to override only the `generate` step within the default rollout function. "
+                    "If your custom `generate` returns `list[Sample]` (multi-sample), make sure your rollout pipeline can handle it; the default rollout expects a flat `list[Sample]` of length `--n-samples-per-prompt` for each prompt group. "
+                    "[Ref](../get_started/customization.md#2-custom-generate-function---custom-generate-function-path)"
                 ),
             )
             parser.add_argument(
@@ -353,7 +398,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom function for logging training rollout data. [Ref](../get_started/customization.md#14-logging-functions)"
+                    "Path to a custom function for logging training rollout data. "
+                    "[Ref](../get_started/customization.md#14-logging-functions)"
                 ),
             )
             parser.add_argument(
@@ -361,7 +407,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom function for logging evaluation rollout data. [Ref](../get_started/customization.md#14-logging-functions)"
+                    "Path to a custom function for logging evaluation rollout data. "
+                    "[Ref](../get_started/customization.md#14-logging-functions)"
                 ),
             )
 
@@ -370,7 +417,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to the function to filter or sort samples in the rollout buffer before training. [Ref](../get_started/customization.md#5-buffer-filter---buffer-filter-path)"
+                    "Path to the function to filter or sort samples in the rollout buffer before training. "
+                    "[Ref](../get_started/customization.md#5-buffer-filter---buffer-filter-path)"
                 ),
             )
             # update weight
@@ -379,7 +427,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=512 * 1024**2,
                 help=(
-                    "Buffer size for updating weights, in bytes. [Ref](https://hebiao064.github.io/rl-weight-sync#42-optimizing-sglang-server-calls-with-tensor-bucketing-from-50s-to-30s)"
+                    "Buffer size for updating weights, in bytes. "
+                    "[Ref](https://hebiao064.github.io/rl-weight-sync#42-optimizing-sglang-server-calls-with-tensor-bucketing-from-50s-to-30s)"
                 ),
             )
             parser.add_argument(
@@ -391,7 +440,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--keep-old-actor",
                 action="store_true",
-                help='Maintains a "Model Queue" (Actor, Rollout Actor, Old Actor) to ensure importance sampling ratios are calculated against the exact policy version that generated the data. Essential for asynchronous RL where training and inference are decoupled, preventing mathematical incorrectness due to model staleness. It consumes additional Host Memory (extra ~1x model size for `update_weights_interval > 1` or 2x for `update_weights_interval == 1`) depending on update interval.',
+                help=(
+                    'Maintains a "Model Queue" (Actor, Rollout Actor, Old Actor) to ensure importance sampling ratios are calculated against the exact policy version that generated the data. '
+                    "Essential for asynchronous RL where training and inference are decoupled, preventing mathematical incorrectness due to model staleness. "
+                    "It consumes additional Host Memory (extra ~1x model size for `update_weights_interval > 1` or 2x for `update_weights_interval == 1`) depending on update interval."
+                ),
             )
 
             parser.add_argument(
@@ -399,7 +452,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a function called after all rollout data (including log probs) is ready. [Ref](../get_started/customization.md#8-rollout-data-postprocess---rollout-data-postprocess-path)"
+                    "Path to a function called after all rollout data (including log probs) is ready. "
+                    "[Ref](../get_started/customization.md#8-rollout-data-postprocess---rollout-data-postprocess-path)"
                 ),
             )
             parser.add_argument(
@@ -440,7 +494,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rollout-health-check-first-wait",
                 type=float,
                 default=0,
-                help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
+                help=(
+                    "Initial grace period (in seconds) before starting health checks. "
+                    "This allows time for model compilation and initialization. "
+                    "Increase this value significantly when using deepgemm."
+                ),
             )
             return parser
 
@@ -452,14 +510,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--num-rollout",
                 type=int,
                 default=None,
-                help="Number of rollout steps. If not set, Miles will calculate the number of rollout steps from the dataset size. **Note:** This value will be overwritten if `--num-epoch` is also set.",
+                help=(
+                    "Number of rollout steps. "
+                    "If not set, Miles will calculate the number of rollout steps from the dataset size. "
+                    "**Note:** This value will be overwritten if `--num-epoch` is also set."
+                ),
             )
             parser.add_argument(
                 "--num-epoch",
                 type=int,
                 default=None,
                 help=(
-                    "Number of epochs for the training. If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. **Note:** This argument takes precedence and will overwrite `--num-rollout` if both are specified."
+                    "Number of epochs for the training. "
+                    "If set, `num_rollout` is calculated as `(num_epoch * dataset_size) // rollout_batch_size`. "
+                    "**Note:** This argument takes precedence and will overwrite `--num-rollout` if both are specified."
                 ),
             )
 
@@ -468,7 +532,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_false",
                 dest="rollout_global_dataset",
                 help=(
-                    "Disable the global dataset for rollout. By default, Miles loads `--prompt-data` into a global dataset and samples from it for rollout. Setting this flag turns off this behavior. Use this flag only when providing a custom `--rollout-function-path` (and usually a custom `--data-source-path`) that handles data loading independently."
+                    "Disable the global dataset for rollout. "
+                    "By default, Miles loads `--prompt-data` into a global dataset and samples from it for rollout. "
+                    "Setting this flag turns off this behavior. "
+                    "Use this flag only when providing a custom `--rollout-function-path` (and usually a custom `--data-source-path`) that handles data loading independently."
                 ),
             )
 
@@ -476,21 +543,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--data-source-path",
                 type=str,
                 default="miles.rollout.data_source.RolloutDataSourceWithBuffer",
-                help="Path to a custom Python class for the rollout data source. [Ref](../get_started/customization.md#15-data-source---data-source-path)",
+                help=(
+                    "Path to a custom Python class for the rollout data source. "
+                    "[Ref](../get_started/customization.md#15-data-source---data-source-path)"
+                ),
             )
             parser.add_argument(
                 "--prompt-data",
                 type=str,
                 default=None,
                 help=(
-                    "Path to the prompt dataset (JSONL format), and each line should contain `--input-key` and `--label-key`, which will be used as the prompt and the label, respectively."
+                    "Path to the prompt dataset (JSONL format), and each line should contain `--input-key` and `--label-key`, which will be "
+                    "used as the prompt and the label, respectively."
                 ),
             )
             parser.add_argument(
                 "--apply-chat-template",
                 action="store_true",
                 default=False,
-                help="Whether to apply the chat template to the input prompt. The input should be the same structure as an OpenAI message, e.g., `[{'role': 'user', 'content': 'blabla'}]`.",
+                help=(
+                    "Whether to apply the chat template to the input prompt. "
+                    "The input should be the same structure as an OpenAI message, e.g., `[{'role': 'user', 'content': 'blabla'}]`."
+                ),
             )
             # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
             parser.add_argument(
@@ -515,9 +589,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--multimodal-keys",
                 type=json.loads,
                 default=None,
-                help=(
-                    'JSON string for multimodal data mapping media types to data keys. Example: `\'{"image": "image_file"}\'`'
-                ),
+                help='JSON string for multimodal data mapping media types to data keys. Example: `\'{"image": "image_file"}\'`',
             )
             parser.add_argument(
                 "--metadata-key",
@@ -529,7 +601,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--tool-key",
                 type=str,
                 default="tools",
-                help=("JSON key for tool definitions in the prompt dataset (used when applying chat templates)."),
+                help="JSON key for tool definitions in the prompt dataset (used when applying chat templates).",
             )
 
             parser.add_argument(
@@ -537,7 +609,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "The starting rollout step. If not set, it is inferred from the --load checkpoint when resuming training. Otherwise, if training is not continuous, Miles will start training from scratch"
+                    "The starting rollout step. "
+                    "If not set, it is inferred from the --load checkpoint when resuming training. "
+                    "Otherwise, if training is not continuous, Miles will start training from scratch"
                 ),
             )
 
@@ -546,15 +620,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rollout-batch-size",
                 type=int,
                 required=True,
-                help=(
-                    "Number of prompts per rollout batch. The total data returned should be `rollout_batch_size` * `n_samples_per_prompt`."
-                ),
+                help="Number of prompts per rollout batch. The total data returned should be `rollout_batch_size` * `n_samples_per_prompt`.",
             )
             parser.add_argument(
                 "--n-samples-per-prompt",
                 type=int,
                 default=1,
-                help="Number of responses to generate for each prompt, e.g., the group size of GRPO. The default rollout pipeline expects each prompt group to contain exactly `n_samples_per_prompt` samples.",
+                help=(
+                    "Number of responses to generate for each prompt, e.g., the group size of GRPO. "
+                    "The default rollout pipeline expects each prompt group to contain exactly `n_samples_per_prompt` samples."
+                ),
             )
 
             # gbs of the training, note that the gbs is of sample, not of prompts,
@@ -572,7 +647,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "The number of training steps to perform using the data collected in a single rollout round. Setting this to `n` means the policy model will be updated `n` times using the same batch of rollout data. Miles ensures that `(rollout-batch-size * n-samples-per-prompt) = (global-batch-size * num-steps-per-rollout)`. If this value is not provided, you have to set `--global-batch-size` explicitly. If both are provided, `--num-steps-per-rollout`  will **override** the global batch size with `num_steps_per_rollout = (rollout_batch_size * n_samples_per_prompt) // num_steps_per_rollout`."
+                    "The number of training steps to perform using the data collected in a single rollout round. "
+                    "Setting this to `n` means the policy model will be updated `n` times using the same batch of rollout data. "
+                    "Miles ensures that `(rollout-batch-size * n-samples-per-prompt) = (global-batch-size * num-steps-per-rollout)`. "
+                    "If this value is not provided, you have to set `--global-batch-size` explicitly. "
+                    "If both are provided, `--num-steps-per-rollout`  will **override** the global batch size with `num_steps_per_rollout = (rollout_batch_size * n_samples_per_prompt) // num_steps_per_rollout`."
                 ),
             )
             # mbs for the training, will be ignored if `use_dynamic_batch_size` is set.
@@ -581,14 +660,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--micro-batch-size",
                 type=int,
                 default=1,
-                help="Micro batch size per GPU. Ignored when `--use-dynamic-batch-size` is enabled. Works for both `--qkv-format thd` and `--qkv-format bshd` (and is required for `bshd` because dynamic batch size is unsupported).",
+                help=(
+                    "Micro batch size per GPU. "
+                    "Ignored when `--use-dynamic-batch-size` is enabled. "
+                    "Works for both `--qkv-format thd` and `--qkv-format bshd` (and is required for `bshd` because dynamic batch size is unsupported)."
+                ),
             )
             parser.add_argument(
                 "--balance-data",
                 action="store_true",
                 default=False,
                 help=(
-                    "Repartition each rollout batch so each data-parallel rank gets a similar total token count via the Karmarkar-Karp method. It may be beneficial for training speed, but changes per-rank sample grouping and adds a small CPU scheduling overhead."
+                    "Repartition each rollout batch so each data-parallel rank gets a similar total token count via the Karmarkar-Karp method. "
+                    "It may be beneficial for training speed, but changes per-rank sample grouping and adds a small CPU scheduling overhead."
                 ),
             )
 
@@ -597,7 +681,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Dynamically packs variable-length samples into micro-batches to maximize GPU utilization, ensuring the total token count per batch does not exceed `--max-tokens-per-gpu`. For example, with a 300-token limit, samples of lengths 100, 200, and 300 would be packed into two batches: `[100, 200]` and `[300]`. **Note:** Miles ensures that enabling this optimization does not affect the mathematical correctness of per-sample or per-token loss calculation. It is **strongly recommended** to enable this for maximum efficiency. **Compatibility:** only supported when `--qkv-format` is `thd` (does not work for `bshd`)."
+                    "Dynamically packs variable-length samples into micro-batches to maximize GPU utilization, ensuring the total token count per batch does not exceed `--max-tokens-per-gpu`. "
+                    "For example, with a 300-token limit, samples of lengths 100, 200, and 300 would be packed into two batches: `[100, 200]` and `[300]`. "
+                    "**Note:** Miles ensures that enabling this optimization does not affect the mathematical correctness of per-sample or per-token loss calculation. "
+                    "It is **strongly recommended** to enable this for maximum efficiency. "
+                    "**Compatibility:** only supported when `--qkv-format` is `thd` (does not work for `bshd`)."
                 ),
             )
             parser.add_argument(
@@ -605,7 +693,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "The maximum number of tokens (Prompt + Response combined) per GPU for dynamic batch size. This parameter defines the total sequence length budget for packing samples into micro-batches during training. Note that when enabling context parallel (CP), the effective capacity is shared, so the value should be approximately `(Total_Sequence_Length) // cp_size`."
+                    "The maximum number of tokens (Prompt + Response combined) per GPU for dynamic batch size. "
+                    "This parameter defines the total sequence length budget for packing samples into micro-batches during training. "
+                    "Note that when enabling context parallel (CP), the effective capacity is shared, so the value should be approximately `(Total_Sequence_Length) // cp_size`."
                 ),
             )
             parser.add_argument(
@@ -613,7 +703,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "The maximum number of tokens per GPU for calculating log probs. This is used to calculate the log probs of the responses during rollout, and should be set to a larger value than `max_tokens_per_gpu` if you want better performance."
+                    "The maximum number of tokens per GPU for calculating log probs. "
+                    "This is used to calculate the log probs of the responses during rollout, and should be set to a larger value than `max_tokens_per_gpu` if you want better performance."
                 ),
             )
             return parser
@@ -624,7 +715,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom evaluation function. [Ref](../get_started/customization.md#16-evaluation-function---eval-function-path)"
+                    "Path to a custom evaluation function. "
+                    "[Ref](../get_started/customization.md#16-evaluation-function---eval-function-path)"
                 ),
             )
 
@@ -642,15 +734,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 nargs="+",
-                help=("List of name and path pairs for evaluation datasets (e.g., `aime /path/to/aime.jsonl`)."),
+                help="List of name and path pairs for evaluation datasets (e.g., `aime /path/to/aime.jsonl`).",
             )
             parser.add_argument(
                 "--eval-config",
                 type=str,
                 default=None,
-                help=(
-                    "Path to an OmegaConf YAML/JSON file describing evaluation datasets (overrides `--eval-prompt-data`)."
-                ),
+                help="Path to an OmegaConf YAML/JSON file describing evaluation datasets (overrides `--eval-prompt-data`).",
             )
             parser.add_argument(
                 "--skip-eval-before-train",
@@ -725,7 +815,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--ref-load",
                 type=str,
                 default=None,
-                help=("Path to the reference model checkpoint. Used as an initial checkpoint if `--load` is not set."),
+                help="Path to the reference model checkpoint. Used as an initial checkpoint if `--load` is not set.",
             )
             parser.add_argument(
                 "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for the reference model."
@@ -750,16 +840,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--no-save-optim",
                 action="store_true",
                 default=False,
-                help=(
-                    "If set, optimizer state is not saved with checkpoints to reduce size, but prevents resumption of training."
-                ),
+                help="If set, optimizer state is not saved with checkpoints to reduce size, but prevents resumption of training.",
             )
             parser.add_argument(
                 "--save-hf",
                 type=str,
                 default=None,
                 help=(
-                    "Path to save the model in HuggingFace format when using Megatron backend. The model will be saved to `save_hf.format(rollout_id)`."
+                    "Path to save the model in HuggingFace format when using Megatron backend. "
+                    "The model will be saved to `save_hf.format(rollout_id)`."
                 ),
             )
             reset_arg(
@@ -767,7 +856,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--seed",
                 type=int,
                 default=1234,
-                help="Random seed for the training process. **Also passed to SGLang servers as `random_seed`** (Miles uses `seed + engine_rank` so each engine has a distinct but reproducible seed).",
+                help=(
+                    "Random seed for the training process. "
+                    "**Also passed to SGLang servers as `random_seed`** (Miles uses `seed + engine_rank` so each engine has a distinct but reproducible seed)."
+                ),
             )
             reset_arg(
                 parser, "--clip-grad", type=float, default=1.0, help="Maximum gradient norm for gradient clipping."
@@ -815,21 +907,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--kl-coef",
                 type=float,
                 default=0.00,
-                help="KL penalty coefficient for reward shaping. This is applied to the reward signal before advantage calculation for PPO and REINFORCE-style estimator.",
+                help=(
+                    "KL penalty coefficient for reward shaping. "
+                    "This is applied to the reward signal before advantage calculation for PPO and REINFORCE-style estimator."
+                ),
             )
             parser.add_argument(
                 "--loss-type",
                 type=str,
                 choices=["policy_loss", "sft_loss", "custom_loss"],
                 default="policy_loss",
-                help=("Type of loss function to use."),
+                help="Type of loss function to use.",
             )
             parser.add_argument(
                 "--custom-loss-function-path",
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom loss calculation function (requires `--loss-type custom_loss`). [Ref](../get_started/customization.md#9-custom-loss-function---custom-loss-function-path)"
+                    "Path to a custom loss calculation function (requires `--loss-type custom_loss`). "
+                    "[Ref](../get_started/customization.md#9-custom-loss-function---custom-loss-function-path)"
                 ),
             )
             parser.add_argument(
@@ -837,7 +933,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 choices=["k1", "k2", "k3", "low_var_kl"],
                 default="k1",
-                help="Selection of the KL loss implementation. See [Approximating KL Divergence](http://joschu.net/blog/kl-approx.html) for more details.",
+                help=(
+                    "Selection of the KL loss implementation. "
+                    "See [Approximating KL Divergence](http://joschu.net/blog/kl-approx.html) for more details."
+                ),
             )
             parser.add_argument(
                 "--advantage-estimator",
@@ -858,7 +957,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_false",
                 dest="compute_advantages_and_returns",
                 help=(
-                    "Disables the calculation of advantages and returns. This is typically used for SFT or custom loss functions where value estimation is not required."
+                    "Disables the calculation of advantages and returns. "
+                    "This is typically used for SFT or custom loss functions where value estimation is not required."
                 ),
             )
             parser.add_argument(
@@ -889,7 +989,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--entropy-coef",
                 type=float,
                 default=0.0,
-                help="Coefficient for entropy regularization term. Penalizes low entropy to encourage exploration and prevent premature convergence.",
+                help=(
+                    "Coefficient for entropy regularization term. "
+                    "Penalizes low entropy to encourage exploration and prevent premature convergence."
+                ),
             )
             parser.add_argument(
                 "--gamma",
@@ -902,7 +1005,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--normalize-advantages",
                 action="store_true",
                 default=False,
-                help="Performs distributed masked whitening of advantages. Normalization statistics are computed globally across the Data-Parallel group, ignoring padding tokens.",
+                help=(
+                    "Performs distributed masked whitening of advantages. "
+                    "Normalization statistics are computed globally across the Data-Parallel group, ignoring padding tokens."
+                ),
             )
             parser.add_argument(
                 "--disable-grpo-std-normalization",
@@ -914,14 +1020,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--disable-rewards-normalization",
                 action="store_false",
                 dest="rewards_normalization",
-                help="Disable the default group-wise reward normalization for GRPO, GSPO, and REINFORCE++. This effectively skips the baseline subtraction step.",
+                help=(
+                    "Disable the default group-wise reward normalization for GRPO, GSPO, and REINFORCE++. "
+                    "This effectively skips the baseline subtraction step."
+                ),
             )
             parser.add_argument(
                 "--use-rollout-entropy",
                 action="store_true",
                 default=False,
                 help=(
-                    "Enable entropy calculation when calculating the logprobs from actor and reference model. This is useful for implementing custom entropy-based loss masking."
+                    "Enable entropy calculation when calculating the logprobs from actor and reference model. "
+                    "This is useful for implementing custom entropy-based loss masking."
                 ),
             )
             parser.add_argument(
@@ -935,7 +1045,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Resets the optimizer state after each rollout round. This clears the optimization history, which can improve stability or satisfy specific experimental requirements."
+                    "Resets the optimizer state after each rollout round. "
+                    "This clears the optimization history, which can improve stability or satisfy specific experimental requirements."
                 ),
             )
             parser.add_argument(
@@ -943,7 +1054,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Use rollout logprobs as the old-policy logprobs when computing importance sampling ratios / PPO-style KL in GRPO/GSPO/PPO. If not set, Miles recomputes old-policy logprobs with the training actor (e.g., `old_actor` or `actor`, depending on configuration). If `--get-mismatch-metrics` is set, the log probs will still be recomputed by the training engine (one more forward pass will be applied)."
+                    "Use rollout logprobs as the old-policy logprobs when computing importance sampling ratios / PPO-style KL in GRPO/GSPO/PPO. "
+                    "If not set, Miles recomputes old-policy logprobs with the training actor (e.g., `old_actor` or `actor`, depending on configuration). "
+                    "If `--get-mismatch-metrics` is set, the log probs will still be recomputed by the training engine (one more forward pass will be applied)."
                 ),
             )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
@@ -951,7 +1064,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-tis",
                 action="store_true",
                 default=False,
-                help="Enable Token-level Importance Sampling (TIS) from this [blog](https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33).",
+                help=(
+                    "Enable Token-level Importance Sampling (TIS) from this "
+                    "[blog](https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33)."
+                ),
             )
             parser.add_argument(
                 "--tis-clip",
@@ -969,32 +1085,49 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--custom-tis-function-path",
                 type=str,
                 default=None,
-                help="Path to a custom TIS or MIS function. [Ref](../get_started/customization.md#10-custom-tisrs-function---custom-tis-function-path)",
+                help=(
+                    "Path to a custom TIS or MIS function. "
+                    "[Ref](../get_started/customization.md#10-custom-tisrs-function---custom-tis-function-path)"
+                ),
             )
             parser.add_argument(
                 "--custom-pg-loss-reducer-function-path",
                 type=str,
                 default=None,
-                help="Custom reducer function for policy gradient loss. [Ref](../get_started/customization.md#11-custom-pg-loss-reducer---custom-pg-loss-reducer-function-path)",
+                help=(
+                    "Custom reducer function for policy gradient loss. "
+                    "[Ref](../get_started/customization.md#11-custom-pg-loss-reducer---custom-pg-loss-reducer-function-path)"
+                ),
             )
 
             parser.add_argument(
                 "--use-routing-replay",
                 action="store_true",
                 default=False,
-                help="Enable R2 (Routing Replay) for MoE: record expert routing decisions during forward and replay them during backward. [Paper](https://arxiv.org/abs/2507.18071) **Note:** automatically set to `True` when `--use-rollout-routing-replay` is enabled.",
+                help=(
+                    "Enable R2 (Routing Replay) for MoE: record expert routing decisions during forward and replay them during backward. "
+                    "[Paper](https://arxiv.org/abs/2507.18071) **Note:** automatically set to `True` when `--use-rollout-routing-replay` is enabled."
+                ),
             )
             parser.add_argument(
                 "--use-rollout-routing-replay",
                 action="store_true",
                 default=False,
-                help="Enable R3 (Rollout Routing Replay) for MoE: record expert routing decisions during rollout and replay them during training. **Requires `--use-miles-router`**. [Paper](https://arxiv.org/abs/2510.11370) [Ref](miles-router.md#22-rollout-routing-replay-r3-for-moe)",
+                help=(
+                    "Enable R3 (Rollout Routing Replay) for MoE: record expert routing decisions during rollout and replay them during training. "
+                    "**Requires `--use-miles-router`**. "
+                    "[Paper](https://arxiv.org/abs/2510.11370) [Ref](miles-router.md#22-rollout-routing-replay-r3-for-moe)"
+                ),
             )
             parser.add_argument(
                 "--use-opsm",
                 action="store_true",
                 default=False,
-                help="Enable Off-Policy Sequence Masking (OPSM). Filters sequences that have **BOTH** negative advantages (bad results) AND high KL divergence (stale data). This stabilizes training by preventing updates from unreliable, highly off-policy samples.",
+                help=(
+                    "Enable Off-Policy Sequence Masking (OPSM). "
+                    "Filters sequences that have **BOTH** negative advantages (bad results) AND high KL divergence (stale data). "
+                    "This stabilizes training by preventing updates from unreliable, highly off-policy samples."
+                ),
             )
             parser.add_argument(
                 "--opsm-delta",
@@ -1009,14 +1142,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-miles-router",
                 action="store_true",
                 default=False,
-                help="Use Miles Router (FastAPI passthrough proxy) instead of SGLang Model Gateway for rollout routing. Required for features that depend on preserving extra rollout metadata (e.g., R3). [Ref](miles-router.md)",
+                help=(
+                    "Use Miles Router (FastAPI passthrough proxy) instead of SGLang Model Gateway for rollout routing. "
+                    "Required for features that depend on preserving extra rollout metadata (e.g., R3). "
+                    "[Ref](miles-router.md)"
+                ),
             )
             parser.add_argument(
                 "--miles-router-middleware-paths",
                 type=str,
                 nargs="+",
                 default="",
-                help="Paths to custom MilesRouter middleware functions. [Ref](../get_started/customization.md#18-miles-router-middleware---miles-router-middleware-paths)",
+                help=(
+                    "Paths to custom MilesRouter middleware functions. "
+                    "[Ref](../get_started/customization.md#18-miles-router-middleware---miles-router-middleware-paths)"
+                ),
             )
             parser.add_argument(
                 "--miles-router-timeout",
@@ -1041,10 +1181,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "This is an experimental feature, and only supports for text model."
-                    "Whether to enable token input for chat completions. If set, we will calculate "
-                    "the input_ids for the prompt part inside miles and add it to the request body."
-                    "This is reserved for cross turn token in under OAI format."
+                    "This is an experimental feature, and only supports for text model.Whether to enable token input for chat completions. "
+                    "If set, we will calculate the input_ids for the prompt part inside miles and add it to the request body.This is reserved for cross turn token in under OAI format."
                 ),
             )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
@@ -1078,14 +1216,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 dest="wandb_random_suffix",
                 default=True,
                 help=(
-                    "Disable adding a random suffix to the WandB run name. By default, we will add a random 6 length string with characters to the run name."
+                    "Disable adding a random suffix to the WandB run name. "
+                    "By default, we will add a random 6 length string with characters to the run name."
                 ),
             )
             parser.add_argument(
                 "--wandb-always-use-train-step",
                 action="store_true",
                 default=False,
-                help=("Use training steps instead of rollout steps for the x-axis."),
+                help="Use training steps instead of rollout steps for the x-axis.",
             )
             parser.add_argument(
                 "--log-multi-turn",
@@ -1104,7 +1243,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Log reward-category statistics (e.g., why the reward function marked a failure). Use this argument to specify the key in the reward dict."
+                    "Log reward-category statistics (e.g., why the reward function marked a failure). "
+                    "Use this argument to specify the key in the reward dict."
                 ),
             )
             parser.add_argument(
@@ -1138,45 +1278,46 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--save-debug-rollout-data",
                 type=str,
                 default=None,
-                help=("Path to save rollout data for offline analysis. [Ref](../developer_guide/debug.md)"),
+                help=("Path to save rollout data for offline analysis. " "[Ref](../developer_guide/debug.md)"),
             )
             parser.add_argument(
                 "--load-debug-rollout-data",
                 type=str,
                 default=None,
-                help=("Path to load debug rollout data (bypasses SGLang). [Ref](../developer_guide/debug.md)"),
+                help=("Path to load debug rollout data (bypasses SGLang). " "[Ref](../developer_guide/debug.md)"),
             )
             parser.add_argument(
                 "--load-debug-rollout-data-subsample",
                 type=float,
                 default=None,
-                help="Percentage of debug data to load (0.0 to 1.0). [Ref](../developer_guide/debug.md)",
+                help=("Percentage of debug data to load (0.0 to 1.0). " "[Ref](../developer_guide/debug.md)"),
             )
             parser.add_argument(
                 "--debug-rollout-only",
                 action="store_true",
                 default=False,
-                help=("Run the rollout phase only without training. [Ref](../developer_guide/debug.md)"),
+                help=("Run the rollout phase only without training. " "[Ref](../developer_guide/debug.md)"),
             )
             parser.add_argument(
                 "--debug-train-only",
                 action="store_true",
                 default=False,
                 help=(
-                    "Run the training phase only without launching SGLang servers. [Ref](../developer_guide/debug.md)"
+                    "Run the training phase only without launching SGLang servers. "
+                    "[Ref](../developer_guide/debug.md)"
                 ),
             )
             parser.add_argument(
                 "--save-debug-train-data",
                 type=str,
                 default=None,
-                help=("Path to save training batches for offline math debugging."),
+                help="Path to save training batches for offline math debugging.",
             )
             parser.add_argument(
                 "--dump-details",
                 type=str,
                 default=None,
-                help=("Dump exhaustive training details for post-hoc visualization."),
+                help="Dump exhaustive training details for post-hoc visualization.",
             )
             # use together with --record-memory-history and --memory-snapshot-path (defined in Megatron)
             parser.add_argument(
@@ -1206,7 +1347,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--check-weight-update-equal",
                 action="store_true",
-                help="Use SGLang's weight checker to check and ensure that the loaded weight from HF checkpoint and received from Megatron are bit-wise equal.",
+                help=(
+                    "Use SGLang's weight checker to check and ensure that the loaded weight from HF checkpoint and received from Megatron "
+                    "are bit-wise equal."
+                ),
             )
             return parser
 
@@ -1233,9 +1377,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--reward-key",
                 type=str,
                 default=None,
-                help=(
-                    "JSON key to extract the numerical reward from a returned dictionary if reward model returns a dict instead of a value."
-                ),
+                help="JSON key to extract the numerical reward from a returned dictionary if reward model returns a dict instead of a value.",
             )
             parser.add_argument(
                 "--eval-reward-key",
@@ -1247,7 +1389,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--group-rm",
                 action="store_true",
                 default=False,
-                help="Defer reward computation to process the entire group of samples (per-prompt) at once. Essential for comparative/ranking reward models and improves throughput. **Not supported in eval**.",
+                help=(
+                    "Defer reward computation to process the entire group of samples (per-prompt) at once. "
+                    "Essential for comparative/ranking reward models and improves throughput. "
+                    "**Not supported in eval**."
+                ),
             )
             parser.add_argument(
                 "--rm-url",
@@ -1260,7 +1406,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom Python reward function. [Ref](../get_started/customization.md#3-reward-model---custom-rm-path)"
+                    "Path to a custom Python reward function. "
+                    "[Ref](../get_started/customization.md#3-reward-model---custom-rm-path)"
                 ),
             )
             parser.add_argument(
@@ -1268,7 +1415,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom reward post-processor. [Ref](../get_started/customization.md#12-reward-post-processing---custom-reward-post-process-path)"
+                    "Path to a custom reward post-processor. "
+                    "[Ref](../get_started/customization.md#12-reward-post-processing---custom-reward-post-process-path)"
                 ),
             )
             parser.add_argument(
@@ -1276,7 +1424,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom data format converter. [Ref](../get_started/customization.md#13-samples-to-train-data-conversion---custom-convert-samples-to-train-data-path)"
+                    "Path to a custom data format converter. "
+                    "[Ref](../get_started/customization.md#13-samples-to-train-data-conversion---custom-convert-samples-to-train-data-path)"
                 ),
             )
             return parser
@@ -1313,14 +1462,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--data-pad-size-multiplier",
                 type=int,
                 default=128,
-                help="Multiplier used to calculate the sequence padding boundary. Miles rounds sequence lengths up to a multiple of `tensor_parallel_size * data_pad_size_multiplier`. This optimization ensures that matrix dimensions are aligned with NVIDIA Tensor Core requirements, maximizing throughput and reducing VRAM fragmentation. **Note:** better not change this; values `<128` may trigger accuracy loss under `--qkv-format thd` when `TP>=4`.",
+                help=(
+                    "Multiplier used to calculate the sequence padding boundary. "
+                    "Miles rounds sequence lengths up to a multiple of `tensor_parallel_size * data_pad_size_multiplier`. "
+                    "This optimization ensures that matrix dimensions are aligned with NVIDIA Tensor Core requirements, maximizing throughput and reducing VRAM fragmentation. "
+                    "**Note:** better not change this; values `<128` may trigger accuracy loss under `--qkv-format thd` when `TP>=4`."
+                ),
             )
             parser.add_argument(
                 "--rollout-sample-filter-path",
                 type=str,
                 default=None,
                 help=(
-                    "Path to the function that marks individual samples to be excluded from loss calculation. [Ref](../get_started/customization.md#6-rollout-sample-filter---rollout-sample-filter-path)"
+                    "Path to the function that marks individual samples to be excluded from loss calculation. "
+                    "[Ref](../get_started/customization.md#6-rollout-sample-filter---rollout-sample-filter-path)"
                 ),
             )
             parser.add_argument(
@@ -1328,7 +1483,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to the function to process all samples (including filtered ones) after rollout. [Ref](../get_started/customization.md#7-rollout-all-samples-process---rollout-all-samples-process-path)"
+                    "Path to the function to process all samples (including filtered ones) after rollout. "
+                    "[Ref](../get_started/customization.md#7-rollout-all-samples-process---rollout-all-samples-process-path)"
                 ),
             )
             parser.add_argument(
@@ -1355,19 +1511,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--custom-megatron-init-path",
                 type=str,
                 default=None,
-                help="Path to custom Megatron initialization logic. [Ref](../get_started/customization.md#17-megatron-hooks)",
+                help=(
+                    "Path to custom Megatron initialization logic. "
+                    "[Ref](../get_started/customization.md#17-megatron-hooks)"
+                ),
             )
             parser.add_argument(
                 "--custom-megatron-before-log-prob-hook-path",
                 type=str,
                 default=None,
-                help="Hook called before calculating log probabilities. [Ref](../get_started/customization.md#17-megatron-hooks)",
+                help=(
+                    "Hook called before calculating log probabilities. "
+                    "[Ref](../get_started/customization.md#17-megatron-hooks)"
+                ),
             )
             parser.add_argument(
                 "--custom-megatron-before-train-step-hook-path",
                 type=str,
                 default=None,
-                help="Hook called before each training step. [Ref](../get_started/customization.md#17-megatron-hooks)",
+                help=(
+                    "Hook called before each training step. "
+                    "[Ref](../get_started/customization.md#17-megatron-hooks)"
+                ),
             )
             return parser
 
