@@ -46,7 +46,6 @@ async def configure_sglang(args: Namespace) -> None:
             "enable": True,
             "dir": str(_get_dir(args)),
             "exp_name": f"engine_{i}",
-            "cleanup_previous": True,
             **overrides,
         }
         coros.append(post(f"{url}/dumper/configure", body))
@@ -94,7 +93,6 @@ class DumperMegatronUtil:
         merged = {
             "dir": str(_get_dir(args)),
             "exp_name": phase.value,
-            "cleanup_previous": True,
             **overrides,
         }
 
