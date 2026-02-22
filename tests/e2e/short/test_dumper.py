@@ -117,7 +117,7 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str, expected_fields: list[str
 
     if expected_fields:
         for field in expected_fields:
-            matches = list(phase_dir.rglob(f"{field}.pt"))
+            matches = list(phase_dir.rglob(f"*name={field}.pt"))
             assert len(matches) > 0, f"Expected field '{field}' not found under {phase_dir}"
 
 
