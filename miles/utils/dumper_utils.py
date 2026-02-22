@@ -59,17 +59,13 @@ async def configure_sglang(args: Namespace) -> None:
 
 
 class DumperMegatronUtil:
-    def __init__(self, args: Namespace, phase: DumperPhase) -> None:
+    def __init__(self, args: Namespace, model: Sequence[torch.nn.Module], phase: DumperPhase) -> None:
         self.enabled = self._configure(args, phase)
-
-    def register_hooks(self, model: Sequence[torch.nn.Module]) -> None:
-        if not self.enabled:
-            return
-
-        assert (
-            len(model) == 1
-        ), f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
-        dumper.register_non_intrusive_dumper(model[0])
+        if self.enabled:
+            assert (
+                len(model) == 1
+            ), f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
+            dumper.register_non_intrusive_dumper(model[0])
 
     def wrap_forward_step(self, forward_step_func: Callable) -> Callable:
         if not self.enabled:

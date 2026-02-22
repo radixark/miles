@@ -183,8 +183,7 @@ def forward_only(
         dict[str, list[torch.Tensor]]: Aggregated outputs keyed by ``store_prefix + key``.
     """
 
-    dumper_phase_util = DumperMegatronUtil(args, DumperPhase.FWD_ONLY)
-    dumper_phase_util.register_hooks(model)
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_ONLY)
 
     # reset data iterator
     for iterator in data_iterator:
@@ -325,8 +324,7 @@ def train_one_step(
         and gradient norm for logging.
     """
     args = get_args()
-    dumper_phase_util = DumperMegatronUtil(args, DumperPhase.FWD_BWD)
-    dumper_phase_util.register_hooks(model)
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD)
 
     # Set grad to zero.
     for model_chunk in model:
