@@ -105,9 +105,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
     )
 
 
-def _check_dump_dir(
-    phase_dir: Path, exp_pattern: str, expected_fields: list[str] | None = None
-) -> None:
+def _check_dump_dir(phase_dir: Path, exp_pattern: str, expected_fields: list[str] | None = None) -> None:
     assert phase_dir.exists(), f"Missing dump dir: {phase_dir}"
     dump_subdirs = list(phase_dir.glob(exp_pattern))
     assert len(dump_subdirs) > 0, f"No {exp_pattern} subdirs in {phase_dir}"
@@ -120,9 +118,7 @@ def _check_dump_dir(
     if expected_fields:
         for field in expected_fields:
             matches = list(phase_dir.rglob(f"{field}.pt"))
-            assert len(matches) > 0, (
-                f"Expected field '{field}' not found under {phase_dir}"
-            )
+            assert len(matches) > 0, f"Expected field '{field}' not found under {phase_dir}"
 
 
 def verify(dump_subdir: str) -> None:
