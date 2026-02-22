@@ -12,7 +12,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from sglang.srt.debug_utils.dumper import DumperConfig, dumper
+from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
 logger = logging.getLogger(__name__)
 
@@ -126,10 +126,6 @@ def _cleanup_dump_dir(dump_dir: Path) -> None:
         shutil.rmtree(dump_dir)
     if dist.is_initialized():
         dist.barrier()
-
-
-def _get_rank() -> int:
-    return dist.get_rank() if dist.is_initialized() else 0
 
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
