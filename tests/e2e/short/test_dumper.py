@@ -12,6 +12,12 @@ DUMP_DIR = "/tmp/test_miles_dumper"
 
 EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
+EXPECTED_FIELDS: dict[str, list[str]] = {
+    "engine_*": ["input_ids", "positions"],
+    "fwd_only": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"],
+    "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"],
+}
+
 # Two configs that together cover all parallelism dimensions:
 #   Config A: TP=2, SP, PP=2, EP=2, DP=2            → covers DP
 #   Config B: TP=2, SP, PP=2, CP=2, EP=2, eTP=2     → covers CP, expert_TP
@@ -99,7 +105,9 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
     )
 
 
-def _check_dump_dir(phase_dir: Path, exp_pattern: str) -> None:
+def _check_dump_dir(
+    phase_dir: Path, exp_pattern: str, expected_fields: list[str] | None = None
+) -> None:
     assert phase_dir.exists(), f"Missing dump dir: {phase_dir}"
     dump_subdirs = list(phase_dir.glob(exp_pattern))
     assert len(dump_subdirs) > 0, f"No {exp_pattern} subdirs in {phase_dir}"
@@ -109,11 +117,18 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str) -> None:
     assert isinstance(sample, dict), f"Unexpected type: {type(sample)}"
     assert "value" in sample and "meta" in sample, f"Missing keys: {sample.keys()}"
 
+    if expected_fields:
+        for field in expected_fields:
+            matches = list(phase_dir.rglob(f"{field}.pt"))
+            assert len(matches) > 0, (
+                f"Expected field '{field}' not found under {phase_dir}"
+            )
+
 
 def verify(dump_subdir: str) -> None:
     base = Path(f"{DUMP_DIR}/{dump_subdir}")
     for pattern in EXP_PATTERNS:
-        _check_dump_dir(base, pattern)
+        _check_dump_dir(base, pattern, expected_fields=EXPECTED_FIELDS.get(pattern))
     print(f"All dump verifications passed for {dump_subdir}!")
 
 
