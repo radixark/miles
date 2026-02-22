@@ -63,7 +63,11 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
 
     sglang_args = "--rollout-num-gpus-per-engine 8 " "--sglang-mem-fraction-static 0.6 "
 
-    dumper_args = f"--dumper-enable --dumper-dir {dump_dir} "
+    dumper_args = (
+        f"--dumper-enable --dumper-dir {dump_dir} "
+        "--dumper-fwd-only enable_model_value=1 "
+        "--dumper-fwd-bwd enable_model_grad=1 "
+    )
 
     misc_args = (
         "--attention-dropout 0.0 --hidden-dropout 0.0 "
