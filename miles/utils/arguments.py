@@ -1122,6 +1122,40 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=("Dump all details of training for post-hoc analysis and visualization."),
             )
+            parser.add_argument(
+                "--dumper-enable",
+                action="store_true",
+                default=False,
+                help="Enable sglang dumper for all three phases (sglang inference, "
+                "megatron forward-only, megatron forward-backward). "
+                "Per-phase --dumper-inference/--dumper-fwd-only/--dumper-fwd-bwd can override.",
+            )
+            parser.add_argument(
+                "--dumper-dir",
+                type=str,
+                default="/tmp/dumper",
+                help="Base output directory for sglang dumper. Three subdirs are created: "
+                "inference/, fwd_only/, fwd_bwd/.",
+            )
+            parser.add_argument(
+                "--dumper-inference",
+                nargs="*",
+                default=None,
+                help="SGLang inference phase dumper config as key=value pairs. "
+                "Keys map to DumperConfig fields (e.g. enable=true filter=whatever).",
+            )
+            parser.add_argument(
+                "--dumper-fwd-only",
+                nargs="*",
+                default=None,
+                help="Megatron forward-only phase dumper config as key=value pairs.",
+            )
+            parser.add_argument(
+                "--dumper-fwd-bwd",
+                nargs="*",
+                default=None,
+                help="Megatron forward-backward phase dumper config as key=value pairs.",
+            )
             # use together with --record-memory-history and --memory-snapshot-path (defined in Megatron)
             parser.add_argument(
                 "--memory-snapshot-dir",
