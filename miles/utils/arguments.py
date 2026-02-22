@@ -1048,6 +1048,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
 
+        # mlflow
+        def add_mlflow_arguments(parser):
+            parser.add_argument("--use-mlflow", action="store_true", default=False)
+            parser.add_argument(
+                "--mlflow-tracking-uri",
+                type=str,
+                default=None,
+                help="MLflow tracking server URI. Defaults to MLFLOW_TRACKING_URI env var, or local mlruns/ directory.",
+            )
+            parser.add_argument(
+                "--mlflow-experiment-name",
+                type=str,
+                default="miles",
+                help="MLflow experiment name.",
+            )
+            parser.add_argument(
+                "--mlflow-run-name",
+                type=str,
+                default=None,
+                help="MLflow run name. Defaults to --wandb-group if not set.",
+            )
+            parser.add_argument("--mlflow-run-id", type=str, default=None)
+            return parser
+
         # tensorboard
         def add_tensorboard_arguments(parser):
             # tb_project_name, tb_experiment_name
@@ -1397,6 +1421,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
         parser = add_wandb_arguments(parser)
+        parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
