@@ -124,10 +124,10 @@ def _cleanup_dump_dir(dump_dir: Path) -> None:
     import torch.distributed as dist
 
     if dist.is_initialized():
-        if dist.get_rank() == 0 and dump_dir.exists():
+        if dist.get_rank() == 0 and dump_dir.is_dir():
             shutil.rmtree(dump_dir)
         dist.barrier()
-    elif dump_dir.exists():
+    elif dump_dir.is_dir():
         shutil.rmtree(dump_dir)
 
 
