@@ -25,6 +25,30 @@ from .update_weight_from_distributed import (
 logger = logging.getLogger(__name__)
 
 
+_LIBCUDA = None
+
+
+def _cuda_ipc_supported(tensor: torch.Tensor) -> bool:
+    """
+    Check if a CUDA tensor is IPC-shareable via cuIpcGetMemHandle (no side effects).
+    Returns False for vmem (TMS) or cudaMallocAsync allocations.
+    """
+    import ctypes
+
+    global _LIBCUDA
+    if _LIBCUDA is None:
+        try:
+            _LIBCUDA = ctypes.CDLL("libcuda.so.1")
+        except OSError:
+            return True  # can't check, assume OK
+
+    _ipc_handle = ctypes.create_string_buffer(64)  # sizeof(CUipcMemHandle) == 64
+    # cuIpcGetMemHandle(CUipcMemHandle* pHandle, CUdeviceptr dptr)
+    # CUdeviceptr is unsigned long long
+    _ret = _LIBCUDA.cuIpcGetMemHandle(ctypes.byref(_ipc_handle), ctypes.c_ulonglong(tensor.data_ptr()))
+    return _ret == 0  # CUDA_SUCCESS == 0
+
+
 class UpdateWeightFromTensor:
     """
     Update rollout engines from tensor dict:
@@ -232,10 +256,37 @@ def _send_to_colocated_engine(
 
     serialized_tensors = []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
+        # Sync before bucket creation to surface any pending async CUDA errors
+        # (e.g., from NCCL all_gather or accidental vmem tensor reads upstream)
+        torch.cuda.synchronize()
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
+        # Sync after cat to surface any error from reading vmem-backed inputs
+        torch.cuda.synchronize()
+        metadata = flattened_tensor_bucket.get_metadata()
+        ft = flattened_tensor_bucket.get_flattened_tensor()
+        # Diagnostic: test IPC shareability via ctypes (no side effects on ref counter).
+        # If the flattened tensor is vmem-backed (TMS), cuIpcGetMemHandle returns non-zero.
+        _rank = dist.get_rank()
+        if ft.is_cuda and not _cuda_ipc_supported(ft):
+            import logging as _logging
+
+            _logger = _logging.getLogger(__name__)
+            _logger.error(
+                f"[rank {_rank}] flattened_tensor not IPC-shareable (will clone to fix) | "
+                f"device={ft.device} dtype={ft.dtype} shape={ft.shape} ptr={hex(ft.data_ptr())} nbytes={ft.nbytes}"
+            )
+            for _n, _t in named_tensors:
+                _device = _t.device
+                _ptr = hex(_t.data_ptr()) if _t.is_cuda else "cpu"
+                _ipc_ok = _cuda_ipc_supported(_t) if _t.is_cuda else "N/A"
+                _logger.error(
+                    f"[rank {_rank}]   input {_n}: device={_device} ptr={_ptr} ipc_ok={_ipc_ok} shape={_t.shape} dtype={_t.dtype}"
+                )
+            # Clone to force fresh MemPool allocation (IPC-compatible)
+            ft = ft.clone()
         flattened_tensor_data = {
-            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-            "metadata": flattened_tensor_bucket.get_metadata(),
+            "flattened_tensor": ft,
+            "metadata": metadata,
         }
         long_live_tensors.append(flattened_tensor_data)
         serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))

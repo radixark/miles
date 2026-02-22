@@ -50,7 +50,7 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 3000
+   --num-rollout 1
    --rollout-batch-size 8
    --n-samples-per-prompt 2
    --rollout-max-response-len 8192
@@ -73,7 +73,7 @@ PERF_ARGS=(
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
-   --expert-model-parallel-size 4
+   --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -119,7 +119,7 @@ WANDB_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 4
-   --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.4
    # --sglang-ep-size 8
 
    # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 64)
@@ -198,7 +198,7 @@ SPEC_ARGS=(
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
