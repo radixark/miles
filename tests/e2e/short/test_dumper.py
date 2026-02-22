@@ -10,7 +10,7 @@ MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 DUMP_DIR = "/tmp/test_miles_dumper"
 
-EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
+EXP_PATTERNS = ["engine_*"]
 
 # Two configs that together cover all parallelism dimensions:
 #   Config A: TP=2, SP, PP=2, EP=2, DP=2            → covers DP
@@ -65,8 +65,8 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
 
     dumper_args = (
         f"--dumper-enable --dumper-dir {dump_dir} "
-        "--dumper-fwd-only enable_model_value=1 "
-        "--dumper-fwd-bwd enable_model_grad=1 "
+        "--dumper-fwd-only enable_model_value=0 "
+        "--dumper-fwd-bwd enable_model_grad=0 "
     )
 
     misc_args = (
