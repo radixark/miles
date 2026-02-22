@@ -65,8 +65,8 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
 
     dumper_args = (
         f"--dumper-enable --dumper-dir {dump_dir} "
-        "--dumper-fwd-only enable_model_value=0 non_intrusive_mode=all filter=embedding "
-        "--dumper-fwd-bwd enable_model_grad=0 non_intrusive_mode=all filter=embedding "
+        "--dumper-fwd-only enable_model_value=0 enable_model_grad=0 "
+        "--dumper-fwd-bwd enable_model_value=0 enable_model_grad=0 "
     )
 
     misc_args = (

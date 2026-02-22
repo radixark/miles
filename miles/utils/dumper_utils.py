@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import enum
 import logging
+import shutil
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -95,9 +96,11 @@ class DumperMegatronUtil:
             "exp_name": phase.value,
             **overrides,
         }
+        merged.pop("cleanup_previous", None)
 
         full_config = DumperConfig(**merged)
         dumper.reset()
+        _cleanup_dump_dir(Path(merged["dir"]) / merged["exp_name"])
         dumper.configure(**dataclasses.asdict(full_config))
         return True
 
@@ -116,6 +119,17 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
 
 
 # ------------------------------- Common -------------------------------------
+
+
+def _cleanup_dump_dir(dump_dir: Path) -> None:
+    import torch.distributed as dist
+
+    if dist.is_initialized():
+        if dist.get_rank() == 0 and dump_dir.exists():
+            shutil.rmtree(dump_dir)
+        dist.barrier()
+    elif dump_dir.exists():
+        shutil.rmtree(dump_dir)
 
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
