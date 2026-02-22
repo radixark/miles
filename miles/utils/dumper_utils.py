@@ -62,10 +62,7 @@ class DumperMegatronUtil:
     def __init__(self, args: Namespace, model: Sequence[torch.nn.Module], phase: DumperPhase) -> None:
         self.enabled = self._configure(args, phase)
         if self.enabled:
-            assert (
-                len(model) == 1
-            ), f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
-            dumper.register_non_intrusive_dumper(model[0])
+            dumper.register_non_intrusive_dumper(self._extract_model(model))
 
     def wrap_forward_step(self, forward_step_func: Callable) -> Callable:
         if not self.enabled:
@@ -77,12 +74,16 @@ class DumperMegatronUtil:
         if not self.enabled:
             return
 
+        dumper.dump_model(self._extract_model(model))
+        dumper.step()
+        dumper.configure(enable=False)
+
+    @staticmethod
+    def _extract_model(model: Sequence[torch.nn.Module]) -> torch.nn.Module:
         assert (
             len(model) == 1
         ), f"Dumper does not yet support virtual pipeline parallelism (got {len(model)} model chunks)"
-        dumper.dump_model(model[0])
-        dumper.step()
-        dumper.configure(enable=False)
+        return model[0]
 
     @staticmethod
     def _configure(args: Namespace, phase: DumperPhase) -> bool:
