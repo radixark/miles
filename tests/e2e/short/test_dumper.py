@@ -10,7 +10,7 @@ MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 DUMP_DIR = "/tmp/test_miles_dumper"
 
-EXP_PATTERNS = ["engine_*"]
+EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
 # Two configs that together cover all parallelism dimensions:
 #   Config A: TP=2, SP, PP=2, EP=2, DP=2            → covers DP

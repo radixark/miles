@@ -184,6 +184,7 @@ def forward_only(
     """
 
     dumper_phase_util = DumperMegatronUtil(args, DumperPhase.FWD_ONLY)
+    dumper_phase_util.register_hooks(model)
 
     # reset data iterator
     for iterator in data_iterator:
@@ -325,6 +326,7 @@ def train_one_step(
     """
     args = get_args()
     dumper_phase_util = DumperMegatronUtil(args, DumperPhase.FWD_BWD)
+    dumper_phase_util.register_hooks(model)
 
     # Set grad to zero.
     for model_chunk in model:
