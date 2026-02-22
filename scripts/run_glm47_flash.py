@@ -29,8 +29,7 @@ def prepare(args: ScriptArgs):
         "pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa"
     )
     U.exec_command(
-        f"hf download {args.model_org}/{args.model_name} "
-        f"--local-dir {args.model_dir}/{args.model_name}"
+        f"hf download {args.model_org}/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}"
     )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
