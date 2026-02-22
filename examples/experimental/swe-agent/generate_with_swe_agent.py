@@ -56,6 +56,60 @@ def _decorate_sample(
     return sample
 
 
+def _normalize_eval_instance_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(metadata)
+    instance_id = normalized.get("instance_id")
+    if isinstance(instance_id, str):
+        normalized["instance_id"] = instance_id.lower()
+
+    repo = normalized.get("repo")
+    if isinstance(repo, str):
+        normalized["repo"] = repo.lower()
+    elif isinstance(instance_id, str):
+        # SWE-Gym instance ids are usually "<org>__<repo>-<id>"; derive a repo hint for parsers.
+        repo_from_instance = instance_id.rsplit("-", 1)[0].replace("__", "/").lower()
+        normalized["repo"] = repo_from_instance
+
+    return normalized
+
+
+def _get_eval_entry(eval_report_full: dict[str, Any], instance_id: str) -> dict[str, Any]:
+    report = eval_report_full.get("eval_report", {})
+    if not isinstance(report, dict):
+        return {}
+
+    if instance_id in report:
+        return report[instance_id]
+
+    lower_instance_id = instance_id.lower()
+    if lower_instance_id in report:
+        return report[lower_instance_id]
+
+    return {}
+
+
+def _build_agent_config(step_limit: int, collapse_limit: int) -> dict[str, Any]:
+    # Keep agent prompting minimal/explicit to avoid over-constraining generations.
+    return {
+        "step_limit": step_limit,
+        "collapse_limit": collapse_limit,
+    }
+
+
+def _build_environment_config() -> dict[str, Any]:
+    # Keep SWE command execution rooted at /testbed and deterministic shell behavior.
+    return {
+        "cwd": "/testbed",
+        "env": {
+            "PAGER": "cat",
+            "MANPAGER": "cat",
+            "LESS": "-R",
+            "PIP_PROGRESS_BAR": "off",
+            "TQDM_DISABLE": "1",
+        },
+    }
+
+
 def run_agent_sync_logic(
     model,
     env,
@@ -64,8 +118,7 @@ def run_agent_sync_logic(
     metadata,
     instance_dir,
     run_id,
-    step_limit,
-    collapse_limit,
+    agent_config: dict[str, Any],
 ):
     """Blocking SWE-agent run + evaluation; executed in a thread."""
     agent = DefaultAgent(
@@ -73,20 +126,57 @@ def run_agent_sync_logic(
         env=env,
         responses_create_params={"input": []},
         sampling_params=sampling_params,
-        step_limit=step_limit,
-        collapse_limit=collapse_limit,
+        **agent_config,
     )
 
     exit_status, result_patch, agent_metrics = agent.run(problem_statement)
 
     eval_start = time.time()
-    eval_report_full = run_eval(
-        instance=metadata,
-        env=env,
-        model_patch=result_patch,
-        instance_dir=instance_dir,
-        run_id=run_id,
-    )
+    eval_instance = _normalize_eval_instance_metadata(metadata)
+    eval_instance_id = str(eval_instance.get("instance_id", metadata.get("instance_id", "unknown")))
+    try:
+        eval_report_full = run_eval(
+            instance=eval_instance,
+            env=env,
+            model_patch=result_patch,
+            instance_dir=instance_dir,
+            run_id=run_id,
+        )
+    except KeyError as exc:
+        parser_key = str(exc).strip("'\"")
+        retry_instance = dict(eval_instance)
+        if "/" in parser_key:
+            retry_instance["repo"] = parser_key.lower()
+        try:
+            eval_report_full = run_eval(
+                instance=retry_instance,
+                env=env,
+                model_patch=result_patch,
+                instance_dir=instance_dir,
+                run_id=run_id,
+            )
+            logger.info(
+                "SWE eval parser recovered after normalization for instance %s (parser_key=%s)",
+                eval_instance_id,
+                parser_key,
+            )
+        except KeyError:
+            instance_id = str(metadata.get("instance_id", "unknown"))
+            logger.info(
+                "SWE eval parser unavailable for instance %s: %s (normalized_instance_id=%s, normalized_repo=%s)",
+                instance_id,
+                exc,
+                eval_instance.get("instance_id"),
+                eval_instance.get("repo"),
+            )
+            eval_report_full = {
+                "eval_report": {
+                    instance_id: {
+                        "resolved": False,
+                        "error": f"eval_parser_unavailable: {exc}",
+                    }
+                }
+            }
     eval_time = time.time() - eval_start
 
     agent_metrics["eval_time"] = eval_time
@@ -133,6 +223,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     instance_dir = output_dir / instance_id
     instance_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"{int(time.time())}_{str(uuid.uuid4())[:8]}"
+    agent_config = _build_agent_config(args.generate_step_limit, args.generate_collapse_limit)
+    env_config = _build_environment_config()
 
     tracer: OpenAIEndpointTracer | None = None
     env = None
@@ -158,9 +250,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             instance_id=instance_id,
             step_timeout=600,
             eval_timeout=600,
+            **env_config,
         )
 
         request_kwargs = build_chat_request_kwargs(input.sampling_params)
+        # Keep stop behavior explicit for SWE multi-turn tracing: stop at role boundary and
+        # do not preserve raw stop tokens in assistant content.
+        request_kwargs["no_stop_trim"] = False
         exit_status, messages, eval_report_full, agent_metrics = await asyncio.to_thread(
             run_agent_sync_logic,
             model,
@@ -170,13 +266,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             metadata,
             instance_dir,
             run_id,
-            args.generate_step_limit,
-            args.generate_collapse_limit,
+            agent_config,
         )
 
         status = _status_from_exit_status(exit_status)
 
-        eval_data = eval_report_full.get("eval_report", {}).get(instance_id, {})
+        eval_data = _get_eval_entry(eval_report_full, instance_id)
         reward = 1.0 if eval_data.get("resolved", False) else 0.0
 
         records = await tracer.collect_records()
@@ -234,6 +329,7 @@ def dynamic_filter(args, samples: list[Sample], **kwargs) -> DynamicFilterOutput
     has_aborted = any(sample.status == Sample.Status.ABORTED for sample in samples)
     if has_aborted:
         return DynamicFilterOutput(keep=False, reason="group_has_aborted")
+
     return DynamicFilterOutput(keep=True)
 
 
@@ -279,9 +375,45 @@ def aggregate_agent_metrics(samples: list[Sample]) -> dict[str, float]:
     return metrics
 
 
+def aggregate_reward_diagnostics(samples: list[Sample]) -> dict[str, float]:
+    """Aggregate reward outcome breakdown for faster rollout debugging."""
+    resolved_count = 0
+    unresolved_count = 0
+    parser_unavailable_count = 0
+
+    for sample in samples:
+        metadata = sample.metadata or {}
+        instance_id = str(metadata.get("instance_id", ""))
+        eval_report_full = metadata.get("eval_report", {})
+        eval_data = _get_eval_entry(eval_report_full, instance_id) if instance_id else {}
+
+        if eval_data.get("resolved", False):
+            resolved_count += 1
+            continue
+
+        unresolved_count += 1
+        error = eval_data.get("error")
+        if isinstance(error, str) and "eval_parser_unavailable" in error:
+            parser_unavailable_count += 1
+
+    total = len(samples)
+    metrics: dict[str, float] = {
+        "reward/resolved_count": float(resolved_count),
+        "reward/unresolved_count": float(unresolved_count),
+        "reward/parser_unavailable_count": float(parser_unavailable_count),
+    }
+    if total > 0:
+        metrics["reward/resolved_ratio"] = resolved_count / total
+        metrics["reward/unresolved_ratio"] = unresolved_count / total
+        metrics["reward/parser_unavailable_ratio"] = parser_unavailable_count / total
+
+    return metrics
+
+
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:
     """Inject SWE agent metrics into default rollout logging."""
     metrics = aggregate_agent_metrics(samples)
+    metrics.update(aggregate_reward_diagnostics(samples))
     if rollout_extra_metrics is not None:
         rollout_extra_metrics.update(metrics)
     return False

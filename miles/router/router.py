@@ -143,9 +143,6 @@ class MilesRouter:
         headers: dict | None = None,
     ) -> dict:
         """Core proxy logic. Returns dict with request_body, response_body, status_code, headers."""
-        worker_url = self._use_url()
-        url = f"{worker_url}/{path}"
-
         if body is None:
             body = await request.body()
         if headers is None:
@@ -153,17 +150,37 @@ class MilesRouter:
         if body is not None:
             headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
 
-        try:
-            response = await self.client.request(request.method, url, content=body, headers=headers)
-            content = await response.aread()
-            return {
-                "request_body": body,
-                "response_body": content,
-                "status_code": response.status_code,
-                "headers": dict(response.headers),
-            }
-        finally:
-            self._finish_url(worker_url)
+        excluded_workers: set[str] = set()
+        max_attempts = max(
+            1, sum(1 for worker_url in self.worker_request_counts if worker_url not in self.dead_workers)
+        )
+
+        for attempt in range(max_attempts):
+            worker_url = self._use_url(exclude_workers=excluded_workers)
+            url = f"{worker_url}/{path}"
+
+            try:
+                response = await self.client.request(request.method, url, content=body, headers=headers)
+                content = await response.aread()
+                return {
+                    "request_body": body,
+                    "response_body": content,
+                    "status_code": response.status_code,
+                    "headers": dict(response.headers),
+                }
+            except httpx.TransportError as exc:
+                logger.debug(
+                    "[miles-router] upstream request failed: %s %s (%s)",
+                    request.method,
+                    url,
+                    exc,
+                )
+                excluded_workers.add(worker_url)
+                if attempt + 1 < max_attempts:
+                    continue
+                raise
+            finally:
+                self._finish_url(worker_url)
 
     def _build_proxy_response(self, result: dict) -> Response:
         """Build HTTP response from proxy result."""
@@ -211,19 +228,19 @@ class MilesRouter:
         """List all registered workers"""
         return {"urls": list(self.worker_request_counts.keys())}
 
-    def _use_url(self):
+    def _use_url(self, exclude_workers: set[str] | None = None):
         """Select worker URL with minimal active requests."""
+        excluded_workers = exclude_workers or set()
+        valid_workers = (
+            worker_url
+            for worker_url in self.worker_request_counts
+            if worker_url not in self.dead_workers and worker_url not in excluded_workers
+        )
 
-        if not self.dead_workers:
-            # Healthy path: select from all workers
-            url = min(self.worker_request_counts, key=self.worker_request_counts.get)
-        else:
-            # Degraded path: select from workers not in dead_workers
-            valid_workers = (w for w in self.worker_request_counts if w not in self.dead_workers)
-            try:
-                url = min(valid_workers, key=self.worker_request_counts.get)
-            except ValueError:
-                raise RuntimeError("No healthy workers available in the pool") from None
+        try:
+            url = min(valid_workers, key=self.worker_request_counts.get)
+        except ValueError:
+            raise RuntimeError("No healthy workers available in the pool") from None
 
         self.worker_request_counts[url] += 1
         return url

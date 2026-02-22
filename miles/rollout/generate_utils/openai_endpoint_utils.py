@@ -44,38 +44,32 @@ class OpenAIEndpointTracer:
 
 
 def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord], tokenizer) -> list[Sample]:
-    return [_compute_sample_from_openai_record(input_sample, record, tokenizer) for record in records]
+    if not records:
+        raise RuntimeError("No OAI session records were collected.")
+
+    samples: list[Sample] = []
+    for index, record in enumerate(records):
+        try:
+            samples.append(_compute_sample_from_openai_record(input_sample, record, tokenizer))
+        except (AssertionError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Failed to parse OAI session record at "
+                f"index={index}, timestamp={record.timestamp}, status_code={record.status_code}, path={record.path}"
+            ) from exc
+
+    return samples
 
 
 def _infer_input_token_ids(choice: dict, record: SessionRecord, tokenizer) -> list[int]:
-    input_token_ids = choice.get("input_token_ids")
-    if input_token_ids is not None:
-        return input_token_ids
-
     request_input_ids = record.request.get("input_ids")
     if request_input_ids is not None:
-        return request_input_ids
+        return list(request_input_ids)
 
-    messages = record.request.get("messages")
-    if messages is None:
-        raise KeyError("input_token_ids")
+    input_token_ids = choice.get("input_token_ids")
+    if input_token_ids is not None:
+        return list(input_token_ids)
 
-    tools = record.request.get("tools")
-    if tools is not None:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_special_tokens=False,
-            add_generation_prompt=True,
-            tools=tools,
-        )
-
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_special_tokens=False,
-        add_generation_prompt=True,
-    )
+    raise KeyError("missing input_token_ids and request.input_ids")
 
 
 def _extract_output_tokens(choice: dict, tokenizer) -> tuple[list[int], list[float]]:
@@ -102,6 +96,14 @@ def _extract_output_tokens(choice: dict, tokenizer) -> tuple[list[int], list[flo
     return output_token_ids, output_log_probs
 
 
+def _extract_choice_content(choice: dict) -> str:
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def _normalize_finish_reason(choice: dict) -> str | None:
     finish_reason = choice.get("finish_reason")
     if isinstance(finish_reason, dict):
@@ -114,7 +116,18 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
     choice = record.response["choices"][0]
 
     input_token_ids = _infer_input_token_ids(choice, record, tokenizer)
-    output_token_ids, output_log_probs = _extract_output_tokens(choice, tokenizer)
+    # IMPORTANT: For multi-turn agentic tasks, later prompts are constructed by re-tokenizing
+    # the message content strings. Tokenization is not guaranteed to be invertible at the
+    # token-id level (decode->encode can change segmentation). To keep turn-to-turn token
+    # streams consistent for merge_samples(), derive output_token_ids from the returned
+    # message content, and only keep rollout logprobs when they align exactly.
+    content = _extract_choice_content(choice)
+    output_token_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
+    output_log_probs: list[float] | None = None
+    if isinstance(choice.get("logprobs", {}).get("content"), list):
+        extracted_ids, extracted_log_probs = _extract_output_tokens(choice, tokenizer)
+        if extracted_ids == output_token_ids:
+            output_log_probs = extracted_log_probs
 
     sample = deepcopy(input_sample)
     request_input_ids = record.request.get("input_ids")
@@ -124,7 +137,7 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
         ), "for prompt part, input_ids return by sglang should match with the request input_ids"
     sample.tokens = list(input_token_ids) + output_token_ids
     sample.rollout_log_probs = output_log_probs
-    sample.response = tokenizer.decode(output_token_ids)
+    sample.response = content
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
 

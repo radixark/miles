@@ -50,6 +50,7 @@ PERF_ARGS=(
     # --micro-batch-size 1
     --use-dynamic-batch-size
     --max-tokens-per-gpu 2048
+    --log-probs-chunk-size 1024
 )
 
 ROLLOUT_ARGS=(
@@ -62,6 +63,9 @@ ROLLOUT_ARGS=(
     --n-samples-per-prompt 8
     --rollout-temperature 0.8
     --rollout-max-response-len 8192
+    # Ray job runner re-evaluates entrypoint via /bin/sh; keep single quotes as literal chars
+    # so the stop token survives shell parsing as <|im_end|>.
+    --rollout-stop "'<|im_end|>'"
     
     --global-batch-size 64
     --balance-data
@@ -120,7 +124,6 @@ MISC_ARGS=(
     # need to comment this when using model with MLA
     --attention-backend flash
     --use-miles-router
-    --miles-router-enable-token-input-for-chat-completions
 )
 
 CUSTOM_ARGS=(
