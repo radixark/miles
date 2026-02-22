@@ -50,7 +50,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
         "--input-key messages --label-key label --apply-chat-template "
         "--rollout-shuffle --rm-type math "
         "--num-rollout 1 --rollout-batch-size 4 --n-samples-per-prompt 2 "
-        "--rollout-max-response-len 128 --rollout-temperature 0.8 "
+        "--rollout-max-response-len 20 --rollout-temperature 0.8 "
         "--global-batch-size 8 "
     )
 
