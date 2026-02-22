@@ -31,11 +31,13 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
+source "${SCRIPT_DIR}/models/small-next.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking
-   --ref-load ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_torch_dist
+   # --hf-checkpoint ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking
+   # --ref-load ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_torch_dist
+   --hf-checkpoint ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking-8L
+   --ref-load ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_partial_torch_dist
    # --load ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_miles/
    # --save ${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_miles/
    # --save-interval 20
@@ -71,16 +73,18 @@ PERF_ARGS=(
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
-   --expert-model-parallel-size 8
+   --expert-model-parallel-size 4
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
 
-   # --micro-batch-size 1
-   --use-dynamic-batch-size
-   --max-tokens-per-gpu 2048
+   --micro-batch-size 1
+   --qkv-format bshd
+   # --qkv-format thd
+   # --use-dynamic-batch-size
+   --max-tokens-per-gpu 8192
 )
 
 GRPO_ARGS=(
@@ -114,8 +118,8 @@ WANDB_ARGS=(
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.5
+   --rollout-num-gpus-per-engine 4
+   --sglang-mem-fraction-static 0.7
    # --sglang-ep-size 8
 
    # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 64)
@@ -144,10 +148,13 @@ MISC_ARGS=(
    # need to comment this when using model with MLA
    --attention-backend flash
 
+   --check-weight-update-equal
+   # --debug-first-weight-sync ${BASE_FOLDER}/debug-first-weight-sync/
+
    # --moe-token-dispatcher-type flex
    # --moe-enable-deepep
-   --debug-rollout-only
-   --save-debug-rollout-data /root/shared/qwen-next/debug_full/data_{rollout_id}.pt
+   # --debug-rollout-only
+   # --save-debug-rollout-data /root/shared/qwen-next/debug1/data_{rollout_id}.pt
    # --debug-train-only
    # --load-debug-rollout-data /root/shared/qwen-next/debug1/data_{rollout_id}.pt
 )
@@ -202,12 +209,13 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
+
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
-   --colocate \
+   --actor-num-gpus-per-node 4 \
+   --rollout-num-gpus 4 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
@@ -219,3 +227,21 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]} \
    ${SPEC_ARGS[@]}
+
+# ray job submit --address="http://127.0.0.1:8265" \
+#    --runtime-env-json="${RUNTIME_ENV_JSON}" \
+#    -- python3 train.py \
+#    --actor-num-nodes 1 \
+#    --actor-num-gpus-per-node 8 \
+#    --colocate \
+#    ${MODEL_ARGS[@]} \
+#    ${CKPT_ARGS[@]} \
+#    ${ROLLOUT_ARGS[@]} \
+#    ${OPTIMIZER_ARGS[@]} \
+#    ${GRPO_ARGS[@]} \
+#    ${WANDB_ARGS[@]} \
+#    ${PERF_ARGS[@]} \
+#    ${EVAL_ARGS[@]} \
+#    ${SGLANG_ARGS[@]} \
+#    ${MISC_ARGS[@]} \
+#    ${SPEC_ARGS[@]}

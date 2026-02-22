@@ -45,6 +45,14 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     return partition_stride, partition_dim
 
 
+def _handle_gdn_weight_gather(args: Namespace, name: str, param: torch.Tensor) -> torch.Tensor:
+    from miles_plugins.mbridge.qwen3_next import fix_gdn_weight_gather, needs_gdn_weight_fix
+
+    if needs_gdn_weight_fix(name):
+        param = fix_gdn_weight_gather(args, name, param)
+    return param
+
+
 def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
     """
     All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
@@ -71,6 +79,10 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
 
     partition_stride, partition_dim = _check_and_fix_partition(args, name, partition_stride, partition_dim)
     param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
+
+    # handle gdn weight gather
+    if getattr(args, "experimental_attention_variant", None) is not None:
+        param = _handle_gdn_weight_gather(args, name, param)
     return param
 
 
@@ -127,6 +139,9 @@ def all_gather_params_async(
             )
             param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
 
+        # handle gdn weight gather
+        if getattr(args, "experimental_attention_variant", None) is not None:
+            param = _handle_gdn_weight_gather(args, info.name, param)
         gathered_params.append(param)
 
     return gathered_params

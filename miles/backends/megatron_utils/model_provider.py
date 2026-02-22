@@ -132,15 +132,23 @@ def get_model_provider_func(
         """
         use_te = args.transformer_impl == "transformer_engine"
 
-        # Experimental loading arguments from yaml
-        assert config is None, "miles builds the config from args, so it expects config to be None"
-        config = core_transformer_config_from_args(args)
+        # Use config from caller (Megatron get_model) if provided, otherwise build from args
+        if config is None:
+            config = core_transformer_config_from_args(args)
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
             # Allow the spec to be a function so that user can use customized Megatron easier.
             if callable(transformer_layer_spec):
                 transformer_layer_spec = transformer_layer_spec(args, config, vp_stage)
+        elif getattr(config, "experimental_attention_variant", None) is not None:
+            from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
+                get_transformer_block_with_experimental_attention_variant_spec,
+            )
+
+            transformer_layer_spec = get_transformer_block_with_experimental_attention_variant_spec(
+                config=config, vp_stage=vp_stage
+            )
         else:
             if args.num_experts:
                 # Define the decoder block spec
