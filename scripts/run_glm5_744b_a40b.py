@@ -48,6 +48,7 @@ II. Usage for multi node (20 layers, 6 nodes as an example):
        python scripts/run_glm5_744b_a40b.py train --model-name GLM-5_20layer --num-nodes 6
 """
 
+import os
 import json
 import re
 from dataclasses import dataclass
@@ -126,10 +127,13 @@ def _process_glm_checkpoint(args: ScriptArgs):
     print(f"Patched {config_path}")
 
 
-def _convert_to_fp8(args: ScriptArgs):
+def _convert_to_fp8(args: ScriptArgs, skip_existing=True):
     """Convert HF checkpoint to FP8 (block quantization). Megatron still uses bf16."""
     src = f"{args.model_dir}/{args.model_name}"
     dst = f"{args.model_dir}/{args.model_name}_fp8"
+    if skip_existing and os.path.exists(dst):
+        print(f"[skip] FP8 checkpoint already exists: {dst}")
+        return
     U.exec_command(
         f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {src} --save-dir {dst} "
