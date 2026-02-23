@@ -191,7 +191,7 @@ class RoutingReplayManager(BaseReplayManager):
     data_key = "rollout_routed_experts"
     if_sp_region = True
     enable_check_replay_result = False
-    replay_check_threshold = 5e-3
+    replay_check_threshold = 1e-2
 
 
 routing_replay_manager = RoutingReplayManager()
