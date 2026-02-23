@@ -511,25 +511,59 @@ index ac839c21f..f18309217 100644
          )
          ops.append(recv_next_op)
      if len(ops) > 0:
+diff --git a/megatron/core/transformer/moe/moe_layer.py b/megatron/core/transformer/moe/moe_layer.py
+index 10d10f667..f874a20f3 100644
+--- a/megatron/core/transformer/moe/moe_layer.py
++++ b/megatron/core/transformer/moe/moe_layer.py
+@@ -93,6 +93,10 @@ class BaseMoELayer(MegatronModule, ABC):
+         self.layer_number = layer_number
+         self.router.set_layer_number(layer_number)
+ 
++    def set_is_mtp(self):
++        """Mark this MoE layer as an MTP layer."""
++        self.router.is_mtp = True
++
+ 
+ class MoELayer(BaseMoELayer):
+     """Mixture of Experts layer.
 diff --git a/megatron/core/transformer/moe/moe_utils.py b/megatron/core/transformer/moe/moe_utils.py
-index 28cff06f5..58dc4bb70 100644
+index 28cff06f5..b6ce0d80b 100644
 --- a/megatron/core/transformer/moe/moe_utils.py
 +++ b/megatron/core/transformer/moe/moe_utils.py
-@@ -587,6 +587,9 @@ def topk_routing_with_score_function(
+@@ -537,6 +537,7 @@ def topk_routing_with_score_function(
+     score_function: str = "softmax",
+     expert_bias: Optional[torch.Tensor] = None,
+     fused: bool = False,
++    is_mtp: bool = False,
+ ):
+     """Compute the routing probabilities and map for top-k selection with score function.
+     Args:
+@@ -587,6 +588,12 @@ def topk_routing_with_score_function(
          else:
              return torch.topk(scores, k=topk, dim=1)
  
 +    from miles.utils.replay_base import routing_replay_manager
-+    compute_topk = routing_replay_manager.get_topk_fn(compute_topk, return_probs=True)
++
++    # MTP layers cannot use rollout routing replay
++    if not is_mtp:
++        compute_topk = routing_replay_manager.get_topk_fn(compute_topk, return_probs=True)
 +
      if score_function == "softmax":
          if use_pre_softmax:
              scores = torch.softmax(logits, dim=-1, dtype=torch.float32).type_as(logits)
 diff --git a/megatron/core/transformer/moe/router.py b/megatron/core/transformer/moe/router.py
-index 16fc9d9af..517944f25 100644
+index 16fc9d9af..454023755 100644
 --- a/megatron/core/transformer/moe/router.py
 +++ b/megatron/core/transformer/moe/router.py
-@@ -201,6 +201,9 @@ class TopKRouter(Router):
+@@ -42,6 +42,7 @@ class Router(ABC, MegatronModule):
+         self.num_experts = self.config.num_moe_experts
+         self.moe_aux_loss_func = None
+         self.layer_number = None
++        self.is_mtp = False
+         self.tp_group = pg_collection.tp
+         self.cp_group = pg_collection.cp
+         self.tp_cp_group = pg_collection.tp_cp
+@@ -201,6 +202,9 @@ class TopKRouter(Router):
              self.global_tokens_per_expert = None
              self.ga_steps = None
  
@@ -539,8 +573,16 @@ index 16fc9d9af..517944f25 100644
      def _maintain_float32_expert_bias(self):
          """
          Maintain the expert bias in float32.
+@@ -510,6 +514,7 @@ class TopKRouter(Router):
+                 score_function=self.score_function,
+                 expert_bias=self.expert_bias,
+                 fused=self.config.moe_router_fusion,
++                is_mtp=self.is_mtp,
+             )
+ 
+         # Apply token dropping to probs and routing_map.
 diff --git a/megatron/core/transformer/multi_token_prediction.py b/megatron/core/transformer/multi_token_prediction.py
-index a8f4abfcd..f33f6f05e 100755
+index a8f4abfcd..21ac8782e 100755
 --- a/megatron/core/transformer/multi_token_prediction.py
 +++ b/megatron/core/transformer/multi_token_prediction.py
 @@ -6,6 +6,7 @@ from typing import Callable, List, Optional, Union
@@ -551,7 +593,16 @@ index a8f4abfcd..f33f6f05e 100755
  
  from megatron.core import InferenceParams, parallel_state, tensor_parallel
  from megatron.core.dist_checkpointing.mapping import ShardedStateDict
-@@ -714,17 +715,19 @@ class MultiTokenPredictionLayer(MegatronModule):
+@@ -674,6 +675,8 @@ class MultiTokenPredictionLayer(MegatronModule):
+             vp_stage=vp_stage,
+             layer_number=self.layer_number + diff_transformer_layer_offset,
+         )
++        if hasattr(self.transformer_layer.mlp, 'set_is_mtp'):
++            self.transformer_layer.mlp.set_is_mtp()
+ 
+         self.final_layernorm = build_module(
+             self.submodules.layer_norm,
+@@ -714,17 +717,19 @@ class MultiTokenPredictionLayer(MegatronModule):
              cp_group=self.cp_group,
              packed_seq_params=packed_seq_params,
          )
@@ -579,7 +630,7 @@ index a8f4abfcd..f33f6f05e 100755
  
          return input_ids, position_ids, decoder_input, hidden_states
  
-@@ -826,6 +829,51 @@ class MultiTokenPredictionLayer(MegatronModule):
+@@ -826,6 +831,51 @@ class MultiTokenPredictionLayer(MegatronModule):
          return hidden_states
  
      def _checkpointed_forward(self, forward_func, *args, **kwargs):
@@ -631,7 +682,7 @@ index a8f4abfcd..f33f6f05e 100755
          def checkpoint_handler():
              """Determines whether to use the `te_checkpoint` or `tensor_parallel.checkpoint`"""
              if self.config.fp8:
-@@ -836,12 +884,11 @@ class MultiTokenPredictionLayer(MegatronModule):
+@@ -836,12 +886,11 @@ class MultiTokenPredictionLayer(MegatronModule):
                      self.config.distribute_saved_activations,
                      tensor_parallel.random.get_cuda_rng_tracker,
                      parallel_state.get_tensor_model_parallel_group(),
