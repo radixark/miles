@@ -29,17 +29,17 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
-source "${REPO_ROOT}/scripts/models/qwen3-4B.sh"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." &>/dev/null && pwd)"
+source "${REPO_ROOT}/scripts/models/qwen3-32B.sh"
 
 # Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/multi_tasks.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/nemo_skills/multi_tasks.yaml"}
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B
-   --ref-load /root/Qwen3-4B_torch_dist
-   --load /root/Qwen3-4B_miles/
-   --save /root/Qwen3-4B_miles/
+   --hf-checkpoint /root/shared/Qwen3-32B
+   --ref-load /root/shared/Qwen3-32B_torch_dist
+   --load /root/shared/Qwen3-32B_miles/
+   --save /root/shared/Qwen3-32B_miles/
    --save-interval 20
 )
 
@@ -67,7 +67,7 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 8
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -90,6 +90,10 @@ GRPO_ARGS=(
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
+
+   --optimizer-cpu-offload
+   --overlap-cpu-optimizer-d2h-h2d
+   --use-precision-aware-optimizer
 )
 
 OPTIMIZER_ARGS=(
@@ -104,13 +108,14 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    --use-wandb
    --wandb-project miles-eval
-   --wandb-group qwen3-4b-eval
+   --wandb-group qwen3-32b-eval
    --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
+   --rollout-num-gpus-per-engine 8
    --sglang-mem-fraction-static 0.7
+   # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
 )
 
 MISC_ARGS=(
@@ -122,10 +127,7 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# export CUDA_VISIBLE_DEVICES=0,1
-# Set Up Your GPUs for Training
-
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 2 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -138,7 +140,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
