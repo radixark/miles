@@ -217,8 +217,8 @@ jobs:
           MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
           SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
         run: |
-          cd /sgl-workspace/sglang && git fetch origin "$SGLANG_PR" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git fetch origin "$MEGATRON_PR" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
+          cd /sgl-workspace/sglang && git checkout . && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd /root/Megatron-LM && git checkout . && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Execute
