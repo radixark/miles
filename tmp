@@ -1,1 +1,0 @@
-step 0: {'train/loss': 0.0, 'train/pg_loss': 0.0, 'train/entropy_loss': 10.224515914916992, 'train/pg_clipfrac': 0.0, 'train/ppo_kl': 0.0, 'train/train_rollout_logprob_abs_diff': 0.1727411150932312, 'train/grad_norm': 0.0, 'train/lr-pg_0': 1e-06, 'train/lr-pg_1': 1e-06, 'train/lr-pg_2': 1e-06, 'train/step': 0}
