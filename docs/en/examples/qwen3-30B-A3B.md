@@ -27,6 +27,11 @@ cd /root/miles
 bash scripts/run-qwen3-30B-A3B.sh
 ```
 
+Note that: Enabling think mode requires high `rollout-max-response-len` (16k+) and 
+small batch sizes to avoid reward hacking, where the model learns to shorten 
+responses due to truncation, but does not improve on AIME scores. Disabling think 
+mode stabilizes training and VRAM but typically collapses performance on AIME.
+
 ### Parameter Introduction
 
 Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.sh](https://github.com/radixark/miles/blob/main/scripts/run-qwen3-30B-A3B.sh) script.
