@@ -15,6 +15,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int | None = None
     hardware: Literal["H100", "GB200", "GB300"] = "H100"
     extra_args: str = ""
+    data_dir: str = "/root/datasets"
+    model_dir: str = "/root/models"
+    megatron_path: str = "/root/Megatron-LM"
     multi_eval: bool = False
     true_on_policy: bool = False
     dynamic_sampling: bool = False
@@ -39,36 +42,37 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir /root/models/{args.model_name}")
-    U.hf_download_dataset("zhuzilin/dapo-math-17k")
-    U.hf_download_dataset("zhuzilin/aime-2024")
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+    U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.multi_eval:
-        U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
-        U.hf_download_dataset("zyzshishui0627/IFBench")
+        U.hf_download_dataset("zyzshishui0627/gpqa_diamond", data_dir=args.data_dir)
+        U.hf_download_dataset("zyzshishui0627/IFBench", data_dir=args.data_dir)
 
     if args.rollout_fp8:
-        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir /root/models/{args.model_name}-FP8")
+        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
 
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
             model_name=args.model_name,
             megatron_model_type=args.megatron_model_type,
             num_gpus_per_node=args.num_gpus_per_node,
-            dir_dst="/root/models",
+            dir_dst=args.model_dir,
+            megatron_path=args.megatron_path,
         )
 
 
 def execute(args: ScriptArgs):
-    load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
-    ref_load_path = f"/root/models/{args.model_name}"
+    ref_load_path = f"{args.model_dir}/{args.model_name}"
     if args.train_backend == "megatron" and not args.enable_megatron_bridge:
-        ref_load_path = f"/root/models/{args.model_name}_torch_dist"
+        ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
 
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name}{'-FP8' if args.rollout_fp8 else ''} "
+        f"--hf-checkpoint {args.model_dir}/{args.model_name}{'-FP8' if args.rollout_fp8 else ''} "
         f"--load {load_save_path} "
         f"--ref-load {ref_load_path} "
         f"--save {load_save_path} "
@@ -79,7 +83,7 @@ def execute(args: ScriptArgs):
         ckpt_args += f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
 
     rollout_args = (
-        "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
@@ -115,22 +119,22 @@ eval:
     top_p: 0.7
   datasets:
     - name: aime
-      path: /root/datasets/aime-2024/aime-2024.jsonl
+      path: {args.data_dir}/aime-2024/aime-2024.jsonl
       rm_type: math
       n_samples_per_eval_prompt: 16
     - name: gpqa
-      path: /root/datasets/gpqa_diamond/gpqa_eval.jsonl
+      path: {args.data_dir}/gpqa_diamond/gpqa_eval.jsonl
       rm_type: gpqa
       n_samples_per_eval_prompt: 2
     - name: ifbench
-      path: /root/datasets/IFBench/IFBench_eval.jsonl
+      path: {args.data_dir}/IFBench/IFBench_eval.jsonl
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 """.strip()
             eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text, 'yaml')} "
         else:
             eval_args += (
-                "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 16 "
                 f"--eval-max-response-len {eval_max_response_len} "
                 "--eval-top-p 1 "
@@ -204,7 +208,7 @@ eval:
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details /root/shared_data/{args.run_id}/dump_details "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
 
@@ -290,6 +294,7 @@ tis_batch_normalize: true
             **misc_env_vars,
             **true_on_policy_envs,
         },
+        megatron_path=args.megatron_path,
     )
 
 

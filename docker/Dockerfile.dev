@@ -80,9 +80,9 @@ RUN pip install -r /tmp/requirements.txt
 
 # https://github.com/pytorch/pytorch/issues/168167
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-    pip install nvidia-cudnn-cu13==9.16.0.29 \
+    pip install nvidia-cudnn-cu13==9.16.0.29; \
   else \
-    pip install nvidia-cudnn-cu12==9.16.0.29 \
+    pip install nvidia-cudnn-cu12==9.16.0.29; \
   fi
 
 # reinstall numpy 1.x for megatron
@@ -101,6 +101,10 @@ RUN cd /sgl-workspace/sglang && \
       git checkout FETCH_HEAD; \
     fi && \
     pip install -e "python[all]" --no-deps
+
+# Current sglang requires "flashinfer_python>=0.6.2"
+RUN pip uninstall flashinfer-jit-cache -y
+RUN pip install "flashinfer_python>=0.6.2" --no-deps
 
 # ====================================== Install main package ============================================
 
