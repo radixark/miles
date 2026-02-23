@@ -4,6 +4,7 @@
     {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8},
     {'test_file': 'e2e/fsdp/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
     {'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 8},
+    {'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 8, 'enable_lora': '1'},
     {'test_file': 'e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 8},
 ] %>
 
@@ -22,6 +23,7 @@
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
+    {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8, 'enable_lora': '1'},
 ] %>
 
 <% set precision_tests = [
@@ -170,5 +172,7 @@ jobs:
 
       - name: Execute
         shell: bash
+        env:
+          ENABLE_LORA: ${{ matrix.info.enable_lora || '0' }}
         run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- << config.test_executor | default('python') >> tests/${{ matrix.info.test_file }}
 <% endfor %>
