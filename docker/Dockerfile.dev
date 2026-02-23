@@ -90,7 +90,7 @@ RUN pip install "numpy<2"
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
 
-# ====================================== Patches ============================================
+# ====================================== Install sglang-miles ============================================
 
 # Install sglang from sglang-miles branch
 RUN cd /sgl-workspace/sglang && \
