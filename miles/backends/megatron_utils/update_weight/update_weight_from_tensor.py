@@ -47,6 +47,8 @@ class UpdateWeightFromTensor:
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.weight_version = 0
+        self._debug_first_weight_sync = None
+        self._debug_first_weight_sync_done = False
 
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args, model=model, model_name=model_name, quantization_config=quantization_config
@@ -109,6 +111,17 @@ class UpdateWeightFromTensor:
         version++, flush caches, process buckets. Progress on rank 0.
         """
         self.weight_version += 1
+        debug_first_weight_sync = (
+            self.args.debug_first_weight_sync and not self._debug_first_weight_sync_done and self.weight_version == 1
+        )
+        if debug_first_weight_sync:
+            from miles.utils.hf_checkpoint_debug import DebugFirstWeightSync
+
+            self._debug_first_weight_sync = DebugFirstWeightSync(
+                output_dir=self.args.debug_first_weight_sync,
+                source_checkpoint=self.args.hf_checkpoint,
+                write_rank=dist.get_rank() == 0,
+            )
 
         rank = dist.get_rank()
         if rank == 0:
@@ -124,6 +137,8 @@ class UpdateWeightFromTensor:
         megatron_local_weights = self.weights_getter()
 
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
+            if debug_first_weight_sync and self._debug_first_weight_sync is not None:
+                self._debug_first_weight_sync.write_chunk(hf_named_tensors)
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
             del long_lived_tensors
@@ -140,6 +155,11 @@ class UpdateWeightFromTensor:
                     rollout_engines=self.rollout_engines,
                 )
         dist.barrier(group=get_gloo_group())
+        if debug_first_weight_sync and self._debug_first_weight_sync is not None:
+            self._debug_first_weight_sync.finalize_and_compare(group=get_gloo_group())
+            self._debug_first_weight_sync_done = True
+            self._debug_first_weight_sync = None
+            raise RuntimeError("debug-first-weight-sync complete; terminating as requested.")
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         all_refs = []
