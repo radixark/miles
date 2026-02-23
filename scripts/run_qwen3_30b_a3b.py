@@ -28,6 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
     tis_use_rs: bool = True
+    enable_r3: bool = False
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
@@ -162,6 +163,12 @@ def execute(args: ScriptArgs):
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
+
+    if args.enable_r3:
+        misc_args += (
+            "--use-rollout-routing-replay "
+            "--use-miles-router "
+        )
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
