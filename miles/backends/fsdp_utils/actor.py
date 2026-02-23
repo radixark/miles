@@ -477,7 +477,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     for p in self.model.parameters():
                         if p.grad is not None:
                             param_norm = p.grad.data.norm(2)
-                            total_norm_sq += param_norm ** 2
+                            total_norm_sq += param_norm**2
 
                     dist.all_reduce(total_norm_sq, op=dist.ReduceOp.SUM, group=self.parallel_state.dp_cp_group)
                     total_norm = total_norm_sq.sqrt().item()

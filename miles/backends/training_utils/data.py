@@ -166,21 +166,9 @@ def get_batch(
         if get_position_ids:
             local_position_ids = packed_position_ids[start:end]
 
-        # TODO: fix global pad
-        # Pad to reduce memory fragmentation and maybe make the computation faster
-        # final_pad = (pad_size - local_tokens.size(0) % pad_size) % pad_size
-        # if final_pad != 0:
-        #     local_tokens = F.pad(local_tokens, (0, final_pad), value=pad_token_id)
-        #     cu_seqlens.append(cu_seqlens[-1] + final_pad)
-        #     if get_position_ids:
-        #         local_position_ids = F.pad(local_position_ids, (0, final_pad), value=pad_token_id)
-
         batch["tokens"] = local_tokens.unsqueeze(0)
         batch["cu_seqlens"] = torch.tensor(cu_seqlens, dtype=torch.int).cuda()  # original sequence boundaries
-        batch["packed_len"] = total_seq_len
         batch["chunk_size"] = chunk_size
-        batch["cp_start_idx"] = start
-        batch["cp_end_idx"] = end
 
         if get_position_ids:
             batch["position_ids"] = local_position_ids.unsqueeze(0)
@@ -202,9 +190,6 @@ def get_batch(
             packed_loss_masks = F.pad(packed_loss_masks, (0, pad_len), value=0)
 
         local_loss_masks = packed_loss_masks[start:end]
-        # TODO: fix global pad
-        # if final_pad != 0:
-        #     local_loss_masks = F.pad(local_loss_masks, (0, final_pad), value=0)
 
         batch["full_loss_masks"] = local_loss_masks.unsqueeze(0)
 

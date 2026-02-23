@@ -2,15 +2,18 @@ from dataclasses import dataclass
 from enum import Enum
 import torch.distributed as dist
 
+
 class CPSlicing(Enum):
     """Context Parallelism data slicing strategy.
-    
+
     ZIGZAG: Each rank gets two non-contiguous chunks.
-            
+
     CONTIGUOUS: Each rank gets one contiguous chunk.
     """
+
     ZIGZAG = "zigzag"
     CONTIGUOUS = "contiguous"
+
 
 @dataclass
 class ParallelState:
@@ -41,11 +44,11 @@ class ParallelState:
     @property
     def uses_zigzag_cp(self) -> bool:
         return self.cp_slicing is CPSlicing.ZIGZAG
-    
+
     @property
     def uses_contiguous_cp(self) -> bool:
         return self.cp_slicing is CPSlicing.CONTIGUOUS
-    
+
     @property
     def has_cp(self) -> bool:
         return self.cp_size > 1

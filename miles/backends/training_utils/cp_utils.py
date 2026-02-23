@@ -1,10 +1,182 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
 from .parallel import ParallelState
+
+
+@dataclass(frozen=True)
+class CPSliceSpec:
+    """Per-sample descriptor for extracting response logits/tokens on this CP rank.
+
+    Both fields are non-empty tuples of half-open [start, end) intervals.
+    logits_slices indexes into the flat logits tensor (shared across all
+    samples on this rank).  token_slices indexes into the per-sample
+    unconcat_tokens[i] tensor.
+
+    Empty contributions use degenerate (0, 0) slices that produce
+    zero-length tensors still connected to the source through autograd.
+    """
+
+    logits_slices: tuple[tuple[int, int], ...]
+    token_slices: tuple[tuple[int, int], ...]
+
+    @property
+    def local_len(self) -> int:
+        """Total number of response tokens on this rank for this sample."""
+        return sum(e - s for s, e in self.logits_slices)
+
+    def to_response_slices(self, prompt_len: int) -> tuple[tuple[int, int], ...]:
+        """Convert token_slices to response-space offsets.
+
+        Useful for indexing into loss_mask or response-space log_prob
+        tensors.  Degenerate spans are normalized to (0, 0).
+        """
+        return tuple((s - prompt_len, e - prompt_len) if s != e else (0, 0) for s, e in self.token_slices)
+
+
+def compute_cp_slice_specs(
+    *,
+    parallel_state: ParallelState,
+    total_lengths: list[int],
+    response_lengths: list[int],
+    qkv_format: str = "thd",
+    max_seq_lens: list[int] | None = None,
+    chunk_size: int | None = None,
+) -> list[CPSliceSpec]:
+    """Compute per-sample CPSliceSpec for every sample in the batch.
+
+    All CP-strategy-specific logic (contiguous vs zigzag vs none, thd vs bshd,
+    the next-token-prediction -1 shift) is absorbed here.  The returned
+    specs contain ready-to-use coordinates — no further arithmetic needed.
+
+    Args:
+        parallel_state: Parallel topology (cp_rank, cp_size, cp_slicing).
+        total_lengths: Total sequence length (prompt + response) per sample.
+        response_lengths: Response-only length per sample.
+        qkv_format: "thd" (packed) or "bshd" (padded).
+        max_seq_lens: Per-sample padded length; required when qkv_format="bshd".
+        chunk_size: For contiguous CP, the size of each rank's local chunk.
+            Computed from total_lengths if not provided.
+
+    Returns:
+        One CPSliceSpec per sample.
+    """
+    cp_size = parallel_state.cp_size
+    cp_rank = parallel_state.cp_rank
+
+    specs: list[CPSliceSpec] = []
+
+    if cp_size == 1:
+
+        end = 0
+
+        for i, (total_length, response_length) in enumerate(zip(total_lengths, response_lengths, strict=True)):
+            prompt_len = total_length - response_length
+
+            if qkv_format == "bshd":
+                sample_base = max_seq_lens[i] * i
+            else:
+                sample_base = end
+
+            logits_start = sample_base + prompt_len - 1
+            logits_end = sample_base + total_length - 1
+
+            if logits_start < logits_end:
+                logits_slice = (logits_start, logits_end)
+                token_slice = (prompt_len, total_length)
+            else:
+                logits_slice = (0, 0)
+                token_slice = (0, 0)
+
+            specs.append(CPSliceSpec(logits_slices=(logits_slice,), token_slices=(token_slice,)))
+
+            if qkv_format != "bshd":
+                end += total_length
+
+        return specs
+
+    if parallel_state.uses_contiguous_cp:
+        local_start = cp_rank * chunk_size
+        local_end = (cp_rank + 1) * chunk_size
+
+        seq_start = 0
+
+        for total_length, response_length in zip(total_lengths, response_lengths, strict=True):
+            prompt_len = total_length - response_length
+
+            logits_global_start = seq_start + prompt_len - 1
+            logits_global_end = seq_start + total_length - 1
+
+            intersect_start = max(logits_global_start, local_start)
+            intersect_end = min(logits_global_end, local_end)
+
+            if intersect_start < intersect_end:
+                logits_slice = (intersect_start - local_start, intersect_end - local_start)
+                resp_offset_start = intersect_start - logits_global_start
+                resp_offset_end = intersect_end - logits_global_start
+                token_slice = (prompt_len + resp_offset_start, prompt_len + resp_offset_end)
+            else:
+                logits_slice = (0, 0)
+                token_slice = (0, 0)
+
+            specs.append(CPSliceSpec(logits_slices=(logits_slice,), token_slices=(token_slice,)))
+            seq_start += total_length
+
+        return specs
+
+    else:
+        flat_offset = 0
+
+        for i, (total_length, response_length) in enumerate(zip(total_lengths, response_lengths, strict=True)):
+            prompt_len = total_length - response_length
+            max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+
+            if qkv_format == "thd":
+                sample_chunk_size = (total_length + 2 * cp_size - 1) // (2 * cp_size)
+            else:
+                assert max_seq_len is not None, "max_seq_len must be provided for qkv_format=bshd"
+                sample_chunk_size = (max_seq_len + 2 * cp_size - 1) // (2 * cp_size)
+
+            chunk_0_start = cp_rank * sample_chunk_size
+            chunk_1_start = (2 * cp_size - cp_rank - 1) * sample_chunk_size
+
+            raw_logits_0 = (
+                max(chunk_0_start, prompt_len - 1),
+                min(chunk_0_start + sample_chunk_size, total_length - 1),
+            )
+            raw_logits_1 = (
+                max(chunk_1_start, prompt_len - 1),
+                min(chunk_1_start + sample_chunk_size, total_length - 1),
+            )
+
+            if raw_logits_0[0] < raw_logits_0[1]:
+                flat_logits_0 = (
+                    flat_offset + raw_logits_0[0] - chunk_0_start,
+                    flat_offset + raw_logits_0[1] - chunk_0_start,
+                )
+                token_0 = (raw_logits_0[0] + 1, raw_logits_0[1] + 1)
+            else:
+                flat_logits_0 = (0, 0)
+                token_0 = (0, 0)
+
+            if raw_logits_1[0] < raw_logits_1[1]:
+                flat_logits_1 = (
+                    flat_offset + sample_chunk_size + raw_logits_1[0] - chunk_1_start,
+                    flat_offset + sample_chunk_size + raw_logits_1[1] - chunk_1_start,
+                )
+                token_1 = (raw_logits_1[0] + 1, raw_logits_1[1] + 1)
+            else:
+                flat_logits_1 = (0, 0)
+                token_1 = (0, 0)
+
+            specs.append(CPSliceSpec(logits_slices=(flat_logits_0, flat_logits_1), token_slices=(token_0, token_1)))
+            flat_offset += 2 * sample_chunk_size
+
+        return specs
 
 
 def get_packed_batch_offsets_with_allgather_cp(

@@ -22,8 +22,8 @@ from miles.utils.types import RolloutBatch
 
 from .cp_utils import (
     all_gather_with_cp,
+    compute_cp_slice_specs,
     get_logits_and_tokens_offset_with_cp,
-    get_packed_batch_offsets_with_allgather_cp,
     get_sum_of_sample_mean,
 )
 from .parallel import ParallelState
@@ -55,6 +55,7 @@ def get_responses(
         unconcat_tokens: List of token tensors (prompt+response) per sample.
         total_lengths: Total sequence lengths (prompt+response) per sample.
         response_lengths: Response segment lengths per sample.
+        batch: Micro-batch dict.
 
     Yields:
         Tuple of `(logits_chunk, tokens_chunk)` where `logits_chunk` is shape
@@ -75,87 +76,19 @@ def get_responses(
 
     logits = logits.div(args.rollout_temperature)
 
-    cp_size = parallel_state.cp_size
-    if parallel_state.uses_contiguous_cp:
-        if cp_size == 1:
-            end = 0
-            for tokens, total_length, response_length in zip(
-                unconcat_tokens, total_lengths, response_lengths, strict=False
-            ):
-                end += total_length
-                start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
-                tokens_chunk = tokens[-response_length:]
-                yield logits_chunk, tokens_chunk
-        else:
-            # Contiguous slicing
-            chunk_size = batch["chunk_size"]
-            assert chunk_size == logits.size(0), f"{chunk_size} vs {logits.size(0)}"
+    specs = compute_cp_slice_specs(
+        parallel_state=parallel_state,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        qkv_format=qkv_format,
+        max_seq_lens=max_seq_lens,
+        chunk_size=batch.get("chunk_size"),
+    )
 
-            offsets = get_packed_batch_offsets_with_allgather_cp(
-                total_lengths, response_lengths, parallel_state, chunk_size
-            )
-
-            for i, (tokens, offset) in enumerate(zip(unconcat_tokens, offsets, strict=False)):
-                if offset["local_logits_start"] >= 0:
-                    logits_chunk = logits[offset["local_logits_start"] : offset["local_logits_end"]]
-
-                    prompt_len = total_lengths[i] - response_lengths[i]
-                    resp_start = offset["response_offset_start"]
-                    resp_end = offset["response_offset_end"]
-                    tokens_chunk = tokens[prompt_len + resp_start : prompt_len + resp_end]
-                else:
-                    logits_chunk = logits.new_empty(0, logits.size(-1))
-                    tokens_chunk = tokens.new_empty(0)
-
-                assert logits_chunk.size(0) == tokens_chunk.size(
-                    0
-                ), f"{logits_chunk.size(0)} vs {tokens_chunk.size(0)}"
-
-                yield logits_chunk, tokens_chunk
-
-    else:
-        end = 0
-        for i, (tokens, total_length, response_length) in enumerate(
-            zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
-        ):
-            max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
-
-            if cp_size == 1:
-                if qkv_format == "bshd":
-                    end = max_seq_len * i + total_length
-                    start = end - response_length
-                else:
-                    end += total_length
-                    start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
-                tokens_chunk = tokens[-response_length:]
-            else:
-                # TODO: this is super ugly... do better abstraction.
-                chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                    total_length, response_length, parallel_state, qkv_format, max_seq_len
-                )
-
-                logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
-                end += 2 * chunk_size
-
-                logits_0 = logits_0[
-                    logits_offset[0][0] - chunks_offset[0][0] : logits_offset[0][1] - chunks_offset[0][0]
-                ]
-                tokens_0 = tokens[tokens_offset[0][0] : tokens_offset[0][1]]
-
-                logits_1 = logits_1[
-                    logits_offset[1][0] - chunks_offset[1][0] : logits_offset[1][1] - chunks_offset[1][0]
-                ]
-                tokens_1 = tokens[tokens_offset[1][0] : tokens_offset[1][1]]
-
-                assert logits_0.size(0) == tokens_0.size(0), f"{logits_0.size(0)} vs {tokens_0.size(0)}"
-                assert logits_1.size(0) == tokens_1.size(0), f"{logits_1.size(0)} vs {tokens_1.size(0)}"
-
-                logits_chunk = torch.cat([logits_0, logits_1], dim=0)
-                tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
-
-            yield logits_chunk, tokens_chunk
+    for spec, tokens in zip(specs, unconcat_tokens, strict=True):
+        logits_chunk = torch.cat([logits[s:e] for s, e in spec.logits_slices])
+        tokens_chunk = torch.cat([tokens[s:e] for s, e in spec.token_slices])
+        yield logits_chunk, tokens_chunk
 
 
 def get_log_probs_and_entropy(
