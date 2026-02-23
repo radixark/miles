@@ -22,6 +22,8 @@
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
+    {'test_file': 'e2e/short/test_dumper.py', 'num_gpus': 8, 'dumper_config': 'tp2_pp2_ep2_dp2'},
+    {'test_file': 'e2e/short/test_dumper.py', 'num_gpus': 8, 'dumper_config': 'tp2_pp2_cp2_ep2_etp2'},
 ] %>
 
 <% set precision_tests = [
@@ -143,6 +145,7 @@ jobs:
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
+      MILES_TEST_DUMPER_CONFIG: ${{ matrix.info.dumper_config || '' }}
       MILES_TEST_FEW_GPU: '0'
 
     steps:

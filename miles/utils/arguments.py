@@ -1122,6 +1122,40 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=("Dump all details of training for post-hoc analysis and visualization."),
             )
+            parser.add_argument(
+                "--dumper-enable",
+                action="store_true",
+                default=False,
+                help="Enable sglang dumper for all three phases (sglang inference, "
+                "megatron forward-only, megatron forward-backward). "
+                "Per-phase --dumper-inference/--dumper-fwd-only/--dumper-fwd-bwd can override.",
+            )
+            parser.add_argument(
+                "--dumper-dir",
+                type=str,
+                default="/tmp/dumper",
+                help="Base output directory for sglang dumper. Three subdirs are created: "
+                "inference/, fwd_only/, fwd_bwd/.",
+            )
+            parser.add_argument(
+                "--dumper-inference",
+                nargs="*",
+                default=None,
+                help="SGLang inference phase dumper config as key=value pairs. "
+                "Keys map to DumperConfig fields (e.g. enable=true filter=whatever).",
+            )
+            parser.add_argument(
+                "--dumper-fwd-only",
+                nargs="*",
+                default=None,
+                help="Megatron forward-only phase dumper config as key=value pairs.",
+            )
+            parser.add_argument(
+                "--dumper-fwd-bwd",
+                nargs="*",
+                default=None,
+                help="Megatron forward-backward phase dumper config as key=value pairs.",
+            )
             # use together with --record-memory-history and --memory-snapshot-path (defined in Megatron)
             parser.add_argument(
                 "--memory-snapshot-dir",
@@ -1736,6 +1770,26 @@ def miles_validate_args(args):
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+
+    _maybe_apply_dumper_overrides(args)
+
+
+def _maybe_apply_dumper_overrides(args) -> None:
+    if not args.dumper_enable:
+        return
+
+    if args.use_fault_tolerance:
+        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
+        args.use_fault_tolerance = False
+
+    logger.info("Dumper mode: all heartbeat mechanisms disabled")
+    args.router_disable_health_check = True
+    args.rollout_health_check_interval = 1e18
+
+    logger.info("Dumper mode: forced num_rollout=%d, disabled eval and save", args.num_rollout)
+    args.num_rollout = (args.start_rollout_id or 0) + 1
+    args.eval_interval = None
+    args.save_interval = None
 
 
 def hf_validate_args(args, hf_config):
