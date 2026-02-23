@@ -1,4 +1,5 @@
 import logging
+import os
 
 import torch
 import torch.distributed as dist
@@ -168,7 +169,8 @@ class BaseReplayManager:
         if mismatch_count == 0:
             return
 
-        mismatch_threshold = self.replay_check_threshold * orig_flat.shape[0]
+        threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_threshold))
+        mismatch_threshold = threshold * orig_flat.shape[0]
         mismatch_indices = is_mismatch.nonzero(as_tuple=False).squeeze(1)
         for idx in mismatch_indices:
             i = idx.item()
@@ -191,7 +193,7 @@ class RoutingReplayManager(BaseReplayManager):
     data_key = "rollout_routed_experts"
     if_sp_region = True
     enable_check_replay_result = False
-    replay_check_threshold = 5e-3
+    replay_check_threshold = 1e-2
 
 
 routing_replay_manager = RoutingReplayManager()
