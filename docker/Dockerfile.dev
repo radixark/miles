@@ -72,8 +72,11 @@ RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
     pip install -e .
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
-RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
+# RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
+RUN pip install git+https://github.com/yushengsu-thu/Megatron-Bridge.git@merged-megatron-0.16.0rc0-miles --no-deps --no-build-isolation
+RUN pip install megatron-energon --no-deps
+RUN pip install multi-storage-client --no-deps
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
@@ -114,7 +117,7 @@ RUN cd /sgl-workspace/sglang && \
 
 # Current sglang requires "flashinfer_python>=0.6.2"
 RUN pip uninstall flashinfer-jit-cache -y
-RUN pip install "flashinfer_python>=0.6.2" --no-deps
+RUN pip install "flashinfer_python==0.6.2" "flashinfer-cubin==0.6.2" --no-deps
 
 # ====================================== Install main package ============================================
 
