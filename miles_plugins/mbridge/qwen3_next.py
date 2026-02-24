@@ -178,15 +178,10 @@ class Qwen3NextBridge(Qwen2MoEBridge):
 
         if "self_attention.out_norm.weight" in mcore_weights_name:
             assert len(hf_weights) == 1
-            out_norm_weight = hf_weights[0]
-            # Qwen3-Next uses mixed norm semantics:
-            # - most RMSNorms are Gemma-style (+1)
-            # - linear_attn.norm is direct-scale (no need +1)
-            # If Megatron enables global zero-centered gamma, compensate here so
-            # GDN out_norm still computes with direct-scale weight.
-            if getattr(self.config, "layernorm_zero_centered_gamma", False):
-                return out_norm_weight - out_norm_weight.new_tensor(1.0)
-            return out_norm_weight
+            # Qwen3-Next mixed norm: linear_attn.norm is direct-scale in HF, but
+            # Megatron's --apply-layernorm-1p computes (1+w). Subtract 1 to compensate.
+            # FP32 arithmetic then cast back to bf16 (1-2 ULP round-trip error is accepted).
+            return (hf_weights[0].float() - 1.0).bfloat16()
 
         # Gated attention: MCore still names the attribute "linear_qkv" even with attention_output_gate=True,
         # but the weight contains [Q, G, K, V] per group instead of [Q, K, V].
@@ -205,10 +200,9 @@ class Qwen3NextBridge(Qwen2MoEBridge):
 
         if "self_attention.out_norm.weight" in mcore_weights_name:
             hf_names = self._weight_name_mapping_mcore_to_hf(mcore_weights_name)
-            out_norm_weight = mcore_weights
-            if getattr(self.config, "layernorm_zero_centered_gamma", False):
-                out_norm_weight = out_norm_weight + out_norm_weight.new_tensor(1.0)
-            return hf_names, [out_norm_weight]
+            # Reverse the -1 applied during hf→mcore: restore to HF direct-scale format.
+            # Use FP32 arithmetic to preserve precision (out_norm is stored in FP32).
+            return hf_names, [(mcore_weights.float() + 1.0).bfloat16()]
 
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             hf_names = self._weight_name_mapping_mcore_to_hf(mcore_weights_name)

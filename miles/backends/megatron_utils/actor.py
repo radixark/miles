@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import socket
 from argparse import Namespace
@@ -82,6 +83,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
 
+        # debug_rollout_only still calls train() and needs parallel metadata for
+        # rollout data preprocessing and logging.
         self.parallel_state = create_megatron_parallel_state(model=None)
         if self.args.debug_rollout_only:
             return 0
@@ -99,14 +102,13 @@ class MegatronTrainRayActor(TrainRayActor):
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
+        # Patch FLA's GDN chunk kernels to match SGLang's implementation.
+        # Disabled by default: allows train/inference to differ in FLA kernel implementation.
+        # Enable via MILES_ENABLE_FLA_COMPAT_PATCH=1 if exact alignment is needed.
+        if os.getenv("MILES_ENABLE_FLA_COMPAT_PATCH", "0") == "1":
+            from .fla_compat import patch_fla_for_sglang_compat
 
-        # Patch FLA's GDN chunk kernels to match SGLang's implementation,
-        # ensuring train_rollout_logprob_abs_diff ≈ 0 for hybrid GDN models.
-        from .fla_compat import patch_fla_for_sglang_compat
-
-        patch_fla_for_sglang_compat()
-
-        self.parallel_state = create_megatron_parallel_state(model=self.model)
+            patch_fla_for_sglang_compat()
 
         if role == "critic":
             if self.args.offload_train:
