@@ -509,6 +509,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
             "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
             "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
             "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
@@ -750,6 +751,8 @@ def compute_metrics_from_samples(args, samples):
     log_dict = {}
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
+    log_dict |= _compute_spec_metrics(args, samples)
+    log_dict |= _compute_prefix_cache_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()

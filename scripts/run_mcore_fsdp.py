@@ -22,6 +22,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
     megatron_model_type: str | None = None
     extra_args: str = ""
+    data_dir: str = "/root/datasets"
+    model_dir: str = "/root/models"
+    megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
         if self.train_backend == "megatron":
@@ -35,26 +38,27 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{args.model_name} " f"--local-dir /root/models/{args.model_name}")
-    U.hf_download_dataset("zhuzilin/dapo-math-17k")
-    U.hf_download_dataset("zhuzilin/aime-2024")
-    U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
-    U.hf_download_dataset("zyzshishui0627/IFBench")
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command(f"hf download Qwen/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}")
+    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+    U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+    U.hf_download_dataset("zyzshishui0627/gpqa_diamond", data_dir=args.data_dir)
+    U.hf_download_dataset("zyzshishui0627/IFBench", data_dir=args.data_dir)
     if args.train_backend == "megatron":
         U.convert_checkpoint(
             model_name=args.model_name,
             megatron_model_type=args.megatron_model_type,
             num_gpus_per_node=args.num_gpus_per_node,
-            dir_dst="/root/models",
+            dir_dst=args.model_dir,
+            megatron_path=args.megatron_path,
         )
 
 
 def execute(args: ScriptArgs):
-    load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
+    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{args.model_name} "
+        f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
@@ -64,14 +68,14 @@ def execute(args: ScriptArgs):
     if args.train_backend == "megatron":
         # Megatron uses torch_dist checkpoint format for ref model
         if args.use_ref:
-            ckpt_args += f"--ref-load /root/models/{args.model_name}_torch_dist "
+            ckpt_args += f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
     else:
         # FSDP now supports ref-load with HF checkpoint
         if args.use_ref:
-            ckpt_args += f"--ref-load /root/models/{args.model_name} "
+            ckpt_args += f"--ref-load {args.model_dir}/{args.model_name} "
 
     rollout_args = (
-        "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
+        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
@@ -104,22 +108,22 @@ eval:
     top_p: 0.7
   datasets:
     - name: aime
-      path: /root/datasets/aime-2024/aime-2024.jsonl
+      path: {args.data_dir}/aime-2024/aime-2024.jsonl
       rm_type: math
       n_samples_per_eval_prompt: 16
     - name: gpqa
-      path: /root/datasets/gpqa_diamond/gpqa_eval.jsonl
+      path: {args.data_dir}/gpqa_diamond/gpqa_eval.jsonl
       rm_type: gpqa
       n_samples_per_eval_prompt: 2
     - name: ifbench
-      path: /root/datasets/IFBench/IFBench_eval.jsonl
+      path: {args.data_dir}/IFBench/IFBench_eval.jsonl
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 """.strip()
             eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text, 'yaml')} "
         else:
             eval_args += (
-                "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
+                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 16 "
                 f"--eval-max-response-len {eval_max_response_len} "
                 "--eval-top-p 1 "
@@ -202,7 +206,7 @@ eval:
     if args.train_backend == "fsdp":
         misc_args += """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
 
-    misc_args += "--use-fault-tolerance " f"--dump-details /root/shared_data/{args.run_id}/dump_details "
+    misc_args += "--use-fault-tolerance " f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
 
     misc_env_vars = {}
 
@@ -251,7 +255,7 @@ eval:
         has_nvlink = "1" if int(nvlink_count or "0") > 0 else "0"
 
         extra_env_vars |= {
-            "PYTHONPATH": "/root/Megatron-LM/",
+            "PYTHONPATH": args.megatron_path,
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             "NCCL_NVLS_ENABLE": has_nvlink,
         }
@@ -264,6 +268,7 @@ eval:
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type if args.train_backend == "megatron" else None,
         extra_env_vars=extra_env_vars,
+        megatron_path=args.megatron_path,
     )
 
 
