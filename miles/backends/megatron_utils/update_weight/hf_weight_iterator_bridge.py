@@ -20,7 +20,6 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO: support quantization (e.g. modify megatron-bridge to provide megatron param name)
-
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             if self.is_lora:

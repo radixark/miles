@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 def set_default_megatron_args(args):
     # always use zero optimizer
     args.use_distributed_optimizer = True
-
     # TODO: maybe change this after megatron has good fp8 support
     args.bf16 = not args.fp16
     # placeholders

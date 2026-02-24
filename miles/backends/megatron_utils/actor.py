@@ -493,7 +493,6 @@ class MegatronTrainRayActor(TrainRayActor):
             # The disable() context alone only prevents new allocations from being
             # tracked -- it does NOT restore previously paused/offloaded tensors.
             torch_memory_saver.resume()
-
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             self.weight_updater.update_weights()
