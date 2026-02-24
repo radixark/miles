@@ -1,14 +1,22 @@
+import asyncio
 import logging
-import os
+import time
+import uuid
 from argparse import Namespace
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
+
+from minisweagent.agents.default import DefaultAgent
+
+from minisweagent.environments import DockerEnvironment
+from minisweagent.models import get_model
+from minisweagent.run.extra.swegym_runner import get_swegym_docker_image_name, run_eval
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.sglang_rollout import GenerateState, eval_rollout
 from miles.utils.async_utils import run
-from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -56,63 +64,129 @@ def build_tokens_and_mask_from_messages(
     return all_tokens, loss_mask, response_text, response_length
 
 
+def run_agent_sync_logic(model, env, problem_statement, sampling_params, metadata, instance_dir, run_id):
+    """
+    Synchronous wrapper to run the agent and evaluation.
+    This is offloaded to a thread to prevent blocking the Ray actor.
+    """
+    agent = DefaultAgent(
+        model=model,
+        env=env,
+        responses_create_params={"input": []},
+        sampling_params=sampling_params,
+        step_limit=250,
+        collapse_limit=3,
+    )
+
+    # Execute the agent lifecycle
+    exit_status, result_patch, agent_metrics = agent.run(problem_statement)
+
+    # Run evaluation
+    eval_start = time.time()
+    eval_report_full = run_eval(
+        instance=metadata,
+        env=env,
+        model_patch=result_patch,
+        instance_dir=instance_dir,
+        run_id=run_id,
+    )
+    eval_time = time.time() - eval_start
+
+    # metrics calculation
+    agent_metrics["eval_time"] = eval_time
+    total_time = agent_metrics.get("agent_run_time", 0) + eval_time
+    agent_metrics["total_time"] = total_time
+    agent_metrics["model_time_ratio"] = agent_metrics.get("model_query_time_sum", 0) / max(total_time, 1e-6)
+    agent_metrics["env_time_ratio"] = agent_metrics.get("env_execution_time_sum", 0) / max(total_time, 1e-6)
+    agent_metrics["eval_time_ratio"] = eval_time / max(total_time, 1e-6)
+
+    return exit_status, agent.messages, eval_report_full, agent_metrics
+
+
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
     """
     Custom generation function for SWE-Agent integration.
 
     Orchestrates the interaction with the external Gym environment:
-    1. Sends prompt/metadata to Gym.
-    2. Receives execution trace (messages) and rewards.
+    1. Directly initializes mini-swe-agent components.
+    2. Runs agent logic in a background thread to maintain Ray cluster stability.
     3. Formats data for Miles training format.
 
     Note: Performs in-place modification of `sample` for memory efficiency.
     """
-    # Prepare request for Gym /run endpoint
-    request = {
-        "responses_create_params": {
-            "input": [],
-        },
-        "sampling_params": sampling_params,
-        **sample.metadata,
-        "sglang_url": f"http://{args.sglang_router_ip}:{args.sglang_router_port}/v1",
-    }
+    instance_id = sample.metadata.get("instance_id")
+    subset = sample.metadata.get("subset", "gym")
+    problem_statement = sample.metadata.get("problem_statement")
 
-    gym_url = os.getenv("SWE_AGENT_GYM_URL", "http://localhost:11000")
-    response = await post(f"{gym_url}/run", request)
+    # Model configuration
+    model_name = f"sglang/{Path(args.hf_checkpoint).name}"
+    sglang_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/v1"
 
-    exit_status = response.get("info", {}).get("exit_status", "")
-    logger.debug(f"exit_status: {exit_status}, reward: {response.get('reward', 0.0)}")
+    model_config = {"model_name": model_name, "model_kwargs": {"base_url": sglang_url, "api_key": "dummy"}}
+    model = get_model(model_name, config=model_config)
 
-    messages = response.get("messages", [])
+    # Environment configuration
+    image_name = get_swegym_docker_image_name(sample.metadata, subset)
+    output_dir = Path("results") / subset / model_name
+    instance_dir = output_dir / instance_id
+    instance_dir.mkdir(parents=True, exist_ok=True)
+    run_id = f"{int(time.time())}_{str(uuid.uuid4())[:8]}"
 
-    if len(messages) >= 2:
-        sample.prompt = messages[:2]
+    env = None
+    try:
+        # Initialize the Docker environment
+        env = DockerEnvironment(
+            image=image_name,
+            instance_id=instance_id,
+            step_timeout=600,
+            eval_timeout=600,
+        )
 
-    state = GenerateState(args)
-    tokens, loss_mask, response_text, response_length = build_tokens_and_mask_from_messages(
-        messages=messages,
-        tokenizer=state.tokenizer,
-    )
+        # Off-Load to Thread
+        exit_status, messages, eval_report_full, agent_metrics = await asyncio.to_thread(
+            run_agent_sync_logic, model, env, problem_statement, sampling_params, sample.metadata, instance_dir, run_id
+        )
 
-    sample.rollout_log_probs = None  # TODO
-    sample.tokens = tokens
-    sample.loss_mask = loss_mask
-    sample.response = response_text
-    sample.response_length = response_length
-    sample.metadata["reward"] = response.get("reward", 0.0)
-    sample.metadata["eval_report"] = response.get("metadata", {})
-    sample.metadata["messages"] = messages
+        # Extract reward from evaluation report
+        report_data = eval_report_full.get("eval_report", {}).get(instance_id, {})
+        resolved = report_data.get("resolved", False)
+        reward = 1.0 if resolved else 0.0
 
-    agent_metrics = response.get("info", {}).get("agent_metrics", {})
-    sample.metadata["agent_metrics"] = agent_metrics
+        if len(messages) >= 2:
+            sample.prompt = messages[:2]
 
-    if exit_status == "Submitted":
-        sample.status = Sample.Status.COMPLETED
-    elif exit_status in ("RolloutTruncated", "LimitsExceeded", "CollapseContinued"):
-        sample.status = Sample.Status.TRUNCATED
-    else:
+        state = GenerateState(args)
+        tokens, loss_mask, response_text, response_length = build_tokens_and_mask_from_messages(
+            messages=messages,
+            tokenizer=state.tokenizer,
+        )
+
+        sample.rollout_log_probs = None  # TODO
+        sample.tokens = tokens
+        sample.loss_mask = loss_mask
+        sample.response = response_text
+        sample.response_length = response_length
+        sample.reward = reward
+        sample.metadata["reward"] = reward
+        sample.metadata["eval_report"] = eval_report_full
+        sample.metadata["messages"] = messages
+        sample.metadata["agent_metrics"] = agent_metrics
+
+        if exit_status == "Submitted":
+            sample.status = Sample.Status.COMPLETED
+        elif exit_status in ("RolloutTruncated", "LimitsExceeded", "CollapseContinued"):
+            sample.status = Sample.Status.TRUNCATED
+        else:
+            sample.status = Sample.Status.ABORTED
+            sample.reward = 0.0
+
+    except Exception as e:
+        logger.error(f"Error processing instance {instance_id}: {e}", exc_info=True)
         sample.status = Sample.Status.ABORTED
         sample.reward = 0.0
+    finally:
+        if env:
+            env.cleanup()
 
     return sample
 
