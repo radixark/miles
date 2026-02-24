@@ -553,8 +553,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to the prompt dataset (JSONL format), and each line should contain `--input-key` and `--label-key`, which will be "
-                    "used as the prompt and the label, respectively."
+                    "Path to the prompt dataset (JSONL format), and each line should contain `--input-key` and `--label-key`, "
+                    "which will be used as the prompt and the label, respectively."
                 ),
             )
             parser.add_argument(
@@ -1278,34 +1278,31 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--save-debug-rollout-data",
                 type=str,
                 default=None,
-                help=("Path to save rollout data for offline analysis. " "[Ref](../developer_guide/debug.md)"),
+                help="Path to save rollout data for offline analysis. [Ref](../developer_guide/debug.md)",
             )
             parser.add_argument(
                 "--load-debug-rollout-data",
                 type=str,
                 default=None,
-                help=("Path to load debug rollout data (bypasses SGLang). " "[Ref](../developer_guide/debug.md)"),
+                help="Path to load debug rollout data (bypasses SGLang). [Ref](../developer_guide/debug.md)",
             )
             parser.add_argument(
                 "--load-debug-rollout-data-subsample",
                 type=float,
                 default=None,
-                help=("Percentage of debug data to load (0.0 to 1.0). " "[Ref](../developer_guide/debug.md)"),
+                help="Percentage of debug data to load (0.0 to 1.0). [Ref](../developer_guide/debug.md)",
             )
             parser.add_argument(
                 "--debug-rollout-only",
                 action="store_true",
                 default=False,
-                help=("Run the rollout phase only without training. " "[Ref](../developer_guide/debug.md)"),
+                help="Run the rollout phase only without training. [Ref](../developer_guide/debug.md)",
             )
             parser.add_argument(
                 "--debug-train-only",
                 action="store_true",
                 default=False,
-                help=(
-                    "Run the training phase only without launching SGLang servers. "
-                    "[Ref](../developer_guide/debug.md)"
-                ),
+                help="Run the training phase only without launching SGLang servers. [Ref](../developer_guide/debug.md)",
             )
             parser.add_argument(
                 "--save-debug-train-data",
@@ -1347,10 +1344,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--check-weight-update-equal",
                 action="store_true",
-                help=(
-                    "Use SGLang's weight checker to check and ensure that the loaded weight from HF checkpoint and received from Megatron "
-                    "are bit-wise equal."
-                ),
+                help="Use SGLang's weight checker to check and ensure that the loaded weight from HF checkpoint and received from Megatron are bit-wise equal.",
             )
             return parser
 
