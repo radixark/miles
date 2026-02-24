@@ -302,11 +302,6 @@ def forward_only(
     return rollout_data
 
 
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
-
-
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -677,11 +672,6 @@ def train(
         disable_forward_pre_hook(model)
 
 
-# ---------------------------------------------------------------------------
-# Checkpoint save
-# ---------------------------------------------------------------------------
-
-
 def save(
     iteration: int, model: Sequence[DDP], optimizer: MegatronOptimizer, opt_param_scheduler: OptimizerParamScheduler
 ) -> None:
@@ -772,11 +762,6 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         except Exception as e:
             if should_log:
                 logger.error(f"Failed to save LoRA adapter: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Initialization
-# ---------------------------------------------------------------------------
 
 
 def initialize_model_and_optimizer(

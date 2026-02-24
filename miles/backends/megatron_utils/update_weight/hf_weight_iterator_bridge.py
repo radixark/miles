@@ -9,7 +9,6 @@ from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
 class HfWeightIteratorBridge(HfWeightIteratorBase):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -23,62 +22,37 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
         # TODO: support quantization (e.g. modify megatron-bridge to provide megatron param name)
 
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
-
         with megatron_bridge_utils.patch_megatron_model(self.model):
             if self.is_lora:
-                # megatron auto_bridge will convert the weights automatically, no need to do anything here
-                yield from self._export_lora_weights()
+                named_weights = self._bridge.export_adapter_weights(
+                    self.model,
+                    cpu=False,
+                    show_progress=False,
+                )
             else:
-                yield from self._export_base_weights(renamed_megatron_local_weights)
+                conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+                conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+                named_weights = self._bridge.export_hf_weights(
+                    self.model,
+                    cpu=False,
+                    conversion_tasks=conversion_tasks,
+                )
 
-    def _export_base_weights(self, renamed_megatron_local_weights):
-        """Export base model weights in HF format."""
-        conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-        conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
-        named_weights = self._bridge.export_hf_weights(
-            self.model,
-            cpu=False,
-            conversion_tasks=conversion_tasks,
-        )
-
-        named_weights = (
-            (
-                hf_param_name,
-                postprocess_hf_param(
-                    args=self.args,
-                    megatron_param_name=megatron_param_name,
-                    hf_param_name=hf_param_name,
-                    param=weight,
-                ),
+            # TODO: verify if postprocess_hf_param is needed for LoRA weights
+            named_weights = (
+                (
+                    hf_param_name,
+                    postprocess_hf_param(
+                        args=self.args,
+                        megatron_param_name=megatron_param_name,
+                        hf_param_name=hf_param_name,
+                        param=weight,
+                    ),
+                )
+                for hf_param_name, weight, megatron_param_name in named_weights
             )
-            for hf_param_name, weight, megatron_param_name in named_weights
-        )
 
-        yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
-
-    def _export_lora_weights(self):
-        """Export LoRA adapter weights in HF format."""
-        lora_weights = self._bridge.export_adapter_weights(
-            self.model,
-            cpu=False,
-            show_progress=False,
-        )
-
-        # TODO: verify if postprocess_hf_param is needed for LoRA weights
-        lora_weights = (
-            (
-                hf_param_name,
-                postprocess_hf_param(
-                    args=self.args,
-                    megatron_param_name=megatron_param_name,
-                    hf_param_name=hf_param_name,
-                    param=weight,
-                ),
-            )
-            for hf_param_name, weight, megatron_param_name in lora_weights
-        )
-
-        yield from chunk_named_params_by_size(lora_weights, chunk_size=self.args.update_weight_buffer_size)
+            yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):

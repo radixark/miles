@@ -24,7 +24,6 @@ from .update_weight_from_distributed import (
 
 logger = logging.getLogger(__name__)
 
-
 class UpdateWeightFromTensor:
     """
     Update rollout engines from tensor dict:
@@ -63,7 +62,6 @@ class UpdateWeightFromTensor:
         )
 
         self._lora_config = build_lora_sync_config(args) if self.is_lora else None
-
         # Create IPC gather groups within megatron.
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = start_rank + self.args.rollout_num_gpus_per_engine
