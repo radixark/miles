@@ -140,9 +140,9 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
    # --sglang-mem-fraction-static 0.4
 
-   # --sglang-enable-deterministic-inference
-   # --sglang-attention-backend flashinfer
-   # --deterministic-mode
+   --sglang-enable-deterministic-inference
+   --sglang-attention-backend flashinfer
+   --deterministic-mode
 )
 
 MISC_ARGS=(

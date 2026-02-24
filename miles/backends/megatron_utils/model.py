@@ -36,14 +36,8 @@ from .parallel import get_packed_seq_params
 logger = logging.getLogger(__name__)
 
 
-from .lora_utils import is_lora_model, save_lora_checkpoint
-
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
-
-
-# ---------------------------------------------------------------------------
-# Optimizer / Scheduler
-# ---------------------------------------------------------------------------
+from .lora_utils import save_lora_checkpoint
 
 
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
