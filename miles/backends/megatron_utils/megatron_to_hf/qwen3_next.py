@@ -159,6 +159,10 @@ def convert_qwen3_next_to_hf(args, name, param):
         elif rest == "self_attention.A_log":
             return [(f"model.layers.{layer_idx}.linear_attn.A_log", param)]
         elif rest == "self_attention.out_norm.weight":
+            # Qwen3-Next linear_attn.norm is direct-scale in HF/SGLang.
+            # If Megatron uses global zero-centered gamma, convert back here.
+            if getattr(args, "layernorm_zero_centered_gamma", False):
+                param = param + 1.0
             return [(f"model.layers.{layer_idx}.linear_attn.norm.weight", param)]
         elif rest == "self_attention.out_proj.weight":
             return [(f"model.layers.{layer_idx}.linear_attn.out_proj.weight", param)]
