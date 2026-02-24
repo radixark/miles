@@ -2,7 +2,6 @@ import dataclasses
 import gc
 import logging
 import math
-import os
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 from functools import partial
@@ -370,9 +369,11 @@ def train_one_step(
             args.qkv_format,
         )
 
-        if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":
-            old_stage = os.environ["ROUTING_REPLAY_STAGE"]
-            os.environ["ROUTING_REPLAY_STAGE"] = "replay_forward"
+        from miles.utils.replay_base import all_replay_managers
+
+        old_stages = [m.stage for m in all_replay_managers]
+        for m in all_replay_managers:
+            m.stage = "replay_forward"
 
         if return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
@@ -402,8 +403,8 @@ def train_one_step(
 
             output_tensor = model(**forward_kwargs)
 
-        if os.environ.get("ENABLE_ROUTING_REPLAY", "0") == "1":
-            os.environ["ROUTING_REPLAY_STAGE"] = old_stage
+        for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
+            m.stage = old_stage
 
         return output_tensor, partial(
             loss_function, args, parallel_state, batch, num_microbatches, apply_megatron_loss_scaling=True
@@ -436,7 +437,8 @@ def train_one_step(
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
-    if args.ci_test and args.enable_mtp_training:
+    if args.ci_test and args.enable_mtp_training and args.rollout_max_response_len <= 128:
+        # under response length <= 128, all outputs are truncated and loss mask is all zeros, so only MTP parameters have non-zero gradients
         from miles.backends.megatron_utils.ci_utils import check_mtp_only_grad
 
         check_mtp_only_grad(model, step_id)

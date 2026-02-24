@@ -171,13 +171,25 @@ def log_rollout_data(
                 and "rollout/log_probs" in reduced_log_dict
                 and "rollout/ref_log_probs" in reduced_log_dict
             ):
-                assert reduced_log_dict["rollout/log_probs"] == reduced_log_dict["rollout/ref_log_probs"]
+                # When R3 (rollout routing replay) is enabled, ref model does not use R3
+                # so log_probs and ref_log_probs may diverge; use a relaxed tolerance.
+                abs_tol = 1e-5 if args.use_rollout_routing_replay else 1e-9
+                assert isclose(
+                    reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/ref_log_probs"], abs_tol=abs_tol
+                ), f"CI check failed: log_probs ({reduced_log_dict['rollout/log_probs']}) != ref_log_probs ({reduced_log_dict['rollout/ref_log_probs']})"
             if "rollout/log_probs" in reduced_log_dict and "rollout/rollout_log_probs" in reduced_log_dict:
                 assert isclose(
                     reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/rollout_log_probs"], abs_tol=0.03
-                )
+                ), f"CI check failed: log_probs ({reduced_log_dict['rollout/log_probs']}) != rollout_log_probs ({reduced_log_dict['rollout/rollout_log_probs']})"
             if "rollout/entropy" in reduced_log_dict:
                 assert 0 < reduced_log_dict["rollout/entropy"] < 0.7
+
+        if args.ci_test and args.true_on_policy_mode:
+            assert log_dict["log_probs"] == log_dict["rollout_log_probs"], (
+                f"CI check failed: true_on_policy_mode is enabled, but log_probs "
+                f"({log_dict['log_probs']}) != rollout_log_probs "
+                f"({log_dict['rollout_log_probs']})"
+            )
 
     if args.log_multi_turn:
         log_multi_turn_data(rollout_id, args, rollout_data, parallel_state)

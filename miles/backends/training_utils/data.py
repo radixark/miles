@@ -121,7 +121,7 @@ def get_batch(
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
-    pad_size = parallel_state.dp_size * pad_multiplier
+    pad_size = parallel_state.tp_size * pad_multiplier
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
