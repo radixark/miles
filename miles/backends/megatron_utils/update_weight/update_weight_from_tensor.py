@@ -203,6 +203,11 @@ class UpdateWeightFromTensor:
             all_refs.extend(refs_lora)
             long_lived_tensors.extend(lora_long_lived)
 
+            if self.use_distribute and self._is_distributed_src_rank:
+                raise NotImplementedError(
+                    "LoRA weight sync via distributed (non-colocate) engines is not implemented yet."
+                )
+
         return all_refs, long_lived_tensors
 
 
