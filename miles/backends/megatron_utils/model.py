@@ -456,7 +456,8 @@ def train_one_step(
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
-    if args.ci_test and args.enable_mtp_training:
+    if args.ci_test and args.enable_mtp_training and args.rollout_max_response_len <= 128:
+        # under response length <= 128, all outputs are truncated and loss mask is all zeros, so only MTP parameters have non-zero gradients
         from miles.backends.megatron_utils.ci_utils import check_mtp_only_grad
 
         check_mtp_only_grad(model, step_id)
