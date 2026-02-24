@@ -24,6 +24,7 @@ from .update_weight_from_distributed import (
 
 logger = logging.getLogger(__name__)
 
+
 class UpdateWeightFromTensor:
     """
     Update rollout engines from tensor dict:
