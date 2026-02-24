@@ -425,16 +425,17 @@ def train_one_step(
 
     valid_step = True
     grad_norm = None
+    grads_prepared = False
     if not getattr(args, "check_for_nan_in_loss_and_grad", True):
         found_inf_flag = optimizer.prepare_grads()
+        grads_prepared = True
+        grad_norm = optimizer.get_grad_norm()
         if found_inf_flag:
             valid_step = False
+        elif isinstance(grad_norm, torch.Tensor):
+            valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
         else:
-            grad_norm = optimizer.get_grad_norm()
-            if isinstance(grad_norm, torch.Tensor):
-                valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
-            else:
-                valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+            valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
@@ -444,12 +445,22 @@ def train_one_step(
         check_mtp_only_grad(model, step_id)
 
     if valid_step:
-        # Update parameters.
-        update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        if grads_prepared:
+            # Grads already prepared (unscaled + inf-checked + loss scale updated).
+            # Use step_with_ready_grads() to avoid double prepare_grads() which would
+            # cause DynamicGradScaler to update loss_scale twice per step.
+            if optimizer.config.clip_grad > 0.0:
+                grad_norm = optimizer.clip_grad_norm(optimizer.config.clip_grad)
+            update_successful = optimizer.step_with_ready_grads()
+        else:
+            # Grads not yet prepared — let step() handle everything.
+            update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
-        # Update learning rate.
-        assert update_successful
-        opt_param_scheduler.step(increment=args.global_batch_size)
+        if not update_successful:
+            logger.warning(f"Optimizer step failed (inf/nan in grads), skipping update at step {step_id}")
+        else:
+            # Update learning rate.
+            opt_param_scheduler.step(increment=args.global_batch_size)
 
     # release grad
     for model_chunk in model:
