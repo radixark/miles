@@ -141,7 +141,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-s
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles/examples/experimental/swe-agent:/root/miles\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SWE_AGENT_GYM_URL\": \"${SWE_AGENT_GYM_URL}\"
   }

@@ -22,4 +22,3 @@ bind right forward-single-char
 # Github SSH Key
 ssh-add ~/.ssh/id_radixark
 
-
