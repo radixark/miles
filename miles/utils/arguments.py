@@ -1188,7 +1188,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Log reward-category statistics (e.g., why the reward function marked a failure). "
-                    "Use this argument to specify the key in the reward dict.",
+                    "Use this argument to specify the key in the reward dict."
                 ),
             )
             parser.add_argument(
