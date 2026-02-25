@@ -98,7 +98,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "This mode automatically enables `--offload-train` and `--offload-rollout` to facilitate weight-swapping between the training actor and inference engine. "
                     "**Note:** The offload parameters are currently only used for AMD GPUs and will be removed soon. "
                     "**Memory Tip:** When colocating, it is highly recommended to set `--sglang-mem-fraction-static` to **0.8** (especially on **NVIDIA Blackwell B200/B300** GPUs). "
-                    "This leaves sufficient VRAM (~20%) for Megatron to initialize its structures before the first weight offload to CPU occurs. "
+                    "This leaves sufficient VRAM (~20%%) for Megatron to initialize its structures before the first weight offload to CPU occurs. "
                     "On GB200/GB300, values up to 0.75 are safer for long-running jobs to prevent potential OOMs. "
                     "#TODO: Verify optimal fraction for Blackwell in production"
                 ),
