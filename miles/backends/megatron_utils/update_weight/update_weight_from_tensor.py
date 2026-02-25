@@ -248,17 +248,21 @@ def _send_to_colocated_engine(
             except Exception:
                 logger.debug(f"No existing LoRA adapter '{lora_name}' to unload (this is expected on first sync)")
 
-            # (Yusheng) to-do: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
+
+            # (Yusheng) to-do-1: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
             # currently, we only support 1 type. If there are multiple dtypes, we need to serialize the tensors for each dtype.
             # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
+            # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
+
             refs.append(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
-                    serialized_tensors=serialized_named_tensors[0][0],
                     config_dict=lora_config,
+                    serialized_tensors=serialized_named_tensors[0][0],
                     load_format="flattened_bucket",
                 )
             )
+
         else:
             num_dtypes = len(serialized_named_tensors[0])
             for i in range(num_dtypes):
