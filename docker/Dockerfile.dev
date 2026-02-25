@@ -14,8 +14,8 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
-ARG PATCH_VERSION=dev
-ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
+ARG MEGATRON_REPO=radixark/Megatron-LM
+ARG MEGATRON_BRANCH=miles-main
 
 ARG ENABLE_CUDA_13=0
 
@@ -67,8 +67,8 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
 # apex
 RUN pip install /tmp/wheels/apex-*.whl
 
-RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
-    cd Megatron-LM && git checkout ${MEGATRON_COMMIT} && \
+RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
+    cd Megatron-LM && \
     pip install -e .
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
@@ -93,17 +93,7 @@ RUN pip install "numpy<2"
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
 
-# ====================================== Patches ============================================
-
-COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
-RUN cd Megatron-LM && \
-    git update-index --refresh && \
-    git apply megatron.patch --3way && \
-    if grep -R -n '^<<<<<<< ' .; then \
-      echo "Patch failed to apply cleanly. Please resolve conflicts." && \
-      exit 1; \
-    fi && \
-    rm megatron.patch
+# ====================================== Install sglang-miles ============================================
 
 # Install sglang from sglang-miles branch
 RUN cd /sgl-workspace/sglang && \
