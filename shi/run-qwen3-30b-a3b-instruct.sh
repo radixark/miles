@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 export SWE_AGENT_GYM_URL="${SWE_AGENT_GYM_URL:-http://swe_env:11000}"
 
-source "${SCRIPT_DIR}/../../scripts/models/qwen3-30B-A3B.sh"
+source "${HOME}/miles/scripts/models/qwen3-30B-A3B.sh"
 
 CKPT_ARGS=(
     --hf-checkpoint Qwen/Qwen3-30B-A3B-Instruct-2507
