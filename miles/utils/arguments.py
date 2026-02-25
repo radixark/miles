@@ -120,20 +120,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to offload the rollout generator to CPU during training. This will always be true when --colocate is set.",
             )
 
-            reset_arg(
-                parser,
-                "--distributed-backend",
-                type=str,
-                default="nccl",
-                help="Backend for distributed communication.",
-            )
-            reset_arg(
-                parser,
-                "--distributed-timeout-minutes",
-                type=int,
-                default=10,
-                help="Timeout for distributed operations in minutes.",
-            )
+            reset_arg(parser, "--distributed-backend", type=str, default="nccl")
+            reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
 
             return parser
 
@@ -635,13 +623,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             # gbs of the training, note that the gbs is of sample, not of prompts,
             # so if you hope to train 1 step for each rollout, the global_bach_size should be set as
             # `rollout_batch_size * n_samples_per_prompt`.
-            reset_arg(
-                parser,
-                "--global-batch-size",
-                type=int,
-                default=None,
-                help="Total samples per optimizer step. Automatically calculated or **overridden** if `num_steps_per_rollout` is set.",
-            )
+            reset_arg(parser, "--global-batch-size", type=int, default=None)
             parser.add_argument(
                 "--num-steps-per-rollout",
                 type=int,
@@ -655,17 +637,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             # mbs for the training, will be ignored if `use_dynamic_batch_size` is set.
-            reset_arg(
-                parser,
-                "--micro-batch-size",
-                type=int,
-                default=1,
-                help=(
-                    "Micro batch size per GPU. "
-                    "Ignored when `--use-dynamic-batch-size` is enabled. "
-                    "Works for both `--qkv-format thd` and `--qkv-format bshd` (and is required for `bshd` because dynamic batch size is unsupported)."
-                ),
-            )
+            reset_arg(parser, "--micro-batch-size", type=int, default=1)
             parser.add_argument(
                 "--balance-data",
                 action="store_true",
@@ -721,13 +693,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             # change the default value of eval_interval from Megatron to None
-            reset_arg(
-                parser,
-                "--eval-interval",
-                type=int,
-                default=None,
-                help="Interval (in rollout steps) between evaluations.",
-            )
+            reset_arg(parser, "--eval-interval", type=int, default=None)
 
             parser.add_argument(
                 "--eval-prompt-data",
@@ -820,21 +786,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for the reference model."
             )
-            reset_arg(parser, "--load", type=str, default=None, help="Path to the training model checkpoint to load.")
-            reset_arg(parser, "--save", type=str, default=None, help="Path to save checkpoints.")
-            reset_arg(
-                parser,
-                "--save-interval",
-                type=int,
-                default=None,
-                help="Interval (in rollout steps) to save checkpoints. Requires `--save` to be set.",
-            )
-            reset_arg(
-                parser,
-                "--async-save",
-                action="store_true",
-                help="Enable asynchronous checkpoint saving (Megatron backend only).",
-            )
+            reset_arg(parser, "--load", type=str, default=None)
+            reset_arg(parser, "--save", type=str, default=None)
+            reset_arg(parser, "--save-interval", type=int, default=None)
+            reset_arg(parser, "--async-save", action="store_true")
             reset_arg(
                 parser,
                 "--no-save-optim",
@@ -851,23 +806,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The model will be saved to `save_hf.format(rollout_id)`."
                 ),
             )
-            reset_arg(
-                parser,
-                "--seed",
-                type=int,
-                default=1234,
-                help=(
-                    "Random seed for the training process. "
-                    "**Also passed to SGLang servers as `random_seed`** (Miles uses `seed + engine_rank` so each engine has a distinct but reproducible seed)."
-                ),
-            )
-            reset_arg(
-                parser, "--clip-grad", type=float, default=1.0, help="Maximum gradient norm for gradient clipping."
-            )
-            reset_arg(
-                parser, "--calculate-per-token-loss", action="store_true", help="Calculate loss on a per-token basis."
-            )
-            reset_arg(parser, "--lr", type=float, default=1e-6, help="Learning rate for the Actor.")
+            reset_arg(parser, "--seed", type=int, default=1234)
+            reset_arg(parser, "--clip-grad", type=float, default=1.0)
+            reset_arg(parser, "--calculate-per-token-loss", action="store_true")
+            reset_arg(parser, "--lr", type=float, default=1e-6)
 
             parser.add_argument(
                 "--num-critic-only-steps",
@@ -1181,8 +1123,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "This is an experimental feature, and only supports for text model.Whether to enable token input for chat completions. "
-                    "If set, we will calculate the input_ids for the prompt part inside miles and add it to the request body.This is reserved for cross turn token in under OAI format."
+                    "This is an experimental feature, and only supports for text model."
+                    "Whether to enable token input for chat completions. If set, we will calculate "
+                    "the input_ids for the prompt part inside miles and add it to the request body."
+                    "This is reserved for cross turn token in under OAI format."
                 ),
             )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
@@ -1209,7 +1153,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-host", type=str, default=None, help="WandB host address.")
             parser.add_argument("--wandb-team", type=str, default=None, help="WandB team name.")
             parser.add_argument("--wandb-group", type=str, default=None, help="WandB group name.")
-            reset_arg(parser, "--wandb-project", type=str, default=None, help="WandB project name.")
+            reset_arg(parser, "--wandb-project", type=str, default=None)
             parser.add_argument(
                 "--disable-wandb-random-suffix",
                 action="store_false",
@@ -1532,14 +1476,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_mtp_training_arguments(parser):
             """Add MTP training specific arguments."""
-            reset_arg(parser, "--mtp-num-layers", type=int, default=None, help="Number of MTP layers to include.")
-            reset_arg(
-                parser,
-                "--mtp-loss-scaling-factor",
-                type=float,
-                default=0.2,
-                help="Scaling factor applied to the MTP loss.",
-            )
+            reset_arg(parser, "--mtp-num-layers", type=int, default=None)
+            reset_arg(parser, "--mtp-loss-scaling-factor", type=float, default=0.2)
             parser.add_argument(
                 "--enable-mtp-training",
                 action="store_true",
@@ -1633,9 +1571,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             default=None,
             help="Path to the YAML config for custom function arguments.",
         )
-        reset_arg(
-            parser, "--padded-vocab-size", type=int, default=None, help="Manually specify the vocab size for padding."
-        )
+        reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser
