@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 export SWE_AGENT_GYM_URL="${SWE_AGENT_GYM_URL:-http://swe_env:11000}"
 
-source "${HOME}/miles/scripts/models/qwen3-30B-A3B.sh"
+source "${SCRIPT_DIR}/../../scripts/models/qwen3-30B-A3B.sh"
 
 CKPT_ARGS=(
     --hf-checkpoint Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -153,7 +153,7 @@ echo "  SWE Agent URL: ${SWE_AGENT_GYM_URL}"
 
 ray job submit --address="http://127.0.0.1:8265" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \
-    -- python3 ${HOME}/miles/train.py \
+    -- python3 train.py \
     --actor-num-nodes 1 \
     --actor-num-gpus-per-node 8 \
     --colocate \
