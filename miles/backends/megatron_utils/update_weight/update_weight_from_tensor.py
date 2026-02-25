@@ -189,7 +189,10 @@ class UpdateWeightFromTensor:
         if self.is_lora:
             self._lora_loaded = True
 
-        if not self.is_lora and self.use_distribute and self._is_distributed_src_rank:
+        if self.is_lora and self.use_distribute and self._is_distributed_src_rank:
+            raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
+
+        if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
