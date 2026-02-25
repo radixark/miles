@@ -53,6 +53,7 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.is_lora = is_lora
+        self._lora_loaded = False
 
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args,
@@ -162,26 +163,31 @@ class UpdateWeightFromTensor:
         # Separate LoRA weights from base weights
         if self.is_lora:
             weight_tensors = [(n, t) for n, t in hf_named_tensors if is_lora_weight_name(n)]
-            kwargs = dict(
-                hf_named_tensors=weight_tensors,
-                ipc_engine=self._ipc_engine,
-                ipc_gather_src=self._ipc_gather_src,
-                ipc_gather_group=self._ipc_gather_group,
-                lora_config=self._lora_config,
-                lora_name=LORA_ADAPTER_NAME,
-            )
         else:
             weight_tensors = hf_named_tensors
-            kwargs = dict(
-                hf_named_tensors=weight_tensors,
-                ipc_engine=self._ipc_engine,
-                ipc_gather_src=self._ipc_gather_src,
-                ipc_gather_group=self._ipc_gather_group,
+
+        kwargs = dict(
+            hf_named_tensors=weight_tensors,
+            ipc_engine=self._ipc_engine,
+            ipc_gather_src=self._ipc_gather_src,
+            ipc_gather_group=self._ipc_gather_group,
+        )
+        if self.is_lora:
+            kwargs |= dict(
+                lora_config=self._lora_config,
+                lora_name=LORA_ADAPTER_NAME,
+                lora_loaded=self._lora_loaded,
+            )
+        else:
+            kwargs |= dict(
                 weight_version=self.weight_version,
             )
 
         refs_colocated, long_lived_tensors = _send_to_colocated_engine(**kwargs)
         all_refs.extend(refs_colocated)
+
+        if self.is_lora:
+            self._lora_loaded = True
 
         if not self.is_lora and self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
@@ -206,6 +212,7 @@ def _send_to_colocated_engine(
     weight_version=None,
     lora_config: dict | None = None,
     lora_name: str | None = None,
+    lora_loaded: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
     is_lora = lora_config is not None
     long_live_tensors = []
@@ -243,10 +250,8 @@ def _send_to_colocated_engine(
     refs = []
     if dist.get_rank() == ipc_gather_src:
         if is_lora:
-            try:
+            if lora_loaded:
                 ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
-            except Exception:
-                logger.debug(f"No existing LoRA adapter '{lora_name}' to unload (this is expected on first sync)")
 
             # (Yusheng) to-do-1: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
             # currently, we only support 1 type. If there are multiple dtypes, we need to serialize the tensors for each dtype.
