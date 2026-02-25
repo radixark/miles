@@ -87,6 +87,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
 
+        self.parallel_state = create_megatron_parallel_state(model=None)
         if self.args.debug_rollout_only:
             self.parallel_state = create_megatron_parallel_state(model=None)
             return 0
@@ -104,8 +105,6 @@ class MegatronTrainRayActor(TrainRayActor):
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
-
-        self.parallel_state = create_megatron_parallel_state(model=self.model)
 
         if role == "critic":
             if self.args.offload_train:
