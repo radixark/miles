@@ -157,55 +157,42 @@ class UpdateWeightFromTensor:
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         all_refs = []
+        long_lived_tensors = []
 
         # Separate LoRA weights from base weights
         if self.is_lora:
-            base_tensors = [(n, t) for n, t in hf_named_tensors if not is_lora_weight_name(n)]
-            lora_tensors = [(n, t) for n, t in hf_named_tensors if is_lora_weight_name(n)]
-        else:
-            base_tensors = hf_named_tensors
-            lora_tensors = []
-
-        # Send base model weights
-        long_lived_tensors = []
-        if base_tensors:
-            refs_colocated, long_lived_tensors = _send_to_colocated_engine(
-                base_tensors,
-                ipc_engine=self._ipc_engine,
-                ipc_gather_src=self._ipc_gather_src,
-                ipc_gather_group=self._ipc_gather_group,
-                weight_version=self.weight_version,
-            )
-            all_refs.extend(refs_colocated)
-
-            if self.use_distribute and self._is_distributed_src_rank:
-                refs_distributed = update_weights_from_distributed(
-                    self._group_name,
-                    self._model_update_groups,
-                    self.weight_version,
-                    self.distributed_rollout_engines,
-                    base_tensors,
-                )
-                if refs_distributed:
-                    all_refs.extend(refs_distributed)
-
-        # Send LoRA weights via load_lora_adapter_from_tensors
-        if lora_tensors and self._lora_config is not None:
-            refs_lora, lora_long_lived = _send_lora_to_colocated_engine(
-                lora_tensors,
+            weight_tensors = [(n, t) for n, t in hf_named_tensors if is_lora_weight_name(n)]
+            kwargs = dict(
+                hf_named_tensors=weight_tensors,
                 ipc_engine=self._ipc_engine,
                 ipc_gather_src=self._ipc_gather_src,
                 ipc_gather_group=self._ipc_gather_group,
                 lora_config=self._lora_config,
                 lora_name=LORA_ADAPTER_NAME,
             )
-            all_refs.extend(refs_lora)
-            long_lived_tensors.extend(lora_long_lived)
+        else:
+            weight_tensors = hf_named_tensors
+            kwargs = dict(
+                hf_named_tensors=weight_tensors,
+                ipc_engine=self._ipc_engine,
+                ipc_gather_src=self._ipc_gather_src,
+                ipc_gather_group=self._ipc_gather_group,
+                weight_version=self.weight_version,
+            )
 
-            if self.use_distribute and self._is_distributed_src_rank:
-                raise NotImplementedError(
-                    "LoRA weight sync via distributed (non-colocate) engines is not implemented yet."
-                )
+        refs_colocated, long_lived_tensors = _send_to_colocated_engine(**kwargs)
+        all_refs.extend(refs_colocated)
+
+        if not self.is_lora and self.use_distribute and self._is_distributed_src_rank:
+            refs_distributed = update_weights_from_distributed(
+                self._group_name,
+                self._model_update_groups,
+                self.weight_version,
+                self.distributed_rollout_engines,
+                weight_tensors,
+            )
+            if refs_distributed:
+                all_refs.extend(refs_distributed)
 
         return all_refs, long_lived_tensors
 
@@ -216,9 +203,11 @@ def _send_to_colocated_engine(
     ipc_engine,
     ipc_gather_src,
     ipc_gather_group,
-    weight_version,
+    weight_version=None,
+    lora_config: dict | None = None,
+    lora_name: str | None = None,
 ) -> tuple[list[ObjectRef], Any]:
-    # TODO improve
+    is_lora = lora_config is not None
     long_live_tensors = []
 
     if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
@@ -234,10 +223,9 @@ def _send_to_colocated_engine(
     serialized_tensors = []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
-        metadata = flattened_tensor_bucket.get_metadata()
         flattened_tensor_data = {
             "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-            "metadata": metadata,
+            "metadata": flattened_tensor_bucket.get_metadata(),
         }
         long_live_tensors.append(flattened_tensor_data)
         serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
@@ -254,62 +242,31 @@ def _send_to_colocated_engine(
 
     refs = []
     if dist.get_rank() == ipc_gather_src:
-        # TODO: here we assume all ranks have the same number of dtypes, not sure if that is correct.
-        num_dtypes = len(serialized_named_tensors[0])
-        for i in range(num_dtypes):
-            kwargs = {
-                "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
-                "load_format": "flattened_bucket",
-                "weight_version": str(weight_version),
-            }
-            refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
-
-    return refs, long_live_tensors
-
-
-def _send_lora_to_colocated_engine(
-    lora_named_tensors: list[tuple[str, torch.Tensor]],
-    *,
-    ipc_engine,
-    ipc_gather_src,
-    ipc_gather_group,
-    lora_config: dict,
-    lora_name: str,
-) -> tuple[list[ObjectRef], Any]:
-    """Send LoRA weights to colocated engine via load_lora_adapter_from_tensors."""
-    long_live_tensors = []
-
-    # LoRA tensors managed by torch memory saver are not sharable through CUDA IPC,
-    # so we detach and clone them.
-    lora_weights = {name: tensor.detach().clone() for name, tensor in lora_named_tensors}
-    long_live_tensors.append(lora_weights)
-    serialized_lora = MultiprocessingSerializer.serialize(lora_weights, output_str=True)
-
-    # Gather from all ranks in the group
-    serialized_lora_gathered = (
-        [None] * dist.get_world_size(ipc_gather_group) if ipc_gather_src == dist.get_rank() else None
-    )
-    dist.gather_object(
-        serialized_lora,
-        object_gather_list=serialized_lora_gathered,
-        dst=ipc_gather_src,
-        group=ipc_gather_group,
-    )
-
-    refs = []
-    if dist.get_rank() == ipc_gather_src:
-        # Unload existing adapter before loading new weights
-        try:
-            ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
-        except Exception:
-            logger.debug(f"No existing LoRA adapter '{lora_name}' to unload (this is expected on first sync)")
-
-        refs.append(
-            ipc_engine.load_lora_adapter_from_tensors.remote(
-                lora_name=lora_name,
-                serialized_tensors=serialized_lora_gathered[0],
-                config_dict=lora_config,
+        if is_lora:
+            try:
+                ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
+            except Exception:
+                logger.debug(f"No existing LoRA adapter '{lora_name}' to unload (this is expected on first sync)")
+            
+            # (Yusheng) to-do: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
+            # currently, we only support 1 type. If there are multiple dtypes, we need to serialize the tensors for each dtype.
+            # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
+            refs.append(
+                ipc_engine.load_lora_adapter_from_tensors.remote(
+                    lora_name=lora_name,
+                    serialized_tensors=serialized_named_tensors[0][0],
+                    config_dict=lora_config,
+                    load_format="flattened_bucket",
+                )
             )
-        )
+        else:
+            num_dtypes = len(serialized_named_tensors[0])
+            for i in range(num_dtypes):
+                kwargs = {
+                    "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
+                    "load_format": "flattened_bucket",
+                    "weight_version": str(weight_version),
+                }
+                refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
 
     return refs, long_live_tensors
