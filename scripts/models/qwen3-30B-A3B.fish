@@ -10,7 +10,7 @@ for i in (seq 0 (math $NLAYERS - 1))
     end
 end
 
-set MOE_LAYER_FREQ "["(string join ', ' $arr)"]"
+set MOE_LAYER_FREQ "["(string join ',' $arr)"]"
 
 if not set -q MODEL_ARGS_ROTARY_BASE
     set MODEL_ARGS_ROTARY_BASE 10000000
