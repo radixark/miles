@@ -59,7 +59,7 @@ RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install nvidia-mathdx==25.6.0 && \
-      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.10.0"; \
+      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.12.0"; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
     fi
@@ -92,6 +92,18 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
 RUN pip install "numpy<2"
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
+
+# ====================================== Patches ============================================
+
+# GB300 (cu13/arm64): patch fla 0.4.0 + Triton 3.5.1 bugs (Blackwell backward kernel,
+# gluon_ir missing in arm64 build). Also set TRITON_PTXAS_PATH since Triton's bundled
+# ptxas does not support sm_103a.
+COPY docker/patch/cu13/patch_fla_blackwell.py /tmp/patch_fla_blackwell.py
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      python3 /tmp/patch_fla_blackwell.py && \
+      echo 'export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas' >> /root/.bashrc; \
+    fi && \
+    rm -f /tmp/patch_fla_blackwell.py
 
 # ====================================== Install sglang-miles ============================================
 
