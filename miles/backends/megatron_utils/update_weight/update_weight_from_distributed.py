@@ -147,7 +147,7 @@ class UpdateWeightFromDistributed:
         Non-expert: gather TP → rm pad → HF → buffer (flush if full). All gather, PP source buffers.
         Returns updated bytes on source, None on non-source.
         """
-        param = all_gather_param(name, param)
+        param = all_gather_param(self.args, name, param)
         if not self._is_pp_src_rank:
             return
 
@@ -170,7 +170,7 @@ class UpdateWeightFromDistributed:
         """
         Expert: gather TP → rm pad → buffer. EP gather + HF deferred. Threshold × EP size.
         """
-        param = all_gather_param(name, param)
+        param = all_gather_param(self.args, name, param)
 
         param_size = param.numel() * param.element_size()
         if (

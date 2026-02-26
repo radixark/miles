@@ -27,19 +27,26 @@ def _gather_with_stride(
     return torch.cat(interleaved, dim=partition_dim)
 
 
-def _check_partition_stride(name: str, partition_stride: int) -> None:
+def _check_partition_stride(args: Namespace, name: str, partition_stride: int) -> int:
     """Validate partition_stride values for known parameter patterns.
 
     After Megatron-LM PR #2708, linear_fc1 correctly reports partition_stride=2
     (GLU/SwiGLU interleaved [gate, up]) and linear_fc2 reports partition_stride=1.
     """
     if "linear_fc1.weight" in name:
-        assert partition_stride == 2, f"Expected partition_stride=2 for {name} (GLU/SwiGLU), got {partition_stride}"
+        if args.moe_grouped_gemm and partition_stride != 2 and args.swiglu:
+            # Megatron bug: TEGroupedLinaer does not set partition_stride=2 for linear_fc1
+            partition_stride = 2
+        if args.swiglu:
+            assert (
+                partition_stride == 2
+            ), f"Expected partition_stride=2 for {name} (GLU/SwiGLU), got {partition_stride}"
     elif "linear_fc2.weight" in name:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
+    return partition_stride
 
 
-def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
+def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
     """
     All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
     Uses expert-TP for ".experts.", else regular-TP. Handles strided partitioning via partition_stride.
@@ -63,12 +70,13 @@ def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
     partition_dim = param.partition_dim
     partition_stride = param.partition_stride
 
-    _check_partition_stride(name, partition_stride)
+    partition_stride = _check_partition_stride(args, name, partition_stride)
     param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
     return param
 
 
 def all_gather_params_async(
+    args: Namespace,
     param_infos_and_params: list[tuple[ParamInfo, torch.Tensor]],
 ) -> list[torch.Tensor]:
     """
@@ -115,7 +123,7 @@ def all_gather_params_async(
             # No all_gather needed
             param = direct_param
         else:
-            _check_partition_stride(info.name, partition_stride)
+            partition_stride = _check_partition_stride(args, info.name, partition_stride)
             param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
 
         gathered_params.append(param)
