@@ -541,7 +541,6 @@ def policy_loss_function(
         # tokens are excluded from the denominator and the metric can be artificially driven to 0.
         # Keep a copy of the original reducer (based on `batch["loss_masks"]`) for metric aggregation.
         sum_of_sample_mean_for_mismatch_metrics = sum_of_sample_mean
-        chunk_size = batch.get("chunk_size", None)
 
         assert "rollout_log_probs" in batch, "rollout_log_probs must be provided for TIS"
 
@@ -565,15 +564,20 @@ def policy_loss_function(
 
         # [decouple IS and rejection] Rebuild sum_of_sample_mean with modified_response_masks for denominator correction
         # modified_response_masks will be sliced with cp in get_sum_of_sample_mean
+        specs = compute_cp_slice_specs(
+            parallel_state=parallel_state,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            qkv_format=args.qkv_format,
+            max_seq_lens=max_seq_lens,
+            chunk_size=batch.get("chunk_size", None),
+        )
         sum_of_sample_mean = get_sum_of_sample_mean(
+            specs,
+            modified_response_masks,
             total_lengths,
             response_lengths,
-            modified_response_masks,
-            parallel_state,
             args.calculate_per_token_loss,
-            args.qkv_format,
-            max_seq_lens,
-            chunk_size,
         )
 
     # Determine pg_loss reducer: use custom if specified, otherwise default
@@ -798,17 +802,22 @@ def loss_function(
     """
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
     num_samples = len(batch["response_lengths"])
-    chunk_size = batch.get("chunk_size", None)
+
+    specs = compute_cp_slice_specs(
+        parallel_state=parallel_state,
+        total_lengths=batch["total_lengths"],
+        response_lengths=batch["response_lengths"],
+        qkv_format=args.qkv_format,
+        max_seq_lens=batch.get("max_seq_lens", None),
+        chunk_size=batch.get("chunk_size", None),
+    )
 
     sum_of_sample_mean = get_sum_of_sample_mean(
+        specs,
+        batch["loss_masks"],
         batch["total_lengths"],
         batch["response_lengths"],
-        batch["loss_masks"],
-        parallel_state,
         args.calculate_per_token_loss,
-        args.qkv_format,
-        batch.get("max_seq_lens", None),
-        chunk_size,
     )
 
     match args.loss_type:

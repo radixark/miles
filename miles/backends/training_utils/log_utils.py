@@ -12,7 +12,7 @@ from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils
-from .cp_utils import get_sum_of_sample_mean
+from .cp_utils import compute_cp_slice_specs, get_sum_of_sample_mean
 from .data import DataIterator
 from .parallel import ParallelState
 
@@ -115,8 +115,16 @@ def log_rollout_data(
         response_lengths = rollout_data["response_lengths"]
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
-        max_seq_lens = rollout_data.get("max_seq_lens", None)
-        chunk_size = rollout_data.get("chunk_size", None)
+
+        specs = compute_cp_slice_specs(
+            parallel_state=parallel_state,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            qkv_format=args.qkv_format,
+            max_seq_lens=rollout_data.get("max_seq_lens", None),
+            chunk_size=rollout_data.get("chunk_size", None),
+        )
+        reducer = get_sum_of_sample_mean(specs, loss_masks, total_lengths, response_lengths)
 
         for key, val in rollout_data.items():
             if key in [
@@ -146,16 +154,7 @@ def log_rollout_data(
                         "values",
                         "entropy",
                     ]:
-                        sum_of_sample_mean = get_sum_of_sample_mean(
-                            total_lengths,
-                            response_lengths,
-                            loss_masks,
-                            parallel_state,
-                            qkv_format=args.qkv_format,
-                            max_seq_lens=max_seq_lens,
-                            chunk_size=chunk_size,
-                        )
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                        val = cp_size * reducer(val) / len(loss_masks)
                     else:
                         val = val.mean() * cp_size
                 else:
@@ -229,17 +228,21 @@ def log_rollout_data(
                 return percentile
 
             raw_rewards = rollout_data["raw_reward"]
+            max_seq_lens = rollout_data.get("max_seq_lens", None)
             # Additional metrics for correct cases are calculated separately below.
             correct_response_lengths = []
             correct_total_lengths = []
             correct_loss_masks = []
             correct_entropy = []
+            correct_max_seq_lens: list[int] | None = [] if max_seq_lens is not None else None
             for i, raw_reward in enumerate(raw_rewards):
                 if raw_reward == 1:
                     correct_response_lengths.append(response_lengths[i])
                     correct_total_lengths.append(total_lengths[i])
                     correct_loss_masks.append(loss_masks[i])
                     correct_entropy.append(-rollout_data["log_probs"][i])
+                    if correct_max_seq_lens is not None:
+                        correct_max_seq_lens.append(max_seq_lens[i])
             num_correct_responses = len(correct_total_lengths)
             rollout_data["correct_response_lengths"] = correct_response_lengths
             correct_response_length_percentile = quantile(
@@ -248,10 +251,18 @@ def log_rollout_data(
             for p, val in correct_response_length_percentile.items():
                 rollout_data[f"correct_length/{p}"] = [val] * num_correct_responses
             if len(correct_entropy) > 0:
-                sum_of_sample_mean = get_sum_of_sample_mean(
-                    correct_total_lengths, correct_response_lengths, correct_loss_masks, parallel_state
+                correct_specs = compute_cp_slice_specs(
+                    parallel_state=parallel_state,
+                    total_lengths=correct_total_lengths,
+                    response_lengths=correct_response_lengths,
+                    qkv_format=args.qkv_format,
+                    max_seq_lens=correct_max_seq_lens,
+                    chunk_size=rollout_data.get("chunk_size", None),
                 )
-                correct_entropy = sum_of_sample_mean(torch.cat(correct_entropy, dim=0))
+                correct_reducer = get_sum_of_sample_mean(
+                    correct_specs, correct_loss_masks, correct_total_lengths, correct_response_lengths
+                )
+                correct_entropy = correct_reducer(torch.cat(correct_entropy, dim=0))
                 rollout_data["correct_entropy"] = [correct_entropy.item()] * num_correct_responses
             else:
                 rollout_data["correct_entropy"] = [0] * num_correct_responses

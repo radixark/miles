@@ -285,126 +285,45 @@ def get_logits_and_tokens_offset_with_cp(
 
 
 def get_sum_of_sample_mean(
+    specs: list[CPSliceSpec],
+    loss_masks: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
-    loss_masks: list[torch.Tensor],
-    parallel_state: ParallelState,
     calculate_per_token_loss: bool = False,
-    qkv_format: str = "thd",
-    max_seq_lens: list[int] | None = None,
-    chunk_size: int | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """
-    Calculate correct sample mean for CP
+    Compute the sum of sample mean for the given specs and loss masks.
     """
-    cp_size = parallel_state.cp_size
-    if cp_size == 1:
+    local_lens: list[int] = []
+    local_masks: list[torch.Tensor] = []
+
+    for spec, loss_mask, total_length, response_length in zip(
+        specs, loss_masks, total_lengths, response_lengths, strict=True
+    ):
+        local_lens.append(spec.local_len)
+        prompt_len = total_length - response_length
+        resp_slices = spec.to_response_slices(prompt_len)
+        local_masks.append(torch.cat([loss_mask[s:e] for s, e in resp_slices]))
+
+    if not calculate_per_token_loss:
 
         def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             return sum(
-                [
-                    (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
-                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
-                ]
+                (x_i * local_mask).sum() / torch.clamp_min(full_mask.sum(), 1)
+                for x_i, local_mask, full_mask in zip(x.split(local_lens, dim=0), local_masks, loss_masks, strict=True)
             )
 
-        def sum_of_token(x: torch.Tensor) -> torch.Tensor:
-            return sum(
-                [
-                    (x_i * loss_mask_i).sum()
-                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
-                ]
-            )
-
-    elif parallel_state.uses_contiguous_cp:
-        if chunk_size is None:
-            total_packed_len = sum(total_lengths)
-            chunk_size = (total_packed_len + cp_size - 1) // cp_size
-
-        offsets = get_packed_batch_offsets_with_allgather_cp(
-            total_lengths, response_lengths, parallel_state, chunk_size
-        )
-
-        local_chunk_info = []
-        for offset, loss_mask in zip(offsets, loss_masks, strict=False):
-            if offset["local_logits_start"] >= 0:
-                start = offset["response_offset_start"]
-                end = offset["response_offset_end"]
-                local_mask = loss_mask[start:end]
-                local_len = offset["local_logits_end"] - offset["local_logits_start"]
-            else:
-                local_mask = torch.tensor([], device=loss_mask.device, dtype=loss_mask.dtype)
-                local_len = 0
-
-            local_chunk_info.append(
-                {
-                    "local_len": local_len,
-                    "local_mask": local_mask,
-                    "full_mask": loss_mask,
-                }
-            )
-
-        def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
-            # Continue the gradient flow when the result is zero.
-            total = 0.0 * x.sum()
-            offset = 0
-            for info in local_chunk_info:
-                if info["local_len"] > 0:
-                    x_chunk = x[offset : offset + info["local_len"]]
-                    local_mask = info["local_mask"]
-                    full_mask = info["full_mask"]
-                    total = total + (x_chunk * local_mask).sum() / torch.clamp_min(full_mask.sum(), 1)
-                    offset += info["local_len"]
-            return total
-
-        def sum_of_token(x: torch.Tensor) -> torch.Tensor:
-            total = 0.0 * x.sum()
-            offset = 0
-            for info in local_chunk_info:
-                if info["local_len"] > 0:
-                    x_chunk = x[offset : offset + info["local_len"]]
-                    local_mask = info["local_mask"]
-                    total = total + (x_chunk * local_mask).sum()
-                    offset += info["local_len"]
-            return total
+        return sum_of_sample_mean
 
     else:
-        cp_chunk_lengths = []
-        chunked_loss_masks = []
-        for i, (total_length, response_length, loss_mask) in enumerate(
-            zip(total_lengths, response_lengths, loss_masks, strict=False)
-        ):
-            max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
-            prompt_length = total_length - response_length
-            _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                total_length, response_length, parallel_state, qkv_format, max_seq_len
-            )
-            loss_mask_0 = loss_mask[tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length]
-            loss_mask_1 = loss_mask[tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length]
-            chunked_loss_masks.append(torch.cat([loss_mask_0, loss_mask_1], dim=0))
-            cp_chunk_lengths.append(chunked_loss_masks[i].size(0))
-
-        def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
-            return sum(
-                [
-                    (x_i * chunked_loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-                    for x_i, chunked_loss_mask, loss_mask in zip(
-                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, loss_masks, strict=False
-                    )
-                ]
-            )
 
         def sum_of_token(x: torch.Tensor) -> torch.Tensor:
             return sum(
-                [
-                    (x_i * chunked_loss_mask).sum()
-                    for x_i, chunked_loss_mask in zip(
-                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, strict=False
-                    )
-                ]
+                (x_i * local_mask).sum()
+                for x_i, local_mask in zip(x.split(local_lens, dim=0), local_masks, strict=True)
             )
 
-    return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
+        return sum_of_token
 
 
 def all_gather_with_cp(
