@@ -26,22 +26,14 @@ patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
     edits:
       - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
-        replacement: |
-          hidden_states, context = self._forward_attention(*args, **kwargs)
-          dumper.dump('patched_attn_output', hidden_states)
+        append: "dumper.dump('patched_attn_output', hidden_states)"
       - match: |
           output = self._forward_mlp(
               hidden_states,
               kwargs.get("inference_context", None),
               padding_mask=kwargs.get("padding_mask", None),
           )
-        replacement: |
-          output = self._forward_mlp(
-              hidden_states,
-              kwargs.get("inference_context", None),
-              padding_mask=kwargs.get("padding_mask", None),
-          )
-          dumper.dump('patched_mlp_output', output)
+        append: "dumper.dump('patched_mlp_output', output)"
 """
 
 # Two configs that together cover all parallelism dimensions:
