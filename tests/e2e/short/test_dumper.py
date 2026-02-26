@@ -31,7 +31,6 @@ SOURCE_PATCHER_CONFIG: dict = {
                     "match": "hidden_states, context = self._forward_attention(*args, **kwargs)",
                     "replacement": (
                         "hidden_states, context = self._forward_attention(*args, **kwargs)\n"
-                        "from sglang.srt.debug_utils.dumper import dumper\n"
                         "dumper.dump('patched_attn_output', hidden_states)"
                     ),
                 },
@@ -49,7 +48,6 @@ SOURCE_PATCHER_CONFIG: dict = {
                         "    kwargs.get(\"inference_context\", None),\n"
                         "    padding_mask=kwargs.get(\"padding_mask\", None),\n"
                         ")\n"
-                        "from sglang.srt.debug_utils.dumper import dumper\n"
                         "dumper.dump('patched_mlp_output', output)"
                     ),
                 },
