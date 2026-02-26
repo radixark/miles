@@ -14,6 +14,10 @@ def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumula
         if args.multi_latent_attention:
             # TODO: mla currently have non-zero kl, need further investigation
             assert log_dict["train/ppo_kl"] < 1e-8, f"{log_dict=}"
+        elif getattr(args, "lora_rank", 0) > 0:
+            # LoRA weight conversion (Megatron → HF for SGLang) introduces
+            # small floating-point differences, so use a relaxed threshold.
+            assert abs(log_dict["train/ppo_kl"]) < 1e-8 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
         else:
             assert abs(log_dict["train/ppo_kl"]) < 1e-10 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
     if accumulated_step_id == 0 and "train/kl_loss" in log_dict and not args.use_rollout_routing_replay:

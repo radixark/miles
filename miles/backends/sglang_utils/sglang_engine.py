@@ -13,6 +13,7 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
 
@@ -272,6 +273,32 @@ class SGLangEngine(RayActor):
             payload,
         )
 
+    def load_lora_adapter_from_tensors(
+        self,
+        lora_name: str,
+        serialized_tensors: str,
+        config_dict: dict,
+        load_format: str | None = None,
+        pinned: bool = False,
+        added_tokens_config: dict | None = None,
+    ):
+        """Load a LoRA adapter from serialized tensor data."""
+        payload = {
+            "lora_name": lora_name,
+            "serialized_tensors": serialized_tensors,
+            "config_dict": config_dict,
+            "pinned": pinned,
+        }
+        if load_format is not None:
+            payload["load_format"] = load_format
+        if added_tokens_config is not None:
+            payload["added_tokens_config"] = added_tokens_config
+
+        return self._make_request(
+            "load_lora_adapter_from_tensors",
+            payload,
+        )
+
     def flush_cache(self):
         """Flush the cache of the server."""
         if self.node_rank != 0:
@@ -336,9 +363,20 @@ class SGLangEngine(RayActor):
                 return response.json()["weight_version"]
         response.raise_for_status()
 
-    def release_memory_occupation(self):
+    def unload_lora_adapter(self, lora_name: str):
+        """Unload LoRA adapter."""
+        return self._make_request(
+            "unload_lora_adapter",
+            {"lora_name": lora_name},
+        )
+
+    def release_memory_occupation(self, tags: list[str] = None):
+        """Release memory occupation. Available tags: weights, kv_cache."""
         self.flush_cache()
-        return self._make_request("release_memory_occupation")
+        return self._make_request(
+            "release_memory_occupation",
+            {"tags": tags},
+        )
 
     def resume_memory_occupation(self, tags: list[str] = None):
         """
@@ -490,6 +528,7 @@ def _compute_server_args(
         "random_seed": args.seed + rank,
         # memory
         "enable_memory_saver": args.offload_rollout,
+        "enable_weights_cpu_backup": args.offload_rollout,
         # distributed
         "host": host,
         "port": port,
@@ -526,6 +565,17 @@ def _compute_server_args(
     if args.fp16:
         kwargs["dtype"] = "float16"
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
+
+    if is_lora_enabled(args):
+        kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = 1
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+
+        if args.lora_adapter_path is not None:
+            kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+        else:
+            logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):

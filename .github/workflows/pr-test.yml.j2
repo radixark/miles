@@ -39,6 +39,10 @@
     {'test_file': 'e2e/long/test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 8},
 ] %>
 
+<% set lora_tests = [
+    {'test_file': 'e2e/lora/test_lora_qwen2.5_0.5B.py', 'num_gpus': 8},
+] %>
+
 <% set jobs = {
     'fast': {
       'test_executor': 'pytest',
@@ -83,9 +87,13 @@
       'label': 'run-ci-long',
       'tests': long_tests,
     },
+    'e2e-test-lora': {
+      'label': 'run-ci-lora',
+      'tests': lora_tests,
+    },
     'e2e-test-image': {
       'label': 'run-ci-image',
-      'tests': fsdp_tests + megatron_tests + short_tests + precision_tests + ckpt_tests + long_tests,
+      'tests': fsdp_tests + megatron_tests + lora_tests + short_tests + precision_tests + ckpt_tests + long_tests,
     },
 } %>
 name: PR Test

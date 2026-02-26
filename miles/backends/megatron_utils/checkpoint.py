@@ -3,6 +3,8 @@ import os
 import re
 from pathlib import Path
 
+import torch.distributed as dist
+
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
@@ -10,11 +12,12 @@ from megatron.training.global_vars import get_args
 
 from miles.utils import megatron_bridge_utils
 
+from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
+
 try:
     # Here we patch out the `validate_non_overlapping_shards_metadata` in both functions
     # because it is really slow for large models with many shards.
     # TODO: find a less hacky way to do this.
-    import torch.distributed as dist
     import torch.distributed._shard.sharding_spec as shard_spec
     from torch.distributed._shard.sharded_tensor import ShardedTensor
     from torch.distributed._shard.sharded_tensor.metadata import ShardedTensorMetadata
@@ -91,7 +94,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["save_checkpoint"]
+__all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
@@ -104,7 +107,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if _is_megatron_checkpoint(load_path):
-        return _load_checkpoint_megatron(
+        result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
             opt_param_scheduler=opt_param_scheduler,
@@ -112,12 +115,54 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
             skip_load_to_model_and_opt=skip_load_to_model_and_opt,
         )
     else:
-        return _load_checkpoint_hf(
+        result = _load_checkpoint_hf(
             ddp_model=ddp_model,
             optimizer=optimizer,
             args=args,
             load_path=load_path,
         )
+
+    # Load LoRA adapter weights if available
+    if is_lora_enabled(args):
+        adapter_path = getattr(args, "lora_adapter_path", None)
+        if adapter_path is not None:
+            loaded, iteration = load_lora_adapter(
+                ddp_model,
+                adapter_path,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+            )
+            if loaded:
+                logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")
+                if iteration is not None:
+                    result = (iteration, result[1])
+            else:
+                logger.warning(
+                    f"LoRA is enabled and --lora-adapter-path={adapter_path} was specified, "
+                    f"but adapter weights could not be loaded. "
+                    f"Training will start with freshly initialized adapter weights."
+                )
+
+    return result
+
+
+def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
+    """Extended save that handles LoRA adapters separately."""
+    args = get_args()
+
+    if is_lora_model(model):
+        save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
+        logger.info(f"Saving LoRA checkpoint to {save_dir}")
+        save_lora_checkpoint(
+            model,
+            args,
+            str(save_dir),
+            optimizer=optimizer,
+            opt_param_scheduler=opt_param_scheduler,
+            iteration=iteration,
+        )
+    else:
+        save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
 
 
 def _is_megatron_checkpoint(path: str | Path) -> bool:
