@@ -61,8 +61,13 @@ note: `-v /var/run/docker.sock:/var/run/docker.sock` is required for Docker-in-D
 
 In **environment docker**, install Gym
 ```bash
+cd /
 git clone https://github.com/yueming-yuan/Gym
+git clone https://github.com/yueming-yuan/nv-mini-swe-agent.git
+cd nv-mini-swe-agent
+git checkout -b miles-swe-agent origin/miles-swe-agent
 cd Gym
+git checkout -b miles-swe-agent origin/miles-swe-agent
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
@@ -79,7 +84,7 @@ note: set host IP to `0.0.0.0` to enable communications between dockers.
 
 then set up for SWE-agent server:
 ```bash
-cd responses_api_agents/mini_swe_agent
+cd /Gym/responses_api_agents/mini_swe_agent
 uv pip install -r requirements.txt
 ```
 Now you should be able to run the SWE-agent server.
@@ -96,9 +101,13 @@ python download_and_process_data.py --input SWE-Gym/SWE-Gym --output /root/swe_t
 ## Running train
 1. In environment docker, launch the agent server
 ```bash
-cd Gym
+cd /Gym
 source .venv/bin/activate
 cd responses_api_agents/mini_swe_agent
+#fix Gym location
+sed -i 's|cd /workspace/swe-agent/Gym|cd /Gym|' start_server.sh
+# Add port=12000 to the ng_run command
+sed -i "/skip_if_exists/a\\    '+mini_swe_simple_agent.responses_api_agents.mini_swe_agent.port=12000'" start_server.sh
 ./start_server.sh
 ```
 
