@@ -3,7 +3,6 @@ import os
 import re
 from pathlib import Path
 
-import torch
 import torch.distributed as dist
 
 # TODO: may need to copy those 2 functions and do refactoring.
@@ -128,8 +127,10 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         adapter_path = getattr(args, "lora_adapter_path", None)
         if adapter_path is not None:
             loaded, iteration = load_lora_adapter(
-                ddp_model, adapter_path,
-                optimizer=optimizer, opt_param_scheduler=opt_param_scheduler,
+                ddp_model,
+                adapter_path,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
             )
             if loaded:
                 logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")
@@ -153,8 +154,12 @@ def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
         save_lora_checkpoint(
-            model, args, str(save_dir),
-            optimizer=optimizer, opt_param_scheduler=opt_param_scheduler, iteration=iteration,
+            model,
+            args,
+            str(save_dir),
+            optimizer=optimizer,
+            opt_param_scheduler=opt_param_scheduler,
+            iteration=iteration,
         )
     else:
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)

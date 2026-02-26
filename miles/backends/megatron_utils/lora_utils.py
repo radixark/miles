@@ -335,11 +335,14 @@ def save_lora_checkpoint(
     # ---- Training state (optimizer + scheduler) for resume ----
     if optimizer is not None:
         rank = dist.get_rank() if dist.is_initialized() else 0
-        torch.save({
-            "iteration": iteration,
-            "optimizer": optimizer.state_dict(),
-            "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-        }, save_path / f"training_state_rank{rank}.pt")
+        torch.save(
+            {
+                "iteration": iteration,
+                "optimizer": optimizer.state_dict(),
+                "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+            },
+            save_path / f"training_state_rank{rank}.pt",
+        )
         logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
     if dist.is_initialized():
