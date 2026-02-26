@@ -30,7 +30,13 @@ def get_sglang_env(args: Namespace) -> dict[str, str]:
     if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return {}
 
-    return {"DUMPER_SERVER_PORT": "reuse"}
+    env: dict[str, str] = {"DUMPER_SERVER_PORT": "reuse"}
+
+    source_patcher_config: str | None = getattr(args, "dumper_source_patcher_config", None)
+    if source_patcher_config:
+        env["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
+
+    return env
 
 
 async def configure_sglang(args: Namespace) -> None:

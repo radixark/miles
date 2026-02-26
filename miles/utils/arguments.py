@@ -1156,6 +1156,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Megatron forward-backward phase dumper config as key=value pairs.",
             )
+            parser.add_argument(
+                "--dumper-source-patcher-config",
+                type=str,
+                default=None,
+                help="Path to YAML config file for source patcher. "
+                "Applied in training actor processes to patch functions via __code__ replacement.",
+            )
             # use together with --record-memory-history and --memory-snapshot-path (defined in Megatron)
             parser.add_argument(
                 "--memory-snapshot-dir",
