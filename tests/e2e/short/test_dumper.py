@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import torch
+import yaml
 
 import miles.utils.external_utils.command_utils as U
 
@@ -9,13 +10,52 @@ MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 DUMP_DIR = "/tmp/test_miles_dumper"
+SOURCE_PATCHER_CONFIG_PATH = "/tmp/test_source_patcher_config.yaml"
 
 EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
+PATCHED_FIELDS = ["patched_attn_output", "patched_mlp_output"]
+
 EXPECTED_FIELDS: dict[str, list[str]] = {
     "engine_*": ["input_ids", "positions"],
-    "fwd_only": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"],
-    "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"],
+    "fwd_only": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + PATCHED_FIELDS,
+    "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + PATCHED_FIELDS,
+}
+
+SOURCE_PATCHER_CONFIG: dict = {
+    "patches": [
+        {
+            "target": "megatron.core.transformer.transformer_layer.TransformerLayer.forward",
+            "edits": [
+                {
+                    "match": "hidden_states, context = self._forward_attention(*args, **kwargs)",
+                    "replacement": (
+                        "hidden_states, context = self._forward_attention(*args, **kwargs)\n"
+                        "from sglang.srt.debug_utils.dumper import dumper\n"
+                        "dumper.dump('patched_attn_output', hidden_states)"
+                    ),
+                },
+                {
+                    "match": (
+                        "output = self._forward_mlp(\n"
+                        "    hidden_states,\n"
+                        "    kwargs.get(\"inference_context\", None),\n"
+                        "    padding_mask=kwargs.get(\"padding_mask\", None),\n"
+                        ")"
+                    ),
+                    "replacement": (
+                        "output = self._forward_mlp(\n"
+                        "    hidden_states,\n"
+                        "    kwargs.get(\"inference_context\", None),\n"
+                        "    padding_mask=kwargs.get(\"padding_mask\", None),\n"
+                        ")\n"
+                        "from sglang.srt.debug_utils.dumper import dumper\n"
+                        "dumper.dump('patched_mlp_output', output)"
+                    ),
+                },
+            ],
+        }
+    ]
 }
 
 # Two configs that together cover all parallelism dimensions:
@@ -45,6 +85,8 @@ def prepare() -> None:
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
     U.exec_command(f"rm -rf {DUMP_DIR}")
 
+    Path(SOURCE_PATCHER_CONFIG_PATH).write_text(yaml.dump(SOURCE_PATCHER_CONFIG))
+
 
 def _execute(perf_args: str, dump_subdir: str) -> None:
     dump_dir = f"{DUMP_DIR}/{dump_subdir}"
@@ -73,6 +115,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
         f"--dumper-enable --dumper-dir {dump_dir} "
         "--dumper-fwd-only enable_model_value=0 enable_model_grad=0 "
         "--dumper-fwd-bwd enable_model_value=0 enable_model_grad=0 "
+        f"--dumper-source-patcher-config {SOURCE_PATCHER_CONFIG_PATH} "
     )
 
     misc_args = (
