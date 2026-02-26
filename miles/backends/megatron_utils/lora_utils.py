@@ -235,19 +235,6 @@ def create_lora_instance(args: Namespace):
 
 
 # ---------------------------------------------------------------------------
-# Parameter freezing / trainable param helpers
-# ---------------------------------------------------------------------------
-
-
-def freeze_base_model(model: Sequence[torch.nn.Module]) -> None:
-    """Freeze base model parameters, only keep LoRA trainable."""
-    for model_chunk in model:
-        for name, param in model_chunk.named_parameters():
-            if "lora_" not in name and "adapter" not in name:
-                param.requires_grad = False
-
-
-# ---------------------------------------------------------------------------
 # Checkpoint save/load
 # ---------------------------------------------------------------------------
 
@@ -256,6 +243,10 @@ def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
     save_dir: str,
+    *,
+    optimizer: Any | None = None,
+    opt_param_scheduler: Any | None = None,
+    iteration: int | None = None,
 ) -> str:
     """Save LoRA adapter checkpoint to disk.
 
@@ -266,6 +257,10 @@ def save_lora_checkpoint(
     2. **Megatron-native format** (``adapter_megatron_tp{tp}_pp{pp}.pt``) for fast
        checkpoint resume without name/weight conversion. Each TP/PP rank saves its
        own shard with original parameter names.
+
+    When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
+    also saved per-rank for checkpoint resume. Base model weights are frozen and
+    never change, so they are not saved.
 
     This function is collective: **all ranks must call it** because the bridge
     export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
@@ -327,6 +322,7 @@ def save_lora_checkpoint(
             "r": args.lora_rank,
             "lora_alpha": args.lora_alpha,
             "target_modules": target_modules_hf,
+            "lora_dropout": args.lora_dropout,
             "bias": "none",
             "task_type": "CAUSAL_LM",
         }
@@ -335,6 +331,16 @@ def save_lora_checkpoint(
 
         os.sync()
         logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
+
+    # ---- Training state (optimizer + scheduler) for resume ----
+    if optimizer is not None:
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        torch.save({
+            "iteration": iteration,
+            "optimizer": optimizer.state_dict(),
+            "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+        }, save_path / f"training_state_rank{rank}.pt")
+        logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
     if dist.is_initialized():
         dist.barrier()
@@ -345,7 +351,10 @@ def save_lora_checkpoint(
 def load_lora_adapter(
     model: Sequence[torch.nn.Module],
     adapter_path: str,
-) -> bool:
+    *,
+    optimizer: Any | None = None,
+    opt_param_scheduler: Any | None = None,
+) -> tuple[bool, int | None]:
     """Load LoRA adapter weights from a saved checkpoint into the model.
 
     Attempts to load from Megatron-native format first (per-rank ``.pt`` files),
@@ -353,17 +362,24 @@ def load_lora_adapter(
     Falls back to HF PEFT ``adapter_model.bin`` if native files are not found
     (not yet implemented for HF PEFT format).
 
+    When ``optimizer`` is provided, also restores training state (optimizer +
+    LR scheduler) from a co-located ``training_state_rank*.pt`` file.
+
     Args:
         model: List of DDP-wrapped model chunks with LoRA layers already applied.
         adapter_path: Path to the adapter checkpoint directory.
+        optimizer: If provided, restore optimizer state for training resume.
+        opt_param_scheduler: If provided, restore LR scheduler state.
 
     Returns:
-        True if adapter weights were successfully loaded, False otherwise.
+        ``(loaded, iteration)`` — *loaded* is True if adapter weights were
+        successfully loaded; *iteration* is the saved iteration number (or None
+        if no training state was found).
     """
     adapter_dir = Path(adapter_path)
     if not adapter_dir.exists():
         logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
-        return False
+        return False, None
 
     tp_rank = mpu.get_tensor_model_parallel_rank()
     pp_rank = mpu.get_pipeline_model_parallel_rank()
@@ -371,7 +387,7 @@ def load_lora_adapter(
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
     native_path = adapter_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
     if native_path.exists():
-        state_dict = torch.load(native_path, map_location="cpu")
+        state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
         loaded = 0
         for model_chunk in model:
             for name, param in model_chunk.named_parameters():
@@ -379,7 +395,9 @@ def load_lora_adapter(
                     param.data.copy_(state_dict[name].to(device=param.device))
                     loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
-        return True
+
+        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+        return True, iteration
 
     # ---- HF PEFT format (future work) ----
     hf_path = adapter_dir / "adapter_model.bin"
@@ -389,10 +407,41 @@ def load_lora_adapter(
             f"Megatron is not yet supported. Please save using Megatron-native format "
             f"(adapter_megatron_tp*_pp*.pt files) for checkpoint resume."
         )
-        return False
+        return False, None
 
     logger.warning(f"No adapter checkpoint found at {adapter_dir}")
-    return False
+    return False, None
+
+
+def _load_training_state(
+    adapter_dir: Path,
+    optimizer: Any | None,
+    opt_param_scheduler: Any | None,
+) -> int | None:
+    """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
+    if optimizer is None:
+        return None
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    state_path = adapter_dir / f"training_state_rank{rank}.pt"
+    if not state_path.exists():
+        return None
+
+    # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
+    # param group metadata), so full unpickling is required here.
+    training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+
+    optimizer.load_state_dict(training_state["optimizer"])
+    logger.info("Restored optimizer state from LoRA checkpoint")
+
+    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
+        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
+        logger.info("Restored LR scheduler state from LoRA checkpoint")
+
+    iteration = training_state.get("iteration")
+    if iteration is not None:
+        logger.info(f"Resuming LoRA training from iteration {iteration}")
+    return iteration
 
 
 # ---------------------------------------------------------------------------

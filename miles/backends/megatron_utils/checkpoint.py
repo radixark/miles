@@ -3,6 +3,9 @@ import os
 import re
 from pathlib import Path
 
+import torch
+import torch.distributed as dist
+
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
@@ -16,7 +19,6 @@ try:
     # Here we patch out the `validate_non_overlapping_shards_metadata` in both functions
     # because it is really slow for large models with many shards.
     # TODO: find a less hacky way to do this.
-    import torch.distributed as dist
     import torch.distributed._shard.sharding_spec as shard_spec
     from torch.distributed._shard.sharded_tensor import ShardedTensor
     from torch.distributed._shard.sharded_tensor.metadata import ShardedTensorMetadata
@@ -125,9 +127,14 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if is_lora_enabled(args):
         adapter_path = getattr(args, "lora_adapter_path", None)
         if adapter_path is not None:
-            loaded = load_lora_adapter(ddp_model, adapter_path)
+            loaded, iteration = load_lora_adapter(
+                ddp_model, adapter_path,
+                optimizer=optimizer, opt_param_scheduler=opt_param_scheduler,
+            )
             if loaded:
                 logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")
+                if iteration is not None:
+                    result = (iteration, result[1])
             else:
                 logger.warning(
                     f"LoRA is enabled and --lora-adapter-path={adapter_path} was specified, "
@@ -145,7 +152,10 @@ def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
     if is_lora_model(model):
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
-        save_lora_checkpoint(model, args, str(save_dir))
+        save_lora_checkpoint(
+            model, args, str(save_dir),
+            optimizer=optimizer, opt_param_scheduler=opt_param_scheduler, iteration=iteration,
+        )
     else:
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
 
