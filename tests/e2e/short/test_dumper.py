@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 
 import torch
-import yaml
 
 import miles.utils.external_utils.command_utils as U
 
@@ -22,39 +21,28 @@ EXPECTED_FIELDS: dict[str, list[str]] = {
     "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + PATCHED_FIELDS,
 }
 
-SOURCE_PATCHER_CONFIG: dict = {
-    "patches": [
-        {
-            "target": "megatron.core.transformer.transformer_layer.TransformerLayer.forward",
-            "edits": [
-                {
-                    "match": "hidden_states, context = self._forward_attention(*args, **kwargs)",
-                    "replacement": (
-                        "hidden_states, context = self._forward_attention(*args, **kwargs)\n"
-                        "dumper.dump('patched_attn_output', hidden_states)"
-                    ),
-                },
-                {
-                    "match": (
-                        "output = self._forward_mlp(\n"
-                        "    hidden_states,\n"
-                        "    kwargs.get(\"inference_context\", None),\n"
-                        "    padding_mask=kwargs.get(\"padding_mask\", None),\n"
-                        ")"
-                    ),
-                    "replacement": (
-                        "output = self._forward_mlp(\n"
-                        "    hidden_states,\n"
-                        "    kwargs.get(\"inference_context\", None),\n"
-                        "    padding_mask=kwargs.get(\"padding_mask\", None),\n"
-                        ")\n"
-                        "dumper.dump('patched_mlp_output', output)"
-                    ),
-                },
-            ],
-        }
-    ]
-}
+SOURCE_PATCHER_CONFIG_YAML: str = """\
+patches:
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
+    edits:
+      - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
+        replacement: |
+          hidden_states, context = self._forward_attention(*args, **kwargs)
+          dumper.dump('patched_attn_output', hidden_states)
+      - match: |
+          output = self._forward_mlp(
+              hidden_states,
+              kwargs.get("inference_context", None),
+              padding_mask=kwargs.get("padding_mask", None),
+          )
+        replacement: |
+          output = self._forward_mlp(
+              hidden_states,
+              kwargs.get("inference_context", None),
+              padding_mask=kwargs.get("padding_mask", None),
+          )
+          dumper.dump('patched_mlp_output', output)
+"""
 
 # Two configs that together cover all parallelism dimensions:
 #   Config A: TP=2, SP, PP=2, EP=2, DP=2            → covers DP
@@ -83,7 +71,7 @@ def prepare() -> None:
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
     U.exec_command(f"rm -rf {DUMP_DIR}")
 
-    Path(SOURCE_PATCHER_CONFIG_PATH).write_text(yaml.dump(SOURCE_PATCHER_CONFIG))
+    Path(SOURCE_PATCHER_CONFIG_PATH).write_text(SOURCE_PATCHER_CONFIG_YAML)
 
 
 def _execute(perf_args: str, dump_subdir: str) -> None:
