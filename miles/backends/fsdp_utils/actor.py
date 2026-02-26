@@ -55,8 +55,10 @@ class FSDPTrainRayActor(TrainRayActor):
     def init(self, args: Namespace, role: str, with_ref: bool = False) -> int:  # type: ignore[override]
         super().init(args, role, with_ref)
 
-        from sglang.srt.debug_utils.dumper import dumper
-        dumper.apply_source_patches()
+        if getattr(args, "dumper_enable", False):
+            from sglang.srt.debug_utils.dumper import dumper
+
+            dumper.apply_source_patches()
 
         # Setup ParallelState for both CP and non-CP cases
         self.parallel_state = create_fsdp_parallel_state(args)

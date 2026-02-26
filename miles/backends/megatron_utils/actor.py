@@ -58,8 +58,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        from sglang.srt.debug_utils.dumper import dumper
-        dumper.apply_source_patches()
+        if getattr(args, "dumper_enable", False):
+            from sglang.srt.debug_utils.dumper import dumper
+
+            dumper.apply_source_patches()
 
         if is_megatron_main_rank():
             init_tracking(args, primary=False)
