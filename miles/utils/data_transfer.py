@@ -10,8 +10,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-import ray
-
 from miles.utils.ray_utils import Box
 
 logger = logging.getLogger(__name__)
@@ -45,9 +43,13 @@ class RayDataTransfer(DataTransferBackend):
     """Default data transfer using Ray Object Store."""
 
     def put(self, data: Any) -> Any:
+        import ray
+
         return Box(ray.put(data))
 
     def get(self, handle: Any) -> Any:
+        import ray
+
         if isinstance(handle, Box):
             return ray.get(handle.inner)
         return ray.get(handle)
@@ -166,6 +168,14 @@ class MooncakeDataTransfer(DataTransferBackend):
         # Queue for keys pending deletion: (key, deletion_time)
         self._pending_deletion = queue.Queue()
 
+        # Reusable buffers: avoid repeated alloc when sizes are similar
+        self._get_buffer = None
+        self._get_buffer_size = 0
+        self._get_buffer_registered = False  # persistent reg to avoid ~17ms/round overhead
+        self._put_buffer = None
+        self._put_buffer_size = 0
+        self._put_buffer_registered = False  # persistent reg for put
+
         # Background cleanup thread (only start if auto cleanup is enabled)
         self._cleanup_thread = None
         self._cleanup_stop_event = threading.Event()
@@ -241,36 +251,34 @@ class MooncakeDataTransfer(DataTransferBackend):
 
     def put(self, data: Any) -> Any:
         """
-        Store data using zero-copy put_from.
+        Store data using zero-copy put_from with persistent buffer registration.
         """
-        # Serialize data to bytes
         serialized_data = pickle.dumps(data)
         data_size = len(serialized_data)
 
-        # Generate unique key
         key = f"rollout_data_{uuid.uuid4().hex}"
 
-        # Allocate buffer with some extra space for safety
-        buffer_size = data_size + 1024  # Extra 1KB padding
-        buffer = (ctypes.c_ubyte * buffer_size)()
+        buffer_size = data_size + 1024
+        if self._put_buffer is None or self._put_buffer_size < buffer_size:
+            if self._put_buffer_registered:
+                self.store.unregister_buffer(ctypes.addressof(self._put_buffer))
+                self._put_buffer_registered = False
+            self._put_buffer = (ctypes.c_ubyte * buffer_size)()
+            self._put_buffer_size = buffer_size
+        buffer = self._put_buffer
         buffer_ptr = ctypes.addressof(buffer)
 
-        # Copy serialized data to buffer
         ctypes.memmove(buffer, serialized_data, data_size)
 
-        # Register buffer for zero-copy operations
-        result = self.store.register_buffer(buffer_ptr, buffer_size)
-        if result != 0:
-            raise RuntimeError(f"Failed to register buffer for put_from: {result}")
-
-        try:
-            # Zero-copy put using put_from
-            result = self.store.put_from(key, buffer_ptr, data_size)
+        if not self._put_buffer_registered:
+            result = self.store.register_buffer(buffer_ptr, buffer_size)
             if result != 0:
-                raise RuntimeError(f"put_from failed with code: {result}")
-        finally:
-            # Unregister buffer
-            self.store.unregister_buffer(buffer_ptr)
+                raise RuntimeError(f"Failed to register buffer for put_from: {result}")
+            self._put_buffer_registered = True
+
+        result = self.store.put_from(key, buffer_ptr, data_size)
+        if result != 0:
+            raise RuntimeError(f"put_from failed with code: {result}")
 
         return key
 
@@ -289,49 +297,41 @@ class MooncakeDataTransfer(DataTransferBackend):
         """
         key = handle
 
-        # Get data size first
         data_size = self.store.get_size(key)
         if data_size < 0:
             raise ValueError(f"Data not found in Mooncake for key: {key}, error code: {data_size}")
 
-        # Allocate buffer with some extra space for safety
-        buffer_size = data_size + 1024  # Extra 1KB padding
-        buffer = (ctypes.c_ubyte * buffer_size)()
+        buffer_size = data_size + 1024
+        if self._get_buffer is None or self._get_buffer_size < buffer_size:
+            if self._get_buffer_registered:
+                self.store.unregister_buffer(ctypes.addressof(self._get_buffer))
+                self._get_buffer_registered = False
+            self._get_buffer = (ctypes.c_ubyte * buffer_size)()
+            self._get_buffer_size = buffer_size
+        buffer = self._get_buffer
         buffer_ptr = ctypes.addressof(buffer)
 
-        # Register buffer for zero-copy operations
-        result = self.store.register_buffer(buffer_ptr, buffer_size)
-        if result != 0:
-            raise RuntimeError(f"Failed to register buffer for get_into: {result}")
+        if not self._get_buffer_registered:
+            result = self.store.register_buffer(buffer_ptr, buffer_size)
+            if result != 0:
+                raise RuntimeError(f"Failed to register buffer for get_into: {result}")
+            self._get_buffer_registered = True
 
-        try:
-            # Zero-copy get using get_into
-            bytes_read = self.store.get_into(key, buffer_ptr, buffer_size)
-            if bytes_read < 0:
-                raise RuntimeError(f"get_into failed with code: {bytes_read}")
-            if bytes_read != data_size:
-                raise RuntimeError(f"Data size mismatch: expected {data_size} bytes, got {bytes_read} bytes")
+        bytes_read = self.store.get_into(key, buffer_ptr, buffer_size)
+        if bytes_read < 0:
+            raise RuntimeError(f"get_into failed with code: {bytes_read}")
+        if bytes_read != data_size:
+            raise RuntimeError(f"Data size mismatch: expected {data_size}, got {bytes_read}")
 
-            # Extract data from buffer
-            serialized_data = bytes(buffer[:bytes_read])
+        data = pickle.loads(memoryview(buffer)[:bytes_read])
 
-            # Deserialize and return
-            data = pickle.loads(serialized_data)
+        should_cleanup = auto_cleanup if auto_cleanup is not None else self.enable_auto_cleanup
+        if should_cleanup:
+            if self._cleanup_thread is None or not self._cleanup_thread.is_alive():
+                self._start_cleanup_thread()
+            self._schedule_deletion(key)
 
-            # Determine if we should schedule deletion
-            should_cleanup = auto_cleanup if auto_cleanup is not None else self.enable_auto_cleanup
-
-            # Schedule deletion after successful retrieval
-            if should_cleanup:
-                # Ensure cleanup thread is running if needed
-                if self._cleanup_thread is None or not self._cleanup_thread.is_alive():
-                    self._start_cleanup_thread()
-                self._schedule_deletion(key)
-
-            return data
-        finally:
-            # Unregister buffer
-            self.store.unregister_buffer(buffer_ptr)
+        return data
 
     def clear(self) -> None:
         """Remove all data from the store."""
@@ -343,6 +343,9 @@ class MooncakeDataTransfer(DataTransferBackend):
             except queue.Empty:
                 break
 
+    # Mooncake error -706: key not found (e.g. already removed by get_into or replication)
+    _CLEANUP_KEY_NOT_FOUND = -706
+
     def cleanup(self, handle: Any):
         """
         Immediately clean up data associated with the handle.
@@ -350,11 +353,23 @@ class MooncakeDataTransfer(DataTransferBackend):
         """
         key = handle
         result = self.store.remove(key)
-        if result != 0:
+        if result != 0 and result != self._CLEANUP_KEY_NOT_FOUND:
             logger.warning(f"Failed to cleanup key {key}, error code: {result}")
 
     def shutdown(self):
-        """Shutdown the cleanup thread gracefully."""
+        """Shutdown the cleanup thread gracefully and unregister persistent buffers."""
+        if self._put_buffer_registered and self._put_buffer is not None:
+            try:
+                self.store.unregister_buffer(ctypes.addressof(self._put_buffer))
+            except Exception as e:
+                logger.warning("Failed to unregister put buffer on shutdown: %s", e)
+            self._put_buffer_registered = False
+        if self._get_buffer_registered and self._get_buffer is not None:
+            try:
+                self.store.unregister_buffer(ctypes.addressof(self._get_buffer))
+            except Exception as e:
+                logger.warning("Failed to unregister get buffer on shutdown: %s", e)
+            self._get_buffer_registered = False
         if self._cleanup_thread is not None:
             self._cleanup_stop_event.set()
             self._cleanup_thread.join(timeout=5.0)
