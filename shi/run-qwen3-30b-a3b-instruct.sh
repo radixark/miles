@@ -105,8 +105,8 @@ WANDB_ARGS=()
 if [ -n "$WANDB_KEY" ]; then
     WANDB_ARGS=(
         --use-wandb
-        --wandb-project miles-swe-agent
-        --wandb-group swe-agent-qwen3-30b-a3b
+        --wandb-project miles-swe-agent-shi
+        --wandb-group swe-agent-qwen3-30b-a3b-debug
         --wandb-key ${WANDB_KEY}
     )
 fi
