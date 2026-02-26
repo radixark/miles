@@ -244,6 +244,7 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            batch=batch,
         )
 
     # Turn on evaluation mode which disables dropout.
