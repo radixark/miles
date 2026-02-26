@@ -80,8 +80,7 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
     partition_stride, partition_dim = _check_and_fix_partition(args, name, partition_stride, partition_dim)
     param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
 
-    # handle gdn weight gather
-    if getattr(args, "experimental_attention_variant", None) is not None:
+    if getattr(args, "experimental_attention_variant", None) == "gated_delta_net":
         param = _handle_gdn_weight_gather(args, name, param)
     return param
 
@@ -139,8 +138,7 @@ def all_gather_params_async(
             )
             param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
 
-        # handle gdn weight gather
-        if getattr(args, "experimental_attention_variant", None) is not None:
+        if getattr(args, "experimental_attention_variant", None) == "gated_delta_net":
             param = _handle_gdn_weight_gather(args, info.name, param)
         gathered_params.append(param)
 
