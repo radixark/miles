@@ -30,18 +30,22 @@ import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 
-def make_mock_rollout_data(batch_size: int, seq_len: int, n_samples_per_prompt: int = 4) -> dict:
+def make_mock_rollout_data(
+    batch_size: int,
+    seq_len: int,
+    n_samples_per_prompt: int = 4,
+    use_routing_replay: bool = False,
+    num_layers: int = 64,
+    moe_router_topk: int = 2,
+) -> dict:
     """Create mock rollout data."""
     num_samples = batch_size * n_samples_per_prompt
     total_lengths = [seq_len + np.random.randint(100, 500) for _ in range(num_samples)]
     response_lengths = [np.random.randint(100, 500) for _ in range(num_samples)]
     tokens = [np.random.randint(0, 32000, size=l, dtype=np.int32) for l in total_lengths]
     loss_masks = [[1] * (resp_len - 50) + [0] * 50 for resp_len in response_lengths]
-    rollout_log_probs = [
-        np.random.randn(tot_len - resp_len).astype(np.float32).tolist()
-        for tot_len, resp_len in zip(total_lengths, response_lengths)
-    ]
-    return {
+    rollout_log_probs = [np.random.randn(tot_len - resp_len).astype(np.float32).tolist() for tot_len, resp_len in zip(total_lengths, response_lengths)]
+    data = {
         "partition": list(range(num_samples)),
         "tokens": tokens,
         "response_lengths": response_lengths,
@@ -50,6 +54,9 @@ def make_mock_rollout_data(batch_size: int, seq_len: int, n_samples_per_prompt: 
         "rollout_log_probs": rollout_log_probs,
         "total_lengths": total_lengths,
     }
+    if use_routing_replay:
+        data["rollout_routed_experts"] = [np.random.randint(0, 8, size=(tot_len - 1, num_layers, moe_router_topk), dtype=np.int32) for tot_len in total_lengths]
+    return data
 
 
 def get_serialized_size(data: dict) -> int:
@@ -85,13 +92,11 @@ class MooncakePutActor:
 
     def __init__(self):
         from miles.utils.data_transfer import MooncakeDataTransfer
+
         self.backend = MooncakeDataTransfer(enable_auto_cleanup=False)
 
     def put(self, data: dict) -> str:
         return self.backend.put(data)
-
-
-
 
 
 def resolve_data_size_mb(data_size_mb: float) -> tuple[int, int]:
@@ -104,20 +109,34 @@ def resolve_data_size_mb(data_size_mb: float) -> tuple[int, int]:
     return batch_size, seq_len
 
 
-def run_multinode_benchmark(data_size_mb: float, num_rounds: int):
+def run_multinode_benchmark(
+    data_size_mb: float,
+    num_rounds: int,
+    use_routing_replay: bool = False,
+    num_layers: int = 64,
+    moe_router_topk: int = 2,
+):
     # Workers inherit env from ray start (PYTHONPATH, MOONCAKE_* set on both nodes)
     ray.init(address="auto")
     head_id, worker_id = _get_node_ids()
 
     batch_size, seq_len = resolve_data_size_mb(data_size_mb)
-    data = make_mock_rollout_data(batch_size, seq_len)
+    data = make_mock_rollout_data(
+        batch_size,
+        seq_len,
+        use_routing_replay=use_routing_replay,
+        num_layers=num_layers,
+        moe_router_topk=moe_router_topk,
+    )
     data_size = get_serialized_size(data) / (1024 * 1024)
 
     protocol = os.environ.get("MOONCAKE_PROTOCOL", "tcp")
     mooncake_env = {"MOONCAKE_PROTOCOL": protocol}
-    print(f"\nMulti-node benchmark: put@72 -> get@70")
-    print(f"  Ray: driver ray.get(ref); Mooncake: driver backend.get(key) direct (no actor return)")
+    print("\nMulti-node benchmark: put@72 -> get@70")
+    print("  Ray: driver ray.get(ref); Mooncake: driver backend.get(key) direct (no actor return)")
     print(f"Mooncake protocol: {protocol} (MOONCAKE_PROTOCOL=rdma for RDMA)")
+    if use_routing_replay:
+        print(f"Routing replay: enabled (num_layers={num_layers}, moe_router_topk={moe_router_topk})")
     print(f"Data: {data_size:.2f} MB (batch={batch_size}, seq_len={seq_len})")
     print("=" * 70)
 
@@ -149,20 +168,21 @@ def run_multinode_benchmark(data_size_mb: float, num_rounds: int):
             print(f"  Ray get round {i}: {e}")
     if put_ms_list and get_ms_list:
         results["ray"] = {
-            "put": np.mean(put_ms_list), "put_std": np.std(put_ms_list),
-            "get": np.mean(get_ms_list), "get_std": np.std(get_ms_list),
+            "put": np.mean(put_ms_list),
+            "put_std": np.std(put_ms_list),
+            "get": np.mean(get_ms_list),
+            "get_std": np.std(get_ms_list),
         }
 
     # --- Mooncake ---
     # put via actor on 72; get via driver direct (driver on 70, same as Ray)
     # Driver direct get avoids actor-return overhead, comparable to Ray's ray.get(ref)
     runtime_env = {"env_vars": mooncake_env}
-    PutActor = MooncakePutActor.options(
-        scheduling_strategy=put_on_72, runtime_env=runtime_env
-    )
+    PutActor = MooncakePutActor.options(scheduling_strategy=put_on_72, runtime_env=runtime_env)
     put_actor = PutActor.remote()
 
     from miles.utils.data_transfer import MooncakeDataTransfer
+
     mc_backend = MooncakeDataTransfer(enable_auto_cleanup=False)
 
     put_ms_list, get_ms_list = [], []
@@ -195,8 +215,10 @@ def run_multinode_benchmark(data_size_mb: float, num_rounds: int):
             print(f"  Mooncake get round {i}: {e}")
     if put_ms_list and get_ms_list:
         results["mooncake"] = {
-            "put": np.mean(put_ms_list), "put_std": np.std(put_ms_list),
-            "get": np.mean(get_ms_list), "get_std": np.std(get_ms_list),
+            "put": np.mean(put_ms_list),
+            "put_std": np.std(put_ms_list),
+            "get": np.mean(get_ms_list),
+            "get_std": np.std(get_ms_list),
         }
 
     print("\n" + "=" * 70)
@@ -213,8 +235,31 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-size-mb", type=float, default=100)
     parser.add_argument("--num-rounds", type=int, default=10)
+    parser.add_argument(
+        "--routing-replay",
+        action="store_true",
+        help="Include rollout_routed_experts in mock data (MoE R3 / rollout routing replay)",
+    )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=64,
+        help="MoE num_layers for routing replay mock (default: 64)",
+    )
+    parser.add_argument(
+        "--moe-router-topk",
+        type=int,
+        default=2,
+        help="MoE router top-k for routing replay mock (default: 2)",
+    )
     args = parser.parse_args()
-    run_multinode_benchmark(args.data_size_mb, args.num_rounds)
+    run_multinode_benchmark(
+        args.data_size_mb,
+        args.num_rounds,
+        use_routing_replay=args.routing_replay,
+        num_layers=args.num_layers,
+        moe_router_topk=args.moe_router_topk,
+    )
 
 
 if __name__ == "__main__":

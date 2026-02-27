@@ -34,6 +34,9 @@ def make_mock_rollout_data(
     batch_size: int = 16,
     seq_len: int = 2048,
     n_samples_per_prompt: int = 4,
+    use_routing_replay: bool = False,
+    num_layers: int = 64,
+    moe_router_topk: int = 2,
 ) -> dict:
     """Create mock rollout data resembling real training data structure."""
     num_samples = batch_size * n_samples_per_prompt
@@ -43,10 +46,7 @@ def make_mock_rollout_data(
     # tokens: list of arrays, one per sample
     tokens = [np.random.randint(0, 32000, size=l, dtype=np.int32) for l in total_lengths]
     loss_masks = [[1] * (resp_len - 50) + [0] * 50 for resp_len in response_lengths]
-    rollout_log_probs = [
-        np.random.randn(tot_len - resp_len).astype(np.float32).tolist()
-        for tot_len, resp_len in zip(total_lengths, response_lengths)
-    ]
+    rollout_log_probs = [np.random.randn(tot_len - resp_len).astype(np.float32).tolist() for tot_len, resp_len in zip(total_lengths, response_lengths)]
 
     data = {
         "partition": list(range(num_samples)),
@@ -57,6 +57,9 @@ def make_mock_rollout_data(
         "rollout_log_probs": rollout_log_probs,
         "total_lengths": total_lengths,
     }
+    if use_routing_replay:
+        # rollout_routed_experts: list of (seq_len-1, num_layers, topk) int32 per sample
+        data["rollout_routed_experts"] = [np.random.randint(0, 8, size=(tot_len - 1, num_layers, moe_router_topk), dtype=np.int32) for tot_len in total_lengths]
     return data
 
 
@@ -110,12 +113,28 @@ def benchmark_backend(backend_name: str, backend, data: dict, num_rounds: int = 
     return results
 
 
-def run_benchmarks(backends: list[str], batch_size: int, seq_len: int, num_rounds: int):
+def run_benchmarks(
+    backends: list[str],
+    batch_size: int,
+    seq_len: int,
+    num_rounds: int,
+    use_routing_replay: bool = False,
+    num_layers: int = 64,
+    moe_router_topk: int = 2,
+):
     """Run benchmarks for specified backends."""
-    data = make_mock_rollout_data(batch_size=batch_size, seq_len=seq_len)
+    data = make_mock_rollout_data(
+        batch_size=batch_size,
+        seq_len=seq_len,
+        use_routing_replay=use_routing_replay,
+        num_layers=num_layers,
+        moe_router_topk=moe_router_topk,
+    )
     data_size_mb = get_serialized_size(data) / (1024 * 1024)
 
     print(f"\nMock rollout data: batch_size={batch_size}, seq_len={seq_len}")
+    if use_routing_replay:
+        print(f"Routing replay: enabled (num_layers={num_layers}, moe_router_topk={moe_router_topk})")
     print(f"Serialized size: {data_size_mb:.2f} MB")
     print("=" * 70)
 
@@ -168,6 +187,7 @@ def run_benchmarks(backends: list[str], batch_size: int, seq_len: int, num_round
             # Cleanup disk temp
             if name == "disk" and hasattr(backend, "_base_dir"):
                 import shutil
+
                 try:
                     shutil.rmtree(backend._base_dir, ignore_errors=True)
                 except Exception:
@@ -178,6 +198,7 @@ def run_benchmarks(backends: list[str], batch_size: int, seq_len: int, num_round
         except Exception as e:
             print(f"  Error: {e}")
             import traceback
+
             traceback.print_exc()
 
     return all_results, data_size_mb
@@ -216,6 +237,23 @@ def main():
         default=None,
         help="Target data size in MB (overrides batch-size/seq-len to achieve ~target). E.g. 100, 1000",
     )
+    parser.add_argument(
+        "--routing-replay",
+        action="store_true",
+        help="Include rollout_routed_experts in mock data (MoE R3 / rollout routing replay)",
+    )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=64,
+        help="MoE num_layers for routing replay mock (default: 64)",
+    )
+    parser.add_argument(
+        "--moe-router-topk",
+        type=int,
+        default=2,
+        help="MoE router top-k for routing replay mock (default: 2)",
+    )
     args = parser.parse_args()
 
     # Scale batch_size, seq_len to achieve target data size if specified
@@ -227,8 +265,16 @@ def main():
         print(f"Target {args.data_size_mb} MB -> batch_size={args.batch_size}, seq_len={args.seq_len}")
 
     print("Miles Data Transfer Benchmark: Ray vs Mooncake vs Disk")
+    if args.routing_replay:
+        print("Mode: with routing replay (rollout_routed_experts)")
     results, data_size_mb = run_benchmarks(
-        args.backends, args.batch_size, args.seq_len, args.num_rounds
+        args.backends,
+        args.batch_size,
+        args.seq_len,
+        args.num_rounds,
+        use_routing_replay=args.routing_replay,
+        num_layers=args.num_layers,
+        moe_router_topk=args.moe_router_topk,
     )
 
     # Summary table
