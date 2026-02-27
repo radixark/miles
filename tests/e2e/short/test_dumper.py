@@ -200,6 +200,8 @@ def _verify_comparator(dump_subdir: str) -> None:
             "json",
             "--grouping",
             "logical",
+            "--diff-threshold",
+            "0.05",
         ],
         capture_output=True,
         text=True,
