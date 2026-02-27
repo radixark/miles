@@ -23,7 +23,7 @@ SGLANG_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "sglang_source_patcher.y
 
 EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
-SOURCE_PATCHED_FIELDS = ["attn_output_with_residual", "mlp_output_with_residual"]
+SOURCE_PATCHED_FIELDS = ["layer_input", "attn_output", "pre_mlp_residual", "mlp_output"]
 
 EXPECTED_FIELDS: dict[str, list[str]] = {
     "engine_*": ["input_ids", "positions"] + SOURCE_PATCHED_FIELDS,
@@ -33,38 +33,43 @@ EXPECTED_FIELDS: dict[str, list[str]] = {
 
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
-  - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
     edits:
-      - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
-        append: "dumper.dump('attn_output_with_residual', hidden_states, dims='t(sp) 1 h')"
-      - match: "return output, context"
-        prepend: "dumper.dump('mlp_output_with_residual', output, dims='t(sp) 1 h')"
+      - match: "residual = hidden_states"
+        prepend: "dumper.dump('layer_input', hidden_states, dims='t(sp) 1 h')"
+      - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(sp) 1 h')"
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
+    edits:
+      - match: "residual = hidden_states"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t(sp) 1 h')"
+      - match: "nvtx_range_pop(suffix=\\"mlp\\")"
+        append: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(sp) 1 h')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
-    preamble: "from sglang.srt.distributed import tensor_model_parallel_all_reduce as _tp_allreduce"
+    preamble: "dumper.dump('layer_input', hidden_states if residual is None else hidden_states + residual, dims='t h')"
     edits:
+      - match: |
+          if hidden_states.shape[0] != 0:
+              hidden_states = self.self_attn(
+                  positions=positions,
+                  hidden_states=hidden_states,
+                  forward_batch=forward_batch,
+              )
+        append: "dumper.dump('attn_output', hidden_states, dims='t h(tp,partial)')"
       - match: |
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
-        append: "dumper.dump('attn_output_with_residual', residual, dims='t h')"
-      - match: |
-          should_allreduce_fusion = (
-              self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
-                  forward_batch
-              )
-          )
-        prepend: "_pre_mlp_residual = residual"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t h')"
       - match: |
           hidden_states = self.mlp(
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
           )
-        append: |
-          _dumper_mlp_out = _tp_allreduce(hidden_states) if should_allreduce_fusion else hidden_states
-          dumper.dump('mlp_output_with_residual', _dumper_mlp_out + _pre_mlp_residual, dims='t h')
+        append: "dumper.dump('mlp_output', hidden_states, dims='t h(tp,partial)')"
 """
 
 # Two configs that together cover all parallelism dimensions:
