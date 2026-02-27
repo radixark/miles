@@ -2,9 +2,9 @@
 # The comparator must report all-passed with zero failures — no exceptions.
 
 # Usage: This is a typer CLI with 3 commands:
-#   python test_dumper.py run --mode <config>        Full: prepare + execute + verify + comparator
-#   python test_dumper.py run-only --mode <config>   Prepare + execute + verify (skip comparator)
-#   python test_dumper.py compare --mode <config> --dump-dir <path>
+#   python test_dumper.py run --mode <mode>        Full: prepare + execute + verify + comparator
+#   python test_dumper.py run-only --mode <mode>   Prepare + execute + verify (skip comparator)
+#   python test_dumper.py compare --mode <mode> --dump-dir <path>
 #                                                    Re-run comparator on existing dumps
 #
 # After running miles once (the expensive execute step), you can re-run the
