@@ -7,6 +7,10 @@ fish_add_path ~/.local/bin/
 fish_add_path ~/.config/emacs/bin/
 set -U fish_prompt_pwd_dir_length 0
 
+function prompt_hostname
+    echo -n "hostname-not-set"
+end
+
 # custom aliases
 alias config "emacs -nw ~/.config/fish/config.fish"
 alias e "emacs -nw"
