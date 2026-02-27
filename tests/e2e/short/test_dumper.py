@@ -4,12 +4,9 @@ import sys
 from pathlib import Path
 
 import torch
+from sglang.srt.debug_utils.comparator.output_types import SummaryRecord, parse_record_json
 
 import miles.utils.external_utils.command_utils as U
-from sglang.srt.debug_utils.comparator.output_types import (
-    SummaryRecord,
-    parse_record_json,
-)
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
@@ -184,11 +181,17 @@ def _verify_comparator(dump_subdir: str) -> None:
 
     result: subprocess.CompletedProcess[str] = subprocess.run(
         [
-            sys.executable, "-m", "sglang.srt.debug_utils.comparator",
-            "--baseline-path", str(baseline_dir),
-            "--target-path", str(target_dir),
-            "--output-format", "json",
-            "--grouping", "logical",
+            sys.executable,
+            "-m",
+            "sglang.srt.debug_utils.comparator",
+            "--baseline-path",
+            str(baseline_dir),
+            "--target-path",
+            str(target_dir),
+            "--output-format",
+            "json",
+            "--grouping",
+            "logical",
         ],
         capture_output=True,
         text=True,
