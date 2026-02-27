@@ -20,7 +20,7 @@ SGLANG_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "sglang_source_patcher.y
 
 EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
-SOURCE_PATCHED_FIELDS = ["attn_output", "mlp_output"]
+SOURCE_PATCHED_FIELDS = ["attn_output_with_residual", "mlp_output_with_residual"]
 
 EXPECTED_FIELDS: dict[str, list[str]] = {
     "engine_*": ["input_ids", "positions"] + SOURCE_PATCHED_FIELDS,
@@ -33,9 +33,9 @@ patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
     edits:
       - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
-        append: "dumper.dump('attn_output', hidden_states.squeeze(1), dims='t(sp) h')"
+        append: "dumper.dump('attn_output_with_residual', hidden_states.squeeze(1), dims='t(sp) h')"
       - match: "return output, context"
-        prepend: "dumper.dump('mlp_output', output.squeeze(1), dims='t(sp) h')"
+        prepend: "dumper.dump('mlp_output_with_residual', output.squeeze(1), dims='t(sp) h')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -46,7 +46,7 @@ patches:
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
-        append: "dumper.dump('attn_output', residual, dims='t h')"
+        append: "dumper.dump('attn_output_with_residual', residual, dims='t h')"
       - match: |
           should_allreduce_fusion = (
               self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
@@ -58,7 +58,7 @@ patches:
           hidden_states = self.mlp(
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
           )
-        append: "dumper.dump('mlp_output', hidden_states + _pre_mlp_residual, dims='t h')"
+        append: "dumper.dump('mlp_output_with_residual', hidden_states + _pre_mlp_residual, dims='t h')"
 """
 
 # Two configs that together cover all parallelism dimensions:
