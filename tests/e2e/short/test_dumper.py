@@ -31,12 +31,7 @@ patches:
     edits:
       - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
         append: "dumper.dump('patched_attn_output', hidden_states)"
-      - match: |
-          output = self._forward_mlp(
-              hidden_states,
-              kwargs.get("inference_context", None),
-              padding_mask=kwargs.get("padding_mask", None),
-          )
+      - match: 'output = self._forward_mlp(hidden_states, kwargs.get("inference_context", None))'
         append: "dumper.dump('patched_mlp_output', output)"
 """
 
