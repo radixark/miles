@@ -35,14 +35,16 @@ MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
     edits:
-      - match: "residual = hidden_states"
-        prepend: "dumper.dump('layer_input', hidden_states, dims='t(sp) 1 h')"
+      - match: |
+          inference_context = deprecate_inference_params(inference_context, inference_params)
+        append: "dumper.dump('layer_input', hidden_states, dims='t(sp) 1 h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(sp) 1 h')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
-      - match: "residual = hidden_states"
-        append: "dumper.dump('pre_mlp_residual', residual, dims='t(sp) 1 h')"
+      - match: |
+          pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)
+        prepend: "dumper.dump('pre_mlp_residual', residual, dims='t(sp) 1 h')"
       - match: "nvtx_range_pop(suffix=\\"mlp\\")"
         append: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(sp) 1 h')"
 """
@@ -50,8 +52,11 @@ patches:
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
-    preamble: "dumper.dump('layer_input', hidden_states if residual is None else hidden_states + residual, dims='t h')"
     edits:
+      - match: |
+          hidden_states, residual = (
+              self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
+        prepend: "dumper.dump('layer_input', hidden_states if residual is None else hidden_states + residual, dims='t h')"
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
