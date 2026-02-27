@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 import torch
-from sglang.srt.debug_utils.comparator.output_types import SummaryRecord, parse_record_json
+from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, parse_record_json
 
 import miles.utils.external_utils.command_utils as U
 
@@ -214,23 +214,27 @@ def _verify_comparator(dump_subdir: str) -> None:
     records = [parse_record_json(line) for line in result.stdout.strip().splitlines() if line.strip()]
     assert len(records) > 0
 
-    summaries = [r for r in records if isinstance(r, SummaryRecord)]
-    assert len(summaries) == 1
-    summary: SummaryRecord = summaries[0]
-    assert summary.total > 0, "No comparisons produced"
-    assert summary.failed == 0, (
-        f"Comparator found {summary.failed} failures "
-        f"(total={summary.total}, passed={summary.passed}, skipped={summary.skipped})"
+    comparisons: list[ComparisonRecord] = [r for r in records if isinstance(r, ComparisonRecord)]
+    assert len(comparisons) > 0, "No comparison records produced"
+
+    diff_passed: int = 0
+    diff_failed: list[str] = []
+    for comp in comparisons:
+        if comp.diff is not None and comp.diff.passed:
+            diff_passed += 1
+        else:
+            rel_diff: float = comp.diff.rel_diff if comp.diff is not None else float("nan")
+            diff_failed.append(f"{comp.name} (rel_diff={rel_diff:.6f})")
+
+    assert len(diff_failed) == 0, (
+        f"Comparator found {len(diff_failed)} diff failures out of {len(comparisons)} comparisons: "
+        + ", ".join(diff_failed[:10])
     )
-    assert summary.passed > 0, (
-        f"No comparisons passed "
-        f"(total={summary.total}, failed={summary.failed}, skipped={summary.skipped})"
-    )
+    assert diff_passed > 0, f"No comparisons passed (total={len(comparisons)})"
 
     print(
         f"Comparator verification passed: engine_0 vs fwd_bwd — "
-        f"total={summary.total}, passed={summary.passed}, "
-        f"failed={summary.failed}, skipped={summary.skipped}"
+        f"total={len(comparisons)}, diff_passed={diff_passed}, diff_failed={len(diff_failed)}"
     )
 
 
