@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import torch
@@ -11,18 +12,20 @@ import miles.utils.external_utils.command_utils as U
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
-DUMP_DIR = "/tmp/test_miles_dumper"
-MEGATRON_SOURCE_PATCHER_CONFIG_PATH = "/tmp/test_megatron_source_patcher_config.yaml"
-SGLANG_SOURCE_PATCHER_CONFIG_PATH = "/tmp/test_sglang_source_patcher_config.yaml"
+
+_RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_miles_dumper_"))
+DUMP_DIR: str = str(_RUN_DIR / "dumps")
+MEGATRON_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "megatron_source_patcher.yaml")
+SGLANG_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "sglang_source_patcher.yaml")
 
 EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
-PATCHED_FIELDS = ["patched_attn_output", "patched_mlp_output"]
+SOURCE_PATCHED_FIELDS = ["attn_output", "mlp_output"]
 
 EXPECTED_FIELDS: dict[str, list[str]] = {
-    "engine_*": ["input_ids", "positions"] + PATCHED_FIELDS,
-    "fwd_only": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + PATCHED_FIELDS,
-    "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + PATCHED_FIELDS,
+    "engine_*": ["input_ids", "positions"] + SOURCE_PATCHED_FIELDS,
+    "fwd_only": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + SOURCE_PATCHED_FIELDS,
+    "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + SOURCE_PATCHED_FIELDS,
 }
 
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -30,9 +33,9 @@ patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
     edits:
       - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
-        append: "dumper.dump('patched_attn_output', hidden_states)"
+        append: "dumper.dump('attn_output', hidden_states)"
       - match: 'output = self._forward_mlp(hidden_states, kwargs.get("inference_context", None))'
-        append: "dumper.dump('patched_mlp_output', output)"
+        append: "dumper.dump('mlp_output', output)"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -43,9 +46,9 @@ patches:
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
-        prepend: "dumper.dump('patched_attn_output', hidden_states, dims='t h')"
+        prepend: "dumper.dump('attn_output', hidden_states, dims='t h')"
       - match: "return hidden_states, residual"
-        prepend: "dumper.dump('patched_mlp_output', hidden_states, dims='t h')"
+        prepend: "dumper.dump('mlp_output', hidden_states, dims='t h')"
 """
 
 # Two configs that together cover all parallelism dimensions:
@@ -219,6 +222,7 @@ def _select_configs() -> dict[str, str]:
 
 
 if __name__ == "__main__":
+    print(f"Run directory: {_RUN_DIR}")
     configs = _select_configs()
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
