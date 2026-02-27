@@ -46,7 +46,7 @@ patches:
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
-        prepend: "dumper.dump('attn_output', hidden_states, dims='t h')"
+        append: "dumper.dump('attn_output', residual, dims='t h')"
       - match: "return hidden_states, residual"
         prepend: "dumper.dump('mlp_output', hidden_states, dims='t h')"
 """
