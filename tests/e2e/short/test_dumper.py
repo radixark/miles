@@ -121,7 +121,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
 
     sglang_args = "--rollout-num-gpus-per-engine 8 " "--sglang-mem-fraction-static 0.6 "
 
-    dumper_filter: str = "filter='layer_id is None or layer_id < 3'"
+    dumper_filter: str = "'filter=layer_id is None or layer_id < 3'"
     dumper_args = (
         f"--dumper-enable --dumper-dir {dump_dir} "
         f"--dumper-inference {dumper_filter} "
