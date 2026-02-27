@@ -42,9 +42,8 @@ patches:
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(sp) 1 h')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
-      - match: |
-          pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)
-        prepend: "dumper.dump('pre_mlp_residual', residual, dims='t(sp) 1 h')"
+      - match: "residual = hidden_states"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t(sp) 1 h')"
       - match: "nvtx_range_pop(suffix=\\"mlp\\")"
         append: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(sp) 1 h')"
 """
