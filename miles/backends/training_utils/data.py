@@ -35,11 +35,22 @@ def get_rollout_data(
         transfer_backend=transfer_backend,
     )
     # move tokens to GPU in advance
-    rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]]
-    rollout_data["loss_masks"] = [torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]]
+    rollout_data["tokens"] = [
+        torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+    ]
+    rollout_data["loss_masks"] = [
+        torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
+    ]
     if "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to GPU in advance
-        rollout_data["multimodal_train_inputs"] = [({key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()} if mm_dict is not None else None) for mm_dict in rollout_data["multimodal_train_inputs"]]
+        rollout_data["multimodal_train_inputs"] = [
+            (
+                {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
+                if mm_dict is not None
+                else None
+            )
+            for mm_dict in rollout_data["multimodal_train_inputs"]
+        ]
 
     if args.qkv_format == "bshd":
         # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
@@ -266,7 +277,9 @@ class DataIterator:
                     indices = self.micro_batch_indices[self.offset]
                     batch[key] = [vals[i] for i in indices]
                 else:
-                    assert self.offset + self.micro_batch_size <= len(vals), f"offset: {self.offset}, micro_batch_size: {self.micro_batch_size}, len(vals): {len(vals)}"
+                    assert self.offset + self.micro_batch_size <= len(
+                        vals
+                    ), f"offset: {self.offset}, micro_batch_size: {self.micro_batch_size}, len(vals): {len(vals)}"
                     batch[key] = vals[self.offset : self.offset + self.micro_batch_size]
 
         if self.micro_batch_indices is not None:
@@ -314,7 +327,10 @@ def get_data_iterator(
     num_steps_per_rollout = num_local_samples // num_local_gbs
 
     if global_batch_size != args.global_batch_size:
-        logger.info(f"Using dynamic global_batch_size={global_batch_size} (original={args.global_batch_size}), num_local_samples={num_local_samples}, num_steps_per_rollout={num_steps_per_rollout}")
+        logger.info(
+            f"Using dynamic global_batch_size={global_batch_size} (original={args.global_batch_size}), "
+            f"num_local_samples={num_local_samples}, num_steps_per_rollout={num_steps_per_rollout}"
+        )
 
     def _generate_data_iterator(rollout_data, micro_batch_size, micro_batch_indices=None):
         data_iterator = []
@@ -333,7 +349,9 @@ def get_data_iterator(
         num_microbatches = []
         for i in range(num_steps_per_rollout):
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
-            num_microbatches.append(get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size))
+            num_microbatches.append(
+                get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
+            )
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
         dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=dp_group)
