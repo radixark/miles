@@ -1,9 +1,8 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 # The comparator must report all-passed with zero failures — no exceptions.
 
-# Usage: This is a typer CLI with 3 commands:
+# Usage: This is a typer CLI with 2 commands:
 #   python test_dumper.py run --mode <mode>        Full: prepare + execute + verify + comparator
-#   python test_dumper.py run-only --mode <mode>   Prepare + execute + verify (skip comparator)
 #   python test_dumper.py compare --mode <mode> --dump-dir <path>
 #                                                    Re-run comparator on existing dumps
 #
@@ -308,19 +307,6 @@ def run(
     verify(config_name)
     _verify_comparator(config_name)
 
-
-@app.command()
-def run_only(
-    mode: Annotated[str, typer.Option(help="Config mode: " + ", ".join(CONFIGS.keys()))],
-) -> None:
-    """Prepare + execute + verify (skip comparator)."""
-    config_name, perf_args = _resolve_mode(mode)
-    print(f"Run directory: {_RUN_DIR}")
-
-    prepare()
-    _clear_proxy_env()
-    _execute(perf_args=perf_args, dump_subdir=config_name)
-    verify(config_name)
 
 
 @app.command()
