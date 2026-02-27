@@ -10,9 +10,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from miles.utils.ray_utils import Box
-
 logger = logging.getLogger(__name__)
+
+# Pickle protocol 5: same as Ray for fair comparison
+_PICKLE_PROTOCOL = 5
 
 
 class DataTransferBackend(ABC):
@@ -45,10 +46,14 @@ class RayDataTransfer(DataTransferBackend):
     def put(self, data: Any) -> Any:
         import ray
 
+        from miles.utils.ray_utils import Box
+
         return Box(ray.put(data))
 
     def get(self, handle: Any) -> Any:
         import ray
+
+        from miles.utils.ray_utils import Box
 
         if isinstance(handle, Box):
             return ray.get(handle.inner)
@@ -90,6 +95,7 @@ class MooncakeStoreConfig:
         export MOONCAKE_PROTOCOL="rdma"
         export MOONCAKE_DEVICE=""
         export MOONCAKE_TE_META_DATA_SERVER="P2PHANDSHAKE"
+        Set MOONCAKE_PROTOCOL=rdma for best performance (requires InfiniBand/RoCE).
         """
         if not os.getenv("MOONCAKE_MASTER"):
             raise ValueError("Neither the environment variable 'MOONCAKE_CONFIG_PATH' nor 'MOONCAKE_MASTER' is set.")
@@ -98,7 +104,7 @@ class MooncakeStoreConfig:
             metadata_server=os.getenv("MOONCAKE_TE_META_DATA_SERVER", "P2PHANDSHAKE"),
             global_segment_size=_parse_segment_size(os.getenv("MOONCAKE_GLOBAL_SEGMENT_SIZE", DEFAULT_GLOBAL_SEGMENT_SIZE)),
             local_buffer_size=_parse_segment_size(os.getenv("MOONCAKE_LOCAL_BUFFER_SIZE", DEFAULT_LOCAL_BUFFER_SIZE)),
-            protocol=os.getenv("MOONCAKE_PROTOCOL", "tcp"),
+            protocol=os.getenv("MOONCAKE_PROTOCOL", "tcp"),  # use "rdma" for RDMA
             device_name=os.getenv("MOONCAKE_DEVICE", ""),
             master_server_address=os.getenv("MOONCAKE_MASTER"),
         )
@@ -138,7 +144,7 @@ class MooncakeDataTransfer(DataTransferBackend):
 
             # Load from environment variables
             self.config = MooncakeStoreConfig.load_from_env()
-            logger.info("Mooncake Configuration loaded from env successfully.")
+            logger.info("Mooncake config loaded from env.")
 
             ret_code = self.store.setup(
                 self.config.local_hostname,
@@ -151,7 +157,7 @@ class MooncakeDataTransfer(DataTransferBackend):
             )
             if ret_code:
                 raise RuntimeError(f"Failed to setup Mooncake store, error code: {ret_code}")
-            logger.info("Mooncake store setup successfully.")
+            logger.info("Mooncake store setup complete.")
 
         except ValueError as e:
             logger.error("Configuration loading failed: %s", e)
@@ -186,7 +192,7 @@ class MooncakeDataTransfer(DataTransferBackend):
         """Start the background cleanup thread."""
         self._cleanup_thread = threading.Thread(target=self._cleanup_worker, name="MooncakeCleanupThread", daemon=True)
         self._cleanup_thread.start()
-        logger.info("Started background cleanup thread for Mooncake data deletion")
+        logger.info("Mooncake cleanup thread started")
 
     def _cleanup_worker(self):
         """Background worker that periodically deletes keys."""
@@ -252,8 +258,9 @@ class MooncakeDataTransfer(DataTransferBackend):
     def put(self, data: Any) -> Any:
         """
         Store data using zero-copy put_from with persistent buffer registration.
+        Same pickle format as Ray for fair comparison.
         """
-        serialized_data = pickle.dumps(data)
+        serialized_data = pickle.dumps(data, protocol=_PICKLE_PROTOCOL)
         data_size = len(serialized_data)
 
         key = f"rollout_data_{uuid.uuid4().hex}"
