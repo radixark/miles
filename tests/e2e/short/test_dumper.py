@@ -115,10 +115,12 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
 
     sglang_args = "--rollout-num-gpus-per-engine 8 " "--sglang-mem-fraction-static 0.6 "
 
+    dumper_filter: str = r"filter=layer_id=[0-2]"
     dumper_args = (
         f"--dumper-enable --dumper-dir {dump_dir} "
-        "--dumper-fwd-only enable_model_value=0 enable_model_grad=0 "
-        "--dumper-fwd-bwd enable_model_value=0 enable_model_grad=0 "
+        f"--dumper-inference {dumper_filter} "
+        f"--dumper-fwd-only enable_model_value=0 enable_model_grad=0 {dumper_filter} "
+        f"--dumper-fwd-bwd enable_model_value=0 enable_model_grad=0 {dumper_filter} "
         f"--dumper-source-patcher-config-train {MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
         f"--dumper-source-patcher-config-inference {SGLANG_SOURCE_PATCHER_CONFIG_PATH} "
     )
@@ -200,8 +202,6 @@ def _verify_comparator(dump_subdir: str) -> None:
             "json",
             "--grouping",
             "logical",
-            "--diff-threshold",
-            "0.05",
         ],
         capture_output=True,
         text=True,
@@ -226,10 +226,9 @@ def _verify_comparator(dump_subdir: str) -> None:
             rel_diff: float = comp.diff.rel_diff if comp.diff is not None else float("nan")
             diff_failed.append(f"{comp.name} (rel_diff={rel_diff:.6f})")
 
-    max_allowed_failures: int = max(1, len(comparisons) // 10)
-    assert len(diff_failed) <= max_allowed_failures, (
-        f"Comparator found {len(diff_failed)} diff failures (max allowed {max_allowed_failures}) "
-        f"out of {len(comparisons)} comparisons: " + ", ".join(diff_failed[:10])
+    assert len(diff_failed) == 0, (
+        f"Comparator found {len(diff_failed)} diff failures out of {len(comparisons)} comparisons: "
+        + ", ".join(diff_failed[:10])
     )
     assert diff_passed > 0, f"No comparisons passed (total={len(comparisons)})"
 
@@ -237,8 +236,6 @@ def _verify_comparator(dump_subdir: str) -> None:
         f"Comparator verification passed: engine_0 vs fwd_bwd — "
         f"total={len(comparisons)}, diff_passed={diff_passed}, diff_failed={len(diff_failed)}"
     )
-    if diff_failed:
-        print(f"  (tolerated failures: {', '.join(diff_failed)})")
 
 
 def _select_configs() -> dict[str, str]:
