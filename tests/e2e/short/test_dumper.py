@@ -44,8 +44,8 @@ patches:
     edits:
       - match: "residual = hidden_states"
         append: "dumper.dump('pre_mlp_residual', residual, dims='t(sp) 1 h')"
-      - match: "nvtx_range_pop(suffix=\\"mlp\\")"
-        append: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(sp) 1 h')"
+      - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(sp) 1 h')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
