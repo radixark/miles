@@ -1,3 +1,6 @@
+# WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
+# The comparator must report all-passed with zero failures — no exceptions.
+
 import os
 import subprocess
 import sys
@@ -33,9 +36,9 @@ patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
     edits:
       - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
-        append: "dumper.dump('attn_output_with_residual', hidden_states.squeeze(1), dims='t(sp) h')"
+        append: "dumper.dump('attn_output_with_residual', hidden_states, dims='t(sp) 1 h')"
       - match: "return output, context"
-        prepend: "dumper.dump('mlp_output_with_residual', output.squeeze(1), dims='t(sp) h')"
+        prepend: "dumper.dump('mlp_output_with_residual', output, dims='t(sp) 1 h')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -115,7 +118,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
 
     sglang_args = "--rollout-num-gpus-per-engine 8 " "--sglang-mem-fraction-static 0.6 "
 
-    dumper_filter: str = r"filter=layer_id=[0-2]"
+    dumper_filter: str = "filter='layer_id is None or layer_id < 3'"
     dumper_args = (
         f"--dumper-enable --dumper-dir {dump_dir} "
         f"--dumper-inference {dumper_filter} "
