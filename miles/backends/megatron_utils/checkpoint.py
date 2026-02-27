@@ -97,7 +97,15 @@ __all__ = ["save_checkpoint"]
 
 
 def _is_optimizer_param_state_key(key: tuple[object, ...]) -> bool:
-    return len(key) >= 2 and key[0] == "optimizer" and key[1] == "param_state"
+    try:
+        optimizer_index = key.index("optimizer")
+    except ValueError:
+        return False
+    try:
+        key.index("param_state", optimizer_index + 1)
+    except ValueError:
+        return False
+    return True
 
 
 def _merge_optimizer_param_state_lists(x1: dict | list, x2: dict | list, key: tuple[object, ...] = ()) -> dict | list:
@@ -211,7 +219,26 @@ def _dp_reshardable_sharding_type(load_path: str | Path, args) -> str | None:
     if not isinstance(common_state, dict):
         raise AssertionError("Invalid common checkpoint state format.")
     optimizer_state = common_state.get("optimizer", {})
-    return optimizer_state.get("param_state_sharding_type", None)
+    if isinstance(optimizer_state, dict) and "param_state_sharding_type" in optimizer_state:
+        return optimizer_state["param_state_sharding_type"]
+
+    sharding_types: set[str] = set()
+    if isinstance(optimizer_state, dict):
+        candidates = optimizer_state.values()
+    elif isinstance(optimizer_state, list):
+        candidates = optimizer_state
+    else:
+        candidates = []
+
+    for value in candidates:
+        if isinstance(value, dict) and "param_state_sharding_type" in value:
+            sharding_types.add(value["param_state_sharding_type"])
+
+    if not sharding_types:
+        return None
+    if len(sharding_types) > 1:
+        raise AssertionError(f"Inconsistent param_state_sharding_type values: {sorted(sharding_types)}")
+    return next(iter(sharding_types))
 
 
 @contextmanager
