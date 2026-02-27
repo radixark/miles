@@ -55,7 +55,14 @@ patches:
       - match: |
           hidden_states, residual = (
               self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-        prepend: "dumper.dump('layer_input', hidden_states if residual is None else hidden_states + residual, dims='t h')"
+                  hidden_states,
+                  residual,
+                  forward_batch,
+                  captured_last_layer_outputs=captured_last_layer_outputs,
+                  **kwargs,
+              )
+          )
+        append: "dumper.dump('layer_input', residual, dims='t h')"
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
