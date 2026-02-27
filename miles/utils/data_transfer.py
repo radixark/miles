@@ -15,6 +15,55 @@ logger = logging.getLogger(__name__)
 # Pickle protocol 5: same as Ray for fair comparison
 _PICKLE_PROTOCOL = 5
 
+# Whitelist of (module, name) for safe pickle unpickling. Prevents RCE when loading
+# data from Mooncake distributed store. Rollout data uses: dict, list, numpy arrays.
+_SAFE_PICKLE_WHITELIST = frozenset(
+    {
+        ("builtins", "dict"),
+        ("builtins", "list"),
+        ("builtins", "tuple"),
+        ("builtins", "set"),
+        ("builtins", "frozenset"),
+        ("builtins", "int"),
+        ("builtins", "float"),
+        ("builtins", "str"),
+        ("builtins", "bytes"),
+        ("builtins", "bytearray"),
+        ("builtins", "bool"),
+        ("builtins", "slice"),
+        ("builtins", "range"),
+        ("builtins", "type"),
+        ("builtins", "object"),
+        ("builtins", "NoneType"),
+        ("numpy", "ndarray"),
+        ("numpy", "dtype"),
+        ("numpy.core.numeric", "_frombuffer"),
+        ("numpy.core.multiarray", "_reconstruct"),
+        ("numpy.core.multiarray", "scalar"),
+    }
+)
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Unpickler that only allows whitelisted classes. Mitigates RCE from malicious pickle."""
+
+    def find_class(self, module: str, name: str) -> Any:
+        if (module, name) not in _SAFE_PICKLE_WHITELIST:
+            raise pickle.UnpicklingError(f"Unpickling of {module}.{name} is disabled for security. Only whitelisted types (builtins, numpy ndarray/dtype) are allowed.")
+        return super().find_class(module, name)
+
+
+def _safe_pickle_loads(data: bytes) -> Any:
+    """
+    Deserialize pickle data using a restricted unpickler to prevent RCE.
+    Use when loading data from external/distributed store (e.g. Mooncake).
+    """
+    if os.environ.get("MILES_UNSAFE_PICKLE", "").lower() in ("1", "true", "yes"):
+        return pickle.loads(data)
+    import io
+
+    return _RestrictedUnpickler(io.BytesIO(data)).load()
+
 
 class DataTransferBackend(ABC):
     """Abstract base class for data transfer backends."""
@@ -133,11 +182,7 @@ class MooncakeDataTransfer(DataTransferBackend):
         try:
             from mooncake.store import MooncakeDistributedStore
         except ImportError as e:
-            raise ImportError(
-                "Please install mooncake by following the instructions at "
-                "https://kvcache-ai.github.io/Mooncake/getting_started/build.html "
-                "to run SGLang with MooncakeConnector."
-            ) from e
+            raise ImportError("Please install mooncake by following the instructions at https://kvcache-ai.github.io/Mooncake/getting_started/build.html to run SGLang with MooncakeConnector.") from e
 
         try:
             self.store = MooncakeDistributedStore()
@@ -171,8 +216,8 @@ class MooncakeDataTransfer(DataTransferBackend):
         self.cleanup_batch_size = cleanup_batch_size
         self.enable_auto_cleanup = enable_auto_cleanup
 
-        # Queue for keys pending deletion: (key, deletion_time)
-        self._pending_deletion = queue.Queue()
+        # Priority queue for keys pending deletion: (deletion_time, key). Lower time = higher priority.
+        self._pending_deletion = queue.PriorityQueue()
 
         # Reusable buffers: avoid repeated alloc when sizes are similar
         self._get_buffer = None
@@ -184,6 +229,7 @@ class MooncakeDataTransfer(DataTransferBackend):
 
         # Background cleanup thread (only start if auto cleanup is enabled)
         self._cleanup_thread = None
+        self._cleanup_thread_lock = threading.Lock()
         self._cleanup_stop_event = threading.Event()
         if self.enable_auto_cleanup:
             self._start_cleanup_thread()
@@ -195,31 +241,30 @@ class MooncakeDataTransfer(DataTransferBackend):
         logger.info("Mooncake cleanup thread started")
 
     def _cleanup_worker(self):
-        """Background worker that periodically deletes keys."""
+        """Background worker that deletes keys when their deletion time is reached.
+        Uses PriorityQueue to block until the next item is due, avoiding polling.
+        """
         while not self._cleanup_stop_event.is_set():
             try:
-                # Collect keys ready for deletion
-                current_time = time.time()
-                keys_to_delete = []
-                keys_not_ready = []
+                keys_to_delete: list[str] = []
+                sleep_until: float | None = None
 
-                # Process pending deletions
+                # Collect keys ready for deletion (up to batch_size)
                 while len(keys_to_delete) < self.cleanup_batch_size:
+                    # Block up to 0.5s when queue is empty; otherwise get next item by priority
                     try:
-                        # Non-blocking get with timeout
-                        key, deletion_time = self._pending_deletion.get(timeout=0.1)
-
-                        if current_time >= deletion_time:
-                            keys_to_delete.append(key)
-                        else:
-                            # Keep track of keys not ready yet
-                            keys_not_ready.append((key, deletion_time))
+                        deletion_time, key = self._pending_deletion.get(timeout=0.5)
                     except queue.Empty:
                         break
 
-                # Put back keys that are not ready yet
-                for key, deletion_time in keys_not_ready:
-                    self._pending_deletion.put((key, deletion_time))
+                    current_time = time.time()
+                    if current_time >= deletion_time:
+                        keys_to_delete.append(key)
+                    else:
+                        # Put back and sleep until this item is due
+                        self._pending_deletion.put((deletion_time, key))
+                        sleep_until = deletion_time
+                        break
 
                 # Batch delete keys
                 if keys_to_delete:
@@ -237,12 +282,11 @@ class MooncakeDataTransfer(DataTransferBackend):
                     if deleted_count > 0:
                         logger.debug(f"Deleted {deleted_count} keys from Mooncake store")
 
-                # Sleep a bit to avoid busy waiting
-                # If we have keys not ready, sleep until the earliest one is ready
-                if keys_not_ready:
-                    earliest_time = min(dt for _, dt in keys_not_ready)
-                    sleep_time = min(0.5, max(0.1, earliest_time - current_time))
-                    time.sleep(sleep_time)
+                # Sleep until next item is due, or 0.5s if queue was empty
+                if sleep_until is not None:
+                    sleep_time = min(0.5, max(0.1, sleep_until - time.time()))
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
                 else:
                     time.sleep(0.5)
 
@@ -253,7 +297,7 @@ class MooncakeDataTransfer(DataTransferBackend):
     def _schedule_deletion(self, key: str):
         """Schedule a key for deletion after the delay period."""
         deletion_time = time.time() + self.cleanup_delay_seconds
-        self._pending_deletion.put((key, deletion_time))
+        self._pending_deletion.put((deletion_time, key))
 
     def put(self, data: Any) -> Any:
         """
@@ -330,12 +374,15 @@ class MooncakeDataTransfer(DataTransferBackend):
         if bytes_read != data_size:
             raise RuntimeError(f"Data size mismatch: expected {data_size}, got {bytes_read}")
 
-        data = pickle.loads(memoryview(buffer)[:bytes_read])
+        # Use restricted unpickler to mitigate RCE from malicious data in distributed store.
+        # Set MILES_UNSAFE_PICKLE=1 to use raw pickle in fully trusted environments.
+        data = _safe_pickle_loads(bytes(memoryview(buffer)[:bytes_read]))
 
         should_cleanup = auto_cleanup if auto_cleanup is not None else self.enable_auto_cleanup
         if should_cleanup:
-            if self._cleanup_thread is None or not self._cleanup_thread.is_alive():
-                self._start_cleanup_thread()
+            with self._cleanup_thread_lock:
+                if self._cleanup_thread is None or not self._cleanup_thread.is_alive():
+                    self._start_cleanup_thread()
             self._schedule_deletion(key)
 
         return data
