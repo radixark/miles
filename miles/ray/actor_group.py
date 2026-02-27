@@ -59,7 +59,7 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
-        source_patcher_config = getattr(self.args, "dumper_source_patcher_config", None)
+        source_patcher_config: str | None = self.args.dumper_source_patcher_config_train
         if source_patcher_config:
             env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
 

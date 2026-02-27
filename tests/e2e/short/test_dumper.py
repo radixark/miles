@@ -1,27 +1,34 @@
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import torch
 
 import miles.utils.external_utils.command_utils as U
+from sglang.srt.debug_utils.comparator.output_types import (
+    SummaryRecord,
+    parse_record_json,
+)
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 DUMP_DIR = "/tmp/test_miles_dumper"
-SOURCE_PATCHER_CONFIG_PATH = "/tmp/test_source_patcher_config.yaml"
+MEGATRON_SOURCE_PATCHER_CONFIG_PATH = "/tmp/test_megatron_source_patcher_config.yaml"
+SGLANG_SOURCE_PATCHER_CONFIG_PATH = "/tmp/test_sglang_source_patcher_config.yaml"
 
 EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
 
 PATCHED_FIELDS = ["patched_attn_output", "patched_mlp_output"]
 
 EXPECTED_FIELDS: dict[str, list[str]] = {
-    "engine_*": ["input_ids", "positions"],
+    "engine_*": ["input_ids", "positions"] + PATCHED_FIELDS,
     "fwd_only": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + PATCHED_FIELDS,
     "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + PATCHED_FIELDS,
 }
 
-SOURCE_PATCHER_CONFIG_YAML: str = """\
+MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
     edits:
@@ -34,6 +41,19 @@ patches:
               padding_mask=kwargs.get("padding_mask", None),
           )
         append: "dumper.dump('patched_mlp_output', output)"
+"""
+
+SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
+patches:
+  - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
+    edits:
+      - match: |
+          hidden_states, residual = self.layer_communicator.prepare_mlp(
+              hidden_states, residual, forward_batch
+          )
+        prepend: "dumper.dump('patched_attn_output', hidden_states, dims='t h')"
+      - match: "return hidden_states, residual"
+        prepend: "dumper.dump('patched_mlp_output', hidden_states, dims='t h')"
 """
 
 # Two configs that together cover all parallelism dimensions:
@@ -63,7 +83,8 @@ def prepare() -> None:
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
     U.exec_command(f"rm -rf {DUMP_DIR}")
 
-    Path(SOURCE_PATCHER_CONFIG_PATH).write_text(SOURCE_PATCHER_CONFIG_YAML)
+    Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(MEGATRON_SOURCE_PATCHER_CONFIG_YAML)
+    Path(SGLANG_SOURCE_PATCHER_CONFIG_PATH).write_text(SGLANG_SOURCE_PATCHER_CONFIG_YAML)
 
 
 def _execute(perf_args: str, dump_subdir: str) -> None:
@@ -93,7 +114,8 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
         f"--dumper-enable --dumper-dir {dump_dir} "
         "--dumper-fwd-only enable_model_value=0 enable_model_grad=0 "
         "--dumper-fwd-bwd enable_model_value=0 enable_model_grad=0 "
-        f"--dumper-source-patcher-config {SOURCE_PATCHER_CONFIG_PATH} "
+        f"--dumper-source-patcher-config-train {MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
+        f"--dumper-source-patcher-config-inference {SGLANG_SOURCE_PATCHER_CONFIG_PATH} "
     )
 
     misc_args = (
@@ -149,6 +171,45 @@ def verify(dump_subdir: str) -> None:
     print(f"All dump verifications passed for {dump_subdir}!")
 
 
+def _log_comparator_output(stdout: str, stderr: str) -> None:
+    if stdout.strip():
+        print(f"[comparator stdout]\n{stdout}")
+    if stderr.strip():
+        print(f"[comparator stderr]\n{stderr}")
+
+
+def _verify_comparator(dump_subdir: str) -> None:
+    baseline_dir: Path = Path(f"{DUMP_DIR}/{dump_subdir}/engine_0")
+    target_dir: Path = Path(f"{DUMP_DIR}/{dump_subdir}/fwd_bwd")
+
+    result: subprocess.CompletedProcess[str] = subprocess.run(
+        [
+            sys.executable, "-m", "sglang.srt.debug_utils.comparator",
+            "--baseline-path", str(baseline_dir),
+            "--target-path", str(target_dir),
+            "--output-format", "json",
+            "--grouping", "logical",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    _log_comparator_output(stdout=result.stdout, stderr=result.stderr)
+
+    assert result.returncode == 0, f"Comparator failed (rc={result.returncode})"
+
+    records = [parse_record_json(line) for line in result.stdout.strip().splitlines() if line.strip()]
+    assert len(records) > 0
+
+    summaries = [r for r in records if isinstance(r, SummaryRecord)]
+    assert len(summaries) == 1
+    summary: SummaryRecord = summaries[0]
+    assert summary.passed > 0
+    assert summary.failed == 0, f"{summary.failed} failed (passed={summary.passed}, skipped={summary.skipped})"
+
+    print(f"Comparator verification passed: engine_0 vs fwd_bwd — {summary.passed} passed, {summary.skipped} skipped")
+
+
 def _select_configs() -> dict[str, str]:
     selected = os.environ["MILES_TEST_DUMPER_CONFIG"]
     if selected not in CONFIGS:
@@ -165,3 +226,4 @@ if __name__ == "__main__":
     for config_name, perf_args in configs.items():
         _execute(perf_args=perf_args, dump_subdir=config_name)
         verify(config_name)
+        _verify_comparator(config_name)
