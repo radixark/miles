@@ -206,6 +206,14 @@ def _verify_comparator(dump_subdir: str) -> None:
     assert len(summaries) == 1
     summary: SummaryRecord = summaries[0]
     assert summary.total > 0, "No comparisons produced"
+    assert summary.failed == 0, (
+        f"Comparator found {summary.failed} failures "
+        f"(total={summary.total}, passed={summary.passed}, skipped={summary.skipped})"
+    )
+    assert summary.passed > 0, (
+        f"No comparisons passed "
+        f"(total={summary.total}, failed={summary.failed}, skipped={summary.skipped})"
+    )
 
     print(
         f"Comparator verification passed: engine_0 vs fwd_bwd — "
