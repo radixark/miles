@@ -33,9 +33,9 @@ patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
     edits:
       - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
-        append: "dumper.dump('attn_output', hidden_states, dims='t b h')"
+        append: "dumper.dump('attn_output', hidden_states.squeeze(1), dims='t h')"
       - match: 'output = self._forward_mlp(hidden_states, kwargs.get("inference_context", None))'
-        append: "dumper.dump('mlp_output', output, dims='t b h')"
+        append: "dumper.dump('mlp_output', output.squeeze(1), dims='t h')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
