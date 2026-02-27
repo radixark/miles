@@ -30,12 +30,14 @@ EXPECTED_FIELDS: dict[str, list[str]] = {
 
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
-  - target: megatron.core.transformer.transformer_layer.TransformerLayer.forward
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
     edits:
-      - match: "hidden_states, context = self._forward_attention(*args, **kwargs)"
-        append: "dumper.dump('attn_output', hidden_states.squeeze(1), dims='t(sp) h')"
-      - match: 'output = self._forward_mlp(hidden_states, kwargs.get("inference_context", None))'
-        append: "dumper.dump('mlp_output', output.squeeze(1), dims='t(sp) h')"
+      - match: 'nvtx_range_pop(suffix="self_attention")'
+        append: "dumper.dump('attn_output', attention_output_with_bias[0].squeeze(1), dims='t(sp) h')"
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_post_mlp
+    edits:
+      - match: 'nvtx_range_push(suffix="mlp_bda")'
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0].squeeze(1), dims='t(sp) h')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -46,9 +48,12 @@ patches:
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
-        append: "dumper.dump('attn_output', residual, dims='t h')"
-      - match: "return hidden_states, residual"
-        prepend: "dumper.dump('mlp_output', hidden_states, dims='t h')"
+        prepend: "dumper.dump('attn_output', hidden_states, dims='t h')"
+      - match: |
+          hidden_states = self.mlp(
+              hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
+          )
+        append: "dumper.dump('mlp_output', hidden_states, dims='t h')"
 """
 
 # Two configs that together cover all parallelism dimensions:
