@@ -55,7 +55,7 @@ class FSDPTrainRayActor(TrainRayActor):
     def init(self, args: Namespace, role: str, with_ref: bool = False) -> int:  # type: ignore[override]
         super().init(args, role, with_ref)
 
-        if getattr(args, "dumper_enable", False):
+        if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
 
             dumper.apply_source_patches()

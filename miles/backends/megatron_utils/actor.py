@@ -58,7 +58,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        if getattr(args, "dumper_enable", False):
+        if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
 
             dumper.apply_source_patches()
