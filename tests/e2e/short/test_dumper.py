@@ -50,11 +50,8 @@ patches:
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
+    preamble: "dumper.dump('layer_input', hidden_states if residual is None else hidden_states + residual, dims='t h')"
     edits:
-      - match: |
-          hidden_states, residual = (
-              self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-        prepend: "dumper.dump('layer_input', hidden_states if residual is None else hidden_states + residual, dims='t h')"
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
