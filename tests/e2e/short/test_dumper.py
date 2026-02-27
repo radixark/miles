@@ -1,16 +1,29 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 # The comparator must report all-passed with zero failures — no exceptions.
 
+# Usage: This is a typer CLI with 3 commands:
+#   python test_dumper.py run --mode <config>        Full: prepare + execute + verify + comparator
+#   python test_dumper.py run-only --mode <config>   Prepare + execute + verify (skip comparator)
+#   python test_dumper.py compare --mode <config> --dump-dir <path>
+#                                                    Re-run comparator on existing dumps
+#
+# After running miles once (the expensive execute step), you can re-run the
+# comparator many times via "compare" to investigate issues without re-running training.
+
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Annotated
 
 import torch
+import typer
 from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, SummaryRecord, parse_record_json
 
 import miles.utils.external_utils.command_utils as U
+
+app: typer.Typer = typer.Typer()
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
@@ -101,6 +114,17 @@ CONFIGS: dict[str, str] = {
         "--use-dynamic-batch-size --max-tokens-per-gpu 2048 "
     ),
 }
+
+
+def _resolve_mode(mode: str) -> tuple[str, str]:
+    if mode not in CONFIGS:
+        raise typer.BadParameter(f"Unknown mode {mode!r}, valid: {list(CONFIGS.keys())}")
+    return mode, CONFIGS[mode]
+
+
+def _clear_proxy_env() -> None:
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
 
 
 def prepare() -> None:
@@ -194,8 +218,8 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str, expected_fields: list[str
             assert len(matches) > 0, f"Expected field '{field}' not found under {phase_dir}"
 
 
-def verify(dump_subdir: str) -> None:
-    base = Path(f"{DUMP_DIR}/{dump_subdir}")
+def verify(dump_subdir: str, dump_base_dir: str | None = None) -> None:
+    base: Path = Path(dump_base_dir if dump_base_dir is not None else DUMP_DIR) / dump_subdir
     for pattern in EXP_PATTERNS:
         _check_dump_dir(base, pattern, expected_fields=EXPECTED_FIELDS.get(pattern))
     print(f"All dump verifications passed for {dump_subdir}!")
@@ -208,9 +232,10 @@ def _log_comparator_output(stdout: str, stderr: str) -> None:
         print(f"[comparator stderr]\n{stderr}")
 
 
-def _verify_comparator(dump_subdir: str) -> None:
-    baseline_dir: Path = Path(f"{DUMP_DIR}/{dump_subdir}/engine_0")
-    target_dir: Path = Path(f"{DUMP_DIR}/{dump_subdir}/fwd_bwd")
+def _verify_comparator(dump_subdir: str, dump_base_dir: str | None = None) -> None:
+    effective_dir: str = dump_base_dir if dump_base_dir is not None else DUMP_DIR
+    baseline_dir: Path = Path(f"{effective_dir}/{dump_subdir}/engine_0")
+    target_dir: Path = Path(f"{effective_dir}/{dump_subdir}/fwd_bwd")
 
     result: subprocess.CompletedProcess[str] = subprocess.run(
         [
@@ -269,21 +294,46 @@ def _verify_comparator(dump_subdir: str) -> None:
     )
 
 
-def _select_configs() -> dict[str, str]:
-    selected = os.environ["MILES_TEST_DUMPER_CONFIG"]
-    if selected not in CONFIGS:
-        raise ValueError(f"Unknown MILES_TEST_DUMPER_CONFIG={selected!r}, " f"valid values: {list(CONFIGS.keys())}")
-    return {selected: CONFIGS[selected]}
+@app.command()
+def run(
+    mode: Annotated[str, typer.Option(help="Config mode: " + ", ".join(CONFIGS.keys()))],
+) -> None:
+    """Full pipeline: prepare + execute + verify + comparator."""
+    config_name, perf_args = _resolve_mode(mode)
+    print(f"Run directory: {_RUN_DIR}")
+
+    prepare()
+    _clear_proxy_env()
+    _execute(perf_args=perf_args, dump_subdir=config_name)
+    verify(config_name)
+    _verify_comparator(config_name)
+
+
+@app.command()
+def run_only(
+    mode: Annotated[str, typer.Option(help="Config mode: " + ", ".join(CONFIGS.keys()))],
+) -> None:
+    """Prepare + execute + verify (skip comparator)."""
+    config_name, perf_args = _resolve_mode(mode)
+    print(f"Run directory: {_RUN_DIR}")
+
+    prepare()
+    _clear_proxy_env()
+    _execute(perf_args=perf_args, dump_subdir=config_name)
+    verify(config_name)
+
+
+@app.command()
+def compare(
+    mode: Annotated[str, typer.Option(help="Config mode: " + ", ".join(CONFIGS.keys()))],
+    dump_dir: Annotated[str, typer.Option(help="Path to existing dump base directory")],
+) -> None:
+    """Re-run comparator on existing dumps (no training)."""
+    config_name, _ = _resolve_mode(mode)
+
+    verify(dump_subdir=config_name, dump_base_dir=dump_dir)
+    _verify_comparator(dump_subdir=config_name, dump_base_dir=dump_dir)
 
 
 if __name__ == "__main__":
-    print(f"Run directory: {_RUN_DIR}")
-    configs = _select_configs()
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-
-    for config_name, perf_args in configs.items():
-        _execute(perf_args=perf_args, dump_subdir=config_name)
-        verify(config_name)
-        _verify_comparator(config_name)
+    app()
