@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 import torch
-from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, parse_record_json
+from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, SummaryRecord, parse_record_json
 
 import miles.utils.external_utils.command_utils as U
 
@@ -255,9 +255,17 @@ def _verify_comparator(dump_subdir: str) -> None:
     )
     assert diff_passed > 0, f"No comparisons passed (total={len(comparisons)})"
 
+    summaries: list[SummaryRecord] = [r for r in records if isinstance(r, SummaryRecord)]
+    assert len(summaries) == 1, f"Expected exactly 1 summary record, got {len(summaries)}"
+    summary: SummaryRecord = summaries[0]
+    assert summary.passed > 0, f"Summary passed must be > 0, got {summary.passed}"
+    assert summary.failed == 0, f"Summary failed must be 0, got {summary.failed}"
+    assert summary.skipped == 0, f"Summary skipped must be 0, got {summary.skipped}"
+
     print(
         f"Comparator verification passed: engine_0 vs fwd_bwd — "
-        f"total={len(comparisons)}, diff_passed={diff_passed}, diff_failed={len(diff_failed)}"
+        f"total={len(comparisons)}, diff_passed={diff_passed}, diff_failed={len(diff_failed)}, "
+        f"summary: passed={summary.passed}, failed={summary.failed}, skipped={summary.skipped}"
     )
 
 
