@@ -132,6 +132,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
         "--attention-backend flash "
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
         "--moe-token-dispatcher-type alltoall "
+        "--use-miles-router --use-rollout-routing-replay "
     )
 
     train_args = " ".join(
