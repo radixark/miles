@@ -44,6 +44,7 @@ patches:
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
+    preamble: "from sglang.srt.distributed import tensor_model_parallel_all_reduce as _tp_allreduce"
     edits:
       - match: |
           hidden_states, residual = self.layer_communicator.prepare_mlp(
@@ -61,7 +62,9 @@ patches:
           hidden_states = self.mlp(
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
           )
-        append: "dumper.dump('mlp_output_with_residual', hidden_states + _pre_mlp_residual, dims='t h')"
+        append: |
+          _dumper_mlp_out = _tp_allreduce(hidden_states) if should_allreduce_fusion else hidden_states
+          dumper.dump('mlp_output_with_residual', _dumper_mlp_out + _pre_mlp_residual, dims='t h')
 """
 
 # Two configs that together cover all parallelism dimensions:
