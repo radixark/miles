@@ -29,7 +29,6 @@ MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_miles_dumper_"))
-DUMP_DIR: str = str(_RUN_DIR / "dumps")
 MEGATRON_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "megatron_source_patcher.yaml")
 SGLANG_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "sglang_source_patcher.yaml")
 
@@ -126,19 +125,19 @@ def _clear_proxy_env() -> None:
         os.environ.pop(proxy_var, None)
 
 
-def prepare() -> None:
+def prepare(dump_dir: str) -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
-    U.exec_command(f"rm -rf {DUMP_DIR}")
+    U.exec_command(f"rm -rf {dump_dir}")
 
     Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(MEGATRON_SOURCE_PATCHER_CONFIG_YAML)
     Path(SGLANG_SOURCE_PATCHER_CONFIG_PATH).write_text(SGLANG_SOURCE_PATCHER_CONFIG_YAML)
 
 
-def _execute(perf_args: str, dump_subdir: str) -> None:
-    dump_dir = f"{DUMP_DIR}/{dump_subdir}"
+def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
+    full_dump_dir: str = f"{dump_dir}/{dump_subdir}"
 
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
@@ -162,7 +161,7 @@ def _execute(perf_args: str, dump_subdir: str) -> None:
 
     dumper_filter: str = "'filter=layer_id is None or layer_id < 3'"
     dumper_args = (
-        f"--dumper-enable --dumper-dir {dump_dir} "
+        f"--dumper-enable --dumper-dir {full_dump_dir} "
         f"--dumper-inference {dumper_filter} "
         f"--dumper-fwd-only enable_model_value=0 enable_model_grad=0 {dumper_filter} "
         f"--dumper-fwd-bwd enable_model_value=0 enable_model_grad=0 {dumper_filter} "
@@ -217,8 +216,8 @@ def _check_dump_dir(phase_dir: Path, exp_pattern: str, expected_fields: list[str
             assert len(matches) > 0, f"Expected field '{field}' not found under {phase_dir}"
 
 
-def verify(dump_subdir: str, dump_base_dir: str | None = None) -> None:
-    base: Path = Path(dump_base_dir if dump_base_dir is not None else DUMP_DIR) / dump_subdir
+def _verify_dumps(dump_subdir: str, dump_dir: str) -> None:
+    base: Path = Path(dump_dir) / dump_subdir
     for pattern in EXP_PATTERNS:
         _check_dump_dir(base, pattern, expected_fields=EXPECTED_FIELDS.get(pattern))
     print(f"All dump verifications passed for {dump_subdir}!")
@@ -231,10 +230,9 @@ def _log_comparator_output(stdout: str, stderr: str) -> None:
         print(f"[comparator stderr]\n{stderr}")
 
 
-def _verify_comparator(dump_subdir: str, dump_base_dir: str | None = None) -> None:
-    effective_dir: str = dump_base_dir if dump_base_dir is not None else DUMP_DIR
-    baseline_dir: Path = Path(f"{effective_dir}/{dump_subdir}/engine_0")
-    target_dir: Path = Path(f"{effective_dir}/{dump_subdir}/fwd_bwd")
+def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
+    baseline_dir: Path = Path(f"{dump_dir}/{dump_subdir}/engine_0")
+    target_dir: Path = Path(f"{dump_dir}/{dump_subdir}/fwd_bwd")
 
     result: subprocess.CompletedProcess[str] = subprocess.run(
         [
@@ -299,14 +297,14 @@ def run(
 ) -> None:
     """Full pipeline: prepare + execute + verify + comparator."""
     config_name, perf_args = _resolve_mode(mode)
+    dump_dir: str = str(_RUN_DIR / "dumps")
     print(f"Run directory: {_RUN_DIR}")
 
-    prepare()
+    prepare(dump_dir=dump_dir)
     _clear_proxy_env()
-    _execute(perf_args=perf_args, dump_subdir=config_name)
-    verify(config_name)
-    _verify_comparator(config_name)
-
+    _execute(perf_args=perf_args, dump_subdir=config_name, dump_dir=dump_dir)
+    _verify_dumps(dump_subdir=config_name, dump_dir=dump_dir)
+    _verify_comparator(dump_subdir=config_name, dump_dir=dump_dir)
 
 
 @app.command()
@@ -317,8 +315,8 @@ def compare(
     """Re-run comparator on existing dumps (no training)."""
     config_name, _ = _resolve_mode(mode)
 
-    verify(dump_subdir=config_name, dump_base_dir=dump_dir)
-    _verify_comparator(dump_subdir=config_name, dump_base_dir=dump_dir)
+    _verify_dumps(dump_subdir=config_name, dump_dir=dump_dir)
+    _verify_comparator(dump_subdir=config_name, dump_dir=dump_dir)
 
 
 if __name__ == "__main__":
