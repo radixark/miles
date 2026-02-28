@@ -37,9 +37,6 @@ class WorkerScriptArgs:
     source_patcher_config: str | None = None
     routing_replay_dump_path: str | None = None
     routing_replay_load_path: str | None = None
-    indexer_replay_dump_path: str | None = None
-    indexer_replay_load_path: str | None = None
-
     # -- serialization: dataclass → CLI arg string ----------------------------
 
     def to_cli_args(self) -> str:

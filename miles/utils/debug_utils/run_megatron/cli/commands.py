@@ -24,8 +24,6 @@ from miles.utils.debug_utils.run_megatron.cli.option_types import (
     EtpOpt,
     ExtraArgsOpt,
     HfCheckpointOpt,
-    IndexerReplayDumpOpt,
-    IndexerReplayLoadOpt,
     MegatronPathOpt,
     ModelTypeOpt,
     PpOpt,
@@ -84,8 +82,6 @@ def run(
     source_patcher_config: SourcePatcherConfigOpt = None,
     routing_replay_dump_path: RoutingReplayDumpOpt = None,
     routing_replay_load_path: RoutingReplayLoadOpt = None,
-    indexer_replay_dump_path: IndexerReplayDumpOpt = None,
-    indexer_replay_load_path: IndexerReplayLoadOpt = None,
     dumper_filter: DumperFilterOpt = "",
     megatron_path: MegatronPathOpt = None,
     extra_args: ExtraArgsOpt = "",
@@ -114,8 +110,6 @@ def run(
         source_patcher_config=str(source_patcher_config) if source_patcher_config is not None else None,
         routing_replay_dump_path=str(routing_replay_dump_path) if routing_replay_dump_path is not None else None,
         routing_replay_load_path=str(routing_replay_load_path) if routing_replay_load_path is not None else None,
-        indexer_replay_dump_path=str(indexer_replay_dump_path) if indexer_replay_dump_path is not None else None,
-        indexer_replay_load_path=str(indexer_replay_load_path) if indexer_replay_load_path is not None else None,
     )
     worker_args_str: str = build_worker_args(
         tp=tp,
@@ -263,8 +257,6 @@ def run_and_compare(
         dumper_filter=dumper_filter,
         megatron_path=megatron_path,
         extra_args=extra_args,
-        indexer_replay_dump_path=None,
-        indexer_replay_load_path=None,
     )
 
     replay_dir: Path | None = output_base_dir / "routing_replay" if routing_replay else None
