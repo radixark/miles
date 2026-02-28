@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import torch
-from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, SummaryRecord, parse_record_json
 
 # ---------------------------------------------------------------------------
 # Shared source patcher configs (used by test_dumper.py and test_run_megatron.py)
@@ -106,7 +105,7 @@ def run_and_verify_comparator(
     target_dir: Path,
     extra_args: list[str] | None = None,
 ) -> None:
-    """Run comparator subprocess, parse JSONL, assert all passed + 0 failed + 0 skipped."""
+    """Run comparator subprocess and rely on its exit code (--forbid-skip ensures skips also fail)."""
     cmd: list[str] = [
         sys.executable,
         "-m",
@@ -115,10 +114,9 @@ def run_and_verify_comparator(
         str(baseline_dir),
         "--target-path",
         str(target_dir),
-        "--output-format",
-        "json",
         "--grouping",
         "logical",
+        "--forbid-skip",
     ]
     if extra_args:
         cmd.extend(extra_args)
@@ -132,38 +130,3 @@ def run_and_verify_comparator(
     log_comparator_output(stdout=result.stdout, stderr=result.stderr)
 
     assert result.returncode == 0, f"Comparator failed (rc={result.returncode})\nstderr: {result.stderr[-2000:]}"
-
-    records = [parse_record_json(line) for line in result.stdout.strip().splitlines() if line.strip()]
-    assert len(records) > 0
-
-    comparisons: list[ComparisonRecord] = [r for r in records if isinstance(r, ComparisonRecord)]
-    assert len(comparisons) > 0, "No comparison records produced"
-
-    diff_passed: int = 0
-    diff_failed: list[str] = []
-    for comp in comparisons:
-        if comp.diff is not None and comp.diff.passed:
-            diff_passed += 1
-        else:
-            rel_diff: float = comp.diff.rel_diff if comp.diff is not None else float("nan")
-            diff_failed.append(f"{comp.name} (rel_diff={rel_diff:.6f})")
-
-    assert (
-        len(diff_failed) == 0
-    ), f"Comparator found {len(diff_failed)} diff failures out of {len(comparisons)} comparisons: " + ", ".join(
-        diff_failed[:10]
-    )
-    assert diff_passed > 0, f"No comparisons passed (total={len(comparisons)})"
-
-    summaries: list[SummaryRecord] = [r for r in records if isinstance(r, SummaryRecord)]
-    assert len(summaries) == 1, f"Expected exactly 1 summary record, got {len(summaries)}"
-    summary: SummaryRecord = summaries[0]
-    assert summary.passed > 0, f"Summary passed must be > 0, got {summary.passed}"
-    assert summary.failed == 0, f"Summary failed must be 0, got {summary.failed}"
-    assert summary.skipped == 0, f"Summary skipped must be 0, got {summary.skipped}"
-
-    print(
-        f"Comparator verification passed: "
-        f"total={len(comparisons)}, diff_passed={diff_passed}, diff_failed={len(diff_failed)}, "
-        f"summary: passed={summary.passed}, failed={summary.failed}, skipped={summary.skipped}"
-    )
