@@ -31,6 +31,54 @@ def build_torchrun_cmd(
     return cmd
 
 
+def _build_megatron_flags(
+    *,
+    tp: int,
+    pp: int,
+    cp: int,
+    ep: int | None,
+    etp: int,
+    seq_length: int,
+    batch_size: int,
+    script_args: WorkerScriptArgs,
+) -> str:
+    """Build Megatron-native CLI flags from declarative tables."""
+    effective_ep: int = ep if ep is not None else tp
+
+    key_value_args: list[tuple[str, object | None]] = [
+        ("--tensor-model-parallel-size", tp),
+        ("--pipeline-model-parallel-size", pp),
+        ("--context-parallel-size", cp),
+        ("--expert-model-parallel-size", effective_ep),
+        ("--expert-tensor-parallel-size", etp),
+        ("--seq-length", seq_length),
+        ("--micro-batch-size", batch_size),
+        ("--global-batch-size", batch_size),
+    ]
+
+    bool_flags: list[tuple[str, bool]] = [
+        ("--sequence-parallel", tp > 1),
+        ("--bf16", True),
+        ("--no-gradient-accumulation-fusion", True),
+        ("--use-miles-router", True),
+        (
+            "--use-routing-replay",
+            script_args.routing_replay_dump_path is not None
+            or script_args.routing_replay_load_path is not None,
+        ),
+    ]
+
+    parts: list[str] = []
+    for flag, value in key_value_args:
+        if value is not None:
+            parts.append(f"{flag} {value}")
+    for flag, condition in bool_flags:
+        if condition:
+            parts.append(flag)
+
+    return " ".join(parts)
+
+
 def build_worker_args(
     *,
     tp: int,
@@ -45,31 +93,22 @@ def build_worker_args(
 ) -> str:
     """Build the worker argument string.
 
-    Megatron-native flags are built manually; ``--script-*`` flags come from
-    ``WorkerScriptArgs.to_cli_args()`` automatically.
+    Megatron-native flags come from declarative tables in
+    ``_build_megatron_flags``; ``--script-*`` flags come from the bridge.
     """
-    effective_ep: int = ep if ep is not None else tp
-
-    megatron_parts: list[str] = [
-        f"--tensor-model-parallel-size {tp}",
-        "--sequence-parallel" if tp > 1 else "",
-        f"--pipeline-model-parallel-size {pp}",
-        f"--context-parallel-size {cp}",
-        f"--expert-model-parallel-size {effective_ep}",
-        f"--expert-tensor-parallel-size {etp}",
-        f"--seq-length {seq_length}",
-        f"--micro-batch-size {batch_size}",
-        f"--global-batch-size {batch_size}",
-        "--bf16",
-        "--no-gradient-accumulation-fusion",
-        "--use-miles-router",
+    parts: list[str] = [
+        _build_megatron_flags(
+            tp=tp,
+            pp=pp,
+            cp=cp,
+            ep=ep,
+            etp=etp,
+            seq_length=seq_length,
+            batch_size=batch_size,
+            script_args=script_args,
+        ),
+        WORKER_SCRIPT_ARGS_BRIDGE.to_cli_args(script_args),
     ]
-
-    if script_args.routing_replay_dump_path is not None or script_args.routing_replay_load_path is not None:
-        megatron_parts.append("--use-routing-replay")
-
-    parts: list[str] = [p for p in megatron_parts if p]
-    parts.append(WORKER_SCRIPT_ARGS_BRIDGE.to_cli_args(script_args))
     if extra_args:
         parts.append(extra_args)
 
