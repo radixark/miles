@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_model_script
-from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 
 
 def build_torchrun_cmd(
@@ -69,7 +69,7 @@ def build_worker_args(
         megatron_parts.append("--use-routing-replay")
 
     parts: list[str] = [p for p in megatron_parts if p]
-    parts.append(script_args.to_cli_args())
+    parts.append(WORKER_SCRIPT_ARGS_BRIDGE.to_cli_args(script_args))
     if extra_args:
         parts.append(extra_args)
 
