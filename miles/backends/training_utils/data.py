@@ -187,6 +187,7 @@ def get_batch(
     batch["tokens"] = tokens
 
     if get_position_ids:
+        assert not allgather_cp, "allgather CP is not supported for FSDP"
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
             seq_len = t.size(0)
