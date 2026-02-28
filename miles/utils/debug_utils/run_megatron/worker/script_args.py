@@ -9,9 +9,22 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-from pathlib import Path
+import types
+from typing import get_type_hints
 
 _PREFIX: str = "script"
+
+
+def _is_bool(tp: type) -> bool:
+    return tp is bool
+
+
+def _is_optional_str(tp: type) -> bool:
+    return (
+        isinstance(tp, types.UnionType)
+        and str in tp.__args__
+        and type(None) in tp.__args__
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,12 +44,15 @@ class WorkerScriptArgs:
 
     def to_cli_args(self) -> str:
         """Serialize to a CLI argument string like ``--script-role actor --script-run-backward``."""
+        resolved: dict[str, type] = get_type_hints(type(self))
         parts: list[str] = []
+
         for field in dataclasses.fields(self):
             value: object = getattr(self, field.name)
             flag: str = f"--{_PREFIX}-{field.name.replace('_', '-')}"
+            tp: type = resolved[field.name]
 
-            if field.type == "bool":
+            if _is_bool(tp):
                 if value:
                     parts.append(flag)
             elif value is not None:
@@ -49,25 +65,30 @@ class WorkerScriptArgs:
     @classmethod
     def register_argparse(cls, parser: argparse.ArgumentParser) -> None:
         """Add ``--script-*`` arguments to an argparse parser."""
+        resolved: dict[str, type] = get_type_hints(cls)
         group: argparse._ArgumentGroup = parser.add_argument_group(
             "run_megatron script args"
         )
+
         for field in dataclasses.fields(cls):
             flag: str = f"--{_PREFIX}-{field.name.replace('_', '-')}"
             dest: str = f"{_PREFIX}_{field.name}"
+            tp: type = resolved[field.name]
 
-            if field.type == "bool":
+            if _is_bool(tp):
                 group.add_argument(flag, dest=dest, action="store_true", default=False)
-            elif field.type == "str | None":
+            elif _is_optional_str(tp):
                 group.add_argument(flag, dest=dest, type=str, default=None)
-            elif field.type == "str":
+            elif tp is str:
                 has_default: bool = field.default is not dataclasses.MISSING
                 if has_default:
                     group.add_argument(flag, dest=dest, type=str, default=field.default)
                 else:
                     group.add_argument(flag, dest=dest, type=str, required=True)
             else:
-                raise TypeError(f"Unsupported field type {field.type!r} for {field.name}")
+                raise TypeError(f"Unsupported field type {tp!r} for {field.name}")
+
+        return parser  # type: ignore[return-value]
 
     @classmethod
     def from_argparse(cls, namespace: argparse.Namespace) -> WorkerScriptArgs:
