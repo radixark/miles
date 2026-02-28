@@ -4,7 +4,7 @@ from typing import Literal
 
 def generate_prompt(
     *,
-    mode: Literal["math", "story", "text"],
+    mode: Literal["math", "file", "text"],
     seq_length: int,
     tokenizer_path: Path | None = None,
     prompt_text: str | None = None,
@@ -15,7 +15,7 @@ def generate_prompt(
 
     Three modes:
     - math: deterministic arithmetic sequence "1+1=2, 1+2=3, ..." padded to seq_length tokens
-    - story: read long text from file, truncate to seq_length tokens
+    - file: read long text from file, truncate to seq_length tokens
     - text: use user-provided text directly (no tokenizer needed)
     """
     if mode == "math":
@@ -24,10 +24,10 @@ def generate_prompt(
             tokenizer_path=tokenizer_path,
             apply_chat_template=apply_chat_template,
         )
-    elif mode == "story":
+    elif mode == "file":
         if prompt_file is None:
-            raise ValueError("--prompt-file is required for story mode")
-        return _generate_story_prompt(
+            raise ValueError("--prompt-file is required for file mode")
+        return _generate_file_prompt(
             seq_length=seq_length,
             tokenizer_path=tokenizer_path,
             prompt_file=prompt_file,
@@ -61,7 +61,7 @@ def _generate_math_prompt(
     return raw_text
 
 
-def _generate_story_prompt(
+def _generate_file_prompt(
     *,
     seq_length: int,
     tokenizer_path: Path | None,

@@ -2,25 +2,6 @@
 
 import json
 
-from miles.utils.debug_utils.run_megatron.utils import exec_command, resolve_model_script
-
-
-def model_is_moe(model_type: str) -> bool:
-    """Check if a model script defines num-experts > 0."""
-    output: str | None = exec_command(
-        f'source "{resolve_model_script(model_type)}" && echo "${{MODEL_ARGS[@]}}"',
-        capture_output=True,
-    )
-    if output and "--num-experts" in output:
-        tokens: list[str] = output.split()
-        for i, token in enumerate(tokens):
-            if token == "--num-experts" and i + 1 < len(tokens):
-                try:
-                    return int(tokens[i + 1]) > 0
-                except ValueError:
-                    pass
-    return False
-
 
 def print_json_summary(stdout: str) -> None:
     """Print a human-readable summary from JSON comparator output."""
