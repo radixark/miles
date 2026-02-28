@@ -54,7 +54,7 @@ patches:
                   hidden_states=hidden_states,
                   forward_batch=forward_batch,
               )
-        append: "dumper.dump('attn_output', hidden_states, dims='t h(tp,partial)')"
+        append: "dumper.dump('attn_output', hidden_states, dims='t h(tp:partial)')"
       - match: |
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
@@ -64,7 +64,7 @@ patches:
           hidden_states = self.mlp(
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
           )
-        append: "dumper.dump('mlp_output', hidden_states, dims='t h(tp,partial)')"
+        append: "dumper.dump('mlp_output', hidden_states, dims='t h(tp:partial)')"
 """
 
 
