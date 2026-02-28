@@ -170,6 +170,7 @@ class TestSetupModelAndOptimizerLoraBranch:
 
 
 class TestSaveLoRaBranch:
+    @patch(f"{_MODEL_MODULE}.save_model_hashes")
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
@@ -177,7 +178,7 @@ class TestSaveLoRaBranch:
     @patch(f"{_MODEL_MODULE}.save_checkpoint_with_lora")
     @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)
     def test_lora_model_calls_lora_save(
-        self, mock_is_lora, mock_save_lora, mock_get_args, mock_should, mock_disable, mock_enable
+        self, mock_is_lora, mock_save_lora, mock_get_args, mock_should, mock_disable, mock_enable, mock_save_hashes
     ):
         from miles.backends.megatron_utils.model import save
 
@@ -186,6 +187,7 @@ class TestSaveLoRaBranch:
 
         mock_save_lora.assert_called_once()
 
+    @patch(f"{_MODEL_MODULE}.save_model_hashes")
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
@@ -193,7 +195,7 @@ class TestSaveLoRaBranch:
     @patch(f"{_MODEL_MODULE}.save_checkpoint")
     @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=False)
     def test_non_lora_model_calls_regular_save(
-        self, mock_is_lora, mock_save_ckpt, mock_get_args, mock_should, mock_disable, mock_enable
+        self, mock_is_lora, mock_save_ckpt, mock_get_args, mock_should, mock_disable, mock_enable, mock_save_hashes
     ):
         from miles.backends.megatron_utils.model import save
 
