@@ -9,16 +9,12 @@
 # After running miles once (the expensive execute step), you can re-run the
 # comparator many times via "compare" to investigate issues without re-running training.
 
-import os
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated
 
-import torch
 import typer
-from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, SummaryRecord, parse_record_json
+from tests.e2e.conftest_dumper import check_dump_dir, clear_proxy_env, run_and_verify_comparator
 
 import miles.utils.external_utils.command_utils as U
 
@@ -111,11 +107,6 @@ def _resolve_mode(mode: str) -> tuple[str, str]:
     return mode, CONFIGS[mode]
 
 
-def _clear_proxy_env() -> None:
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-
-
 def prepare(dump_dir: str) -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
@@ -193,95 +184,17 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
     )
 
 
-def _check_dump_dir(phase_dir: Path, exp_pattern: str, expected_fields: list[str] | None = None) -> None:
-    assert phase_dir.exists(), f"Missing dump dir: {phase_dir}"
-    dump_subdirs = list(phase_dir.glob(exp_pattern))
-    assert len(dump_subdirs) > 0, f"No {exp_pattern} subdirs in {phase_dir}"
-    dump_files = list(dump_subdirs[0].glob("*.pt"))
-    assert len(dump_files) > 0, f"No .pt files in {dump_subdirs[0]}"
-    sample = torch.load(dump_files[0], weights_only=False)
-    assert isinstance(sample, dict), f"Unexpected type: {type(sample)}"
-    assert "value" in sample and "meta" in sample, f"Missing keys: {sample.keys()}"
-
-    if expected_fields:
-        for field in expected_fields:
-            matches = list(phase_dir.rglob(f"*name={field}*.pt"))
-            assert len(matches) > 0, f"Expected field '{field}' not found under {phase_dir}"
-
-
 def _verify_dumps(dump_subdir: str, dump_dir: str) -> None:
     base: Path = Path(dump_dir) / dump_subdir
     for pattern in EXP_PATTERNS:
-        _check_dump_dir(base, pattern, expected_fields=EXPECTED_FIELDS.get(pattern))
+        check_dump_dir(base, pattern, expected_fields=EXPECTED_FIELDS.get(pattern))
     print(f"All dump verifications passed for {dump_subdir}!")
-
-
-def _log_comparator_output(stdout: str, stderr: str) -> None:
-    if stdout.strip():
-        print(f"[comparator stdout]\n{stdout}")
-    if stderr.strip():
-        print(f"[comparator stderr]\n{stderr}")
 
 
 def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
     baseline_dir: Path = Path(f"{dump_dir}/{dump_subdir}/engine_0")
     target_dir: Path = Path(f"{dump_dir}/{dump_subdir}/fwd_bwd")
-
-    result: subprocess.CompletedProcess[str] = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "sglang.srt.debug_utils.comparator",
-            "--baseline-path",
-            str(baseline_dir),
-            "--target-path",
-            str(target_dir),
-            "--output-format",
-            "json",
-            "--grouping",
-            "logical",
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-    _log_comparator_output(stdout=result.stdout, stderr=result.stderr)
-
-    assert result.returncode == 0, f"Comparator failed (rc={result.returncode})\nstderr: {result.stderr[-2000:]}"
-
-    records = [parse_record_json(line) for line in result.stdout.strip().splitlines() if line.strip()]
-    assert len(records) > 0
-
-    comparisons: list[ComparisonRecord] = [r for r in records if isinstance(r, ComparisonRecord)]
-    assert len(comparisons) > 0, "No comparison records produced"
-
-    diff_passed: int = 0
-    diff_failed: list[str] = []
-    for comp in comparisons:
-        if comp.diff is not None and comp.diff.passed:
-            diff_passed += 1
-        else:
-            rel_diff: float = comp.diff.rel_diff if comp.diff is not None else float("nan")
-            diff_failed.append(f"{comp.name} (rel_diff={rel_diff:.6f})")
-
-    assert len(diff_failed) == 0, (
-        f"Comparator found {len(diff_failed)} diff failures out of {len(comparisons)} comparisons: "
-        + ", ".join(diff_failed[:10])
-    )
-    assert diff_passed > 0, f"No comparisons passed (total={len(comparisons)})"
-
-    summaries: list[SummaryRecord] = [r for r in records if isinstance(r, SummaryRecord)]
-    assert len(summaries) == 1, f"Expected exactly 1 summary record, got {len(summaries)}"
-    summary: SummaryRecord = summaries[0]
-    assert summary.passed > 0, f"Summary passed must be > 0, got {summary.passed}"
-    assert summary.failed == 0, f"Summary failed must be 0, got {summary.failed}"
-    assert summary.skipped == 0, f"Summary skipped must be 0, got {summary.skipped}"
-
-    print(
-        f"Comparator verification passed: engine_0 vs fwd_bwd — "
-        f"total={len(comparisons)}, diff_passed={diff_passed}, diff_failed={len(diff_failed)}, "
-        f"summary: passed={summary.passed}, failed={summary.failed}, skipped={summary.skipped}"
-    )
+    run_and_verify_comparator(baseline_dir=baseline_dir, target_dir=target_dir)
 
 
 @app.command()
@@ -294,7 +207,7 @@ def run(
     print(f"Run directory: {_RUN_DIR}")
 
     prepare(dump_dir=dump_dir)
-    _clear_proxy_env()
+    clear_proxy_env()
     _execute(perf_args=perf_args, dump_subdir=config_name, dump_dir=dump_dir)
     _verify_dumps(dump_subdir=config_name, dump_dir=dump_dir)
     _verify_comparator(dump_subdir=config_name, dump_dir=dump_dir)
