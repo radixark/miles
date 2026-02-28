@@ -1,5 +1,6 @@
 """Input batch preparation and loss function for standalone Megatron forward/backward."""
 
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -9,18 +10,30 @@ def prepare_batch(
     *,
     token_ids: list[int],
     batch_size: int,
+    cp_rank: int = 0,
+    cp_size: int = 1,
 ) -> dict[str, torch.Tensor]:
     """Build the batch dict for Megatron forward from pre-tokenized token IDs."""
     seq_length: int = len(token_ids)
 
-    input_ids: torch.Tensor = torch.tensor(
-        [token_ids] * batch_size,
-        dtype=torch.long,
-        device="cuda",
-    )
-    position_ids: torch.Tensor = (
-        torch.arange(seq_length, dtype=torch.long, device="cuda").unsqueeze(0).expand(batch_size, -1)
-    )
+    token_tensor: torch.Tensor = torch.tensor(token_ids, dtype=torch.long, device="cuda")
+    position_tensor: torch.Tensor = torch.arange(seq_length, dtype=torch.long, device="cuda")
+
+    if cp_size > 1:
+        from miles.backends.training_utils.cp_utils import slice_with_cp
+
+        parallel_state: SimpleNamespace = SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size)
+        token_tensor = slice_with_cp(
+            token_tensor, pad_value=0, parallel_state=parallel_state,
+            qkv_format="bshd", max_seq_len=seq_length,
+        )
+        position_tensor = slice_with_cp(
+            position_tensor, pad_value=0, parallel_state=parallel_state,
+            qkv_format="bshd", max_seq_len=seq_length,
+        )
+
+    input_ids: torch.Tensor = token_tensor.unsqueeze(0).expand(batch_size, -1)
+    position_ids: torch.Tensor = position_tensor.unsqueeze(0).expand(batch_size, -1)
     labels: torch.Tensor = input_ids.clone()
 
     return {

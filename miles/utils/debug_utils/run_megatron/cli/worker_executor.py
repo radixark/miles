@@ -57,7 +57,7 @@ def _build_megatron_flags(
     ]
 
     bool_flags: list[tuple[str, bool]] = [
-        ("--sequence-parallel", tp > 1),
+        ("--sequence-parallel", tp > 1 or cp > 1),
         ("--bf16", True),
         ("--no-gradient-accumulation-fusion", True),
         ("--use-miles-router", True),
