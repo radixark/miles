@@ -27,36 +27,65 @@ from miles.utils.debug_utils.run_megatron.helpers import (
 from miles.utils.debug_utils.run_megatron.prompt_utils import generate_prompt
 from miles.utils.debug_utils.run_megatron.torchrun import build_dumper_env, build_torchrun_cmd, build_worker_args
 
+# ---------------------------------------------------------------------------
+# Shared Annotated type aliases (metadata defined once, reused across commands)
+# ---------------------------------------------------------------------------
+
+ModelTypeOpt = Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.sh")]
+HfCheckpointOpt = Annotated[Path, typer.Option(help="HuggingFace checkpoint path")]
+RefLoadOpt = Annotated[Path | None, typer.Option(help="Megatron checkpoint path")]
+TpOpt = Annotated[int, typer.Option(help="Tensor parallel size")]
+PpOpt = Annotated[int, typer.Option(help="Pipeline parallel size")]
+CpOpt = Annotated[int, typer.Option(help="Context parallel size")]
+EpOpt = Annotated[int | None, typer.Option(help="Expert parallel size (default=tp)")]
+EtpOpt = Annotated[int, typer.Option(help="Expert tensor parallel size")]
+RunBackwardOpt = Annotated[bool, typer.Option("--run-backward", help="Run backward pass")]
+PromptModeOpt = Annotated[str, typer.Option(help="Prompt mode: math / story / text")]
+PromptTextOpt = Annotated[str | None, typer.Option(help="Prompt text (for text mode)")]
+PromptFileOpt = Annotated[Path | None, typer.Option(help="Prompt file (for story mode)")]
+SeqLengthOpt = Annotated[int, typer.Option(help="Sequence length")]
+BatchSizeOpt = Annotated[int, typer.Option(help="Micro batch size")]
+ApplyChatTemplateOpt = Annotated[bool, typer.Option("--apply-chat-template", help="Apply chat template")]
+RoleOpt = Annotated[str, typer.Option(help="Model role: actor / critic")]
+SourcePatcherConfigOpt = Annotated[Path | None, typer.Option(help="Source patcher YAML config path")]
+RoutingReplayDumpOpt = Annotated[Path | None, typer.Option(help="Routing replay dump path")]
+RoutingReplayLoadOpt = Annotated[Path | None, typer.Option(help="Routing replay load path")]
+IndexerReplayDumpOpt = Annotated[Path | None, typer.Option(help="Indexer replay dump path")]
+IndexerReplayLoadOpt = Annotated[Path | None, typer.Option(help="Indexer replay load path")]
+DumperFilterOpt = Annotated[str, typer.Option(help="Dumper filter expression")]
+MegatronPathOpt = Annotated[Path | None, typer.Option(help="Path to Megatron-LM")]
+ExtraArgsOpt = Annotated[str, typer.Option(help="Extra args passed to worker")]
+
 app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
 
 
 @app.command()
 def run(
-    model_type: Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.sh")],
-    hf_checkpoint: Annotated[Path, typer.Option(help="HuggingFace checkpoint path")],
+    model_type: ModelTypeOpt,
+    hf_checkpoint: HfCheckpointOpt,
     output_dir: Annotated[Path, typer.Option(help="Dump output directory")],
-    ref_load: Annotated[Path | None, typer.Option(help="Megatron checkpoint path")] = None,
-    tp: Annotated[int, typer.Option(help="Tensor parallel size")] = 1,
-    pp: Annotated[int, typer.Option(help="Pipeline parallel size")] = 1,
-    cp: Annotated[int, typer.Option(help="Context parallel size")] = 1,
-    ep: Annotated[int | None, typer.Option(help="Expert parallel size (default=tp)")] = None,
-    etp: Annotated[int, typer.Option(help="Expert tensor parallel size")] = 1,
-    run_backward: Annotated[bool, typer.Option("--run-backward", help="Run backward pass")] = False,
-    prompt_mode: Annotated[str, typer.Option(help="Prompt mode: math / story / text")] = "math",
-    prompt_text: Annotated[str | None, typer.Option(help="Prompt text (for text mode)")] = None,
-    prompt_file: Annotated[Path | None, typer.Option(help="Prompt file (for story mode)")] = None,
-    seq_length: Annotated[int, typer.Option(help="Sequence length")] = 128,
-    batch_size: Annotated[int, typer.Option(help="Micro batch size")] = 1,
-    apply_chat_template: Annotated[bool, typer.Option("--apply-chat-template", help="Apply chat template")] = False,
-    role: Annotated[str, typer.Option(help="Model role: actor / critic")] = "actor",
-    source_patcher_config: Annotated[Path | None, typer.Option(help="Source patcher YAML config path")] = None,
-    routing_replay_dump_path: Annotated[Path | None, typer.Option(help="Routing replay dump path")] = None,
-    routing_replay_load_path: Annotated[Path | None, typer.Option(help="Routing replay load path")] = None,
-    indexer_replay_dump_path: Annotated[Path | None, typer.Option(help="Indexer replay dump path")] = None,
-    indexer_replay_load_path: Annotated[Path | None, typer.Option(help="Indexer replay load path")] = None,
-    dumper_filter: Annotated[str, typer.Option(help="Dumper filter expression")] = "",
-    megatron_path: Annotated[Path | None, typer.Option(help="Path to Megatron-LM")] = None,
-    extra_args: Annotated[str, typer.Option(help="Extra args passed to worker")] = "",
+    ref_load: RefLoadOpt = None,
+    tp: TpOpt = 1,
+    pp: PpOpt = 1,
+    cp: CpOpt = 1,
+    ep: EpOpt = None,
+    etp: EtpOpt = 1,
+    run_backward: RunBackwardOpt = False,
+    prompt_mode: PromptModeOpt = "math",
+    prompt_text: PromptTextOpt = None,
+    prompt_file: PromptFileOpt = None,
+    seq_length: SeqLengthOpt = 128,
+    batch_size: BatchSizeOpt = 1,
+    apply_chat_template: ApplyChatTemplateOpt = False,
+    role: RoleOpt = "actor",
+    source_patcher_config: SourcePatcherConfigOpt = None,
+    routing_replay_dump_path: RoutingReplayDumpOpt = None,
+    routing_replay_load_path: RoutingReplayLoadOpt = None,
+    indexer_replay_dump_path: IndexerReplayDumpOpt = None,
+    indexer_replay_load_path: IndexerReplayLoadOpt = None,
+    dumper_filter: DumperFilterOpt = "",
+    megatron_path: MegatronPathOpt = None,
+    extra_args: ExtraArgsOpt = "",
 ) -> None:
     """Launch torchrun to run Megatron standalone forward (or forward+backward)."""
     resolved_megatron: str = resolve_megatron_path(megatron_path)
@@ -171,24 +200,24 @@ def compare(
 
 @app.command(name="run-and-compare")
 def run_and_compare(
-    model_type: Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.sh")],
-    hf_checkpoint: Annotated[Path, typer.Option(help="HuggingFace checkpoint path")],
+    model_type: ModelTypeOpt,
+    hf_checkpoint: HfCheckpointOpt,
     output_base_dir: Annotated[Path, typer.Option(help="Base output directory for dumps")],
     baseline: Annotated[str, typer.Option(help='Baseline parallel config, e.g. "--tp 1 --cp 1"')],
     target: Annotated[str, typer.Option(help='Target parallel config, e.g. "--tp 2 --cp 2"')],
-    ref_load: Annotated[Path | None, typer.Option(help="Megatron checkpoint path")] = None,
-    run_backward: Annotated[bool, typer.Option("--run-backward", help="Run backward pass")] = False,
-    prompt_mode: Annotated[str, typer.Option(help="Prompt mode: math / story / text")] = "math",
-    prompt_text: Annotated[str | None, typer.Option(help="Prompt text (for text mode)")] = None,
-    prompt_file: Annotated[Path | None, typer.Option(help="Prompt file (for story mode)")] = None,
-    seq_length: Annotated[int, typer.Option(help="Sequence length")] = 128,
-    batch_size: Annotated[int, typer.Option(help="Micro batch size")] = 1,
-    apply_chat_template: Annotated[bool, typer.Option("--apply-chat-template", help="Apply chat template")] = False,
-    role: Annotated[str, typer.Option(help="Model role: actor / critic")] = "actor",
-    source_patcher_config: Annotated[Path | None, typer.Option(help="Source patcher YAML config")] = None,
-    dumper_filter: Annotated[str, typer.Option(help="Dumper filter expression")] = "",
-    megatron_path: Annotated[Path | None, typer.Option(help="Path to Megatron-LM")] = None,
-    extra_args: Annotated[str, typer.Option(help="Extra args passed to worker")] = "",
+    ref_load: RefLoadOpt = None,
+    run_backward: RunBackwardOpt = False,
+    prompt_mode: PromptModeOpt = "math",
+    prompt_text: PromptTextOpt = None,
+    prompt_file: PromptFileOpt = None,
+    seq_length: SeqLengthOpt = 128,
+    batch_size: BatchSizeOpt = 1,
+    apply_chat_template: ApplyChatTemplateOpt = False,
+    role: RoleOpt = "actor",
+    source_patcher_config: SourcePatcherConfigOpt = None,
+    dumper_filter: DumperFilterOpt = "",
+    megatron_path: MegatronPathOpt = None,
+    extra_args: ExtraArgsOpt = "",
     no_replay: Annotated[bool, typer.Option("--no-replay", help="Disable automatic routing replay")] = False,
 ) -> None:
     """Run baseline + target configs, then compare dumps."""
@@ -262,7 +291,7 @@ def run_and_compare(
 
 @app.command(name="show-model-args")
 def show_model_args(
-    model_type: Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.sh")],
+    model_type: ModelTypeOpt,
 ) -> None:
     """Show the MODEL_ARGS for a given model type (debug helper)."""
     output: str | None = exec_command(
@@ -278,6 +307,17 @@ def show_model_args(
 # ---------------------------------------------------------------------------
 
 
+def _parallel_kwargs(parsed: dict[str, int]) -> dict[str, object]:
+    """Convert parsed parallel config dict to kwargs for ``run()``."""
+    return dict(
+        tp=parsed.get("tp", 1),
+        pp=parsed.get("pp", 1),
+        cp=parsed.get("cp", 1),
+        ep=parsed.get("ep"),
+        etp=parsed.get("etp", 1),
+    )
+
+
 def _run_and_compare_with_replay(
     *,
     baseline_p: dict[str, int],
@@ -288,9 +328,6 @@ def _run_and_compare_with_replay(
     common_run_kwargs: dict[str, object],
 ) -> None:
     print("[cli] MOE model detected — using routing replay flow", flush=True)
-
-    def _parallel_kwargs(p: dict[str, int]) -> dict[str, object]:
-        return dict(tp=p.get("tp", 1), pp=p.get("pp", 1), cp=p.get("cp", 1), ep=p.get("ep"), etp=p.get("etp", 1))
 
     print("[cli] Step 1/3: Baseline run (record routing)", flush=True)
     run(
@@ -329,9 +366,6 @@ def _run_and_compare_simple(
     target_output: Path,
     common_run_kwargs: dict[str, object],
 ) -> None:
-    def _parallel_kwargs(p: dict[str, int]) -> dict[str, object]:
-        return dict(tp=p.get("tp", 1), pp=p.get("pp", 1), cp=p.get("cp", 1), ep=p.get("ep"), etp=p.get("etp", 1))
-
     print("[cli] Step 1/2: Baseline run", flush=True)
     run(
         **common_run_kwargs,
