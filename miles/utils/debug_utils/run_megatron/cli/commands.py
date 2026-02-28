@@ -326,7 +326,7 @@ def _run_and_compare_with_replay(
 ) -> None:
     print("[cli] MOE model detected — using routing replay flow", flush=True)
 
-    print("[cli] Step 1/3: Baseline run (record routing)", flush=True)
+    print("[cli] Step 1/2: Baseline run (record routing)", flush=True)
     run(
         **common_run_kwargs,
         **_parallel_kwargs(baseline_p),  # type: ignore[arg-type]
@@ -335,17 +335,7 @@ def _run_and_compare_with_replay(
         routing_replay_load_path=None,
     )
 
-    print("[cli] Step 2/3: Baseline run (replay routing)", flush=True)
-    exec_command(f"rm -rf {baseline_output}")
-    run(
-        **common_run_kwargs,
-        **_parallel_kwargs(baseline_p),  # type: ignore[arg-type]
-        output_dir=baseline_output,
-        routing_replay_dump_path=None,
-        routing_replay_load_path=replay_dir,
-    )
-
-    print("[cli] Step 3/3: Target run (replay routing)", flush=True)
+    print("[cli] Step 2/2: Target run (replay routing)", flush=True)
     run(
         **common_run_kwargs,
         **_parallel_kwargs(target_p),  # type: ignore[arg-type]
