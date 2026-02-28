@@ -1,13 +1,14 @@
 """Routing replay stage management for standalone Megatron worker."""
 
-import argparse
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
 
+from miles.utils.debug_utils.run_megatron.script_args import ScriptArgs
 
-def setup_replay_stage(args: argparse.Namespace) -> None:
+
+def setup_replay_stage(script: ScriptArgs) -> None:
     """Set routing replay manager stage based on CLI args.
 
     The replay manager hooks are registered during model construction
@@ -16,22 +17,22 @@ def setup_replay_stage(args: argparse.Namespace) -> None:
     """
     from miles.utils.replay_base import routing_replay_manager
 
-    if args.routing_replay_dump_path:
+    if script.routing_replay_dump_path:
         routing_replay_manager.stage = "record"
-        print(f"[worker] Routing replay stage=record (dump → {args.routing_replay_dump_path})", flush=True)
-    elif args.routing_replay_load_path:
+        print(f"[worker] Routing replay stage=record (dump → {script.routing_replay_dump_path})", flush=True)
+    elif script.routing_replay_load_path:
         routing_replay_manager.stage = "replay_forward"
-        print(f"[worker] Routing replay stage=replay_forward (load ← {args.routing_replay_load_path})", flush=True)
+        print(f"[worker] Routing replay stage=replay_forward (load ← {script.routing_replay_load_path})", flush=True)
 
 
-def save_replay_data(args: argparse.Namespace) -> None:
+def save_replay_data(script: ScriptArgs) -> None:
     """Save recorded routing replay data to disk."""
-    if not args.routing_replay_dump_path:
+    if not script.routing_replay_dump_path:
         return
 
     from miles.utils.replay_base import routing_replay_manager
 
-    dump_path: Path = Path(args.routing_replay_dump_path)
+    dump_path: Path = Path(script.routing_replay_dump_path)
     dump_path.mkdir(parents=True, exist_ok=True)
 
     rank: int = dist.get_rank()
@@ -46,14 +47,14 @@ def save_replay_data(args: argparse.Namespace) -> None:
             print(f"[worker] Saved routing replay ({len(all_data)} entries) → {save_path}", flush=True)
 
 
-def load_replay_data(args: argparse.Namespace) -> None:
+def load_replay_data(script: ScriptArgs) -> None:
     """Load routing replay data from disk before forward pass."""
-    if not args.routing_replay_load_path:
+    if not script.routing_replay_load_path:
         return
 
     from miles.utils.replay_base import routing_replay_manager
 
-    load_path: Path = Path(args.routing_replay_load_path)
+    load_path: Path = Path(script.routing_replay_load_path)
     rank: int = dist.get_rank()
     replay_file: Path = load_path / f"rank{rank}_{routing_replay_manager.filename}"
 

@@ -17,39 +17,24 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from miles.utils.debug_utils.run_megatron.script_args import ScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.dumper_env import finalize_dumper, setup_dumper
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
 
 
-def _add_custom_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    group: argparse._ArgumentGroup = parser.add_argument_group("run_megatron worker")
-
-    group.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace checkpoint path")
-    group.add_argument("--ref-load", type=str, default=None, help="Megatron checkpoint path (--load)")
-    group.add_argument("--token-ids-file", type=str, required=True, help="Path to JSON file containing token IDs")
-    group.add_argument("--run-backward", action="store_true", default=False, help="Run backward pass after forward")
-    group.add_argument("--role", type=str, default="actor", choices=["actor", "critic"], help="Model role")
-    group.add_argument("--source-patcher-config", type=str, default=None, help="Source patcher YAML config")
-    group.add_argument("--routing-replay-dump-path", type=str, default=None, help="Dump routing replay path")
-    group.add_argument("--routing-replay-load-path", type=str, default=None, help="Load routing replay path")
-    group.add_argument("--indexer-replay-dump-path", type=str, default=None, help="Dump indexer replay path")
-    group.add_argument("--indexer-replay-load-path", type=str, default=None, help="Load indexer replay path")
-
-    return parser
-
-
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[argparse.Namespace, ScriptArgs]:
     from megatron.training.arguments import parse_args
 
-    args: argparse.Namespace = parse_args(extra_args_provider=_add_custom_args)
+    args: argparse.Namespace = parse_args(extra_args_provider=ScriptArgs.register_argparse)
+    script: ScriptArgs = ScriptArgs.from_argparse(args)
 
-    if args.ref_load is not None:
-        args.load = args.ref_load
+    if script.ref_load is not None:
+        args.load = script.ref_load
 
     args.hidden_dropout = 0.0
     args.attention_dropout = 0.0
-    return args
+    return args, script
 
 
 def _initialize_megatron(args: argparse.Namespace) -> None:
@@ -61,14 +46,14 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     init(args)
 
 
-def _build_and_load_model(args: argparse.Namespace) -> list[Any]:
+def _build_and_load_model(args: argparse.Namespace, script: ScriptArgs) -> list[Any]:
     from megatron.core.enums import ModelType
     from megatron.training.training import get_model
 
     from miles.backends.megatron_utils.checkpoint import load_checkpoint
     from miles.backends.megatron_utils.model_provider import get_model_provider_func
 
-    model_provider = get_model_provider_func(args, role=args.role)
+    model_provider = get_model_provider_func(args, role=script.role)
     model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
 
     if args.load is not None:
@@ -92,6 +77,7 @@ def _apply_source_patches(config_path: str) -> None:
 
 def _run_forward_backward(
     args: argparse.Namespace,
+    script: ScriptArgs,
     model: list[Any],
     batch: dict[str, torch.Tensor],
 ) -> None:
@@ -118,7 +104,7 @@ def _run_forward_backward(
         num_microbatches=1,
         seq_length=args.seq_length,
         micro_batch_size=args.micro_batch_size,
-        forward_only=not args.run_backward,
+        forward_only=not script.run_backward,
     )
 
     rank: int = dist.get_rank()
@@ -127,7 +113,7 @@ def _run_forward_backward(
 
 
 def main() -> None:
-    args: argparse.Namespace = _parse_args()
+    args, script = _parse_args()
     _initialize_megatron(args)
 
     rank: int = dist.get_rank()
@@ -139,25 +125,25 @@ def main() -> None:
             f"etp={args.expert_tensor_parallel_size}",
             flush=True,
         )
-        print(f"[worker] run_backward={args.run_backward}, role={args.role}", flush=True)
+        print(f"[worker] run_backward={script.run_backward}, role={script.role}", flush=True)
 
-    if args.source_patcher_config:
-        _apply_source_patches(args.source_patcher_config)
+    if script.source_patcher_config:
+        _apply_source_patches(script.source_patcher_config)
 
     setup_dumper(args)
-    model: list[Any] = _build_and_load_model(args)
+    model: list[Any] = _build_and_load_model(args, script)
 
-    load_replay_data(args)
-    setup_replay_stage(args)
+    load_replay_data(script)
+    setup_replay_stage(script)
 
-    token_ids: list[int] = json.loads(Path(args.token_ids_file).read_text())
+    token_ids: list[int] = json.loads(Path(script.token_ids_file).read_text())
     batch: dict[str, torch.Tensor] = prepare_batch(token_ids=token_ids, batch_size=args.micro_batch_size)
 
     if rank == 0:
         print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
 
-    _run_forward_backward(args=args, model=model, batch=batch)
-    save_replay_data(args)
+    _run_forward_backward(args=args, script=script, model=model, batch=batch)
+    save_replay_data(script)
     finalize_dumper()
 
     if rank == 0:

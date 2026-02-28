@@ -56,6 +56,7 @@ from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_torchrun_cmd,
     build_worker_args,
 )
+from miles.utils.debug_utils.run_megatron.script_args import ScriptArgs
 from miles.utils.misc import exec_command
 
 app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
@@ -104,24 +105,27 @@ def run(
     token_ids_file: Path = write_token_ids_to_tmpfile(token_ids)
     print(f"[cli] Token IDs written to {token_ids_file} ({len(token_ids)} tokens)", flush=True)
 
+    script_args: ScriptArgs = ScriptArgs(
+        hf_checkpoint=str(hf_checkpoint),
+        token_ids_file=str(token_ids_file),
+        role=role,
+        ref_load=str(ref_load) if ref_load is not None else None,
+        run_backward=run_backward,
+        source_patcher_config=str(source_patcher_config) if source_patcher_config is not None else None,
+        routing_replay_dump_path=str(routing_replay_dump_path) if routing_replay_dump_path is not None else None,
+        routing_replay_load_path=str(routing_replay_load_path) if routing_replay_load_path is not None else None,
+        indexer_replay_dump_path=str(indexer_replay_dump_path) if indexer_replay_dump_path is not None else None,
+        indexer_replay_load_path=str(indexer_replay_load_path) if indexer_replay_load_path is not None else None,
+    )
     worker_args_str: str = build_worker_args(
         tp=tp,
         pp=pp,
         cp=cp,
         ep=ep,
         etp=etp,
-        hf_checkpoint=hf_checkpoint,
-        ref_load=ref_load,
         seq_length=seq_length,
         batch_size=batch_size,
-        run_backward=run_backward,
-        role=role,
-        token_ids_file=token_ids_file,
-        source_patcher_config=source_patcher_config,
-        routing_replay_dump_path=routing_replay_dump_path,
-        routing_replay_load_path=routing_replay_load_path,
-        indexer_replay_dump_path=indexer_replay_dump_path,
-        indexer_replay_load_path=indexer_replay_load_path,
+        script_args=script_args,
         extra_args=extra_args,
     )
 
