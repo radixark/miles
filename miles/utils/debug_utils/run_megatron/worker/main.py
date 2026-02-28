@@ -23,6 +23,55 @@ from miles.utils.debug_utils.run_megatron.worker.dumper_env import finalize_dump
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
 
 
+def main() -> None:
+    args, script = _parse_args()
+    _initialize_megatron(args)
+
+    rank: int = dist.get_rank()
+    if rank == 0:
+        print(f"[worker] seq_length={args.seq_length}, micro_batch_size={args.micro_batch_size}", flush=True)
+        print(
+            f"[worker] tp={args.tensor_model_parallel_size}, pp={args.pipeline_model_parallel_size}, "
+            f"cp={args.context_parallel_size}, ep={args.expert_model_parallel_size}, "
+            f"etp={args.expert_tensor_parallel_size}",
+            flush=True,
+        )
+        print(f"[worker] run_backward={script.run_backward}, role={script.role}", flush=True)
+
+    if script.source_patcher_config:
+        _apply_source_patches(script.source_patcher_config)
+
+    setup_dumper(args)
+    model: list[Any] = _build_and_load_model(args, script)
+
+    load_replay_data(script)
+    setup_replay_stage(script)
+
+    from megatron.core import mpu
+
+    cp_rank: int = mpu.get_context_parallel_rank()
+    cp_size: int = mpu.get_context_parallel_world_size()
+
+    token_ids: list[int] = json.loads(Path(script.token_ids_file).read_text())
+    batch: dict[str, torch.Tensor] = prepare_batch(
+        token_ids=token_ids, batch_size=args.micro_batch_size,
+        cp_rank=cp_rank, cp_size=cp_size,
+    )
+
+    if rank == 0:
+        print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
+
+    _run_forward_backward(args=args, script=script, model=model, batch=batch)
+    save_replay_data(script)
+    finalize_dumper()
+
+    if rank == 0:
+        print("[worker] Done.", flush=True)
+
+    dist.barrier()
+    dist.destroy_process_group()
+
+
 def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
     from megatron.training.arguments import parse_args
 
@@ -110,55 +159,6 @@ def _run_forward_backward(
     rank: int = dist.get_rank()
     if rank == 0 and losses:
         print(f"[worker rank={rank}] losses={losses}", flush=True)
-
-
-def main() -> None:
-    args, script = _parse_args()
-    _initialize_megatron(args)
-
-    rank: int = dist.get_rank()
-    if rank == 0:
-        print(f"[worker] seq_length={args.seq_length}, micro_batch_size={args.micro_batch_size}", flush=True)
-        print(
-            f"[worker] tp={args.tensor_model_parallel_size}, pp={args.pipeline_model_parallel_size}, "
-            f"cp={args.context_parallel_size}, ep={args.expert_model_parallel_size}, "
-            f"etp={args.expert_tensor_parallel_size}",
-            flush=True,
-        )
-        print(f"[worker] run_backward={script.run_backward}, role={script.role}", flush=True)
-
-    if script.source_patcher_config:
-        _apply_source_patches(script.source_patcher_config)
-
-    setup_dumper(args)
-    model: list[Any] = _build_and_load_model(args, script)
-
-    load_replay_data(script)
-    setup_replay_stage(script)
-
-    from megatron.core import mpu
-
-    cp_rank: int = mpu.get_context_parallel_rank()
-    cp_size: int = mpu.get_context_parallel_world_size()
-
-    token_ids: list[int] = json.loads(Path(script.token_ids_file).read_text())
-    batch: dict[str, torch.Tensor] = prepare_batch(
-        token_ids=token_ids, batch_size=args.micro_batch_size,
-        cp_rank=cp_rank, cp_size=cp_size,
-    )
-
-    if rank == 0:
-        print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
-
-    _run_forward_backward(args=args, script=script, model=model, batch=batch)
-    save_replay_data(script)
-    finalize_dumper()
-
-    if rank == 0:
-        print("[worker] Done.", flush=True)
-
-    dist.barrier()
-    dist.destroy_process_group()
 
 
 if __name__ == "__main__":

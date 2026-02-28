@@ -8,6 +8,32 @@ import torch.distributed as dist
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 
 
+def load_replay_data(script: WorkerScriptArgs) -> None:
+    """Load routing replay data from disk before forward pass."""
+    if not script.routing_replay_load_path:
+        return
+
+    from miles.utils.replay_base import routing_replay_manager
+
+    load_path: Path = Path(script.routing_replay_load_path)
+    rank: int = dist.get_rank()
+    replay_file: Path = load_path / f"rank{rank}_{routing_replay_manager.filename}"
+
+    if not replay_file.exists():
+        print(f"[worker rank={rank}] WARNING: replay file not found: {replay_file}", flush=True)
+        return
+
+    data: list[torch.Tensor] = torch.load(replay_file, weights_only=False)
+    idx: int = 0
+    for replay in routing_replay_manager.replays:
+        chunk_size: int = len(replay.data) if replay.data else 1
+        replay.data = data[idx : idx + chunk_size]
+        idx += chunk_size
+
+    if rank == 0:
+        print(f"[worker] Loaded routing replay ({len(data)} entries) ← {replay_file}", flush=True)
+
+
 def setup_replay_stage(script: WorkerScriptArgs) -> None:
     """Set routing replay manager stage based on CLI args.
 
@@ -45,29 +71,3 @@ def save_replay_data(script: WorkerScriptArgs) -> None:
         torch.save(all_data, save_path)
         if rank == 0:
             print(f"[worker] Saved routing replay ({len(all_data)} entries) → {save_path}", flush=True)
-
-
-def load_replay_data(script: WorkerScriptArgs) -> None:
-    """Load routing replay data from disk before forward pass."""
-    if not script.routing_replay_load_path:
-        return
-
-    from miles.utils.replay_base import routing_replay_manager
-
-    load_path: Path = Path(script.routing_replay_load_path)
-    rank: int = dist.get_rank()
-    replay_file: Path = load_path / f"rank{rank}_{routing_replay_manager.filename}"
-
-    if not replay_file.exists():
-        print(f"[worker rank={rank}] WARNING: replay file not found: {replay_file}", flush=True)
-        return
-
-    data: list[torch.Tensor] = torch.load(replay_file, weights_only=False)
-    idx: int = 0
-    for replay in routing_replay_manager.replays:
-        chunk_size: int = len(replay.data) if replay.data else 1
-        replay.data = data[idx : idx + chunk_size]
-        idx += chunk_size
-
-    if rank == 0:
-        print(f"[worker] Loaded routing replay ({len(data)} entries) ← {replay_file}", flush=True)

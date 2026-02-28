@@ -17,13 +17,13 @@ def resolve_megatron_path(megatron_path: Path | None) -> str:
     return _DEFAULT_MEGATRON_PATH
 
 
-def resolve_repo_base() -> Path:
-    return Path(os.path.abspath(__file__)).resolve().parents[5]
-
-
 def resolve_model_script(model_type: str) -> Path:
-    repo_base: Path = resolve_repo_base()
+    repo_base: Path = _resolve_repo_base()
     script: Path = repo_base / "scripts" / "models" / f"{model_type}.sh"
     if not script.exists():
         raise typer.BadParameter(f"Model script not found: {script}")
     return script
+
+
+def _resolve_repo_base() -> Path:
+    return Path(os.path.abspath(__file__)).resolve().parents[5]

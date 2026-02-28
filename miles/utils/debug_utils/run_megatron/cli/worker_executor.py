@@ -31,55 +31,6 @@ def build_torchrun_cmd(
     return cmd
 
 
-def _build_megatron_flags(
-    *,
-    tp: int,
-    pp: int,
-    cp: int,
-    ep: int | None,
-    etp: int,
-    sp: bool,
-    seq_length: int,
-    batch_size: int,
-    script_args: WorkerScriptArgs,
-) -> str:
-    """Build Megatron-native CLI flags from declarative tables."""
-    effective_ep: int = ep if ep is not None else tp
-
-    key_value_args: list[tuple[str, object | None]] = [
-        ("--tensor-model-parallel-size", tp),
-        ("--pipeline-model-parallel-size", pp),
-        ("--context-parallel-size", cp),
-        ("--expert-model-parallel-size", effective_ep),
-        ("--expert-tensor-parallel-size", etp),
-        ("--seq-length", seq_length),
-        ("--micro-batch-size", batch_size),
-        ("--global-batch-size", batch_size),
-    ]
-
-    bool_flags: list[tuple[str, bool]] = [
-        ("--sequence-parallel", sp),
-        ("--bf16", True),
-        ("--no-gradient-accumulation-fusion", True),
-        ("--use-miles-router", True),
-        (
-            "--use-routing-replay",
-            script_args.routing_replay_dump_path is not None
-            or script_args.routing_replay_load_path is not None,
-        ),
-    ]
-
-    parts: list[str] = []
-    for flag, value in key_value_args:
-        if value is not None:
-            parts.append(f"{flag} {value}")
-    for flag, condition in bool_flags:
-        if condition:
-            parts.append(flag)
-
-    return " ".join(parts)
-
-
 def build_worker_args(
     *,
     tp: int,
@@ -135,3 +86,52 @@ def build_dumper_env(
     if run_backward:
         env["DUMPER_DUMP_GRAD"] = "1"
     return env
+
+
+def _build_megatron_flags(
+    *,
+    tp: int,
+    pp: int,
+    cp: int,
+    ep: int | None,
+    etp: int,
+    sp: bool,
+    seq_length: int,
+    batch_size: int,
+    script_args: WorkerScriptArgs,
+) -> str:
+    """Build Megatron-native CLI flags from declarative tables."""
+    effective_ep: int = ep if ep is not None else tp
+
+    key_value_args: list[tuple[str, object | None]] = [
+        ("--tensor-model-parallel-size", tp),
+        ("--pipeline-model-parallel-size", pp),
+        ("--context-parallel-size", cp),
+        ("--expert-model-parallel-size", effective_ep),
+        ("--expert-tensor-parallel-size", etp),
+        ("--seq-length", seq_length),
+        ("--micro-batch-size", batch_size),
+        ("--global-batch-size", batch_size),
+    ]
+
+    bool_flags: list[tuple[str, bool]] = [
+        ("--sequence-parallel", sp),
+        ("--bf16", True),
+        ("--no-gradient-accumulation-fusion", True),
+        ("--use-miles-router", True),
+        (
+            "--use-routing-replay",
+            script_args.routing_replay_dump_path is not None
+            or script_args.routing_replay_load_path is not None,
+        ),
+    ]
+
+    parts: list[str] = []
+    for flag, value in key_value_args:
+        if value is not None:
+            parts.append(f"{flag} {value}")
+    for flag, condition in bool_flags:
+        if condition:
+            parts.append(flag)
+
+    return " ".join(parts)

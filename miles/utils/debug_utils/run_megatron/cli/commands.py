@@ -201,6 +201,19 @@ def compare(
     print("[cli] Compare completed.", flush=True)
 
 
+@app.command(name="show-model-args")
+def show_model_args(
+    model_type: ModelTypeOpt,
+) -> None:
+    """Show the MODEL_ARGS for a given model type (debug helper)."""
+    output: str | None = exec_command(
+        f'source "{resolve_model_script(model_type)}" && echo "${{MODEL_ARGS[@]}}"',
+        capture_output=True,
+    )
+    if output:
+        print(output.strip())
+
+
 @app.command(name="run-and-compare")
 def run_and_compare(
     model_type: ModelTypeOpt,
@@ -284,35 +297,6 @@ def run_and_compare(
     )
 
 
-@app.command(name="show-model-args")
-def show_model_args(
-    model_type: ModelTypeOpt,
-) -> None:
-    """Show the MODEL_ARGS for a given model type (debug helper)."""
-    output: str | None = exec_command(
-        f'source "{resolve_model_script(model_type)}" && echo "${{MODEL_ARGS[@]}}"',
-        capture_output=True,
-    )
-    if output:
-        print(output.strip())
-
-
-# ---------------------------------------------------------------------------
-# run-and-compare sub-flows
-# ---------------------------------------------------------------------------
-
-
-def _parallel_kwargs(parsed: dict[str, int]) -> dict[str, object]:
-    """Convert parsed parallel config dict to kwargs for ``run()``."""
-    return dict(
-        tp=parsed.get("tp", 1),
-        pp=parsed.get("pp", 1),
-        cp=parsed.get("cp", 1),
-        ep=parsed.get("ep"),
-        etp=parsed.get("etp", 1),
-    )
-
-
 def _run_baseline_and_target(
     *,
     baseline_p: dict[str, int],
@@ -341,4 +325,15 @@ def _run_baseline_and_target(
         output_dir=target_output,
         routing_replay_dump_path=None,
         routing_replay_load_path=replay_dir,
+    )
+
+
+def _parallel_kwargs(parsed: dict[str, int]) -> dict[str, object]:
+    """Convert parsed parallel config dict to kwargs for ``run()``."""
+    return dict(
+        tp=parsed.get("tp", 1),
+        pp=parsed.get("pp", 1),
+        cp=parsed.get("cp", 1),
+        ep=parsed.get("ep"),
+        etp=parsed.get("etp", 1),
     )

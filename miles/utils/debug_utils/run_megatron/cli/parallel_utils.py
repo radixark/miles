@@ -1,25 +1,8 @@
 """Parallel configuration utilities for run_megatron CLI."""
 
 
-def build_parallel_dir_name(
-    *,
-    tp: int,
-    pp: int,
-    cp: int,
-    ep: int | None,
-    etp: int,
-) -> str:
-    """Build directory name from parallel config, e.g. 'tp2_cp2_ep2'."""
-    parts: list[str] = [f"tp{tp}"]
-    if pp > 1:
-        parts.append(f"pp{pp}")
-    if cp > 1:
-        parts.append(f"cp{cp}")
-    if ep is not None and ep != tp:
-        parts.append(f"ep{ep}")
-    if etp > 1:
-        parts.append(f"etp{etp}")
-    return "_".join(parts)
+def nproc(*, tp: int, pp: int, cp: int) -> int:
+    return tp * pp * cp
 
 
 def parse_parallel_args(args_str: str) -> dict[str, int]:
@@ -44,5 +27,22 @@ def parse_parallel_args(args_str: str) -> dict[str, int]:
     return result
 
 
-def nproc(*, tp: int, pp: int, cp: int) -> int:
-    return tp * pp * cp
+def build_parallel_dir_name(
+    *,
+    tp: int,
+    pp: int,
+    cp: int,
+    ep: int | None,
+    etp: int,
+) -> str:
+    """Build directory name from parallel config, e.g. 'tp2_cp2_ep2'."""
+    parts: list[str] = [f"tp{tp}"]
+    if pp > 1:
+        parts.append(f"pp{pp}")
+    if cp > 1:
+        parts.append(f"cp{cp}")
+    if ep is not None and ep != tp:
+        parts.append(f"ep{ep}")
+    if etp > 1:
+        parts.append(f"etp{etp}")
+    return "_".join(parts)
