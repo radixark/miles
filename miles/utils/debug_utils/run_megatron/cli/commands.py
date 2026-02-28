@@ -50,7 +50,7 @@ from miles.utils.debug_utils.run_megatron.cli.path_utils import (
     resolve_megatron_path,
     resolve_model_script,
 )
-from miles.utils.debug_utils.run_megatron.cli.prompt_utils import generate_prompt, write_prompt_to_tmpfile
+from miles.utils.debug_utils.run_megatron.cli.prompt_utils import generate_token_ids, write_token_ids_to_tmpfile
 from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_dumper_env,
     build_torchrun_cmd,
@@ -93,16 +93,16 @@ def run(
     resolved_megatron: str = resolve_megatron_path(megatron_path)
     nproc_count: int = nproc(tp=tp, pp=pp, cp=cp)
 
-    prompt: str = generate_prompt(
+    token_ids: list[int] = generate_token_ids(
         mode=prompt_mode,  # type: ignore[arg-type]
         seq_length=seq_length,
-        tokenizer_path=hf_checkpoint if prompt_mode != "text" else None,
+        tokenizer_path=hf_checkpoint,
         prompt_text=prompt_text,
         prompt_file=prompt_file,
         apply_chat_template=apply_chat_template,
     )
-    prompt_tmpfile: Path = write_prompt_to_tmpfile(prompt)
-    print(f"[cli] Prompt written to {prompt_tmpfile} ({len(prompt)} chars)", flush=True)
+    token_ids_file: Path = write_token_ids_to_tmpfile(token_ids)
+    print(f"[cli] Token IDs written to {token_ids_file} ({len(token_ids)} tokens)", flush=True)
 
     worker_args_str: str = build_worker_args(
         tp=tp,
@@ -116,7 +116,7 @@ def run(
         batch_size=batch_size,
         run_backward=run_backward,
         role=role,
-        prompt_file=prompt_tmpfile,
+        token_ids_file=token_ids_file,
         source_patcher_config=source_patcher_config,
         routing_replay_dump_path=routing_replay_dump_path,
         routing_replay_load_path=routing_replay_load_path,

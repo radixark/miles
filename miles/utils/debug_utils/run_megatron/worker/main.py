@@ -8,6 +8,7 @@ Not intended to be run directly — use ``python -m miles.utils.debug_utils.run_
 """
 
 import argparse
+import json
 import os
 from functools import partial
 from pathlib import Path
@@ -26,7 +27,7 @@ def _add_custom_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
 
     group.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace checkpoint path")
     group.add_argument("--ref-load", type=str, default=None, help="Megatron checkpoint path (--load)")
-    group.add_argument("--prompt-file", type=str, required=True, help="Path to file containing prompt text")
+    group.add_argument("--token-ids-file", type=str, required=True, help="Path to JSON file containing token IDs")
     group.add_argument("--run-backward", action="store_true", default=False, help="Run backward pass after forward")
     group.add_argument("--role", type=str, default="actor", choices=["actor", "critic"], help="Model role")
     group.add_argument("--source-patcher-config", type=str, default=None, help="Source patcher YAML config")
@@ -149,8 +150,8 @@ def main() -> None:
     load_replay_data(args)
     setup_replay_stage(args)
 
-    prompt_text: str = Path(args.prompt_file).read_text()
-    batch: dict[str, torch.Tensor] = prepare_batch(args=args, prompt_text=prompt_text)
+    token_ids: list[int] = json.loads(Path(args.token_ids_file).read_text())
+    batch: dict[str, torch.Tensor] = prepare_batch(token_ids=token_ids, batch_size=args.micro_batch_size)
 
     if rank == 0:
         print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)

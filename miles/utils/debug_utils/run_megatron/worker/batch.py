@@ -1,29 +1,17 @@
 """Input batch preparation and loss function for standalone Megatron forward/backward."""
 
-import argparse
 from typing import Any
 
 import torch
 
 
 def prepare_batch(
-    args: argparse.Namespace,
-    prompt_text: str,
+    *,
+    token_ids: list[int],
+    batch_size: int,
 ) -> dict[str, torch.Tensor]:
-    """Tokenize prompt and build the batch dict for Megatron forward."""
-    from megatron.training.global_vars import get_tokenizer
-
-    tokenizer = get_tokenizer()
-    token_ids: list[int] = tokenizer.tokenize(prompt_text)
-
-    seq_length: int = args.seq_length
-    batch_size: int = args.micro_batch_size
-
-    if len(token_ids) > seq_length:
-        token_ids = token_ids[:seq_length]
-    elif len(token_ids) < seq_length:
-        pad_id: int = tokenizer.pad if hasattr(tokenizer, "pad") and tokenizer.pad is not None else tokenizer.eod
-        token_ids = token_ids + [pad_id] * (seq_length - len(token_ids))
+    """Build the batch dict for Megatron forward from pre-tokenized token IDs."""
+    seq_length: int = len(token_ids)
 
     input_ids: torch.Tensor = torch.tensor(
         [token_ids] * batch_size,
