@@ -223,7 +223,7 @@ def run_and_verify_comparator(
         "--output-format",
         "json",
         "--preset",
-        "miles_megatron",
+        "sglang_megatron",
         "--allow-skipped-pattern",
         "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
     ]
