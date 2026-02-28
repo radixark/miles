@@ -1,5 +1,15 @@
+import tempfile
 from pathlib import Path
 from typing import Literal
+
+
+def write_prompt_to_tmpfile(prompt_text: str) -> Path:
+    tmp: tempfile.NamedTemporaryFile = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, prefix="run_megatron_prompt_"
+    )
+    tmp.write(prompt_text)
+    tmp.close()
+    return Path(tmp.name)
 
 
 def generate_prompt(

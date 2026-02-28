@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from miles.utils.debug_utils.run_megatron.utils import resolve_model_script
+from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_model_script
 
 
 def build_torchrun_cmd(

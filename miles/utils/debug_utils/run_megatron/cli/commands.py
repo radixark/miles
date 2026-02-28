@@ -41,21 +41,22 @@ from miles.utils.debug_utils.run_megatron.cli.option_types import (
     SourcePatcherConfigOpt,
     TpOpt,
 )
-from miles.utils.debug_utils.run_megatron.cli.prompt_utils import generate_prompt
+from miles.utils.debug_utils.run_megatron.cli.parallel_utils import (
+    build_parallel_dir_name,
+    nproc,
+    parse_parallel_args,
+)
+from miles.utils.debug_utils.run_megatron.cli.path_utils import (
+    resolve_megatron_path,
+    resolve_model_script,
+)
+from miles.utils.debug_utils.run_megatron.cli.prompt_utils import generate_prompt, write_prompt_to_tmpfile
 from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_dumper_env,
     build_torchrun_cmd,
     build_worker_args,
 )
-from miles.utils.debug_utils.run_megatron.utils import (
-    build_parallel_dir_name,
-    exec_command,
-    nproc,
-    parse_parallel_args,
-    resolve_megatron_path,
-    resolve_model_script,
-    write_prompt_to_tmpfile,
-)
+from miles.utils.misc import exec_command
 
 app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
 
