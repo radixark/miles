@@ -1,0 +1,72 @@
+"""Routing replay stage management for standalone Megatron worker."""
+
+import argparse
+from pathlib import Path
+
+import torch
+import torch.distributed as dist
+
+
+def setup_replay_stage(args: argparse.Namespace) -> None:
+    """Set routing replay manager stage based on CLI args.
+
+    The replay manager hooks are registered during model construction
+    (when ``--use-routing-replay`` / ``--use-rollout-routing-replay`` is set).
+    Here we only set the stage so the hooks know whether to record or replay.
+    """
+    from miles.utils.replay_base import routing_replay_manager
+
+    if args.routing_replay_dump_path:
+        routing_replay_manager.stage = "record"
+        print(f"[worker] Routing replay stage=record (dump → {args.routing_replay_dump_path})", flush=True)
+    elif args.routing_replay_load_path:
+        routing_replay_manager.stage = "replay_forward"
+        print(f"[worker] Routing replay stage=replay_forward (load ← {args.routing_replay_load_path})", flush=True)
+
+
+def save_replay_data(args: argparse.Namespace) -> None:
+    """Save recorded routing replay data to disk."""
+    if not args.routing_replay_dump_path:
+        return
+
+    from miles.utils.replay_base import routing_replay_manager
+
+    dump_path: Path = Path(args.routing_replay_dump_path)
+    dump_path.mkdir(parents=True, exist_ok=True)
+
+    rank: int = dist.get_rank()
+    all_data: list[torch.Tensor] = []
+    for replay in routing_replay_manager.replays:
+        all_data.extend(replay.data)
+
+    if all_data:
+        save_path: Path = dump_path / f"rank{rank}_{routing_replay_manager.filename}"
+        torch.save(all_data, save_path)
+        if rank == 0:
+            print(f"[worker] Saved routing replay ({len(all_data)} entries) → {save_path}", flush=True)
+
+
+def load_replay_data(args: argparse.Namespace) -> None:
+    """Load routing replay data from disk before forward pass."""
+    if not args.routing_replay_load_path:
+        return
+
+    from miles.utils.replay_base import routing_replay_manager
+
+    load_path: Path = Path(args.routing_replay_load_path)
+    rank: int = dist.get_rank()
+    replay_file: Path = load_path / f"rank{rank}_{routing_replay_manager.filename}"
+
+    if not replay_file.exists():
+        print(f"[worker rank={rank}] WARNING: replay file not found: {replay_file}", flush=True)
+        return
+
+    data: list[torch.Tensor] = torch.load(replay_file, weights_only=False)
+    idx: int = 0
+    for replay in routing_replay_manager.replays:
+        chunk_size: int = len(replay.data) if replay.data else 1
+        replay.data = data[idx : idx + chunk_size]
+        idx += chunk_size
+
+    if rank == 0:
+        print(f"[worker] Loaded routing replay ({len(data)} entries) ← {replay_file}", flush=True)

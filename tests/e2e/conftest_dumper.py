@@ -9,6 +9,64 @@ from pathlib import Path
 import torch
 from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, SummaryRecord, parse_record_json
 
+# ---------------------------------------------------------------------------
+# Shared source patcher configs (used by test_dumper.py and test_run_megatron.py)
+# ---------------------------------------------------------------------------
+
+SOURCE_PATCHED_FIELDS: list[str] = ["layer_input", "attn_output", "pre_mlp_residual", "mlp_output"]
+
+MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
+patches:
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
+    edits:
+      - match: |
+          inference_context = deprecate_inference_params(inference_context, inference_params)
+        append: "dumper.dump('layer_input', hidden_states, dims='t(cp:zigzag,sp) 1 h')"
+      - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
+    edits:
+      - match: "residual = hidden_states"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t(cp:zigzag,sp) 1 h')"
+      - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
+"""
+
+SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
+patches:
+  - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
+    edits:
+      - match: |
+          hidden_states, residual = (
+              self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
+                  hidden_states,
+                  residual,
+                  forward_batch,
+                  captured_last_layer_outputs=captured_last_layer_outputs,
+                  **kwargs,
+              )
+          )
+        append: "dumper.dump('layer_input', residual, dims='t h')"
+      - match: |
+          if hidden_states.shape[0] != 0:
+              hidden_states = self.self_attn(
+                  positions=positions,
+                  hidden_states=hidden_states,
+                  forward_batch=forward_batch,
+              )
+        append: "dumper.dump('attn_output', hidden_states, dims='t h(tp,partial)')"
+      - match: |
+          hidden_states, residual = self.layer_communicator.prepare_mlp(
+              hidden_states, residual, forward_batch
+          )
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t h')"
+      - match: |
+          hidden_states = self.mlp(
+              hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
+          )
+        append: "dumper.dump('mlp_output', hidden_states, dims='t h(tp,partial)')"
+"""
+
 
 def clear_proxy_env() -> None:
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):

@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from tests.e2e.conftest_dumper import check_dump_dir, clear_proxy_env, run_and_verify_comparator
+from tests.e2e.conftest_dumper import (
+    MEGATRON_SOURCE_PATCHER_CONFIG_YAML,
+    SOURCE_PATCHED_FIELDS,
+    check_dump_dir,
+    clear_proxy_env,
+    run_and_verify_comparator,
+)
 
 import miles.utils.external_utils.command_utils as U
 from miles.utils.misc import exec_command
@@ -23,25 +29,6 @@ MODEL_TYPE: str = "qwen3-30B-A3B"
 NUM_GPUS: int = 8
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
-
-SOURCE_PATCHED_FIELDS: list[str] = ["layer_input", "attn_output", "pre_mlp_residual", "mlp_output"]
-
-MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
-patches:
-  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
-    edits:
-      - match: |
-          inference_context = deprecate_inference_params(inference_context, inference_params)
-        append: "dumper.dump('layer_input', hidden_states, dims='t(cp:zigzag,sp) 1 h')"
-      - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
-        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
-  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
-    edits:
-      - match: "residual = hidden_states"
-        append: "dumper.dump('pre_mlp_residual', residual, dims='t(cp:zigzag,sp) 1 h')"
-      - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
-"""
 
 CONFIGS: dict[str, tuple[str, str]] = {
     # (baseline_parallel_args, target_parallel_args)
