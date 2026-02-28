@@ -14,10 +14,15 @@ import torch
 
 SOURCE_PATCHED_FIELDS: list[str] = [
     "layer_input",
+    "input_layernorm_output",
     "attn_output",
-    "pre_mlp_residual",
-    "mlp_output",
+    "attn_q",
+    "attn_k",
+    "attn_v",
     "attn_pre_o_proj",
+    "pre_mlp_residual",
+    "pre_mlp_layernorm_output",
+    "mlp_output",
     "moe_router_logits",
     "moe_expert_output",
 ]
@@ -29,18 +34,27 @@ patches:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
         append: "dumper.dump('layer_input', hidden_states, dims='t(cp:zigzag,sp) 1 h')"
+      - match: "input_layernorm_output = apply_module(self.input_layernorm)(hidden_states)"
+        append: "dumper.dump('input_layernorm_output', input_layernorm_output, dims='t(cp:zigzag,sp) 1 h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
       - match: "residual = hidden_states"
         append: "dumper.dump('pre_mlp_residual', residual, dims='t(cp:zigzag,sp) 1 h')"
+      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
+        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t(cp:zigzag,sp) 1 h')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
         prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
     edits:
+      - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
+        append: |
+          dumper.dump('attn_q', query.reshape(query.size(0), query.size(1), -1), dims='t(cp:zigzag,sp) 1 h(tp)')
+          dumper.dump('attn_k', key.reshape(key.size(0), key.size(1), -1), dims='t(cp:zigzag,sp) 1 h(tp)')
+          dumper.dump('attn_v', value.reshape(value.size(0), value.size(1), -1), dims='t(cp:zigzag,sp) 1 h(tp)')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
         prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t(cp:zigzag,sp) 1 h(tp)')"
 
@@ -63,18 +77,27 @@ patches:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
         append: "dumper.dump('layer_input', hidden_states, dims='s(cp:zigzag,sp) b h')"
+      - match: "input_layernorm_output = apply_module(self.input_layernorm)(hidden_states)"
+        append: "dumper.dump('input_layernorm_output', input_layernorm_output, dims='s(cp:zigzag,sp) b h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s(cp:zigzag,sp) b h')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
       - match: "residual = hidden_states"
         append: "dumper.dump('pre_mlp_residual', residual, dims='s(cp:zigzag,sp) b h')"
+      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
+        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s(cp:zigzag,sp) b h')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
         prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s(cp:zigzag,sp) b h')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
     edits:
+      - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
+        append: |
+          dumper.dump('attn_q', query.reshape(query.size(0), query.size(1), -1), dims='s(cp:zigzag,sp) b h(tp)')
+          dumper.dump('attn_k', key.reshape(key.size(0), key.size(1), -1), dims='s(cp:zigzag,sp) b h(tp)')
+          dumper.dump('attn_v', value.reshape(value.size(0), value.size(1), -1), dims='s(cp:zigzag,sp) b h(tp)')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
         prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='s(cp:zigzag,sp) b h(tp)')"
 
@@ -104,7 +127,9 @@ patches:
                   **kwargs,
               )
           )
-        append: "dumper.dump('layer_input', residual, dims='t h')"
+        append: |
+          dumper.dump('layer_input', residual, dims='t h')
+          dumper.dump('input_layernorm_output', hidden_states, dims='t h')
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
@@ -117,7 +142,9 @@ patches:
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
-        append: "dumper.dump('pre_mlp_residual', residual, dims='t h')"
+        append: |
+          dumper.dump('pre_mlp_residual', residual, dims='t h')
+          dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h')
       - match: |
           hidden_states = self.mlp(
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
@@ -127,6 +154,12 @@ patches:
   # --- attention internals ---
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeAttention.forward_core
     edits:
+      - match: |
+          attn_output = self.attn(
+        prepend: |
+          dumper.dump('attn_q', q, dims='t h(tp)')
+          dumper.dump('attn_k', k, dims='t h(tp)')
+          dumper.dump('attn_v', v, dims='t h(tp)')
       - match: "output, _ = self.o_proj(attn_output)"
         prepend: "dumper.dump('attn_pre_o_proj', attn_output, dims='t h(tp)')"
 
