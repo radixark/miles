@@ -9,9 +9,14 @@
 # After running miles once (the expensive execute step), you can re-run the
 # comparator many times via "compare" to investigate issues without re-running training.
 
+import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated
+
+_MILES_ROOT: Path = Path(__file__).resolve().parents[3]
+if str(_MILES_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MILES_ROOT))
 
 import typer
 from tests.e2e.conftest_dumper import (
