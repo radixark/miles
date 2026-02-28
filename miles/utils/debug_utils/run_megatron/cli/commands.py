@@ -14,7 +14,7 @@ from typing import Annotated
 
 import typer
 
-from miles.utils.debug_utils.run_megatron.cli.comparator_utils import assert_all_passed, model_is_moe, print_json_summary
+from miles.utils.debug_utils.run_megatron.cli.comparator_utils import assert_all_passed, print_json_summary
 from miles.utils.debug_utils.run_megatron.cli.option_types import (
     ApplyChatTemplateOpt,
     BatchSizeOpt,
@@ -215,7 +215,7 @@ def run_and_compare(
     dumper_filter: DumperFilterOpt = "",
     megatron_path: MegatronPathOpt = None,
     extra_args: ExtraArgsOpt = "",
-    no_replay: Annotated[bool, typer.Option("--no-replay", help="Disable automatic routing replay")] = False,
+    routing_replay: Annotated[bool, typer.Option("--routing-replay", help="Enable routing replay (record on baseline, replay on target)")] = False,
 ) -> None:
     """Run baseline + target configs, then compare dumps."""
     baseline_p: dict[str, int] = parse_parallel_args(baseline)
@@ -256,26 +256,18 @@ def run_and_compare(
         indexer_replay_load_path=None,
     )
 
-    needs_replay: bool = not no_replay and model_is_moe(model_type)
-    replay_dir: Path = output_base_dir / "routing_replay"
+    replay_dir: Path | None = (
+        output_base_dir / "routing_replay" if routing_replay else None
+    )
 
-    if needs_replay:
-        _run_and_compare_with_replay(
-            baseline_p=baseline_p,
-            target_p=target_p,
-            baseline_output=baseline_output,
-            target_output=target_output,
-            replay_dir=replay_dir,
-            common_run_kwargs=common_run_kwargs,
-        )
-    else:
-        _run_and_compare_simple(
-            baseline_p=baseline_p,
-            target_p=target_p,
-            baseline_output=baseline_output,
-            target_output=target_output,
-            common_run_kwargs=common_run_kwargs,
-        )
+    _run_baseline_and_target(
+        baseline_p=baseline_p,
+        target_p=target_p,
+        baseline_output=baseline_output,
+        target_output=target_output,
+        replay_dir=replay_dir,
+        common_run_kwargs=common_run_kwargs,
+    )
 
     print("[cli] Comparing baseline vs target", flush=True)
     compare(
@@ -315,50 +307,24 @@ def _parallel_kwargs(parsed: dict[str, int]) -> dict[str, object]:
     )
 
 
-def _run_and_compare_with_replay(
+def _run_baseline_and_target(
     *,
     baseline_p: dict[str, int],
     target_p: dict[str, int],
     baseline_output: Path,
     target_output: Path,
-    replay_dir: Path,
+    replay_dir: Path | None,
     common_run_kwargs: dict[str, object],
 ) -> None:
-    print("[cli] MOE model detected — using routing replay flow", flush=True)
+    if replay_dir is not None:
+        print("[cli] Routing replay enabled", flush=True)
 
-    print("[cli] Step 1/2: Baseline run (record routing)", flush=True)
-    run(
-        **common_run_kwargs,
-        **_parallel_kwargs(baseline_p),  # type: ignore[arg-type]
-        output_dir=baseline_output,
-        routing_replay_dump_path=replay_dir,
-        routing_replay_load_path=None,
-    )
-
-    print("[cli] Step 2/2: Target run (replay routing)", flush=True)
-    run(
-        **common_run_kwargs,
-        **_parallel_kwargs(target_p),  # type: ignore[arg-type]
-        output_dir=target_output,
-        routing_replay_dump_path=None,
-        routing_replay_load_path=replay_dir,
-    )
-
-
-def _run_and_compare_simple(
-    *,
-    baseline_p: dict[str, int],
-    target_p: dict[str, int],
-    baseline_output: Path,
-    target_output: Path,
-    common_run_kwargs: dict[str, object],
-) -> None:
     print("[cli] Step 1/2: Baseline run", flush=True)
     run(
         **common_run_kwargs,
         **_parallel_kwargs(baseline_p),  # type: ignore[arg-type]
         output_dir=baseline_output,
-        routing_replay_dump_path=None,
+        routing_replay_dump_path=replay_dir,
         routing_replay_load_path=None,
     )
 
@@ -368,5 +334,5 @@ def _run_and_compare_simple(
         **_parallel_kwargs(target_p),  # type: ignore[arg-type]
         output_dir=target_output,
         routing_replay_dump_path=None,
-        routing_replay_load_path=None,
+        routing_replay_load_path=replay_dir,
     )
