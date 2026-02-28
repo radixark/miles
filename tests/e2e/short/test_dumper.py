@@ -136,9 +136,11 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
         "--prompt-data /root/datasets/gsm8k/train.parquet "
         "--input-key messages --label-key label --apply-chat-template "
         "--rollout-shuffle --rm-type math "
-        "--num-rollout 1 --rollout-batch-size 4 --n-samples-per-prompt 2 "
         "--rollout-max-response-len 20 --rollout-temperature 0.8 "
-        "--global-batch-size 8 "
+        # NOTE: Only generate 1 training sample
+        "--num-rollout 1 --rollout-batch-size 1 --n-samples-per-prompt 1 --global-batch-size 1 "
+        # NOTE: Must disable cuda graph to allow dumping
+        "--sglang-disable-cuda-graph "
     )
 
     optimizer_args = (
