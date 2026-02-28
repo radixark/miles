@@ -12,14 +12,16 @@ from miles.utils.argparse_utils import DataclassArgparseBridge
 
 @dataclasses.dataclass(frozen=True)
 class _SampleArgs:
-    name: str
-    count: int
-    rate: float = 0.5
-    label: str = "default"
-    verbose: bool = False
-    tag: str | None = None
-    limit: int | None = None
-    threshold: float | None = None
+    mandatory_str: str
+    mandatory_int: int
+    mandatory_float: float
+    defaulted_str: str = "default"
+    defaulted_int: int = 10
+    defaulted_float: float = 0.5
+    flag: bool = False
+    optional_str: str | None = None
+    optional_int: int | None = None
+    optional_float: float | None = None
 
 
 _BRIDGE: DataclassArgparseBridge[_SampleArgs] = DataclassArgparseBridge(
@@ -54,38 +56,46 @@ class TestRegisterOnParser:
         _BRIDGE.register_on_parser(parser)
 
         namespace: argparse.Namespace = parser.parse_args([
-            "--sample-name", "hello",
-            "--sample-count", "42",
-            "--sample-rate", "1.5",
-            "--sample-verbose",
-            "--sample-tag", "mytag",
-            "--sample-limit", "100",
-            "--sample-threshold", "0.9",
+            "--sample-mandatory-str", "hello",
+            "--sample-mandatory-int", "42",
+            "--sample-mandatory-float", "3.14",
+            "--sample-defaulted-str", "custom",
+            "--sample-defaulted-int", "99",
+            "--sample-defaulted-float", "1.5",
+            "--sample-flag",
+            "--sample-optional-str", "mytag",
+            "--sample-optional-int", "100",
+            "--sample-optional-float", "0.9",
         ])
 
-        assert namespace.sample_name == "hello"
-        assert namespace.sample_count == 42
-        assert namespace.sample_rate == 1.5
-        assert namespace.sample_verbose is True
-        assert namespace.sample_tag == "mytag"
-        assert namespace.sample_limit == 100
-        assert namespace.sample_threshold == 0.9
+        assert namespace.sample_mandatory_str == "hello"
+        assert namespace.sample_mandatory_int == 42
+        assert namespace.sample_mandatory_float == 3.14
+        assert namespace.sample_defaulted_str == "custom"
+        assert namespace.sample_defaulted_int == 99
+        assert namespace.sample_defaulted_float == 1.5
+        assert namespace.sample_flag is True
+        assert namespace.sample_optional_str == "mytag"
+        assert namespace.sample_optional_int == 100
+        assert namespace.sample_optional_float == 0.9
 
     def test_defaults_are_applied(self) -> None:
         parser: argparse.ArgumentParser = argparse.ArgumentParser()
         _BRIDGE.register_on_parser(parser)
 
         namespace: argparse.Namespace = parser.parse_args([
-            "--sample-name", "test",
-            "--sample-count", "1",
+            "--sample-mandatory-str", "test",
+            "--sample-mandatory-int", "1",
+            "--sample-mandatory-float", "2.0",
         ])
 
-        assert namespace.sample_rate == 0.5
-        assert namespace.sample_label == "default"
-        assert namespace.sample_verbose is False
-        assert namespace.sample_tag is None
-        assert namespace.sample_limit is None
-        assert namespace.sample_threshold is None
+        assert namespace.sample_defaulted_str == "default"
+        assert namespace.sample_defaulted_int == 10
+        assert namespace.sample_defaulted_float == 0.5
+        assert namespace.sample_flag is False
+        assert namespace.sample_optional_str is None
+        assert namespace.sample_optional_int is None
+        assert namespace.sample_optional_float is None
 
     def test_no_prefix(self) -> None:
         parser: argparse.ArgumentParser = argparse.ArgumentParser()
@@ -102,20 +112,22 @@ class TestFromNamespace:
         _BRIDGE.register_on_parser(parser)
 
         namespace: argparse.Namespace = parser.parse_args([
-            "--sample-name", "world",
-            "--sample-count", "7",
-            "--sample-verbose",
-            "--sample-tag", "x",
+            "--sample-mandatory-str", "world",
+            "--sample-mandatory-int", "7",
+            "--sample-mandatory-float", "1.0",
+            "--sample-flag",
+            "--sample-optional-str", "x",
         ])
 
         instance: _SampleArgs = _BRIDGE.from_namespace(namespace)
 
-        assert instance.name == "world"
-        assert instance.count == 7
-        assert instance.rate == 0.5
-        assert instance.verbose is True
-        assert instance.tag == "x"
-        assert instance.limit is None
+        assert instance.mandatory_str == "world"
+        assert instance.mandatory_int == 7
+        assert instance.mandatory_float == 1.0
+        assert instance.defaulted_str == "default"
+        assert instance.flag is True
+        assert instance.optional_str == "x"
+        assert instance.optional_int is None
 
     def test_no_prefix_from_namespace(self) -> None:
         parser: argparse.ArgumentParser = argparse.ArgumentParser()
@@ -131,37 +143,38 @@ class TestFromNamespace:
 class TestToCliArgs:
     def test_serializes_all_types(self) -> None:
         instance: _SampleArgs = _SampleArgs(
-            name="hello",
-            count=42,
-            rate=1.5,
-            verbose=True,
-            tag="mytag",
-            limit=100,
-            threshold=0.9,
+            mandatory_str="hello",
+            mandatory_int=42,
+            mandatory_float=3.14,
+            flag=True,
+            optional_str="mytag",
+            optional_int=100,
+            optional_float=0.9,
         )
 
         cli: str = _BRIDGE.to_cli_args(instance)
 
-        assert "--sample-name hello" in cli
-        assert "--sample-count 42" in cli
-        assert "--sample-rate 1.5" in cli
-        assert "--sample-verbose" in cli
-        assert "--sample-tag mytag" in cli
-        assert "--sample-limit 100" in cli
-        assert "--sample-threshold 0.9" in cli
+        assert "--sample-mandatory-str hello" in cli
+        assert "--sample-mandatory-int 42" in cli
+        assert "--sample-mandatory-float 3.14" in cli
+        assert "--sample-flag" in cli
+        assert "--sample-optional-str mytag" in cli
+        assert "--sample-optional-int 100" in cli
+        assert "--sample-optional-float 0.9" in cli
 
     def test_skips_none_and_false(self) -> None:
         instance: _SampleArgs = _SampleArgs(
-            name="test",
-            count=1,
+            mandatory_str="test",
+            mandatory_int=1,
+            mandatory_float=2.0,
         )
 
         cli: str = _BRIDGE.to_cli_args(instance)
 
-        assert "--sample-verbose" not in cli
-        assert "--sample-tag" not in cli
-        assert "--sample-limit" not in cli
-        assert "--sample-threshold" not in cli
+        assert "--sample-flag" not in cli
+        assert "--sample-optional-str" not in cli
+        assert "--sample-optional-int" not in cli
+        assert "--sample-optional-float" not in cli
 
     def test_no_prefix_serialization(self) -> None:
         instance: _NoPrefixArgs = _NoPrefixArgs(name="foo", debug=True)
@@ -174,14 +187,16 @@ class TestToCliArgs:
 class TestRoundTrip:
     def test_to_cli_args_then_parse_back(self) -> None:
         original: _SampleArgs = _SampleArgs(
-            name="roundtrip",
-            count=99,
-            rate=2.5,
-            label="custom",
-            verbose=True,
-            tag="t",
-            limit=50,
-            threshold=0.1,
+            mandatory_str="roundtrip",
+            mandatory_int=99,
+            mandatory_float=2.5,
+            defaulted_str="custom",
+            defaulted_int=77,
+            defaulted_float=1.1,
+            flag=True,
+            optional_str="t",
+            optional_int=50,
+            optional_float=0.1,
         )
 
         cli: str = _BRIDGE.to_cli_args(original)
@@ -194,7 +209,11 @@ class TestRoundTrip:
         assert restored == original
 
     def test_round_trip_with_defaults(self) -> None:
-        original: _SampleArgs = _SampleArgs(name="minimal", count=1)
+        original: _SampleArgs = _SampleArgs(
+            mandatory_str="minimal",
+            mandatory_int=1,
+            mandatory_float=2.0,
+        )
 
         cli: str = _BRIDGE.to_cli_args(original)
 
