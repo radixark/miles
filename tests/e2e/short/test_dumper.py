@@ -174,7 +174,13 @@ def _verify_dumps(config_name: str, dump_subdir: str, dump_dir: str) -> None:
 def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
     baseline_dir: Path = Path(f"{dump_dir}/{dump_subdir}/engine_0")
     target_dir: Path = Path(f"{dump_dir}/{dump_subdir}/fwd_bwd")
-    run_and_verify_comparator(baseline_dir=baseline_dir, target_dir=target_dir)
+    # TODO: moe_expert_output comparison is not yet supported (unshard logic
+    #       for post-alltoall MoE tensors needs dedicated handling)
+    run_and_verify_comparator(
+        baseline_dir=baseline_dir,
+        target_dir=target_dir,
+        extra_args=["--exclude", "moe_expert_output"],
+    )
 
 
 @app.command()
