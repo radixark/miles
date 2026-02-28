@@ -38,6 +38,7 @@ def _build_megatron_flags(
     cp: int,
     ep: int | None,
     etp: int,
+    sp: bool,
     seq_length: int,
     batch_size: int,
     script_args: WorkerScriptArgs,
@@ -57,6 +58,7 @@ def _build_megatron_flags(
     ]
 
     bool_flags: list[tuple[str, bool]] = [
+        ("--sequence-parallel", sp),
         ("--bf16", True),
         ("--no-gradient-accumulation-fusion", True),
         ("--use-miles-router", True),
@@ -85,6 +87,7 @@ def build_worker_args(
     cp: int,
     ep: int | None,
     etp: int,
+    sp: bool,
     seq_length: int,
     batch_size: int,
     script_args: WorkerScriptArgs,
@@ -102,6 +105,7 @@ def build_worker_args(
             cp=cp,
             ep=ep,
             etp=etp,
+            sp=sp,
             seq_length=seq_length,
             batch_size=batch_size,
             script_args=script_args,
