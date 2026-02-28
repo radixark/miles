@@ -114,6 +114,8 @@ def run_and_verify_comparator(
         str(baseline_dir),
         "--target-path",
         str(target_dir),
+        "--output-format",
+        "json",
         "--grouping",
         "logical",
         "--forbid-skip",
