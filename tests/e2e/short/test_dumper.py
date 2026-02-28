@@ -48,15 +48,15 @@ patches:
     edits:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
-        append: "dumper.dump('layer_input', hidden_states, dims='t(sp) 1 h')"
+        append: "dumper.dump('layer_input', hidden_states, dims='t(cp:zigzag,sp) 1 h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
-        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(sp) 1 h')"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
       - match: "residual = hidden_states"
-        append: "dumper.dump('pre_mlp_residual', residual, dims='t(sp) 1 h')"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t(cp:zigzag,sp) 1 h')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(sp) 1 h')"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -136,7 +136,7 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
         "--prompt-data /root/datasets/gsm8k/train.parquet "
         "--input-key messages --label-key label --apply-chat-template "
         "--rollout-shuffle --rm-type math "
-        "--rollout-max-response-len 20 --rollout-temperature 0.8 "
+        "--rollout-max-response-len 3 --rollout-temperature 0.8 "
         # NOTE: Only generate 1 training sample
         "--num-rollout 1 --rollout-batch-size 1 --n-samples-per-prompt 1 --global-batch-size 1 "
         # NOTE: Must disable cuda graph to allow dumping
