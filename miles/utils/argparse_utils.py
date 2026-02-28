@@ -1,12 +1,6 @@
-"""Generic bridge between frozen dataclasses and argparse.
+"""Dataclass ↔ argparse bridge.
 
-``DataclassArgparseBridge`` eliminates the need for each dataclass to
-hand-write ``register_argparse`` / ``from_namespace`` / ``to_cli_args``
-methods.  Only the dataclass field definitions are needed — the bridge
-derives everything else from ``get_type_hints()``.
-
-Supported field types: ``str``, ``int``, ``float``, ``bool``,
-``str | None``, ``int | None``, ``float | None``.
+Supported field types: str, int, float, bool, and their ``X | None`` variants.
 """
 
 from __future__ import annotations
@@ -26,7 +20,6 @@ def _is_bool(tp: type) -> bool:
 
 
 def _is_optional(tp: type) -> tuple[bool, type | None]:
-    """Return ``(True, inner)`` if *tp* is ``X | None``, else ``(False, None)``."""
     if not isinstance(tp, types.UnionType):
         return False, None
 
@@ -39,17 +32,10 @@ def _is_optional(tp: type) -> tuple[bool, type | None]:
 
 
 class DataclassArgparseBridge(Generic[T]):
-    """Bi-directional converter between a frozen dataclass and argparse.
+    """Bi-directional converter: dataclass ↔ argparse.
 
-    Parameters
-    ----------
-    dataclass_type:
-        The dataclass class itself (not an instance).
-    prefix:
-        CLI flag prefix.  ``"script"`` → ``--script-field-name``;
-        ``""`` → ``--field-name``.
-    group_title:
-        Title used for the argparse argument group.
+    *prefix* controls the CLI flag prefix: ``"script"`` → ``--script-field-name``,
+    ``""`` → ``--field-name``.
     """
 
     def __init__(
@@ -79,7 +65,6 @@ class DataclassArgparseBridge(Generic[T]):
         return field_name
 
     def register_on_parser(self, parser: argparse.ArgumentParser) -> None:
-        """Add arguments derived from the dataclass fields to *parser*."""
         group: argparse._ArgumentGroup = parser.add_argument_group(self._group_title)
 
         for field in dataclasses.fields(self._cls):
@@ -113,14 +98,12 @@ class DataclassArgparseBridge(Generic[T]):
             raise TypeError(f"Unsupported field type {tp!r} for field {field.name}")
 
     def from_namespace(self, namespace: argparse.Namespace) -> T:
-        """Construct a dataclass instance from a parsed ``Namespace``."""
         kwargs: dict[str, object] = {}
         for field in dataclasses.fields(self._cls):
             kwargs[field.name] = getattr(namespace, self._dest(field.name))
         return self._cls(**kwargs)  # type: ignore[call-arg]
 
     def to_cli_args(self, instance: T) -> str:
-        """Serialize a dataclass instance into a CLI argument string."""
         parts: list[str] = []
 
         for field in dataclasses.fields(self._cls):  # type: ignore[arg-type]
