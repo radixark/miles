@@ -14,8 +14,36 @@ from typing import Annotated
 
 import typer
 
-from miles.utils.debug_utils.run_megatron.comparator_utils import assert_all_passed, model_is_moe, print_json_summary
-from miles.utils.debug_utils.run_megatron.helpers import (
+from miles.utils.debug_utils.run_megatron.cli.comparator_utils import assert_all_passed, model_is_moe, print_json_summary
+from miles.utils.debug_utils.run_megatron.cli.option_types import (
+    ApplyChatTemplateOpt,
+    BatchSizeOpt,
+    CpOpt,
+    DumperFilterOpt,
+    EpOpt,
+    EtpOpt,
+    ExtraArgsOpt,
+    HfCheckpointOpt,
+    IndexerReplayDumpOpt,
+    IndexerReplayLoadOpt,
+    MegatronPathOpt,
+    ModelTypeOpt,
+    PpOpt,
+    PromptFileOpt,
+    PromptModeOpt,
+    PromptTextOpt,
+    RefLoadOpt,
+    RoleOpt,
+    RoutingReplayDumpOpt,
+    RoutingReplayLoadOpt,
+    RunBackwardOpt,
+    SeqLengthOpt,
+    SourcePatcherConfigOpt,
+    TpOpt,
+)
+from miles.utils.debug_utils.run_megatron.cli.prompt_utils import generate_prompt
+from miles.utils.debug_utils.run_megatron.cli.torchrun import build_dumper_env, build_torchrun_cmd, build_worker_args
+from miles.utils.debug_utils.run_megatron.utils import (
     build_parallel_dir_name,
     exec_command,
     nproc,
@@ -24,37 +52,6 @@ from miles.utils.debug_utils.run_megatron.helpers import (
     resolve_model_script,
     write_prompt_to_tmpfile,
 )
-from miles.utils.debug_utils.run_megatron.prompt_utils import generate_prompt
-from miles.utils.debug_utils.run_megatron.torchrun import build_dumper_env, build_torchrun_cmd, build_worker_args
-
-# ---------------------------------------------------------------------------
-# Shared Annotated type aliases (metadata defined once, reused across commands)
-# ---------------------------------------------------------------------------
-
-ModelTypeOpt = Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.sh")]
-HfCheckpointOpt = Annotated[Path, typer.Option(help="HuggingFace checkpoint path")]
-RefLoadOpt = Annotated[Path | None, typer.Option(help="Megatron checkpoint path")]
-TpOpt = Annotated[int, typer.Option(help="Tensor parallel size")]
-PpOpt = Annotated[int, typer.Option(help="Pipeline parallel size")]
-CpOpt = Annotated[int, typer.Option(help="Context parallel size")]
-EpOpt = Annotated[int | None, typer.Option(help="Expert parallel size (default=tp)")]
-EtpOpt = Annotated[int, typer.Option(help="Expert tensor parallel size")]
-RunBackwardOpt = Annotated[bool, typer.Option("--run-backward", help="Run backward pass")]
-PromptModeOpt = Annotated[str, typer.Option(help="Prompt mode: math / story / text")]
-PromptTextOpt = Annotated[str | None, typer.Option(help="Prompt text (for text mode)")]
-PromptFileOpt = Annotated[Path | None, typer.Option(help="Prompt file (for story mode)")]
-SeqLengthOpt = Annotated[int, typer.Option(help="Sequence length")]
-BatchSizeOpt = Annotated[int, typer.Option(help="Micro batch size")]
-ApplyChatTemplateOpt = Annotated[bool, typer.Option("--apply-chat-template", help="Apply chat template")]
-RoleOpt = Annotated[str, typer.Option(help="Model role: actor / critic")]
-SourcePatcherConfigOpt = Annotated[Path | None, typer.Option(help="Source patcher YAML config path")]
-RoutingReplayDumpOpt = Annotated[Path | None, typer.Option(help="Routing replay dump path")]
-RoutingReplayLoadOpt = Annotated[Path | None, typer.Option(help="Routing replay load path")]
-IndexerReplayDumpOpt = Annotated[Path | None, typer.Option(help="Indexer replay dump path")]
-IndexerReplayLoadOpt = Annotated[Path | None, typer.Option(help="Indexer replay load path")]
-DumperFilterOpt = Annotated[str, typer.Option(help="Dumper filter expression")]
-MegatronPathOpt = Annotated[Path | None, typer.Option(help="Path to Megatron-LM")]
-ExtraArgsOpt = Annotated[str, typer.Option(help="Extra args passed to worker")]
 
 app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
 

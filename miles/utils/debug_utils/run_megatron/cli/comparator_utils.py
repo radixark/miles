@@ -2,7 +2,7 @@
 
 import json
 
-from miles.utils.debug_utils.run_megatron.helpers import exec_command, resolve_model_script
+from miles.utils.debug_utils.run_megatron.utils import exec_command, resolve_model_script
 
 
 def model_is_moe(model_type: str) -> bool:

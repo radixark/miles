@@ -1,4 +1,4 @@
-"""Shared helpers for run_megatron CLI."""
+"""Shared utilities for run_megatron package."""
 
 import os
 import subprocess
