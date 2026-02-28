@@ -193,6 +193,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
+            parser.add_argument(
+                "--allgather-cp",
+                action="store_true",
+                default=False,
+            )
 
             return parser
 
@@ -1841,6 +1846,10 @@ def hf_validate_args(args, hf_config):
     # multimodal models have different config structure
     if hasattr(hf_config, "text_config"):
         hf_config = hf_config.text_config
+
+    if hasattr(hf_config, "rope_parameters") and isinstance(hf_config.rope_parameters, dict):
+        if "rope_theta" in hf_config.rope_parameters:
+            hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
 
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
