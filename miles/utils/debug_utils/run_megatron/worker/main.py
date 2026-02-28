@@ -59,9 +59,8 @@ def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) ->
     if args.load is not None:
         load_checkpoint(model, optimizer=None, opt_param_scheduler=None)
 
-    if not script.run_backward:
-        for m in model:
-            m.eval()
+    for m in model:
+        m.train()
     return model
 
 
