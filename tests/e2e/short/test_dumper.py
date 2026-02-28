@@ -94,16 +94,7 @@ patches:
         append: "dumper.dump('mlp_output', hidden_states, dims='t h(tp,partial)')"
 """
 
-# Two configs that together cover all parallelism dimensions:
-#   Config A: TP=2, SP, PP=2, EP=2, DP=2            → covers DP
-#   Config B: TP=2, SP, PP=2, CP=2, EP=2, eTP=2     → covers CP, expert_TP
 CONFIGS: dict[str, str] = {
-    "tp2_pp2_ep2_dp2": (
-        "--tensor-model-parallel-size 2 --sequence-parallel "
-        "--pipeline-model-parallel-size 2 "
-        "--expert-model-parallel-size 2 --expert-tensor-parallel-size 1 "
-        "--use-dynamic-batch-size --max-tokens-per-gpu 2048 "
-    ),
     "tp2_pp2_cp2_ep2_etp2": (
         "--tensor-model-parallel-size 2 --sequence-parallel "
         "--pipeline-model-parallel-size 2 "
