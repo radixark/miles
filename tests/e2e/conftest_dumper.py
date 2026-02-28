@@ -1,5 +1,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 # The comparator must report all-passed with zero failures — no exceptions.
+# NOTE: Dump raw tensors as-is — never reshape/squeeze/flatten before dumping.
+# The comparator is responsible for alignment and shape reconciliation.
 
 import os
 import subprocess
@@ -52,11 +54,11 @@ patches:
     edits:
       - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
         append: |
-          dumper.dump('attn_q', query.reshape(query.size(0), -1), dims='t(cp:zigzag,sp) h(tp)')
-          dumper.dump('attn_k', key.reshape(key.size(0), -1), dims='t(cp:zigzag,sp) h(tp)')
-          dumper.dump('attn_v', value.reshape(value.size(0), -1), dims='t(cp:zigzag,sp) h(tp)')
+          dumper.dump('attn_q', query, dims='t(cp:zigzag,sp) num_heads(tp) head_dim')
+          dumper.dump('attn_k', key, dims='t(cp:zigzag,sp) num_kv_heads(tp) head_dim')
+          dumper.dump('attn_v', value, dims='t(cp:zigzag,sp) num_kv_heads(tp) head_dim')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
-        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t(cp:zigzag,sp) h(tp)')"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out)"
 
   # --- moe internals ---
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
@@ -95,11 +97,11 @@ patches:
     edits:
       - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
         append: |
-          dumper.dump('attn_q', query.reshape(query.size(0), query.size(1), -1), dims='s(cp:zigzag,sp) b h(tp)')
-          dumper.dump('attn_k', key.reshape(key.size(0), key.size(1), -1), dims='s(cp:zigzag,sp) b h(tp)')
-          dumper.dump('attn_v', value.reshape(value.size(0), value.size(1), -1), dims='s(cp:zigzag,sp) b h(tp)')
+          dumper.dump('attn_q', query, dims='s(cp:zigzag,sp) b num_heads(tp) head_dim')
+          dumper.dump('attn_k', key, dims='s(cp:zigzag,sp) b num_kv_heads(tp) head_dim')
+          dumper.dump('attn_v', value, dims='s(cp:zigzag,sp) b num_kv_heads(tp) head_dim')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
-        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='s(cp:zigzag,sp) b h(tp)')"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out)"
 
   # --- moe internals ---
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
