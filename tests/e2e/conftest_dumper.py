@@ -52,17 +52,17 @@ patches:
     edits:
       - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
         append: |
-          dumper.dump('attn_q', query.reshape(query.size(0), query.size(1), -1), dims='t(cp:zigzag,sp) 1 h(tp)')
-          dumper.dump('attn_k', key.reshape(key.size(0), key.size(1), -1), dims='t(cp:zigzag,sp) 1 h(tp)')
-          dumper.dump('attn_v', value.reshape(value.size(0), value.size(1), -1), dims='t(cp:zigzag,sp) 1 h(tp)')
+          dumper.dump('attn_q', query.reshape(query.size(0), -1), dims='t(cp:zigzag,sp) h(tp)')
+          dumper.dump('attn_k', key.reshape(key.size(0), -1), dims='t(cp:zigzag,sp) h(tp)')
+          dumper.dump('attn_v', value.reshape(value.size(0), -1), dims='t(cp:zigzag,sp) h(tp)')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
-        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t(cp:zigzag,sp) 1 h(tp)')"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t(cp:zigzag,sp) h(tp)')"
 
   # --- moe internals ---
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='t(cp:zigzag,sp) 1 num_experts')"
+        append: "dumper.dump('moe_router_logits', logits, dims='t(cp:zigzag,sp) num_experts')"
 
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
