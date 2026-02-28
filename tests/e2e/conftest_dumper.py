@@ -128,7 +128,7 @@ patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeAttention.forward_core
     edits:
       - match: "output, _ = self.o_proj(attn_output)"
-        prepend: "dumper.dump('attn_pre_o_proj', attn_output, dims='t attn_h(tp)')"
+        prepend: "dumper.dump('attn_pre_o_proj', attn_output, dims='t h(tp)')"
 
   # --- moe internals ---
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeSparseMoeBlock.forward_normal
