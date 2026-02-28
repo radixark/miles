@@ -222,8 +222,8 @@ def run_and_verify_comparator(
         str(target_dir),
         "--output-format",
         "json",
-        "--grouping",
-        "logical",
+        "--preset",
+        "miles_megatron",
         "--allow-skip-pattern",
         "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
     ]
