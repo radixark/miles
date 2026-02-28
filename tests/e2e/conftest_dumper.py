@@ -58,7 +58,7 @@ patches:
           dumper.dump('attn_k', key, dims='t(cp:zigzag,sp) num_kv_heads(tp) head_dim')
           dumper.dump('attn_v', value, dims='t(cp:zigzag,sp) num_kv_heads(tp) head_dim')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
-        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out)"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t(cp:zigzag,sp) 1 num_heads*head_dim(tp)')"
 
   # --- moe internals ---
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
@@ -101,13 +101,13 @@ patches:
           dumper.dump('attn_k', key, dims='s(cp:zigzag,sp) b num_kv_heads(tp) head_dim')
           dumper.dump('attn_v', value, dims='s(cp:zigzag,sp) b num_kv_heads(tp) head_dim')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
-        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out)"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='s(cp:zigzag,sp) b num_heads*head_dim(tp)')"
 
   # --- moe internals ---
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='s(cp:zigzag,sp) num_experts')"
+        append: "dumper.dump('moe_router_logits', logits, dims='s(cp:zigzag,sp) b num_experts')"
 
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
@@ -159,11 +159,11 @@ patches:
       - match: |
           attn_output = self.attn(
         prepend: |
-          dumper.dump('attn_q', q, dims='t h(tp)')
-          dumper.dump('attn_k', k, dims='t h(tp)')
-          dumper.dump('attn_v', v, dims='t h(tp)')
+          dumper.dump('attn_q', q, dims='t num_heads*head_dim(tp)')
+          dumper.dump('attn_k', k, dims='t num_kv_heads*head_dim(tp)')
+          dumper.dump('attn_v', v, dims='t num_kv_heads*head_dim(tp)')
       - match: "output, _ = self.o_proj(attn_output)"
-        prepend: "dumper.dump('attn_pre_o_proj', attn_output, dims='t h(tp)')"
+        prepend: "dumper.dump('attn_pre_o_proj', attn_output, dims='t num_heads*head_dim(tp)')"
 
   # --- moe internals ---
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeSparseMoeBlock.forward_normal
