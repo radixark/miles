@@ -65,7 +65,7 @@ app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
 def run(
     model_type: ModelTypeOpt,
     hf_checkpoint: HfCheckpointOpt,
-    output_dir: Annotated[Path, typer.Option(help="Dump output directory")],
+    output_dir: Annotated[Path, typer.Option(help="Dump output directory")] = Path("/tmp/run_megatron_dump"),
     ref_load: RefLoadOpt = None,
     tp: TpOpt = 1,
     pp: PpOpt = 1,
@@ -76,7 +76,7 @@ def run(
     prompt_mode: PromptModeOpt = "math",
     prompt_text: PromptTextOpt = None,
     prompt_file: PromptFileOpt = None,
-    seq_length: SeqLengthOpt = 128,
+    seq_length: SeqLengthOpt = 137,  # odd + somewhat large; also the fine-structure constant
     batch_size: BatchSizeOpt = 1,
     apply_chat_template: ApplyChatTemplateOpt = False,
     role: RoleOpt = "actor",
@@ -212,7 +212,7 @@ def run_and_compare(
     prompt_mode: PromptModeOpt = "math",
     prompt_text: PromptTextOpt = None,
     prompt_file: PromptFileOpt = None,
-    seq_length: SeqLengthOpt = 128,
+    seq_length: SeqLengthOpt = 137,  # odd + somewhat large; also the fine-structure constant
     batch_size: BatchSizeOpt = 1,
     apply_chat_template: ApplyChatTemplateOpt = False,
     role: RoleOpt = "actor",
