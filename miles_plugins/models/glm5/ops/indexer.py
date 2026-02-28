@@ -42,7 +42,7 @@ class IndexerFunction(torch.autograd.Function):
     def backward(ctx, grad_scores, grad_indices):
         index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk_indices = ctx.saved_tensors
         grad_q, grad_w, grad_k = indexer_bwd_interface(index_q, weights, index_k, topk_indices, grad_scores)
-        return grad_q, grad_k, grad_w, None, None, None, None, None, None, None
+        return grad_q, grad_k, grad_w, None, None, None, None
 
 
 def lighting_indexer(
