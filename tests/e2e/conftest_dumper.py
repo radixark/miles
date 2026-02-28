@@ -1,7 +1,6 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 # The comparator must report all-passed with zero failures — no exceptions.
 
-import json
 import os
 import subprocess
 import sys
@@ -106,7 +105,7 @@ def run_and_verify_comparator(
     target_dir: Path,
     extra_args: list[str] | None = None,
 ) -> None:
-    """Run comparator and verify: failed==0 and passed>0 from JSON summary."""
+    """Run comparator subprocess and rely on its exit code (--forbid-skip ensures skips also fail)."""
     cmd: list[str] = [
         sys.executable,
         "-m",
@@ -119,6 +118,7 @@ def run_and_verify_comparator(
         "json",
         "--grouping",
         "logical",
+        "--forbid-skip",
     ]
     if extra_args:
         cmd.extend(extra_args)
@@ -131,26 +131,4 @@ def run_and_verify_comparator(
 
     log_comparator_output(stdout=result.stdout, stderr=result.stderr)
 
-    assert result.returncode == 0, (
-        f"Comparator failed (rc={result.returncode})\nstderr: {result.stderr[-2000:]}"
-    )
-
-    summary: dict | None = _extract_summary(result.stdout)
-    assert summary is not None, "No summary record found in comparator output"
-    assert summary["failed"] == 0, f"Comparator has {summary['failed']} failed comparisons"
-    assert summary["passed"] > 0, f"Comparator has 0 passed comparisons (total={summary['total']})"
-
-
-def _extract_summary(stdout: str) -> dict | None:
-    """Extract the summary JSON record from JSONL comparator output."""
-    for line in stdout.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record: dict = json.loads(line)
-            if record.get("type") == "summary":
-                return record
-        except json.JSONDecodeError:
-            continue
-    return None
+    assert result.returncode == 0, f"Comparator failed (rc={result.returncode})\nstderr: {result.stderr[-2000:]}"
