@@ -42,7 +42,7 @@ from miles.utils.debug_utils.run_megatron.cli.option_types import (
     TpOpt,
 )
 from miles.utils.debug_utils.run_megatron.cli.prompt_utils import generate_prompt
-from miles.utils.debug_utils.run_megatron.cli.torchrun import build_dumper_env, build_torchrun_cmd, build_worker_args
+from miles.utils.debug_utils.run_megatron.cli.worker_executor import build_dumper_env, build_torchrun_cmd, build_worker_args
 from miles.utils.debug_utils.run_megatron.utils import (
     build_parallel_dir_name,
     exec_command,
