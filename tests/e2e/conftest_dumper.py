@@ -34,7 +34,7 @@ patches:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
         append: "dumper.dump('layer_input', hidden_states, dims='t(cp:zigzag,sp) 1 h')"
-      - match: "input_layernorm_output = apply_module(self.input_layernorm)(hidden_states)"
+      - match: "input_layernorm_output = self.input_layernorm(hidden_states)"
         append: "dumper.dump('input_layernorm_output', input_layernorm_output, dims='t(cp:zigzag,sp) 1 h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
@@ -42,7 +42,7 @@ patches:
     edits:
       - match: "residual = hidden_states"
         append: "dumper.dump('pre_mlp_residual', residual, dims='t(cp:zigzag,sp) 1 h')"
-      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
+      - match: "pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t(cp:zigzag,sp) 1 h')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
         prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
@@ -77,7 +77,7 @@ patches:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
         append: "dumper.dump('layer_input', hidden_states, dims='s(cp:zigzag,sp) b h')"
-      - match: "input_layernorm_output = apply_module(self.input_layernorm)(hidden_states)"
+      - match: "input_layernorm_output = self.input_layernorm(hidden_states)"
         append: "dumper.dump('input_layernorm_output', input_layernorm_output, dims='s(cp:zigzag,sp) b h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s(cp:zigzag,sp) b h')"
@@ -85,7 +85,7 @@ patches:
     edits:
       - match: "residual = hidden_states"
         append: "dumper.dump('pre_mlp_residual', residual, dims='s(cp:zigzag,sp) b h')"
-      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
+      - match: "pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s(cp:zigzag,sp) b h')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
         prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s(cp:zigzag,sp) b h')"
