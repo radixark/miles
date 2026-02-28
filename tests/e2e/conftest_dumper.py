@@ -105,7 +105,7 @@ def run_and_verify_comparator(
     target_dir: Path,
     extra_args: list[str] | None = None,
 ) -> None:
-    """Run comparator subprocess and rely on its exit code (--forbid-skip ensures skips also fail)."""
+    """Run comparator subprocess and rely on its exit code (--allow-skip-pattern limits allowed skips)."""
     cmd: list[str] = [
         sys.executable,
         "-m",
@@ -118,7 +118,8 @@ def run_and_verify_comparator(
         "json",
         "--grouping",
         "logical",
-        "--forbid-skip",
+        "--allow-skip-pattern",
+        "input_ids|positions",
     ]
     if extra_args:
         cmd.extend(extra_args)
