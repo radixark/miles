@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_model_script
-from miles.utils.debug_utils.run_megatron.script_args import ScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 
 
 def build_torchrun_cmd(
@@ -40,13 +40,13 @@ def build_worker_args(
     etp: int,
     seq_length: int,
     batch_size: int,
-    script_args: ScriptArgs,
+    script_args: WorkerScriptArgs,
     extra_args: str,
 ) -> str:
     """Build the worker argument string.
 
     Megatron-native flags are built manually; ``--script-*`` flags come from
-    ``ScriptArgs.to_cli_args()`` automatically.
+    ``WorkerScriptArgs.to_cli_args()`` automatically.
     """
     effective_ep: int = ep if ep is not None else tp
 

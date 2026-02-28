@@ -1,4 +1,4 @@
-"""ScriptArgs: our custom arguments passed from CLI to torchrun worker.
+"""WorkerScriptArgs: our custom arguments passed from CLI to torchrun worker.
 
 All flags use the ``--script-`` prefix to avoid collision with Megatron's own
 argparse namespace.  Adding a new field here is the *only* change needed —
@@ -15,7 +15,7 @@ _PREFIX: str = "script"
 
 
 @dataclasses.dataclass(frozen=True)
-class ScriptArgs:
+class WorkerScriptArgs:
     hf_checkpoint: str
     token_ids_file: str
     role: str = "actor"
@@ -70,8 +70,8 @@ class ScriptArgs:
                 raise TypeError(f"Unsupported field type {field.type!r} for {field.name}")
 
     @classmethod
-    def from_argparse(cls, namespace: argparse.Namespace) -> ScriptArgs:
-        """Extract ``script_*`` attributes from a Namespace into a ScriptArgs."""
+    def from_argparse(cls, namespace: argparse.Namespace) -> WorkerScriptArgs:
+        """Extract ``script_*`` attributes from a Namespace into a WorkerScriptArgs."""
         kwargs: dict[str, object] = {}
         for field in dataclasses.fields(cls):
             kwargs[field.name] = getattr(namespace, f"{_PREFIX}_{field.name}")

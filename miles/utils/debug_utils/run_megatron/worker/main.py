@@ -17,17 +17,17 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from miles.utils.debug_utils.run_megatron.script_args import ScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.dumper_env import finalize_dumper, setup_dumper
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
 
 
-def _parse_args() -> tuple[argparse.Namespace, ScriptArgs]:
+def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
     from megatron.training.arguments import parse_args
 
-    args: argparse.Namespace = parse_args(extra_args_provider=ScriptArgs.register_argparse)
-    script: ScriptArgs = ScriptArgs.from_argparse(args)
+    args: argparse.Namespace = parse_args(extra_args_provider=WorkerScriptArgs.register_argparse)
+    script: WorkerScriptArgs = WorkerScriptArgs.from_argparse(args)
 
     if script.ref_load is not None:
         args.load = script.ref_load
@@ -46,7 +46,7 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     init(args)
 
 
-def _build_and_load_model(args: argparse.Namespace, script: ScriptArgs) -> list[Any]:
+def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
     from megatron.core.enums import ModelType
     from megatron.training.training import get_model
 
@@ -77,7 +77,7 @@ def _apply_source_patches(config_path: str) -> None:
 
 def _run_forward_backward(
     args: argparse.Namespace,
-    script: ScriptArgs,
+    script: WorkerScriptArgs,
     model: list[Any],
     batch: dict[str, torch.Tensor],
 ) -> None:

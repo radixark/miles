@@ -56,7 +56,7 @@ from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_torchrun_cmd,
     build_worker_args,
 )
-from miles.utils.debug_utils.run_megatron.script_args import ScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 from miles.utils.misc import exec_command
 
 app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
@@ -105,7 +105,7 @@ def run(
     token_ids_file: Path = write_token_ids_to_tmpfile(token_ids)
     print(f"[cli] Token IDs written to {token_ids_file} ({len(token_ids)} tokens)", flush=True)
 
-    script_args: ScriptArgs = ScriptArgs(
+    script_args: WorkerScriptArgs = WorkerScriptArgs(
         hf_checkpoint=str(hf_checkpoint),
         token_ids_file=str(token_ids_file),
         role=role,

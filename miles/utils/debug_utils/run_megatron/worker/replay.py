@@ -5,10 +5,10 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from miles.utils.debug_utils.run_megatron.script_args import ScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 
 
-def setup_replay_stage(script: ScriptArgs) -> None:
+def setup_replay_stage(script: WorkerScriptArgs) -> None:
     """Set routing replay manager stage based on CLI args.
 
     The replay manager hooks are registered during model construction
@@ -25,7 +25,7 @@ def setup_replay_stage(script: ScriptArgs) -> None:
         print(f"[worker] Routing replay stage=replay_forward (load ← {script.routing_replay_load_path})", flush=True)
 
 
-def save_replay_data(script: ScriptArgs) -> None:
+def save_replay_data(script: WorkerScriptArgs) -> None:
     """Save recorded routing replay data to disk."""
     if not script.routing_replay_dump_path:
         return
@@ -47,7 +47,7 @@ def save_replay_data(script: ScriptArgs) -> None:
             print(f"[worker] Saved routing replay ({len(all_data)} entries) → {save_path}", flush=True)
 
 
-def load_replay_data(script: ScriptArgs) -> None:
+def load_replay_data(script: WorkerScriptArgs) -> None:
     """Load routing replay data from disk before forward pass."""
     if not script.routing_replay_load_path:
         return
