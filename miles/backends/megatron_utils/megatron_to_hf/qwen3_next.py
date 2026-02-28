@@ -1,7 +1,65 @@
 import re
+from argparse import Namespace
 
+import torch
 
 from miles_plugins.mbridge.qwen3_next import convert_gated_attn_qgkv_mcore_to_hf, convert_gdn_in_proj_mcore_to_hf
+
+
+def needs_gdn_weight_fix(name: str) -> bool:
+    """Check if a parameter name requires GDN weight gather fix."""
+    if "self_attention.in_proj.weight" in name and "layer_norm" not in name:
+        return True
+    if "self_attention.conv1d.weight" in name:
+        return True
+    if "self_attention.conv1d.bias" in name:
+        return True
+    return False
+
+
+def fix_gdn_weight_gather(args: Namespace, name: str, param: torch.Tensor) -> torch.Tensor:
+    """Fix GDN (GatedDeltaNet) per-component TP gathering.
+
+    MCore's sharded_state_dict loads GDN in_proj and conv1d weights with per-component
+    TP sharding: each rank holds [Q_local, K_local, V_local, ...].  But partition_stride=1
+    causes all_gather_param to do a simple cat, producing
+        [Q_r0, K_r0, V_r0, ..., Q_r1, K_r1, V_r1, ...]
+    instead of the correct layout
+        [Q_all, K_all, V_all, ...].
+    This function rearranges the gathered tensor to the correct component-contiguous layout.
+    """
+    from megatron.core import mpu
+
+    tp_size = mpu.get_tensor_model_parallel_world_size()
+    if tp_size <= 1:
+        return param
+
+    qk_local = args.linear_num_key_heads * args.linear_key_head_dim // tp_size
+    v_local = args.linear_num_value_heads * args.linear_value_head_dim // tp_size
+    nv_local = args.linear_num_value_heads // tp_size
+
+    if "self_attention.in_proj.weight" in name and "layer_norm" not in name:
+        sections = [qk_local, qk_local, v_local, v_local, nv_local, nv_local]
+    elif "self_attention.conv1d.weight" in name:
+        sections = [qk_local, qk_local, v_local]
+    elif "self_attention.conv1d.bias" in name:
+        sections = [qk_local, qk_local, v_local]
+    else:
+        return param
+
+    chunks = param.chunk(tp_size, dim=0)
+    per_rank_comps = [c.split(sections, dim=0) for c in chunks]
+    return torch.cat(
+        [torch.cat([per_rank_comps[r][c] for r in range(tp_size)], dim=0) for c in range(len(sections))],
+        dim=0,
+    )
+
+
+def handle_gdn_weight_gather(args: Namespace, name: str, param: torch.Tensor) -> torch.Tensor:
+    """Apply GDN weight gather fix if needed (called after TP all-gather)."""
+    if needs_gdn_weight_fix(name):
+        param = fix_gdn_weight_gather(args, name, param)
+    return param
 
 
 def _convert_qgkv_weight_to_hf(args, param, head_dim, prefix):
@@ -159,9 +217,9 @@ def convert_qwen3_next_to_hf(args, name, param):
         elif rest == "self_attention.A_log":
             return [(f"model.layers.{layer_idx}.linear_attn.A_log", param)]
         elif rest == "self_attention.out_norm.weight":
-            # Megatron stores zero-centered gamma (w-1); restore to HF direct-scale (w).
-            # Use FP32 arithmetic to preserve precision (out_norm is stored in FP32).
-            return [(f"model.layers.{layer_idx}.linear_attn.norm.weight", (param.float() + 1.0).bfloat16())]
+            # GDN out_norm uses direct-scale weights (gdn_out_norm_zero_centered_gamma=False),
+            # matching HF format directly. No +1/-1 adjustment needed.
+            return [(f"model.layers.{layer_idx}.linear_attn.norm.weight", param)]
         elif rest == "self_attention.out_proj.weight":
             return [(f"model.layers.{layer_idx}.linear_attn.out_proj.weight", param)]
 
