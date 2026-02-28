@@ -42,7 +42,11 @@ from miles.utils.debug_utils.run_megatron.cli.option_types import (
     TpOpt,
 )
 from miles.utils.debug_utils.run_megatron.cli.prompt_utils import generate_prompt
-from miles.utils.debug_utils.run_megatron.cli.worker_executor import build_dumper_env, build_torchrun_cmd, build_worker_args
+from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
+    build_dumper_env,
+    build_torchrun_cmd,
+    build_worker_args,
+)
 from miles.utils.debug_utils.run_megatron.utils import (
     build_parallel_dir_name,
     exec_command,
@@ -215,7 +219,9 @@ def run_and_compare(
     dumper_filter: DumperFilterOpt = "",
     megatron_path: MegatronPathOpt = None,
     extra_args: ExtraArgsOpt = "",
-    routing_replay: Annotated[bool, typer.Option("--routing-replay", help="Enable routing replay (record on baseline, replay on target)")] = False,
+    routing_replay: Annotated[
+        bool, typer.Option("--routing-replay", help="Enable routing replay (record on baseline, replay on target)")
+    ] = False,
 ) -> None:
     """Run baseline + target configs, then compare dumps."""
     baseline_p: dict[str, int] = parse_parallel_args(baseline)
@@ -256,9 +262,7 @@ def run_and_compare(
         indexer_replay_load_path=None,
     )
 
-    replay_dir: Path | None = (
-        output_base_dir / "routing_replay" if routing_replay else None
-    )
+    replay_dir: Path | None = output_base_dir / "routing_replay" if routing_replay else None
 
     _run_baseline_and_target(
         baseline_p=baseline_p,

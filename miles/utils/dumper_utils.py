@@ -32,7 +32,7 @@ def get_sglang_env(args: Namespace) -> dict[str, str]:
 
     env: dict[str, str] = {"DUMPER_SERVER_PORT": "reuse"}
 
-    if (source_patcher_config := args.dumper_source_patcher_config_inference):
+    if source_patcher_config := args.dumper_source_patcher_config_inference:
         env["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
 
     return env
