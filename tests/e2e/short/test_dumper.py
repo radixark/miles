@@ -91,9 +91,7 @@ def prepare(dump_dir: str, mode: str) -> None:
     U.exec_command(f"rm -rf {dump_dir}")
 
     megatron_yaml: str = (
-        MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML
-        if mode.endswith("_bshd")
-        else MEGATRON_SOURCE_PATCHER_CONFIG_YAML
+        MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML if mode.endswith("_bshd") else MEGATRON_SOURCE_PATCHER_CONFIG_YAML
     )
     Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(megatron_yaml)
     Path(SGLANG_SOURCE_PATCHER_CONFIG_PATH).write_text(SGLANG_SOURCE_PATCHER_CONFIG_YAML)

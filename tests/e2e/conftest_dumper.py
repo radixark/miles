@@ -13,8 +13,13 @@ import torch
 # ---------------------------------------------------------------------------
 
 SOURCE_PATCHED_FIELDS: list[str] = [
-    "layer_input", "attn_output", "pre_mlp_residual", "mlp_output",
-    "attn_pre_o_proj", "moe_router_logits", "moe_expert_output",
+    "layer_input",
+    "attn_output",
+    "pre_mlp_residual",
+    "mlp_output",
+    "attn_pre_o_proj",
+    "moe_router_logits",
+    "moe_expert_output",
 ]
 
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
