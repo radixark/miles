@@ -20,6 +20,7 @@ if str(_MILES_ROOT) not in sys.path:
 
 import typer
 from tests.e2e.conftest_dumper import (
+    MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML,
     MEGATRON_SOURCE_PATCHER_CONFIG_YAML,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
     SOURCE_PATCHED_FIELDS,
@@ -40,12 +41,22 @@ _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_miles_dumper_"))
 MEGATRON_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "megatron_source_patcher.yaml")
 SGLANG_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "sglang_source_patcher.yaml")
 
-EXP_PATTERNS = ["engine_*", "fwd_only", "fwd_bwd"]
+EXP_PATTERNS: list[str] = ["engine_*", "fwd_only", "fwd_bwd"]
 
-EXPECTED_FIELDS: dict[str, list[str]] = {
-    "engine_*": ["input_ids", "positions"] + SOURCE_PATCHED_FIELDS,
-    "fwd_only": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + SOURCE_PATCHED_FIELDS,
-    "fwd_bwd": ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"] + SOURCE_PATCHED_FIELDS,
+_MEGATRON_AUX_THD: list[str] = ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"]
+_MEGATRON_AUX_BSHD: list[str] = ["input_ids"]
+
+EXPECTED_FIELDS: dict[str, dict[str, list[str]]] = {
+    "tp2_pp2_cp2_ep2_etp2": {
+        "engine_*": ["input_ids", "positions"] + SOURCE_PATCHED_FIELDS,
+        "fwd_only": _MEGATRON_AUX_THD + SOURCE_PATCHED_FIELDS,
+        "fwd_bwd": _MEGATRON_AUX_THD + SOURCE_PATCHED_FIELDS,
+    },
+    "tp2_pp2_cp2_ep2_etp2_bshd": {
+        "engine_*": ["input_ids", "positions"] + SOURCE_PATCHED_FIELDS,
+        "fwd_only": _MEGATRON_AUX_BSHD + SOURCE_PATCHED_FIELDS,
+        "fwd_bwd": _MEGATRON_AUX_BSHD + SOURCE_PATCHED_FIELDS,
+    },
 }
 
 CONFIGS: dict[str, str] = {
@@ -56,6 +67,13 @@ CONFIGS: dict[str, str] = {
         "--expert-model-parallel-size 2 --expert-tensor-parallel-size 2 "
         "--use-dynamic-batch-size --max-tokens-per-gpu 2048 "
     ),
+    "tp2_pp2_cp2_ep2_etp2_bshd": (
+        "--tensor-model-parallel-size 2 --sequence-parallel "
+        "--pipeline-model-parallel-size 2 "
+        "--context-parallel-size 2 "
+        "--expert-model-parallel-size 2 --expert-tensor-parallel-size 2 "
+        "--qkv-format bshd --micro-batch-size 1 "
+    ),
 }
 
 
@@ -65,14 +83,19 @@ def _resolve_mode(mode: str) -> tuple[str, str]:
     return mode, CONFIGS[mode]
 
 
-def prepare(dump_dir: str) -> None:
+def prepare(dump_dir: str, mode: str) -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
     U.exec_command(f"rm -rf {dump_dir}")
 
-    Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(MEGATRON_SOURCE_PATCHER_CONFIG_YAML)
+    megatron_yaml: str = (
+        MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML
+        if mode.endswith("_bshd")
+        else MEGATRON_SOURCE_PATCHER_CONFIG_YAML
+    )
+    Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(megatron_yaml)
     Path(SGLANG_SOURCE_PATCHER_CONFIG_PATH).write_text(SGLANG_SOURCE_PATCHER_CONFIG_YAML)
 
 
@@ -142,10 +165,11 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
     )
 
 
-def _verify_dumps(dump_subdir: str, dump_dir: str) -> None:
+def _verify_dumps(config_name: str, dump_subdir: str, dump_dir: str) -> None:
     base: Path = Path(dump_dir) / dump_subdir
+    config_expected: dict[str, list[str]] = EXPECTED_FIELDS[config_name]
     for pattern in EXP_PATTERNS:
-        check_dump_dir(base, pattern, expected_fields=EXPECTED_FIELDS.get(pattern))
+        check_dump_dir(base, pattern, expected_fields=config_expected.get(pattern))
     print(f"All dump verifications passed for {dump_subdir}!")
 
 
@@ -164,10 +188,10 @@ def run(
     dump_dir: str = str(_RUN_DIR / "dumps")
     print(f"Run directory: {_RUN_DIR}")
 
-    prepare(dump_dir=dump_dir)
+    prepare(dump_dir=dump_dir, mode=config_name)
     clear_proxy_env()
     _execute(perf_args=perf_args, dump_subdir=config_name, dump_dir=dump_dir)
-    _verify_dumps(dump_subdir=config_name, dump_dir=dump_dir)
+    _verify_dumps(config_name=config_name, dump_subdir=config_name, dump_dir=dump_dir)
     _verify_comparator(dump_subdir=config_name, dump_dir=dump_dir)
 
 
@@ -179,7 +203,7 @@ def compare(
     """Re-run comparator on existing dumps (no training)."""
     config_name, _ = _resolve_mode(mode)
 
-    _verify_dumps(dump_subdir=config_name, dump_dir=dump_dir)
+    _verify_dumps(config_name=config_name, dump_subdir=config_name, dump_dir=dump_dir)
     _verify_comparator(dump_subdir=config_name, dump_dir=dump_dir)
 
 

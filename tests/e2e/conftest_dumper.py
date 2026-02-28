@@ -12,7 +12,10 @@ import torch
 # Shared source patcher configs (used by test_dumper.py and test_run_megatron.py)
 # ---------------------------------------------------------------------------
 
-SOURCE_PATCHED_FIELDS: list[str] = ["layer_input", "attn_output", "pre_mlp_residual", "mlp_output"]
+SOURCE_PATCHED_FIELDS: list[str] = [
+    "layer_input", "attn_output", "pre_mlp_residual", "mlp_output",
+    "attn_pre_o_proj", "moe_router_logits", "moe_expert_output",
+]
 
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
@@ -29,6 +32,57 @@ patches:
         append: "dumper.dump('pre_mlp_residual', residual, dims='t(cp:zigzag,sp) 1 h')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
         prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t(cp:zigzag,sp) 1 h')"
+
+  # --- attention internals ---
+  - target: megatron.core.transformer.attention.Attention.forward
+    edits:
+      - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t(cp:zigzag,sp) 1 h(tp)')"
+
+  # --- moe internals ---
+  - target: megatron.core.transformer.moe.router.TopKRouter.forward
+    edits:
+      - match: "logits = self.gating(input)"
+        append: "dumper.dump('moe_router_logits', logits, dims='t(cp:zigzag,sp) num_experts')"
+
+  - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
+    edits:
+      - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h(tp:partial)')"
+"""
+
+MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML: str = """\
+patches:
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
+    edits:
+      - match: |
+          inference_context = deprecate_inference_params(inference_context, inference_params)
+        append: "dumper.dump('layer_input', hidden_states, dims='s(cp:zigzag,sp) b h')"
+      - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s(cp:zigzag,sp) b h')"
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
+    edits:
+      - match: "residual = hidden_states"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='s(cp:zigzag,sp) b h')"
+      - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s(cp:zigzag,sp) b h')"
+
+  # --- attention internals ---
+  - target: megatron.core.transformer.attention.Attention.forward
+    edits:
+      - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='s(cp:zigzag,sp) b h(tp)')"
+
+  # --- moe internals ---
+  - target: megatron.core.transformer.moe.router.TopKRouter.forward
+    edits:
+      - match: "logits = self.gating(input)"
+        append: "dumper.dump('moe_router_logits', logits, dims='s(cp:zigzag,sp) num_experts')"
+
+  - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
+    edits:
+      - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h(tp:partial)')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -64,6 +118,20 @@ patches:
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
           )
         append: "dumper.dump('mlp_output', hidden_states, dims='t h(tp:partial)')"
+
+  # --- attention internals ---
+  - target: sglang.srt.models.qwen3_moe.Qwen3MoeAttention.forward_core
+    edits:
+      - match: "output, _ = self.o_proj(attn_output)"
+        prepend: "dumper.dump('attn_pre_o_proj', attn_output, dims='t attn_h(tp)')"
+
+  # --- moe internals ---
+  - target: sglang.srt.models.qwen3_moe.Qwen3MoeSparseMoeBlock.forward_normal
+    edits:
+      - match: "router_logits, _ = self.gate(hidden_states)"
+        append: "dumper.dump('moe_router_logits', router_logits, dims='t num_experts')"
+      - match: "final_hidden_states = self.experts(hidden_states, topk_output)"
+        append: "dumper.dump('moe_expert_output', final_hidden_states, dims='t h(tp:partial)')"
 """
 
 
