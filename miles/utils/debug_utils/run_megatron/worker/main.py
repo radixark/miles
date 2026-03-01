@@ -19,7 +19,7 @@ import torch.distributed as dist
 
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
-from miles.utils.debug_utils.run_megatron.worker.dumper_env import finalize_dumper, setup_dumper
+from miles.utils.debug_utils.run_megatron.worker.dumper_utils import finalize_dumper, setup_dumper
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
 
 
