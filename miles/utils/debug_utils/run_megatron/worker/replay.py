@@ -76,18 +76,20 @@ def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
     replays_data: list[list[torch.Tensor]] = [replay.top_indices_list for replay in routing_replay_manager.replays]
     total_entries: int = sum(len(d) for d in replays_data)
 
-    if total_entries > 0:
-        payload: dict[str, Any] = {
-            "version": _REPLAY_FORMAT_VERSION,
-            "replays": replays_data,
-        }
-        save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path, rank=rank)
-        torch.save(payload, save_path)
-        if rank == 0:
-            print(
-                f"[worker] Saved routing replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
-                flush=True,
-            )
+    if total_entries == 0:
+        return
+
+    payload: dict[str, Any] = {
+        "version": _REPLAY_FORMAT_VERSION,
+        "replays": replays_data,
+    }
+    save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path, rank=rank)
+    torch.save(payload, save_path)
+    if rank == 0:
+        print(
+            f"[worker] Saved routing replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
+            flush=True,
+        )
 
 
 def _load_per_rank_file(replay_file: Path, *, rank: int) -> None:
