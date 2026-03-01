@@ -36,7 +36,7 @@ def print_top_predictions_for_rank(
             input_str: str = tokenizer.decode([input_token]) if tokenizer else f"t{input_token}"
             preds: str = ", ".join(
                 f"{tokenizer.decode([idx.item()]) if tokenizer else f't{idx.item()}'}({prob.item():.3f})"
-                for prob, idx in zip(top_probs, top_indices)
+                for prob, idx in zip(top_probs, top_indices, strict=True)
             )
             print(f"pos[{pos:3d}] {input_str!r:12s} -> {preds}")
 

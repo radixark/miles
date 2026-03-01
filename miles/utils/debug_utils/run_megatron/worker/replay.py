@@ -61,9 +61,7 @@ def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
 
     script.routing_replay_dump_path.mkdir(parents=True, exist_ok=True)
 
-    replays_data: list[list[torch.Tensor]] = [
-        replay.top_indices_list for replay in routing_replay_manager.replays
-    ]
+    replays_data: list[list[torch.Tensor]] = [replay.top_indices_list for replay in routing_replay_manager.replays]
     total_entries: int = sum(len(d) for d in replays_data)
 
     if total_entries > 0:
@@ -87,12 +85,10 @@ def _load_per_rank_file(replay_file: Path, *, rank: int) -> None:
     saved_replays: list[list[torch.Tensor]] = payload["replays"]
     expected: int = len(routing_replay_manager.replays)
     if len(saved_replays) != expected:
-        raise ValueError(
-            f"Replay file has {len(saved_replays)} replays but model expects {expected}"
-        )
+        raise ValueError(f"Replay file has {len(saved_replays)} replays but model expects {expected}")
 
     total_entries: int = 0
-    for replay, data in zip(routing_replay_manager.replays, saved_replays):
+    for replay, data in zip(routing_replay_manager.replays, saved_replays, strict=True):
         replay.top_indices_list = data
         total_entries += len(data)
 
@@ -120,9 +116,7 @@ def _load_with_slicing(
 
     expected: int = len(routing_replay_manager.replays)
     if len(saved_replays) != expected:
-        raise ValueError(
-            f"Replay file has {len(saved_replays)} replays but model expects {expected}"
-        )
+        raise ValueError(f"Replay file has {len(saved_replays)} replays but model expects {expected}")
 
     cp_size: int = mpu.get_context_parallel_world_size() if mpu.is_initialized() else 1
     cp_rank: int = mpu.get_context_parallel_rank() if mpu.is_initialized() else 0
@@ -132,16 +126,15 @@ def _load_with_slicing(
     do_sp_slice: bool = sequence_parallel and routing_replay_manager.if_sp_region and tp_size > 1
 
     total_entries: int = 0
-    for replay_idx, (replay, indices_list) in enumerate(zip(routing_replay_manager.replays, saved_replays)):
+    for replay_idx, (replay, indices_list) in enumerate(
+        zip(routing_replay_manager.replays, saved_replays, strict=True)
+    ):
         sliced: list[torch.Tensor] = indices_list
 
         if cp_size > 1:
             from megatron.core.transformer.deepseek_v4_cp_utils import natural_to_zigzag_slice
 
-            sliced = [
-                natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank)
-                for t in sliced
-            ]
+            sliced = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in sliced]
 
         if do_sp_slice:
             sliced = [_sp_slice(t, tp_size=tp_size, tp_rank=tp_rank) for t in sliced]

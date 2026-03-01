@@ -69,7 +69,10 @@ def main() -> None:
         print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
 
     captured_logits: torch.Tensor | None = _run_forward_backward(
-        args=args, script=script, model=model, batch=batch,
+        args=args,
+        script=script,
+        model=model,
+        batch=batch,
     )
 
     if script.top_k > 0 and captured_logits is not None:

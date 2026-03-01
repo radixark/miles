@@ -84,9 +84,7 @@ def _build_labels(
     if cp_size > 1:
         global_seq_len: int = global_input_ids.shape[1]
         valid_mask: torch.Tensor = position_ids < global_seq_len - 1
-        next_pos: torch.Tensor = torch.where(
-            valid_mask, position_ids + 1, torch.zeros_like(position_ids)
-        )
+        next_pos: torch.Tensor = torch.where(valid_mask, position_ids + 1, torch.zeros_like(position_ids))
         labels: torch.Tensor = global_input_ids.gather(1, next_pos)
         labels = labels.masked_fill(~valid_mask, -100)
         return labels
