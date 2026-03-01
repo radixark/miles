@@ -3,10 +3,6 @@
 import json
 
 
-def _nonempty_lines(stdout: str) -> list[str]:
-    return [line for line in stdout.strip().splitlines() if line.strip()]
-
-
 def print_json_summary(stdout: str) -> None:
     """Print a human-readable summary from JSON comparator output."""
     for line in _nonempty_lines(stdout):
@@ -60,3 +56,7 @@ def assert_all_passed(stdout: str) -> None:
         f"summary: passed={summary.passed}, failed={summary.failed}, skipped={summary.skipped}",
         flush=True,
     )
+
+
+def _nonempty_lines(stdout: str) -> list[str]:
+    return [line for line in stdout.strip().splitlines() if line.strip()]
