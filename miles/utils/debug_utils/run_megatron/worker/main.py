@@ -16,21 +16,20 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-
 from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.training.arguments import parse_args
 from megatron.training.training import get_model
+from sglang.srt.debug_utils.dumper import dumper
+from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
 
 from miles.backends.megatron_utils.checkpoint import load_checkpoint
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
-from miles.utils.debug_utils.run_megatron.worker.dumper_utils import finalize_dumper
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
-from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
 
 
 def main() -> None:
@@ -58,8 +57,10 @@ def main() -> None:
 
     token_ids: list[int] = json.loads(Path(script.token_ids_file).read_text())
     batch: dict[str, torch.Tensor] = prepare_batch(
-        token_ids=token_ids, batch_size=args.micro_batch_size,
-        cp_rank=mpu.get_context_parallel_rank(), cp_size=mpu.get_context_parallel_world_size(),
+        token_ids=token_ids,
+        batch_size=args.micro_batch_size,
+        cp_rank=mpu.get_context_parallel_rank(),
+        cp_size=mpu.get_context_parallel_world_size(),
     )
 
     if rank == 0:
@@ -67,7 +68,7 @@ def main() -> None:
 
     _run_forward_backward(args=args, script=script, model=model, batch=batch)
     save_replay_data(script)
-    finalize_dumper()
+    _finalize_dumper()
 
     if rank == 0:
         print("[worker] Done.", flush=True)
@@ -149,6 +150,13 @@ def _run_forward_backward(
     rank: int = dist.get_rank()
     if rank == 0 and losses:
         print(f"[worker rank={rank}] losses={losses}", flush=True)
+
+
+def _finalize_dumper() -> None:
+    """Step + disable dumper after forward/backward."""
+    if os.environ.get("DUMPER_ENABLE", "0") == "1":
+        dumper.step()
+        dumper.configure(enable=False)
 
 
 if __name__ == "__main__":
