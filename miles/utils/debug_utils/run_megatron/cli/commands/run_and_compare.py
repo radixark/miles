@@ -136,6 +136,11 @@ def _run_baseline_and_target(
     common_run_kwargs: _CommonRunKwargs,
 ) -> None:
     if replay_dir is not None:
+        if baseline_config.nproc != 1:
+            raise ValueError(
+                f"Routing replay requires single-rank baseline (nproc=1), "
+                f"got nproc={baseline_config.nproc} (tp={baseline_config.tp}, pp={baseline_config.pp}, cp={baseline_config.cp})"
+            )
         print("[cli] Routing replay enabled", flush=True)
 
     print("[cli] Step 1/2: Baseline run", flush=True)
@@ -162,5 +167,4 @@ def _run_baseline_and_target(
         output_dir=target_output,
         routing_replay_dump_path=None,
         routing_replay_load_path=replay_dir,
-        routing_replay_load_mode="sliced" if replay_dir is not None else None,
     )

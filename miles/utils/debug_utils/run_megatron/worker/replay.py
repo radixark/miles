@@ -1,4 +1,8 @@
-"""Routing replay stage management for standalone Megatron worker."""
+"""Routing replay stage management for standalone Megatron worker.
+
+Only single-rank (nproc=1) baselines are supported: save always writes
+a rank-0 file, and load always reads that file with CP/SP slicing.
+"""
 
 from pathlib import Path
 from typing import Any
@@ -9,7 +13,6 @@ from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScript
 from miles.utils.replay_base import routing_replay_manager
 
 _REPLAY_FORMAT_VERSION: int = 1
-_VALID_LOAD_MODES: frozenset[str] = frozenset({"per_rank", "sliced"})
 
 
 def load_replay_data(
@@ -18,31 +21,15 @@ def load_replay_data(
     rank: int,
     sequence_parallel: bool = False,
 ) -> None:
-    """Load routing replay data from disk before forward pass.
-
-    Requires ``routing_replay_load_mode`` to be explicitly set:
-    - ``"per_rank"``: each rank loads its own file (no slicing)
-    - ``"sliced"``: all ranks load from rank 0's file with CP zigzag + SP slicing
-    """
+    """Load routing replay data from rank 0's file with CP/SP slicing."""
     if not script.routing_replay_load_path:
         return
 
-    mode: str | None = script.routing_replay_load_mode
-    if mode not in _VALID_LOAD_MODES:
-        raise ValueError(
-            f"routing_replay_load_mode must be one of {sorted(_VALID_LOAD_MODES)}, got {mode!r}"
-        )
+    replay_file: Path = _replay_file_path(base_dir=script.routing_replay_load_path)
+    if not replay_file.exists():
+        raise FileNotFoundError(f"Replay file not found: {replay_file}")
 
-    if mode == "sliced":
-        rank0_file: Path = _replay_file_path(base_dir=script.routing_replay_load_path, rank=0)
-        if not rank0_file.exists():
-            raise FileNotFoundError(f"Replay rank0 file not found: {rank0_file}")
-        _load_with_slicing(rank0_file, rank=rank, sequence_parallel=sequence_parallel)
-    else:
-        per_rank_file: Path = _replay_file_path(base_dir=script.routing_replay_load_path, rank=rank)
-        if not per_rank_file.exists():
-            raise FileNotFoundError(f"Replay per-rank file not found: {per_rank_file}")
-        _load_per_rank_file(per_rank_file, rank=rank)
+    _load_replay(replay_file, rank=rank, sequence_parallel=sequence_parallel)
 
 
 def setup_replay_before_model(script: WorkerScriptArgs) -> None:
@@ -60,15 +47,16 @@ def setup_replay_before_model(script: WorkerScriptArgs) -> None:
         routing_replay_manager.enabled = True
         routing_replay_manager.stage = "replay_forward"
         print(
-            f"[worker] Routing replay enabled, stage=replay_forward "
-            f"(load ← {script.routing_replay_load_path}, mode={script.routing_replay_load_mode})",
+            f"[worker] Routing replay enabled, stage=replay_forward (load ← {script.routing_replay_load_path})",
             flush=True,
         )
 
 
 def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
-    """Save recorded routing replay data to disk."""
+    """Save recorded routing replay data to disk (rank 0 only)."""
     if not script.routing_replay_dump_path:
+        return
+    if rank != 0:
         return
 
     script.routing_replay_dump_path.mkdir(parents=True, exist_ok=True)
@@ -83,46 +71,21 @@ def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
         "version": _REPLAY_FORMAT_VERSION,
         "replays": replays_data,
     }
-    save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path, rank=rank)
+    save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path)
     torch.save(payload, save_path)
-    if rank == 0:
-        print(
-            f"[worker] Saved routing replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
-            flush=True,
-        )
+    print(
+        f"[worker] Saved routing replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
+        flush=True,
+    )
 
 
-def _load_per_rank_file(replay_file: Path, *, rank: int) -> None:
-    """Load replay data from a per-rank file (exact match, no slicing)."""
-    payload: dict[str, Any] = torch.load(replay_file, weights_only=False)
-
-    saved_replays: list[list[torch.Tensor]] = payload["replays"]
-    expected: int = len(routing_replay_manager.replays)
-    if len(saved_replays) != expected:
-        raise ValueError(f"Replay file has {len(saved_replays)} replays but model expects {expected}")
-
-    total_entries: int = 0
-    for replay, data in zip(routing_replay_manager.replays, saved_replays, strict=True):
-        replay.top_indices_list = data
-        total_entries += len(data)
-
-    if rank == 0:
-        print(
-            f"[worker] Loaded routing replay ({total_entries} entries, {expected} replays) ← {replay_file}",
-            flush=True,
-        )
-
-
-def _load_with_slicing(
+def _load_replay(
     replay_file: Path,
     *,
     rank: int,
     sequence_parallel: bool,
 ) -> None:
-    """Load replay from a single-rank file with CP zigzag slicing and SP slicing.
-
-    Used for cross-config comparison where baseline has fewer ranks than target.
-    """
+    """Load replay from rank 0's file with CP zigzag slicing and SP slicing."""
     from megatron.core import mpu
 
     payload: dict[str, Any] = torch.load(replay_file, weights_only=False)
@@ -169,8 +132,7 @@ def _load_with_slicing(
 
     if rank == 0:
         print(
-            f"[worker] Loaded routing replay with slicing ({total_entries} entries, {expected} replays) "
-            f"← {replay_file}",
+            f"[worker] Loaded routing replay ({total_entries} entries, {expected} replays) ← {replay_file}",
             flush=True,
         )
 
@@ -185,5 +147,5 @@ def _sp_slice(tensor: torch.Tensor, *, tp_size: int, tp_rank: int) -> torch.Tens
     return tensor[start:end]
 
 
-def _replay_file_path(*, base_dir: Path, rank: int) -> Path:
-    return base_dir / f"rank{rank}_{routing_replay_manager.filename}"
+def _replay_file_path(*, base_dir: Path) -> Path:
+    return base_dir / f"rank0_{routing_replay_manager.filename}"

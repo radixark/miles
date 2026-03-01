@@ -23,7 +23,6 @@ class WorkerScriptArgs:
     source_patcher_config: Path | None = None
     routing_replay_dump_path: Path | None = None
     routing_replay_load_path: Path | None = None
-    routing_replay_load_mode: str | None = None  # "per_rank" or "sliced"
     top_k: int = 0
 
 

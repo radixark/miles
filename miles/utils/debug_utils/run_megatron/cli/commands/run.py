@@ -23,7 +23,6 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     RefLoadOpt,
     RoleOpt,
     RoutingReplayDumpOpt,
-    RoutingReplayLoadModeOpt,
     RoutingReplayLoadOpt,
     RunBackwardOpt,
     SeqLengthOpt,
@@ -76,7 +75,6 @@ def run(
     source_patcher_config: SourcePatcherConfigOpt = None,
     routing_replay_dump_path: RoutingReplayDumpOpt = None,
     routing_replay_load_path: RoutingReplayLoadOpt = None,
-    routing_replay_load_mode: RoutingReplayLoadModeOpt = None,
     top_k: TopKOpt = 0,
     dumper_filter: DumperFilterOpt = "",
     megatron_path: MegatronPathOpt = None,
@@ -84,6 +82,13 @@ def run(
 ) -> None:
     """Launch torchrun to run Megatron standalone forward (or forward+backward)."""
     parallel: ParallelConfig = ParallelConfig(tp=tp, pp=pp, cp=cp, ep=ep, etp=etp)
+
+    if routing_replay_dump_path is not None and parallel.nproc != 1:
+        raise ValueError(
+            f"Routing replay dump requires single-rank run (nproc=1), "
+            f"got nproc={parallel.nproc} (tp={tp}, pp={pp}, cp={cp})"
+        )
+
     resolved_megatron: Path = resolve_megatron_path(megatron_path)
 
     prompt: PromptConfig = PromptConfig(
@@ -106,7 +111,6 @@ def run(
         source_patcher_config=source_patcher_config,
         routing_replay_dump_path=routing_replay_dump_path,
         routing_replay_load_path=routing_replay_load_path,
-        routing_replay_load_mode=routing_replay_load_mode,
         top_k=top_k,
     )
     worker_args_str: str = build_worker_args(
