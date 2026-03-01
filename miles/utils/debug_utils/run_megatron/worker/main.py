@@ -31,6 +31,7 @@ from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_predictions_all_ranks
 
 
 def main() -> None:
@@ -67,7 +68,18 @@ def main() -> None:
     if rank == 0:
         print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
 
-    _run_forward_backward(args=args, script=script, model=model, batch=batch)
+    captured_logits: torch.Tensor | None = _run_forward_backward(
+        args=args, script=script, model=model, batch=batch,
+    )
+
+    if script.top_k > 0 and captured_logits is not None:
+        _print_top_k(
+            logits=captured_logits,
+            input_ids=batch["input_ids"],
+            top_k=script.top_k,
+            tokenizer_path=script.hf_checkpoint,
+        )
+
     save_replay_data(script, rank=rank)
     _finalize_dumper()
 
@@ -121,8 +133,10 @@ def _run_forward_backward(
     script: WorkerScriptArgs,
     model: list[Any],
     batch: dict[str, torch.Tensor],
-) -> None:
+) -> torch.Tensor | None:
+    """Run forward (and optionally backward) pass, returning captured logits."""
     forward_backward_func: Callable[..., Any] = get_forward_backward_func()
+    captured: list[torch.Tensor] = []
 
     def forward_step_func(
         data_iterator: Any,
@@ -135,6 +149,7 @@ def _run_forward_backward(
             attention_mask=data.get("attention_mask"),
             runtime_gather_output=True,
         )
+        captured.append(output.detach())
         return output, partial(loss_func, data["labels"])
 
     losses: Any = forward_backward_func(
@@ -150,6 +165,30 @@ def _run_forward_backward(
     rank: int = dist.get_rank()
     if rank == 0 and losses:
         print(f"[worker rank={rank}] losses={losses}", flush=True)
+
+    return captured[0] if captured else None
+
+
+def _print_top_k(
+    *,
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    top_k: int,
+    tokenizer_path: Path,
+) -> None:
+    """Print top-k predictions across all ranks."""
+    from transformers import AutoTokenizer
+
+    tokenizer: Any = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
+    pad_token_id: int | None = tokenizer.pad_token_id or tokenizer.eos_token_id
+
+    print_top_predictions_all_ranks(
+        logits=logits,
+        input_ids=input_ids,
+        top_k=top_k,
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+    )
 
 
 def _finalize_dumper() -> None:

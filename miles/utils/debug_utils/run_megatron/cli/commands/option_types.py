@@ -30,4 +30,5 @@ RoutingReplayDumpOpt = Annotated[Path | None, typer.Option(help="Routing replay 
 RoutingReplayLoadOpt = Annotated[Path | None, typer.Option(help="Routing replay load path")]
 DumperFilterOpt = Annotated[str, typer.Option(help="Dumper filter expression")]
 MegatronPathOpt = Annotated[Path | None, typer.Option(help="Path to Megatron-LM")]
+TopKOpt = Annotated[int, typer.Option("--top-k", help="Print top-k predictions per position (0=disabled)")]
 ExtraArgsOpt = Annotated[str, typer.Option(help="Extra args passed to worker")]

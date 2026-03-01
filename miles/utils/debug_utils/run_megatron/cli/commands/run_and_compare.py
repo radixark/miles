@@ -23,6 +23,7 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     SeqLengthOpt,
     SourcePatcherConfigOpt,
     SpOpt,
+    TopKOpt,
 )
 from miles.utils.debug_utils.run_megatron.cli.commands.run import run
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
@@ -42,6 +43,7 @@ class _CommonRunKwargs(TypedDict):
     apply_chat_template: bool
     role: str
     source_patcher_config: Path | None
+    top_k: int
     dumper_filter: str
     megatron_path: Path | None
     extra_args: str
@@ -69,6 +71,7 @@ def run_and_compare(
     apply_chat_template: ApplyChatTemplateOpt = False,
     role: RoleOpt = "actor",
     source_patcher_config: SourcePatcherConfigOpt = None,
+    top_k: TopKOpt = 0,
     dumper_filter: DumperFilterOpt = "",
     megatron_path: MegatronPathOpt = None,
     extra_args: ExtraArgsOpt = "",
@@ -97,6 +100,7 @@ def run_and_compare(
         apply_chat_template=apply_chat_template,
         role=role,
         source_patcher_config=source_patcher_config,
+        top_k=top_k,
         dumper_filter=dumper_filter,
         megatron_path=megatron_path,
         extra_args=extra_args,

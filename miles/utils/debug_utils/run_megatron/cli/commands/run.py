@@ -28,6 +28,7 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     SeqLengthOpt,
     SourcePatcherConfigOpt,
     SpOpt,
+    TopKOpt,
     TpOpt,
 )
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig
@@ -74,6 +75,7 @@ def run(
     source_patcher_config: SourcePatcherConfigOpt = None,
     routing_replay_dump_path: RoutingReplayDumpOpt = None,
     routing_replay_load_path: RoutingReplayLoadOpt = None,
+    top_k: TopKOpt = 0,
     dumper_filter: DumperFilterOpt = "",
     megatron_path: MegatronPathOpt = None,
     extra_args: ExtraArgsOpt = "",
@@ -102,6 +104,7 @@ def run(
         source_patcher_config=source_patcher_config,
         routing_replay_dump_path=routing_replay_dump_path,
         routing_replay_load_path=routing_replay_load_path,
+        top_k=top_k,
     )
     worker_args_str: str = build_worker_args(
         parallel=parallel,
