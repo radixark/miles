@@ -120,7 +120,7 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
 
     grpo_args = "--advantage-estimator grpo --eps-clip 0.2 "
 
-    sglang_args = "--rollout-num-gpus-per-engine 8 " "--sglang-mem-fraction-static 0.6 "
+    sglang_args = "--rollout-num-gpus-per-engine 4 " "--sglang-mem-fraction-static 0.6 "
 
     dumper_filter: str = "'filter=layer_id is None or layer_id < 3'"
     dumper_args = (
@@ -176,12 +176,10 @@ def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
     target_dir: Path = Path(f"{dump_dir}/{dump_subdir}/fwd_bwd")
     # TODO: moe_expert_output comparison is not yet supported (unshard logic
     #       for post-alltoall MoE tensors needs dedicated handling)
-    # TODO: attn_k/attn_v dims annotation assumes KV heads are TP-sharded,
-    #       but GQA models with kv_heads < tp_size use replication instead
     run_and_verify_comparator(
         baseline_dir=baseline_dir,
         target_dir=target_dir,
-        extra_args=["--allow-failed-pattern", "moe_expert_output|attn_k|attn_v"],
+        extra_args=["--allow-failed-pattern", "moe_expert_output"],
     )
 
 
