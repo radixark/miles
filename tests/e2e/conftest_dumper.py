@@ -53,11 +53,13 @@ patches:
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
     edits:
+      - match: "nvtx_range_pop(suffix=\\"adjust_key_value\\")"
+        append: |
+          dumper.dump('attn_k', key, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
+          dumper.dump('attn_v', value, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
       - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
         append: |
           dumper.dump('attn_q', query, dims='t[cp:zigzag,sp] num_heads[tp] head_dim # ep:replicated etp:replicated')
-          dumper.dump('attn_k', key, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
-          dumper.dump('attn_v', value, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
         prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t[cp:zigzag,sp] 1 (num_heads*head_dim)[tp] # ep:replicated etp:replicated')"
 
@@ -94,11 +96,13 @@ patches:
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
     edits:
+      - match: "nvtx_range_pop(suffix=\\"adjust_key_value\\")"
+        append: |
+          dumper.dump('attn_k', key, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
+          dumper.dump('attn_v', value, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
       - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
         append: |
           dumper.dump('attn_q', query, dims='s[cp:zigzag,sp] b num_heads[tp] head_dim # ep:replicated etp:replicated')
-          dumper.dump('attn_k', key, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
-          dumper.dump('attn_v', value, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
         prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='s[cp:zigzag,sp] b (num_heads*head_dim)[tp] # ep:replicated etp:replicated')"
 
