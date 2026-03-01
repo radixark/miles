@@ -37,9 +37,7 @@ def generate_token_ids(
 
     raw_text: str = _resolve_raw_text(prompt)
 
-    tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
-        str(tokenizer_path), trust_remote_code=True
-    )
+    tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
 
     if prompt.apply_chat_template:
         messages: list[dict[str, str]] = [{"role": "user", "content": raw_text}]
