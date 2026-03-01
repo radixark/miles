@@ -13,6 +13,7 @@ from transformers import AutoConfig
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
+from miles.utils.data_transfer import get_data_transfer_backend
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -63,6 +64,7 @@ class FSDPTrainRayActor(TrainRayActor):
         self.train_parallel_config = {
             "dp_size": self.parallel_state.dp_size,
         }
+        self.transfer_backend = get_data_transfer_backend(args)
 
         if self.args.debug_rollout_only:
             return 0
@@ -398,7 +400,9 @@ class FSDPTrainRayActor(TrainRayActor):
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref, self.parallel_state)
+            rollout_data = get_rollout_data(
+                self.args, rollout_data_ref, self.parallel_state, transfer_backend=self.transfer_backend
+            )
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)

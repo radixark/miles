@@ -320,6 +320,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=("Whether to shuffle the prompts during rollout."),
             )
             parser.add_argument(
+                "--transfer-backend",
+                type=str,
+                choices=["ray", "mooncake"],
+                default="ray",
+                help=(
+                    "Backend for transferring rollout data from rollout workers to training actors. "
+                    "'ray' uses Ray Object Store (default). 'mooncake' uses Mooncake distributed store for disaggregated setups."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-seed",
                 type=int,
                 default=42,
