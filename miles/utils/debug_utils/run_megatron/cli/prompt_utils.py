@@ -1,17 +1,25 @@
+from __future__ import annotations
+
+import dataclasses
 import json
 import tempfile
 from pathlib import Path
 from typing import Literal
 
 
+@dataclasses.dataclass(frozen=True)
+class PromptConfig:
+    mode: Literal["math", "file", "text"] = "math"
+    text: str | None = None
+    file: Path | None = None
+    seq_length: int = 137
+    apply_chat_template: bool = False
+
+
 def generate_token_ids(
     *,
-    mode: Literal["math", "file", "text"],
-    seq_length: int,
+    prompt: PromptConfig,
     tokenizer_path: Path,
-    prompt_text: str | None = None,
-    prompt_file: Path | None = None,
-    apply_chat_template: bool = False,
 ) -> list[int]:
     """Generate token IDs for Megatron standalone forward/backward.
 
@@ -22,21 +30,16 @@ def generate_token_ids(
     """
     from transformers import AutoTokenizer
 
-    if mode == "text" and prompt_text is None:
+    if prompt.mode == "text" and prompt.text is None:
         raise ValueError("--prompt-text is required for text mode")
-    if mode == "file" and prompt_file is None:
+    if prompt.mode == "file" and prompt.file is None:
         raise ValueError("--prompt-file is required for file mode")
 
-    raw_text: str = _resolve_raw_text(
-        mode=mode,
-        seq_length=seq_length,
-        prompt_text=prompt_text,
-        prompt_file=prompt_file,
-    )
+    raw_text: str = _resolve_raw_text(prompt)
 
     tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
 
-    if apply_chat_template:
+    if prompt.apply_chat_template:
         messages: list[dict[str, str]] = [{"role": "user", "content": raw_text}]
         raw_text = tokenizer.apply_chat_template(
             messages,
@@ -47,12 +50,12 @@ def generate_token_ids(
     token_ids: list[int] = tokenizer.encode(raw_text)
     token_ids = _pad_or_truncate(
         token_ids=token_ids,
-        seq_length=seq_length,
+        seq_length=prompt.seq_length,
         pad_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
     )
 
-    assert len(token_ids) == seq_length, (
-        f"token_ids length {len(token_ids)} != seq_length {seq_length}"
+    assert len(token_ids) == prompt.seq_length, (
+        f"token_ids length {len(token_ids)} != seq_length {prompt.seq_length}"
     )
     return token_ids
 
@@ -66,23 +69,17 @@ def write_token_ids_to_tmpfile(token_ids: list[int]) -> Path:
     return Path(tmp.name)
 
 
-def _resolve_raw_text(
-    *,
-    mode: Literal["math", "file", "text"],
-    seq_length: int,
-    prompt_text: str | None,
-    prompt_file: Path | None,
-) -> str:
-    if mode == "math":
-        return _build_math_sequence(target_char_length=seq_length * 8)
-    elif mode == "file":
-        assert prompt_file is not None
-        return prompt_file.read_text()
-    elif mode == "text":
-        assert prompt_text is not None
-        return prompt_text
+def _resolve_raw_text(prompt: PromptConfig) -> str:
+    if prompt.mode == "math":
+        return _build_math_sequence(target_char_length=prompt.seq_length * 8)
+    elif prompt.mode == "file":
+        assert prompt.file is not None
+        return prompt.file.read_text()
+    elif prompt.mode == "text":
+        assert prompt.text is not None
+        return prompt.text
     else:
-        raise ValueError(f"Unknown prompt mode: {mode!r}")
+        raise ValueError(f"Unknown prompt mode: {prompt.mode!r}")
 
 
 def _build_math_sequence(target_char_length: int) -> str:

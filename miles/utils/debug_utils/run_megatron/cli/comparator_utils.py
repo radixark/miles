@@ -3,10 +3,13 @@
 import json
 
 
+def _nonempty_lines(stdout: str) -> list[str]:
+    return [line for line in stdout.strip().splitlines() if line.strip()]
+
+
 def print_json_summary(stdout: str) -> None:
     """Print a human-readable summary from JSON comparator output."""
-    lines: list[str] = [line for line in stdout.strip().splitlines() if line.strip()]
-    for line in lines:
+    for line in _nonempty_lines(stdout):
         try:
             record: dict[str, object] = json.loads(line)
             if record.get("type") == "summary":
@@ -24,7 +27,7 @@ def assert_all_passed(stdout: str) -> None:
     """Assert all comparisons passed in JSON output (strict mode)."""
     from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, SummaryRecord, parse_record_json
 
-    lines: list[str] = [line for line in stdout.strip().splitlines() if line.strip()]
+    lines: list[str] = _nonempty_lines(stdout)
     records = [parse_record_json(line) for line in lines]
 
     comparisons: list[ComparisonRecord] = [r for r in records if isinstance(r, ComparisonRecord)]

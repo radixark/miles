@@ -1,12 +1,12 @@
 """``run-and-compare`` CLI command."""
 
+import dataclasses
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from miles.utils.debug_utils.run_megatron.cli.commands.compare import compare
-from miles.utils.debug_utils.run_megatron.cli.commands.run import run
 from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     ApplyChatTemplateOpt,
     BatchSizeOpt,
@@ -25,8 +25,9 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     SourcePatcherConfigOpt,
     SpOpt,
 )
+from miles.utils.debug_utils.run_megatron.cli.commands.run import run
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import (
-    build_parallel_dir_name,
+    ParallelConfig,
     parse_parallel_args,
 )
 
@@ -61,23 +62,11 @@ def run_and_compare(
     ] = False,
 ) -> None:
     """Run baseline + target configs, then compare dumps."""
-    baseline_p: dict[str, int] = parse_parallel_args(baseline)
-    target_p: dict[str, int] = parse_parallel_args(target)
+    baseline_config: ParallelConfig = ParallelConfig.from_parsed_args(parse_parallel_args(baseline))
+    target_config: ParallelConfig = ParallelConfig.from_parsed_args(parse_parallel_args(target))
 
-    baseline_output: Path = output_base_dir / build_parallel_dir_name(
-        tp=baseline_p.get("tp", 1),
-        pp=baseline_p.get("pp", 1),
-        cp=baseline_p.get("cp", 1),
-        ep=baseline_p.get("ep"),
-        etp=baseline_p.get("etp", 1),
-    )
-    target_output: Path = output_base_dir / build_parallel_dir_name(
-        tp=target_p.get("tp", 1),
-        pp=target_p.get("pp", 1),
-        cp=target_p.get("cp", 1),
-        ep=target_p.get("ep"),
-        etp=target_p.get("etp", 1),
-    )
+    baseline_output: Path = output_base_dir / baseline_config.dir_name()
+    target_output: Path = output_base_dir / target_config.dir_name()
 
     common_run_kwargs: dict[str, object] = dict(
         model_type=model_type,
@@ -101,8 +90,8 @@ def run_and_compare(
     replay_dir: Path | None = output_base_dir / "routing_replay" if routing_replay else None
 
     _run_baseline_and_target(
-        baseline_p=baseline_p,
-        target_p=target_p,
+        baseline_config=baseline_config,
+        target_config=target_config,
         baseline_output=baseline_output,
         target_output=target_output,
         replay_dir=replay_dir,
@@ -120,8 +109,8 @@ def run_and_compare(
 
 def _run_baseline_and_target(
     *,
-    baseline_p: dict[str, int],
-    target_p: dict[str, int],
+    baseline_config: ParallelConfig,
+    target_config: ParallelConfig,
     baseline_output: Path,
     target_output: Path,
     replay_dir: Path | None,
@@ -133,7 +122,7 @@ def _run_baseline_and_target(
     print("[cli] Step 1/2: Baseline run", flush=True)
     run(
         **common_run_kwargs,
-        **_parallel_kwargs(baseline_p),  # type: ignore[arg-type]
+        **dataclasses.asdict(baseline_config),  # type: ignore[arg-type]
         output_dir=baseline_output,
         routing_replay_dump_path=replay_dir,
         routing_replay_load_path=None,
@@ -142,19 +131,8 @@ def _run_baseline_and_target(
     print("[cli] Step 2/2: Target run", flush=True)
     run(
         **common_run_kwargs,
-        **_parallel_kwargs(target_p),  # type: ignore[arg-type]
+        **dataclasses.asdict(target_config),  # type: ignore[arg-type]
         output_dir=target_output,
         routing_replay_dump_path=None,
         routing_replay_load_path=replay_dir,
-    )
-
-
-def _parallel_kwargs(parsed: dict[str, int]) -> dict[str, object]:
-    """Convert parsed parallel config dict to kwargs for ``run()``."""
-    return dict(
-        tp=parsed.get("tp", 1),
-        pp=parsed.get("pp", 1),
-        cp=parsed.get("cp", 1),
-        ep=parsed.get("ep"),
-        etp=parsed.get("etp", 1),
     )

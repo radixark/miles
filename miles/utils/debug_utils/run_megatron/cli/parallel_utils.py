@@ -1,8 +1,44 @@
 """Parallel configuration utilities for run_megatron CLI."""
 
+from __future__ import annotations
 
-def nproc(*, tp: int, pp: int, cp: int) -> int:
-    return tp * pp * cp
+import dataclasses
+
+
+@dataclasses.dataclass(frozen=True)
+class ParallelConfig:
+    tp: int = 1
+    pp: int = 1
+    cp: int = 1
+    ep: int | None = None
+    etp: int = 1
+
+    @classmethod
+    def from_parsed_args(cls, parsed: dict[str, int]) -> ParallelConfig:
+        return cls(
+            tp=parsed.get("tp", 1),
+            pp=parsed.get("pp", 1),
+            cp=parsed.get("cp", 1),
+            ep=parsed.get("ep"),
+            etp=parsed.get("etp", 1),
+        )
+
+    @property
+    def nproc(self) -> int:
+        return self.tp * self.pp * self.cp
+
+    def dir_name(self) -> str:
+        """Build directory name from parallel config, e.g. 'tp2_cp2_ep2'."""
+        parts: list[str] = [f"tp{self.tp}"]
+        if self.pp > 1:
+            parts.append(f"pp{self.pp}")
+        if self.cp > 1:
+            parts.append(f"cp{self.cp}")
+        if self.ep is not None and self.ep != self.tp:
+            parts.append(f"ep{self.ep}")
+        if self.etp > 1:
+            parts.append(f"etp{self.etp}")
+        return "_".join(parts)
 
 
 def parse_parallel_args(args_str: str) -> dict[str, int]:
@@ -25,24 +61,3 @@ def parse_parallel_args(args_str: str) -> dict[str, int]:
         else:
             i += 1
     return result
-
-
-def build_parallel_dir_name(
-    *,
-    tp: int,
-    pp: int,
-    cp: int,
-    ep: int | None,
-    etp: int,
-) -> str:
-    """Build directory name from parallel config, e.g. 'tp2_cp2_ep2'."""
-    parts: list[str] = [f"tp{tp}"]
-    if pp > 1:
-        parts.append(f"pp{pp}")
-    if cp > 1:
-        parts.append(f"cp{cp}")
-    if ep is not None and ep != tp:
-        parts.append(f"ep{ep}")
-    if etp > 1:
-        parts.append(f"etp{etp}")
-    return "_".join(parts)
