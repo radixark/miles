@@ -33,9 +33,9 @@ def print_top_predictions_for_rank(
             top_indices: torch.Tensor
             top_probs, top_indices = torch.topk(probs, top_k)
 
-            input_str: str = tokenizer.decode([input_token]) if tokenizer else f"t{input_token}"
+            input_str: str = _decode_token(tokenizer, token_id=input_token)
             preds: str = ", ".join(
-                f"{tokenizer.decode([idx.item()]) if tokenizer else f't{idx.item()}'}({prob.item():.3f})"
+                f"{_decode_token(tokenizer, token_id=idx.item())}({prob.item():.3f})"
                 for prob, idx in zip(top_probs, top_indices, strict=True)
             )
             print(f"pos[{pos:3d}] {input_str!r:12s} -> {preds}")
@@ -50,8 +50,7 @@ def print_top_predictions_all_ranks(
     pad_token_id: int | None = None,
 ) -> None:
     """Print top-k predictions from all ranks sequentially (rank 0 first, then rank 1, etc.)."""
-    rank: int = dist.get_rank() if dist.is_initialized() else 0
-    world_size: int = dist.get_world_size() if dist.is_initialized() else 1
+    rank, world_size = _get_dist_info()
 
     if rank == 0:
         print(f"\n{'=' * 80}")
@@ -60,8 +59,7 @@ def print_top_predictions_all_ranks(
         print(f"{'=' * 80}")
 
     for r in range(world_size):
-        if dist.is_initialized():
-            dist.barrier()
+        _maybe_barrier()
         if rank == r:
             print_top_predictions_for_rank(
                 logits=logits,
@@ -73,5 +71,20 @@ def print_top_predictions_all_ranks(
             )
             sys.stdout.flush()
 
+    _maybe_barrier()
+
+
+def _decode_token(tokenizer: object, *, token_id: int) -> str:
+    return tokenizer.decode([token_id]) if tokenizer else f"t{token_id}"
+
+
+def _get_dist_info() -> tuple[int, int]:
+    """Return (rank, world_size), defaulting to (0, 1) if not initialized."""
+    if dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size()
+    return 0, 1
+
+
+def _maybe_barrier() -> None:
     if dist.is_initialized():
         dist.barrier()
