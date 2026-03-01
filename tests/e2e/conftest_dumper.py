@@ -34,17 +34,17 @@ patches:
     edits:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
-        append: "dumper.dump('layer_input', hidden_states, dims='t[cp:zigzag,sp] 1 h')"
+        append: "dumper.dump('layer_input', hidden_states, dims='t[cp:zigzag,sp] 1 h # tp:replicated')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
-        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h')"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
       - match: "residual = hidden_states"
-        append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h')"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h # tp:replicated')"
       - match: "pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)"
-        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h')"
+        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h # tp:replicated')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h')"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
@@ -61,7 +61,7 @@ patches:
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts')"
+        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts # tp:replicated')"
 
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
@@ -75,17 +75,17 @@ patches:
     edits:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
-        append: "dumper.dump('layer_input', hidden_states, dims='s[cp:zigzag,sp] b h')"
+        append: "dumper.dump('layer_input', hidden_states, dims='s[cp:zigzag,sp] b h # tp:replicated')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
-        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s[cp:zigzag,sp] b h')"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s[cp:zigzag,sp] b h # tp:replicated')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
       - match: "residual = hidden_states"
-        append: "dumper.dump('pre_mlp_residual', residual, dims='s[cp:zigzag,sp] b h')"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='s[cp:zigzag,sp] b h # tp:replicated')"
       - match: "pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)"
-        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp:zigzag,sp] b h')"
+        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp:zigzag,sp] b h # tp:replicated')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s[cp:zigzag,sp] b h')"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s[cp:zigzag,sp] b h # tp:replicated')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
@@ -102,7 +102,7 @@ patches:
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='s[cp:zigzag,sp] b num_experts')"
+        append: "dumper.dump('moe_router_logits', logits, dims='s[cp:zigzag,sp] b num_experts # tp:replicated')"
 
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
@@ -124,7 +124,7 @@ patches:
                   **kwargs,
               )
           )
-        append: "dumper.dump('layer_input', residual, dims='t h')"
+        append: "dumper.dump('layer_input', residual, dims='t h # tp:replicated')"
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
@@ -138,8 +138,8 @@ patches:
               hidden_states, residual, forward_batch
           )
         append: |
-          dumper.dump('pre_mlp_residual', residual, dims='t h')
-          dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h')
+          dumper.dump('pre_mlp_residual', residual, dims='t h # tp:replicated')
+          dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated')
       - match: |
           hidden_states = self.mlp(
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
@@ -162,7 +162,7 @@ patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeSparseMoeBlock.forward_normal
     edits:
       - match: "router_logits, _ = self.gate(hidden_states)"
-        append: "dumper.dump('moe_router_logits', router_logits, dims='t num_experts')"
+        append: "dumper.dump('moe_router_logits', router_logits, dims='t num_experts # tp:replicated')"
       - match: "final_hidden_states = self.experts(hidden_states, topk_output)"
         append: "dumper.dump('moe_expert_output', final_hidden_states, dims='t h[tp:partial]')"
 """
