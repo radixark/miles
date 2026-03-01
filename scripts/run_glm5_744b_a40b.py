@@ -337,6 +337,7 @@ def _execute_train(args: ScriptArgs):
     )
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{32 if args.enable_pd else 256}",
+        "SGLANG_NSA_FORCE_MLA": "1",
     }
 
     misc_args = (
