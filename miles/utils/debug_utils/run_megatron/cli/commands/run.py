@@ -84,10 +84,7 @@ def run(
     parallel: ParallelConfig = ParallelConfig(tp=tp, pp=pp, cp=cp, ep=ep, etp=etp)
 
     if routing_replay_dump_path is not None and parallel.nproc != 1:
-        raise ValueError(
-            f"Routing replay dump requires single-rank run (nproc=1), "
-            f"got nproc={parallel.nproc} (tp={tp}, pp={pp}, cp={cp})"
-        )
+        raise ValueError(f"Routing replay dump requires single-rank run (nproc=1), got {parallel}")
 
     resolved_megatron: Path = resolve_megatron_path(megatron_path)
 

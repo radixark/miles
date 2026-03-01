@@ -40,6 +40,9 @@ class ParallelConfig:
     def nproc(self) -> int:
         return self.tp * self.pp * self.cp
 
+    def __str__(self) -> str:
+        return f"tp={self.tp}, pp={self.pp}, cp={self.cp}, ep={self.ep}, etp={self.etp}, nproc={self.nproc}"
+
     def dir_name(self) -> str:
         """Build directory name from parallel config, e.g. 'tp2_cp2_ep2'."""
         parts: list[str] = [f"tp{self.tp}"]

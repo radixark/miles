@@ -2,7 +2,7 @@
 
 import dataclasses
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated
 
 import typer
 
@@ -29,25 +29,10 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
 from miles.utils.debug_utils.run_megatron.cli.commands.run import run
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
 
-
-class _CommonRunKwargs(TypedDict):
-    model_type: str
-    hf_checkpoint: Path
-    ref_load: Path | None
-    sp: bool
-    run_backward: bool
-    prompt_mode: str
-    prompt_text: str | None
-    prompt_file: Path | None
-    seq_length: int
-    batch_size: int
-    apply_chat_template: bool
-    role: str
-    source_patcher_config: Path | None
-    top_k: int
-    dumper_filter: str
-    megatron_path: Path | None
-    extra_args: str
+_NON_COMMON_PARAMS: frozenset[str] = frozenset({
+    "output_base_dir", "baseline", "target", "routing_replay",
+    "baseline_config", "target_config", "baseline_output", "target_output",
+})
 
 
 def register(app: typer.Typer) -> None:
@@ -87,25 +72,9 @@ def run_and_compare(
     baseline_output: Path = output_base_dir / baseline_config.dir_name()
     target_output: Path = output_base_dir / target_config.dir_name()
 
-    common_run_kwargs: _CommonRunKwargs = _CommonRunKwargs(
-        model_type=model_type,
-        hf_checkpoint=hf_checkpoint,
-        ref_load=ref_load,
-        sp=sp,
-        run_backward=run_backward,
-        prompt_mode=prompt_mode,
-        prompt_text=prompt_text,
-        prompt_file=prompt_file,
-        seq_length=seq_length,
-        batch_size=batch_size,
-        apply_chat_template=apply_chat_template,
-        role=role,
-        source_patcher_config=source_patcher_config,
-        top_k=top_k,
-        dumper_filter=dumper_filter,
-        megatron_path=megatron_path,
-        extra_args=extra_args,
-    )
+    common_run_kwargs: dict[str, object] = {
+        k: v for k, v in locals().items() if k not in _NON_COMMON_PARAMS
+    }
 
     replay_dir: Path | None = output_base_dir / "routing_replay" if routing_replay else None
 
@@ -134,14 +103,11 @@ def _run_baseline_and_target(
     baseline_output: Path,
     target_output: Path,
     replay_dir: Path | None,
-    common_run_kwargs: _CommonRunKwargs,
+    common_run_kwargs: dict[str, object],
 ) -> None:
     if replay_dir is not None:
         if baseline_config.nproc != 1:
-            raise ValueError(
-                f"Routing replay requires single-rank baseline (nproc=1), "
-                f"got nproc={baseline_config.nproc} (tp={baseline_config.tp}, pp={baseline_config.pp}, cp={baseline_config.cp})"
-            )
+            raise ValueError(f"Routing replay requires single-rank baseline (nproc=1), got {baseline_config}")
         print("[cli] Routing replay enabled", flush=True)
 
     print("[cli] Step 1/2: Baseline run", flush=True)
