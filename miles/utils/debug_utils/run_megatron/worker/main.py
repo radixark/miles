@@ -57,13 +57,10 @@ def main() -> None:
     load_replay_data(script)
     setup_replay_stage(script)
 
-    cp_rank: int = mpu.get_context_parallel_rank()
-    cp_size: int = mpu.get_context_parallel_world_size()
-
     token_ids: list[int] = json.loads(Path(script.token_ids_file).read_text())
     batch: dict[str, torch.Tensor] = prepare_batch(
         token_ids=token_ids, batch_size=args.micro_batch_size,
-        cp_rank=cp_rank, cp_size=cp_size,
+        cp_rank=mpu.get_context_parallel_rank(), cp_size=mpu.get_context_parallel_world_size(),
     )
 
     if rank == 0:
