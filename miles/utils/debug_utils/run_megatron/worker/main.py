@@ -132,7 +132,8 @@ def _run_forward_backward(
         output: torch.Tensor = model_chunk(
             input_ids=data["input_ids"],
             position_ids=data["position_ids"],
-            attention_mask=None,
+            attention_mask=data.get("attention_mask"),
+            runtime_gather_output=True,
         )
         return output, partial(loss_func, data["labels"])
 
