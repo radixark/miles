@@ -25,10 +25,15 @@ def load_replay_data(
     if not script.routing_replay_load_path:
         return
 
-    replay_file: Path = _replay_file_path(base_dir=script.routing_replay_load_path)
-    if not replay_file.exists():
-        raise FileNotFoundError(f"Replay file not found: {replay_file}")
+    load_dir: Path = script.routing_replay_load_path
+    replay_files: list[Path] = sorted(load_dir.glob(f"*_{routing_replay_manager.filename}"))
+    if len(replay_files) != 1:
+        raise ValueError(
+            f"Expected exactly 1 replay file in {load_dir}, "
+            f"found {len(replay_files)}: {[f.name for f in replay_files]}"
+        )
 
+    replay_file: Path = replay_files[0]
     _load_replay(replay_file, rank=rank, sequence_parallel=sequence_parallel)
 
 
