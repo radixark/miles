@@ -49,8 +49,7 @@ async def configure_sglang(args: Namespace) -> None:
     overrides = _get_phase_override_configs(args, DumperPhase.INFERENCE)
 
     engines_dir: Path = _get_dir(args) / "engines"
-    if engines_dir.is_dir():
-        shutil.rmtree(engines_dir)
+    _cleanup_dump_dir(engines_dir)
 
     coros = []
     for i, url in enumerate(worker_urls):
