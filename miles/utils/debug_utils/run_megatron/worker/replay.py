@@ -12,8 +12,6 @@ import torch
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 from miles.utils.replay_base import routing_replay_manager
 
-_REPLAY_FORMAT_VERSION: int = 1
-
 
 def load_replay_data(
     script: WorkerScriptArgs,
@@ -72,16 +70,16 @@ def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
     if total_entries == 0:
         return
 
-    payload: dict[str, Any] = {
-        "version": _REPLAY_FORMAT_VERSION,
-        "replays": replays_data,
-    }
     save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path)
-    torch.save(payload, save_path)
+    torch.save(replays_data, save_path)
     print(
         f"[worker] Saved routing replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
         flush=True,
     )
+
+
+def _replay_file_path(*, base_dir: Path) -> Path:
+    return base_dir / f"rank0_{routing_replay_manager.filename}"
 
 
 def _load_replay(
@@ -93,8 +91,7 @@ def _load_replay(
     """Load replay from rank 0's file with CP zigzag slicing and SP slicing."""
     from megatron.core import mpu
 
-    payload: dict[str, Any] = torch.load(replay_file, weights_only=False)
-    saved_replays: list[list[torch.Tensor]] = payload["replays"]
+    saved_replays: list[list[torch.Tensor]] = torch.load(replay_file, weights_only=False)
 
     expected: int = len(routing_replay_manager.replays)
     if len(saved_replays) != expected:
@@ -150,7 +147,3 @@ def _sp_slice(tensor: torch.Tensor, *, tp_size: int, tp_rank: int) -> torch.Tens
     start: int = chunk_size * tp_rank
     end: int = chunk_size * (tp_rank + 1)
     return tensor[start:end]
-
-
-def _replay_file_path(*, base_dir: Path) -> Path:
-    return base_dir / f"rank0_{routing_replay_manager.filename}"
