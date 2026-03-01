@@ -14,6 +14,18 @@ class ParallelConfig:
     ep: int | None = None
     etp: int = 1
 
+    def __post_init__(self) -> None:
+        effective_ep: int = self.ep if self.ep is not None else self.tp
+        if self.nproc % effective_ep != 0:
+            raise ValueError(
+                f"nproc ({self.nproc} = tp*pp*cp = {self.tp}*{self.pp}*{self.cp}) "
+                f"is not divisible by effective EP ({effective_ep})"
+            )
+
+    @property
+    def effective_ep(self) -> int:
+        return self.ep if self.ep is not None else self.tp
+
     @classmethod
     def from_parsed_args(cls, parsed: dict[str, int]) -> ParallelConfig:
         return cls(

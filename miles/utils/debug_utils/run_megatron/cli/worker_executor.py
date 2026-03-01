@@ -93,13 +93,11 @@ def _build_megatron_flags(
     use_routing_replay: bool,
 ) -> str:
     """Build Megatron-native CLI flags from declarative tables."""
-    effective_ep: int = parallel.ep if parallel.ep is not None else parallel.tp
-
     key_value_args: list[tuple[str, object | None]] = [
         ("--tensor-model-parallel-size", parallel.tp),
         ("--pipeline-model-parallel-size", parallel.pp),
         ("--context-parallel-size", parallel.cp),
-        ("--expert-model-parallel-size", effective_ep),
+        ("--expert-model-parallel-size", parallel.effective_ep),
         ("--expert-tensor-parallel-size", parallel.etp),
         ("--seq-length", seq_length),
         ("--micro-batch-size", batch_size),
