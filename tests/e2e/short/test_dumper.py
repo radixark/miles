@@ -129,7 +129,7 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
         "--sglang-dp-size 4 --sglang-enable-dp-attention "
     )
 
-    dumper_filter: str = "'filter=layer_id is None or layer_id < 3 or layer_id == 42'"
+    dumper_filter: str = "'filter=layer_id is None or layer_id < 3 or layer_id == 24'"
     dumper_args = (
         f"--dumper-enable --dumper-dir {full_dump_dir} "
         f"--dumper-inference {dumper_filter} "
