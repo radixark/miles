@@ -120,7 +120,14 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
 
     grpo_args = "--advantage-estimator grpo --eps-clip 0.2 "
 
-    sglang_args = "--rollout-num-gpus-per-engine 4 " "--sglang-mem-fraction-static 0.6 "
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 4 "
+        "--sglang-mem-fraction-static 0.6 "
+        # Workaround: enable DP attention to avoid flashinfer allreduce fusion,
+        # which crashes with base_gpu_id != 0 in colocate mode.
+        # See https://github.com/flashinfer-ai/flashinfer/pull/2662
+        "--sglang-dp 4 --sglang-enable-dp-attention "
+    )
 
     dumper_filter: str = "'filter=layer_id is None or layer_id < 3'"
     dumper_args = (
