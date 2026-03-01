@@ -70,7 +70,7 @@ patches:
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
-        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated')"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated cp:replicated sp:replicated')"
 """
 
 MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML: str = """\
@@ -111,7 +111,7 @@ patches:
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
-        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated')"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated cp:replicated sp:replicated')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
