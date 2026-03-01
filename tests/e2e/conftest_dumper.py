@@ -30,7 +30,7 @@ SOURCE_PATCHED_FIELDS: list[str] = [
 
 # Megatron replicated axes: axes that are active (size > 1) but not sharded
 # for most tensors.  Declared once so every dims string stays concise.
-_MEG_REPL = "tp:replicated ep:replicated pp:replicated etp:replicated"
+_MEG_REPL = "tp:replicated ep:replicated etp:replicated"
 
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
@@ -55,11 +55,11 @@ patches:
     edits:
       - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
         append: |
-          dumper.dump('attn_q', query, dims='t[cp:zigzag,sp] num_heads[tp] head_dim # ep:replicated pp:replicated etp:replicated')
-          dumper.dump('attn_k', key, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated pp:replicated etp:replicated')
-          dumper.dump('attn_v', value, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated pp:replicated etp:replicated')
+          dumper.dump('attn_q', query, dims='t[cp:zigzag,sp] num_heads[tp] head_dim # ep:replicated etp:replicated')
+          dumper.dump('attn_k', key, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
+          dumper.dump('attn_v', value, dims='t[cp:zigzag,sp] num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
-        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t[cp:zigzag,sp] 1 (num_heads*head_dim)[tp] # ep:replicated pp:replicated etp:replicated')"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='t[cp:zigzag,sp] 1 (num_heads*head_dim)[tp] # ep:replicated etp:replicated')"
 
   # --- moe internals ---
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
@@ -70,7 +70,7 @@ patches:
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
-        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated pp:replicated etp:replicated')"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated')"
 """
 
 MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML: str = """\
@@ -96,11 +96,11 @@ patches:
     edits:
       - match: "nvtx_range_pop(suffix=\\"rotary_pos_emb\\")"
         append: |
-          dumper.dump('attn_q', query, dims='s[cp:zigzag,sp] b num_heads[tp] head_dim # ep:replicated pp:replicated etp:replicated')
-          dumper.dump('attn_k', key, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated pp:replicated etp:replicated')
-          dumper.dump('attn_v', value, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated pp:replicated etp:replicated')
+          dumper.dump('attn_q', query, dims='s[cp:zigzag,sp] b num_heads[tp] head_dim # ep:replicated etp:replicated')
+          dumper.dump('attn_k', key, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
+          dumper.dump('attn_v', value, dims='s[cp:zigzag,sp] b num_kv_heads[tp] head_dim # ep:replicated etp:replicated')
       - match: "nvtx_range_push(suffix=\\"linear_proj\\")"
-        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='s[cp:zigzag,sp] b (num_heads*head_dim)[tp] # ep:replicated pp:replicated etp:replicated')"
+        prepend: "dumper.dump('attn_pre_o_proj', core_attn_out, dims='s[cp:zigzag,sp] b (num_heads*head_dim)[tp] # ep:replicated etp:replicated')"
 
   # --- moe internals ---
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
@@ -111,7 +111,7 @@ patches:
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
-        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated pp:replicated etp:replicated')"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
