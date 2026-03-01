@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from miles.utils.debug_utils.run_megatron.cli.option_types import (
+from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     ApplyChatTemplateOpt,
     BatchSizeOpt,
     CpOpt,

@@ -7,7 +7,7 @@ import typer
 
 from miles.utils.debug_utils.run_megatron.cli.commands.command_compare import compare
 from miles.utils.debug_utils.run_megatron.cli.commands.command_run import run
-from miles.utils.debug_utils.run_megatron.cli.option_types import (
+from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     ApplyChatTemplateOpt,
     BatchSizeOpt,
     DumperFilterOpt,
