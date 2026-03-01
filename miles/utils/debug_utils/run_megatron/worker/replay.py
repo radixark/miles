@@ -39,19 +39,24 @@ def load_replay_data(
         _load_with_slicing(rank0_file, rank=rank, sequence_parallel=sequence_parallel)
 
 
-def setup_replay_stage(script: WorkerScriptArgs) -> None:
-    """Set routing replay manager stage based on CLI args.
+def setup_replay_before_model(script: WorkerScriptArgs) -> None:
+    """Enable replay manager and set stage BEFORE model construction.
 
-    The replay manager hooks are registered during model construction
-    (when ``--use-routing-replay`` / ``--use-rollout-routing-replay`` is set).
-    Here we only set the stage so the hooks know whether to record or replay.
+    Must be called before ``get_model()`` so that ``register_to_module``
+    (called during model construction) sees ``enabled=True`` and creates
+    Replay objects on MoE modules.
     """
     if script.routing_replay_dump_path:
+        routing_replay_manager.enabled = True
         routing_replay_manager.stage = "record"
-        print(f"[worker] Routing replay stage=record (dump → {script.routing_replay_dump_path})", flush=True)
+        print(f"[worker] Routing replay enabled, stage=record (dump → {script.routing_replay_dump_path})", flush=True)
     elif script.routing_replay_load_path:
+        routing_replay_manager.enabled = True
         routing_replay_manager.stage = "replay_forward"
-        print(f"[worker] Routing replay stage=replay_forward (load ← {script.routing_replay_load_path})", flush=True)
+        print(
+            f"[worker] Routing replay enabled, stage=replay_forward (load ← {script.routing_replay_load_path})",
+            flush=True,
+        )
 
 
 def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:

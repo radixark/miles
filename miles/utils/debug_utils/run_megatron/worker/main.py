@@ -29,7 +29,7 @@ from miles.backends.megatron_utils.checkpoint import load_checkpoint
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
-from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
+from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_before_model
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_predictions_all_ranks
 
@@ -52,10 +52,10 @@ def main() -> None:
     if script.source_patcher_config:
         _apply_source_patches(script.source_patcher_config)
 
+    setup_replay_before_model(script)
     model: list[Any] = _build_and_load_model(args, script)
 
     load_replay_data(script, rank=rank, sequence_parallel=getattr(args, "sequence_parallel", False))
-    setup_replay_stage(script)
 
     token_ids: list[int] = json.loads(script.token_ids_file.read_text())
     batch: dict[str, torch.Tensor] = prepare_batch(
