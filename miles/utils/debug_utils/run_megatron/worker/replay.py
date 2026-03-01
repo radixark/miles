@@ -6,18 +6,15 @@ import torch
 import torch.distributed as dist
 
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
+from miles.utils.replay_base import routing_replay_manager
 
 
-def load_replay_data(script: WorkerScriptArgs) -> None:
+def load_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
     """Load routing replay data from disk before forward pass."""
     if not script.routing_replay_load_path:
         return
 
-    from miles.utils.replay_base import routing_replay_manager
-
-    load_path: Path = Path(script.routing_replay_load_path)
-    rank: int = dist.get_rank()
-    replay_file: Path = load_path / f"rank{rank}_{routing_replay_manager.filename}"
+    replay_file: Path = _replay_file_path(base_dir=script.routing_replay_load_path, rank=rank)
 
     if not replay_file.exists():
         print(f"[worker rank={rank}] WARNING: replay file not found: {replay_file}", flush=True)
@@ -41,8 +38,6 @@ def setup_replay_stage(script: WorkerScriptArgs) -> None:
     (when ``--use-routing-replay`` / ``--use-rollout-routing-replay`` is set).
     Here we only set the stage so the hooks know whether to record or replay.
     """
-    from miles.utils.replay_base import routing_replay_manager
-
     if script.routing_replay_dump_path:
         routing_replay_manager.stage = "record"
         print(f"[worker] Routing replay stage=record (dump → {script.routing_replay_dump_path})", flush=True)
@@ -51,23 +46,23 @@ def setup_replay_stage(script: WorkerScriptArgs) -> None:
         print(f"[worker] Routing replay stage=replay_forward (load ← {script.routing_replay_load_path})", flush=True)
 
 
-def save_replay_data(script: WorkerScriptArgs) -> None:
+def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
     """Save recorded routing replay data to disk."""
     if not script.routing_replay_dump_path:
         return
 
-    from miles.utils.replay_base import routing_replay_manager
+    script.routing_replay_dump_path.mkdir(parents=True, exist_ok=True)
 
-    dump_path: Path = Path(script.routing_replay_dump_path)
-    dump_path.mkdir(parents=True, exist_ok=True)
-
-    rank: int = dist.get_rank()
     all_data: list[torch.Tensor] = []
     for replay in routing_replay_manager.replays:
         all_data.extend(replay.data)
 
     if all_data:
-        save_path: Path = dump_path / f"rank{rank}_{routing_replay_manager.filename}"
+        save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path, rank=rank)
         torch.save(all_data, save_path)
         if rank == 0:
             print(f"[worker] Saved routing replay ({len(all_data)} entries) → {save_path}", flush=True)
+
+
+def _replay_file_path(*, base_dir: Path, rank: int) -> Path:
+    return base_dir / f"rank{rank}_{routing_replay_manager.filename}"

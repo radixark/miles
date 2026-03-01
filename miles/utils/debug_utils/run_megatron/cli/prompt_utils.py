@@ -59,11 +59,10 @@ def generate_token_ids(
 
 
 def write_token_ids_to_tmpfile(token_ids: list[int]) -> Path:
-    tmp: tempfile.NamedTemporaryFile = tempfile.NamedTemporaryFile(
+    with tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, prefix="run_megatron_token_ids_"
-    )
-    json.dump(token_ids, tmp)
-    tmp.close()
+    ) as tmp:
+        json.dump(token_ids, tmp)
     return Path(tmp.name)
 
 

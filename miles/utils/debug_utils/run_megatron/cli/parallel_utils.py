@@ -43,21 +43,10 @@ class ParallelConfig:
 
 def parse_parallel_args(args_str: str) -> dict[str, int]:
     """Parse a parallel config string like '--tp 2 --cp 2' into a dict."""
-    tokens: list[str] = args_str.split()
-    result: dict[str, int] = {}
-    arg_map: dict[str, str] = {
-        "--tp": "tp",
-        "--pp": "pp",
-        "--cp": "cp",
-        "--ep": "ep",
-        "--etp": "etp",
-    }
+    import argparse
 
-    i: int = 0
-    while i < len(tokens):
-        if tokens[i] in arg_map and i + 1 < len(tokens):
-            result[arg_map[tokens[i]]] = int(tokens[i + 1])
-            i += 2
-        else:
-            i += 1
-    return result
+    parser: argparse.ArgumentParser = argparse.ArgumentParser()
+    for flag in ("tp", "pp", "cp", "ep", "etp"):
+        parser.add_argument(f"--{flag}", type=int)
+    namespace: argparse.Namespace = parser.parse_args(args_str.split())
+    return {k: v for k, v in vars(namespace).items() if v is not None}

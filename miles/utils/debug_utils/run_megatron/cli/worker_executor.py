@@ -46,13 +46,16 @@ def build_worker_args(
     Megatron-native flags come from declarative tables in
     ``_build_megatron_flags``; ``--script-*`` flags come from the bridge.
     """
+    use_routing_replay: bool = (
+        script_args.routing_replay_dump_path is not None or script_args.routing_replay_load_path is not None
+    )
     parts: list[str] = [
         _build_megatron_flags(
             parallel=parallel,
             sp=sp,
             seq_length=seq_length,
             batch_size=batch_size,
-            script_args=script_args,
+            use_routing_replay=use_routing_replay,
         ),
         WORKER_SCRIPT_ARGS_BRIDGE.to_cli_args(script_args),
     ]
@@ -87,7 +90,7 @@ def _build_megatron_flags(
     sp: bool,
     seq_length: int,
     batch_size: int,
-    script_args: WorkerScriptArgs,
+    use_routing_replay: bool,
 ) -> str:
     """Build Megatron-native CLI flags from declarative tables."""
     effective_ep: int = parallel.ep if parallel.ep is not None else parallel.tp
@@ -108,10 +111,7 @@ def _build_megatron_flags(
         ("--bf16", True),
         ("--no-gradient-accumulation-fusion", True),
         ("--use-miles-router", True),
-        (
-            "--use-routing-replay",
-            script_args.routing_replay_dump_path is not None or script_args.routing_replay_load_path is not None,
-        ),
+        ("--use-routing-replay", use_routing_replay),
     ]
 
     parts: list[str] = []

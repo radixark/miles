@@ -20,7 +20,7 @@ def print_json_summary(stdout: str) -> None:
                     flush=True,
                 )
         except json.JSONDecodeError:
-            pass
+            print(f"[comparator] WARNING: non-JSON line: {line[:120]}", flush=True)
 
 
 def assert_all_passed(stdout: str) -> None:

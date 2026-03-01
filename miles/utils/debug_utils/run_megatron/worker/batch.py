@@ -22,21 +22,14 @@ def prepare_batch(
     if cp_size > 1:
         from miles.backends.training_utils.cp_utils import slice_with_cp
 
-        parallel_state: SimpleNamespace = SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size)
-        token_tensor = slice_with_cp(
-            token_tensor,
+        cp_kwargs: dict[str, object] = dict(
             pad_value=0,
-            parallel_state=parallel_state,
+            parallel_state=SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size),
             qkv_format="bshd",
             max_seq_len=seq_length,
         )
-        position_tensor = slice_with_cp(
-            position_tensor,
-            pad_value=0,
-            parallel_state=parallel_state,
-            qkv_format="bshd",
-            max_seq_len=seq_length,
-        )
+        token_tensor = slice_with_cp(token_tensor, **cp_kwargs)
+        position_tensor = slice_with_cp(position_tensor, **cp_kwargs)
 
     input_ids: torch.Tensor = token_tensor.unsqueeze(0).expand(batch_size, -1)
     position_ids: torch.Tensor = position_tensor.unsqueeze(0).expand(batch_size, -1)

@@ -2,7 +2,7 @@
 
 import dataclasses
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 import typer
 
@@ -27,6 +27,25 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
 )
 from miles.utils.debug_utils.run_megatron.cli.commands.run import run
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
+
+
+class _CommonRunKwargs(TypedDict):
+    model_type: str
+    hf_checkpoint: Path
+    ref_load: Path | None
+    sp: bool
+    run_backward: bool
+    prompt_mode: str
+    prompt_text: str | None
+    prompt_file: Path | None
+    seq_length: int
+    batch_size: int
+    apply_chat_template: bool
+    role: str
+    source_patcher_config: Path | None
+    dumper_filter: str
+    megatron_path: Path | None
+    extra_args: str
 
 
 def register(app: typer.Typer) -> None:
@@ -65,7 +84,7 @@ def run_and_compare(
     baseline_output: Path = output_base_dir / baseline_config.dir_name()
     target_output: Path = output_base_dir / target_config.dir_name()
 
-    common_run_kwargs: dict[str, object] = dict(
+    common_run_kwargs: _CommonRunKwargs = _CommonRunKwargs(
         model_type=model_type,
         hf_checkpoint=hf_checkpoint,
         ref_load=ref_load,
@@ -111,7 +130,7 @@ def _run_baseline_and_target(
     baseline_output: Path,
     target_output: Path,
     replay_dir: Path | None,
-    common_run_kwargs: dict[str, object],
+    common_run_kwargs: _CommonRunKwargs,
 ) -> None:
     if replay_dir is not None:
         print("[cli] Routing replay enabled", flush=True)

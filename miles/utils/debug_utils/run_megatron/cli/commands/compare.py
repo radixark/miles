@@ -50,23 +50,23 @@ def compare(
         cmd_parts.extend(["--diff-threshold", str(diff_threshold)])
 
     print(f"EXEC: {' '.join(cmd_parts)}", flush=True)
-    result: subprocess.CompletedProcess[str] = subprocess.run(
+    proc: subprocess.CompletedProcess[str] = subprocess.run(
         cmd_parts,
         capture_output=True,
         text=True,
     )
 
-    if result.stdout.strip():
-        print(f"[comparator stdout]\n{result.stdout}")
-    if result.stderr.strip():
-        print(f"[comparator stderr]\n{result.stderr}")
+    if proc.stdout.strip():
+        print(f"[comparator stdout]\n{proc.stdout}")
+    if proc.stderr.strip():
+        print(f"[comparator stderr]\n{proc.stderr}")
     if output_format == "json":
-        print_json_summary(result.stdout)
+        print_json_summary(proc.stdout)
 
     if strict:
-        if result.returncode != 0:
+        if proc.returncode != 0:
             raise typer.Exit(code=1)
         if output_format == "json":
-            assert_all_passed(result.stdout)
+            assert_all_passed(proc.stdout)
 
     print("[cli] Compare completed.", flush=True)

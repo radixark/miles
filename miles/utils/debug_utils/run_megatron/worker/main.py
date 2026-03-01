@@ -52,10 +52,10 @@ def main() -> None:
 
     model: list[Any] = _build_and_load_model(args, script)
 
-    load_replay_data(script)
+    load_replay_data(script, rank=rank)
     setup_replay_stage(script)
 
-    token_ids: list[int] = json.loads(Path(script.token_ids_file).read_text())
+    token_ids: list[int] = json.loads(script.token_ids_file.read_text())
     batch: dict[str, torch.Tensor] = prepare_batch(
         token_ids=token_ids,
         batch_size=args.micro_batch_size,
@@ -67,7 +67,7 @@ def main() -> None:
         print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
 
     _run_forward_backward(args=args, script=script, model=model, batch=batch)
-    save_replay_data(script)
+    save_replay_data(script, rank=rank)
     _finalize_dumper()
 
     if rank == 0:
@@ -82,10 +82,8 @@ def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
     script_args: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
 
     if script_args.ref_load is not None:
-        args.load = script_args.ref_load
+        args.load = str(script_args.ref_load)
 
-    args.hidden_dropout = 0.0
-    args.attention_dropout = 0.0
     return args, script_args
 
 
@@ -108,8 +106,8 @@ def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) ->
     return model
 
 
-def _apply_source_patches(config_path: str) -> None:
-    yaml_content: str = Path(config_path).read_text()
+def _apply_source_patches(config_path: Path) -> None:
+    yaml_content: str = config_path.read_text()
     apply_patches_from_config(
         yaml_content,
         extra_imports=["from sglang.srt.debug_utils.dumper import dumper"],

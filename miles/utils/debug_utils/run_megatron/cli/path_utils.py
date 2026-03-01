@@ -26,4 +26,8 @@ def resolve_model_script(model_type: str) -> Path:
 
 
 def _resolve_repo_base() -> Path:
-    return Path(os.path.abspath(__file__)).resolve().parents[5]
+    current: Path = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    raise RuntimeError(f"Cannot find repo root (no pyproject.toml found above {current})")

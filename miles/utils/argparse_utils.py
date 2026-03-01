@@ -8,11 +8,12 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import types
+from pathlib import Path
 from typing import Generic, TypeVar, get_type_hints
 
 T = TypeVar("T")
 
-_SCALAR_TYPES: dict[type, type] = {str: str, int: int, float: float}
+_SCALAR_TYPES: dict[type, type] = {str: str, int: int, float: float, Path: Path}
 
 
 def _is_bool(tp: type) -> bool:

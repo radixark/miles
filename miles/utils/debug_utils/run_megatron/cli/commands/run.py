@@ -52,10 +52,6 @@ def register(app: typer.Typer) -> None:
     app.command(name="show-model-args")(show_model_args)
 
 
-def _optional_str(path: Path | None) -> str | None:
-    return str(path) if path is not None else None
-
-
 def run(
     model_type: ModelTypeOpt,
     hf_checkpoint: HfCheckpointOpt,
@@ -98,14 +94,14 @@ def run(
     print(f"[cli] Token IDs written to {token_ids_file} ({len(token_ids)} tokens)", flush=True)
 
     script_args: WorkerScriptArgs = WorkerScriptArgs(
-        hf_checkpoint=str(hf_checkpoint),
-        token_ids_file=str(token_ids_file),
+        hf_checkpoint=hf_checkpoint,
+        token_ids_file=token_ids_file,
         role=role,
-        ref_load=_optional_str(ref_load),
+        ref_load=ref_load,
         run_backward=run_backward,
-        source_patcher_config=_optional_str(source_patcher_config),
-        routing_replay_dump_path=_optional_str(routing_replay_dump_path),
-        routing_replay_load_path=_optional_str(routing_replay_load_path),
+        source_patcher_config=source_patcher_config,
+        routing_replay_dump_path=routing_replay_dump_path,
+        routing_replay_load_path=routing_replay_load_path,
     )
     worker_args_str: str = build_worker_args(
         parallel=parallel,

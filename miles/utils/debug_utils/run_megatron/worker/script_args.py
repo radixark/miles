@@ -8,20 +8,21 @@ serialization (CLI → worker) and deserialization (worker argparse) are automat
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 from miles.utils.argparse_utils import DataclassArgparseBridge
 
 
 @dataclasses.dataclass(frozen=True)
 class WorkerScriptArgs:
-    hf_checkpoint: str
-    token_ids_file: str
+    hf_checkpoint: Path
+    token_ids_file: Path
     role: str = "actor"
-    ref_load: str | None = None
+    ref_load: Path | None = None
     run_backward: bool = False
-    source_patcher_config: str | None = None
-    routing_replay_dump_path: str | None = None
-    routing_replay_load_path: str | None = None
+    source_patcher_config: Path | None = None
+    routing_replay_dump_path: Path | None = None
+    routing_replay_load_path: Path | None = None
 
 
 WORKER_SCRIPT_ARGS_BRIDGE: DataclassArgparseBridge[WorkerScriptArgs] = DataclassArgparseBridge(
