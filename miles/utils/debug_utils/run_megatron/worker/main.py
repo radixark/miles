@@ -35,7 +35,7 @@ from miles.utils.debug_utils.run_megatron.worker.replay import (
     setup_replay_before_model,
 )
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
-from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_predictions_all_ranks
+from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
 
 
 def main() -> None:
@@ -80,7 +80,7 @@ def main() -> None:
     )
 
     if script.top_k > 0 and captured_logits is not None:
-        _print_top_k(
+        print_top_k(
             logits=captured_logits,
             input_ids=batch["input_ids"],
             top_k=script.top_k,
@@ -174,28 +174,6 @@ def _run_forward_backward(
         print(f"[worker rank={rank}] losses={losses}", flush=True)
 
     return captured[0] if captured else None
-
-
-def _print_top_k(
-    *,
-    logits: torch.Tensor,
-    input_ids: torch.Tensor,
-    top_k: int,
-    tokenizer_path: Path,
-) -> None:
-    """Print top-k predictions across all ranks."""
-    from transformers import AutoTokenizer
-
-    tokenizer: Any = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
-    pad_token_id: int | None = tokenizer.pad_token_id or tokenizer.eos_token_id
-
-    print_top_predictions_all_ranks(
-        logits=logits,
-        input_ids=input_ids,
-        top_k=top_k,
-        tokenizer=tokenizer,
-        pad_token_id=pad_token_id,
-    )
 
 
 def _finalize_dumper() -> None:

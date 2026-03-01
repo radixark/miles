@@ -1,9 +1,33 @@
 """Top-K prediction printing for debugging forward pass outputs."""
 
 import sys
+from pathlib import Path
+from typing import Any
 
 import torch
 import torch.distributed as dist
+
+
+def print_top_k(
+    *,
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    top_k: int,
+    tokenizer_path: Path,
+) -> None:
+    """Load tokenizer and print top-k predictions across all ranks."""
+    from transformers import AutoTokenizer
+
+    tokenizer: Any = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
+    pad_token_id: int | None = tokenizer.pad_token_id or tokenizer.eos_token_id
+
+    print_top_predictions_all_ranks(
+        logits=logits,
+        input_ids=input_ids,
+        top_k=top_k,
+        tokenizer=tokenizer,
+        pad_token_id=pad_token_id,
+    )
 
 
 def print_top_predictions_for_rank(
