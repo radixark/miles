@@ -181,12 +181,23 @@ def _verify_dumps(config_name: str, dump_subdir: str, dump_dir: str) -> None:
 def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
     baseline_dir: Path = Path(f"{dump_dir}/{dump_subdir}/engines")
     target_dir: Path = Path(f"{dump_dir}/{dump_subdir}/fwd_bwd")
+    # With PP > 1, Megatron fwd_bwd dumps contain layers from all PP stages,
+    # but the SGLang baseline (engines/) only covers the layers it serves.
+    # Layers belonging to other PP stages have no baseline → baseline_load_failed.
+    # Allow those source-patched fields to be skipped alongside the aux tensors.
+    allow_skipped: str = "|".join(
+        ["input_ids", "positions", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"]
+        + SOURCE_PATCHED_FIELDS
+    )
     # TODO: moe_expert_output comparison is not yet supported (unshard logic
     #       for post-alltoall MoE tensors needs dedicated handling)
     run_and_verify_comparator(
         baseline_dir=baseline_dir,
         target_dir=target_dir,
-        extra_args=["--allow-failed-pattern", "moe_expert_output"],
+        extra_args=[
+            "--allow-skipped-pattern", allow_skipped,
+            "--allow-failed-pattern", "moe_expert_output",
+        ],
     )
 
 
