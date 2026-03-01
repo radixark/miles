@@ -16,7 +16,6 @@ import torch
 
 SOURCE_PATCHED_FIELDS: list[str] = [
     "layer_input",
-    "input_layernorm_output",
     "attn_output",
     "attn_q",
     "attn_k",
@@ -36,8 +35,6 @@ patches:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
         append: "dumper.dump('layer_input', hidden_states, dims='t[cp:zigzag,sp] 1 h')"
-      - match: "input_layernorm_output = self.input_layernorm(hidden_states)"
-        append: "dumper.dump('input_layernorm_output', input_layernorm_output, dims='t[cp:zigzag,sp] 1 h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
@@ -79,8 +76,6 @@ patches:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
         append: "dumper.dump('layer_input', hidden_states, dims='s[cp:zigzag,sp] b h')"
-      - match: "input_layernorm_output = self.input_layernorm(hidden_states)"
-        append: "dumper.dump('input_layernorm_output', input_layernorm_output, dims='s[cp:zigzag,sp] b h')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s[cp:zigzag,sp] b h')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
@@ -129,9 +124,7 @@ patches:
                   **kwargs,
               )
           )
-        append: |
-          dumper.dump('layer_input', residual, dims='t h')
-          dumper.dump('input_layernorm_output', hidden_states, dims='t h')
+        append: "dumper.dump('layer_input', residual, dims='t h')"
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
