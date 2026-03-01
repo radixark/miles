@@ -53,7 +53,7 @@ def main() -> None:
 
     model: list[Any] = _build_and_load_model(args, script)
 
-    load_replay_data(script, rank=rank)
+    load_replay_data(script, rank=rank, sequence_parallel=getattr(args, "sequence_parallel", False))
     setup_replay_stage(script)
 
     token_ids: list[int] = json.loads(script.token_ids_file.read_text())
