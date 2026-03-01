@@ -10,6 +10,7 @@ Not intended to be run directly — use ``python -m miles.utils.debug_utils.run_
 import argparse
 import json
 import os
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -95,7 +96,7 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
-    model_provider = get_model_provider_func(args, role=script.role)
+    model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
     model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
 
     if args.load is not None:
@@ -121,7 +122,7 @@ def _run_forward_backward(
     model: list[Any],
     batch: dict[str, torch.Tensor],
 ) -> None:
-    forward_backward_func = get_forward_backward_func()
+    forward_backward_func: Callable[..., Any] = get_forward_backward_func()
 
     def forward_step_func(
         data_iterator: Any,
@@ -135,7 +136,7 @@ def _run_forward_backward(
         )
         return output, partial(loss_func, data["labels"])
 
-    losses = forward_backward_func(
+    losses: Any = forward_backward_func(
         forward_step_func=forward_step_func,
         data_iterator=iter([batch]),
         model=model,

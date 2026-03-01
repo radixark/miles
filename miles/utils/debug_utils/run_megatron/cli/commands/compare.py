@@ -40,11 +40,11 @@ def compare(
         "--grouping",
         grouping,
     ]
-    if override_baseline_dims:
+    if override_baseline_dims is not None:
         cmd_parts.extend(["--override-baseline-dims", override_baseline_dims])
-    if override_target_dims:
+    if override_target_dims is not None:
         cmd_parts.extend(["--override-target-dims", override_target_dims])
-    if patch_config:
+    if patch_config is not None:
         cmd_parts.extend(["--patch-config", str(patch_config)])
     if diff_threshold is not None:
         cmd_parts.extend(["--diff-threshold", str(diff_threshold)])
@@ -60,6 +60,8 @@ def compare(
         print(f"[comparator stdout]\n{proc.stdout}")
     if proc.stderr.strip():
         print(f"[comparator stderr]\n{proc.stderr}")
+    if proc.returncode != 0:
+        print(f"[comparator] exited with code {proc.returncode}", flush=True)
     if output_format == "json":
         print_json_summary(proc.stdout)
 

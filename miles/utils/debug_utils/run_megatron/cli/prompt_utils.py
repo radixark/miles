@@ -28,7 +28,7 @@ def generate_token_ids(
     - file: read long text from file, tokenize and truncate to seq_length
     - text: use user-provided text directly, tokenize and truncate to seq_length
     """
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
     if prompt.mode == "text" and prompt.text is None:
         raise ValueError("--prompt-text is required for text mode")
@@ -37,7 +37,9 @@ def generate_token_ids(
 
     raw_text: str = _resolve_raw_text(prompt)
 
-    tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
+    tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
+        str(tokenizer_path), trust_remote_code=True
+    )
 
     if prompt.apply_chat_template:
         messages: list[dict[str, str]] = [{"role": "user", "content": raw_text}]
@@ -68,10 +70,12 @@ def _resolve_raw_text(prompt: PromptConfig) -> str:
     if prompt.mode == "math":
         return _build_math_sequence(target_char_length=prompt.seq_length * 8)
     elif prompt.mode == "file":
-        assert prompt.file is not None
+        if prompt.file is None:
+            raise ValueError("--prompt-file is required for file mode")
         return prompt.file.read_text()
     elif prompt.mode == "text":
-        assert prompt.text is not None
+        if prompt.text is None:
+            raise ValueError("--prompt-text is required for text mode")
         return prompt.text
     else:
         raise ValueError(f"Unknown prompt mode: {prompt.mode!r}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 
 
@@ -43,8 +44,6 @@ class ParallelConfig:
 
 def parse_parallel_args(args_str: str) -> dict[str, int]:
     """Parse a parallel config string like '--tp 2 --cp 2' into a dict."""
-    import argparse
-
     parser: argparse.ArgumentParser = argparse.ArgumentParser()
     for flag in ("tp", "pp", "cp", "ep", "etp"):
         parser.add_argument(f"--{flag}", type=int)

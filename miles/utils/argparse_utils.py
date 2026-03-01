@@ -1,6 +1,7 @@
 """Dataclass ↔ argparse bridge.
 
-Supported field types: str, int, float, bool, and their ``X | None`` variants.
+Supported field types: str, int, float, Path, bool, and their ``X | None``
+variants (except ``bool | None`` which is not supported).
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ def _is_optional(tp: type) -> tuple[bool, type | None]:
         return False, None
 
     return True, non_none[0]
+
+
+def _resolve_default(field: dataclasses.Field[object]) -> object:
+    """Return the effective default for a dataclass field, or ``MISSING``."""
+    if field.default is not dataclasses.MISSING:
+        return field.default
+    if field.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
+        return field.default_factory()  # type: ignore[misc]
+    return dataclasses.MISSING
 
 
 class DataclassArgparseBridge(Generic[T]):
@@ -85,10 +95,10 @@ class DataclassArgparseBridge(Generic[T]):
                 continue
 
             if tp in _SCALAR_TYPES:
-                has_default: bool = field.default is not dataclasses.MISSING
+                default: object = _resolve_default(field)
                 kwargs: dict[str, object] = {"dest": dest, "type": _SCALAR_TYPES[tp]}
-                if has_default:
-                    kwargs["default"] = field.default
+                if default is not dataclasses.MISSING:
+                    kwargs["default"] = default
                 else:
                     kwargs["required"] = True
                 group.add_argument(flag, **kwargs)  # type: ignore[arg-type]

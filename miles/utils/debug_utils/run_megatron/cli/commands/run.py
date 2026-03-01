@@ -80,7 +80,7 @@ def run(
 ) -> None:
     """Launch torchrun to run Megatron standalone forward (or forward+backward)."""
     parallel: ParallelConfig = ParallelConfig(tp=tp, pp=pp, cp=cp, ep=ep, etp=etp)
-    resolved_megatron: str = resolve_megatron_path(megatron_path)
+    resolved_megatron: Path = resolve_megatron_path(megatron_path)
 
     prompt: PromptConfig = PromptConfig(
         mode=prompt_mode,  # type: ignore[arg-type]

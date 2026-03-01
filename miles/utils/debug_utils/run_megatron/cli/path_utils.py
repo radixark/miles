@@ -5,15 +5,15 @@ from pathlib import Path
 
 import typer
 
-_DEFAULT_MEGATRON_PATH: str = "/root/Megatron-LM"
+_DEFAULT_MEGATRON_PATH: Path = Path("/root/Megatron-LM")
 
 
-def resolve_megatron_path(megatron_path: Path | None) -> str:
+def resolve_megatron_path(megatron_path: Path | None) -> Path:
     if megatron_path is not None:
-        return str(megatron_path)
+        return megatron_path
     env_path: str | None = os.environ.get("MEGATRON_PATH")
     if env_path:
-        return env_path
+        return Path(env_path)
     return _DEFAULT_MEGATRON_PATH
 
 

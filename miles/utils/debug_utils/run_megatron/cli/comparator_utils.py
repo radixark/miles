@@ -25,10 +25,15 @@ def print_json_summary(stdout: str) -> None:
 
 def assert_all_passed(stdout: str) -> None:
     """Assert all comparisons passed in JSON output (strict mode)."""
-    from sglang.srt.debug_utils.comparator.output_types import ComparisonRecord, SummaryRecord, parse_record_json
+    from sglang.srt.debug_utils.comparator.output_types import (
+        AnyRecord,
+        ComparisonRecord,
+        SummaryRecord,
+        parse_record_json,
+    )
 
     lines: list[str] = _nonempty_lines(stdout)
-    records = [parse_record_json(line) for line in lines]
+    records: list[AnyRecord] = [parse_record_json(line) for line in lines]
 
     comparisons: list[ComparisonRecord] = [r for r in records if isinstance(r, ComparisonRecord)]
     assert len(comparisons) > 0, "No comparison records produced"

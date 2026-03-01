@@ -10,7 +10,7 @@ from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIP
 def build_torchrun_cmd(
     *,
     model_type: str,
-    megatron_path: str,
+    megatron_path: Path,
     nproc: int,
     worker_args: str,
 ) -> str:
