@@ -9,6 +9,7 @@ from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScript
 from miles.utils.replay_base import routing_replay_manager
 
 _REPLAY_FORMAT_VERSION: int = 1
+_VALID_LOAD_MODES: frozenset[str] = frozenset({"per_rank", "sliced"})
 
 
 def load_replay_data(
@@ -19,51 +20,29 @@ def load_replay_data(
 ) -> None:
     """Load routing replay data from disk before forward pass.
 
-    Supports two loading modes:
-    1. Per-rank files (rank{N}_routing_replay.pt) — when the current config
-       matches the dumped config (no slicing needed, per-rank file exists)
-    2. Rank-0 file with slicing — for cross-config comparison where the
-       dumped config has fewer ranks. Always loads from rank 0's file and
-       applies CP zigzag slicing + SP slicing.
-
-    Decision logic: if CP>1 or SP is active, we ALWAYS use sliced loading
-    from rank 0's file, because the dump may come from a different config.
+    Requires ``routing_replay_load_mode`` to be explicitly set:
+    - ``"per_rank"``: each rank loads its own file (no slicing)
+    - ``"sliced"``: all ranks load from rank 0's file with CP zigzag + SP slicing
     """
     if not script.routing_replay_load_path:
         return
 
-    needs_slicing: bool = _needs_replay_slicing(sequence_parallel=sequence_parallel)
+    mode: str | None = script.routing_replay_load_mode
+    if mode not in _VALID_LOAD_MODES:
+        raise ValueError(
+            f"routing_replay_load_mode must be one of {sorted(_VALID_LOAD_MODES)}, got {mode!r}"
+        )
 
-    if needs_slicing:
+    if mode == "sliced":
         rank0_file: Path = _replay_file_path(base_dir=script.routing_replay_load_path, rank=0)
         if not rank0_file.exists():
-            print(f"[worker rank={rank}] WARNING: replay rank0 file not found: {rank0_file}", flush=True)
-            return
+            raise FileNotFoundError(f"Replay rank0 file not found: {rank0_file}")
         _load_with_slicing(rank0_file, rank=rank, sequence_parallel=sequence_parallel)
     else:
         per_rank_file: Path = _replay_file_path(base_dir=script.routing_replay_load_path, rank=rank)
-        if per_rank_file.exists():
-            _load_per_rank_file(per_rank_file, rank=rank)
-        else:
-            rank0_file = _replay_file_path(base_dir=script.routing_replay_load_path, rank=0)
-            if not rank0_file.exists():
-                print(f"[worker rank={rank}] WARNING: replay file not found: {per_rank_file}", flush=True)
-                return
-            _load_per_rank_file(rank0_file, rank=rank)
-
-
-def _needs_replay_slicing(*, sequence_parallel: bool) -> bool:
-    """Check if current parallel config requires slicing replay data."""
-    from megatron.core import mpu
-
-    cp_size: int = mpu.get_context_parallel_world_size() if mpu.is_initialized() else 1
-    tp_size: int = mpu.get_tensor_model_parallel_world_size() if mpu.is_initialized() else 1
-
-    if cp_size > 1:
-        return True
-    if sequence_parallel and routing_replay_manager.if_sp_region and tp_size > 1:
-        return True
-    return False
+        if not per_rank_file.exists():
+            raise FileNotFoundError(f"Replay per-rank file not found: {per_rank_file}")
+        _load_per_rank_file(per_rank_file, rank=rank)
 
 
 def setup_replay_before_model(script: WorkerScriptArgs) -> None:
@@ -81,7 +60,8 @@ def setup_replay_before_model(script: WorkerScriptArgs) -> None:
         routing_replay_manager.enabled = True
         routing_replay_manager.stage = "replay_forward"
         print(
-            f"[worker] Routing replay enabled, stage=replay_forward (load ← {script.routing_replay_load_path})",
+            f"[worker] Routing replay enabled, stage=replay_forward "
+            f"(load ← {script.routing_replay_load_path}, mode={script.routing_replay_load_mode})",
             flush=True,
         )
 

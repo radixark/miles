@@ -162,4 +162,5 @@ def _run_baseline_and_target(
         output_dir=target_output,
         routing_replay_dump_path=None,
         routing_replay_load_path=replay_dir,
+        routing_replay_load_mode="sliced" if replay_dir is not None else None,
     )

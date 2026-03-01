@@ -23,6 +23,7 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     RefLoadOpt,
     RoleOpt,
     RoutingReplayDumpOpt,
+    RoutingReplayLoadModeOpt,
     RoutingReplayLoadOpt,
     RunBackwardOpt,
     SeqLengthOpt,
@@ -75,6 +76,7 @@ def run(
     source_patcher_config: SourcePatcherConfigOpt = None,
     routing_replay_dump_path: RoutingReplayDumpOpt = None,
     routing_replay_load_path: RoutingReplayLoadOpt = None,
+    routing_replay_load_mode: RoutingReplayLoadModeOpt = None,
     top_k: TopKOpt = 0,
     dumper_filter: DumperFilterOpt = "",
     megatron_path: MegatronPathOpt = None,
@@ -104,6 +106,7 @@ def run(
         source_patcher_config=source_patcher_config,
         routing_replay_dump_path=routing_replay_dump_path,
         routing_replay_load_path=routing_replay_load_path,
+        routing_replay_load_mode=routing_replay_load_mode,
         top_k=top_k,
     )
     worker_args_str: str = build_worker_args(
