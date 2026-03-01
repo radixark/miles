@@ -32,7 +32,11 @@ def register(app: typer.Typer) -> None:
 def run_impl(args: RunArgs) -> None:
     """Core run logic, called by both ``run`` command and ``run_and_compare``."""
     parallel: ParallelConfig = ParallelConfig(
-        tp=args.tp, pp=args.pp, cp=args.cp, ep=args.ep, etp=args.etp,
+        tp=args.tp,
+        pp=args.pp,
+        cp=args.cp,
+        ep=args.ep,
+        etp=args.etp,
     )
 
     if args.routing_replay_dump_path is not None and parallel.nproc != 1:

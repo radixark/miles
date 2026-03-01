@@ -33,9 +33,7 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
     baseline_output: Path = args.output_base_dir / baseline_config.dir_name()
     target_output: Path = args.output_base_dir / target_config.dir_name()
 
-    common_fields: dict[str, object] = {
-        f.name: getattr(args, f.name) for f in dataclasses.fields(CommonRunArgs)
-    }
+    common_fields: dict[str, object] = {f.name: getattr(args, f.name) for f in dataclasses.fields(CommonRunArgs)}
 
     replay_dir: Path | None = args.output_base_dir / "routing_replay" if args.routing_replay else None
 
@@ -49,12 +47,14 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
     )
 
     print("[cli] Comparing baseline vs target", flush=True)
-    compare_impl(CompareArgs(
-        baseline_dir=baseline_output / "standalone",
-        target_dir=target_output / "standalone",
-        output_format="json",
-        grouping="logical",
-    ))
+    compare_impl(
+        CompareArgs(
+            baseline_dir=baseline_output / "standalone",
+            target_dir=target_output / "standalone",
+            output_format="json",
+            grouping="logical",
+        )
+    )
 
 
 def _run_baseline_and_target(
@@ -72,19 +72,23 @@ def _run_baseline_and_target(
         print("[cli] Routing replay enabled", flush=True)
 
     print("[cli] Step 1/2: Baseline run", flush=True)
-    run_impl(RunArgs(
-        **common_fields,
-        **dataclasses.asdict(baseline_config),
-        output_dir=baseline_output,
-        routing_replay_dump_path=replay_dir,
-        routing_replay_load_path=None,
-    ))
+    run_impl(
+        RunArgs(
+            **common_fields,
+            **dataclasses.asdict(baseline_config),
+            output_dir=baseline_output,
+            routing_replay_dump_path=replay_dir,
+            routing_replay_load_path=None,
+        )
+    )
 
     print("[cli] Step 2/2: Target run", flush=True)
-    run_impl(RunArgs(
-        **common_fields,
-        **dataclasses.asdict(target_config),
-        output_dir=target_output,
-        routing_replay_dump_path=None,
-        routing_replay_load_path=replay_dir,
-    ))
+    run_impl(
+        RunArgs(
+            **common_fields,
+            **dataclasses.asdict(target_config),
+            output_dir=target_output,
+            routing_replay_dump_path=None,
+            routing_replay_load_path=replay_dir,
+        )
+    )

@@ -1,7 +1,8 @@
 import dataclasses
 import functools
 import inspect
-from typing import Annotated, Callable, TypeVar, overload
+from collections.abc import Callable
+from typing import Annotated, TypeVar, overload
 
 import typer
 

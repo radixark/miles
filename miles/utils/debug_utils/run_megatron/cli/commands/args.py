@@ -50,9 +50,7 @@ class CommonRunArgs:
     # odd + somewhat large; also the fine-structure constant
     seq_length: int = _field(default=137, help="Sequence length")
     batch_size: int = _field(default=1, help="Micro batch size")
-    apply_chat_template: bool = _field(
-        default=False, help="Apply chat template", flag="--apply-chat-template"
-    )
+    apply_chat_template: bool = _field(default=False, help="Apply chat template", flag="--apply-chat-template")
     role: str = _field(default="actor", help="Model role: actor / critic")
     source_patcher_config: Path | None = _field(default=None, help="Source patcher YAML config path")
     top_k: int = _field(default=0, help="Print top-k predictions per position (0=disabled)", flag="--top-k")
@@ -65,9 +63,7 @@ class CommonRunArgs:
 class RunArgs(CommonRunArgs):
     """Arguments for the ``run`` command."""
 
-    output_dir: Path = _field(
-        default=Path("/tmp/run_megatron_dump"), help="Dump output directory"
-    )
+    output_dir: Path = _field(default=Path("/tmp/run_megatron_dump"), help="Dump output directory")
     tp: int = _field(default=1, help="Tensor parallel size")
     pp: int = _field(default=1, help="Pipeline parallel size")
     cp: int = _field(default=1, help="Context parallel size")
