@@ -29,7 +29,11 @@ from miles.backends.megatron_utils.checkpoint import load_checkpoint
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
-from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_before_model
+from miles.utils.debug_utils.run_megatron.worker.replay import (
+    load_replay_data,
+    save_replay_data,
+    setup_replay_before_model,
+)
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_predictions_all_ranks
 
