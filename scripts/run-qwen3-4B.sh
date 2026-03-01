@@ -10,33 +10,58 @@ sleep 3
 pkill -9 ray
 pkill -9 python
 
-set -ex
+set -euxo pipefail
+
+# ==================== Platform Detection ====================
+if [ -e /dev/kfd ] || python3 -c "import torch; assert torch.version.hip" 2>/dev/null; then
+    GPU_VENDOR="amd"
+elif command -v nvidia-smi &>/dev/null; then
+    GPU_VENDOR="nvidia"
+else
+    echo "ERROR: No supported GPU detected (need NVIDIA or AMD)"
+    exit 1
+fi
+echo "Detected GPU vendor: ${GPU_VENDOR}"
+
+# ==================== Configurable Paths ====================
+MODEL_DIR="${MODEL_DIR:-/root}"
+DATA_DIR="${DATA_DIR:-/root}"
+export MODEL_DIR DATA_DIR
+
+# ==================== Platform-Specific Setup ====================
+if [ "$GPU_VENDOR" = "amd" ]; then
+    export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"}
+    export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"}
+    NUM_GPUS=$(echo ${HIP_VISIBLE_DEVICES} | tr ',' '\n' | wc -l)
+    HAS_NVLINK=0
+else
+    NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
+    if [ "$NVLINK_COUNT" -gt 0 ]; then
+        HAS_NVLINK=1
+    else
+        HAS_NVLINK=0
+    fi
+    echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
+    NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
-
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-if [ "$NVLINK_COUNT" -gt 0 ]; then
-    HAS_NVLINK=1
-else
-    HAS_NVLINK=0
-fi
-echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B
-   #--hf-checkpoint /root/Qwen3-4B-FP8
-   --ref-load /root/Qwen3-4B_torch_dist
-   --load /root/Qwen3-4B_miles/
-   --save /root/Qwen3-4B_miles/
+   --hf-checkpoint ${MODEL_DIR}/Qwen3-4B
+   #--hf-checkpoint ${MODEL_DIR}/Qwen3-4B-FP8
+   --ref-load ${MODEL_DIR}/Qwen3-4B_torch_dist
+   --load ${MODEL_DIR}/Qwen3-4B_miles/
+   --save ${MODEL_DIR}/Qwen3-4B_miles/
    --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data ${DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -54,7 +79,7 @@ ROLLOUT_ARGS=(
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
+   --eval-prompt-data aime ${DATA_DIR}/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
@@ -108,6 +133,11 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
 )
 
+# AMD: disable custom all-reduce to prevent driver-level deadlocks with offload enabled
+if [ "$GPU_VENDOR" = "amd" ]; then
+    SGLANG_ARGS+=(--sglang-disable-custom-all-reduce)
+fi
+
 MISC_ARGS=(
    # default dropout in megatron is 0.1
    --attention-dropout 0.0
@@ -119,14 +149,17 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
-# launch the master node of ray in container
+# ==================== Launch Ray ====================
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
-# Build the runtime environment JSON with proper variable substitution
+# Dynamically detect Megatron-LM installation path
+MEGATRON_LM_PATH=$(python3 -c "import megatron; import os; print(os.path.dirname(os.path.dirname(megatron.__file__)))" 2>/dev/null || echo "/app/Megatron-LM")
+
+# Build the runtime environment JSON
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/\",
+    \"PYTHONPATH\": \"${MEGATRON_LM_PATH}/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
@@ -136,7 +169,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node ${NUM_GPUS} \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
