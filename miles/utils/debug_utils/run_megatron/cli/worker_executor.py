@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig
 from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_model_script
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 
@@ -33,11 +34,7 @@ def build_torchrun_cmd(
 
 def build_worker_args(
     *,
-    tp: int,
-    pp: int,
-    cp: int,
-    ep: int | None,
-    etp: int,
+    parallel: ParallelConfig,
     sp: bool,
     seq_length: int,
     batch_size: int,
@@ -51,11 +48,7 @@ def build_worker_args(
     """
     parts: list[str] = [
         _build_megatron_flags(
-            tp=tp,
-            pp=pp,
-            cp=cp,
-            ep=ep,
-            etp=etp,
+            parallel=parallel,
             sp=sp,
             seq_length=seq_length,
             batch_size=batch_size,
@@ -84,31 +77,27 @@ def build_dumper_env(
     if dumper_filter:
         env["DUMPER_FILTER"] = dumper_filter
     if run_backward:
-        env["DUMPER_DUMP_GRAD"] = "1"
+        env["DUMPER_ENABLE_MODEL_GRAD"] = "1"
     return env
 
 
 def _build_megatron_flags(
     *,
-    tp: int,
-    pp: int,
-    cp: int,
-    ep: int | None,
-    etp: int,
+    parallel: ParallelConfig,
     sp: bool,
     seq_length: int,
     batch_size: int,
     script_args: WorkerScriptArgs,
 ) -> str:
     """Build Megatron-native CLI flags from declarative tables."""
-    effective_ep: int = ep if ep is not None else tp
+    effective_ep: int = parallel.ep if parallel.ep is not None else parallel.tp
 
     key_value_args: list[tuple[str, object | None]] = [
-        ("--tensor-model-parallel-size", tp),
-        ("--pipeline-model-parallel-size", pp),
-        ("--context-parallel-size", cp),
+        ("--tensor-model-parallel-size", parallel.tp),
+        ("--pipeline-model-parallel-size", parallel.pp),
+        ("--context-parallel-size", parallel.cp),
         ("--expert-model-parallel-size", effective_ep),
-        ("--expert-tensor-parallel-size", etp),
+        ("--expert-tensor-parallel-size", parallel.etp),
         ("--seq-length", seq_length),
         ("--micro-batch-size", batch_size),
         ("--global-batch-size", batch_size),

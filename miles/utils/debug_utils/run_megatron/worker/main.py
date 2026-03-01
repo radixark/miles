@@ -27,7 +27,7 @@ from miles.backends.megatron_utils.checkpoint import load_checkpoint
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
-from miles.utils.debug_utils.run_megatron.worker.dumper_utils import finalize_dumper, setup_dumper
+from miles.utils.debug_utils.run_megatron.worker.dumper_utils import finalize_dumper
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
@@ -51,7 +51,6 @@ def main() -> None:
     if script.source_patcher_config:
         _apply_source_patches(script.source_patcher_config)
 
-    setup_dumper(args)
     model: list[Any] = _build_and_load_model(args, script)
 
     load_replay_data(script)
