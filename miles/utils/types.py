@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+import numpy
 import torch
 
 
@@ -24,7 +25,7 @@ class Sample:
     loss_mask: list[int] | None = None
     weight_versions: list[str] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
-    rollout_routed_experts: list[list[int]] | None = None  # Routed experts from rollout engine
+    rollout_routed_experts: numpy.ndarray | None = None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     remove_sample: bool = False
 
     class Status(Enum):
