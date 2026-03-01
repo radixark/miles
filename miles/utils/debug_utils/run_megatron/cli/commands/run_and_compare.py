@@ -1,38 +1,22 @@
 """``run-and-compare`` CLI command."""
 
+from __future__ import annotations
+
 import dataclasses
 from pathlib import Path
-from typing import Annotated
 
 import typer
 
-from miles.utils.debug_utils.run_megatron.cli.commands.compare import compare
-from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
-    ApplyChatTemplateOpt,
-    BatchSizeOpt,
-    DumperFilterOpt,
-    ExtraArgsOpt,
-    HfCheckpointOpt,
-    MegatronPathOpt,
-    ModelTypeOpt,
-    PromptFileOpt,
-    PromptModeOpt,
-    PromptTextOpt,
-    RefLoadOpt,
-    RoleOpt,
-    RunBackwardOpt,
-    SeqLengthOpt,
-    SourcePatcherConfigOpt,
-    SpOpt,
-    TopKOpt,
+from miles.utils.debug_utils.run_megatron.cli.commands.args import (
+    CommonRunArgs,
+    CompareArgs,
+    RunAndCompareArgs,
+    RunArgs,
 )
-from miles.utils.debug_utils.run_megatron.cli.commands.run import run
+from miles.utils.debug_utils.run_megatron.cli.commands.compare import compare_impl
+from miles.utils.debug_utils.run_megatron.cli.commands.run import run_impl
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
-
-_NON_COMMON_PARAMS: frozenset[str] = frozenset({
-    "output_base_dir", "baseline", "target", "routing_replay",
-    "baseline_config", "target_config", "baseline_output", "target_output",
-})
+from miles.utils.typer_utils import dataclass_cli
 
 
 def register(app: typer.Typer) -> None:
@@ -40,43 +24,20 @@ def register(app: typer.Typer) -> None:
     app.command(name="run-and-compare")(run_and_compare)
 
 
-def run_and_compare(
-    model_type: ModelTypeOpt,
-    hf_checkpoint: HfCheckpointOpt,
-    output_base_dir: Annotated[Path, typer.Option(help="Base output directory for dumps")],
-    baseline: Annotated[str, typer.Option(help='Baseline parallel config, e.g. "--tp 1 --cp 1"')],
-    target: Annotated[str, typer.Option(help='Target parallel config, e.g. "--tp 2 --cp 2"')],
-    ref_load: RefLoadOpt = None,
-    sp: SpOpt = False,
-    run_backward: RunBackwardOpt = False,
-    prompt_mode: PromptModeOpt = "math",
-    prompt_text: PromptTextOpt = None,
-    prompt_file: PromptFileOpt = None,
-    seq_length: SeqLengthOpt = 137,  # odd + somewhat large; also the fine-structure constant
-    batch_size: BatchSizeOpt = 1,
-    apply_chat_template: ApplyChatTemplateOpt = False,
-    role: RoleOpt = "actor",
-    source_patcher_config: SourcePatcherConfigOpt = None,
-    top_k: TopKOpt = 0,
-    dumper_filter: DumperFilterOpt = "",
-    megatron_path: MegatronPathOpt = None,
-    extra_args: ExtraArgsOpt = "",
-    routing_replay: Annotated[
-        bool, typer.Option("--routing-replay", help="Enable routing replay (record on baseline, replay on target)")
-    ] = False,
-) -> None:
+@dataclass_cli(env_var_prefix="")
+def run_and_compare(args: RunAndCompareArgs) -> None:
     """Run baseline + target configs, then compare dumps."""
-    baseline_config: ParallelConfig = ParallelConfig.from_parsed_args(parse_parallel_args(baseline))
-    target_config: ParallelConfig = ParallelConfig.from_parsed_args(parse_parallel_args(target))
+    baseline_config: ParallelConfig = ParallelConfig.from_parsed_args(parse_parallel_args(args.baseline))
+    target_config: ParallelConfig = ParallelConfig.from_parsed_args(parse_parallel_args(args.target))
 
-    baseline_output: Path = output_base_dir / baseline_config.dir_name()
-    target_output: Path = output_base_dir / target_config.dir_name()
+    baseline_output: Path = args.output_base_dir / baseline_config.dir_name()
+    target_output: Path = args.output_base_dir / target_config.dir_name()
 
-    common_run_kwargs: dict[str, object] = {
-        k: v for k, v in locals().items() if k not in _NON_COMMON_PARAMS
+    common_fields: dict[str, object] = {
+        f.name: getattr(args, f.name) for f in dataclasses.fields(CommonRunArgs)
     }
 
-    replay_dir: Path | None = output_base_dir / "routing_replay" if routing_replay else None
+    replay_dir: Path | None = args.output_base_dir / "routing_replay" if args.routing_replay else None
 
     _run_baseline_and_target(
         baseline_config=baseline_config,
@@ -84,16 +45,16 @@ def run_and_compare(
         baseline_output=baseline_output,
         target_output=target_output,
         replay_dir=replay_dir,
-        common_run_kwargs=common_run_kwargs,
+        common_fields=common_fields,
     )
 
     print("[cli] Comparing baseline vs target", flush=True)
-    compare(
+    compare_impl(CompareArgs(
         baseline_dir=baseline_output / "standalone",
         target_dir=target_output / "standalone",
         output_format="json",
         grouping="logical",
-    )
+    ))
 
 
 def _run_baseline_and_target(
@@ -103,7 +64,7 @@ def _run_baseline_and_target(
     baseline_output: Path,
     target_output: Path,
     replay_dir: Path | None,
-    common_run_kwargs: dict[str, object],
+    common_fields: dict[str, object],
 ) -> None:
     if replay_dir is not None:
         if baseline_config.nproc != 1:
@@ -111,19 +72,19 @@ def _run_baseline_and_target(
         print("[cli] Routing replay enabled", flush=True)
 
     print("[cli] Step 1/2: Baseline run", flush=True)
-    run(
-        **common_run_kwargs,
+    run_impl(RunArgs(
+        **common_fields,
         **dataclasses.asdict(baseline_config),
         output_dir=baseline_output,
         routing_replay_dump_path=replay_dir,
         routing_replay_load_path=None,
-    )
+    ))
 
     print("[cli] Step 2/2: Target run", flush=True)
-    run(
-        **common_run_kwargs,
+    run_impl(RunArgs(
+        **common_fields,
         **dataclasses.asdict(target_config),
         output_dir=target_output,
         routing_replay_dump_path=None,
         routing_replay_load_path=replay_dir,
-    )
+    ))
