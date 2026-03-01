@@ -50,25 +50,41 @@ def compare(
         cmd_parts.extend(["--diff-threshold", str(diff_threshold)])
 
     print(f"EXEC: {' '.join(cmd_parts)}", flush=True)
-    proc: subprocess.CompletedProcess[str] = subprocess.run(
+    stdout_text, stderr_text, returncode = _run_streaming(cmd_parts)
+
+    if stderr_text.strip():
+        print(f"[comparator stderr]\n{stderr_text}", flush=True)
+    if returncode != 0:
+        print(f"[comparator] exited with code {returncode}", flush=True)
+    if output_format == "json":
+        print_json_summary(stdout_text)
+
+    if strict:
+        if returncode != 0:
+            raise typer.Exit(code=1)
+        if output_format == "json":
+            assert_all_passed(stdout_text)
+
+    print("[cli] Compare completed.", flush=True)
+
+
+def _run_streaming(cmd_parts: list[str]) -> tuple[str, str, int]:
+    """Run subprocess with real-time stdout streaming, returning captured output."""
+    proc: subprocess.Popen[str] = subprocess.Popen(
         cmd_parts,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
     )
 
-    if proc.stdout.strip():
-        print(f"[comparator stdout]\n{proc.stdout}")
-    if proc.stderr.strip():
-        print(f"[comparator stderr]\n{proc.stderr}")
-    if proc.returncode != 0:
-        print(f"[comparator] exited with code {proc.returncode}", flush=True)
-    if output_format == "json":
-        print_json_summary(proc.stdout)
+    stdout_lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        stdout_lines.append(line)
 
-    if strict:
-        if proc.returncode != 0:
-            raise typer.Exit(code=1)
-        if output_format == "json":
-            assert_all_passed(proc.stdout)
+    assert proc.stderr is not None
+    stderr_text: str = proc.stderr.read()
+    proc.wait()
 
-    print("[cli] Compare completed.", flush=True)
+    return "".join(stdout_lines), stderr_text, proc.returncode
