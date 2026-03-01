@@ -76,14 +76,14 @@ def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
     from megatron.training.arguments import parse_args
 
     args: argparse.Namespace = parse_args(extra_args_provider=WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser)
-    script: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
+    script_args: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
 
-    if script.ref_load is not None:
-        args.load = script.ref_load
+    if script_args.ref_load is not None:
+        args.load = script_args.ref_load
 
     args.hidden_dropout = 0.0
     args.attention_dropout = 0.0
-    return args, script
+    return args, script_args
 
 
 def _initialize_megatron(args: argparse.Namespace) -> None:
