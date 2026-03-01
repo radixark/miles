@@ -30,11 +30,6 @@ def generate_token_ids(
     """
     from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-    if prompt.mode == "text" and prompt.text is None:
-        raise ValueError("--prompt-text is required for text mode")
-    if prompt.mode == "file" and prompt.file is None:
-        raise ValueError("--prompt-file is required for file mode")
-
     raw_text: str = _resolve_raw_text(prompt)
 
     tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)

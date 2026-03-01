@@ -38,14 +38,15 @@ def compare(
         "--grouping",
         grouping,
     ]
-    if override_baseline_dims is not None:
-        cmd_parts.extend(["--override-baseline-dims", override_baseline_dims])
-    if override_target_dims is not None:
-        cmd_parts.extend(["--override-target-dims", override_target_dims])
-    if patch_config is not None:
-        cmd_parts.extend(["--patch-config", str(patch_config)])
-    if diff_threshold is not None:
-        cmd_parts.extend(["--diff-threshold", str(diff_threshold)])
+    optional_args: dict[str, object | None] = {
+        "--override-baseline-dims": override_baseline_dims,
+        "--override-target-dims": override_target_dims,
+        "--patch-config": patch_config,
+        "--diff-threshold": diff_threshold,
+    }
+    for flag, value in optional_args.items():
+        if value is not None:
+            cmd_parts.extend([flag, str(value)])
 
     exec_command(" ".join(cmd_parts))
     print("[cli] Compare completed.", flush=True)

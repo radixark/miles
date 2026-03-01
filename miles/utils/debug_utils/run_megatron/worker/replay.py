@@ -82,6 +82,18 @@ def _replay_file_path(*, base_dir: Path) -> Path:
     return base_dir / f"rank0_{routing_replay_manager.filename}"
 
 
+def _get_parallel_ranks() -> tuple[int, int, int, int]:
+    """Return (cp_size, cp_rank, tp_size, tp_rank), defaulting to 1/0 if mpu is not initialized."""
+    from megatron.core import mpu
+
+    initialized: bool = mpu.is_initialized()
+    cp_size: int = mpu.get_context_parallel_world_size() if initialized else 1
+    cp_rank: int = mpu.get_context_parallel_rank() if initialized else 0
+    tp_size: int = mpu.get_tensor_model_parallel_world_size() if initialized else 1
+    tp_rank: int = mpu.get_tensor_model_parallel_rank() if initialized else 0
+    return cp_size, cp_rank, tp_size, tp_rank
+
+
 def _load_replay(
     replay_file: Path,
     *,
@@ -89,19 +101,13 @@ def _load_replay(
     sequence_parallel: bool,
 ) -> None:
     """Load replay from rank 0's file with CP zigzag slicing and SP slicing."""
-    from megatron.core import mpu
-
     saved_replays: list[list[torch.Tensor]] = torch.load(replay_file, weights_only=False)
 
     expected: int = len(routing_replay_manager.replays)
     if len(saved_replays) != expected:
         raise ValueError(f"Replay file has {len(saved_replays)} replays but model expects {expected}")
 
-    cp_size: int = mpu.get_context_parallel_world_size() if mpu.is_initialized() else 1
-    cp_rank: int = mpu.get_context_parallel_rank() if mpu.is_initialized() else 0
-    tp_size: int = mpu.get_tensor_model_parallel_world_size() if mpu.is_initialized() else 1
-    tp_rank: int = mpu.get_tensor_model_parallel_rank() if mpu.is_initialized() else 0
-
+    cp_size, cp_rank, tp_size, tp_rank = _get_parallel_ranks()
     do_sp_slice: bool = sequence_parallel and routing_replay_manager.if_sp_region and tp_size > 1
 
     total_entries: int = 0
