@@ -10,13 +10,13 @@ Usage:
 import typer
 
 from miles.utils.debug_utils.run_megatron.cli.commands import (
-    command_compare,
-    command_run,
-    command_run_and_compare,
+    compare,
+    run,
+    run_and_compare,
 )
 
 app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
 
-command_run.register(app)
-command_compare.register(app)
-command_run_and_compare.register(app)
+run.register(app)
+compare.register(app)
+run_and_compare.register(app)
