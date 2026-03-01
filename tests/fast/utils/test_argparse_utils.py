@@ -55,18 +55,29 @@ class TestRegisterOnParser:
         parser: argparse.ArgumentParser = argparse.ArgumentParser()
         _BRIDGE.register_on_parser(parser)
 
-        namespace: argparse.Namespace = parser.parse_args([
-            "--sample-mandatory-str", "hello",
-            "--sample-mandatory-int", "42",
-            "--sample-mandatory-float", "3.14",
-            "--sample-defaulted-str", "custom",
-            "--sample-defaulted-int", "99",
-            "--sample-defaulted-float", "1.5",
-            "--sample-flag",
-            "--sample-optional-str", "mytag",
-            "--sample-optional-int", "100",
-            "--sample-optional-float", "0.9",
-        ])
+        namespace: argparse.Namespace = parser.parse_args(
+            [
+                "--sample-mandatory-str",
+                "hello",
+                "--sample-mandatory-int",
+                "42",
+                "--sample-mandatory-float",
+                "3.14",
+                "--sample-defaulted-str",
+                "custom",
+                "--sample-defaulted-int",
+                "99",
+                "--sample-defaulted-float",
+                "1.5",
+                "--sample-flag",
+                "--sample-optional-str",
+                "mytag",
+                "--sample-optional-int",
+                "100",
+                "--sample-optional-float",
+                "0.9",
+            ]
+        )
 
         assert namespace.sample_mandatory_str == "hello"
         assert namespace.sample_mandatory_int == 42
@@ -83,11 +94,16 @@ class TestRegisterOnParser:
         parser: argparse.ArgumentParser = argparse.ArgumentParser()
         _BRIDGE.register_on_parser(parser)
 
-        namespace: argparse.Namespace = parser.parse_args([
-            "--sample-mandatory-str", "test",
-            "--sample-mandatory-int", "1",
-            "--sample-mandatory-float", "2.0",
-        ])
+        namespace: argparse.Namespace = parser.parse_args(
+            [
+                "--sample-mandatory-str",
+                "test",
+                "--sample-mandatory-int",
+                "1",
+                "--sample-mandatory-float",
+                "2.0",
+            ]
+        )
 
         assert namespace.sample_defaulted_str == "default"
         assert namespace.sample_defaulted_int == 10
@@ -111,13 +127,19 @@ class TestFromNamespace:
         parser: argparse.ArgumentParser = argparse.ArgumentParser()
         _BRIDGE.register_on_parser(parser)
 
-        namespace: argparse.Namespace = parser.parse_args([
-            "--sample-mandatory-str", "world",
-            "--sample-mandatory-int", "7",
-            "--sample-mandatory-float", "1.0",
-            "--sample-flag",
-            "--sample-optional-str", "x",
-        ])
+        namespace: argparse.Namespace = parser.parse_args(
+            [
+                "--sample-mandatory-str",
+                "world",
+                "--sample-mandatory-int",
+                "7",
+                "--sample-mandatory-float",
+                "1.0",
+                "--sample-flag",
+                "--sample-optional-str",
+                "x",
+            ]
+        )
 
         instance: _SampleArgs = _BRIDGE.from_namespace(namespace)
 

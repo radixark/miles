@@ -79,9 +79,7 @@ class DataclassArgparseBridge(Generic[T]):
             is_opt, inner = _is_optional(tp)
             if is_opt:
                 if inner not in _SCALAR_TYPES:
-                    raise TypeError(
-                        f"Unsupported optional inner type {inner!r} for field {field.name}"
-                    )
+                    raise TypeError(f"Unsupported optional inner type {inner!r} for field {field.name}")
                 group.add_argument(flag, dest=dest, type=_SCALAR_TYPES[inner], default=None)
                 continue
 
