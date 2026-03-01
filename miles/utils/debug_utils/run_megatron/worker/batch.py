@@ -24,12 +24,18 @@ def prepare_batch(
 
         parallel_state: SimpleNamespace = SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size)
         token_tensor = slice_with_cp(
-            token_tensor, pad_value=0, parallel_state=parallel_state,
-            qkv_format="bshd", max_seq_len=seq_length,
+            token_tensor,
+            pad_value=0,
+            parallel_state=parallel_state,
+            qkv_format="bshd",
+            max_seq_len=seq_length,
         )
         position_tensor = slice_with_cp(
-            position_tensor, pad_value=0, parallel_state=parallel_state,
-            qkv_format="bshd", max_seq_len=seq_length,
+            position_tensor,
+            pad_value=0,
+            parallel_state=parallel_state,
+            qkv_format="bshd",
+            max_seq_len=seq_length,
         )
 
     input_ids: torch.Tensor = token_tensor.unsqueeze(0).expand(batch_size, -1)

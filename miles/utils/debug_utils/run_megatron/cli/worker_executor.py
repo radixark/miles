@@ -110,8 +110,7 @@ def _build_megatron_flags(
         ("--use-miles-router", True),
         (
             "--use-routing-replay",
-            script_args.routing_replay_dump_path is not None
-            or script_args.routing_replay_load_path is not None,
+            script_args.routing_replay_dump_path is not None or script_args.routing_replay_load_path is not None,
         ),
     ]
 

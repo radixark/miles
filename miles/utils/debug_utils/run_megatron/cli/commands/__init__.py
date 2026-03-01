@@ -9,11 +9,7 @@ Usage:
 
 import typer
 
-from miles.utils.debug_utils.run_megatron.cli.commands import (
-    compare,
-    run,
-    run_and_compare,
-)
+from miles.utils.debug_utils.run_megatron.cli.commands import compare, run, run_and_compare
 
 app: typer.Typer = typer.Typer(pretty_exceptions_enable=False)
 

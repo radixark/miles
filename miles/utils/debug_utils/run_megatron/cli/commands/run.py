@@ -31,10 +31,7 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     TpOpt,
 )
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig
-from miles.utils.debug_utils.run_megatron.cli.path_utils import (
-    resolve_megatron_path,
-    resolve_model_script,
-)
+from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_megatron_path, resolve_model_script
 from miles.utils.debug_utils.run_megatron.cli.prompt_utils import (
     PromptConfig,
     generate_token_ids,

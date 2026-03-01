@@ -26,10 +26,7 @@ from miles.utils.debug_utils.run_megatron.cli.commands.option_types import (
     SpOpt,
 )
 from miles.utils.debug_utils.run_megatron.cli.commands.run import run
-from miles.utils.debug_utils.run_megatron.cli.parallel_utils import (
-    ParallelConfig,
-    parse_parallel_args,
-)
+from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
 
 
 def register(app: typer.Typer) -> None:

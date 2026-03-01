@@ -54,9 +54,7 @@ def generate_token_ids(
         pad_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
     )
 
-    assert len(token_ids) == prompt.seq_length, (
-        f"token_ids length {len(token_ids)} != seq_length {prompt.seq_length}"
-    )
+    assert len(token_ids) == prompt.seq_length, f"token_ids length {len(token_ids)} != seq_length {prompt.seq_length}"
     return token_ids
 
 
