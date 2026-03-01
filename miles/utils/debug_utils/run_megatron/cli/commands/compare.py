@@ -1,12 +1,12 @@
 """``compare`` CLI command."""
 
 import sys
-from pathlib import Path
-from typing import Annotated
 
 import typer
 
+from miles.utils.debug_utils.run_megatron.cli.commands.args import CompareArgs
 from miles.utils.misc import exec_command
+from miles.utils.typer_utils import dataclass_cli
 
 
 def register(app: typer.Typer) -> None:
@@ -14,35 +14,27 @@ def register(app: typer.Typer) -> None:
     app.command()(compare)
 
 
-def compare(
-    baseline_dir: Annotated[Path, typer.Option(help="Baseline dump directory")],
-    target_dir: Annotated[Path, typer.Option(help="Target dump directory")],
-    output_format: Annotated[str, typer.Option(help="Output format: text / json")] = "text",
-    grouping: Annotated[str, typer.Option(help="Grouping: logical / raw")] = "logical",
-    override_baseline_dims: Annotated[str | None, typer.Option(help="Override baseline dims")] = None,
-    override_target_dims: Annotated[str | None, typer.Option(help="Override target dims")] = None,
-    patch_config: Annotated[Path | None, typer.Option(help="Patch config YAML path")] = None,
-    diff_threshold: Annotated[float | None, typer.Option(help="Pass/fail threshold")] = None,
-) -> None:
-    """Run comparator on existing dump directories."""
+def compare_impl(args: CompareArgs) -> None:
+    """Core compare logic, called by both ``compare`` command and ``run_and_compare``."""
     cmd_parts: list[str] = [
         sys.executable,
         "-m",
         "sglang.srt.debug_utils.comparator",
         "--baseline-path",
-        str(baseline_dir),
+        str(args.baseline_dir),
         "--target-path",
-        str(target_dir),
+        str(args.target_dir),
         "--output-format",
-        output_format,
+        args.output_format,
         "--grouping",
-        grouping,
+        args.grouping,
     ]
+
     optional_args: dict[str, object | None] = {
-        "--override-baseline-dims": override_baseline_dims,
-        "--override-target-dims": override_target_dims,
-        "--patch-config": patch_config,
-        "--diff-threshold": diff_threshold,
+        "--override-baseline-dims": args.override_baseline_dims,
+        "--override-target-dims": args.override_target_dims,
+        "--patch-config": args.patch_config,
+        "--diff-threshold": args.diff_threshold,
     }
     for flag, value in optional_args.items():
         if value is not None:
@@ -50,3 +42,9 @@ def compare(
 
     exec_command(" ".join(cmd_parts))
     print("[cli] Compare completed.", flush=True)
+
+
+@dataclass_cli(env_var_prefix="")
+def compare(args: CompareArgs) -> None:
+    """Run comparator on existing dump directories."""
+    compare_impl(args)
