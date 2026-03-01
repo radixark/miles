@@ -1,3 +1,4 @@
+from ast import Raise
 import itertools
 import logging
 import multiprocessing
@@ -13,6 +14,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 from miles.rollout.base_types import call_rollout_fn
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
@@ -541,7 +543,8 @@ def init_rollout_engines(args, pg, all_rollout_engines):
 
     pg, reordered_bundle_indices, reordered_gpu_ids = pg
 
-    RolloutRayActor = ray.remote(SGLangEngine)
+    # use diffusion SGLang rollout engines for miles diffusion
+    RolloutRayActor = ray.remote(SGLangDiffusionEngine)
 
     rollout_engines = []
     for i in range(num_engines):

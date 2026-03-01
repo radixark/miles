@@ -51,8 +51,9 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    from sglang.multimodal_gen import launch_server
+    from sglang.multimodal_gen.runtime.launch_server import launch_server
 
+    # use spawn to avoid potential risks of fork in terms of subthreads or CUDA.
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
@@ -91,26 +92,15 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
             time.sleep(2)
 
         # use flush_cache to make sure the working queue is empty, so that we can do offload
-        while True:
-            try:
-                response = session.get(f"{base_url}/flush_cache", headers=headers)
-                if response.status_code == 200:
-                    break
-
-            except requests.RequestException:
-                pass
-
-            if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
-
-            time.sleep(2)
+        # TODO: check if sglang-D need flush_cache
 
 
 class SGLangDiffusionEngine(RayActor):
-    def __init__(self, args, rank: int, worker_type: str = "regular", base_gpu_id: int | None = None):
+    def __init__(self, args, rank: int, base_gpu_id: int | None = None):
         self.args = args
+        # rank: the global rank of this engine among all rollout engines
         self.rank = rank
-        self.worker_type = worker_type
+        # remove PD Disaggregation
         self.base_gpu_id = base_gpu_id
 
     def init(self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None):
@@ -479,14 +469,16 @@ def _compute_server_args(
 ):
     nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
+    # if CUDA_VISIBLE_DEVICE="2,3,4,5,6,7"
+    # then cuda:1 = GPU 3, 1 is local_id, 3 is physical_id
     base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
     base = _to_local_gpu_id(base)
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
         "random_seed": args.seed + rank,
-        # memory
-        "enable_memory_saver": args.offload_rollout,
+        # diffusion doesn't support memory saver
+        "enable_memory_saver": False,
         # distributed
         "host": host,
         "port": port,
@@ -498,36 +490,22 @@ def _compute_server_args(
         "base_gpu_id": base,
         # parallel
         "tp_size": args.rollout_num_gpus_per_engine,
-        "dp_size": args.sglang_dp_size,
-        "pp_size": args.sglang_pp_size,
-        "ep_size": args.sglang_ep_size,
+        "sp_size": args.sglang_sp_size,
+        "cfgp_size": args.sglang_cfgp_size,
         # always skip warmup to prevent warmup timeout.
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
         "enable_draft_weights_cpu_backup": True,
     }
 
-    if worker_type == "prefill":
-        kwargs["disaggregation_mode"] = "prefill"
-        kwargs["load_balance_method"] = "round_robin"
-        assert (
-            disaggregation_bootstrap_port is not None
-        ), "disaggregation_bootstrap_port must be set for prefill worker"
-        kwargs["disaggregation_bootstrap_port"] = disaggregation_bootstrap_port
-    elif worker_type == "decode":
-        kwargs["disaggregation_mode"] = "decode"
-        kwargs["prefill_round_robin_balance"] = True
+    # remove PD disagg
 
-    if args.use_rollout_routing_replay:
-        kwargs["enable_return_routed_experts"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
-        if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
-            continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
         unused_keys.discard(attr.name)
