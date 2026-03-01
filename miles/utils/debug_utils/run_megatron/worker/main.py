@@ -17,10 +17,20 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
+from megatron.core import mpu
+from megatron.core.enums import ModelType
+from megatron.core.pipeline_parallel import get_forward_backward_func
+from megatron.training.arguments import parse_args
+from megatron.training.training import get_model
+
+from miles.backends.megatron_utils.checkpoint import load_checkpoint
+from miles.backends.megatron_utils.initialize import init
+from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.dumper_utils import finalize_dumper, setup_dumper
 from miles.utils.debug_utils.run_megatron.worker.replay import load_replay_data, save_replay_data, setup_replay_stage
+from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
+from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
 
 
 def main() -> None:
@@ -47,8 +57,6 @@ def main() -> None:
     load_replay_data(script)
     setup_replay_stage(script)
 
-    from megatron.core import mpu
-
     cp_rank: int = mpu.get_context_parallel_rank()
     cp_size: int = mpu.get_context_parallel_world_size()
 
@@ -73,8 +81,6 @@ def main() -> None:
 
 
 def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
-    from megatron.training.arguments import parse_args
-
     args: argparse.Namespace = parse_args(extra_args_provider=WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser)
     script_args: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
 
@@ -87,8 +93,6 @@ def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
 
 
 def _initialize_megatron(args: argparse.Namespace) -> None:
-    from miles.backends.megatron_utils.initialize import init
-
     torch.distributed.init_process_group(backend="nccl")
     local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
@@ -96,12 +100,6 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
-    from megatron.core.enums import ModelType
-    from megatron.training.training import get_model
-
-    from miles.backends.megatron_utils.checkpoint import load_checkpoint
-    from miles.backends.megatron_utils.model_provider import get_model_provider_func
-
     model_provider = get_model_provider_func(args, role=script.role)
     model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
 
@@ -114,8 +112,6 @@ def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) ->
 
 
 def _apply_source_patches(config_path: str) -> None:
-    from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
-
     yaml_content: str = Path(config_path).read_text()
     apply_patches_from_config(
         yaml_content,
@@ -130,8 +126,6 @@ def _run_forward_backward(
     model: list[Any],
     batch: dict[str, torch.Tensor],
 ) -> None:
-    from megatron.core.pipeline_parallel import get_forward_backward_func
-
     forward_backward_func = get_forward_backward_func()
 
     def forward_step_func(

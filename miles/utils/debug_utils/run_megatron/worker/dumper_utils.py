@@ -3,11 +3,11 @@
 import argparse
 import os
 
+from sglang.srt.debug_utils.dumper import dumper
+
 
 def setup_dumper(args: argparse.Namespace) -> None:
     """Configure dumper from environment variables (set by cli.py)."""
-    from sglang.srt.debug_utils.dumper import dumper
-
     dumper_dir: str | None = os.environ.get("DUMPER_DIR")
     if not dumper_dir:
         return
@@ -30,8 +30,6 @@ def setup_dumper(args: argparse.Namespace) -> None:
 
 def finalize_dumper() -> None:
     """Step + disable dumper after forward/backward."""
-    from sglang.srt.debug_utils.dumper import dumper
-
     if os.environ.get("DUMPER_ENABLE", "0") == "1":
         dumper.step()
         dumper.configure(enable=False)
