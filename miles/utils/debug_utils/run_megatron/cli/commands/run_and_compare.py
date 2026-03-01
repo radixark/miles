@@ -1,5 +1,6 @@
 """``run-and-compare`` CLI command."""
 
+import dataclasses
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -146,11 +147,7 @@ def _run_baseline_and_target(
     print("[cli] Step 1/2: Baseline run", flush=True)
     run(
         **common_run_kwargs,
-        tp=baseline_config.tp,
-        pp=baseline_config.pp,
-        cp=baseline_config.cp,
-        ep=baseline_config.ep,
-        etp=baseline_config.etp,
+        **dataclasses.asdict(baseline_config),
         output_dir=baseline_output,
         routing_replay_dump_path=replay_dir,
         routing_replay_load_path=None,
@@ -159,11 +156,7 @@ def _run_baseline_and_target(
     print("[cli] Step 2/2: Target run", flush=True)
     run(
         **common_run_kwargs,
-        tp=target_config.tp,
-        pp=target_config.pp,
-        cp=target_config.cp,
-        ep=target_config.ep,
-        etp=target_config.etp,
+        **dataclasses.asdict(target_config),
         output_dir=target_output,
         routing_replay_dump_path=None,
         routing_replay_load_path=replay_dir,
