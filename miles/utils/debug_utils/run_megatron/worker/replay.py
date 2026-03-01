@@ -1,11 +1,14 @@
 """Routing replay stage management for standalone Megatron worker."""
 
 from pathlib import Path
+from typing import Any
 
 import torch
 
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 from miles.utils.replay_base import routing_replay_manager
+
+_REPLAY_FORMAT_VERSION: int = 1
 
 
 def load_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
@@ -19,15 +22,25 @@ def load_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
         print(f"[worker rank={rank}] WARNING: replay file not found: {replay_file}", flush=True)
         return
 
-    data: list[torch.Tensor] = torch.load(replay_file, weights_only=False)
-    idx: int = 0
-    for replay in routing_replay_manager.replays:
-        chunk_size: int = len(replay.data) if replay.data else 1
-        replay.data = data[idx : idx + chunk_size]
-        idx += chunk_size
+    payload: dict[str, Any] = torch.load(replay_file, weights_only=False)
+
+    saved_replays: list[list[torch.Tensor]] = payload["replays"]
+    expected: int = len(routing_replay_manager.replays)
+    if len(saved_replays) != expected:
+        raise ValueError(
+            f"Replay file has {len(saved_replays)} replays but model expects {expected}"
+        )
+
+    total_entries: int = 0
+    for replay, data in zip(routing_replay_manager.replays, saved_replays):
+        replay.top_indices_list = data
+        total_entries += len(data)
 
     if rank == 0:
-        print(f"[worker] Loaded routing replay ({len(data)} entries) ← {replay_file}", flush=True)
+        print(
+            f"[worker] Loaded routing replay ({total_entries} entries, {expected} replays) ← {replay_file}",
+            flush=True,
+        )
 
 
 def setup_replay_stage(script: WorkerScriptArgs) -> None:
@@ -52,15 +65,23 @@ def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
 
     script.routing_replay_dump_path.mkdir(parents=True, exist_ok=True)
 
-    all_data: list[torch.Tensor] = []
-    for replay in routing_replay_manager.replays:
-        all_data.extend(replay.data)
+    replays_data: list[list[torch.Tensor]] = [
+        replay.top_indices_list for replay in routing_replay_manager.replays
+    ]
+    total_entries: int = sum(len(d) for d in replays_data)
 
-    if all_data:
+    if total_entries > 0:
+        payload: dict[str, Any] = {
+            "version": _REPLAY_FORMAT_VERSION,
+            "replays": replays_data,
+        }
         save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path, rank=rank)
-        torch.save(all_data, save_path)
+        torch.save(payload, save_path)
         if rank == 0:
-            print(f"[worker] Saved routing replay ({len(all_data)} entries) → {save_path}", flush=True)
+            print(
+                f"[worker] Saved routing replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
+                flush=True,
+            )
 
 
 def _replay_file_path(*, base_dir: Path, rank: int) -> Path:
