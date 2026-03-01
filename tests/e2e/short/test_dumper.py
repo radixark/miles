@@ -41,7 +41,7 @@ _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_miles_dumper_"))
 MEGATRON_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "megatron_source_patcher.yaml")
 SGLANG_SOURCE_PATCHER_CONFIG_PATH: str = str(_RUN_DIR / "sglang_source_patcher.yaml")
 
-EXP_PATTERNS: list[str] = ["engine_*", "fwd_only", "fwd_bwd"]
+EXP_PATTERNS: list[str] = ["engines/engine_*", "fwd_only", "fwd_bwd"]
 
 _MEGATRON_AUX_THD: list[str] = ["input_ids", "cu_seqlens_q", "cu_seqlens_kv", "qkv_format"]
 _MEGATRON_AUX_BSHD: list[str] = ["input_ids"]
@@ -172,7 +172,7 @@ def _verify_dumps(config_name: str, dump_subdir: str, dump_dir: str) -> None:
 
 
 def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
-    baseline_dir: Path = Path(f"{dump_dir}/{dump_subdir}/engine_0")
+    baseline_dir: Path = Path(f"{dump_dir}/{dump_subdir}/engines")
     target_dir: Path = Path(f"{dump_dir}/{dump_subdir}/fwd_bwd")
     # TODO: moe_expert_output comparison is not yet supported (unshard logic
     #       for post-alltoall MoE tensors needs dedicated handling)
