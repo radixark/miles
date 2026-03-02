@@ -25,7 +25,6 @@ MODEL_ARGS=(
    --num-layers 48
    --hidden-size 2048
    --ffn-hidden-size 5120
-   --use-gated-attention
 
    --normalization RMSNorm
    --apply-layernorm-1p
@@ -55,4 +54,5 @@ MODEL_ARGS=(
    # qwen3 specific
    --attention-output-gate
    --moe-shared-expert-gate
+   --mtp-num-layers 1
 )
