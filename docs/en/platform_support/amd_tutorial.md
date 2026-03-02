@@ -86,7 +86,6 @@ source scripts/models/qwen3-4B.sh
 MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
 PYTHONPATH=${MEGATRON_LM_PATH} python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
-    --no-gradient-accumulation-fusion \
     --hf-checkpoint /root/Qwen3-4B \
     --save /root/Qwen3-4B_torch_dist
 ```
@@ -107,8 +106,6 @@ MODEL_DIR=/root \
 DATA_DIR=/root \
 bash scripts/run-qwen3-4B-amd.sh
 ``` 
-
-⚠️ TODO: ROCM seems to not support `apex` yet. Thus, we need to disable gradient accumulation fusionby adding the `--no-gradient-accumulation-fusion` flag in the training script currently. We will continue investigating how to enable this.
 
 ⚠️ Note: The main difference between ROCm's training script and NVIDIA's script is that you need to set `RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES` and `HIP_VISIBLE_DEVICES` for ray to function properly on AMD GPUs.
 
@@ -243,9 +240,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   ### AMD Support ###
-   # disable gradient accumulation fusion: Need to add apex to enable this
-   --no-gradient-accumulation-fusion
    ###################
 )
 
