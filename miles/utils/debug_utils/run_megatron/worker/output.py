@@ -41,8 +41,7 @@ def compute_and_save_output_info(
     output_path = output_dir / f"rank_{rank}.json"
     output_path.write_text(json.dumps(payload, indent=2))
 
-    num_valid: int = payload.get("logprob", {}).get("summary", {}).get("num_valid", 0)
-    print(f"[output] rank={rank}: saved {num_valid} valid logprob entries to {output_path}", flush=True)
+    print(f"[output] rank={rank}: saved to {output_path}", flush=True)
 
 
 def _compute_output_info(
@@ -69,7 +68,7 @@ def _compute_output_info(
         "tp_size": mpu.get_tensor_model_parallel_world_size() if dist.is_initialized() else 1,
         "cp_size": mpu.get_context_parallel_world_size() if dist.is_initialized() else 1,
         "pp_size": mpu.get_pipeline_model_parallel_world_size() if dist.is_initialized() else 1,
-        "logprob": logprob_info,
+        "logprob_entries": logprob_info,
     }
 
 
