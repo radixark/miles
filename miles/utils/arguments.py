@@ -1433,6 +1433,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
             )
+            parser.add_argument(
+                "--ci-save-model-hash",
+                action="store_true",
+            )
+            parser.add_argument(
+                "--ci-check-model-hash",
+                action="store_true",
+            )
             return parser
 
         def add_user_provided_function_arguments(parser):
