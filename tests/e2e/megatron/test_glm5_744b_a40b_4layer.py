@@ -44,9 +44,7 @@ def _process_glm_checkpoint():
 
 def prepare():
     U.exec_command(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
-    U.exec_command(
-        f"huggingface-cli download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}"
-    )
+    U.exec_command(f"huggingface-cli download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _process_glm_checkpoint()
