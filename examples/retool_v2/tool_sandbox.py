@@ -1,10 +1,5 @@
 """
-Tool sandbox module for safe code execution and tool management.
-
-This module provides:
-- PythonSandbox: Safe Python code execution environment
-- ToolRegistry: Tool registration and execution management
-- Memory management utilities
+copied from examples/retool/tool_sandbox.py
 """
 
 import asyncio
