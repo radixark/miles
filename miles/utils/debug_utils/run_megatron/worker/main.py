@@ -35,6 +35,7 @@ from miles.utils.debug_utils.run_megatron.worker.replay import (
     setup_replay_before_model,
 )
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.logprob import compute_and_save_logprobs
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
 
 
@@ -71,6 +72,14 @@ def main() -> None:
         model=model,
         batch=batch,
     )
+
+    if script.logprob_output is not None and captured_logits is not None:
+        compute_and_save_logprobs(
+            logits=captured_logits,
+            labels=batch["labels"],
+            position_ids=batch["position_ids"],
+            output_dir=script.logprob_output,
+        )
 
     if script.top_k > 0 and captured_logits is not None:
         print_top_k(

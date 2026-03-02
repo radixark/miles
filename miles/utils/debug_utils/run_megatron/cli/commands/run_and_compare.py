@@ -37,6 +37,12 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
 
     replay_dir: Path | None = args.output_base_dir / "routing_replay" if args.routing_replay else None
 
+    baseline_logprob_dir: Path | None = None
+    target_logprob_dir: Path | None = None
+    if args.compare_logprobs:
+        baseline_logprob_dir = baseline_output / "logprobs"
+        target_logprob_dir = target_output / "logprobs"
+
     _run_baseline_and_target(
         baseline_config=baseline_config,
         target_config=target_config,
@@ -44,6 +50,8 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
         target_output=target_output,
         replay_dir=replay_dir,
         common_fields=common_fields,
+        baseline_logprob_dir=baseline_logprob_dir,
+        target_logprob_dir=target_logprob_dir,
     )
 
     print("[cli] Comparing baseline vs target", flush=True)
@@ -53,6 +61,8 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
             target_dir=target_output / "standalone",
             output_format="json",
             grouping="logical",
+            baseline_logprob_dir=baseline_logprob_dir,
+            target_logprob_dir=target_logprob_dir,
         )
     )
 
@@ -65,6 +75,8 @@ def _run_baseline_and_target(
     target_output: Path,
     replay_dir: Path | None,
     common_fields: dict[str, object],
+    baseline_logprob_dir: Path | None,
+    target_logprob_dir: Path | None,
 ) -> None:
     if replay_dir is not None:
         if baseline_config.nproc != 1:
@@ -79,6 +91,7 @@ def _run_baseline_and_target(
             output_dir=baseline_output,
             routing_replay_dump_path=replay_dir,
             routing_replay_load_path=None,
+            logprob_output=baseline_logprob_dir,
         )
     )
 
@@ -90,5 +103,6 @@ def _run_baseline_and_target(
             output_dir=target_output,
             routing_replay_dump_path=None,
             routing_replay_load_path=replay_dir,
+            logprob_output=target_logprob_dir,
         )
     )

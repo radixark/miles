@@ -1,10 +1,12 @@
 """``compare`` CLI command."""
 
+import subprocess
 import sys
 
 import typer
 
 from miles.utils.debug_utils.run_megatron.cli.commands.args import CompareArgs
+from miles.utils.debug_utils.run_megatron.logprob_comparator import compare_logprobs
 from miles.utils.misc import exec_command
 from miles.utils.typer_utils import dataclass_cli
 
@@ -16,6 +18,29 @@ def register(app: typer.Typer) -> None:
 
 def compare_impl(args: CompareArgs) -> None:
     """Core compare logic, called by both ``compare`` command and ``run_and_compare``."""
+    activation_passed = _run_activation_comparison(args)
+
+    logprob_passed = True
+    if args.baseline_logprob_dir is not None and args.target_logprob_dir is not None:
+        logprob_passed = compare_logprobs(
+            baseline_dir=args.baseline_logprob_dir,
+            target_dir=args.target_logprob_dir,
+            threshold=args.logprob_threshold if args.logprob_threshold is not None else 1e-3,
+        )
+
+    if not activation_passed or not logprob_passed:
+        failures: list[str] = []
+        if not activation_passed:
+            failures.append("activation comparison")
+        if not logprob_passed:
+            failures.append("logprob comparison")
+        print(f"[cli] FAILED: {', '.join(failures)}", flush=True)
+        sys.exit(1)
+
+    print("[cli] Compare completed.", flush=True)
+
+
+def _run_activation_comparison(args: CompareArgs) -> bool:
     cmd_parts: list[str] = [
         sys.executable,
         "-m",
@@ -40,8 +65,12 @@ def compare_impl(args: CompareArgs) -> None:
         if value is not None:
             cmd_parts.extend([flag, str(value)])
 
-    exec_command(" ".join(cmd_parts))
-    print("[cli] Compare completed.", flush=True)
+    try:
+        exec_command(" ".join(cmd_parts))
+        return True
+    except subprocess.CalledProcessError:
+        print("[cli] Activation comparison failed", flush=True)
+        return False
 
 
 @dataclass_cli(env_var_prefix="")

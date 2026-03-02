@@ -24,6 +24,7 @@ class WorkerScriptArgs:
     routing_replay_dump_path: Path | None = None
     routing_replay_load_path: Path | None = None
     top_k: int = 0
+    logprob_output: Path | None = None
 
 
 WORKER_SCRIPT_ARGS_BRIDGE: DataclassArgparseBridge[WorkerScriptArgs] = DataclassArgparseBridge(

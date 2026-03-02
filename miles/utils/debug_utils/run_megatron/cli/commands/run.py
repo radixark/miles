@@ -59,6 +59,7 @@ def run_impl(args: RunArgs) -> None:
         routing_replay_dump_path=args.routing_replay_dump_path,
         routing_replay_load_path=args.routing_replay_load_path,
         top_k=args.top_k,
+        logprob_output=args.logprob_output,
     )
     worker_args_str: str = build_worker_args(
         parallel=parallel,

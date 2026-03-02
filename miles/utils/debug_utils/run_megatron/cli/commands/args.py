@@ -45,6 +45,7 @@ class RunArgs(CommonRunArgs):
     etp: int = _field(default=1, help="Expert tensor parallel size")
     routing_replay_dump_path: Path | None = _field(default=None, help="Routing replay dump path")
     routing_replay_load_path: Path | None = _field(default=None, help="Routing replay load path")
+    logprob_output: Path | None = _field(default=None, help="Directory to save per-token logprob JSON files")
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -55,6 +56,10 @@ class RunAndCompareArgs(CommonRunArgs):
     routing_replay: bool = _field(
         default=False,
         help="Enable routing replay (record on baseline, replay on target)",
+    )
+    compare_logprobs: bool = _field(
+        default=False,
+        help="Compute and compare per-token logprobs between baseline and target",
     )
 
 
@@ -68,3 +73,6 @@ class CompareArgs:
     override_target_dims: str | None = _field(default=None, help="Override target dims")
     patch_config: Path | None = _field(default=None, help="Patch config YAML path")
     diff_threshold: float | None = _field(default=None, help="Pass/fail threshold")
+    baseline_logprob_dir: Path | None = _field(default=None, help="Baseline logprob JSON directory")
+    target_logprob_dir: Path | None = _field(default=None, help="Target logprob JSON directory")
+    logprob_threshold: float | None = _field(default=None, help="Logprob max abs diff threshold")
