@@ -15,8 +15,6 @@ def _field(
     if flag is not None:
         metadata["flag"] = flag
 
-    if default is dataclasses.MISSING:
-        return dataclasses.field(metadata=metadata)
     return dataclasses.field(default=default, metadata=metadata)  # type: ignore[arg-type]
 
 
