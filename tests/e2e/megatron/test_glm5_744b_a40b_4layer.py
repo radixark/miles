@@ -177,7 +177,6 @@ def execute():
         "--actor-num-gpus-per-node 8 "
         "--num-gpus-per-node 8 "
         "--colocate "
-        "--use-fault-tolerance "
         "--dump-details /root/shared_data/dump_details "
         "--disable-weights-backuper "
     )
