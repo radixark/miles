@@ -23,6 +23,16 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
     else:
         layer_idx, rest = match.groups()
 
+    # Skip quantization for BF16 tail of main decoder layers.
+    if getattr(args, "first_last_layers_bf16", False):
+        assert hasattr(args, "num_layers"), "Expected args.num_layers to be set for BF16 tail."
+        num_layers = int(args.num_layers)
+        assert num_layers > 0, "Expected args.num_layers > 0 for BF16 tail."
+        num_layers_at_end_in_bf16 = int(getattr(args, "num_layers_at_end_in_bf16", 0))
+        tail_start_idx = max(0, num_layers - num_layers_at_end_in_bf16)
+        if int(layer_idx) >= tail_start_idx:
+            return converted_named_params
+
     # experts
     expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
     match = re.match(expert_pattern, rest)
