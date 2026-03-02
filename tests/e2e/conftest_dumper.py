@@ -79,7 +79,7 @@ patches:
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] num_experts # """
+        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts # """
     + _MEG_REPL
     + """')"
       - match: "return probs, routing_map"
