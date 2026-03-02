@@ -5,7 +5,6 @@ a rank-0 file, and load always reads that file with CP/SP slicing.
 """
 
 from pathlib import Path
-from typing import Any
 
 import torch
 
