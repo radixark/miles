@@ -1,46 +1,30 @@
-"""Compute and save per-token log-probabilities from forward-pass logits."""
+"""Pure computation of per-token log-probability info from forward-pass logits."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 import torch
-import torch.distributed as dist
-from megatron.core import mpu
 
 
-def _get_rank() -> int:
-    return dist.get_rank() if dist.is_initialized() else 0
-
-
-def compute_and_save_logprobs(
+def compute_logprob_info(
     *,
     logits: torch.Tensor,
     labels: torch.Tensor,
     position_ids: torch.Tensor,
-    output_dir: Path,
-) -> None:
-    """Compute per-token logprobs and save one JSON file per rank.
+) -> dict[str, Any] | None:
+    """Compute per-token logprob entries and summary statistics.
+
+    Returns None if logits don't look like vocab logits (e.g. critic model).
 
     Args:
         logits: [batch_size, local_seq_len, vocab_size] — must already be gathered across TP.
         labels: [batch_size, local_seq_len], -100 = ignore.
         position_ids: [batch_size, local_seq_len], global positions.
-        output_dir: directory to write ``rank_{rank}.json`` files into.
     """
-    rank = _get_rank()
-
     if logits.ndim < 3 or logits.size(-1) == 1:
-        print(
-            f"[logprob] rank={rank}: skipping logprob — logits shape {logits.shape} "
-            f"does not look like vocab logits (critic model?)",
-            flush=True,
-        )
-        return
+        return None
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     batch_size, local_seq_len, vocab_size = logits.shape
     log_probs = torch.log_softmax(logits.float(), dim=-1)
 
@@ -73,11 +57,7 @@ def compute_and_save_logprobs(
             })
         all_entries.append(batch_entries)
 
-    payload: dict[str, Any] = {
-        "rank": rank,
-        "tp_size": mpu.get_tensor_model_parallel_world_size() if dist.is_initialized() else 1,
-        "cp_size": mpu.get_context_parallel_world_size() if dist.is_initialized() else 1,
-        "pp_size": mpu.get_pipeline_model_parallel_world_size() if dist.is_initialized() else 1,
+    return {
         "seq_length": local_seq_len,
         "vocab_size": vocab_size,
         "batch_size": batch_size,
@@ -89,7 +69,3 @@ def compute_and_save_logprobs(
             "num_valid": total_valid,
         },
     }
-
-    output_path = output_dir / f"rank_{rank}.json"
-    output_path.write_text(json.dumps(payload, indent=2))
-    print(f"[logprob] rank={rank}: saved {total_valid} valid entries to {output_path}", flush=True)
