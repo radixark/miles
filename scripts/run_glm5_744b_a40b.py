@@ -70,6 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "glm5-744B-A40B"
     num_gpus_per_node: int = 8
     fp8_rollout: bool = False
+    use_deepep: bool = True
     enable_eval: bool = False
     enable_mtp: bool = False
     enable_pd: bool = True
@@ -312,7 +313,7 @@ def _execute_train(args: ScriptArgs):
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
     )
-    if args.fp8_rollout:
+    if args.fp8_rollout and args.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
     if args.enable_mtp:
         sglang_args += (
@@ -337,6 +338,7 @@ def _execute_train(args: ScriptArgs):
     )
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{32 if args.enable_pd else 256}",
+        "SGLANG_NSA_FORCE_MLA": "1",
     }
 
     misc_args = (

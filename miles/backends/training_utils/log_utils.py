@@ -165,7 +165,7 @@ def log_rollout_data(
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict, parallel_state)
-        if args.ci_test and reduced_log_dict is not None:
+        if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
             if (
                 rollout_id == 0
                 and "rollout/log_probs" in reduced_log_dict
