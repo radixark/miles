@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import inspect
+import typing
 from collections.abc import Callable
 from typing import Annotated, TypeVar, overload
 
@@ -50,9 +51,9 @@ def dataclass_cli(
 
 
 def _wrap(func: _F, *, env_var_prefix: str) -> _F:
-    sig: inspect.Signature = inspect.signature(func)
-    first_param: inspect.Parameter = list(sig.parameters.values())[0]
-    dataclass_cls: type = first_param.annotation
+    hints: dict[str, type] = typing.get_type_hints(func)
+    first_param_name: str = next(iter(inspect.signature(func).parameters))
+    dataclass_cls: type = hints[first_param_name]
     assert dataclasses.is_dataclass(dataclass_cls)
 
     init_sig: inspect.Signature = inspect.signature(dataclass_cls.__init__)

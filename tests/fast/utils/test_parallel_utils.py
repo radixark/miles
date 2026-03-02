@@ -1,25 +1,11 @@
 import dataclasses
-import importlib.util
-import sys
-import types
-from pathlib import Path
 
 import pytest
 
-# parallel_utils lives under cli/ but doesn't depend on the cli package.
-# Importing via the normal path triggers cli/__init__.py which eagerly loads
-# the full command tree (and currently fails on Python 3.12).  We load the
-# module directly from file to avoid that.
-_MOD_NAME = "miles.utils.debug_utils.run_megatron.cli.parallel_utils"
-_MOD_FILE = Path(__file__).resolve().parents[3] / "miles" / "utils" / "debug_utils" / "run_megatron" / "cli" / "parallel_utils.py"
-_spec = importlib.util.spec_from_file_location(_MOD_NAME, _MOD_FILE)
-assert _spec is not None and _spec.loader is not None
-_mod = importlib.util.module_from_spec(_spec)
-sys.modules[_MOD_NAME] = _mod
-_spec.loader.exec_module(_mod)
-
-ParallelConfig = _mod.ParallelConfig
-parse_parallel_args = _mod.parse_parallel_args
+from miles.utils.debug_utils.run_megatron.cli.parallel_utils import (
+    ParallelConfig,
+    parse_parallel_args,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -116,15 +102,27 @@ class TestFromParsedArgs:
 
 class TestFromRunArgs:
     def test_from_run_args(self) -> None:
-        # Use a simple namespace instead of importing RunArgs directly,
-        # because the cli package's __init__.py has import-time issues
-        # on Python 3.12 that are unrelated to parallel_utils.
-        args = types.SimpleNamespace(tp=2, pp=4, cp=1, ep=2, etp=1)
+        from miles.utils.debug_utils.run_megatron.cli.commands.args import RunArgs
+
+        args = RunArgs(
+            model_type="test",
+            hf_checkpoint="/tmp/hf",
+            tp=2,
+            pp=4,
+            cp=1,
+            ep=2,
+            etp=1,
+        )
         config = ParallelConfig.from_run_args(args)
         assert config == ParallelConfig(tp=2, pp=4, cp=1, ep=2, etp=1)
 
     def test_from_run_args_defaults(self) -> None:
-        args = types.SimpleNamespace(tp=1, pp=1, cp=1, ep=None, etp=1)
+        from miles.utils.debug_utils.run_megatron.cli.commands.args import RunArgs
+
+        args = RunArgs(
+            model_type="test",
+            hf_checkpoint="/tmp/hf",
+        )
         config = ParallelConfig.from_run_args(args)
         assert config == ParallelConfig()
 
