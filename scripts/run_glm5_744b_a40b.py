@@ -70,7 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "glm5-744B-A40B"
     num_gpus_per_node: int = 8
     fp8_rollout: bool = False
-    use_deepep = True
+    use_deepep: bool = True
     enable_eval: bool = False
     enable_mtp: bool = False
     enable_pd: bool = True
