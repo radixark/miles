@@ -1,4 +1,4 @@
-NLAYERS=48
+NLAYERS=8
 FIRST_K_DENSE_REPLACE=0
 
 arr=()
@@ -20,7 +20,7 @@ MODEL_ARGS=(
    --num-attention-heads 16
    --num-query-groups 2
    --kv-channels 256
-   --num-layers 48
+   --num-layers 8
    --hidden-size 2048
    --ffn-hidden-size 5120
 
