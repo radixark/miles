@@ -21,7 +21,7 @@ def print_top_k(
     tokenizer: Any = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
     pad_token_id: int | None = tokenizer.pad_token_id or tokenizer.eos_token_id
 
-    print_top_predictions_all_ranks(
+    _print_top_predictions_all_ranks(
         logits=logits,
         input_ids=input_ids,
         top_k=top_k,
@@ -30,14 +30,47 @@ def print_top_k(
     )
 
 
-def print_top_predictions_for_rank(
+def _print_top_predictions_all_ranks(
     *,
     logits: torch.Tensor,
     input_ids: torch.Tensor,
     top_k: int,
     tokenizer: object,
-    rank: int,
     pad_token_id: int | None = None,
+) -> None:
+    """Print top-k predictions from all ranks sequentially (rank 0 first, then rank 1, etc.)."""
+    rank, world_size = _get_dist_info()
+
+    if rank == 0:
+        print(f"\n{'=' * 80}")
+        print(f"Top-{top_k} Predictions (all ranks)")
+        print(f"World size: {world_size}")
+        print(f"{'=' * 80}")
+
+    for r in range(world_size):
+        _maybe_barrier()
+        if rank == r:
+            _print_top_predictions_for_rank(
+                logits=logits,
+                input_ids=input_ids,
+                top_k=top_k,
+                tokenizer=tokenizer,
+                rank=rank,
+                pad_token_id=pad_token_id,
+            )
+            sys.stdout.flush()
+
+    _maybe_barrier()
+
+
+def _print_top_predictions_for_rank(
+        *,
+        logits: torch.Tensor,
+        input_ids: torch.Tensor,
+        top_k: int,
+        tokenizer: object,
+        rank: int,
+        pad_token_id: int | None = None,
 ) -> None:
     """Print top-k predictions for this rank, one line per position."""
     batch_size: int = logits.shape[0]
@@ -63,39 +96,6 @@ def print_top_predictions_for_rank(
                 for prob, idx in zip(top_probs, top_indices, strict=True)
             )
             print(f"pos[{pos:3d}] {input_str!r:12s} -> {preds}")
-
-
-def print_top_predictions_all_ranks(
-    *,
-    logits: torch.Tensor,
-    input_ids: torch.Tensor,
-    top_k: int,
-    tokenizer: object,
-    pad_token_id: int | None = None,
-) -> None:
-    """Print top-k predictions from all ranks sequentially (rank 0 first, then rank 1, etc.)."""
-    rank, world_size = _get_dist_info()
-
-    if rank == 0:
-        print(f"\n{'=' * 80}")
-        print(f"Top-{top_k} Predictions (all ranks)")
-        print(f"World size: {world_size}")
-        print(f"{'=' * 80}")
-
-    for r in range(world_size):
-        _maybe_barrier()
-        if rank == r:
-            print_top_predictions_for_rank(
-                logits=logits,
-                input_ids=input_ids,
-                top_k=top_k,
-                tokenizer=tokenizer,
-                rank=rank,
-                pad_token_id=pad_token_id,
-            )
-            sys.stdout.flush()
-
-    _maybe_barrier()
 
 
 def _decode_token(tokenizer: object, *, token_id: int) -> str:
