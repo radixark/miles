@@ -188,10 +188,6 @@ def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
     # rank ordering differs between sglang and megatron so direct
     # comparison is meaningless (rel_diff ≈ 1.0). Allow-fail until
     # a partial-sum-aware aligner is implemented.
-    # attn_output, pre_mlp_residual: diff passes but moe_tp replicated
-    # check fails because dp_attention distributes tokens across ranks
-    # (different shapes per rank), making the replicated assertion
-    # inapplicable. The cross-side diff comparison is still valid.
     run_and_verify_comparator(
         baseline_dir=baseline_dir,
         target_dir=target_dir,
@@ -199,7 +195,7 @@ def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
             "--diff-threshold",
             "0.009",
             "--allow-failed-pattern",
-            "moe_expert_output|attn_output|pre_mlp_residual",
+            "moe_expert_output",
             "--allow-skipped-pattern",
             "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
         ],

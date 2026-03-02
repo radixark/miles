@@ -177,13 +177,13 @@ patches:
                   hidden_states=hidden_states,
                   forward_batch=forward_batch,
               )
-        append: "dumper.dump('attn_output', hidden_states, dims='t h # tp:replicated moe_tp:replicated')"
+        append: "dumper.dump('attn_output', hidden_states, dims='t[moe_tp] h # tp:replicated')"
       - match: |
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
         append: |
-          dumper.dump('pre_mlp_residual', residual, dims='t h # tp:replicated moe_tp:replicated')
+          dumper.dump('pre_mlp_residual', residual, dims='t[moe_tp] h # tp:replicated')
           dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated moe_tp:replicated')
       - match: |
           hidden_states = self.mlp(
