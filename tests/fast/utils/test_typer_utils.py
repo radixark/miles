@@ -1,5 +1,8 @@
 import dataclasses
+import enum
+from typing import Optional
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -59,6 +62,71 @@ class _MultiFieldArgs:
 class _AllRequiredArgs:
     first: str
     second: int
+
+
+@dataclasses.dataclass
+class _SingleFieldArgs:
+    value: str = "default"
+
+
+@dataclasses.dataclass
+class _FloatArgs:
+    rate: float = 0.01
+
+
+@dataclasses.dataclass
+class _OptionalStrArgs:
+    tag: Optional[str] = None
+
+
+class _Color(str, enum.Enum):
+    RED = "red"
+    GREEN = "green"
+    BLUE = "blue"
+
+
+@dataclasses.dataclass
+class _EnumArgs:
+    color: _Color = _Color.RED
+
+
+@dataclasses.dataclass
+class _FieldWithDefaultNoMeta:
+    count: int = dataclasses.field(default=5)
+
+
+@dataclasses.dataclass
+class _DefaultFactoryArgs:
+    items: str = dataclasses.field(default_factory=lambda: "a,b,c")
+
+
+@dataclasses.dataclass
+class _MixedMetaArgs:
+    plain: str = "hello"
+    with_help: int = dataclasses.field(
+        default=0,
+        metadata={"help": "A number"},
+    )
+    with_flag: str = dataclasses.field(
+        default="x",
+        metadata={"flag": "--wf"},
+    )
+    with_both: bool = dataclasses.field(
+        default=False,
+        metadata={"help": "Toggle it", "flag": "--tb"},
+    )
+
+
+@dataclasses.dataclass
+class _EmptyMetaArgs:
+    value: str = dataclasses.field(default="ok", metadata={})
+
+
+@dataclasses.dataclass
+class _MultipleRequiredArgs:
+    alpha: str
+    beta: str
+    gamma: str
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +247,21 @@ class TestParameterizedDecorator:
         )
         assert result.exit_code != 0
 
+    def test_default_prefix_when_called_with_parens(self) -> None:
+        """@dataclass_cli() with no args should behave same as bare @dataclass_cli."""
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli()
+        def cmd(args: _SimpleArgs) -> None:
+            print(f"{args.name}|{args.count}")
+
+        result = runner.invoke(
+            app, [], env={"MILES_SCRIPT_NAME": "ViaParens", "MILES_SCRIPT_COUNT": "3"}
+        )
+        assert result.exit_code == 0
+        assert "ViaParens|3" in result.stdout
+
 
 # ---------------------------------------------------------------------------
 # Field metadata: help & flag
@@ -210,6 +293,18 @@ class TestFieldMetadata:
         assert result.exit_code == 0
         assert "val=hello" in result.stdout
 
+    def test_original_flag_name_still_works_with_custom_flag(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _MetaFlagArgs) -> None:
+            print(f"val={args.short_param}")
+
+        result = runner.invoke(app, ["--short-param", "world"])
+        assert result.exit_code == 0
+        assert "val=world" in result.stdout
+
     def test_help_and_flag_together(self) -> None:
         app = typer.Typer()
 
@@ -225,6 +320,55 @@ class TestFieldMetadata:
         result = runner.invoke(app, ["--verbose"])
         assert result.exit_code == 0
         assert "verbose=True" in result.stdout
+
+    def test_empty_metadata_treated_as_no_metadata(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _EmptyMetaArgs) -> None:
+            print(f"value={args.value}")
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "value=ok" in result.stdout
+
+    def test_mixed_metadata_fields(self) -> None:
+        """Dataclass with a mix of plain, help-only, flag-only, and both."""
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _MixedMetaArgs) -> None:
+            print(f"{args.plain}|{args.with_help}|{args.with_flag}|{args.with_both}")
+
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "A number" in result.stdout
+        assert "Toggle it" in result.stdout
+
+        result = runner.invoke(app, ["--with-help", "7", "--wf", "y", "--tb"])
+        assert result.exit_code == 0
+        assert "hello|7|y|True" in result.stdout
+
+    def test_flag_with_env_var(self) -> None:
+        """Custom flag + env_var_prefix should both work."""
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="TST_")
+        def cmd(args: _MetaFlagArgs) -> None:
+            print(f"val={args.short_param}")
+
+        result = runner.invoke(app, [], env={"TST_SHORT_PARAM": "from_env"})
+        assert result.exit_code == 0
+        assert "val=from_env" in result.stdout
+
+        result = runner.invoke(
+            app, ["--sp", "from_flag"], env={"TST_SHORT_PARAM": "from_env"}
+        )
+        assert result.exit_code == 0
+        assert "val=from_flag" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +400,179 @@ class TestBoolFields:
         result = runner.invoke(app, ["--verbose"])
         assert result.exit_code == 0
         assert "verbose=True" in result.stdout
+
+    def test_bool_no_flag_disables(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _BoolArgs) -> None:
+            print(f"verbose={args.verbose}")
+
+        result = runner.invoke(app, ["--no-verbose"])
+        assert result.exit_code == 0
+        assert "verbose=False" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Various field types
+# ---------------------------------------------------------------------------
+
+
+class TestFieldTypes:
+    def test_float_field(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _FloatArgs) -> None:
+            print(f"rate={args.rate}")
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "rate=0.01" in result.stdout
+
+        result = runner.invoke(app, ["--rate", "0.5"])
+        assert result.exit_code == 0
+        assert "rate=0.5" in result.stdout
+
+    def test_optional_str_default_none(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _OptionalStrArgs) -> None:
+            print(f"tag={args.tag}")
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "tag=None" in result.stdout
+
+    def test_optional_str_provided(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _OptionalStrArgs) -> None:
+            print(f"tag={args.tag}")
+
+        result = runner.invoke(app, ["--tag", "v1"])
+        assert result.exit_code == 0
+        assert "tag=v1" in result.stdout
+
+    def test_enum_field_default(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _EnumArgs) -> None:
+            print(f"color={args.color.value}")
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "color=red" in result.stdout
+
+    def test_enum_field_override(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _EnumArgs) -> None:
+            print(f"color={args.color.value}")
+
+        result = runner.invoke(app, ["--color", "blue"])
+        assert result.exit_code == 0
+        assert "color=blue" in result.stdout
+
+    def test_enum_invalid_value_fails(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _EnumArgs) -> None:
+            pass
+
+        result = runner.invoke(app, ["--color", "yellow"])
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# dataclasses.field without metadata / with default_factory
+# ---------------------------------------------------------------------------
+
+
+class TestDataclassField:
+    def test_field_with_default_no_metadata(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _FieldWithDefaultNoMeta) -> None:
+            print(f"count={args.count}")
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "count=5" in result.stdout
+
+    def test_field_with_default_factory(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _DefaultFactoryArgs) -> None:
+            print(f"items={args.items}")
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "items=a,b,c" in result.stdout
+
+        result = runner.invoke(app, ["--items", "x,y"])
+        assert result.exit_code == 0
+        assert "items=x,y" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Single field / many required fields
+# ---------------------------------------------------------------------------
+
+
+class TestFieldCounts:
+    def test_single_field_dataclass(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _SingleFieldArgs) -> None:
+            print(f"value={args.value}")
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "value=default" in result.stdout
+
+    def test_multiple_required_all_provided(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _MultipleRequiredArgs) -> None:
+            print(f"{args.alpha}|{args.beta}|{args.gamma}")
+
+        result = runner.invoke(
+            app, ["--alpha", "a", "--beta", "b", "--gamma", "c"]
+        )
+        assert result.exit_code == 0
+        assert "a|b|c" in result.stdout
+
+    def test_multiple_required_missing_any_fails(self) -> None:
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _MultipleRequiredArgs) -> None:
+            pass
+
+        result = runner.invoke(app, ["--alpha", "a", "--beta", "b"])
+        assert result.exit_code != 0
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +630,78 @@ class TestMultipleFields:
 
 
 # ---------------------------------------------------------------------------
+# Return value passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestReturnValue:
+    def test_return_value_is_forwarded(self) -> None:
+        @dataclass_cli(env_var_prefix="")
+        def compute(args: _SimpleArgs) -> str:
+            return f"result:{args.name}"
+
+        value = compute(name="test", count=1)
+        assert value == "result:test"
+
+    def test_return_none(self) -> None:
+        @dataclass_cli(env_var_prefix="")
+        def noop(args: _SimpleArgs) -> None:
+            pass
+
+        value = noop(name="x", count=0)
+        assert value is None
+
+
+# ---------------------------------------------------------------------------
+# Dataclass instance correctness
+# ---------------------------------------------------------------------------
+
+
+class TestDataclassInstance:
+    def test_receives_correct_dataclass_type(self) -> None:
+        received: list = []
+
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _SimpleArgs) -> None:
+            received.append(args)
+
+        runner.invoke(app, ["--name", "check", "--count", "7"])
+        assert len(received) == 1
+        assert isinstance(received[0], _SimpleArgs)
+        assert received[0].name == "check"
+        assert received[0].count == 7
+
+    def test_bool_field_receives_python_bool(self) -> None:
+        received: list = []
+
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _BoolArgs) -> None:
+            received.append(args)
+
+        runner.invoke(app, ["--verbose"])
+        assert received[0].verbose is True
+
+    def test_enum_field_receives_enum_instance(self) -> None:
+        received: list = []
+
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _EnumArgs) -> None:
+            received.append(args)
+
+        runner.invoke(app, ["--color", "green"])
+        assert received[0].color is _Color.GREEN
+
+
+# ---------------------------------------------------------------------------
 # Wrapped function attributes
 # ---------------------------------------------------------------------------
 
@@ -340,3 +729,79 @@ class TestWrappedAttributes:
 
         assert another_func.__name__ == "another_func"
         assert another_func.__doc__ == "Another doc."
+
+    def test_no_docstring(self) -> None:
+        @dataclass_cli
+        def no_doc(args: _SimpleArgs) -> None:
+            pass
+
+        assert no_doc.__doc__ is None
+
+    def test_has_signature(self) -> None:
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _SimpleArgs) -> None:
+            pass
+
+        sig = inspect.signature(cmd)
+        param_names = list(sig.parameters.keys())
+        assert "name" in param_names
+        assert "count" in param_names
+        assert "args" not in param_names
+
+
+# ---------------------------------------------------------------------------
+# Error: non-dataclass annotation
+# ---------------------------------------------------------------------------
+
+
+class TestErrorCases:
+    def test_non_dataclass_raises(self) -> None:
+        class NotADataclass:
+            pass
+
+        with pytest.raises(AssertionError):
+
+            @dataclass_cli
+            def bad(args: NotADataclass) -> None:
+                pass
+
+    def test_non_dataclass_raises_parameterized(self) -> None:
+        class NotADataclass:
+            pass
+
+        with pytest.raises(AssertionError):
+
+            @dataclass_cli(env_var_prefix="")
+            def bad(args: NotADataclass) -> None:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Env var naming: uppercase conversion
+# ---------------------------------------------------------------------------
+
+
+class TestEnvVarNaming:
+    def test_underscore_field_name_uppercased(self) -> None:
+        @dataclasses.dataclass
+        class _SnakeArgs:
+            my_long_name: str = "default"
+
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli
+        def cmd(args: _SnakeArgs) -> None:
+            print(f"val={args.my_long_name}")
+
+        result = runner.invoke(
+            app, [], env={"MILES_SCRIPT_MY_LONG_NAME": "from_env"}
+        )
+        assert result.exit_code == 0
+        assert "val=from_env" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# import needed for signature inspection
+# ---------------------------------------------------------------------------
+import inspect
