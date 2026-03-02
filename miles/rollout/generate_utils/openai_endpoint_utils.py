@@ -48,15 +48,19 @@ def compute_samples_from_openai_records(input_sample: Sample, records: list[Sess
 
 
 def _compute_sample_from_openai_record(input_sample: Sample, record: SessionRecord, tokenizer) -> Sample:
-    # TODO may refine after @guapisolo's implementation
-    choice = record.response["choices"][0]
+    response = record.response
+    choice = response["choices"][0]
 
-    input_token_ids = choice["input_token_ids"]
-    output_token_ids = [item["token_id"] for item in choice["logprobs"]["content"]]
-    output_log_probs = [item["logprob"] for item in choice["logprobs"]["content"]]
+    # Prompt token IDs: from return_prompt_token_ids (in choice) or legacy input_token_ids
+    if "prompt_token_ids" in choice:
+        input_token_ids = choice["prompt_token_ids"]
+
+    # Output token IDs + logprobs: from logprobs.content[].token_id
+    logprobs_content = (choice.get("logprobs") or {}).get("content") or []
+    output_token_ids = [item["token_id"] for item in logprobs_content]
+    output_log_probs = [item["logprob"] for item in logprobs_content]
 
     sample = deepcopy(input_sample)
-    # sample.tokens = record.request["input_ids"] + output_token_ids
     request_input_ids = record.request.get("input_ids")
     if request_input_ids is not None:
         assert (

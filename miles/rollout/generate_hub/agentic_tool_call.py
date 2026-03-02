@@ -59,10 +59,11 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
 
-    # Notice: Here we force the inference backend to return token information and start from 0
-    # The start len should be 0 to make sure prompt token ids and be correctly returned from SGLang.
+    # return_prompt_token_ids: get prompt token IDs without computing logprobs (zero cost, cache-safe)
+    # logprobs: get output token IDs + logprobs (via logprobs.content[].token_id)
+    # NOTE: do NOT set logprob_start_len=0, that would destroy SGLang's prefix cache.
+    request_kwargs["return_prompt_token_ids"] = True
     request_kwargs["logprobs"] = True
-    request_kwargs["logprob_start_len"] = 0
 
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys

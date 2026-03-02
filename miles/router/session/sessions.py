@@ -68,13 +68,12 @@ def setup_session_routes(app, router: "MilesRouter"):
         choice = response.get("choices", [{}])[0]
         # messages = request_body["messages"] + [choice["message"]]
 
-        if "logprobs" not in choice or "content" not in choice["logprobs"]:
+        # Validate logprobs with token_id are present in the response
+        if "logprobs" not in choice or "content" not in (choice.get("logprobs") or {}):
             raise RuntimeError("logprobs must be in choice")
-        logprobs_content = choice["logprobs"]["content"]
-
-        for item in logprobs_content:
+        for item in choice["logprobs"]["content"]:
             if "token_id" not in item:
-                raise RuntimeError("token_id must be in item")
+                raise RuntimeError("token_id must be in logprobs content item")
         record = SessionRecord(
             timestamp=time.time(),
             method=request.method,
