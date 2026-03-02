@@ -12,6 +12,26 @@ from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScript
 from miles.utils.replay_base import routing_replay_manager
 
 
+def setup_replay_before_model(script: WorkerScriptArgs) -> None:
+    """Enable replay manager and set stage BEFORE model construction.
+
+    Must be called before ``get_model()`` so that ``register_to_module``
+    (called during model construction) sees ``enabled=True`` and creates
+    Replay objects on MoE modules.
+    """
+    if script.routing_replay_dump_path:
+        routing_replay_manager.enabled = True
+        routing_replay_manager.stage = "record"
+        print(f"[worker] Routing replay enabled, stage=record (dump → {script.routing_replay_dump_path})", flush=True)
+    elif script.routing_replay_load_path:
+        routing_replay_manager.enabled = True
+        routing_replay_manager.stage = "replay_forward"
+        print(
+            f"[worker] Routing replay enabled, stage=replay_forward (load ← {script.routing_replay_load_path})",
+            flush=True,
+        )
+
+
 def load_replay_data(
     script: WorkerScriptArgs,
     *,
@@ -32,26 +52,6 @@ def load_replay_data(
 
     replay_file: Path = replay_files[0]
     _load_replay(replay_file, rank=rank, sequence_parallel=sequence_parallel)
-
-
-def setup_replay_before_model(script: WorkerScriptArgs) -> None:
-    """Enable replay manager and set stage BEFORE model construction.
-
-    Must be called before ``get_model()`` so that ``register_to_module``
-    (called during model construction) sees ``enabled=True`` and creates
-    Replay objects on MoE modules.
-    """
-    if script.routing_replay_dump_path:
-        routing_replay_manager.enabled = True
-        routing_replay_manager.stage = "record"
-        print(f"[worker] Routing replay enabled, stage=record (dump → {script.routing_replay_dump_path})", flush=True)
-    elif script.routing_replay_load_path:
-        routing_replay_manager.enabled = True
-        routing_replay_manager.stage = "replay_forward"
-        print(
-            f"[worker] Routing replay enabled, stage=replay_forward (load ← {script.routing_replay_load_path})",
-            flush=True,
-        )
 
 
 def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
