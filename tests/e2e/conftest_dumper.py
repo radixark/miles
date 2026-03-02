@@ -82,7 +82,7 @@ patches:
         append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts # """
     + _MEG_REPL
     + """')"
-      - match: "# Apply token dropping to probs and routing_map."
+      - match: "return probs, routing_map"
         prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] 1 topk # """
     + _MEG_REPL
     + """')"
@@ -143,7 +143,7 @@ patches:
         append: "dumper.dump('moe_router_logits', logits, dims='s[cp:zigzag,sp] b num_experts # """
     + _MEG_REPL
     + """')"
-      - match: "# Apply token dropping to probs and routing_map."
+      - match: "return probs, routing_map"
         prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] 1 topk # """
     + _MEG_REPL
     + """')"
