@@ -90,6 +90,16 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
+        # Apply Vision DP monkey patch when CP > 1 and model is a VLM
+        if self.parallel_state.cp_size > 1 and hasattr(self.hf_config, "vision_config"):
+            from miles.utils.vision_dp import apply_vision_dp_patch
+
+            apply_vision_dp_patch(
+                cp_group=self.parallel_state.cp_group,
+                cp_size=self.parallel_state.cp_size,
+                cp_rank=self.parallel_state.cp_rank,
+            )
+
         init_context = self._get_init_weight_context_manager()
 
         with init_context():
@@ -467,6 +477,13 @@ class FSDPTrainRayActor(TrainRayActor):
                         num_microbatches=num_microbatches[step_id],
                     )
                     losses_reduced.append(log_dict)
+
+                # Sync vision tower gradients across CP ranks (Vision DP produces
+                # different ViT gradients per rank since each processes different images)
+                if self.parallel_state.cp_size > 1 and hasattr(self.hf_config, "vision_config"):
+                    from miles.utils.vision_dp import sync_vision_grads_across_cp
+
+                    sync_vision_grads_across_cp(self.model, self.parallel_state.cp_group)
 
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                 grad_norm = grad_norm.full_tensor().item()
