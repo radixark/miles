@@ -195,11 +195,8 @@ def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
         extra_args=[
             "--diff-threshold",
             "0.005",
-            "--allow-failed-pattern",
-            "moe_expert_output",
             "--allow-skipped-pattern",
-            "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format"
-            "|pre_mlp_layernorm_output|mlp_output|moe_router_logits|moe_expert_output",
+            "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
         ],
     )
 
