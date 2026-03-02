@@ -1,4 +1,3 @@
-import os
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -141,8 +140,7 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
-        "--sglang-mem-fraction-static 0.7 "
+        f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} " "--sglang-mem-fraction-static 0.7 "
     )
 
     perf_args = (
