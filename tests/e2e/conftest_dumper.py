@@ -25,6 +25,7 @@ SOURCE_PATCHED_FIELDS: list[str] = [
     "pre_mlp_layernorm_output",
     "mlp_output",
     "moe_router_logits",
+    "moe_topk_ids",
     "moe_expert_output",
 ]
 
@@ -79,6 +80,10 @@ patches:
     edits:
       - match: "logits = self.gating(input)"
         append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts # """
+    + _MEG_REPL
+    + """')"
+      - match: "# Apply token dropping to probs and routing_map."
+        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] 1 topk # """
     + _MEG_REPL
     + """')"
 
@@ -136,6 +141,10 @@ patches:
     edits:
       - match: "logits = self.gating(input)"
         append: "dumper.dump('moe_router_logits', logits, dims='s[cp:zigzag,sp] b num_experts # """
+    + _MEG_REPL
+    + """')"
+      - match: "# Apply token dropping to probs and routing_map."
+        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] 1 topk # """
     + _MEG_REPL
     + """')"
 
@@ -199,6 +208,8 @@ patches:
     edits:
       - match: "router_logits, _ = self.gate(hidden_states)"
         append: "dumper.dump('moe_router_logits', router_logits, dims='t num_experts # tp:replicated moe_tp:replicated')"
+      - match: "topk_output = self.topk(hidden_states, router_logits)"
+        append: "dumper.dump('moe_topk_ids', topk_output.topk_ids.sort(dim=-1).values, dims='t topk # tp:replicated moe_tp:replicated')"
       - match: "final_hidden_states = self.experts(hidden_states, topk_output)"
         append: "dumper.dump('moe_expert_output', final_hidden_states, dims='t h[tp:partial] # moe_tp:replicated')"
 """
