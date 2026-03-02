@@ -8,14 +8,9 @@ def _field(
     default: object = dataclasses.MISSING,
     *,
     help: str,
-    flag: str | None = None,
 ) -> dataclasses.Field:  # type: ignore[type-arg]
     """Shorthand to create a dataclass field with typer metadata."""
-    metadata: dict[str, str] = {"help": help}
-    if flag is not None:
-        metadata["flag"] = flag
-
-    return dataclasses.field(default=default, metadata=metadata)  # type: ignore[arg-type]
+    return dataclasses.field(default=default, metadata={"help": help})  # type: ignore[arg-type]
 
 
 @dataclasses.dataclass
@@ -23,18 +18,18 @@ class CommonRunArgs:
     model_type: str = _field(help="Model type matching scripts/models/{model_type}.sh")
     hf_checkpoint: Path = _field(help="HuggingFace checkpoint path")
     ref_load: Path | None = _field(default=None, help="Megatron checkpoint path")
-    sp: bool = _field(default=False, help="Enable sequence parallelism", flag="--sp")
-    run_backward: bool = _field(default=False, help="Run backward pass", flag="--run-backward")
+    sp: bool = _field(default=False, help="Enable sequence parallelism")
+    run_backward: bool = _field(default=False, help="Run backward pass")
     prompt_mode: str = _field(default="math", help="Prompt mode: math / file / text")
     prompt_text: str | None = _field(default=None, help="Prompt text (for text mode)")
     prompt_file: Path | None = _field(default=None, help="Prompt file (for file mode)")
     # odd + somewhat large; also the fine-structure constant
     seq_length: int = _field(default=137, help="Sequence length")
     batch_size: int = _field(default=1, help="Micro batch size")
-    apply_chat_template: bool = _field(default=False, help="Apply chat template", flag="--apply-chat-template")
+    apply_chat_template: bool = _field(default=False, help="Apply chat template")
     role: str = _field(default="actor", help="Model role: actor / critic")
     source_patcher_config: Path | None = _field(default=None, help="Source patcher YAML config path")
-    top_k: int = _field(default=0, help="Print top-k predictions per position (0=disabled)", flag="--top-k")
+    top_k: int = _field(default=0, help="Print top-k predictions per position (0=disabled)")
     dumper_filter: str = _field(default="", help="Dumper filter expression")
     megatron_path: Path | None = _field(default=None, help="Path to Megatron-LM")
     extra_args: str = _field(default="", help="Extra args passed to worker")
@@ -60,7 +55,6 @@ class RunAndCompareArgs(CommonRunArgs):
     routing_replay: bool = _field(
         default=False,
         help="Enable routing replay (record on baseline, replay on target)",
-        flag="--routing-replay",
     )
 
 

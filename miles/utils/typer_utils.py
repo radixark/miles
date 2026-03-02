@@ -32,7 +32,6 @@ def dataclass_cli(
 
     Supports field ``metadata`` keys:
     - ``"help"``: passed as ``help=`` to ``typer.Option``
-    - ``"flag"``: custom CLI flag name (e.g. ``"--sp"``)
 
     Usage::
 
@@ -75,11 +74,7 @@ def _wrap(func: _F, *, env_var_prefix: str) -> _F:
         if "help" in field.metadata:
             typer_kwargs["help"] = field.metadata["help"]
 
-        flag: str | None = field.metadata.get("flag")
-        if flag is not None:
-            new_annotation = Annotated[param.annotation, typer.Option(flag, **typer_kwargs)]
-        else:
-            new_annotation = Annotated[param.annotation, typer.Option(**typer_kwargs)]
+        new_annotation = Annotated[param.annotation, typer.Option(**typer_kwargs)]
 
         new_parameters.append(param.replace(annotation=new_annotation))
 
