@@ -2,7 +2,7 @@
 # The comparator must report all-passed with zero failures — no exceptions.
 
 # Usage: This is a typer CLI with 2 commands:
-#   python test_run_megatron.py run --mode <mode>         Full: prepare + run baseline + run target + verify + comparator
+#   python test_run_megatron.py run --mode <mode>         Full: prepare + run baseline + run target + compare
 #   python test_run_megatron.py compare --mode <mode> --dump-dir <path>
 #                                                          Re-run comparator on existing dumps
 
@@ -13,13 +13,11 @@ from typing import Annotated
 import typer
 from tests.e2e.conftest_dumper import (
     MEGATRON_SOURCE_PATCHER_CONFIG_YAML,
-    SOURCE_PATCHED_FIELDS,
-    check_dump_dir,
     clear_proxy_env,
-    run_and_verify_comparator,
 )
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
 from miles.utils.misc import exec_command
 
 app: typer.Typer = typer.Typer()
@@ -60,74 +58,33 @@ def _prepare(dump_dir: Path) -> Path:
     return source_patcher_path
 
 
-def _run_standalone(
-    *,
-    parallel_args: str,
-    output_dir: Path,
-    source_patcher_config: Path,
-) -> None:
-    """Run standalone Megatron forward via run_megatron CLI."""
-    cmd: str = (
-        f"python -m miles.utils.debug_utils.run_megatron run "
-        f"--model-type {MODEL_TYPE} "
-        f"--hf-checkpoint /root/models/{MODEL_NAME} "
-        f"--ref-load /root/{MODEL_NAME}_torch_dist "
-        f"--output-dir {output_dir} "
-        f"--seq-length 128 "
-        f"--batch-size 1 "
-        f"--prompt-mode math "
-        f"--source-patcher-config {source_patcher_config} "
-        f"--dumper-filter 'layer_id is None or layer_id < 3' "
-        f"{parallel_args}"
-    )
-    exec_command(cmd)
-
-
-def _verify_dumps(dump_dir: Path) -> None:
-    """Verify dump directory structure."""
-    check_dump_dir(
-        phase_dir=dump_dir,
-        exp_pattern="standalone",
-        expected_fields=SOURCE_PATCHED_FIELDS,
-    )
-    print(f"Dump verification passed for {dump_dir}!")
-
-
 @app.command()
 def run(
     mode: Annotated[str, typer.Option(help="Config mode: " + ", ".join(CONFIGS.keys()))],
 ) -> None:
-    """Full pipeline: prepare + run baseline + run target + verify + comparator."""
-    config_name, baseline_args, target_args = _resolve_mode(mode)
+    """Full pipeline: prepare + run baseline + run target + compare."""
+    _config_name, baseline_args, target_args = _resolve_mode(mode)
     dump_dir: Path = _RUN_DIR / "dumps"
     print(f"Run directory: {_RUN_DIR}")
 
     source_patcher_config: Path = _prepare(dump_dir=dump_dir)
     clear_proxy_env()
 
-    baseline_output: Path = dump_dir / "baseline"
-    target_output: Path = dump_dir / "target"
-
-    print(f"[test] Running baseline: {baseline_args}", flush=True)
-    _run_standalone(
-        parallel_args=baseline_args,
-        output_dir=baseline_output,
-        source_patcher_config=source_patcher_config,
+    cmd: str = (
+        f"python -m miles.utils.debug_utils.run_megatron run-and-compare "
+        f"--model-type {MODEL_TYPE} "
+        f"--hf-checkpoint /root/models/{MODEL_NAME} "
+        f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        f"--output-base-dir {dump_dir} "
+        f"--baseline '{baseline_args}' "
+        f"--target '{target_args}' "
+        f"--seq-length 128 "
+        f"--batch-size 1 "
+        f"--prompt-mode math "
+        f"--source-patcher-config {source_patcher_config} "
+        f"--dumper-filter 'layer_id is None or layer_id < 3'"
     )
-
-    print(f"[test] Running target: {target_args}", flush=True)
-    _run_standalone(
-        parallel_args=target_args,
-        output_dir=target_output,
-        source_patcher_config=source_patcher_config,
-    )
-
-    _verify_dumps(baseline_output)
-    _verify_dumps(target_output)
-    run_and_verify_comparator(
-        baseline_dir=baseline_output / "standalone",
-        target_dir=target_output / "standalone",
-    )
+    exec_command(cmd)
 
 
 @app.command()
@@ -136,18 +93,18 @@ def compare(
     dump_dir: Annotated[str, typer.Option(help="Path to existing dump base directory")],
 ) -> None:
     """Re-run comparator on existing dumps (no training)."""
-    _resolve_mode(mode)
+    _config_name, baseline_args, target_args = _resolve_mode(mode)
     base: Path = Path(dump_dir)
 
-    baseline_output: Path = base / "baseline"
-    target_output: Path = base / "target"
+    baseline_dir_name: str = ParallelConfig.from_parsed_args(parse_parallel_args(baseline_args)).dir_name()
+    target_dir_name: str = ParallelConfig.from_parsed_args(parse_parallel_args(target_args)).dir_name()
 
-    _verify_dumps(baseline_output)
-    _verify_dumps(target_output)
-    run_and_verify_comparator(
-        baseline_dir=baseline_output / "standalone",
-        target_dir=target_output / "standalone",
+    cmd: str = (
+        f"python -m miles.utils.debug_utils.run_megatron compare "
+        f"--baseline-dir {base / baseline_dir_name / 'standalone'} "
+        f"--target-dir {base / target_dir_name / 'standalone'}"
     )
+    exec_command(cmd)
 
 
 if __name__ == "__main__":
