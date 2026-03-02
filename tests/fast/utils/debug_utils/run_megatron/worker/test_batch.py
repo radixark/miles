@@ -336,158 +336,122 @@ class TestPrepareBatchZigzag:
             )
         return batches
 
-    # -- shapes --
+    def test_zigzag_token_and_position_assignment_cp2(self, seq8_cp2: dict) -> None:
+        """Verify exact zigzag token/position assignment for all ranks with cp_size=2.
 
-    def test_local_seq_len_is_half(self, seq8_cp2: dict) -> None:
+        seq_len=8, chunk_size=2:
+          rank 0: tokens[0:2] + tokens[6:8] -> ids [100,200,700,800], pos [0,1,6,7]
+          rank 1: tokens[2:4] + tokens[4:6] -> ids [300,400,500,600], pos [2,3,4,5]
+        """
+        expected_ids = {
+            "rank0": [100, 200, 700, 800],
+            "rank1": [300, 400, 500, 600],
+        }
+        expected_pos = {
+            "rank0": [0, 1, 6, 7],
+            "rank1": [2, 3, 4, 5],
+        }
         for rank_key in seq8_cp2:
             batch = seq8_cp2[rank_key]
+            assert batch["input_ids"][0].tolist() == expected_ids[rank_key]
+            assert batch["position_ids"][0].tolist() == expected_pos[rank_key]
+
             assert batch["input_ids"].shape == (1, 4)
-            assert batch["position_ids"].shape == (1, 4)
             assert batch["labels"].shape == (1, 4)
             assert batch["attention_mask"].shape == (1, 1, 4, 4)
+            assert batch["global_input_ids"].shape == (1, 8)
+            assert batch["global_input_ids"][0].tolist() == [100, 200, 300, 400, 500, 600, 700, 800]
 
-    def test_global_input_ids_shape_unchanged(self, seq8_cp2: dict) -> None:
-        for rank_key in seq8_cp2:
-            assert seq8_cp2[rank_key]["global_input_ids"].shape == (1, 8)
+    def test_zigzag_token_and_position_assignment_cp4(self, seq16_cp4: dict) -> None:
+        """Verify exact zigzag token/position assignment for all ranks with cp_size=4.
 
-    def test_cp4_local_seq_len(self, seq16_cp4: dict) -> None:
+        seq_len=16, chunk_size=2:
+          rank 0: tokens[0:2]  + tokens[14:16] -> [1000,1001,1014,1015], pos [0,1,14,15]
+          rank 1: tokens[2:4]  + tokens[12:14] -> [1002,1003,1012,1013], pos [2,3,12,13]
+          rank 2: tokens[4:6]  + tokens[10:12] -> [1004,1005,1010,1011], pos [4,5,10,11]
+          rank 3: tokens[6:8]  + tokens[8:10]  -> [1006,1007,1008,1009], pos [6,7,8,9]
+        """
+        expected_ids = {
+            "rank0": [1000, 1001, 1014, 1015],
+            "rank1": [1002, 1003, 1012, 1013],
+            "rank2": [1004, 1005, 1010, 1011],
+            "rank3": [1006, 1007, 1008, 1009],
+        }
+        expected_pos = {
+            "rank0": [0, 1, 14, 15],
+            "rank1": [2, 3, 12, 13],
+            "rank2": [4, 5, 10, 11],
+            "rank3": [6, 7, 8, 9],
+        }
         for rank_key in seq16_cp4:
             batch = seq16_cp4[rank_key]
+            assert batch["input_ids"][0].tolist() == expected_ids[rank_key]
+            assert batch["position_ids"][0].tolist() == expected_pos[rank_key]
+
             assert batch["input_ids"].shape == (1, 4)
-            assert batch["position_ids"].shape == (1, 4)
+            assert batch["labels"].shape == (1, 4)
+            assert batch["global_input_ids"].shape == (1, 16)
 
-    # -- zigzag token assignment --
+    def test_all_ranks_partition_full_sequence(self, seq8_cp2: dict, seq16_cp4: dict) -> None:
+        """All ranks together cover every position exactly once (no overlap, no gap)."""
+        for batches, seq_len in [(seq8_cp2, 8), (seq16_cp4, 16)]:
+            all_positions: list[int] = []
+            all_tokens: list[int] = []
+            for rank_key in batches:
+                all_positions.extend(batches[rank_key]["position_ids"][0].tolist())
+                all_tokens.extend(batches[rank_key]["input_ids"][0].tolist())
 
-    def test_rank0_tokens_cp2(self, seq8_cp2: dict) -> None:
-        batch = seq8_cp2["rank0"]
-        assert batch["input_ids"][0].tolist() == [100, 200, 700, 800]
+            assert sorted(all_positions) == list(range(seq_len))
+            assert len(all_positions) == len(set(all_positions))
+            assert len(all_tokens) == seq_len
 
-    def test_rank1_tokens_cp2(self, seq8_cp2: dict) -> None:
-        batch = seq8_cp2["rank1"]
-        assert batch["input_ids"][0].tolist() == [300, 400, 500, 600]
+    def test_labels_per_rank_cp2(self, seq8_cp2: dict) -> None:
+        """Verify labels for all ranks with cp_size=2.
 
-    def test_rank0_tokens_cp4(self, seq16_cp4: dict) -> None:
-        batch = seq16_cp4["rank0"]
-        assert batch["input_ids"][0].tolist() == [1000, 1001, 1014, 1015]
-
-    def test_rank1_tokens_cp4(self, seq16_cp4: dict) -> None:
-        batch = seq16_cp4["rank1"]
-        assert batch["input_ids"][0].tolist() == [1002, 1003, 1012, 1013]
-
-    def test_rank2_tokens_cp4(self, seq16_cp4: dict) -> None:
-        batch = seq16_cp4["rank2"]
-        assert batch["input_ids"][0].tolist() == [1004, 1005, 1010, 1011]
-
-    def test_rank3_tokens_cp4(self, seq16_cp4: dict) -> None:
-        batch = seq16_cp4["rank3"]
-        assert batch["input_ids"][0].tolist() == [1006, 1007, 1008, 1009]
-
-    # -- zigzag position assignment --
-
-    def test_rank0_positions_cp2(self, seq8_cp2: dict) -> None:
-        assert seq8_cp2["rank0"]["position_ids"][0].tolist() == [0, 1, 6, 7]
-
-    def test_rank1_positions_cp2(self, seq8_cp2: dict) -> None:
-        assert seq8_cp2["rank1"]["position_ids"][0].tolist() == [2, 3, 4, 5]
-
-    def test_rank0_positions_cp4(self, seq16_cp4: dict) -> None:
-        assert seq16_cp4["rank0"]["position_ids"][0].tolist() == [0, 1, 14, 15]
-
-    def test_rank3_positions_cp4(self, seq16_cp4: dict) -> None:
-        assert seq16_cp4["rank3"]["position_ids"][0].tolist() == [6, 7, 8, 9]
-
-    # -- all ranks together cover the full sequence --
-
-    def test_all_ranks_cover_full_sequence_cp2(self, seq8_cp2: dict) -> None:
-        all_positions = set()
+        rank 0 positions [0,1,6,7]: labels = [tok@1=200, tok@2=300, tok@7=800, -100]
+        rank 1 positions [2,3,4,5]: labels = [tok@3=400, tok@4=500, tok@5=600, tok@6=700]
+        """
+        expected_labels = {
+            "rank0": [200, 300, 800, -100],
+            "rank1": [400, 500, 600, 700],
+        }
         for rank_key in seq8_cp2:
-            all_positions.update(seq8_cp2[rank_key]["position_ids"][0].tolist())
-        assert all_positions == set(range(8))
+            assert seq8_cp2[rank_key]["labels"][0].tolist() == expected_labels[rank_key]
 
-    def test_all_ranks_cover_full_sequence_cp4(self, seq16_cp4: dict) -> None:
-        all_positions = set()
-        for rank_key in seq16_cp4:
-            all_positions.update(seq16_cp4[rank_key]["position_ids"][0].tolist())
-        assert all_positions == set(range(16))
-
-    def test_all_ranks_cover_all_tokens_cp2(self, seq8_cp2: dict) -> None:
-        all_tokens = []
-        for rank_key in seq8_cp2:
-            all_tokens.extend(seq8_cp2[rank_key]["input_ids"][0].tolist())
-        assert sorted(all_tokens) == [100, 200, 300, 400, 500, 600, 700, 800]
-
-    def test_no_position_overlap_between_ranks_cp4(self, seq16_cp4: dict) -> None:
-        seen: set[int] = set()
-        for rank_key in seq16_cp4:
-            positions = set(seq16_cp4[rank_key]["position_ids"][0].tolist())
-            assert seen.isdisjoint(positions), f"Overlap at {seen & positions}"
-            seen.update(positions)
-
-    # -- global_input_ids is the same for all ranks --
-
-    def test_global_input_ids_same_across_ranks(self, seq8_cp2: dict) -> None:
-        expected = [100, 200, 300, 400, 500, 600, 700, 800]
-        for rank_key in seq8_cp2:
-            assert seq8_cp2[rank_key]["global_input_ids"][0].tolist() == expected
-
-    # -- labels correctness under zigzag --
-
-    def test_labels_rank0_cp2(self, seq8_cp2: dict) -> None:
-        batch = seq8_cp2["rank0"]
-        labels = batch["labels"][0].tolist()
-        # positions [0, 1, 6, 7]
-        # pos 0 -> next token at pos 1 = 200
-        # pos 1 -> next token at pos 2 = 300
-        # pos 6 -> next token at pos 7 = 800
-        # pos 7 -> last position -> -100
-        assert labels == [200, 300, 800, -100]
-
-    def test_labels_rank1_cp2(self, seq8_cp2: dict) -> None:
-        batch = seq8_cp2["rank1"]
-        labels = batch["labels"][0].tolist()
-        # positions [2, 3, 4, 5]
-        # pos 2 -> next at pos 3 = 400
-        # pos 3 -> next at pos 4 = 500
-        # pos 4 -> next at pos 5 = 600
-        # pos 5 -> next at pos 6 = 700
-        assert labels == [400, 500, 600, 700]
-
-    def test_labels_rank0_cp4(self, seq16_cp4: dict) -> None:
-        batch = seq16_cp4["rank0"]
-        labels = batch["labels"][0].tolist()
-        # positions [0, 1, 14, 15]
-        # pos 0 -> token at pos 1 = 1001
-        # pos 1 -> token at pos 2 = 1002
-        # pos 14 -> token at pos 15 = 1015
-        # pos 15 -> last -> -100
-        assert labels == [1001, 1002, 1015, -100]
-
-    def test_labels_rank3_cp4(self, seq16_cp4: dict) -> None:
-        batch = seq16_cp4["rank3"]
-        labels = batch["labels"][0].tolist()
-        # positions [6, 7, 8, 9]
-        # pos 6 -> token at 7 = 1007
-        # pos 7 -> token at 8 = 1008
-        # pos 8 -> token at 9 = 1009
-        # pos 9 -> token at 10 = 1010
-        assert labels == [1007, 1008, 1009, 1010]
-
-    def test_labels_all_ranks_exactly_one_neg100_cp2(self, seq8_cp2: dict) -> None:
-        """Only the rank holding the last global position should have -100."""
         neg100_count = sum(
-            (seq8_cp2[rk]["labels"] == -100).sum().item()
-            for rk in seq8_cp2
+            (seq8_cp2[rk]["labels"] == -100).sum().item() for rk in seq8_cp2
         )
-        assert neg100_count == 1  # only rank 0 has pos 7 (last)
+        assert neg100_count == 1
 
-    def test_labels_all_ranks_exactly_one_neg100_cp4(self, seq16_cp4: dict) -> None:
+    def test_labels_per_rank_cp4(self, seq16_cp4: dict) -> None:
+        """Verify labels for all ranks with cp_size=4.
+
+        rank 0 positions [0,1,14,15]:  labels = [1001, 1002, 1015, -100]
+        rank 1 positions [2,3,12,13]:  labels = [1003, 1004, 1013, 1014]
+        rank 2 positions [4,5,10,11]:  labels = [1005, 1006, 1011, 1012]
+        rank 3 positions [6,7,8,9]:    labels = [1007, 1008, 1009, 1010]
+        """
+        expected_labels = {
+            "rank0": [1001, 1002, 1015, -100],
+            "rank1": [1003, 1004, 1013, 1014],
+            "rank2": [1005, 1006, 1011, 1012],
+            "rank3": [1007, 1008, 1009, 1010],
+        }
+        for rank_key in seq16_cp4:
+            assert seq16_cp4[rank_key]["labels"][0].tolist() == expected_labels[rank_key]
+
         neg100_count = sum(
-            (seq16_cp4[rk]["labels"] == -100).sum().item()
-            for rk in seq16_cp4
+            (seq16_cp4[rk]["labels"] == -100).sum().item() for rk in seq16_cp4
         )
-        assert neg100_count == 1  # only rank 0 has pos 15 (last)
+        assert neg100_count == 1
 
-    # -- attention mask under CP --
+    def test_input_ids_match_global_at_positions(self, seq8_cp2: dict, seq16_cp4: dict) -> None:
+        """For every rank, input_ids[i] == global_input_ids[position_ids[i]]."""
+        for batches in [seq8_cp2, seq16_cp4]:
+            for rank_key in batches:
+                batch = batches[rank_key]
+                gathered = batch["global_input_ids"][0][batch["position_ids"][0]]
+                assert torch.equal(batch["input_ids"][0], gathered)
 
     def test_attention_mask_is_causal_locally(self, seq8_cp2: dict) -> None:
         for rank_key in seq8_cp2:
@@ -496,7 +460,15 @@ class TestPrepareBatchZigzag:
             expected = torch.tril(torch.ones(local_len, local_len, dtype=torch.bool))
             assert torch.equal(mask, expected)
 
-    # -- batch dimension under CP --
+    def test_positions_monotonic_within_each_chunk(self, seq8_cp2: dict, seq16_cp4: dict) -> None:
+        """Each half (chunk) of local positions should be monotonically increasing."""
+        for batches in [seq8_cp2, seq16_cp4]:
+            for rank_key in batches:
+                pos = batches[rank_key]["position_ids"][0]
+                half = len(pos) // 2
+                chunk1, chunk2 = pos[:half], pos[half:]
+                assert all(chunk1[i] < chunk1[i + 1] for i in range(len(chunk1) - 1))
+                assert all(chunk2[i] < chunk2[i + 1] for i in range(len(chunk2) - 1))
 
     def test_batch_dim_broadcast_cp2(self) -> None:
         token_ids = list(range(100, 108))
@@ -507,39 +479,6 @@ class TestPrepareBatchZigzag:
         for i in range(3):
             assert batch["input_ids"][i].tolist() == batch["input_ids"][0].tolist()
             assert batch["labels"][i].tolist() == batch["labels"][0].tolist()
-
-    # -- token_ids / position_ids consistency --
-
-    def test_input_ids_match_global_at_positions(self, seq8_cp2: dict) -> None:
-        """For each rank, input_ids[i] == global_input_ids[position_ids[i]]."""
-        for rank_key in seq8_cp2:
-            batch = seq8_cp2[rank_key]
-            global_ids = batch["global_input_ids"][0]
-            pos_ids = batch["position_ids"][0]
-            input_ids = batch["input_ids"][0]
-            gathered = global_ids[pos_ids]
-            assert torch.equal(input_ids, gathered)
-
-    def test_input_ids_match_global_at_positions_cp4(self, seq16_cp4: dict) -> None:
-        for rank_key in seq16_cp4:
-            batch = seq16_cp4[rank_key]
-            global_ids = batch["global_input_ids"][0]
-            pos_ids = batch["position_ids"][0]
-            input_ids = batch["input_ids"][0]
-            gathered = global_ids[pos_ids]
-            assert torch.equal(input_ids, gathered)
-
-    # -- positions are locally sorted (zigzag chunk1 < chunk2) --
-
-    def test_positions_monotonic_within_each_chunk(self, seq8_cp2: dict) -> None:
-        """Each half (chunk) of local positions should be monotonically increasing."""
-        for rank_key in seq8_cp2:
-            pos = seq8_cp2[rank_key]["position_ids"][0]
-            half = len(pos) // 2
-            chunk1 = pos[:half]
-            chunk2 = pos[half:]
-            assert all(chunk1[i] < chunk1[i + 1] for i in range(len(chunk1) - 1))
-            assert all(chunk2[i] < chunk2[i + 1] for i in range(len(chunk2) - 1))
 
 
 # ---------------------------------------------------------------------------
