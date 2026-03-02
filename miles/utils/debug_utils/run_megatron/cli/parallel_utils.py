@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from miles.utils.debug_utils.run_megatron.cli.commands.args import RunArgs
+
+_FIELD_NAMES: tuple[str, ...] = ("tp", "pp", "cp", "ep", "etp")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -15,30 +21,28 @@ class ParallelConfig:
     etp: int = 1
 
     def __post_init__(self) -> None:
-        effective_ep: int = self.ep if self.ep is not None else self.tp
-        if self.nproc % effective_ep != 0:
+        if self.nproc % self.effective_ep != 0:
             raise ValueError(
                 f"nproc ({self.nproc} = tp*pp*cp = {self.tp}*{self.pp}*{self.cp}) "
-                f"is not divisible by effective EP ({effective_ep})"
+                f"is not divisible by effective EP ({self.effective_ep})"
             )
 
     @property
     def effective_ep(self) -> int:
         return self.ep if self.ep is not None else self.tp
 
-    @classmethod
-    def from_parsed_args(cls, parsed: dict[str, int]) -> ParallelConfig:
-        return cls(
-            tp=parsed.get("tp", 1),
-            pp=parsed.get("pp", 1),
-            cp=parsed.get("cp", 1),
-            ep=parsed.get("ep"),
-            etp=parsed.get("etp", 1),
-        )
-
     @property
     def nproc(self) -> int:
         return self.tp * self.pp * self.cp
+
+    @classmethod
+    def from_parsed_args(cls, parsed: dict[str, int]) -> ParallelConfig:
+        defaults: dict[str, object] = {f.name: f.default for f in dataclasses.fields(cls)}
+        return cls(**{name: parsed.get(name, defaults[name]) for name in _FIELD_NAMES})  # type: ignore[arg-type]
+
+    @classmethod
+    def from_run_args(cls, args: RunArgs) -> ParallelConfig:
+        return cls(**{name: getattr(args, name) for name in _FIELD_NAMES})  # type: ignore[arg-type]
 
     def __str__(self) -> str:
         return f"tp={self.tp}, pp={self.pp}, cp={self.cp}, ep={self.ep}, etp={self.etp}, nproc={self.nproc}"
@@ -60,7 +64,7 @@ class ParallelConfig:
 def parse_parallel_args(args_str: str) -> dict[str, int]:
     """Parse a parallel config string like '--tp 2 --cp 2' into a dict."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser()
-    for flag in ("tp", "pp", "cp", "ep", "etp"):
+    for flag in _FIELD_NAMES:
         parser.add_argument(f"--{flag}", type=int)
     namespace: argparse.Namespace = parser.parse_args(args_str.split())
     return {k: v for k, v in vars(namespace).items() if v is not None}

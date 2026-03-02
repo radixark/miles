@@ -47,7 +47,7 @@ class RunArgs(CommonRunArgs):
     routing_replay_load_path: Path | None = _field(default=None, help="Routing replay load path")
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(kw_only=True)
 class RunAndCompareArgs(CommonRunArgs):
     output_base_dir: Path = _field(help="Base output directory for dumps")
     baseline: str = _field(help='Baseline parallel config, e.g. "--tp 1 --cp 1"')
