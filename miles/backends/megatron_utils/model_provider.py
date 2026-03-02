@@ -63,8 +63,13 @@ def get_model_provider_func(
     if getattr(args, "custom_model_provider_path", None):
 
         def wrapped_model_provider(
-            pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None
+            pre_process: bool = True,
+            post_process: bool = True,
+            vp_stage: int | None = None,
+            config: TransformerConfig | None = None,
+            pg_collection=None,
         ) -> GPTModel:
+            assert config is None, "miles builds the config from args, so it expects config to be None"
             custom_model_provider = load_function(args.custom_model_provider_path)
             # Check if the custom provider supports vp_stage parameter
             has_vp_stage = "vp_stage" in inspect.signature(custom_model_provider).parameters
@@ -93,9 +98,26 @@ def get_model_provider_func(
         provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
         provider.sequence_parallel = args.sequence_parallel
         provider.finalize()
-        return provider.provide
 
-    def model_provider(pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None) -> GPTModel:
+        def wrapped_bridge_provider(
+            pre_process: bool = True,
+            post_process: bool = True,
+            vp_stage: int | None = None,
+            config: TransformerConfig | None = None,
+            pg_collection=None,
+        ) -> GPTModel:
+            assert config is None, "miles builds the config from args, so it expects config to be None"
+            return provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+
+        return wrapped_bridge_provider
+
+    def model_provider(
+        pre_process: bool = True,
+        post_process: bool = True,
+        vp_stage: int | None = None,
+        config: TransformerConfig | None = None,
+        pg_collection=None,
+    ) -> GPTModel:
         """Builds the model.
 
         If you set the use_legacy_models to True, it will return the legacy GPT model and if not the mcore GPT model.
@@ -111,7 +133,8 @@ def get_model_provider_func(
         use_te = args.transformer_impl == "transformer_engine"
 
         # Experimental loading arguments from yaml
-        config: TransformerConfig = core_transformer_config_from_args(args)
+        assert config is None, "miles builds the config from args, so it expects config to be None"
+        config = core_transformer_config_from_args(args)
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)

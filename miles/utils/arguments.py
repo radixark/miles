@@ -1433,6 +1433,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
             )
+            parser.add_argument(
+                "--ci-save-model-hash",
+                action="store_true",
+            )
+            parser.add_argument(
+                "--ci-check-model-hash",
+                action="store_true",
+            )
             return parser
 
         def add_user_provided_function_arguments(parser):
@@ -1857,7 +1865,11 @@ def hf_validate_args(args, hf_config):
         ("num_hidden_layers", "num_layers", equal),
         ("intermediate_size", "ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
-        ("rms_norm_eps", "norm_epsilon", equal),
+        (
+            "rms_norm_eps",
+            "norm_epsilon" if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1" else "layernorm_epsilon",
+            equal,
+        ),
         ("rope_theta", "rotary_base", equal),
     ]:
         if hasattr(hf_config, hf_config_name):
