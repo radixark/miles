@@ -79,11 +79,11 @@ patches:
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts # """
+        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] num_experts # """
     + _MEG_REPL
     + """')"
       - match: "return probs, routing_map"
-        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] 1 topk # """
+        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # """
     + _MEG_REPL
     + """')"
 
@@ -144,7 +144,7 @@ patches:
     + _MEG_REPL
     + """')"
       - match: "return probs, routing_map"
-        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] 1 topk # """
+        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # """
     + _MEG_REPL
     + """')"
 
