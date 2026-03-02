@@ -29,6 +29,7 @@ from ..training_utils.log_utils import aggregate_forward_results, aggregate_trai
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
+from .ci_utils import check_model_hashes, compute_model_hashes_by_layer, save_model_hashes
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
@@ -686,6 +687,9 @@ def save(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
     """
     args = get_args()
+    hashes = None
+    if args.ci_test and args.ci_save_model_hash:
+        hashes = compute_model_hashes_by_layer(model)
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
@@ -703,6 +707,8 @@ def save(
             preprocess_common_state_dict_fn=None,
         )
 
+    if hashes is not None:
+        save_model_hashes(args, model, iteration, hashes)
     if should_disable_forward_pre_hook(args):
         enable_forward_pre_hook(model)
 
@@ -798,6 +804,8 @@ def initialize_model_and_optimizer(
         skip_load_to_model_and_opt=False,
     )
     clear_memory()
+
+    check_model_hashes(args, model, iteration)
 
     opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
