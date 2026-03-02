@@ -58,7 +58,7 @@ class RunAndCompareArgs(CommonRunArgs):
         help="Enable routing replay (record on baseline, replay on target)",
     )
     compare_logprobs: bool = _field(
-        default=False,
+        default=True,
         help="Compute and compare per-token logprobs between baseline and target",
     )
 
