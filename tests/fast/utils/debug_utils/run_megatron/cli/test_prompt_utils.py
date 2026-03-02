@@ -3,9 +3,9 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
+from transformers import AutoTokenizer
 
 from miles.utils.debug_utils.run_megatron.cli.prompt_utils import (
     PromptConfig,
@@ -14,6 +14,8 @@ from miles.utils.debug_utils.run_megatron.cli.prompt_utils import (
     generate_token_ids,
     write_token_ids_to_tmpfile,
 )
+
+QWEN3_MODEL_ID = "Qwen/Qwen3-0.6B"
 
 
 class TestPromptConfig:
@@ -93,40 +95,65 @@ class TestWriteTokenIdsToTmpfile:
 
 
 class TestGenerateTokenIds:
-    def _make_mock_tokenizer(self, encoded_ids: list[int]) -> MagicMock:
-        mock_tok = MagicMock()
-        mock_tok.encode.return_value = encoded_ids
-        mock_tok.apply_chat_template.return_value = "templated text"
-        return mock_tok
+    """Uses real Qwen3-0.6B tokenizer."""
 
-    @patch("transformers.AutoTokenizer")
-    def test_correct_length(self, mock_auto_tok: MagicMock) -> None:
-        ids = list(range(200))
-        mock_auto_tok.from_pretrained.return_value = self._make_mock_tokenizer(ids)
+    @pytest.fixture(scope="class")
+    def tokenizer(self) -> AutoTokenizer:
+        return AutoTokenizer.from_pretrained(QWEN3_MODEL_ID, trust_remote_code=True)
 
+    def test_correct_length(self, tokenizer: AutoTokenizer) -> None:
         result = generate_token_ids(
             prompt=PromptConfig(mode="math", seq_length=50),
-            tokenizer_path=Path("/fake/tokenizer"),
+            tokenizer_path=Path(QWEN3_MODEL_ID),
         )
         assert len(result) == 50
+        assert all(isinstance(t, int) for t in result)
 
-    @patch("transformers.AutoTokenizer")
-    def test_chat_template_called(self, mock_auto_tok: MagicMock) -> None:
-        mock_tok = self._make_mock_tokenizer(list(range(200)))
-        mock_auto_tok.from_pretrained.return_value = mock_tok
+    def test_chat_template_changes_tokens(self, tokenizer: AutoTokenizer) -> None:
+        prompt_text = "The quick brown fox jumps over the lazy dog. " * 5
+        seq_length = 10
 
-        generate_token_ids(
-            prompt=PromptConfig(mode="text", text="hello", seq_length=50, apply_chat_template=True),
-            tokenizer_path=Path("/fake/tokenizer"),
+        without_template = generate_token_ids(
+            prompt=PromptConfig(
+                mode="text", text=prompt_text,
+                seq_length=seq_length, apply_chat_template=False,
+            ),
+            tokenizer_path=Path(QWEN3_MODEL_ID),
         )
-        mock_tok.apply_chat_template.assert_called_once()
+        with_template = generate_token_ids(
+            prompt=PromptConfig(
+                mode="text", text=prompt_text,
+                seq_length=seq_length, apply_chat_template=True,
+            ),
+            tokenizer_path=Path(QWEN3_MODEL_ID),
+        )
+        assert without_template != with_template
 
-    @patch("transformers.AutoTokenizer")
-    def test_math_mode_deterministic(self, mock_auto_tok: MagicMock) -> None:
-        ids = list(range(200))
-        mock_auto_tok.from_pretrained.return_value = self._make_mock_tokenizer(ids)
-
+    def test_math_mode_deterministic(self) -> None:
         prompt = PromptConfig(mode="math", seq_length=50)
-        r1 = generate_token_ids(prompt=prompt, tokenizer_path=Path("/fake"))
-        r2 = generate_token_ids(prompt=prompt, tokenizer_path=Path("/fake"))
+        r1 = generate_token_ids(prompt=prompt, tokenizer_path=Path(QWEN3_MODEL_ID))
+        r2 = generate_token_ids(prompt=prompt, tokenizer_path=Path(QWEN3_MODEL_ID))
         assert r1 == r2
+
+    def test_too_short_raises(self) -> None:
+        with pytest.raises(ValueError, match="less than seq_length"):
+            generate_token_ids(
+                prompt=PromptConfig(mode="text", text="hi", seq_length=9999),
+                tokenizer_path=Path(QWEN3_MODEL_ID),
+            )
+
+    def test_text_mode_encodes_real_text(self) -> None:
+        result = generate_token_ids(
+            prompt=PromptConfig(mode="text", text="The quick brown fox jumps over the lazy dog " * 10, seq_length=30),
+            tokenizer_path=Path(QWEN3_MODEL_ID),
+        )
+        assert len(result) == 30
+
+    def test_file_mode(self, tmp_path: Path) -> None:
+        f = tmp_path / "prompt.txt"
+        f.write_text("Hello world, this is a test prompt. " * 20)
+        result = generate_token_ids(
+            prompt=PromptConfig(mode="file", file=f, seq_length=40),
+            tokenizer_path=Path(QWEN3_MODEL_ID),
+        )
+        assert len(result) == 40
