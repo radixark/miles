@@ -197,7 +197,7 @@ def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
         target_dir=target_dir,
         extra_args=[
             "--diff-threshold",
-            "0.01",
+            "0.009",
             "--allow-failed-pattern",
             "moe_expert_output|attn_output|pre_mlp_residual",
             "--allow-skipped-pattern",
