@@ -15,16 +15,7 @@ from miles.utils.debug_utils.run_megatron.worker.replay import (
     save_replay_data,
     setup_replay_before_model,
 )
-from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
-
-
-def _make_script_args(**overrides: object) -> WorkerScriptArgs:
-    defaults = dict(
-        hf_checkpoint=Path("/fake/hf"),
-        token_ids_file=Path("/tmp/tokens.json"),
-    )
-    defaults.update(overrides)
-    return WorkerScriptArgs(**defaults)  # type: ignore[arg-type]
+from tests.fast.utils.debug_utils.run_megatron.conftest import make_script_args
 
 
 class TestSpSlice:
@@ -51,7 +42,7 @@ class TestSpSlice:
 
 class TestSetupReplayBeforeModel:
     def test_dump_enables_record(self) -> None:
-        script = _make_script_args(routing_replay_dump_path=Path("/dump"))
+        script = make_script_args(routing_replay_dump_path=Path("/dump"))
         with patch(
             "miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager"
         ) as mock_mgr:
@@ -62,7 +53,7 @@ class TestSetupReplayBeforeModel:
             assert mock_mgr.stage == "record"
 
     def test_load_enables_replay_forward(self) -> None:
-        script = _make_script_args(routing_replay_load_path=Path("/load"))
+        script = make_script_args(routing_replay_load_path=Path("/load"))
         with patch(
             "miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager"
         ) as mock_mgr:
@@ -73,7 +64,7 @@ class TestSetupReplayBeforeModel:
             assert mock_mgr.stage == "replay_forward"
 
     def test_neither_noop(self) -> None:
-        script = _make_script_args()
+        script = make_script_args()
         with patch(
             "miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager"
         ) as mock_mgr:
@@ -93,7 +84,7 @@ class TestSaveReplayData:
         replay = SimpleNamespace(top_indices_list=[torch.tensor([1, 2])])
         mock_mgr.replays = [replay]
 
-        script = _make_script_args(routing_replay_dump_path=tmp_path)
+        script = make_script_args(routing_replay_dump_path=tmp_path)
         save_replay_data(script, rank=0)
 
         saved_files = list(tmp_path.glob("*.pt"))
@@ -109,7 +100,7 @@ class TestSaveReplayData:
         replay = SimpleNamespace(top_indices_list=original)
         mock_mgr.replays = [replay]
 
-        script = _make_script_args(routing_replay_dump_path=tmp_path)
+        script = make_script_args(routing_replay_dump_path=tmp_path)
         save_replay_data(script, rank=0)
 
         saved_file = list(tmp_path.glob("*.pt"))[0]
@@ -121,7 +112,7 @@ class TestSaveReplayData:
 
     @patch("miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager")
     def test_noop_when_no_path(self, mock_mgr: MagicMock) -> None:
-        script = _make_script_args()
+        script = make_script_args()
         save_replay_data(script, rank=0)
 
     @patch("miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager")
@@ -132,7 +123,7 @@ class TestSaveReplayData:
         replay = SimpleNamespace(top_indices_list=[torch.tensor([1, 2])])
         mock_mgr.replays = [replay]
 
-        script = _make_script_args(routing_replay_dump_path=tmp_path)
+        script = make_script_args(routing_replay_dump_path=tmp_path)
         with pytest.raises(AssertionError):
             save_replay_data(script, rank=1)
 
@@ -144,7 +135,7 @@ class TestSaveReplayData:
         replay = SimpleNamespace(top_indices_list=[])
         mock_mgr.replays = [replay]
 
-        script = _make_script_args(routing_replay_dump_path=tmp_path)
+        script = make_script_args(routing_replay_dump_path=tmp_path)
         with pytest.raises(AssertionError):
             save_replay_data(script, rank=0)
 
@@ -152,7 +143,7 @@ class TestSaveReplayData:
 class TestLoadReplayData:
     @patch("miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager")
     def test_noop_when_no_path(self, mock_mgr: MagicMock) -> None:
-        script = _make_script_args()
+        script = make_script_args()
         load_replay_data(script, rank=0)
 
     @patch("miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager")
@@ -160,7 +151,7 @@ class TestLoadReplayData:
         self, mock_mgr: MagicMock, tmp_path: Path
     ) -> None:
         mock_mgr.filename = "routing_replay.pt"
-        script = _make_script_args(routing_replay_load_path=tmp_path)
+        script = make_script_args(routing_replay_load_path=tmp_path)
         with pytest.raises(ValueError, match="Expected exactly 1 replay file"):
             load_replay_data(script, rank=0)
 
@@ -172,7 +163,7 @@ class TestLoadReplayData:
         (tmp_path / "a_routing_replay.pt").touch()
         (tmp_path / "b_routing_replay.pt").touch()
 
-        script = _make_script_args(routing_replay_load_path=tmp_path)
+        script = make_script_args(routing_replay_load_path=tmp_path)
         with pytest.raises(ValueError, match="Expected exactly 1 replay file"):
             load_replay_data(script, rank=0)
 
@@ -201,7 +192,7 @@ class TestLoadReplayData:
         save_path = tmp_path / "rank0_routing_replay.pt"
         torch.save(saved_data, save_path)
 
-        script = _make_script_args(routing_replay_load_path=tmp_path)
+        script = make_script_args(routing_replay_load_path=tmp_path)
         load_replay_data(script, rank=0)
 
         assert len(replay_obj.top_indices_list) == 2

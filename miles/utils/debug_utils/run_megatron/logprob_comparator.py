@@ -133,12 +133,12 @@ def _compute_comparison(
     target_logprobs: list[float] = []
 
     for key in common_keys:
-        bl = baseline_entries[key]
-        tg = target_entries[key]
-        abs_diff = abs(bl.logprob - tg.logprob)
+        baseline = baseline_entries[key]
+        target = target_entries[key]
+        abs_diff = abs(baseline.logprob - target.logprob)
         diffs.append(abs_diff)
-        baseline_logprobs.append(bl.logprob)
-        target_logprobs.append(tg.logprob)
+        baseline_logprobs.append(baseline.logprob)
+        target_logprobs.append(target.logprob)
 
         if abs_diff > max_abs_diff:
             max_abs_diff = abs_diff
@@ -147,17 +147,17 @@ def _compute_comparison(
     sorted_diffs = sorted(diffs)
     num = len(sorted_diffs)
 
-    bl_worst = baseline_entries[max_diff_key]
-    tg_worst = target_entries[max_diff_key]
+    baseline_worst = baseline_entries[max_diff_key]
+    target_worst = target_entries[max_diff_key]
 
     return _CompareResult(
         passed=max_abs_diff <= threshold,
         num_positions=num,
         max_abs_diff=max_abs_diff,
         max_diff_position=max_diff_key[1],
-        max_diff_baseline_logprob=bl_worst.logprob,
-        max_diff_target_logprob=tg_worst.logprob,
-        max_diff_token_id=bl_worst.token_id,
+        max_diff_baseline_logprob=baseline_worst.logprob,
+        max_diff_target_logprob=target_worst.logprob,
+        max_diff_token_id=baseline_worst.token_id,
         mean_abs_diff=statistics.mean(diffs),
         median_abs_diff=statistics.median(diffs),
         p95_abs_diff=sorted_diffs[int(num * 0.95)] if num > 0 else 0.0,

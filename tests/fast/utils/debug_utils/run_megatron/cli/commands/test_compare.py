@@ -148,3 +148,4 @@ class TestLogprobBranch:
                 baseline_logprob_dir=Path("/bl"),
                 target_logprob_dir=Path("/tg"),
             ))
+        mock_logprob.assert_called_once()

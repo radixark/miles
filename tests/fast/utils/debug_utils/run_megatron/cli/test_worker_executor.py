@@ -1,8 +1,6 @@
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig
 from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     _build_megatron_flags,
@@ -10,7 +8,7 @@ from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_torchrun_cmd,
     build_worker_args,
 )
-from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
+from tests.fast.utils.debug_utils.run_megatron.conftest import make_script_args
 
 
 class TestBuildDumperEnv:
@@ -125,21 +123,13 @@ class TestBuildMegatronFlags:
 
 
 class TestBuildWorkerArgs:
-    def _make_script_args(self, **overrides: object) -> WorkerScriptArgs:
-        defaults = dict(
-            hf_checkpoint=Path("/fake/hf"),
-            token_ids_file=Path("/tmp/tokens.json"),
-        )
-        defaults.update(overrides)
-        return WorkerScriptArgs(**defaults)  # type: ignore[arg-type]
-
     def test_includes_parallel_flags(self) -> None:
         result = build_worker_args(
             parallel=ParallelConfig(tp=2),
             sp=False,
             seq_length=128,
             batch_size=1,
-            script_args=self._make_script_args(),
+            script_args=make_script_args(),
             extra_args="",
         )
         assert "--tensor-model-parallel-size 2" in result
@@ -150,7 +140,7 @@ class TestBuildWorkerArgs:
             sp=False,
             seq_length=128,
             batch_size=1,
-            script_args=self._make_script_args(hf_checkpoint=Path("/my/hf")),
+            script_args=make_script_args(hf_checkpoint=Path("/my/hf")),
             extra_args="",
         )
         assert "--script-hf-checkpoint /my/hf" in result
@@ -161,7 +151,7 @@ class TestBuildWorkerArgs:
             sp=False,
             seq_length=128,
             batch_size=1,
-            script_args=self._make_script_args(),
+            script_args=make_script_args(),
             extra_args="--custom-flag value",
         )
         assert result.endswith("--custom-flag value")
@@ -172,7 +162,7 @@ class TestBuildWorkerArgs:
             sp=False,
             seq_length=128,
             batch_size=1,
-            script_args=self._make_script_args(),
+            script_args=make_script_args(),
             extra_args="",
         )
         assert not result.endswith(" ")
@@ -183,7 +173,7 @@ class TestBuildWorkerArgs:
             sp=False,
             seq_length=128,
             batch_size=1,
-            script_args=self._make_script_args(
+            script_args=make_script_args(
                 routing_replay_dump_path=Path("/dump")
             ),
             extra_args="",
@@ -196,7 +186,7 @@ class TestBuildWorkerArgs:
             sp=False,
             seq_length=128,
             batch_size=1,
-            script_args=self._make_script_args(),
+            script_args=make_script_args(),
             extra_args="",
         )
         assert "--use-routing-replay" not in result

@@ -1,8 +1,10 @@
+import dataclasses
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.utils.debug_utils.run_megatron.cli.commands.args import CommonRunArgs
 from miles.utils.debug_utils.run_megatron.cli.commands.run_and_compare import (
     _run_baseline_and_target,
 )
@@ -10,27 +12,13 @@ from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConf
 
 
 def _make_common_fields(**overrides: object) -> dict[str, object]:
-    defaults = dict(
+    base = CommonRunArgs(
         model_type="deepseek_v3",
         hf_checkpoint=Path("/fake/hf"),
-        ref_load=None,
-        sp=False,
-        run_backward=False,
-        prompt_mode="math",
-        prompt_text=None,
-        prompt_file=None,
-        seq_length=137,
-        batch_size=1,
-        apply_chat_template=False,
-        role="actor",
-        source_patcher_config=None,
-        top_k=0,
-        dumper_filter="",
-        megatron_path=None,
-        extra_args="",
     )
-    defaults.update(overrides)
-    return defaults
+    result = dataclasses.asdict(base)
+    result.update(overrides)
+    return result
 
 
 class TestRunAndCompare:
