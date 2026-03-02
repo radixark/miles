@@ -102,7 +102,6 @@ class TestSaveReplayData:
     def test_noop_when_no_path(self, mock_mgr: MagicMock) -> None:
         script = _make_script_args()
         save_replay_data(script, rank=0)
-        # No error, no file saved
 
     @patch("miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager")
     def test_asserts_rank_zero(

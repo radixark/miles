@@ -17,23 +17,6 @@ def _make_run_args(**overrides: object) -> RunArgs:
     return RunArgs(**defaults)  # type: ignore[arg-type]
 
 
-_COMMON_PATCHES = [
-    patch("miles.utils.debug_utils.run_megatron.cli.commands.run.exec_command"),
-    patch(
-        "miles.utils.debug_utils.run_megatron.cli.commands.run.generate_token_ids",
-        return_value=list(range(200)),
-    ),
-    patch(
-        "miles.utils.debug_utils.run_megatron.cli.commands.run.write_token_ids_to_tmpfile",
-        return_value=Path("/tmp/tokens.json"),
-    ),
-    patch(
-        "miles.utils.debug_utils.run_megatron.cli.worker_executor.resolve_model_script",
-        return_value=Path("/repo/scripts/models/deepseek_v3.sh"),
-    ),
-]
-
-
 class TestRunImpl:
     @patch("miles.utils.debug_utils.run_megatron.cli.commands.run.exec_command")
     @patch(

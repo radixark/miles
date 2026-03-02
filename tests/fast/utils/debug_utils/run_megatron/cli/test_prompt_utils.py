@@ -79,14 +79,6 @@ class TestBuildMathSequence:
         assert "2+1=" in seq
 
 
-class TestPadOrTruncate:
-    """The source uses slicing for truncation and raises on too-short.
-
-    These tests validate the truncation/length behavior within generate_token_ids
-    indirectly via _resolve_raw_text + tokenizer mock.
-    """
-
-
 class TestWriteTokenIdsToTmpfile:
     def test_roundtrip_json(self) -> None:
         token_ids = [10, 20, 30, 40]

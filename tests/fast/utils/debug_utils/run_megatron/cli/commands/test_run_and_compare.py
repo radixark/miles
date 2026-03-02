@@ -3,12 +3,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.utils.debug_utils.run_megatron.cli.commands.args import (
-    CommonRunArgs,
-    CompareArgs,
-    RunAndCompareArgs,
-    RunArgs,
-)
 from miles.utils.debug_utils.run_megatron.cli.commands.run_and_compare import (
     _run_baseline_and_target,
 )
@@ -51,6 +45,8 @@ class TestRunAndCompare:
             target_output=Path("/tmp/target"),
             replay_dir=None,
             common_fields=_make_common_fields(),
+            baseline_logprob_dir=None,
+            target_logprob_dir=None,
         )
         assert mock_run.call_count == 2
 
@@ -68,6 +64,8 @@ class TestRunAndCompare:
             target_output=Path("/tmp/out") / target_config.dir_name(),
             replay_dir=None,
             common_fields=_make_common_fields(),
+            baseline_logprob_dir=None,
+            target_logprob_dir=None,
         )
 
         baseline_args = mock_run.call_args_list[0][0][0]
@@ -88,6 +86,8 @@ class TestRunAndCompare:
                 target_output=Path("/tmp/target"),
                 replay_dir=Path("/tmp/replay"),
                 common_fields=_make_common_fields(),
+                baseline_logprob_dir=None,
+                target_logprob_dir=None,
             )
 
     @patch(
@@ -101,6 +101,8 @@ class TestRunAndCompare:
             target_output=Path("/tmp/target"),
             replay_dir=Path("/tmp/replay"),
             common_fields=_make_common_fields(),
+            baseline_logprob_dir=None,
+            target_logprob_dir=None,
         )
 
         baseline_args = mock_run.call_args_list[0][0][0]
