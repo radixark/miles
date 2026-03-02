@@ -1,13 +1,3 @@
-"""Dataclass argument definitions for run_megatron CLI commands.
-
-Hierarchy:
-    CommonRunArgs           <- shared by ``run`` and ``run-and-compare``
-    ├── RunArgs             <- ``run`` command
-    └── RunAndCompareArgs   <- ``run-and-compare`` command
-
-    CompareArgs             <- ``compare`` command (independent)
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -30,15 +20,8 @@ def _field(
     return dataclasses.field(default=default, metadata=metadata)  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
-# run / run-and-compare  (shared fields)
-# ---------------------------------------------------------------------------
-
-
 @dataclasses.dataclass
 class CommonRunArgs:
-    """Parameters shared by ``run`` and ``run-and-compare`` commands."""
-
     model_type: str = _field(help="Model type matching scripts/models/{model_type}.sh")
     hf_checkpoint: Path = _field(help="HuggingFace checkpoint path")
     ref_load: Path | None = _field(default=None, help="Megatron checkpoint path")
@@ -61,8 +44,6 @@ class CommonRunArgs:
 
 @dataclasses.dataclass
 class RunArgs(CommonRunArgs):
-    """Arguments for the ``run`` command."""
-
     output_dir: Path = _field(default=Path("/tmp/run_megatron_dump"), help="Dump output directory")
     tp: int = _field(default=1, help="Tensor parallel size")
     pp: int = _field(default=1, help="Pipeline parallel size")
@@ -75,8 +56,6 @@ class RunArgs(CommonRunArgs):
 
 @dataclasses.dataclass
 class RunAndCompareArgs(CommonRunArgs):
-    """Arguments for the ``run-and-compare`` command."""
-
     output_base_dir: Path = _field(help="Base output directory for dumps")
     baseline: str = _field(help='Baseline parallel config, e.g. "--tp 1 --cp 1"')
     target: str = _field(help='Target parallel config, e.g. "--tp 2 --cp 2"')
@@ -87,15 +66,8 @@ class RunAndCompareArgs(CommonRunArgs):
     )
 
 
-# ---------------------------------------------------------------------------
-# compare  (independent)
-# ---------------------------------------------------------------------------
-
-
 @dataclasses.dataclass
 class CompareArgs:
-    """Arguments for the ``compare`` command."""
-
     baseline_dir: Path = _field(help="Baseline dump directory")
     target_dir: Path = _field(help="Target dump directory")
     output_format: str = _field(default="text", help="Output format: text / json")
