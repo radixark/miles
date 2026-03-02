@@ -75,7 +75,7 @@ class DataclassArgparseBridge(Generic[T]):
             return f"{self._prefix}_{field_name}"
         return field_name
 
-    def register_on_parser(self, parser: argparse.ArgumentParser) -> None:
+    def register_on_parser(self, parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         group: argparse._ArgumentGroup = parser.add_argument_group(self._group_title)
 
         for field in dataclasses.fields(self._cls):
@@ -105,6 +105,8 @@ class DataclassArgparseBridge(Generic[T]):
                 continue
 
             raise TypeError(f"Unsupported field type {tp!r} for field {field.name}")
+
+        return parser
 
     def from_namespace(self, namespace: argparse.Namespace) -> T:
         kwargs: dict[str, object] = {}
