@@ -107,19 +107,17 @@ def _quantize_param(args, name, weight, weight_block_size):
 
 
 def _get_scale_format(args, name, weight_block_size):
-    if not (
-        should_deepgemm_weight_requant_ue8m0
-        and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size)
-    ):
+    if not (should_deepgemm_weight_requant_ue8m0
+            and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size)):
         return None  # use default fp32 scale format
 
-    if "expert" in name:
-        # MoE expert weights: only ue8m0 when runner is deep_gemm
-        if args.sglang_moe_runner_backend == "deep_gemm" or (
-            args.sglang_moe_runner_backend == "auto" and args.sglang_moe_a2a_backend in ["deepep", "mooncake"]
-        ):
-            return "ue8m0"
-        return None
-    else:
+    if ".experts." not in name:
         # Non-MoE linear weights: ue8m0 when deepgemm is enabled
         return "ue8m0"
+
+    # MoE expert weights: only ue8m0 when runner is deep_gemm
+    is_deepgemm_moe_backend = args.sglang_moe_runner_backend == "deep_gemm" or (
+        args.sglang_moe_runner_backend == "auto"
+        and args.sglang_moe_a2a_backend in ["deepep", "mooncake"]
+    )
+    return "ue8m0" if is_deepgemm_moe_backend else None
