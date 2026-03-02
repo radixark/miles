@@ -27,23 +27,22 @@ def _gather_with_stride(
     return torch.cat(interleaved, dim=partition_dim)
 
 
-def _check_partition_stride(args: Namespace, name: str, partition_stride: int) -> int:
+def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, partition_dim: int) -> tuple[int, int]:
     """Validate partition_stride values for known parameter patterns.
 
     After Megatron-LM PR #2708, linear_fc1 correctly reports partition_stride=2
-    (GLU/SwiGLU interleaved [gate, up]) and linear_fc2 reports partition_stride=1.
+    (GLU/SwiGLU interleaved [gate, up]), so assert partition_stride==2 is removed.
+    But TEGroupedLinear still does not set partition_stride/partition_dim correctly for grouped moe gemm
     """
-    if "linear_fc1.weight" in name:
-        if args.moe_grouped_gemm and partition_stride != 2 and args.swiglu:
-            # Megatron bug: TEGroupedLinaer does not set partition_stride=2 for linear_fc1
-            partition_stride = 2
-        if args.swiglu:
-            assert (
-                partition_stride == 2
-            ), f"Expected partition_stride=2 for {name} (GLU/SwiGLU), got {partition_stride}"
+    if "linear_fc1.weight" in name and args.swiglu:
+        partition_stride = 2
     elif "linear_fc2.weight" in name:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
-    return partition_stride
+        if partition_dim == 0:
+            partition_dim = 1
+    else:
+        assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
+    return partition_stride, partition_dim
 
 
 def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
@@ -70,7 +69,7 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
     partition_dim = param.partition_dim
     partition_stride = param.partition_stride
 
-    partition_stride = _check_partition_stride(args, name, partition_stride)
+    partition_stride, partition_dim = _check_and_fix_partition(args, name, partition_stride, partition_dim)
     param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
     return param
 
@@ -123,7 +122,9 @@ def all_gather_params_async(
             # No all_gather needed
             param = direct_param
         else:
-            partition_stride = _check_partition_stride(args, info.name, partition_stride)
+            partition_stride, partition_dim = _check_and_fix_partition(
+                args, info.name, partition_stride, partition_dim
+            )
             param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
 
         gathered_params.append(param)
