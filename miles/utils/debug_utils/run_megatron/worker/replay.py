@@ -58,16 +58,13 @@ def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
     """Save recorded routing replay data to disk (rank 0 only)."""
     if not script.routing_replay_dump_path:
         return
-    if rank != 0:
-        return
+    assert rank == 0
 
     script.routing_replay_dump_path.mkdir(parents=True, exist_ok=True)
 
     replays_data: list[list[torch.Tensor]] = [replay.top_indices_list for replay in routing_replay_manager.replays]
     total_entries: int = sum(len(d) for d in replays_data)
-
-    if total_entries == 0:
-        return
+    assert total_entries > 0
 
     save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path)
     torch.save(replays_data, save_path)
