@@ -49,6 +49,9 @@ RUN rm -rf aiter
 RUN git clone https://github.com/ROCm/aiter.git \
     && cd aiter \
     && git checkout v0.1.10.post3 \
+    && curl -fsSL https://patch-diff.githubusercontent.com/raw/ROCm/aiter/pull/2075.patch -o /tmp/aiter-pr2075.patch \
+    && git apply --3way /tmp/aiter-pr2075.patch \
+    && rm -f /tmp/aiter-pr2075.patch \
     && git submodule sync --recursive \
     && git submodule update --init --recursive \
     && GPU_ARCHS=gfx942 python setup.py develop
