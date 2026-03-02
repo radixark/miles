@@ -44,14 +44,7 @@ def main() -> None:
 
     rank: int = dist.get_rank()
     if rank == 0:
-        print(f"[worker] seq_length={args.seq_length}, micro_batch_size={args.micro_batch_size}", flush=True)
-        print(
-            f"[worker] tp={args.tensor_model_parallel_size}, pp={args.pipeline_model_parallel_size}, "
-            f"cp={args.context_parallel_size}, ep={args.expert_model_parallel_size}, "
-            f"etp={args.expert_tensor_parallel_size}",
-            flush=True,
-        )
-        print(f"[worker] run_backward={script.run_backward}, role={script.role}", flush=True)
+        _print_config(args, script)
 
     if script.source_patcher_config:
         _apply_source_patches(script.source_patcher_config)
@@ -174,6 +167,17 @@ def _run_forward_backward(
         print(f"[worker rank={rank}] losses={losses}", flush=True)
 
     return captured[0] if captured else None
+
+
+def _print_config(args: argparse.Namespace, script: WorkerScriptArgs) -> None:
+    print(f"[worker] seq_length={args.seq_length}, micro_batch_size={args.micro_batch_size}", flush=True)
+    print(
+        f"[worker] tp={args.tensor_model_parallel_size}, pp={args.pipeline_model_parallel_size}, "
+        f"cp={args.context_parallel_size}, ep={args.expert_model_parallel_size}, "
+        f"etp={args.expert_tensor_parallel_size}",
+        flush=True,
+    )
+    print(f"[worker] run_backward={script.run_backward}, role={script.role}", flush=True)
 
 
 def _finalize_dumper() -> None:

@@ -39,17 +39,16 @@ def generate_token_ids(
         raw_text = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True,
         )
 
     token_ids: list[int] = tokenizer.encode(raw_text)
-    token_ids = _pad_or_truncate(
-        token_ids=token_ids,
-        seq_length=prompt.seq_length,
-        pad_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
-    )
+    if len(token_ids) < prompt.seq_length:
+        raise ValueError(
+            f"Token count ({len(token_ids)}) is less than seq_length ({prompt.seq_length}). "
+            f"Provide longer input text or reduce --seq-length."
+        )
+    token_ids = token_ids[: prompt.seq_length]
 
-    assert len(token_ids) == prompt.seq_length, f"token_ids length {len(token_ids)} != seq_length {prompt.seq_length}"
     return token_ids
 
 
@@ -61,7 +60,7 @@ def write_token_ids_to_tmpfile(token_ids: list[int]) -> Path:
 
 def _resolve_raw_text(prompt: PromptConfig) -> str:
     if prompt.mode == "math":
-        return _build_math_sequence(target_char_length=prompt.seq_length * 8)
+        return _build_math_sequence(target_char_length=prompt.seq_length * 16)
     elif prompt.mode == "file":
         if prompt.file is None:
             raise ValueError("--prompt-file is required for file mode")
@@ -93,14 +92,3 @@ def _build_math_sequence(target_char_length: int) -> str:
     return "".join(parts)
 
 
-def _pad_or_truncate(
-    *,
-    token_ids: list[int],
-    seq_length: int,
-    pad_id: int,
-) -> list[int]:
-    if len(token_ids) > seq_length:
-        return token_ids[:seq_length]
-    elif len(token_ids) < seq_length:
-        return token_ids + [pad_id] * (seq_length - len(token_ids))
-    return token_ids

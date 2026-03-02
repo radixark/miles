@@ -45,19 +45,17 @@ class ParallelConfig:
         return cls(**{name: getattr(args, name) for name in _FIELD_NAMES})  # type: ignore[arg-type]
 
     def __str__(self) -> str:
-        return f"tp={self.tp}, pp={self.pp}, cp={self.cp}, ep={self.ep}, etp={self.etp}, nproc={self.nproc}"
+        field_str: str = ", ".join(f"{name}={getattr(self, name)}" for name in _FIELD_NAMES)
+        return f"{field_str}, nproc={self.nproc}"
 
     def dir_name(self) -> str:
         """Build directory name from parallel config, e.g. 'tp2_cp2_ep2'."""
-        parts: list[str] = [f"tp{self.tp}"]
-        if self.pp > 1:
-            parts.append(f"pp{self.pp}")
-        if self.cp > 1:
-            parts.append(f"cp{self.cp}")
-        if self.ep is not None and self.ep != self.tp:
-            parts.append(f"ep{self.ep}")
-        if self.etp > 1:
-            parts.append(f"etp{self.etp}")
+        _SKIP: dict[str, object] = {"tp": None, "pp": 1, "cp": 1, "ep": self.tp, "etp": 1}
+        parts: list[str] = [
+            f"{name}{getattr(self, name)}"
+            for name in _FIELD_NAMES
+            if getattr(self, name) is not None and getattr(self, name) != _SKIP[name]
+        ]
         return "_".join(parts)
 
 

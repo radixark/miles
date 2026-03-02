@@ -5,11 +5,19 @@ a rank-0 file, and load always reads that file with CP/SP slicing.
 """
 
 from pathlib import Path
+from typing import NamedTuple
 
 import torch
 
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
 from miles.utils.replay_base import routing_replay_manager
+
+
+class _ParallelRanks(NamedTuple):
+    cp_size: int
+    cp_rank: int
+    tp_size: int
+    tp_rank: int
 
 
 def setup_replay_before_model(script: WorkerScriptArgs) -> None:
@@ -78,16 +86,17 @@ def _replay_file_path(*, base_dir: Path) -> Path:
     return base_dir / f"rank0_{routing_replay_manager.filename}"
 
 
-def _get_parallel_ranks() -> tuple[int, int, int, int]:
-    """Return (cp_size, cp_rank, tp_size, tp_rank), defaulting to 1/0 if mpu is not initialized."""
+def _get_parallel_ranks() -> _ParallelRanks:
+    """Return parallel ranks, defaulting to 1/0 if mpu is not initialized."""
     from megatron.core import mpu
 
     initialized: bool = mpu.is_initialized()
-    cp_size: int = mpu.get_context_parallel_world_size() if initialized else 1
-    cp_rank: int = mpu.get_context_parallel_rank() if initialized else 0
-    tp_size: int = mpu.get_tensor_model_parallel_world_size() if initialized else 1
-    tp_rank: int = mpu.get_tensor_model_parallel_rank() if initialized else 0
-    return cp_size, cp_rank, tp_size, tp_rank
+    return _ParallelRanks(
+        cp_size=mpu.get_context_parallel_world_size() if initialized else 1,
+        cp_rank=mpu.get_context_parallel_rank() if initialized else 0,
+        tp_size=mpu.get_tensor_model_parallel_world_size() if initialized else 1,
+        tp_rank=mpu.get_tensor_model_parallel_rank() if initialized else 0,
+    )
 
 
 def _load_replay(
@@ -103,8 +112,8 @@ def _load_replay(
     if len(saved_replays) != expected:
         raise ValueError(f"Replay file has {len(saved_replays)} replays but model expects {expected}")
 
-    cp_size, cp_rank, tp_size, tp_rank = _get_parallel_ranks()
-    do_sp_slice: bool = sequence_parallel and routing_replay_manager.if_sp_region and tp_size > 1
+    ranks: _ParallelRanks = _get_parallel_ranks()
+    do_sp_slice: bool = sequence_parallel and routing_replay_manager.if_sp_region and ranks.tp_size > 1
 
     total_entries: int = 0
     for replay_idx, (replay, indices_list) in enumerate(
@@ -112,13 +121,13 @@ def _load_replay(
     ):
         sliced: list[torch.Tensor] = indices_list
 
-        if cp_size > 1:
+        if ranks.cp_size > 1:
             from megatron.core.transformer.deepseek_v4_cp_utils import natural_to_zigzag_slice
 
-            sliced = [natural_to_zigzag_slice(t, dim=0, cp_size=cp_size, cp_rank=cp_rank) for t in sliced]
+            sliced = [natural_to_zigzag_slice(t, dim=0, cp_size=ranks.cp_size, cp_rank=ranks.cp_rank) for t in sliced]
 
         if do_sp_slice:
-            sliced = [_sp_slice(t, tp_size=tp_size, tp_rank=tp_rank) for t in sliced]
+            sliced = [_sp_slice(t, tp_size=ranks.tp_size, tp_rank=ranks.tp_rank) for t in sliced]
 
         replay.top_indices_list = sliced
         replay.forward_index = 0
@@ -129,7 +138,7 @@ def _load_replay(
             shapes_before: list[torch.Size] = [t.shape for t in indices_list]
             shapes_after: list[torch.Size] = [t.shape for t in sliced]
             print(
-                f"[worker] replay[{replay_idx}]: cp={cp_size}/{cp_rank}, tp={tp_size}/{tp_rank}, "
+                f"[worker] replay[{replay_idx}]: cp={ranks.cp_size}/{ranks.cp_rank}, tp={ranks.tp_size}/{ranks.tp_rank}, "
                 f"sp={sequence_parallel}, shapes {shapes_before} → {shapes_after}",
                 flush=True,
             )
