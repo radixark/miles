@@ -19,6 +19,10 @@
     {'test_file': 'e2e/megatron/test_glm47_flash_r3_mtp.py', 'num_gpus': 8, 'enable_eval': '0'},
 ] %>
 
+<% set glm5_tests = [
+    {'test_file': 'e2e/megatron/test_glm5_744b_a40b_4layer.py', 'num_gpus': 8},
+] %>
+
 <% set short_tests = [
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
@@ -90,6 +94,11 @@
     'e2e-test-lora': {
       'label': 'run-ci-lora',
       'tests': lora_tests,
+    },
+    'e2e-test-glm5': {
+      'label': 'run-ci-glm5',
+      'image': 'radixark/miles:glm5',
+      'tests': glm5_tests,
     },
     'e2e-test-image': {
       'label': 'run-ci-image',
