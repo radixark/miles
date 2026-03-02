@@ -61,6 +61,7 @@ def _wrap(func: _F, *, env_var_prefix: str) -> _F:
     if old_parameters and old_parameters[0].name == "self":
         del old_parameters[0]
 
+    resolved_hints: dict[str, type] = typing.get_type_hints(dataclass_cls)
     fields_by_name: dict[str, dataclasses.Field] = {  # type: ignore[type-arg]
         f.name: f for f in dataclasses.fields(dataclass_cls)
     }
@@ -75,7 +76,8 @@ def _wrap(func: _F, *, env_var_prefix: str) -> _F:
         if "help" in field.metadata:
             typer_kwargs["help"] = field.metadata["help"]
 
-        new_annotation = Annotated[param.annotation, typer.Option(**typer_kwargs)]
+        resolved_type: type = resolved_hints.get(param.name, param.annotation)
+        new_annotation = Annotated[resolved_type, typer.Option(**typer_kwargs)]
 
         new_parameters.append(param.replace(annotation=new_annotation))
 
