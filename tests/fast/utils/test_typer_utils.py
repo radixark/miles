@@ -36,18 +36,10 @@ class _MetaHelpArgs:
 
 
 @dataclasses.dataclass
-class _MetaFlagArgs:
-    short_param: str = dataclasses.field(
-        default="x",
-        metadata={"flag": "--sp"},
-    )
-
-
-@dataclasses.dataclass
 class _MetaHelpAndFlagArgs:
     verbose: bool = dataclasses.field(
         default=False,
-        metadata={"help": "Enable verbose output", "flag": "--verbose"},
+        metadata={"help": "Enable verbose output"},
     )
 
 
@@ -109,11 +101,10 @@ class _MixedMetaArgs:
     )
     with_flag: str = dataclasses.field(
         default="x",
-        metadata={"flag": "--wf"},
     )
     with_both: bool = dataclasses.field(
         default=False,
-        metadata={"help": "Toggle it", "flag": "--tb"},
+        metadata={"help": "Toggle it"},
     )
 
 
@@ -264,7 +255,7 @@ class TestParameterizedDecorator:
 
 
 # ---------------------------------------------------------------------------
-# Field metadata: help & flag
+# Field metadata: help
 # ---------------------------------------------------------------------------
 
 
@@ -280,30 +271,6 @@ class TestFieldMetadata:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "Verbosity level" in result.stdout
-
-    def test_custom_flag_name(self) -> None:
-        app = typer.Typer()
-
-        @app.command()
-        @dataclass_cli(env_var_prefix="")
-        def cmd(args: _MetaFlagArgs) -> None:
-            print(f"val={args.short_param}")
-
-        result = runner.invoke(app, ["--sp", "hello"])
-        assert result.exit_code == 0
-        assert "val=hello" in result.stdout
-
-    def test_custom_flag_replaces_original_name(self) -> None:
-        """When metadata provides a custom flag, the auto-derived --short-param is gone."""
-        app = typer.Typer()
-
-        @app.command()
-        @dataclass_cli(env_var_prefix="")
-        def cmd(args: _MetaFlagArgs) -> None:
-            print(f"val={args.short_param}")
-
-        result = runner.invoke(app, ["--short-param", "world"])
-        assert result.exit_code != 0
 
     def test_help_and_flag_together(self) -> None:
         app = typer.Typer()
@@ -334,7 +301,7 @@ class TestFieldMetadata:
         assert "value=ok" in result.stdout
 
     def test_mixed_metadata_fields(self) -> None:
-        """Dataclass with a mix of plain, help-only, flag-only, and both."""
+        """Dataclass with a mix of plain fields and help-annotated fields."""
         app = typer.Typer()
 
         @app.command()
@@ -347,28 +314,9 @@ class TestFieldMetadata:
         assert "A number" in result.stdout
         assert "Toggle it" in result.stdout
 
-        result = runner.invoke(app, ["--with-help", "7", "--wf", "y", "--tb"])
+        result = runner.invoke(app, ["--with-help", "7", "--with-flag", "y", "--with-both"])
         assert result.exit_code == 0
         assert "hello|7|y|True" in result.stdout
-
-    def test_flag_with_env_var(self) -> None:
-        """Custom flag + env_var_prefix should both work."""
-        app = typer.Typer()
-
-        @app.command()
-        @dataclass_cli(env_var_prefix="TST_")
-        def cmd(args: _MetaFlagArgs) -> None:
-            print(f"val={args.short_param}")
-
-        result = runner.invoke(app, [], env={"TST_SHORT_PARAM": "from_env"})
-        assert result.exit_code == 0
-        assert "val=from_env" in result.stdout
-
-        result = runner.invoke(
-            app, ["--sp", "from_flag"], env={"TST_SHORT_PARAM": "from_env"}
-        )
-        assert result.exit_code == 0
-        assert "val=from_flag" in result.stdout
 
 
 # ---------------------------------------------------------------------------
