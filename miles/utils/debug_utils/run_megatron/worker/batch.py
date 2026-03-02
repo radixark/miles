@@ -12,6 +12,7 @@ def prepare_batch(
     batch_size: int,
     cp_rank: int = 0,
     cp_size: int = 1,
+    device: str | torch.device = "cuda",
 ) -> dict[str, torch.Tensor]:
     """Build the batch dict for Megatron forward from pre-tokenized token IDs.
 
@@ -24,8 +25,8 @@ def prepare_batch(
     """
     seq_length: int = len(token_ids)
 
-    token_tensor: torch.Tensor = torch.tensor(token_ids, dtype=torch.long, device="cuda")
-    position_tensor: torch.Tensor = torch.arange(seq_length, dtype=torch.long, device="cuda")
+    token_tensor: torch.Tensor = torch.tensor(token_ids, dtype=torch.long, device=device)
+    position_tensor: torch.Tensor = torch.arange(seq_length, dtype=torch.long, device=device)
 
     # Keep global copy before CP slicing (needed for CP-aware labels)
     global_tokens: torch.Tensor = token_tensor.clone()
@@ -56,7 +57,7 @@ def prepare_batch(
     )
 
     attention_mask: torch.Tensor = torch.tril(
-        torch.ones(batch_size, 1, local_seq_len, local_seq_len, dtype=torch.bool, device="cuda")
+        torch.ones(batch_size, 1, local_seq_len, local_seq_len, dtype=torch.bool, device=device)
     )
 
     return {
