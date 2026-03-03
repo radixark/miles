@@ -15,7 +15,8 @@
 # - Ray: 2.47.1
 #
 # Patches: amd_patch/sglv0.5.7/
-#   - megatron.patch
+# - megatron.patch
+# - sglang.patch
 # =====================================================================
 
 
