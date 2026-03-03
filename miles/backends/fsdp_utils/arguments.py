@@ -49,6 +49,7 @@ class FSDPArgs:
 
     # Context Parallelism
     context_parallel_size: int = 1  # Context Parallelism size
+    vision_dp: bool = False  # Vision DP: distribute ViT across CP ranks
     # Profile
     record_memory_history: bool = False
     memory_snapshot_path: str = "snapshot.pickle"
