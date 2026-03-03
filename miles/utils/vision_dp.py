@@ -276,6 +276,10 @@ def create_dp_vision_forward(original_forward, cp_group, cp_size, cp_rank):
         # Step 2: Extract local inputs
         local_pixels, local_grid_thw, local_indices = prepare_local_vision_inputs(hidden_states, grid_thw, image_assignments, cp_rank)
 
+        # Detect Qwen3-VL deepstack: model attribute, not return type,
+        # because empty ranks don't call original_forward and can't inspect the return.
+        has_deepstack = hasattr(self, "deepstack_merger_list")
+
         # Step 3: Process local images
         if local_pixels.shape[0] > 0:
             local_embeddings = original_forward(self, local_pixels, local_grid_thw, **kwargs)
@@ -296,12 +300,36 @@ def create_dp_vision_forward(original_forward, cp_group, cp_size, cp_rank):
             # Empty rank must participate in autograd for backward all_reduce
             local_embeddings.requires_grad_()
 
+        # Unpack Qwen3-VL deepstack: forward returns (embeddings, list[3 × Tensor])
+        local_deepstack = None
+        if has_deepstack:
+            if isinstance(local_embeddings, tuple):
+                local_embeddings, local_deepstack = local_embeddings[0], local_embeddings[1]
+            else:
+                # Empty rank: create matching empty deepstack tensors
+                num_deepstack = len(self.deepstack_merger_list)
+                h = local_embeddings.shape[1]
+                local_deepstack = [
+                    torch.empty(
+                        (0, h), dtype=hidden_states.dtype, device=hidden_states.device
+                    )
+                    for _ in range(num_deepstack)
+                ]
+
         # Step 4: All-gather (contiguous assignment, no reordering needed)
         # Compute per-rank embedding counts locally (grid_thw is replicated on all ranks)
         all_counts = [sum(embedding_counts[i] for i in image_assignments[r]) for r in range(cp_size)]
         all_embeddings = gather_vision_embeddings(local_embeddings, cp_group, all_counts)
 
         assert all_embeddings.shape[0] == total_embeddings, f"[Vision DP] Output embedding count mismatch: all_embeddings.shape[0]={all_embeddings.shape[0]}, expected={total_embeddings}"
+
+        # Step 5: All-gather deepstack embeddings (all ranks must participate)
+        if local_deepstack is not None:
+            gathered_deepstack = [
+                gather_vision_embeddings(ds, cp_group, all_counts)
+                for ds in local_deepstack
+            ]
+            return all_embeddings, gathered_deepstack
 
         return all_embeddings
 
