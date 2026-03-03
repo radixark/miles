@@ -95,6 +95,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             assert not self.megatron_use_deepep, (
                 "Known issue: Megatron's DeepEP fail on GB300. " "Please specify --no-megatron-use-deepep."
             )
+        if not self.use_deepep:
+            self.megatron_use_deepep = False
         if self.num_nodes == 1:
             self.enable_pd = False
             self.mode = "debug_minimal"
