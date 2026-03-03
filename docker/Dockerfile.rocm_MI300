@@ -234,7 +234,7 @@ COPY amd_patch/sglv0.5.7/sglang.patch /app/patch/sglang.patch
 
 # Apply Megatron patches
 RUN cd /app/Megatron-LM \
-    && git apply /app/patch/megatron.patch --3way \
+    && git apply --3way /app/patch/megatron.patch \
     && if grep -R -n '^<<<<<<< ' .; then \
         echo "Patch failed to apply cleanly. Please resolve conflicts." && \
         exit 1; \
@@ -243,7 +243,7 @@ RUN cd /app/Megatron-LM \
 
 # Apply SGLang patch
 RUN cd /app/sglang \
-    && git apply /app/patch/sglang.patch --3way \
+    && git apply --3way /app/patch/sglang.patch \
     && if grep -R -n '^<<<<<<< ' .; then \
         echo "SGLang patch failed to apply cleanly. Please resolve conflicts." && \
         exit 1; \
