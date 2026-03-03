@@ -20,7 +20,12 @@ from miles.utils.ppo_utils import (
 )
 from miles.utils.types import RolloutBatch
 
-from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
+from .cp_utils import (
+    _allgather_cp_redistribute,
+    all_gather_with_cp,
+    get_logits_and_tokens_offset_with_cp,
+    get_sum_of_sample_mean,
+)
 from .parallel import ParallelState
 
 
@@ -71,6 +76,7 @@ def get_responses(
 
     cp_size = parallel_state.cp_size
     end = 0
+    seq_start = 0
     for i, (tokens, total_length, response_length) in enumerate(
         zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
     ):
@@ -85,6 +91,29 @@ def get_responses(
                 start = end - response_length
             logits_chunk = logits[start - 1 : end - 1]
             tokens_chunk = tokens[-response_length:]
+        elif args.allgather_cp:
+            # DSA: global concat then contiguous CP split. Each rank owns logits for
+            # global positions [chunk_start, chunk_end).
+            logits_local_len = logits.size(0)
+            cp_rank = parallel_state.cp_rank
+            chunk_start = cp_rank * logits_local_len
+            chunk_end = chunk_start + logits_local_len
+
+            prompt_length = total_length - response_length
+            resp_token_start = seq_start + prompt_length
+            resp_token_end = seq_start + total_length
+            logit_global_start = resp_token_start - 1
+            logit_global_end = resp_token_end - 1
+
+            s = max(logit_global_start, chunk_start)
+            e = min(logit_global_end, chunk_end)
+            if e <= s:
+                logits_chunk = logits[0:0]
+                tokens_chunk = tokens[0:0]
+            else:
+                logits_chunk = logits[s - chunk_start : e - chunk_start]
+                tokens_chunk = tokens[(s + 1) - seq_start : (e + 1) - seq_start]
+            assert logits_chunk.size(0) == tokens_chunk.size(0), f"{logits_chunk.size(0)} vs {tokens_chunk.size(0)}"
         else:
             # TODO: this is super ugly... do better abstraction.
             chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
@@ -105,6 +134,8 @@ def get_responses(
 
             logits_chunk = torch.cat([logits_0, logits_1], dim=0)
             tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
+
+        seq_start += total_length
 
         yield logits_chunk, tokens_chunk
 
@@ -172,6 +203,19 @@ def get_log_probs_and_entropy(
     }
     if with_entropy:
         res["entropy"] = entropy_list
+
+    # we need to turn the all gather kv into zigzag ring attn kv
+    if args.allgather_cp:
+        _allgather_cp_redistribute(
+            res,
+            logits=logits,
+            args=args,
+            parallel_state=parallel_state,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
+
     return res
 
 
@@ -219,9 +263,22 @@ def get_values(
         assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
         value_list.append(logits_chunk.squeeze(-1))
 
-    return {
+    res = {
         "values": value_list,
     }
+
+    if args.allgather_cp:
+        _allgather_cp_redistribute(
+            res,
+            logits=logits,
+            args=args,
+            parallel_state=parallel_state,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
+
+    return res
 
 
 def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelState, rollout_data: RolloutBatch) -> None:

@@ -70,7 +70,7 @@ class TestSGLangFunctionCallParser:
                 'Let me check for you.\n<tool_call>\n{"name": "get_year", "arguments": {}}\n</tool_call>',
                 (
                     "Let me check for you.",
-                    [ToolCallItem(tool_index=-1, name="get_year", parameters="{}")],
+                    [ToolCallItem(tool_index=0, name="get_year", parameters="{}")],
                 ),
                 id="single_tool_call",
             ),
@@ -81,8 +81,8 @@ class TestSGLangFunctionCallParser:
                 (
                     "I will get year and temperature.",
                     [
-                        ToolCallItem(tool_index=-1, name="get_year", parameters="{}"),
-                        ToolCallItem(tool_index=-1, name="get_temperature", parameters='{"location": "Shanghai"}'),
+                        ToolCallItem(tool_index=0, name="get_year", parameters="{}"),
+                        ToolCallItem(tool_index=1, name="get_temperature", parameters='{"location": "Shanghai"}'),
                     ],
                 ),
                 id="multi_tool_calls",
@@ -97,8 +97,8 @@ class TestSGLangFunctionCallParser:
                 (
                     "Let me get the year and temperature first.",
                     [
-                        ToolCallItem(tool_index=-1, name="get_year", parameters="{}"),
-                        ToolCallItem(tool_index=-1, name="get_temperature", parameters='{"location": "Mars"}'),
+                        ToolCallItem(tool_index=0, name="get_year", parameters="{}"),
+                        ToolCallItem(tool_index=1, name="get_temperature", parameters='{"location": "Mars"}'),
                     ],
                 ),
                 id="multi_turn_first_response",

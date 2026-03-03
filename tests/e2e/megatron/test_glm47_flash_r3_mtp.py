@@ -2,21 +2,22 @@ import os
 
 import miles.utils.external_utils.command_utils as U
 
-
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
-USE_FP8_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_FP8_ROLLOUT", "1")))
 
-MODEL_NAME = "Qwen3-30B-A3B"
-MODEL_TYPE = "qwen3-30B-A3B"
+MODEL_NAME = "GLM-4.7-Flash"
+MODEL_TYPE = "glm4.7-flash"
 NUM_GPUS = 8
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+    # GLM-4.7-Flash requires a newer transformers version
+    U.exec_command(
+        "pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa --break-system-packages"
+    )
+    U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
@@ -24,10 +25,10 @@ def prepare():
 
 
 def execute():
-    if USE_FP8_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
-    else:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
+    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
+
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -42,7 +43,6 @@ def execute():
         "--rollout-max-response-len 8192 "
         "--rollout-temperature 1 "
         "--global-batch-size 32 "
-        "--balance-data "
     )
 
     eval_args = (
@@ -53,30 +53,31 @@ def execute():
         "--eval-top-k 1 "
     )
 
+    # tp=4 because GLM-4.7-Flash has 20 attention heads (tp must divide num_heads)
     perf_args = (
         "--tensor-model-parallel-size 4 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 2 "
+        "--context-parallel-size 1 "
         "--expert-model-parallel-size 8 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
+        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 32768} "
     )
 
     grpo_args = (
-        "--advantage-estimator gspo "
+        "--advantage-estimator grpo "
         f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
-        "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
-        "--eps-clip 4e-4 "
-        "--use-tis "
-        "--use-routing-replay "
+        "--eps-clip 0.2 "
+        "--eps-clip-high 0.28 "
+        "--use-rollout-routing-replay "
+        "--use-miles-router "
     )
 
     optimizer_args = (
@@ -92,25 +93,27 @@ def execute():
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
+        "--rollout-num-gpus-per-engine 4 "
         f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
-        "--sglang-max-running-requests 512 "
-        "--sglang-enable-metrics "
+        # EAGLE speculative decoding (MTP)
+        "--sglang-speculative-algorithm EAGLE "
+        "--sglang-speculative-num-steps 2 "
+        "--sglang-speculative-eagle-topk 1 "
+        "--sglang-speculative-num-draft-tokens 3 "
     )
 
     if USE_DEEPEP:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
 
+    mtp_args = "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
+
     ci_args = "--ci-test "
 
     misc_args = (
-        # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
-        # should be good for model performance
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
@@ -131,6 +134,7 @@ def execute():
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
+        f"{mtp_args} "
         f"{ci_args} "
         f"{misc_args} "
     )
@@ -139,12 +143,10 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 
 if __name__ == "__main__":
-    # TODO also use typer
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)

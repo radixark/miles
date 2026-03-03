@@ -7,8 +7,8 @@ This example demonstrates SWE-agent RL training in Miles using:
 - SWE-Gym data for training prompts
 - SWE-bench style evaluation via `swegym`
 
-The implementation depends on the `mini-swe-agent` submodule in this directory.
-Submodule reference:
+Implementation dependencies:
+- Nemo-Gym (Gym): https://github.com/yueming-yuan/Gym/tree/miles-swe-agent
 - mini-swe-agent: https://github.com/yueming-yuan/nv-mini-swe-agent/tree/miles-swe-agent
 
 ## Prepare environment
@@ -21,7 +21,7 @@ git submodule update --init --recursive
 ### 2. Docker requirements
 SWE tasks run inside per-instance Docker containers. The Miles container must be able to launch Docker containers.
 
-Required when launching the Miles container:
+Required when launching Miles:
 ```bash
 -v /var/run/docker.sock:/var/run/docker.sock
 ```
@@ -31,11 +31,73 @@ Install Docker CLI in the Miles container if needed:
 apt update && apt install -y docker.io
 ```
 
-### 3. Install Miles and SWE eval dependency
+### 3. Optional two-container setup (environment + Miles)
+If you run Gym in a separate container, use a shared Docker network and mount Docker socket into the environment container.
+
+```bash
+# create network
+docker network create swe-net
+
+# environment container (example)
+docker run -itd \
+  --name swe_env \
+  --shm-size 16g \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /mnt/data:/data \
+  -v /home/sglang-rl/<your_name>:/workspace \
+  --ipc=host \
+  --ulimit nofile=65536:65536 \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  --network swe-net \
+  ubuntu:latest \
+  /bin/bash
+
+# miles container (example)
+docker run -itd \
+  --shm-size 32g \
+  --gpus all \
+  -v /mnt/data/cache/huggingface:/root/.cache/huggingface \
+  -v /mnt/data:/data \
+  -v /home/sglang-rl/<your_name>:/workspace \
+  --ipc=host \
+  --ulimit nofile=65536:65536 \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  --privileged \
+  --network swe-net \
+  --name miles_<your_name> \
+  radixark/miles:latest \
+  /bin/zsh
+```
+
+## Installation
+
+### In Miles container
 From the Miles repo root:
 ```bash
 pip install -e . --no-deps
 pip install "swegym @ git+https://github.com/sdevare-nv/nv-SWE-Bench-Package.git@31e1cb8f0241da1707d00faa633c3d6ce1a8ba3b"
+```
+
+### Optional: in environment container (if running Gym server separately)
+```bash
+cd /
+git clone https://github.com/yueming-yuan/Gym
+git clone https://github.com/yueming-yuan/nv-mini-swe-agent.git
+cd nv-mini-swe-agent && git checkout -b miles-swe-agent origin/miles-swe-agent
+cd /Gym && git checkout -b miles-swe-agent origin/miles-swe-agent
+
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+uv venv --python 3.12 && source .venv/bin/activate
+uv sync --extra dev --group docs
+
+# configure env.yaml
+echo "policy_base_url: https://api.openai.com/v1
+policy_api_key: your-openai-api-key
+policy_model_name: gpt-4.1-2025-04-14
+default_host: 0.0.0.0" > env.yaml
 ```
 
 ## Prepare model and data
@@ -82,11 +144,12 @@ export WANDB_KEY=<your_wandb_api_key>
 ## Troubleshooting
 
 1. First startup can be slow because task-specific Docker images are pulled on demand.
-2. Evaluation can take time (default timeout is 10 minutes); while eval is running, wait for completion logs.
+2. Evaluation can take time (default timeout is 10 minutes); if logs show eval running, wait for completion.
 3. If runs stop with CUDA OOM, reduce sequence pressure first (for example, `--max-tokens-per-gpu`, `--rollout-max-response-len`, or rollout batch sizing).
 
 ## Metrics
-```
+
+```text
 agent/turns_mean, agent/turns_sum - Turn counts
 agent/tool_calls_mean, agent/tool_calls_sum - Tool call counts
 agent/total_time_mean/max/min - Total time statistics
