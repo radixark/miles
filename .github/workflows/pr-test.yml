@@ -38,7 +38,10 @@ jobs:
 
   # Stage B: SGLang patch tests (1 GPU)
   stage-b-sglang:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-sglang'))
+    needs: [stage-a-fast]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-sglang')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 1
@@ -47,7 +50,10 @@ jobs:
 
   # Stage B: Short 8-GPU tests
   stage-b-short:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
+    needs: [stage-a-fast]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
@@ -56,7 +62,10 @@ jobs:
 
   # Stage C: FSDP 8-GPU tests
   stage-c-fsdp:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
@@ -65,7 +74,10 @@ jobs:
 
   # Stage C: Megatron 8-GPU tests (3 partitions)
   stage-c-megatron:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron')))
     strategy:
       fail-fast: false
       matrix:
@@ -78,7 +90,10 @@ jobs:
 
   # Stage C: Precision 8-GPU tests
   stage-c-precision:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
@@ -87,7 +102,10 @@ jobs:
 
   # Stage C: Checkpoint 8-GPU tests
   stage-c-ckpt:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
@@ -96,7 +114,10 @@ jobs:
 
   # Stage C: Long 8-GPU tests
   stage-c-long:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long'))
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
@@ -105,7 +126,10 @@ jobs:
 
   # Stage C: LoRA 8-GPU tests
   stage-c-lora:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-lora'))
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-lora')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
@@ -114,7 +138,10 @@ jobs:
 
   # Stage C: All suites (triggered by run-ci-image label)
   stage-c-all:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image')))
     strategy:
       fail-fast: false
       matrix:
