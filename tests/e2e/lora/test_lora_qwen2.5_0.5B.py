@@ -14,6 +14,9 @@ Triggered by label: run-ci-lora
 import os
 
 import miles.utils.external_utils.command_utils as U
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=600, suite="stage-c-lora-8-gpu", num_gpus=8)
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 

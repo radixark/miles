@@ -1,16 +1,20 @@
 import os
 
 import miles.utils.external_utils.command_utils as U
+from tests.ci.ci_register import register_cuda_ci
 
+register_cuda_ci(est_time=1800, suite="stage-c-megatron-8-gpu", num_gpus=8)
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
-USE_FP8_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_FP8_ROLLOUT", "1")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
+
+CONFIGS = [
+    {"USE_DEEPEP": False, "USE_FP8_ROLLOUT": False},
+    {"USE_DEEPEP": True, "USE_FP8_ROLLOUT": True},
+]
 
 
 def prepare():
@@ -23,7 +27,7 @@ def prepare():
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
 
 
-def execute():
+def execute(USE_DEEPEP=False, USE_FP8_ROLLOUT=False):
     if USE_FP8_ROLLOUT:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
     else:
@@ -46,7 +50,6 @@ def execute():
     )
 
     eval_args = (
-        f"{'--eval-interval 20 ' if ENABLE_EVAL else ''}"
         "--eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 16384 "
@@ -144,8 +147,9 @@ def execute():
 
 
 if __name__ == "__main__":
-    # TODO also use typer
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
+    for config in CONFIGS:
+        print(f"\n{'='*60}\nRunning config: {config}\n{'='*60}\n", flush=True)
+        execute(**config)

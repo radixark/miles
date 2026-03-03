@@ -1,5 +1,9 @@
 import os
+
 import miles.utils.external_utils.command_utils as U
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=300, suite="stage-b-short-8-gpu", num_gpus=8)
 
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 

@@ -1,5 +1,9 @@
 import os
+
 import miles.utils.external_utils.command_utils as U
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=600, suite="stage-c-fsdp-8-gpu", num_gpus=8)
 
 MODEL_NAME = "Qwen3-0.6B"
 

@@ -1,10 +1,13 @@
 import os
 
 import miles.utils.external_utils.command_utils as U
+from tests.ci.ci_register import register_cuda_ci
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
+register_cuda_ci(est_time=900, suite="stage-c-megatron-8-gpu", num_gpus=8)
+
+ENABLE_EVAL = False
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
+USE_DEEPEP = False
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"

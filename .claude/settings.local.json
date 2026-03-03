@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(do python:*)",
+      "Bash(do:*)",
+      "Bash(PYTHONPATH=/Users/doug/miles:*)",
+      "Bash(export:*)"
+    ]
+  }
+}
