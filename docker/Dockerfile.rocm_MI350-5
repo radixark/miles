@@ -228,8 +228,9 @@ RUN python -m pip cache purge
 #### APPLY PATCHES (gfx950/MI355) #########
 ###########################################
 
-# Copy Megatron patch from miles repo
+# Copy patch from miles repo
 COPY amd_patch/sglv0.5.7/megatron.patch /app/patch/megatron.patch
+COPY amd_patch/sglv0.5.7/sglang.patch /app/patch/sglang.patch
 
 # Apply Megatron patches
 RUN cd /app/Megatron-LM \
@@ -239,6 +240,14 @@ RUN cd /app/Megatron-LM \
         exit 1; \
     fi \
     && pip install -e . -v
+
+# Apply SGLang patch
+RUN cd /app/sglang \
+    && git apply /app/patch/sglang.patch --3way \
+    && if grep -R -n '^<<<<<<< ' .; then \
+        echo "SGLang patch failed to apply cleanly. Please resolve conflicts." && \
+        exit 1; \
+    fi
 
 # Copy MOE configs for gfx950/MI355
 RUN find /app/sglang/python/sglang/srt/layers/quantization/configs/ \
