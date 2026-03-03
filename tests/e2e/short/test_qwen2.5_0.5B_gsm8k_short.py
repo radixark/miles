@@ -1,3 +1,4 @@
+# CI test trigger for short suite
 import os
 
 import miles.utils.external_utils.command_utils as U
