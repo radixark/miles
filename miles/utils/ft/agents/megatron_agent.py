@@ -8,8 +8,6 @@ from typing import Any, Literal
 
 from prometheus_client import CollectorRegistry, Gauge, start_http_server
 
-import miles.utils.ft.metric_names as mn
-
 logger = logging.getLogger(__name__)
 
 _PHASE_TO_NUMERIC: dict[str, float] = {
@@ -39,13 +37,13 @@ class FtMegatronAgent:
         }
 
         iteration_gauge = Gauge(
-            mn.TRAINING_ITERATION,
+            "training_iteration",
             "Current training iteration",
             labelnames=["rank", "node_id"],
             registry=self._registry,
         )
         phase_gauge = Gauge(
-            mn.TRAINING_PHASE,
+            "training_phase",
             "Current training phase (0=idle, 1=training, 2=checkpoint_saving)",
             labelnames=["rank", "node_id"],
             registry=self._registry,
