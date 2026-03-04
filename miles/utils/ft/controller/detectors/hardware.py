@@ -1,5 +1,3 @@
-import logging
-
 from miles.utils.ft.controller.detectors._metric_names import (
     NODE_DISK_AVAILABLE_BYTES,
     NODE_GPU_AVAILABLE,
@@ -10,8 +8,6 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.models import ActionType, Decision
-
-logger = logging.getLogger(__name__)
 
 _CRITICAL_XID_CODES: frozenset[int] = frozenset({48, 62, 64, 79})
 _DISK_AVAILABLE_THRESHOLD_BYTES: float = 1e9  # 1 GB
@@ -86,15 +82,16 @@ class HighConfidenceHardwareDetector(BaseFaultDetector):
         bad_nodes: set[str],
         reasons: list[str],
     ) -> None:
-        df = metric_store.instant_query(NODE_DISK_AVAILABLE_BYTES)
+        df = metric_store.instant_query(
+            f"{NODE_DISK_AVAILABLE_BYTES} < {self._disk_available_threshold_bytes}"
+        )
         if df.is_empty():
             return
 
         for row in df.iter_rows(named=True):
-            if row["value"] < self._disk_available_threshold_bytes:
-                node_id = row["node_id"]
-                bad_nodes.add(node_id)
-                reasons.append(f"disk space low on {node_id} ({row['value']:.0f} bytes)")
+            node_id = row["node_id"]
+            bad_nodes.add(node_id)
+            reasons.append(f"disk space low on {node_id} ({row['value']:.0f} bytes)")
 
     def _check_majority_nic_down(
         self,

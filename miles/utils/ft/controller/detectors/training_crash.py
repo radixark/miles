@@ -1,4 +1,3 @@
-import logging
 import math
 
 from miles.utils.ft.controller.detectors._metric_names import TRAINING_JOB_STATUS
@@ -6,8 +5,6 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.models import ActionType, Decision
-
-logger = logging.getLogger(__name__)
 
 _JOB_STATUS_FAILED = -1
 
@@ -33,7 +30,7 @@ class TrainingCrashDetector(BaseFaultDetector):
 
     def _determine_trigger(self, mini_wandb: MiniWandb) -> str:
         latest_loss = mini_wandb.latest("loss", rank=0)
-        if latest_loss is not None and (math.isnan(latest_loss) or math.isinf(latest_loss)):
+        if latest_loss is not None and not math.isfinite(latest_loss):
             return "nan_loss"
 
         return "crash"

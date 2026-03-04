@@ -1,6 +1,5 @@
-import math
-
 from tests.fast.utils.ft.conftest import (
+    EMPTY_RANK_PLACEMENT,
     inject_training_job_status,
     make_fake_metric_store,
     make_fake_mini_wandb,
@@ -8,8 +7,6 @@ from tests.fast.utils.ft.conftest import (
 
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
 from miles.utils.ft.models import ActionType
-
-_EMPTY_RANK_PLACEMENT: dict[int, str] = {}
 
 # Numeric values match controller._JOB_STATUS_TO_NUMERIC
 _RUNNING = 1
@@ -24,7 +21,7 @@ class TestTrainingCrashDetector:
         inject_training_job_status(store, status_value=_RUNNING)
         detector = TrainingCrashDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
 
@@ -34,7 +31,7 @@ class TestTrainingCrashDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": 2.5}})
         detector = TrainingCrashDetector()
 
-        decision = detector.evaluate(store, wandb, _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, wandb, EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "crash"
@@ -45,7 +42,7 @@ class TestTrainingCrashDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})
         detector = TrainingCrashDetector()
 
-        decision = detector.evaluate(store, wandb, _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, wandb, EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "nan_loss"
@@ -56,7 +53,7 @@ class TestTrainingCrashDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("inf")}})
         detector = TrainingCrashDetector()
 
-        decision = detector.evaluate(store, wandb, _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, wandb, EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "nan_loss"
@@ -66,7 +63,7 @@ class TestTrainingCrashDetector:
         inject_training_job_status(store, status_value=_PENDING)
         detector = TrainingCrashDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
 
@@ -75,7 +72,7 @@ class TestTrainingCrashDetector:
         inject_training_job_status(store, status_value=_STOPPED)
         detector = TrainingCrashDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
 
@@ -85,7 +82,7 @@ class TestTrainingCrashDetector:
         wandb = make_fake_mini_wandb()
         detector = TrainingCrashDetector()
 
-        decision = detector.evaluate(store, wandb, _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, wandb, EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "crash"

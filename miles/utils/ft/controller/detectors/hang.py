@@ -1,5 +1,3 @@
-import logging
-
 from miles.utils.ft.controller.detectors._metric_names import (
     TRAINING_ITERATION,
     TRAINING_JOB_STATUS,
@@ -9,8 +7,6 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.models import ActionType, Decision
-
-logger = logging.getLogger(__name__)
 
 _JOB_STATUS_RUNNING = 1
 _PHASE_CHECKPOINT_SAVING = 2.0

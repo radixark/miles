@@ -7,6 +7,7 @@ from tests.fast.utils.ft.conftest import (
     inject_healthy_node,
     inject_nic_down,
     inject_training_job_status,
+    make_fake_metric_store,
     make_fake_mini_wandb,
 )
 
@@ -16,7 +17,6 @@ from miles.utils.ft.controller.detectors._metric_names import (
     TRAINING_ITERATION,
     TRAINING_PHASE,
 )
-from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.models import ActionType, MetricSample
 
 _RUNNING = 1
@@ -24,13 +24,9 @@ _FAILED = -1
 _RANK_PLACEMENT: dict[int, str] = {0: "node-0", 1: "node-1"}
 
 
-def _make_store() -> MiniPrometheus:
-    return MiniPrometheus(config=MiniPrometheusConfig(retention=timedelta(minutes=60)))
-
-
 class TestDetectorChainIntegration:
     def test_all_healthy_returns_none(self) -> None:
-        store = _make_store()
+        store = make_fake_metric_store()
         inject_healthy_node(store, node_id="node-0")
         inject_healthy_node(store, node_id="node-1")
         inject_training_job_status(store, status_value=_RUNNING)
@@ -56,7 +52,7 @@ class TestDetectorChainIntegration:
 
     def test_hardware_fault_overrides_crash(self) -> None:
         """HighConfidenceHardwareDetector has higher priority than TrainingCrashDetector."""
-        store = _make_store()
+        store = make_fake_metric_store()
         inject_gpu_unavailable(store, node_id="node-0")
         inject_training_job_status(store, status_value=_FAILED)
 
@@ -75,7 +71,7 @@ class TestDetectorChainIntegration:
 
     def test_network_alert_overrides_hang(self) -> None:
         """NetworkAlertDetector has higher priority than HangDetector."""
-        store = _make_store()
+        store = make_fake_metric_store()
         inject_training_job_status(store, status_value=_RUNNING)
 
         now = datetime.now(timezone.utc)
@@ -116,7 +112,7 @@ class TestDetectorChainIntegration:
 
     def test_crash_with_nan_loss(self) -> None:
         """TrainingCrashDetector sets trigger to nan_loss when last loss is NaN."""
-        store = _make_store()
+        store = make_fake_metric_store()
         inject_training_job_status(store, status_value=_FAILED)
 
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})

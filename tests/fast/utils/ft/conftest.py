@@ -60,6 +60,9 @@ def make_fake_mini_wandb(
     return wandb
 
 
+EMPTY_RANK_PLACEMENT: dict[int, str] = {}
+
+
 # ---------------------------------------------------------------------------
 # Detector test helpers — inject functions (detectors milestone)
 # ---------------------------------------------------------------------------

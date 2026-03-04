@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
 
 from tests.fast.utils.ft.conftest import (
     inject_gpu_temperature,
@@ -109,6 +108,8 @@ class TestMfuDeclineDetector:
 
     def test_dynamic_baseline(self) -> None:
         # 50 steps of high mfu followed by 10 steps of low mfu
+        # Dynamic baseline = avg of last 50 steps = (40*0.5 + 10*0.3)/50 = 0.46
+        # Threshold = 0.46 * 0.8 = 0.368, avg of last 10 = 0.3 < 0.368 → decline
         high_mfu = [0.5] * 50
         low_mfu = [0.3] * 10
         all_steps = high_mfu + low_mfu
@@ -123,13 +124,8 @@ class TestMfuDeclineDetector:
 
         decision = detector.evaluate(store, wandb, {})
 
-        # Dynamic baseline computed from last 50 steps includes the low values too
-        # (query_last_n_steps(last_n=50) returns last 50 which includes the low values)
-        # But the check is: avg of last 10 (0.3) vs baseline * 0.8
-        # The baseline is the average of the last 50 steps (mix of 0.5 and 0.3)
-        # This might or might not trigger depending on the math
-        # Let's just verify it doesn't crash
-        assert decision.action in (ActionType.NONE, ActionType.NOTIFY_HUMAN)
+        assert decision.action == ActionType.NONE
+        assert "monitoring" in decision.reason
 
     def test_mfu_recovers_resets_timer(self) -> None:
         store = make_fake_metric_store()

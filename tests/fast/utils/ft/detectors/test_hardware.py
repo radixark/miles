@@ -1,4 +1,5 @@
 from tests.fast.utils.ft.conftest import (
+    EMPTY_RANK_PLACEMENT,
     inject_critical_xid,
     inject_disk_fault,
     inject_gpu_unavailable,
@@ -12,8 +13,6 @@ from tests.fast.utils.ft.conftest import (
 from miles.utils.ft.controller.detectors.hardware import HighConfidenceHardwareDetector
 from miles.utils.ft.models import ActionType
 
-_EMPTY_RANK_PLACEMENT: dict[int, str] = {}
-
 
 class TestHighConfidenceHardwareDetector:
     def test_all_healthy(self) -> None:
@@ -21,7 +20,7 @@ class TestHighConfidenceHardwareDetector:
         inject_healthy_node(store, node_id="node-0")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
 
@@ -31,7 +30,7 @@ class TestHighConfidenceHardwareDetector:
         inject_gpu_unavailable(store, node_id="node-0", gpu="3")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -42,7 +41,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=48)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -53,7 +52,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=62)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
 
@@ -62,7 +61,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=64)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
 
@@ -71,7 +70,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=79)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
 
@@ -80,7 +79,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=31)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
 
@@ -89,7 +88,7 @@ class TestHighConfidenceHardwareDetector:
         inject_disk_fault(store, node_id="node-0", available_bytes=500e6)  # 500MB < 1GB
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -100,7 +99,7 @@ class TestHighConfidenceHardwareDetector:
         inject_disk_fault(store, node_id="node-0", available_bytes=2e9)  # 2GB > 1GB
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
 
@@ -112,7 +111,7 @@ class TestHighConfidenceHardwareDetector:
         inject_nic_up(store, node_id="node-0", device="ib3")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -126,7 +125,7 @@ class TestHighConfidenceHardwareDetector:
         inject_nic_up(store, node_id="node-0", device="ib3")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
 
@@ -136,7 +135,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-1", xid_code=48)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -146,6 +145,6 @@ class TestHighConfidenceHardwareDetector:
         store = make_fake_metric_store()
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), _EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
         assert decision.action == ActionType.NONE
