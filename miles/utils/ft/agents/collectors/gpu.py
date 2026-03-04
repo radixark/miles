@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from types import ModuleType
 
 import miles.utils.ft.metric_names as mn
 from miles.utils.ft.agents.collectors.base import BaseCollector
-from miles.utils.ft.models import CollectorOutput, MetricSample
+from miles.utils.ft.models import MetricSample
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +21,6 @@ class GpuCollector(BaseCollector):
             self._pynvml = pynvml
         except Exception:
             logger.warning("pynvml unavailable — GpuCollector will report all GPUs as unavailable", exc_info=True)
-
-    async def collect(self) -> CollectorOutput:
-        metrics = await asyncio.to_thread(self._collect_sync)
-        return CollectorOutput(metrics=metrics)
 
     async def close(self) -> None:
         if self._pynvml is not None:
