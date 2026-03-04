@@ -6,7 +6,9 @@ import datetime
 import json
 import os
 import random
+import shlex
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -92,6 +94,33 @@ class ExecuteTrainConfig:
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+    enable_elastic: bool = False
+
+
+_FT_CONTROLLER_STARTUP_WAIT_SECONDS = 5
+
+
+def _submit_ft_controller_job(
+    ray_address: str,
+    train_entrypoint: str,
+    megatron_path: str,
+) -> None:
+    """Submit the FT Controller as a separate Ray job (fire-and-forget)."""
+    quoted_entrypoint = shlex.quote(train_entrypoint)
+    launcher_cmd = (
+        "python -m miles.utils.ft.platform.launcher main "
+        "--platform k8s-ray "
+        f"--ray-address {ray_address} "
+        f"--entrypoint {quoted_entrypoint} "
+        "--as-ray-actor"
+    )
+    runtime_env = json.dumps({"env_vars": {"PYTHONPATH": megatron_path}})
+    exec_command(
+        f'ray job submit --address="{ray_address}" '
+        f"--runtime-env-json='{runtime_env}' "
+        f"--no-wait "
+        f"-- {launcher_cmd}"
+    )
 
 
 def execute_train(
@@ -99,11 +128,11 @@ def execute_train(
     num_gpus_per_node: int,
     megatron_model_type: str | None,
     train_script: str = "train.py",
-    before_ray_job_submit=None,
-    extra_env_vars=None,
+    before_ray_job_submit: Callable[[], None] | None = None,
+    extra_env_vars: dict[str, str] | None = None,
     config: ExecuteTrainConfig | None = None,
     megatron_path: str = "/root/Megatron-LM",
-):
+) -> None:
     if extra_env_vars is None:
         extra_env_vars = {}
     if config is None:
@@ -142,6 +171,20 @@ def execute_train(
 
     if (f := before_ray_job_submit) is not None:
         f()
+
+    ray_address = "http://127.0.0.1:8265"
+
+    if config.enable_elastic:
+        train_entrypoint = f"python3 {train_script} {train_args}"
+        _submit_ft_controller_job(
+            ray_address=ray_address,
+            train_entrypoint=train_entrypoint,
+            megatron_path=megatron_path,
+        )
+        time.sleep(_FT_CONTROLLER_STARTUP_WAIT_SECONDS)
+
+        if "--use-fault-tolerance" not in train_args:
+            train_args = f"--use-fault-tolerance {train_args}"
 
     runtime_env_json = json.dumps(
         {
@@ -184,7 +227,7 @@ def execute_train(
         exec_command(
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
-            f'ray job submit --address="http://127.0.0.1:8265" '
+            f'ray job submit --address="{ray_address}" '
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
@@ -192,19 +235,19 @@ def execute_train(
         )
 
 
-def _parse_extra_env_vars(text: str):
+def _parse_extra_env_vars(text: str) -> dict[str, str]:
     try:
         return json.loads(text)
     except ValueError:
         return {kv[0]: kv[1] for item in text.split(" ") if item.strip() != "" if (kv := item.split("=")) or True}
 
 
-def check_has_nvlink():
+def check_has_nvlink() -> bool:
     output = exec_command("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
     return int(output) > 0
 
 
-def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, run_id: str | None = None):
+def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, run_id: str | None = None) -> str:
     if not os.environ.get("WANDB_API_KEY"):
         print("Skip wandb configuration since WANDB_API_KEY is not found")
         return ""
@@ -254,11 +297,11 @@ def get_bool_env_var(name: str, default: str = "false") -> bool:
     return value in truthy_values
 
 
-def get_env_enable_infinite_run():
+def get_env_enable_infinite_run() -> bool:
     return get_bool_env_var("MILES_TEST_ENABLE_INFINITE_RUN", "false")
 
 
-def save_to_temp_file(text: str, ext: str):
+def save_to_temp_file(text: str, ext: str) -> str:
     path = Path(f"/tmp/miles_temp_file_{time.time()}_{random.randrange(0, 10000000)}.{ext}")
     path.write_text(text)
     print(f"Write the following content to {path=}: {text=}")
