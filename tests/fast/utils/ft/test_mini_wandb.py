@@ -122,6 +122,19 @@ class TestMiniWandbRingBuffer:
         assert result[2][0] == 4  # newest step
 
 
+class TestMiniWandbMaxAgeEviction:
+    def test_max_age_evicts_old_records(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1", max_age=timedelta(seconds=1))
+
+        wandb.log_step(run_id="run-1", rank=0, step=1, metrics={"loss": 3.0})
+        time.sleep(1.5)
+        wandb.log_step(run_id="run-1", rank=0, step=2, metrics={"loss": 2.0})
+
+        result = wandb.query_last_n_steps(metric_name="loss", rank=0, last_n=10)
+        assert len(result) == 1
+        assert result[0] == (2, 2.0)
+
+
 class TestMiniWandbMultiRank:
     def test_multi_rank_data_independent(self) -> None:
         wandb = MiniWandb(active_run_id="run-1")

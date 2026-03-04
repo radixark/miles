@@ -408,3 +408,106 @@ class TestMiniPrometheusIngestSamples:
         df = store.instant_query("gpu_available == 0")
         assert len(df) == 1
         assert df["node_id"][0] == "node-1"
+
+
+class TestMiniPrometheusScrapeTargets:
+    def test_remove_scrape_target(self) -> None:
+        store = MiniPrometheus()
+        store.add_scrape_target(target_id="node-0", address="http://localhost:9090")
+        store.add_scrape_target(target_id="node-1", address="http://localhost:9091")
+
+        store.remove_scrape_target("node-0")
+
+        assert "node-0" not in store._scrape_targets
+        assert "node-1" in store._scrape_targets
+
+    def test_remove_nonexistent_target_is_noop(self) -> None:
+        store = MiniPrometheus()
+        store.remove_scrape_target("doesnt-exist")  # should not raise
+
+
+class TestMiniPrometheusRangeFunctionEdgeCases:
+    def test_single_sample_count_over_time(self) -> None:
+        store = MiniPrometheus(config=MiniPrometheusConfig(
+            retention=timedelta(minutes=60),
+        ))
+        now = datetime.now(timezone.utc)
+
+        store.ingest_samples(
+            target_id="node-0",
+            samples=[MetricSample(name="metric", labels={}, value=42.0)],
+            timestamp=now,
+        )
+
+        df = store.instant_query("count_over_time(metric[5m])")
+        assert len(df) == 1
+        assert df["value"][0] == 1.0
+
+    def test_single_sample_changes_returns_zero(self) -> None:
+        store = MiniPrometheus(config=MiniPrometheusConfig(
+            retention=timedelta(minutes=60),
+        ))
+        now = datetime.now(timezone.utc)
+
+        store.ingest_samples(
+            target_id="node-0",
+            samples=[MetricSample(name="metric", labels={}, value=42.0)],
+            timestamp=now,
+        )
+
+        df = store.instant_query("changes(metric[5m])")
+        assert len(df) == 1
+        assert df["value"][0] == 0.0
+
+    def test_changes_with_compare_eq_zero(self) -> None:
+        store = MiniPrometheus(config=MiniPrometheusConfig(
+            retention=timedelta(minutes=60),
+        ))
+        now = datetime.now(timezone.utc)
+
+        for i in range(3):
+            store.ingest_samples(
+                target_id="node-0",
+                samples=[MetricSample(name="iter", labels={"rank": "0"}, value=100.0)],
+                timestamp=now - timedelta(minutes=2 - i),
+            )
+
+        df = store.instant_query("changes(iter[5m]) == 0")
+        assert len(df) == 1
+        assert df["value"][0] == 0.0
+
+    def test_count_over_time_with_compare_filters(self) -> None:
+        store = MiniPrometheus(config=MiniPrometheusConfig(
+            retention=timedelta(minutes=60),
+        ))
+        now = datetime.now(timezone.utc)
+
+        store.ingest_samples(
+            target_id="node-0",
+            samples=[MetricSample(name="alert", labels={}, value=1.0)],
+            timestamp=now,
+        )
+
+        df_pass = store.instant_query("count_over_time(alert[5m]) >= 1")
+        assert len(df_pass) == 1
+
+        df_fail = store.instant_query("count_over_time(alert[5m]) >= 10")
+        assert len(df_fail) == 0
+
+
+class TestMiniPrometheusRangeQueryEdgeCases:
+    def test_empty_range_query(self) -> None:
+        store = MiniPrometheus(config=MiniPrometheusConfig(
+            retention=timedelta(minutes=60),
+        ))
+        now = datetime.now(timezone.utc)
+
+        df = store.range_query(
+            query="nonexistent",
+            start=now - timedelta(minutes=10),
+            end=now,
+            step=timedelta(minutes=1),
+        )
+        assert df.is_empty()
+        assert "timestamp" in df.columns
+        assert "value" in df.columns
