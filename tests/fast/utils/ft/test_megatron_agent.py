@@ -14,6 +14,20 @@ import pytest
 from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
 
 
+def _parse_gauge(text: str, metric_name: str, labels: dict[str, str]) -> float:
+    """Extract a gauge value from Prometheus text exposition format."""
+    for line in text.splitlines():
+        if line.startswith("#"):
+            continue
+        if metric_name not in line:
+            continue
+        label_match = all(f'{k}="{v}"' in line for k, v in labels.items())
+        if label_match:
+            value_str = line.rsplit(" ", 1)[-1]
+            return float(value_str)
+    raise ValueError(f"{metric_name} with labels {labels} not found in metrics output")
+
+
 @pytest.fixture()
 def agent() -> Iterator[FtMegatronAgent]:
     agent = FtMegatronAgent(rank=0, world_size=4)
@@ -90,6 +104,86 @@ class TestFtMegatronAgentStep:
         agent._controller_handle = MagicMock()
         agent.step(iteration=10)
         agent._controller_handle.log_step.remote.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_step_without_iteration_keeps_last_value(
+        self, agent: FtMegatronAgent
+    ) -> None:
+        agent.step(iteration=5)
+        agent.step()
+
+        address = agent.get_exporter_address()
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{address}/metrics")
+
+        labels = {"rank": "0"}
+        iteration = _parse_gauge(response.text, "miles_ft_training_iteration", labels)
+        assert iteration == 5.0
+
+    @pytest.mark.asyncio()
+    async def test_step_idle_phase_preserves_iteration(
+        self, agent: FtMegatronAgent
+    ) -> None:
+        agent.step(iteration=10)
+        agent.step(phase="idle")
+
+        address = agent.get_exporter_address()
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{address}/metrics")
+
+        labels = {"rank": "0"}
+        iteration = _parse_gauge(response.text, "miles_ft_training_iteration", labels)
+        phase = _parse_gauge(response.text, "miles_ft_training_phase", labels)
+        assert iteration == 10.0
+        assert phase == 0.0
+
+    @pytest.mark.asyncio()
+    async def test_step_iteration_monotonic_across_phases(
+        self, agent: FtMegatronAgent
+    ) -> None:
+        """Simulate a full rollout cycle and verify the gauge stays monotonic."""
+        address = agent.get_exporter_address()
+        labels = {"rank": "0"}
+        observed_iterations: list[float] = []
+
+        async def record() -> None:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{address}/metrics")
+            observed_iterations.append(
+                _parse_gauge(resp.text, "miles_ft_training_iteration", labels)
+            )
+
+        agent.step()
+        await record()
+
+        for step_id in range(4):
+            agent.step(iteration=step_id)
+            await record()
+
+        agent.step(phase="idle")
+        await record()
+
+        agent.step(phase="checkpoint_saving")
+        await record()
+
+        agent.step(phase="idle")
+        await record()
+
+        agent.step()
+        await record()
+
+        for step_id in range(4, 8):
+            agent.step(iteration=step_id)
+            await record()
+
+        agent.step(phase="idle")
+        await record()
+
+        for i in range(1, len(observed_iterations)):
+            assert observed_iterations[i] >= observed_iterations[i - 1], (
+                f"Iteration gauge decreased at index {i}: "
+                f"{observed_iterations[i - 1]} -> {observed_iterations[i]}"
+            )
 
 
 class TestFtMegatronAgentRegisterRank:
