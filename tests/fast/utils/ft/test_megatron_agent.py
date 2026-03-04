@@ -46,8 +46,8 @@ class TestFtMegatronAgentExporter:
             response = await client.get(f"{address}/metrics")
 
         text = response.text
-        assert "miles_ft_training_iteration" in text
-        assert "miles_ft_training_phase" in text
+        assert "training_iteration" in text
+        assert "training_phase" in text
         assert 'rank="0"' in text
 
 
@@ -63,7 +63,7 @@ class TestFtMegatronAgentStep:
             response = await client.get(f"{address}/metrics")
 
         text = response.text
-        assert "miles_ft_training_iteration" in text
+        assert "training_iteration" in text
         assert "42.0" in text
 
     @pytest.mark.asyncio()

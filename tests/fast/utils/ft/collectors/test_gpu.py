@@ -20,12 +20,12 @@ class TestGpuCollector:
 
         gpu0_names = {m.name for m in result.metrics if m.labels.get("gpu") == "0"}
         assert gpu0_names == {
-            "miles_ft_gpu_available",
-            "miles_ft_dcgm_fi_dev_gpu_temp",
-            "miles_ft_dcgm_fi_dev_row_remap_pending",
-            "miles_ft_dcgm_fi_dev_row_remap_failure",
-            "miles_ft_dcgm_fi_dev_pcie_tx_throughput",
-            "miles_ft_dcgm_fi_dev_gpu_util",
+            "gpu_available",
+            "gpu_temperature_celsius",
+            "gpu_row_remap_pending",
+            "gpu_row_remap_failure",
+            "gpu_pcie_bandwidth_gbs",
+            "gpu_tensorcore_utilization",
         }
 
     @pytest.mark.asyncio()
@@ -37,11 +37,11 @@ class TestGpuCollector:
 
         gpu2_metrics = [m for m in result.metrics if m.labels.get("gpu") == "2"]
         assert len(gpu2_metrics) == 1
-        assert gpu2_metrics[0].name == "miles_ft_gpu_available"
+        assert gpu2_metrics[0].name == "gpu_available"
         assert gpu2_metrics[0].value == 0.0
 
         gpu0_metrics = [m for m in result.metrics if m.labels.get("gpu") == "0"]
-        available = [m for m in gpu0_metrics if m.name == "miles_ft_gpu_available"]
+        available = [m for m in gpu0_metrics if m.name == "gpu_available"]
         assert available[0].value == 1.0
 
     @pytest.mark.asyncio()
@@ -64,11 +64,11 @@ class TestGpuCollector:
             collector = GpuCollector()
             result = await collector.collect()
 
-        pending = [m for m in result.metrics if m.name == "miles_ft_dcgm_fi_dev_row_remap_pending"]
+        pending = [m for m in result.metrics if m.name == "gpu_row_remap_pending"]
         assert len(pending) == 1
         assert pending[0].value == 3.0
 
-        failure = [m for m in result.metrics if m.name == "miles_ft_dcgm_fi_dev_row_remap_failure"]
+        failure = [m for m in result.metrics if m.name == "gpu_row_remap_failure"]
         assert len(failure) == 1
         assert failure[0].value == 1.0
 
@@ -91,9 +91,9 @@ class TestGpuCollector:
             collector = GpuCollector()
             result = await collector.collect()
 
-        bw = [m for m in result.metrics if m.name == "miles_ft_dcgm_fi_dev_pcie_tx_throughput"]
+        bw = [m for m in result.metrics if m.name == "gpu_pcie_bandwidth_gbs"]
         assert len(bw) == 1
-        assert bw[0].value == pytest.approx(2097152 * 1024)
+        assert bw[0].value == pytest.approx(2.0)
 
     @pytest.mark.asyncio()
     async def test_close_safe_when_nvml_unavailable(self) -> None:
@@ -114,10 +114,10 @@ class TestGpuCollector:
             result = await collector.collect()
 
         names = {m.name for m in result.metrics}
-        assert "miles_ft_gpu_available" in names
-        assert "miles_ft_dcgm_fi_dev_gpu_temp" not in names
-        assert "miles_ft_dcgm_fi_dev_row_remap_pending" in names
-        assert "miles_ft_dcgm_fi_dev_pcie_tx_throughput" in names
+        assert "gpu_available" in names
+        assert "gpu_temperature_celsius" not in names
+        assert "gpu_row_remap_pending" in names
+        assert "gpu_pcie_bandwidth_gbs" in names
 
     @pytest.mark.asyncio()
     async def test_collect_interval_default(self) -> None:

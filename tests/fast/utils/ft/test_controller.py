@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from miles.utils.ft.metric_names import TRAINING_JOB_STATUS
+from miles.utils.ft.controller.controller import METRIC_TRAINING_JOB_STATUS
 from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
@@ -310,7 +310,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(TRAINING_JOB_STATUS)
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert not df.is_empty()
         assert df["value"][0] == 1
 
@@ -322,7 +322,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(TRAINING_JOB_STATUS)
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert df["value"][0] == -1
 
     @pytest.mark.asyncio
@@ -333,7 +333,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(TRAINING_JOB_STATUS)
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert df["value"][0] == 0
 
     @pytest.mark.asyncio
@@ -344,7 +344,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(TRAINING_JOB_STATUS)
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert df["value"][0] == 2
 
 

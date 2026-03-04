@@ -91,7 +91,7 @@ class TestHeartbeatScrape:
 
             await harness.metric_store.scrape_once()
 
-            result = harness.metric_store.instant_query("miles_ft_training_iteration")
+            result = harness.metric_store.instant_query("training_iteration")
             assert len(result) > 0
             row = result.row(0, named=True)
             assert row["value"] == 42.0
@@ -178,6 +178,6 @@ class TestPhaseSwitch:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
             text = response.text
-            assert 'miles_ft_training_phase{node_id=' in text
+            assert 'training_phase{node_id=' in text
         finally:
             agent.shutdown()

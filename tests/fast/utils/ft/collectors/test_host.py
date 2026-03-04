@@ -19,7 +19,7 @@ class TestHostCollectorXid:
         ])
 
         result = await collector.collect()
-        xid_samples = [m for m in result.metrics if m.name == "miles_ft_xid_code_recent"]
+        xid_samples = [m for m in result.metrics if m.name == "xid_code_recent"]
         assert len(xid_samples) == 1
         assert xid_samples[0].labels == {"xid": "48"}
         assert xid_samples[0].value == 1.0
@@ -33,7 +33,7 @@ class TestHostCollectorXid:
         ])
 
         result = await collector.collect()
-        xid_samples = [m for m in result.metrics if m.name == "miles_ft_xid_code_recent"]
+        xid_samples = [m for m in result.metrics if m.name == "xid_code_recent"]
         assert len(xid_samples) == 2
         xid_codes = {m.labels["xid"] for m in xid_samples}
         assert xid_codes == {"31", "48"}
@@ -51,10 +51,10 @@ class TestHostCollectorXid:
         collector._kmsg_reader = FakeKmsgReader([])
         result = await collector.collect()
 
-        xid_samples = [m for m in result.metrics if m.name == "miles_ft_xid_code_recent"]
+        xid_samples = [m for m in result.metrics if m.name == "xid_code_recent"]
         assert len(xid_samples) == 0
 
-        count_sample = [m for m in result.metrics if m.name == "miles_ft_xid_count_recent"]
+        count_sample = [m for m in result.metrics if m.name == "xid_count_recent"]
         assert count_sample[0].value == 0.0
 
     @pytest.mark.asyncio()
@@ -67,7 +67,7 @@ class TestHostCollectorXid:
         ])
 
         result = await collector.collect()
-        count = [m for m in result.metrics if m.name == "miles_ft_xid_count_recent"]
+        count = [m for m in result.metrics if m.name == "xid_count_recent"]
         assert count[0].value == 3.0
 
 
@@ -80,7 +80,7 @@ class TestHostCollectorKernelEvents:
         ])
 
         result = await collector.collect()
-        kernel = [m for m in result.metrics if m.name == "miles_ft_kernel_event_count"]
+        kernel = [m for m in result.metrics if m.name == "kernel_event_count"]
         assert kernel[0].value == 1.0
 
     @pytest.mark.asyncio()
@@ -91,7 +91,7 @@ class TestHostCollectorKernelEvents:
         ])
 
         result = await collector.collect()
-        kernel = [m for m in result.metrics if m.name == "miles_ft_kernel_event_count"]
+        kernel = [m for m in result.metrics if m.name == "kernel_event_count"]
         assert kernel[0].value == 1.0
 
     @pytest.mark.asyncio()
@@ -102,7 +102,7 @@ class TestHostCollectorKernelEvents:
         ])
 
         result = await collector.collect()
-        kernel = [m for m in result.metrics if m.name == "miles_ft_kernel_event_count"]
+        kernel = [m for m in result.metrics if m.name == "kernel_event_count"]
         assert kernel[0].value == 0.0
 
 
@@ -116,9 +116,9 @@ class TestHostCollectorDisk:
         collector._kmsg_reader = FakeKmsgReader([])
 
         result = await collector.collect()
-        disk = [m for m in result.metrics if m.name == "miles_ft_node_filesystem_avail_bytes"]
+        disk = [m for m in result.metrics if m.name == "disk_available_bytes"]
         assert len(disk) == 1
-        assert disk[0].labels == {"mountpoint": str(tmp_path)}
+        assert disk[0].labels == {"mount": str(tmp_path)}
         assert disk[0].value > 0
 
 
@@ -137,7 +137,7 @@ class TestHostCollectorDmesgFallback:
 
             result = await collector.collect()
 
-        xid_samples = [m for m in result.metrics if m.name == "miles_ft_xid_code_recent"]
+        xid_samples = [m for m in result.metrics if m.name == "xid_code_recent"]
         assert len(xid_samples) == 1
         assert xid_samples[0].labels["xid"] == "48"
 

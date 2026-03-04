@@ -151,12 +151,12 @@ class TestMiniPrometheusRangeFunctions:
             store.ingest_samples(
                 target_id="node-0",
                 samples=[MetricSample(
-                    name="miles_ft_training_iteration", labels={"rank": "0"}, value=100.0,
+                    name="training_iteration", labels={"rank": "0"}, value=100.0,
                 )],
                 timestamp=now - timedelta(minutes=2 - i),
             )
 
-        df = store.instant_query("changes(miles_ft_training_iteration[5m])")
+        df = store.instant_query("changes(training_iteration[5m])")
         assert len(df) == 1
         assert df["value"][0] == 0.0
 
@@ -171,12 +171,12 @@ class TestMiniPrometheusRangeFunctions:
             store.ingest_samples(
                 target_id="node-0",
                 samples=[MetricSample(
-                    name="miles_ft_training_iteration", labels={"rank": "0"}, value=val,
+                    name="training_iteration", labels={"rank": "0"}, value=val,
                 )],
                 timestamp=now - timedelta(minutes=4 - i),
             )
 
-        df = store.instant_query("changes(miles_ft_training_iteration[5m])")
+        df = store.instant_query("changes(training_iteration[5m])")
         assert df["value"][0] == 3.0
 
     def test_count_over_time_with_compare(self) -> None:
