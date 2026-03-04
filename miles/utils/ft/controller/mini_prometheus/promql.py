@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import operator as _op
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -127,6 +128,18 @@ def _parse_metric_selector(text: str) -> MetricSelector:
     return MetricSelector(name=text)
 
 
+def _find_matching_close(text: str, *, open_ch: str, close_ch: str) -> int:
+    depth = 1
+    for i, ch in enumerate(text):
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
 def _find_compare_op(text: str) -> tuple[str, CompareOp, str] | None:
     brace_depth = 0
     for i, ch in enumerate(text):
@@ -154,17 +167,7 @@ def parse_promql(query: str) -> PromQLExpr:
         prefix = f"{func_name}("
         if query.startswith(prefix):
             inner_and_rest = query[len(prefix):]
-
-            paren_depth = 1
-            func_end = -1
-            for i, ch in enumerate(inner_and_rest):
-                if ch == "(":
-                    paren_depth += 1
-                elif ch == ")":
-                    paren_depth -= 1
-                    if paren_depth == 0:
-                        func_end = i
-                        break
+            func_end = _find_matching_close(inner_and_rest, open_ch="(", close_ch=")")
 
             if func_end < 0:
                 raise ValueError(f"Unmatched parenthesis in: {query!r}")
@@ -222,20 +225,21 @@ def parse_promql(query: str) -> PromQLExpr:
 # ---------------------------------------------------------------------------
 
 
+_COMPARE_DISPATCH = {
+    CompareOp.EQ: _op.eq,
+    CompareOp.NEQ: _op.ne,
+    CompareOp.GT: _op.gt,
+    CompareOp.LT: _op.lt,
+    CompareOp.GTE: _op.ge,
+    CompareOp.LTE: _op.le,
+}
+
+
 def compare_col(col: pl.Expr, op: CompareOp, threshold: float) -> pl.Expr:
-    if op == CompareOp.EQ:
-        return col == threshold
-    if op == CompareOp.NEQ:
-        return col != threshold
-    if op == CompareOp.GT:
-        return col > threshold
-    if op == CompareOp.LT:
-        return col < threshold
-    if op == CompareOp.GTE:
-        return col >= threshold
-    if op == CompareOp.LTE:
-        return col <= threshold
-    raise ValueError(f"Unknown compare op: {op}")
+    fn = _COMPARE_DISPATCH.get(op)
+    if fn is None:
+        raise ValueError(f"Unknown compare op: {op}")
+    return fn(col, threshold)
 
 
 # ---------------------------------------------------------------------------

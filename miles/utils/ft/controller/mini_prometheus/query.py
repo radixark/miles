@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
@@ -9,8 +10,14 @@ import polars as pl
 
 _SeriesKey = tuple[str, frozenset[tuple[str, str]]]
 
-_EMPTY_INSTANT = pl.DataFrame({"__name__": [], "value": []})
-_EMPTY_RANGE = pl.DataFrame({"__name__": [], "timestamp": [], "value": []})
+EMPTY_INSTANT = pl.DataFrame(
+    {"__name__": pl.Series([], dtype=pl.Utf8), "value": pl.Series([], dtype=pl.Float64)}
+)
+EMPTY_RANGE = pl.DataFrame({
+    "__name__": pl.Series([], dtype=pl.Utf8),
+    "timestamp": pl.Series([], dtype=pl.Float64),
+    "value": pl.Series([], dtype=pl.Float64),
+})
 
 
 @dataclass
@@ -31,16 +38,10 @@ def query_latest(
     metric_name: str,
     label_filters: dict[str, str] | None = None,
 ) -> pl.DataFrame:
-    rows: list[dict] = []
-    for labels, samples in _iter_matching(series, label_maps, name_index, metric_name, label_filters):
-        latest = samples[-1]
-        row: dict = {"__name__": metric_name, "value": latest.value}
-        row.update(labels)
-        rows.append(row)
-
-    if not rows:
-        return _EMPTY_INSTANT
-    return pl.DataFrame(rows)
+    return _instant_query(
+        series, label_maps, name_index, metric_name, label_filters,
+        value_fn=lambda samples: samples[-1].value,
+    )
 
 
 def query_range(
@@ -101,6 +102,29 @@ def _iter_matching(
         yield labels, samples
 
 
+def _instant_query(
+    series: dict[_SeriesKey, deque[TimeSeriesSample]],
+    label_maps: dict[_SeriesKey, dict[str, str]],
+    name_index: dict[str, set[_SeriesKey]],
+    metric_name: str,
+    label_filters: dict[str, str] | None,
+    value_fn: Callable[[deque[TimeSeriesSample]], float | None],
+) -> pl.DataFrame:
+    rows: list[dict] = []
+    for labels, samples in _iter_matching(series, label_maps, name_index, metric_name, label_filters):
+        value = value_fn(samples)
+        if value is None:
+            continue
+
+        row: dict = {"__name__": metric_name, "value": value}
+        row.update(labels)
+        rows.append(row)
+
+    if not rows:
+        return _EMPTY_INSTANT
+    return pl.DataFrame(rows)
+
+
 def range_aggregate(
     series: dict[_SeriesKey, deque[TimeSeriesSample]],
     label_maps: dict[_SeriesKey, dict[str, str]],
@@ -110,23 +134,18 @@ def range_aggregate(
     window: timedelta,
     label_filters: dict[str, str] | None,
 ) -> pl.DataFrame:
-    now = datetime.now(timezone.utc)
-    window_start = now - window
-    rows: list[dict] = []
+    window_start = datetime.now(timezone.utc) - window
 
-    for labels, samples in _iter_matching(series, label_maps, name_index, metric_name, label_filters):
+    def _extract(samples: deque[TimeSeriesSample]) -> float | None:
         window_samples = [s for s in samples if s.timestamp >= window_start]
         if not window_samples:
-            continue
+            return None
+        return _compute_aggregate(func_name, window_samples)
 
-        value = _compute_aggregate(func_name, window_samples)
-        row: dict = {"__name__": metric_name, "value": value}
-        row.update(labels)
-        rows.append(row)
-
-    if not rows:
-        return _EMPTY_INSTANT
-    return pl.DataFrame(rows)
+    return _instant_query(
+        series, label_maps, name_index, metric_name, label_filters,
+        value_fn=_extract,
+    )
 
 
 def _compute_aggregate(func_name: str, samples: list[TimeSeriesSample]) -> float:
