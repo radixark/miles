@@ -5,6 +5,7 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.mini_prometheus.storage import MiniPrometheus
 from miles.utils.ft.controller.mini_wandb import MiniWandb
+from miles.utils.ft.metric_names import TRAINING_JOB_STATUS
 from miles.utils.ft.models import ActionType, Decision, MetricSample
 from miles.utils.ft.platform.protocols import (
     JobStatus,
@@ -23,7 +24,6 @@ _JOB_STATUS_TO_NUMERIC: dict[JobStatus, int] = {
 
 _ALL_DETECTORS_PASSED = Decision(action=ActionType.NONE, reason="all detectors passed")
 
-METRIC_TRAINING_JOB_STATUS = "training_job_status"
 _SYNTHETIC_TARGET_ID = "controller"
 
 
@@ -185,7 +185,7 @@ class FtController:
                 target_id=_SYNTHETIC_TARGET_ID,
                 samples=[
                     MetricSample(
-                        name=METRIC_TRAINING_JOB_STATUS,
+                        name=TRAINING_JOB_STATUS,
                         labels={},
                         value=status_value,
                     )
