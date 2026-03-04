@@ -181,7 +181,7 @@ def create_placement_groups(args):
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
     excluded: set[str] = set()
-    if getattr(args, "use_fault_tolerance", False):
+    if args.use_fault_tolerance:
         excluded = _get_excluded_node_ids()
         if excluded:
             logger.info("Excluding bad nodes from placement: %s", excluded)

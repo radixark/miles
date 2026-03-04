@@ -105,7 +105,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
-        ft_enabled = getattr(self.args, "use_fault_tolerance", False)
+        ft_enabled = self.args.use_fault_tolerance
 
         self._ft_agent = FtMegatronAgent.maybe_create(
             rank=dist.get_rank(),
