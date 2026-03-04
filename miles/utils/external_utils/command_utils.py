@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import random
+import shlex
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -96,17 +97,21 @@ class ExecuteTrainConfig:
     enable_elastic: bool = False
 
 
+_FT_CONTROLLER_STARTUP_WAIT_SECONDS = 5
+
+
 def _submit_ft_controller_job(
     ray_address: str,
     train_entrypoint: str,
     megatron_path: str,
 ) -> None:
     """Submit the FT Controller as a separate Ray job (fire-and-forget)."""
+    quoted_entrypoint = shlex.quote(train_entrypoint)
     launcher_cmd = (
         "python -m miles.utils.ft.platform.launcher main "
         "--platform k8s-ray "
         f"--ray-address {ray_address} "
-        f'--entrypoint "{train_entrypoint}" '
+        f"--entrypoint {quoted_entrypoint} "
         "--as-ray-actor"
     )
     runtime_env = json.dumps({"env_vars": {"PYTHONPATH": megatron_path}})
@@ -170,14 +175,14 @@ def execute_train(
     ray_address = "http://127.0.0.1:8265"
 
     if config.enable_elastic:
-        train_entrypoint = (
-            f"python3 {train_script} {train_args}"
-        )
+        train_entrypoint = f"python3 {train_script} {train_args}"
         _submit_ft_controller_job(
             ray_address=ray_address,
             train_entrypoint=train_entrypoint,
             megatron_path=megatron_path,
         )
+        time.sleep(_FT_CONTROLLER_STARTUP_WAIT_SECONDS)
+
         if "--use-fault-tolerance" not in train_args:
             train_args = f"--use-fault-tolerance {train_args}"
 

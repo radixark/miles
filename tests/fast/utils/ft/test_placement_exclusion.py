@@ -107,6 +107,21 @@ class TestGetExcludedNodeIds:
 
         assert result == set()
 
+    def test_os_error_still_includes_hostname(self) -> None:
+        mock_module = _make_mock_k8s_module(["host-with-os-error"])
+
+        with (
+            patch.dict(sys.modules, {"miles.utils.ft.platform.k8s_node_manager": mock_module}),
+            patch(
+                "miles.ray.placement_group.socket.gethostbyname",
+                side_effect=OSError("network unreachable"),
+            ),
+        ):
+            result = _get_excluded_node_ids()
+
+        assert "host-with-os-error" in result
+        assert len(result) == 1
+
     def test_multiple_bad_nodes(self) -> None:
         mock_module = _make_mock_k8s_module(["node-a", "node-b"])
 
