@@ -32,7 +32,6 @@ from ..training_utils.log_utils import aggregate_forward_results, aggregate_trai
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
-from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
@@ -587,7 +586,6 @@ def train(
         pre_hook_enabled = False
 
     num_steps_per_rollout = len(num_microbatches)
-    is_main_rank = is_megatron_main_rank()
 
     # Run training iterations till done.
     for step_id in range(num_steps_per_rollout):
@@ -641,7 +639,11 @@ def train(
             ft_agent.step(iteration=accumulated_step_id)
 
         # per train step log.
-        if is_main_rank:
+        if (
+            mpu.get_data_parallel_rank(with_context_parallel=True) == 0
+            and mpu.get_tensor_model_parallel_rank() == 0
+            and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
+        ):
             role = getattr(model[0], "role", "actor")
             role_tag = "" if role == "actor" else f"{role}-"
 
