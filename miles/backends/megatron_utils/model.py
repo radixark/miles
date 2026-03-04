@@ -495,6 +495,7 @@ def train(
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
     parallel_state: ParallelState,
+    ft_agent: "FtMegatronAgent | None" = None,
 ) -> None:
     """Run training over a rollout consisting of multiple steps.
 
@@ -508,6 +509,7 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
+        ft_agent: Optional FtMegatronAgent for fault tolerance heartbeat and metrics.
     """
     args = get_args()
 
@@ -625,13 +627,24 @@ def train(
 
                     check_mtp_loss(mtp_losses)
 
-        # per train step log.
-        if (
+        accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
+
+        is_main_rank = (
             mpu.get_data_parallel_rank(with_context_parallel=True) == 0
             and mpu.get_tensor_model_parallel_rank() == 0
             and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
-        ):
-            accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
+        )
+
+        if ft_agent is not None:
+            ft_agent.step(
+                iteration=accumulated_step_id,
+                loss=loss_dict.get("total_loss") if is_main_rank else None,
+                grad_norm=grad_norm if is_main_rank else None,
+                phase="training",
+            )
+
+        # per train step log.
+        if is_main_rank:
             role = getattr(model[0], "role", "actor")
             role_tag = "" if role == "actor" else f"{role}-"
 
