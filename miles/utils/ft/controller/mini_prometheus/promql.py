@@ -71,7 +71,7 @@ PromQLExpr = MetricSelector | CompareExpr | RangeFunction | RangeFunctionCompare
 # ---------------------------------------------------------------------------
 
 _DURATION_RE = re.compile(r"(\d+)([smhd])")
-_COMPARE_OPS = ["==", "!=", ">=", "<=", ">", "<"]
+_COMPARE_OPS = ["==", "!=", ">=", "<=", ">", "<"]  # longest-first to avoid greedy single-char match
 _RANGE_FUNCTIONS = {
     "count_over_time",
     "changes",

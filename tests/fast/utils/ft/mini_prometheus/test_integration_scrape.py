@@ -1,6 +1,5 @@
 """Integration tests: MiniPrometheus scraping real prometheus_client exporters."""
 
-import asyncio
 import logging
 import socket
 from datetime import timedelta

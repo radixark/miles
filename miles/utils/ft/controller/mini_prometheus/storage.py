@@ -8,10 +8,11 @@ from datetime import datetime, timedelta
 
 import polars as pl
 
+from typing import Iterator
+
 from miles.utils.ft.controller.mini_prometheus.promql import (
     CompareExpr,
     CompareOp,
-    LabelMatcher,
     MetricSelector,
     PromQLExpr,
     RangeFunction,
@@ -44,10 +45,12 @@ class MiniPrometheus:
     def __init__(self, config: MiniPrometheusConfig | None = None) -> None:
         self._config = config or MiniPrometheusConfig()
         self._series: dict[_SeriesKey, deque[_TimeSeriesSample]] = {}
+        # Cached label dicts to avoid reconstructing from frozenset on every query
         self._label_maps: dict[_SeriesKey, dict[str, str]] = {}
         self._name_index: dict[str, list[_SeriesKey]] = {}
         self._scrape_targets: dict[str, str] = {}
         self._running = False
+        self._last_eviction_time: datetime | None = None
 
     # -------------------------------------------------------------------
     # Scrape target management
@@ -82,7 +85,7 @@ class MiniPrometheus:
 
             self._series[key].append(_TimeSeriesSample(timestamp=ts, value=sample.value))
 
-        self._evict_expired()
+        self._maybe_evict()
 
     # -------------------------------------------------------------------
     # HTTP scraping
@@ -143,32 +146,12 @@ class MiniPrometheus:
         return self._evaluate_range(expr, start=start, end=end, step=step)
 
     # -------------------------------------------------------------------
-    # Internal: instant evaluation
+    # Internal: shared query helpers
     # -------------------------------------------------------------------
 
-    def _evaluate_instant(self, expr: PromQLExpr) -> pl.DataFrame:
-        if isinstance(expr, MetricSelector):
-            return self._instant_selector(expr)
-
-        if isinstance(expr, CompareExpr):
-            df = self._instant_selector(expr.selector)
-            if df.is_empty():
-                return df
-            return df.filter(_compare_col(pl.col("value"), expr.op, expr.threshold))
-
-        if isinstance(expr, RangeFunction):
-            return self._instant_range_function(expr)
-
-        if isinstance(expr, RangeFunctionCompare):
-            df = self._instant_range_function(expr.func)
-            if df.is_empty():
-                return df
-            return df.filter(_compare_col(pl.col("value"), expr.op, expr.threshold))
-
-        raise ValueError(f"Unsupported expression type: {type(expr)}")
-
-    def _instant_selector(self, selector: MetricSelector) -> pl.DataFrame:
-        rows: list[dict] = []
+    def _iter_matching_series(
+        self, selector: MetricSelector,
+    ) -> Iterator[tuple[dict[str, str], deque[_TimeSeriesSample]]]:
         for key in self._name_index.get(selector.name, []):
             samples = self._series.get(key)
             if not samples:
@@ -178,6 +161,40 @@ class MiniPrometheus:
             if not _match_labels(labels, selector.matchers):
                 continue
 
+            yield labels, samples
+
+    @staticmethod
+    def _filter_by_compare(
+        df: pl.DataFrame, op: CompareOp, threshold: float,
+    ) -> pl.DataFrame:
+        if df.is_empty():
+            return df
+        return df.filter(_compare_col(pl.col("value"), op, threshold))
+
+    # -------------------------------------------------------------------
+    # Internal: instant evaluation
+    # -------------------------------------------------------------------
+
+    def _evaluate_instant(self, expr: PromQLExpr) -> pl.DataFrame:
+        if isinstance(expr, MetricSelector):
+            return self._instant_selector(expr)
+
+        if isinstance(expr, CompareExpr):
+            df = self._instant_selector(expr.selector)
+            return self._filter_by_compare(df, expr.op, expr.threshold)
+
+        if isinstance(expr, RangeFunction):
+            return self._instant_range_function(expr)
+
+        if isinstance(expr, RangeFunctionCompare):
+            df = self._instant_range_function(expr.func)
+            return self._filter_by_compare(df, expr.op, expr.threshold)
+
+        raise ValueError(f"Unsupported expression type: {type(expr)}")
+
+    def _instant_selector(self, selector: MetricSelector) -> pl.DataFrame:
+        rows: list[dict] = []
+        for labels, samples in self._iter_matching_series(selector):
             latest = samples[-1]
             row: dict = {"__name__": selector.name, "value": latest.value}
             row.update(labels)
@@ -192,15 +209,7 @@ class MiniPrometheus:
         window_start = now - func.duration
         rows: list[dict] = []
 
-        for key in self._name_index.get(func.selector.name, []):
-            samples = self._series.get(key)
-            if not samples:
-                continue
-
-            labels = self._label_maps[key]
-            if not _match_labels(labels, func.selector.matchers):
-                continue
-
+        for labels, samples in self._iter_matching_series(func.selector):
             window_samples = [s for s in samples if s.timestamp >= window_start]
             if not window_samples:
                 continue
@@ -230,9 +239,7 @@ class MiniPrometheus:
 
         if isinstance(expr, CompareExpr):
             df = self._range_selector(expr.selector, start=start, end=end, step=step)
-            if df.is_empty():
-                return df
-            return df.filter(_compare_col(pl.col("value"), expr.op, expr.threshold))
+            return self._filter_by_compare(df, expr.op, expr.threshold)
 
         raise ValueError(
             f"range_query not yet supported for expression type: {type(expr)}"
@@ -246,17 +253,11 @@ class MiniPrometheus:
         step: timedelta,
     ) -> pl.DataFrame:
         rows: list[dict] = []
-        for key in self._name_index.get(selector.name, []):
-            samples = self._series.get(key)
-            if not samples:
-                continue
-
-            labels = self._label_maps[key]
-            if not _match_labels(labels, selector.matchers):
-                continue
-
+        for labels, samples in self._iter_matching_series(selector):
             for sample in samples:
-                if start <= sample.timestamp <= end:
+                if sample.timestamp > end:
+                    break
+                if sample.timestamp >= start:
                     row: dict = {
                         "__name__": selector.name,
                         "timestamp": sample.timestamp,
@@ -272,6 +273,17 @@ class MiniPrometheus:
     # -------------------------------------------------------------------
     # Internal: eviction
     # -------------------------------------------------------------------
+
+    def _maybe_evict(self) -> None:
+        now = datetime.utcnow()
+        evict_interval = self._config.retention / 10
+        if (
+            self._last_eviction_time is not None
+            and now - self._last_eviction_time < evict_interval
+        ):
+            return
+        self._last_eviction_time = now
+        self._evict_expired()
 
     def _evict_expired(self) -> None:
         cutoff = datetime.utcnow() - self._config.retention
