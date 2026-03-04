@@ -22,8 +22,7 @@ from miles.utils.reloadable_process_group import destroy_process_groups, monkey_
 from miles.utils.replay_base import all_replay_managers
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
-from miles.utils.ft.agents.tracking_agent import FtTrackingAgent
-from miles.utils.tracking_utils import init_tracking, set_ft_tracking_agent
+from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
@@ -112,11 +111,6 @@ class MegatronTrainRayActor(TrainRayActor):
             world_size=dist.get_world_size(),
             enabled=ft_enabled,
         )
-
-        if ft_enabled:
-            set_ft_tracking_agent(
-                FtTrackingAgent(rank=dist.get_rank())
-            )
 
         if role == "critic":
             if self.args.offload_train:
