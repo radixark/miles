@@ -516,7 +516,7 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
-        ft_agent: Optional FtMegatronAgent for fault tolerance heartbeat and metrics.
+        ft_agent: Optional FtMegatronAgent for fault tolerance heartbeat.
     """
     args = get_args()
 
@@ -638,12 +638,7 @@ def train(
         accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
 
         if ft_agent is not None:
-            ft_agent.step(
-                iteration=accumulated_step_id,
-                loss=loss_dict.get("loss") if is_main_rank else None,
-                grad_norm=grad_norm if is_main_rank else None,
-                phase="training",
-            )
+            ft_agent.step(iteration=accumulated_step_id)
 
         # per train step log.
         if is_main_rank:
