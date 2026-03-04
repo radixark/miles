@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import socket
 
@@ -10,7 +9,6 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.actor_group import RayTrainGroup
 from miles.ray.rollout import RolloutManager
-from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
 
 logger = logging.getLogger(__name__)
 
@@ -44,28 +42,13 @@ def _sort_key(x: tuple[int, str, str]) -> tuple[list[int], str]:
     return (node_ip_parts, gpu_id)
 
 
-def _get_excluded_node_ids() -> set[str]:
-    """Query K8s for bad nodes and return a set of all identifiers (hostname + IP).
-
-    Returns both hostname and resolved IP so the exclusion check works regardless
-    of whether Ray reports node IPs or hostnames.
-    Falls back gracefully on any error (returns empty set, logs warning).
-    """
-    try:
-        manager = K8sNodeManager()
-        bad_nodes: list[str] = asyncio.run(manager.get_bad_nodes())
-    except Exception:
-        logger.warning(
-            "Failed to query K8s bad nodes, proceeding without exclusion",
-            exc_info=True,
-        )
-        return set()
-
+def _resolve_excluded_nodes(names: list[str]) -> set[str]:
+    """Expand node names into a set containing both the original name and its resolved IP."""
     ids: set[str] = set()
-    for hostname in bad_nodes:
-        ids.add(hostname)
+    for name in names:
+        ids.add(name)
         try:
-            ids.add(socket.gethostbyname(hostname))
+            ids.add(socket.gethostbyname(name))
         except (socket.gaierror, OSError):
             pass
     return ids
@@ -181,10 +164,9 @@ def create_placement_groups(args):
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
     excluded: set[str] = set()
-    if args.use_fault_tolerance:
-        excluded = _get_excluded_node_ids()
-        if excluded:
-            logger.info("Excluding bad nodes from placement: %s", excluded)
+    if args.excluded_nodes:
+        excluded = _resolve_excluded_nodes(args.excluded_nodes.split(","))
+        logger.info("Excluding nodes from placement: %s", excluded)
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
     pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(

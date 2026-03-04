@@ -2,8 +2,10 @@
 This file is not for miles framework itself, but as an optional utility to easily launch miles jobs and tests.
 """
 
+import asyncio
 import datetime
 import json
+import logging
 import os
 import random
 import shlex
@@ -13,10 +15,13 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
 from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command, exec_command_all_ray_node, dataclass_cli
+
+logger = logging.getLogger(__name__)
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
@@ -123,6 +128,16 @@ def _submit_ft_controller_job(
     )
 
 
+def _query_excluded_nodes() -> list[str]:
+    """Query K8s for nodes labeled as bad. Returns empty list on failure."""
+    try:
+        manager = K8sNodeManager()
+        return asyncio.run(manager.get_bad_nodes())
+    except Exception:
+        logger.warning("Failed to query K8s bad nodes", exc_info=True)
+        return []
+
+
 def execute_train(
     train_args: str,
     num_gpus_per_node: int,
@@ -185,6 +200,10 @@ def execute_train(
 
         if "--use-fault-tolerance" not in train_args:
             train_args = f"--use-fault-tolerance {train_args}"
+
+        excluded = _query_excluded_nodes()
+        if excluded:
+            train_args = f"--excluded-nodes {','.join(excluded)} {train_args}"
 
     runtime_env_json = json.dumps(
         {

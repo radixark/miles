@@ -486,6 +486,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
+            parser.add_argument(
+                "--excluded-nodes",
+                type=str,
+                default="",
+                help="Comma-separated list of node hostnames/IPs to exclude from placement groups.",
+            )
             return parser
 
         # data
