@@ -9,33 +9,13 @@ from __future__ import annotations
 import pytest
 
 from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
-from miles.utils.ft.models import ActionType, Decision, DiagnosticResult, RecoveryPhase
+from miles.utils.ft.models import RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
     ControllerTestHarness,
-    FakeNodeAgent,
-    FixedDecisionDetector,
+    make_fake_agents,
     make_test_controller,
 )
-
-
-def _make_agents_with_results(
-    node_results: dict[str, dict[str, bool]],
-) -> dict[str, FakeNodeAgent]:
-    """Build FakeNodeAgents from {node_id: {diag_type: passed}} mapping."""
-    agents: dict[str, FakeNodeAgent] = {}
-    for node_id, results in node_results.items():
-        diagnostic_results = {
-            diag_type: DiagnosticResult(
-                diagnostic_type=diag_type,
-                node_id=node_id,
-                passed=passed,
-                details="pass" if passed else "fail",
-            )
-            for diag_type, passed in results.items()
-        }
-        agents[node_id] = FakeNodeAgent(diagnostic_results=diagnostic_results)
-    return agents
 
 
 def _enter_recovery_and_skip_to_diagnosing(
@@ -64,7 +44,7 @@ class TestDiagnosticPipelineWithBadNode:
 
     @pytest.mark.asyncio
     async def test_diagnose_evict_bad_node(self) -> None:
-        agents = _make_agents_with_results({
+        agents = make_fake_agents({
             "node-0": {"gpu": True},
             "node-1": {"gpu": False},
         })
@@ -108,7 +88,7 @@ class TestDiagnosticPipelineAllPass:
 
     @pytest.mark.asyncio
     async def test_all_pass_leads_to_notify(self) -> None:
-        agents = _make_agents_with_results({
+        agents = make_fake_agents({
             "node-0": {"gpu": True},
             "node-1": {"gpu": True},
         })
@@ -175,7 +155,7 @@ class TestDiagnosticPipelineMultiStep:
 
     @pytest.mark.asyncio
     async def test_multi_step_second_step_catches(self) -> None:
-        agents = _make_agents_with_results({
+        agents = make_fake_agents({
             "node-0": {"gpu": True, "intra": True},
             "node-1": {"gpu": True, "intra": False},
         })

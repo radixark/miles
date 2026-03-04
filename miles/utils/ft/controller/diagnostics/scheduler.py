@@ -43,7 +43,13 @@ class DiagnosticScheduler:
                 reason="all diagnostics passed (empty pipeline)",
             )
 
-        remaining_agents = dict(self._agents)
+        if suspect_node_ids is not None:
+            remaining_agents = {
+                nid: agent for nid, agent in self._agents.items()
+                if nid in suspect_node_ids
+            }
+        else:
+            remaining_agents = dict(self._agents)
 
         for diagnostic_type in self._pipeline:
             if not remaining_agents:

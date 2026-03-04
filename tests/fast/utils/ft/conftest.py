@@ -468,6 +468,25 @@ class TestCollector(BaseCollector):
         return list(self._metrics)
 
 
+def make_fake_agents(
+    node_results: dict[str, dict[str, bool]],
+) -> dict[str, "FakeNodeAgent"]:
+    """Build FakeNodeAgents from {node_id: {diag_type: passed}} mapping."""
+    agents: dict[str, FakeNodeAgent] = {}
+    for node_id, results in node_results.items():
+        diagnostic_results = {
+            diag_type: DiagnosticResult(
+                diagnostic_type=diag_type,
+                node_id=node_id,
+                passed=passed,
+                details="pass" if passed else "fail",
+            )
+            for diag_type, passed in results.items()
+        }
+        agents[node_id] = FakeNodeAgent(diagnostic_results=diagnostic_results)
+    return agents
+
+
 class FakeNodeAgent:
     def __init__(
         self,
@@ -480,7 +499,15 @@ class FakeNodeAgent:
     async def run_diagnostic(
         self, diagnostic_type: str, timeout_seconds: int = 120,
     ) -> DiagnosticResult:
-        return self._diagnostic_results[diagnostic_type]
+        result = self._diagnostic_results.get(diagnostic_type)
+        if result is None:
+            return DiagnosticResult(
+                diagnostic_type=diagnostic_type,
+                node_id="fake",
+                passed=False,
+                details=f"unknown diagnostic type: {diagnostic_type}",
+            )
+        return result
 
     async def cleanup_training_processes(self, training_job_id: str) -> None:
         self.cleanup_called = True
