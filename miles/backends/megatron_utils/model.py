@@ -23,14 +23,13 @@ from megatron.training.training import get_model
 
 from miles.utils.memory_utils import clear_memory
 
-from .initialize import is_megatron_main_rank
-
 from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
+from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
