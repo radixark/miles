@@ -4,6 +4,7 @@ import logging
 import pytest
 from prometheus_client import CollectorRegistry
 
+from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
@@ -320,7 +321,6 @@ class TestTrainingJobStatusExporter:
     @pytest.mark.asyncio
     async def test_tick_updates_training_job_status_gauge(self) -> None:
         registry = CollectorRegistry()
-        from miles.utils.ft.controller.controller_exporter import ControllerExporter
         exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(controller_exporter=exporter)
 
@@ -331,7 +331,6 @@ class TestTrainingJobStatusExporter:
     @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
         registry = CollectorRegistry()
-        from miles.utils.ft.controller.controller_exporter import ControllerExporter
         exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(
             status_sequence=[JobStatus.FAILED],
@@ -345,7 +344,6 @@ class TestTrainingJobStatusExporter:
     @pytest.mark.asyncio
     async def test_stopped_status_maps_to_zero(self) -> None:
         registry = CollectorRegistry()
-        from miles.utils.ft.controller.controller_exporter import ControllerExporter
         exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(
             status_sequence=[JobStatus.STOPPED],
@@ -359,7 +357,6 @@ class TestTrainingJobStatusExporter:
     @pytest.mark.asyncio
     async def test_pending_status_maps_to_two(self) -> None:
         registry = CollectorRegistry()
-        from miles.utils.ft.controller.controller_exporter import ControllerExporter
         exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(
             status_sequence=[JobStatus.PENDING],
@@ -373,7 +370,6 @@ class TestTrainingJobStatusExporter:
     @pytest.mark.asyncio
     async def test_tick_count_incremented(self) -> None:
         registry = CollectorRegistry()
-        from miles.utils.ft.controller.controller_exporter import ControllerExporter
         exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(controller_exporter=exporter)
 

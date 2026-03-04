@@ -82,11 +82,12 @@ def _parse_instant_response(data: dict) -> pl.DataFrame:
         logger.warning("prometheus_query_error response=%s", data)
         return _empty_instant_dataframe()
 
-    result = data.get("data", {}).get("result", [])
+    data_section = data.get("data", {})
+    result = data_section.get("result", [])
     if not result:
         return _empty_instant_dataframe()
 
-    result_type = data.get("data", {}).get("resultType", "")
+    result_type = data_section.get("resultType", "")
     if result_type == "vector":
         return _parse_vector(result)
     if result_type == "scalar":
@@ -111,8 +112,7 @@ def _parse_vector(result: list[dict]) -> pl.DataFrame:
 
     records: list[dict[str, object]] = []
     for row in rows:
-        metric = row["_metric"]
-        assert isinstance(metric, dict)
+        metric: dict = row["_metric"]  # type: ignore[assignment]
         record: dict[str, object] = {"__name__": metric.get("__name__", "")}
         for key in sorted(all_label_keys):
             if key != "__name__":
@@ -133,11 +133,12 @@ def _parse_range_response(data: dict) -> pl.DataFrame:
         logger.warning("prometheus_query_error response=%s", data)
         return _empty_range_dataframe()
 
-    result = data.get("data", {}).get("result", [])
+    data_section = data.get("data", {})
+    result = data_section.get("result", [])
     if not result:
         return _empty_range_dataframe()
 
-    result_type = data.get("data", {}).get("resultType", "")
+    result_type = data_section.get("resultType", "")
     if result_type != "matrix":
         logger.warning("prometheus_unsupported_range_result_type type=%s", result_type)
         return _empty_range_dataframe()
