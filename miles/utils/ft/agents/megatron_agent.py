@@ -31,27 +31,31 @@ class FtMegatronAgent:
         self._node_id: str = socket.gethostname()
 
         self._registry = CollectorRegistry()
-        self._iteration_gauge = Gauge(
+        self._labels: dict[str, str] = {
+            "rank": str(self._rank),
+            "node_id": self._node_id,
+        }
+
+        iteration_gauge = Gauge(
             "training_iteration",
             "Current training iteration",
             labelnames=["rank", "node_id"],
             registry=self._registry,
         )
-        self._phase_gauge = Gauge(
+        phase_gauge = Gauge(
             "training_phase",
             "Current training phase (0=idle, 1=training, 2=checkpoint_saving)",
             labelnames=["rank", "node_id"],
             registry=self._registry,
         )
 
-        self._iteration_gauge.labels(
-            rank=str(self._rank), node_id=self._node_id
-        ).set(0)
-        self._phase_gauge.labels(
-            rank=str(self._rank), node_id=self._node_id
-        ).set(_PHASE_TO_NUMERIC["idle"])
+        self._iteration_child = iteration_gauge.labels(**self._labels)
+        self._phase_child = phase_gauge.labels(**self._labels)
+        self._iteration_child.set(0)
+        self._phase_child.set(_PHASE_TO_NUMERIC["idle"])
 
         self._controller_handle: Any | None = None
+        self._controller_lookup_failed: bool = False
 
         httpd, _thread = start_http_server(port=0, registry=self._registry)
         self._httpd = httpd
@@ -109,6 +113,14 @@ class FtMegatronAgent:
                 exc_info=True,
             )
 
+    def shutdown(self) -> None:
+        self._httpd.shutdown()
+        self._httpd.server_close()
+
+    # ------------------------------------------------------------------
+    # Internal: step logic
+    # ------------------------------------------------------------------
+
     def _step_inner(
         self,
         iteration: int,
@@ -118,12 +130,8 @@ class FtMegatronAgent:
         iteration_time: float | None,
         phase: str,
     ) -> None:
-        self._iteration_gauge.labels(
-            rank=str(self._rank), node_id=self._node_id
-        ).set(iteration)
-        self._phase_gauge.labels(
-            rank=str(self._rank), node_id=self._node_id
-        ).set(_PHASE_TO_NUMERIC.get(phase, 0.0))
+        self._iteration_child.set(iteration)
+        self._phase_child.set(_PHASE_TO_NUMERIC.get(phase, 0.0))
 
         metrics: dict[str, float] = {}
         if loss is not None:
@@ -146,7 +154,7 @@ class FtMegatronAgent:
                 )
 
     # ------------------------------------------------------------------
-    # Internal
+    # Internal: controller communication
     # ------------------------------------------------------------------
 
     _REGISTER_MAX_ATTEMPTS = 3
@@ -191,12 +199,15 @@ class FtMegatronAgent:
     def _get_controller_handle(self) -> Any | None:
         if self._controller_handle is not None:
             return self._controller_handle
+        if self._controller_lookup_failed:
+            return None
 
         try:
             import ray
 
             self._controller_handle = ray.get_actor("ft_controller")
         except Exception:
+            self._controller_lookup_failed = True
             logger.warning("Failed to get ft_controller actor handle")
             return None
 
@@ -204,3 +215,4 @@ class FtMegatronAgent:
 
     def _reset_controller_handle(self) -> None:
         self._controller_handle = None
+        self._controller_lookup_failed = False

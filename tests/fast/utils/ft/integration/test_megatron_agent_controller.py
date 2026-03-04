@@ -5,8 +5,6 @@ the end-to-end data path: agent step() → controller log_step() → MiniWandb,
 and agent exporter → MiniPrometheus scrape.
 """
 
-import asyncio
-
 import httpx
 import pytest
 
@@ -72,8 +70,7 @@ class TestScrapeTargetRegistration:
 
             assert "rank-0" in harness.metric_store._scrape_targets
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()
 
 
 class TestHeartbeatScrape:
@@ -99,8 +96,7 @@ class TestHeartbeatScrape:
             row = result.row(0, named=True)
             assert row["value"] == 42.0
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()
 
 
 class TestRunIdClear:
@@ -159,8 +155,7 @@ class TestControllerUnreachable:
             agent._run_id = "test-run-unreachable"
             agent.step(iteration=10, loss=2.5)
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()
 
 
 class TestPhaseSwitch:
@@ -185,5 +180,4 @@ class TestPhaseSwitch:
             text = response.text
             assert 'training_phase{node_id=' in text
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()

@@ -1,23 +1,21 @@
 """Unit tests for FtMegatronAgent."""
 
-from collections.abc import AsyncIterator
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
 
 
-class TestFtMegatronAgentExporter:
-    @pytest.fixture()
-    def agent(self) -> FtMegatronAgent:
-        agent = FtMegatronAgent(rank=0, world_size=4)
-        yield agent
-        agent._httpd.shutdown()
-        agent._httpd.server_close()
+@pytest.fixture()
+def agent() -> FtMegatronAgent:
+    agent = FtMegatronAgent(rank=0, world_size=4)
+    yield agent
+    agent.shutdown()
 
+
+class TestFtMegatronAgentExporter:
     @pytest.mark.asyncio()
     async def test_exporter_returns_prometheus_format(
         self, agent: FtMegatronAgent
@@ -53,13 +51,6 @@ class TestFtMegatronAgentExporter:
 
 
 class TestFtMegatronAgentStep:
-    @pytest.fixture()
-    def agent(self) -> FtMegatronAgent:
-        agent = FtMegatronAgent(rank=0, world_size=4)
-        yield agent
-        agent._httpd.shutdown()
-        agent._httpd.server_close()
-
     @pytest.mark.asyncio()
     async def test_step_updates_iteration_gauge(
         self, agent: FtMegatronAgent
@@ -111,8 +102,7 @@ class TestFtMegatronAgentStep:
                 metrics={"loss": 2.5, "grad_norm": 1.1},
             )
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()
 
     def test_step_without_metrics_does_not_push(
         self, agent: FtMegatronAgent
@@ -144,8 +134,7 @@ class TestFtMegatronAgentStep:
             try:
                 agent.step(iteration=10, loss=2.5)
             finally:
-                agent._httpd.shutdown()
-                agent._httpd.server_close()
+                agent.shutdown()
 
 
 class TestFtMegatronAgentRegisterRank:
@@ -168,8 +157,7 @@ class TestFtMegatronAgentRegisterRank:
                 assert call_kwargs["rank"] == 0
                 assert call_kwargs["world_size"] == 4
             finally:
-                agent._httpd.shutdown()
-                agent._httpd.server_close()
+                agent.shutdown()
 
     @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
     def test_register_rank_retries_on_failure(
@@ -197,8 +185,7 @@ class TestFtMegatronAgentRegisterRank:
                 assert call_count == 3
                 assert mock_controller.register_rank.remote.call_count == 3
             finally:
-                agent._httpd.shutdown()
-                agent._httpd.server_close()
+                agent.shutdown()
 
     @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
     def test_register_rank_all_attempts_fail_no_exception(
@@ -216,16 +203,14 @@ class TestFtMegatronAgentRegisterRank:
             try:
                 assert mock_controller.register_rank.remote.call_count == 3
             finally:
-                agent._httpd.shutdown()
-                agent._httpd.server_close()
+                agent.shutdown()
 
     def test_register_rank_skipped_without_run_id(self) -> None:
         agent = FtMegatronAgent(rank=0, world_size=4)
         try:
             assert agent._run_id == ""
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()
 
 
 class TestFtMegatronAgentFaultTolerance:
@@ -236,8 +221,7 @@ class TestFtMegatronAgentFaultTolerance:
             assert isinstance(agent, FtMegatronAgent)
         finally:
             if agent is not None:
-                agent._httpd.shutdown()
-                agent._httpd.server_close()
+                agent.shutdown()
 
     def test_maybe_create_returns_none_when_disabled(self) -> None:
         agent = FtMegatronAgent.maybe_create(rank=0, world_size=4, enabled=False)
@@ -257,8 +241,7 @@ class TestFtMegatronAgentFaultTolerance:
             assert agent._run_id == ""
         finally:
             if agent is not None:
-                agent._httpd.shutdown()
-                agent._httpd.server_close()
+                agent.shutdown()
 
     def test_step_exception_does_not_propagate(self) -> None:
         agent = FtMegatronAgent(rank=0, world_size=4)
@@ -268,17 +251,17 @@ class TestFtMegatronAgentFaultTolerance:
             ):
                 agent.step(iteration=1, loss=2.5)
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()
 
     def test_reset_controller_handle(self) -> None:
         agent = FtMegatronAgent(rank=0, world_size=4)
         try:
             agent._controller_handle = MagicMock()
-            assert agent._controller_handle is not None
+            agent._controller_lookup_failed = True
 
             agent._reset_controller_handle()
+
             assert agent._controller_handle is None
+            assert agent._controller_lookup_failed is False
         finally:
-            agent._httpd.shutdown()
-            agent._httpd.server_close()
+            agent.shutdown()
