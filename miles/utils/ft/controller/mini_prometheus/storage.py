@@ -7,11 +7,15 @@ from datetime import datetime, timedelta, timezone
 import polars as pl
 
 from miles.utils.ft.controller.mini_prometheus.query import (
-    SeriesStore,
     TimeSeriesSample,
     _SeriesKey,
-    instant_query,
-    range_query,
+    avg_over_time as _avg_over_time,
+    changes as _changes,
+    count_over_time as _count_over_time,
+    max_over_time as _max_over_time,
+    min_over_time as _min_over_time,
+    query_latest as _query_latest,
+    query_range as _query_range,
 )
 from miles.utils.ft.controller.mini_prometheus.scrape_loop import ScrapeLoop
 from miles.utils.ft.models import MetricSample
@@ -26,7 +30,9 @@ class MiniPrometheusConfig:
 class MiniPrometheus:
     def __init__(self, config: MiniPrometheusConfig | None = None) -> None:
         self._config = config or MiniPrometheusConfig()
-        self._store = SeriesStore()
+        self._series: dict[_SeriesKey, deque[TimeSeriesSample]] = {}
+        self._label_maps: dict[_SeriesKey, dict[str, str]] = {}
+        self._name_index: dict[str, set[_SeriesKey]] = {}
         self._last_eviction_time: datetime | None = None
 
         self._scrape_loop = ScrapeLoop(
@@ -74,15 +80,15 @@ class MiniPrometheus:
         ts = timestamp or datetime.now(timezone.utc)
         for sample in samples:
             labels = dict(sample.labels)
-            labels["node_id"] = target_id
+            labels.setdefault("node_id", target_id)
             key: _SeriesKey = (sample.name, frozenset(labels.items()))
 
-            if key not in self._store.series:
-                self._store.series[key] = deque()
-                self._store.label_maps[key] = labels
-                self._store.name_index.setdefault(sample.name, set()).add(key)
+            if key not in self._series:
+                self._series[key] = deque()
+                self._label_maps[key] = labels
+                self._name_index.setdefault(sample.name, set()).add(key)
 
-            self._store.series[key].append(TimeSeriesSample(timestamp=ts, value=sample.value))
+            self._series[key].append(TimeSeriesSample(timestamp=ts, value=sample.value))
 
         self._maybe_evict()
 
@@ -90,20 +96,46 @@ class MiniPrometheus:
     # Query API (MetricStoreProtocol)
     # -------------------------------------------------------------------
 
-    def instant_query(self, query: str) -> pl.DataFrame:
-        return instant_query(self._store, query)
-
-    def range_query(
-        self,
-        query: str,
-        start: datetime,
-        end: datetime,
-        step: timedelta,
+    def query_latest(
+        self, metric_name: str, label_filters: dict[str, str] | None = None,
     ) -> pl.DataFrame:
-        return range_query(
-            self._store, query,
-            start=start, end=end, step=step,
-        )
+        return _query_latest(self._series, self._label_maps, self._name_index, metric_name, label_filters)
+
+    def query_range(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        return _query_range(self._series, self._label_maps, self._name_index, metric_name, window, label_filters)
+
+    def changes(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        return _changes(self._series, self._label_maps, self._name_index, metric_name, window, label_filters)
+
+    def count_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        return _count_over_time(self._series, self._label_maps, self._name_index, metric_name, window, label_filters)
+
+    def avg_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        return _avg_over_time(self._series, self._label_maps, self._name_index, metric_name, window, label_filters)
+
+    def min_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        return _min_over_time(self._series, self._label_maps, self._name_index, metric_name, window, label_filters)
+
+    def max_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        return _max_over_time(self._series, self._label_maps, self._name_index, metric_name, window, label_filters)
 
     # -------------------------------------------------------------------
     # Internal: eviction
@@ -124,7 +156,7 @@ class MiniPrometheus:
         cutoff = datetime.now(timezone.utc) - self._config.retention
         empty_keys: list[_SeriesKey] = []
 
-        for key, samples in self._store.series.items():
+        for key, samples in self._series.items():
             while samples and samples[0].timestamp < cutoff:
                 samples.popleft()
             if not samples:
@@ -132,10 +164,10 @@ class MiniPrometheus:
 
         for key in empty_keys:
             metric_name, _ = key
-            del self._store.series[key]
-            self._store.label_maps.pop(key, None)
-            index_set = self._store.name_index.get(metric_name)
+            del self._series[key]
+            self._label_maps.pop(key, None)
+            index_set = self._name_index.get(metric_name)
             if index_set is not None:
                 index_set.discard(key)
                 if not index_set:
-                    del self._store.name_index[metric_name]
+                    del self._name_index[metric_name]
