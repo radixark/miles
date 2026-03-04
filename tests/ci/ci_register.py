@@ -2,7 +2,6 @@ import ast
 import warnings
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import List, Optional
 
 __all__ = [
     "HWBackend",
@@ -31,12 +30,10 @@ class CIRegistry:
     suite: str
     num_gpus: int = 0
     nightly: bool = False
-    disabled: Optional[str] = None  # None = enabled, string = disabled with reason
+    disabled: str | None = None  # None = enabled, string = disabled with reason
 
 
-def register_cpu_ci(
-    est_time: float, suite: str, nightly: bool = False, disabled: Optional[str] = None
-):
+def register_cpu_ci(est_time: float, suite: str, nightly: bool = False, disabled: str | None = None):
     """Marker for CPU CI registration (parsed via AST; runtime no-op)."""
     return None
 
@@ -46,7 +43,7 @@ def register_cuda_ci(
     suite: str,
     num_gpus: int = 8,
     nightly: bool = False,
-    disabled: Optional[str] = None,
+    disabled: str | None = None,
 ):
     """Marker for CUDA CI registration (parsed via AST; runtime no-op)."""
     return None
@@ -68,54 +65,38 @@ class RegistryVisitor(ast.NodeVisitor):
             return node.value
         return _UNSET
 
-    def _parse_call_args(self, func_call: ast.Call, param_order: tuple) -> tuple[float, str, int, bool, Optional[str]]:
+    def _parse_call_args(self, func_call: ast.Call, param_order: tuple) -> tuple[float, str, int, bool, str | None]:
         args = {name: _UNSET for name in param_order}
         seen = set()
 
         if any(isinstance(arg, ast.Starred) for arg in func_call.args):
-            raise ValueError(
-                f"{self.filename}: starred arguments are not supported in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: starred arguments are not supported in {func_call.func.id}()")
         if len(func_call.args) > len(param_order):
-            raise ValueError(
-                f"{self.filename}: too many positional arguments in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: too many positional arguments in {func_call.func.id}()")
 
-        for name, arg in zip(param_order, func_call.args):
+        for name, arg in zip(param_order, func_call.args, strict=False):
             seen.add(name)
             args[name] = self._constant_value(arg)
 
         for kw in func_call.keywords:
             if kw.arg is None:
-                raise ValueError(
-                    f"{self.filename}: **kwargs are not supported in {func_call.func.id}()"
-                )
+                raise ValueError(f"{self.filename}: **kwargs are not supported in {func_call.func.id}()")
             if kw.arg not in args:
-                raise ValueError(
-                    f"{self.filename}: unknown argument '{kw.arg}' in {func_call.func.id}()"
-                )
+                raise ValueError(f"{self.filename}: unknown argument '{kw.arg}' in {func_call.func.id}()")
             if kw.arg in seen:
-                raise ValueError(
-                    f"{self.filename}: duplicated argument '{kw.arg}' in {func_call.func.id}()"
-                )
+                raise ValueError(f"{self.filename}: duplicated argument '{kw.arg}' in {func_call.func.id}()")
             seen.add(kw.arg)
             args[kw.arg] = self._constant_value(kw.value)
 
         if args["est_time"] is _UNSET or args["suite"] is _UNSET:
-            raise ValueError(
-                f"{self.filename}: est_time and suite are required constants in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: est_time and suite are required constants in {func_call.func.id}()")
 
         est_time, suite = args["est_time"], args["suite"]
 
         if not isinstance(est_time, (int, float)):
-            raise ValueError(
-                f"{self.filename}: est_time must be a number in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: est_time must be a number in {func_call.func.id}()")
         if not isinstance(suite, str):
-            raise ValueError(
-                f"{self.filename}: suite must be a string in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: suite must be a string in {func_call.func.id}()")
 
         # num_gpus (CUDA only)
         num_gpus_value = args.get("num_gpus", _UNSET)
@@ -124,9 +105,7 @@ class RegistryVisitor(ast.NodeVisitor):
         elif isinstance(num_gpus_value, int):
             num_gpus = num_gpus_value
         else:
-            raise ValueError(
-                f"{self.filename}: num_gpus must be an integer in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: num_gpus must be an integer in {func_call.func.id}()")
 
         # nightly
         nightly_value = args.get("nightly", _UNSET)
@@ -135,18 +114,14 @@ class RegistryVisitor(ast.NodeVisitor):
         elif isinstance(nightly_value, bool):
             nightly = nightly_value
         else:
-            raise ValueError(
-                f"{self.filename}: nightly must be a boolean in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: nightly must be a boolean in {func_call.func.id}()")
 
         # disabled
         disabled = args.get("disabled", _UNSET)
         if disabled is _UNSET:
             disabled = None
         elif disabled is not None and not isinstance(disabled, str):
-            raise ValueError(
-                f"{self.filename}: disabled must be a string in {func_call.func.id}()"
-            )
+            raise ValueError(f"{self.filename}: disabled must be a string in {func_call.func.id}()")
 
         return float(est_time), suite, num_gpus, nightly, disabled
 
@@ -159,9 +134,7 @@ class RegistryVisitor(ast.NodeVisitor):
             return None
 
         backend, param_order = mapping
-        est_time, suite, num_gpus, nightly, disabled = self._parse_call_args(
-            func_call, param_order
-        )
+        est_time, suite, num_gpus, nightly, disabled = self._parse_call_args(func_call, param_order)
         return CIRegistry(
             backend=backend,
             filename=self.filename,
@@ -182,9 +155,8 @@ class RegistryVisitor(ast.NodeVisitor):
                 self.registries.append(cr)
 
 
-
-def ut_parse_one_file(filename: str) -> List[CIRegistry]:
-    with open(filename, "r") as f:
+def ut_parse_one_file(filename: str) -> list[CIRegistry]:
+    with open(filename) as f:
         file_content = f.read()
     tree = ast.parse(file_content, filename=filename)
     visitor = RegistryVisitor(filename=filename)
@@ -192,7 +164,7 @@ def ut_parse_one_file(filename: str) -> List[CIRegistry]:
     return visitor.registries
 
 
-def collect_tests(files: list[str], sanity_check: bool = True) -> List[CIRegistry]:
+def collect_tests(files: list[str], sanity_check: bool = True) -> list[CIRegistry]:
     ci_tests = []
     for file in files:
         registries = ut_parse_one_file(file)
@@ -201,7 +173,7 @@ def collect_tests(files: list[str], sanity_check: bool = True) -> List[CIRegistr
             if sanity_check:
                 raise ValueError(msg)
             else:
-                warnings.warn(msg)
+                warnings.warn(msg, stacklevel=2)
                 continue
 
         ci_tests.extend(registries)

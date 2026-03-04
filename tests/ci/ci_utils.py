@@ -5,8 +5,8 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Union
 
 from tests.ci.ci_register import CIRegistry
 
@@ -90,7 +90,7 @@ def _kill_process_tree(pgid: int):
 def run_with_timeout(
     func: Callable,
     args: tuple = (),
-    kwargs: Optional[dict] = None,
+    kwargs: dict | None = None,
     timeout: float = None,
 ):
     """Run a function with timeout."""
@@ -127,7 +127,7 @@ def write_github_step_summary(content: str):
 
 
 def run_unittest_files(
-    files: Union[List[TestFile], List[CIRegistry]],
+    files: list[TestFile] | list[CIRegistry],
     timeout_per_file: float,
     continue_on_error: bool = False,
     enable_retry: bool = False,
@@ -162,13 +162,11 @@ def run_unittest_files(
         process = None
         output_lines = []
 
-        def run_one_file(filename, capture_output=False):
+        def run_one_file(filename, capture_output=False, _i=i, _estimated_time=estimated_time):
             nonlocal process, output_lines
 
             full_path = os.path.join(os.getcwd(), filename)
-            logger.info(
-                f".\n.\nBegin ({i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n"
-            )
+            logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
             file_tic = time.perf_counter()
 
             if capture_output:
@@ -188,16 +186,16 @@ def run_unittest_files(
                 process.wait()
             else:
                 process = subprocess.Popen(
-                    ["python3", full_path], stdout=None, stderr=None,
+                    ["python3", full_path],
+                    stdout=None,
+                    stderr=None,
                     start_new_session=True,
                 )
                 process.wait()
 
             elapsed = time.perf_counter() - file_tic
 
-            logger.info(
-                f".\n.\nEnd ({i}/{len(files) - 1}):\n{filename=}, {elapsed=:.0f}, {estimated_time=}\n.\n.\n"
-            )
+            logger.info(f".\n.\nEnd ({_i}/{len(files) - 1}):\n{filename=}, {elapsed=:.0f}, {_estimated_time=}\n.\n.\n")
             return process.returncode
 
         # Retry loop for each file
@@ -207,9 +205,7 @@ def run_unittest_files(
 
         while attempt <= (max_attempts if enable_retry else 1):
             if attempt > 1:
-                logger.info(
-                    f"\n[CI Retry] Attempt {attempt}/{max_attempts} for {filename}\n"
-                )
+                logger.info(f"\n[CI Retry] Attempt {attempt}/{max_attempts} for {filename}\n")
                 was_retried = True
 
             try:
@@ -223,9 +219,7 @@ def run_unittest_files(
                 if ret_code == 0:
                     file_passed = True
                     if was_retried:
-                        logger.info(
-                            f"\nPASSED on retry (attempt {attempt}): {filename}\n"
-                        )
+                        logger.info(f"\nPASSED on retry (attempt {attempt}): {filename}\n")
                         retried_tests.append((filename, attempt, "passed"))
                     passed_tests.append(filename)
                     break
@@ -237,21 +231,15 @@ def run_unittest_files(
 
                         if is_retriable:
                             logger.info(f"\n[CI Retry] {filename} failed with {reason}")
-                            logger.info(
-                                f"[CI Retry] Waiting {retry_wait_seconds}s before retry...\n"
-                            )
+                            logger.info(f"[CI Retry] Waiting {retry_wait_seconds}s before retry...\n")
                             time.sleep(retry_wait_seconds)
                             attempt += 1
                             continue
                         else:
-                            logger.info(
-                                f"\n[CI Retry] {filename} failed with {reason} - not retrying\n"
-                            )
+                            logger.info(f"\n[CI Retry] {filename} failed with {reason} - not retrying\n")
 
                     # No retry or not retriable
-                    logger.info(
-                        f"\nFAILED: {filename} returned exit code {ret_code}\n"
-                    )
+                    logger.info(f"\nFAILED: {filename} returned exit code {ret_code}\n")
                     if was_retried:
                         retried_tests.append((filename, attempt, "failed"))
                     failed_tests.append((filename, f"exit code {ret_code}"))
@@ -260,9 +248,7 @@ def run_unittest_files(
             except TimeoutError:
                 _kill_process_tree(process.pid)
                 time.sleep(5)
-                logger.info(
-                    f"\nTIMEOUT: {filename} after {timeout_per_file} seconds\n"
-                )
+                logger.info(f"\nTIMEOUT: {filename} after {timeout_per_file} seconds\n")
                 if was_retried:
                     retried_tests.append((filename, attempt, "timeout"))
                 failed_tests.append((filename, f"timeout after {timeout_per_file}s"))
