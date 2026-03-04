@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
-from miles.utils.ft.controller.diagnostic_scheduler_stub import (
-    StubDiagnosticScheduler,
-)
 from miles.utils.ft.controller.detectors._metric_names import (
     NODE_DISK_AVAILABLE_BYTES,
     NODE_GPU_AVAILABLE,
@@ -25,6 +23,7 @@ from miles.utils.ft.models import (
     RECOVERY_PHASE_TO_INT,
 )
 from miles.utils.ft.platform.protocols import (
+    DiagnosticSchedulerProtocol,
     JobStatus,
     NodeManagerProtocol,
     NotificationProtocol,
@@ -39,6 +38,10 @@ _PENDING_TIMEOUT_SECONDS: int = 300
 _MAX_RETRIES: int = 3
 
 _StepHandler = Callable[[], Coroutine[Any, Any, None]]
+
+
+def _is_finite(value: float) -> bool:
+    return math.isfinite(value)
 
 
 @dataclass
@@ -65,7 +68,7 @@ class RecoveryOrchestrator:
         metric_store: MetricStoreProtocol,
         mini_wandb: MiniWandb,
         notifier: NotificationProtocol | None,
-        diagnostic_scheduler: StubDiagnosticScheduler,
+        diagnostic_scheduler: DiagnosticSchedulerProtocol,
         controller_exporter: ControllerExporter | None = None,
         global_timeout_seconds: int = 1800,
         monitoring_success_iterations: int = 10,
@@ -193,7 +196,9 @@ class RecoveryOrchestrator:
         if status == JobStatus.RUNNING:
             iteration = self._mini_wandb.latest(metric_name="iteration", rank=0)
             self._context.reattempt_start_time = datetime.now(timezone.utc)
-            self._context.reattempt_base_iteration = int(iteration) if iteration is not None else 0
+            self._context.reattempt_base_iteration = (
+                int(iteration) if iteration is not None and _is_finite(iteration) else 0
+            )
             logger.info(
                 "reattempt_running base_iteration=%s",
                 self._context.reattempt_base_iteration,
@@ -249,8 +254,10 @@ class RecoveryOrchestrator:
 
     def _iteration_progress(self) -> int:
         current_iteration = self._mini_wandb.latest(metric_name="iteration", rank=0)
+        if current_iteration is None or not _is_finite(current_iteration):
+            return 0
         base = self._context.reattempt_base_iteration or 0
-        return (int(current_iteration) - base) if current_iteration is not None else 0
+        return int(current_iteration) - base
 
     async def _step_diagnosing(self) -> None:
         decision = await self._diagnostic_scheduler.run_diagnostic_pipeline(
@@ -341,7 +348,7 @@ class RecoveryOrchestrator:
 
     async def _retry_async(
         self,
-        func: Callable[[], Coroutine[Any, Any, None]],
+        func: Callable[[], Coroutine[Any, Any, Any]],
         description: str,
         max_retries: int = _MAX_RETRIES,
     ) -> bool:

@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from prometheus_client import CollectorRegistry
 
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
+from miles.utils.ft.controller.mini_prometheus import MiniPrometheus
+from miles.utils.ft.controller.mini_wandb import MiniWandb as MiniWandbCls
 from miles.utils.ft.controller.recovery_orchestrator import (
     RecoveryContext,
     RecoveryOrchestrator,
@@ -24,7 +26,10 @@ from tests.fast.utils.ft.conftest import (
     FakeTrainingJob,
     get_sample_value,
     inject_critical_xid,
+    inject_disk_fault,
     inject_gpu_unavailable,
+    inject_nic_down,
+    inject_nic_up,
     make_fake_metric_store,
     make_fake_mini_wandb,
 )
@@ -33,10 +38,6 @@ from tests.fast.utils.ft.conftest import (
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
-
-
-from miles.utils.ft.controller.mini_prometheus import MiniPrometheus
-from miles.utils.ft.controller.mini_wandb import MiniWandb as MiniWandbCls
 
 _OrchestratorWithStore = tuple[
     RecoveryOrchestrator,
@@ -425,6 +426,124 @@ class TestNotify:
 # -------------------------------------------------------------------
 # Exporter integration
 # -------------------------------------------------------------------
+
+
+class TestCheckAlertsDiskFault:
+    def test_disk_fault_transitions_to_evict(self) -> None:
+        orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
+        inject_disk_fault(metric_store, node_id="node-0", available_bytes=0.0)
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.EVICT_AND_RESTART
+
+
+class TestCheckAlertsNicDown:
+    def test_majority_nic_down_transitions_to_evict(self) -> None:
+        orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
+        inject_nic_down(metric_store, node_id="node-0", device="ib0")
+        inject_nic_down(metric_store, node_id="node-0", device="ib1")
+        inject_nic_down(metric_store, node_id="node-0", device="ib2")
+        inject_nic_up(metric_store, node_id="node-0", device="ib3")
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.EVICT_AND_RESTART
+
+    def test_minority_nic_down_proceeds_to_reattempting(self) -> None:
+        orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
+        inject_nic_down(metric_store, node_id="node-0", device="ib0")
+        inject_nic_up(metric_store, node_id="node-0", device="ib1")
+        inject_nic_up(metric_store, node_id="node-0", device="ib2")
+        inject_nic_up(metric_store, node_id="node-0", device="ib3")
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.REATTEMPTING
+
+
+class TestCheckAlertsXidCodes:
+    def test_non_critical_xid_ignored(self) -> None:
+        orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
+        inject_critical_xid(metric_store, node_id="node-0", xid_code=13)
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.REATTEMPTING
+
+
+class TestReattemptingSubmitFailure:
+    def test_submit_failure_transitions_to_notify(self) -> None:
+        orch, _, training_job, _, _ = _make_orchestrator(
+            status_sequence=[JobStatus.RUNNING],
+        )
+        orch._context.phase = RecoveryPhase.REATTEMPTING
+
+        async def failing_submit() -> str:
+            raise RuntimeError("submit failed")
+        training_job.submit_training = failing_submit
+
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.NOTIFY
+
+
+class TestNotifyWithBrokenNotifier:
+    def test_notifier_exception_still_transitions_to_done(self) -> None:
+        notifier = FakeNotifier()
+
+        async def broken_send(title: str, content: str, severity: str) -> None:
+            raise RuntimeError("notification service unreachable")
+        notifier.send = broken_send
+
+        orch, _, _, _, _ = _make_orchestrator(notifier=notifier)
+        orch._context.phase = RecoveryPhase.NOTIFY
+
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.DONE
+
+
+class TestEvictStopTrainingFailure:
+    def test_stop_failure_continues_to_submit(self) -> None:
+        orch, _, training_job, _, _ = _make_orchestrator(
+            status_sequence=[JobStatus.RUNNING],
+        )
+        orch._context.phase = RecoveryPhase.EVICT_AND_RESTART
+        orch._bad_node_ids = ["node-0"]
+
+        async def failing_stop(timeout_seconds: int = 300) -> None:
+            raise RuntimeError("stop failed")
+        training_job.stop_training = failing_stop
+
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.DONE
+        assert training_job._submitted
+
+
+class TestEvictMultipleBadNodes:
+    def test_multiple_bad_nodes_all_marked(self) -> None:
+        orch, node_mgr, training_job, _, _ = _make_orchestrator(
+            status_sequence=[JobStatus.RUNNING],
+        )
+        orch._context.phase = RecoveryPhase.EVICT_AND_RESTART
+        orch._bad_node_ids = ["node-0", "node-1", "node-2"]
+
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.DONE
+        assert node_mgr.is_node_bad("node-0")
+        assert node_mgr.is_node_bad("node-1")
+        assert node_mgr.is_node_bad("node-2")
+        assert training_job._submitted
+
+
+class TestPhaseBeforeNotify:
+    def test_global_timeout_captures_previous_phase(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator(global_timeout_seconds=0)
+        orch._context.phase = RecoveryPhase.MONITORING
+        orch._context.recovery_start_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.NOTIFY
+        assert orch._context.phase_before_notify == RecoveryPhase.MONITORING
+
+    def test_diagnosing_all_passed_captures_previous_phase(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator()
+        orch._context.phase = RecoveryPhase.DIAGNOSING
+
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.NOTIFY
+        assert orch._context.phase_before_notify == RecoveryPhase.DIAGNOSING
 
 
 class TestExporterIntegration:

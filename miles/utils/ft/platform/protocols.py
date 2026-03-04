@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 from enum import Enum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from miles.utils.ft.models import Decision
 
 
 class JobStatus(str, Enum):
@@ -27,3 +32,11 @@ class TrainingJobProtocol(Protocol):
 
 class NotificationProtocol(Protocol):
     async def send(self, title: str, content: str, severity: str) -> None: ...
+
+
+class DiagnosticSchedulerProtocol(Protocol):
+    async def run_diagnostic_pipeline(
+        self,
+        trigger_reason: str,
+        suspect_node_ids: list[str] | None = None,
+    ) -> Decision: ...

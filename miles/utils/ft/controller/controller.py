@@ -16,6 +16,7 @@ from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models import ActionType, Decision, RECOVERY_PHASE_TO_INT
 from miles.utils.ft.platform.protocols import (
+    DiagnosticSchedulerProtocol,
     JobStatus,
     NodeManagerProtocol,
     NotificationProtocol,
@@ -46,7 +47,7 @@ class FtController:
         tick_interval: float = 30.0,
         controller_exporter: ControllerExporter | None = None,
         scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
-        diagnostic_scheduler: StubDiagnosticScheduler | None = None,
+        diagnostic_scheduler: DiagnosticSchedulerProtocol | None = None,
     ) -> None:
         self._node_manager = node_manager
         self._training_job = training_job
@@ -57,7 +58,9 @@ class FtController:
         self._tick_interval = tick_interval
         self._controller_exporter = controller_exporter
         self._scrape_target_manager = scrape_target_manager
-        self._diagnostic_scheduler = diagnostic_scheduler or StubDiagnosticScheduler()
+        self._diagnostic_scheduler: DiagnosticSchedulerProtocol = (
+            diagnostic_scheduler or StubDiagnosticScheduler()
+        )
 
         self._active_run_id: str | None = None
         self._expected_world_size: int | None = None
