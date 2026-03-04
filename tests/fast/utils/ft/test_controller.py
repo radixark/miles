@@ -287,6 +287,42 @@ class TestShutdown:
         assert harness.controller._shutting_down
         assert harness.controller._tick_count >= 1
 
+    @pytest.mark.asyncio
+    async def test_run_starts_and_stops_scrape_loop(self) -> None:
+        """run() must start the scrape loop as a background task and
+        stop it on shutdown, even if the metric store supports start/stop."""
+        harness = make_test_controller(tick_interval=0.01)
+        store = harness.metric_store
+
+        started = False
+        stopped = False
+        original_start = store.start
+        original_stop = store.stop
+
+        async def tracking_start() -> None:
+            nonlocal started
+            started = True
+            await original_start()
+
+        async def tracking_stop() -> None:
+            nonlocal stopped
+            stopped = True
+            await original_stop()
+
+        store.start = tracking_start
+        store.stop = tracking_stop
+
+        async def _shutdown_soon() -> None:
+            await asyncio.sleep(0.05)
+            await harness.controller.shutdown()
+
+        shutdown_task = asyncio.create_task(_shutdown_soon())
+        await harness.controller.run()
+        await shutdown_task
+
+        assert started
+        assert stopped
+
 
 class TestDetectorChain:
     def test_first_non_none_wins(self) -> None:
