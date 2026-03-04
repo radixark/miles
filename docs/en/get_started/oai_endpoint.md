@@ -48,14 +48,16 @@ Minimal request shape:
     {"role": "user", "content": "Answer with one word: 2+2?"}
   ],
   "logprobs": true,
-  "logprob_start_len": 0
+  "return_prompt_token_ids": true
 }
 ```
 
 You can pass any OpenAI-compatible parameters in the payload, or any
 SGLang-compatible `ChatCompletionRequest` parameters. Note:
-`logprobs=True` and `logprob_start_len=0` are required to extract token ids and
-logprobs for TITO (see below), and are already set in `request_kwargs`.
+`logprobs=True` and `return_prompt_token_ids=True` are set in
+`request_kwargs` to extract token ids and logprobs for TITO (see below).
+Do **not** set `logprob_start_len=0` — it would disable SGLang's prefix
+cache.
 
 ## 3. Quickstart index
 
@@ -71,7 +73,7 @@ OpenAI-format examples that use `agentic_tool_call.generate`:
 - `examples/openai_format/dapo_math.py`
   - Single-turn OpenAI format agent (DAPO math).
 - Launcher scripts:
-  - `examples/openai_format/run-qwen3-4B-dapo-math.sh`
+  - `examples/openai_format/run-qwen3-4B.sh`
 
 
 You can customize generate function like:
@@ -108,15 +110,22 @@ see `docs/en/get_started/gen_endpoint.md`.
 
 TITO needs two things:
 
-1. Prompt token ids returned by the backend (e.g. `input_logprobs` or
-   `input_token_ids`). These can come from tokenizing `messages`, or from a
-   provided `input_ids` payload.
-2. Output token ids returned by the backend (`logprobs.content[*].token_id`).
+1. Prompt token ids returned by the backend (via `prompt_token_ids` in the
+   response choice, triggered by `return_prompt_token_ids=True` in the
+   request).
+2. Output token ids returned by the backend (`logprobs.content[*].token_id`,
+   triggered by `logprobs=True`).
 
-By default, the session middleware forwards raw `messages` to SGLang. With
-`logprobs=True` and `logprob_start_len=0`, SGLang tokenizes the prompt and
-returns prompt token ids along with output token ids, which is sufficient for
-TITO. You do not need to provide `input_ids`.
+By default, `build_chat_request_kwargs` in `agentic_tool_call.py` sets
+`return_prompt_token_ids=True` and `logprobs=True`. The session middleware
+forwards raw `messages` to SGLang, which tokenizes the prompt and returns
+both prompt token ids and output token ids. This is sufficient for TITO
+without providing `input_ids`.
+
+**Important**: Do **not** set `logprob_start_len=0` — it forces SGLang to
+compute logprobs for every prompt token, which destroys the prefix cache and
+hurts performance. Use `return_prompt_token_ids=True` instead, which returns
+prompt token ids at zero cost without affecting caching.
 
 If you prefer to send `input_ids` to SGLang, you can enable token input for chat
 completions in the router via
@@ -131,6 +140,8 @@ independently, regardless of which option you choose.
 
 ### Common pitfalls
 
-- Ensure `logprobs=True` in OpenAI chat requests, and ensure
-  `logprob_start_len=0` if you rely on SGLang to return prompt token ids.
+- Ensure `logprobs=True` and `return_prompt_token_ids=True` in OpenAI chat
+  requests (both are already set in `request_kwargs`).
+- Do **not** set `logprob_start_len=0` — use `return_prompt_token_ids=True`
+  to get prompt token ids without breaking SGLang's prefix cache.
 - Ensure the tokenizer matches `--hf-checkpoint`.

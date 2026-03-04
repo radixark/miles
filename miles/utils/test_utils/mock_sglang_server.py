@@ -193,7 +193,7 @@ class MockSGLangServer:
                         "tool_calls": tool_calls,
                     },
                     "logprobs": {"content": logprobs_content},
-                    "input_token_ids": prompt_ids,
+                    "prompt_token_ids": prompt_ids,
                     "finish_reason": finish_reason,
                 }
             ],
