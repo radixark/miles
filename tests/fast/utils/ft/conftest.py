@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.models import MetricSample
@@ -91,3 +93,29 @@ class FakeTrainingJob:
         self._call_count = 0
         self._run_id = f"fake-{id(self)}"
         return self._run_id
+
+
+# ---------------------------------------------------------------------------
+# Controller factory (controller-skeleton milestone)
+# ---------------------------------------------------------------------------
+
+
+def make_test_controller(
+    detectors: list[BaseFaultDetector] | None = None,
+    status_sequence: list[JobStatus] | None = None,
+    tick_interval: float = 0.01,
+) -> tuple[FtController, FakeNodeManager, FakeTrainingJob, MiniPrometheus, MiniWandb]:
+    """Construct a Controller and all its dependencies for testing."""
+    node_manager = FakeNodeManager()
+    training_job = FakeTrainingJob(status_sequence=status_sequence)
+    metric_store = MiniPrometheus(config=MiniPrometheusConfig())
+    mini_wandb = MiniWandb()
+    controller = FtController(
+        node_manager=node_manager,
+        training_job=training_job,
+        metric_store=metric_store,
+        mini_wandb=mini_wandb,
+        detectors=detectors,
+        tick_interval=tick_interval,
+    )
+    return controller, node_manager, training_job, metric_store, mini_wandb

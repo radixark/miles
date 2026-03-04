@@ -2,34 +2,12 @@ import asyncio
 
 import pytest
 
-from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
-from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob
-
-
-def _make_controller(
-    detectors: list[BaseFaultDetector] | None = None,
-    status_sequence: list[JobStatus] | None = None,
-    tick_interval: float = 0.01,
-) -> tuple[FtController, FakeNodeManager, FakeTrainingJob, MiniPrometheus, MiniWandb]:
-    node_manager = FakeNodeManager()
-    training_job = FakeTrainingJob(status_sequence=status_sequence)
-    metric_store = MiniPrometheus(config=MiniPrometheusConfig())
-    mini_wandb = MiniWandb()
-    controller = FtController(
-        node_manager=node_manager,
-        training_job=training_job,
-        metric_store=metric_store,
-        mini_wandb=mini_wandb,
-        detectors=detectors,
-        tick_interval=tick_interval,
-    )
-    return controller, node_manager, training_job, metric_store, mini_wandb
+from tests.fast.utils.ft.conftest import make_test_controller
 
 
 class _AlwaysNoneDetector(BaseFaultDetector):
@@ -65,13 +43,13 @@ class _AlwaysMarkBadDetector(BaseFaultDetector):
 class TestTickEmptyDetectorChain:
     @pytest.mark.asyncio
     async def test_tick_succeeds_with_no_detectors(self) -> None:
-        controller, _, _, _, _ = _make_controller()
+        controller, _, _, _, _ = make_test_controller()
         await controller._tick()
         assert controller._tick_count == 1
 
     @pytest.mark.asyncio
     async def test_tick_returns_none_decision(self) -> None:
-        controller, _, _, _, _ = _make_controller()
+        controller, _, _, _, _ = make_test_controller()
         await controller._tick()
         decision = controller._evaluate_detectors()
         assert decision.action == ActionType.NONE
@@ -80,7 +58,7 @@ class TestTickEmptyDetectorChain:
 class TestLogStep:
     @pytest.mark.asyncio
     async def test_log_step_matching_run_id(self) -> None:
-        controller, _, _, _, mini_wandb = _make_controller()
+        controller, _, _, _, mini_wandb = make_test_controller()
         run_id = "run-123"
         await controller.register_rank(
             run_id=run_id, rank=0, world_size=2,
@@ -96,7 +74,7 @@ class TestLogStep:
 
     @pytest.mark.asyncio
     async def test_log_step_mismatched_run_id(self) -> None:
-        controller, _, _, _, mini_wandb = _make_controller()
+        controller, _, _, _, mini_wandb = make_test_controller()
         await controller.register_rank(
             run_id="run-123", rank=0, world_size=2,
             node_id="node-0", exporter_address="http://node-0:9090",
@@ -111,7 +89,7 @@ class TestLogStep:
 
     @pytest.mark.asyncio
     async def test_log_step_no_active_run(self) -> None:
-        controller, _, _, _, mini_wandb = _make_controller()
+        controller, _, _, _, mini_wandb = make_test_controller()
 
         await controller.log_step(
             run_id="run-123", rank=0, step=1,
@@ -124,7 +102,7 @@ class TestLogStep:
 class TestRegisterRank:
     @pytest.mark.asyncio
     async def test_new_run_id_updates_state(self) -> None:
-        controller, _, _, _, mini_wandb = _make_controller()
+        controller, _, _, _, mini_wandb = make_test_controller()
 
         await controller.register_rank(
             run_id="run-1", rank=0, world_size=2,
@@ -136,7 +114,7 @@ class TestRegisterRank:
 
     @pytest.mark.asyncio
     async def test_new_run_id_clears_mini_wandb(self) -> None:
-        controller, _, _, _, mini_wandb = _make_controller()
+        controller, _, _, _, mini_wandb = make_test_controller()
 
         await controller.register_rank(
             run_id="run-1", rank=0, world_size=2,
@@ -156,7 +134,7 @@ class TestRegisterRank:
 
     @pytest.mark.asyncio
     async def test_same_run_id_different_rank_appends(self) -> None:
-        controller, _, _, _, _ = _make_controller()
+        controller, _, _, _, _ = make_test_controller()
 
         await controller.register_rank(
             run_id="run-1", rank=0, world_size=2,
@@ -171,7 +149,7 @@ class TestRegisterRank:
 
     @pytest.mark.asyncio
     async def test_same_run_id_same_rank_updates(self) -> None:
-        controller, _, _, _, mini_wandb = _make_controller()
+        controller, _, _, _, mini_wandb = make_test_controller()
 
         await controller.register_rank(
             run_id="run-1", rank=0, world_size=2,
@@ -191,7 +169,7 @@ class TestRegisterRank:
 
     @pytest.mark.asyncio
     async def test_exporter_address_registered_to_metric_store(self) -> None:
-        controller, _, _, metric_store, _ = _make_controller()
+        controller, _, _, metric_store, _ = make_test_controller()
 
         await controller.register_rank(
             run_id="run-1", rank=0, world_size=2,
@@ -205,7 +183,7 @@ class TestRegisterRank:
 class TestShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_stops_run_loop(self) -> None:
-        controller, _, _, _, _ = _make_controller(tick_interval=0.01)
+        controller, _, _, _, _ = make_test_controller(tick_interval=0.01)
 
         async def _shutdown_after_delay() -> None:
             await asyncio.sleep(0.05)
@@ -224,7 +202,7 @@ class TestDetectorChain:
     async def test_first_non_none_wins(self) -> None:
         none_detector = _AlwaysNoneDetector()
         bad_detector = _AlwaysMarkBadDetector()
-        controller, _, _, _, _ = _make_controller(
+        controller, _, _, _, _ = make_test_controller(
             detectors=[none_detector, bad_detector],
         )
 
@@ -237,7 +215,7 @@ class TestDetectorChain:
     async def test_short_circuit_after_non_none(self) -> None:
         bad_detector = _AlwaysMarkBadDetector()
         trailing_detector = _AlwaysNoneDetector()
-        controller, _, _, _, _ = _make_controller(
+        controller, _, _, _, _ = make_test_controller(
             detectors=[bad_detector, trailing_detector],
         )
 
@@ -250,7 +228,7 @@ class TestDetectorChain:
 class TestTrainingJobStatusInjection:
     @pytest.mark.asyncio
     async def test_tick_injects_training_job_status(self) -> None:
-        controller, _, _, metric_store, _ = _make_controller()
+        controller, _, _, metric_store, _ = make_test_controller()
 
         await controller._tick()
 
@@ -260,7 +238,7 @@ class TestTrainingJobStatusInjection:
 
     @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
-        controller, _, _, metric_store, _ = _make_controller(
+        controller, _, _, metric_store, _ = make_test_controller(
             status_sequence=[JobStatus.FAILED],
         )
 
