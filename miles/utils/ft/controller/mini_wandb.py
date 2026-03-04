@@ -3,6 +3,8 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from miles.utils.ft.models import StepValue, TimedStepValue
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,14 +62,14 @@ class MiniWandb:
         metric_name: str,
         rank: int,
         last_n: int,
-    ) -> list[tuple[int, float]]:
+    ) -> list[StepValue]:
         if rank not in self._data:
             return []
 
-        result: list[tuple[int, float]] = []
+        result: list[StepValue] = []
         for record in reversed(self._data[rank]):
             if metric_name in record.metrics:
-                result.append((record.step, record.metrics[metric_name]))
+                result.append(StepValue(step=record.step, value=record.metrics[metric_name]))
                 if len(result) >= last_n:
                     break
 
@@ -79,17 +81,19 @@ class MiniWandb:
         metric_name: str,
         rank: int,
         window: timedelta,
-    ) -> list[tuple[int, datetime, float]]:
+    ) -> list[TimedStepValue]:
         if rank not in self._data:
             return []
 
         cutoff = datetime.now(timezone.utc) - window
-        result: list[tuple[int, datetime, float]] = []
+        result: list[TimedStepValue] = []
         for record in self._data[rank]:
             if record.receive_time >= cutoff and metric_name in record.metrics:
-                result.append(
-                    (record.step, record.receive_time, record.metrics[metric_name])
-                )
+                result.append(TimedStepValue(
+                    step=record.step,
+                    timestamp=record.receive_time,
+                    value=record.metrics[metric_name],
+                ))
 
         return result
 

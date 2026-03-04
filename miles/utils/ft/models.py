@@ -1,7 +1,19 @@
+from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict
+
+
+class StepValue(NamedTuple):
+    step: int
+    value: float
+
+
+class TimedStepValue(NamedTuple):
+    step: int
+    timestamp: datetime
+    value: float
 
 
 class FtBaseModel(BaseModel):
