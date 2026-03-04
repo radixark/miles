@@ -15,7 +15,15 @@ WORKDIR /root/
 # ======================================== Apt dependencies =============================================
 
 RUN apt update
-RUN apt install -y nvtop rsync dnsutils
+# ethtool for network diagnostics
+RUN apt install -y nvtop rsync dnsutils ethtool
+
+# nccl-tests for diagnostics
+RUN git clone --depth 1 https://github.com/NVIDIA/nccl-tests.git -b master /tmp/nccl-tests && \
+    cd /tmp/nccl-tests && \
+    make -j$(nproc) CUDA_HOME=/usr/local/cuda && \
+    cp /tmp/nccl-tests/build/*_perf /usr/local/bin/ && \
+    rm -rf /tmp/nccl-tests
 
 # ====================================== Python dependencies ============================================
 
@@ -115,18 +123,3 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
-
-# ====================================== FT diagnostics tools ============================================
-
-# ethtool: optional network diagnostics utility
-RUN apt-get update && apt-get install -y --no-install-recommends ethtool && rm -rf /var/lib/apt/lists/*
-
-# py-spy: stack trace collection for hang diagnosis (requires SYS_PTRACE at runtime)
-RUN pip install --no-cache-dir py-spy==0.4.1
-
-# nccl-tests: intra/inter-machine communication diagnostics
-RUN git clone --depth 1 https://github.com/NVIDIA/nccl-tests.git -b master /tmp/nccl-tests && \
-    cd /tmp/nccl-tests && \
-    make -j$(nproc) CUDA_HOME=/usr/local/cuda && \
-    cp /tmp/nccl-tests/build/*_perf /usr/local/bin/ && \
-    rm -rf /tmp/nccl-tests
