@@ -6,10 +6,11 @@ import socket
 import time
 from typing import Literal
 
-from prometheus_client import CollectorRegistry, Gauge, start_http_server
+from prometheus_client import Gauge
 
 import miles.utils.ft.metric_names as mn
 from miles.utils.ft.agents.controller_handle import ControllerHandleMixin
+from miles.utils.ft.agents.prometheus_exporter import PrometheusExporter
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class FtMegatronAgent(ControllerHandleMixin):
         self._run_id: str = os.environ.get("FT_TRAINING_RUN_ID", "")
         self._node_id: str = socket.gethostname()
 
-        self._registry = CollectorRegistry()
+        self._exporter = PrometheusExporter()
         self._labels: dict[str, str] = {
             "rank": str(self._rank),
             "node_id": self._node_id,
@@ -47,23 +48,19 @@ class FtMegatronAgent(ControllerHandleMixin):
             mn.TRAINING_ITERATION,
             "Current training iteration",
             labelnames=["rank", "node_id"],
-            registry=self._registry,
+            registry=self._exporter.registry,
         )
         phase_gauge = Gauge(
             mn.TRAINING_PHASE,
             "Current training phase (0=idle, 1=training, 2=checkpoint_saving)",
             labelnames=["rank", "node_id"],
-            registry=self._registry,
+            registry=self._exporter.registry,
         )
 
         self._iteration_child = iteration_gauge.labels(**self._labels)
         self._phase_child = phase_gauge.labels(**self._labels)
         self._iteration_child.set(0)
         self._phase_child.set(_PHASE_TO_NUMERIC["idle"])
-
-        httpd, _thread = start_http_server(port=0, registry=self._registry)
-        self._httpd = httpd
-        self._port: int = httpd.server_port
 
         self._register_rank()
 
@@ -91,7 +88,7 @@ class FtMegatronAgent(ControllerHandleMixin):
     # ------------------------------------------------------------------
 
     def get_exporter_address(self) -> str:
-        return f"http://localhost:{self._port}"
+        return self._exporter.get_address()
 
     def step(
         self,
@@ -108,8 +105,7 @@ class FtMegatronAgent(ControllerHandleMixin):
             )
 
     def shutdown(self) -> None:
-        self._httpd.shutdown()
-        self._httpd.server_close()
+        self._exporter.shutdown()
 
     # ------------------------------------------------------------------
     # Internal: controller communication
@@ -154,4 +150,3 @@ class FtMegatronAgent(ControllerHandleMixin):
                         self._REGISTER_MAX_ATTEMPTS,
                         exc_info=True,
                     )
-
