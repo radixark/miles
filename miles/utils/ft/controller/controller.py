@@ -66,6 +66,7 @@ class FtController:
         self._active_run_id: str | None = None
         self._expected_world_size: int | None = None
         self._rank_placement: dict[int, str] = {}
+        self._rank_pids: dict[int, int] = {}
         self._shutting_down: bool = False
         self._tick_count: int = 0
 
@@ -154,6 +155,7 @@ class FtController:
         world_size: int,
         node_id: str,
         exporter_address: str,
+        pid: int = 0,
     ) -> None:
         if run_id != self._active_run_id:
             logger.info(
@@ -166,9 +168,12 @@ class FtController:
             self._mini_wandb.clear()
             self._remove_old_scrape_targets()
             self._rank_placement = {}
+            self._rank_pids = {}
 
         self._expected_world_size = world_size
         self._rank_placement[rank] = node_id
+        if pid:
+            self._rank_pids[rank] = pid
         logger.info(
             "rank_registered run_id=%s rank=%d world_size=%d node_id=%s",
             run_id, rank, world_size, node_id,
@@ -179,6 +184,13 @@ class FtController:
                 target_id=f"rank-{rank}",
                 address=exporter_address,
             )
+
+    def get_rank_pids_for_node(self, node_id: str) -> dict[int, int]:
+        return {
+            rank: self._rank_pids[rank]
+            for rank, nid in self._rank_placement.items()
+            if nid == node_id and rank in self._rank_pids
+        }
 
     def _remove_old_scrape_targets(self) -> None:
         if self._scrape_target_manager is not None:

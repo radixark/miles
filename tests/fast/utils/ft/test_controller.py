@@ -270,6 +270,102 @@ class TestRegisterRank:
         assert harness.controller._expected_world_size == 4
         assert harness.controller._rank_placement == {0: "node-0"}
 
+    @pytest.mark.asyncio
+    async def test_register_rank_stores_pid(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=1234,
+        )
+
+        assert harness.controller._rank_pids == {0: 1234}
+
+    @pytest.mark.asyncio
+    async def test_new_run_id_clears_rank_pids(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=1234,
+        )
+        assert harness.controller._rank_pids == {0: 1234}
+
+        await harness.controller.register_rank(
+            run_id="run-2", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=5678,
+        )
+        assert harness.controller._rank_pids == {0: 5678}
+
+    @pytest.mark.asyncio
+    async def test_register_rank_without_pid_does_not_store(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+
+        assert harness.controller._rank_pids == {}
+
+
+class TestGetRankPidsForNode:
+    @pytest.mark.asyncio
+    async def test_returns_pids_for_matching_node(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=4,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=100,
+        )
+        await harness.controller.register_rank(
+            run_id="run-1", rank=1, world_size=4,
+            node_id="node-0", exporter_address="http://node-0:9091",
+            pid=101,
+        )
+        await harness.controller.register_rank(
+            run_id="run-1", rank=2, world_size=4,
+            node_id="node-1", exporter_address="http://node-1:9090",
+            pid=200,
+        )
+
+        result = harness.controller.get_rank_pids_for_node("node-0")
+        assert result == {0: 100, 1: 101}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_unknown_node(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=100,
+        )
+
+        result = harness.controller.get_rank_pids_for_node("node-999")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_excludes_ranks_without_pid(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=100,
+        )
+        await harness.controller.register_rank(
+            run_id="run-1", rank=1, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9091",
+        )
+
+        result = harness.controller.get_rank_pids_for_node("node-0")
+        assert result == {0: 100}
+
 
 class TestShutdown:
     @pytest.mark.asyncio
