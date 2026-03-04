@@ -85,3 +85,28 @@ class TestControllerExporterAddress:
         registry = CollectorRegistry()
         exporter = ControllerExporter(port=9500, registry=registry)
         assert exporter.address == "http://localhost:9500"
+
+
+class TestControllerExporterLifecycle:
+    def test_stop_shuts_down_http_server(self) -> None:
+        registry = CollectorRegistry()
+        exporter = ControllerExporter(registry=registry)
+
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        exporter._port = port
+        exporter.start()
+        assert exporter._httpd is not None
+
+        exporter.stop()
+        assert exporter._httpd is None
+
+    def test_stop_idempotent_when_not_started(self) -> None:
+        registry = CollectorRegistry()
+        exporter = ControllerExporter(registry=registry)
+        exporter.stop()
+        assert exporter._httpd is None

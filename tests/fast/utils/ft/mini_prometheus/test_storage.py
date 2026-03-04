@@ -371,6 +371,33 @@ class TestMiniPrometheusIngestSamples:
         assert "node_id" in df.columns
         assert df["node_id"][0] == "node-42"
 
+    def test_ingest_preserves_existing_node_id(self) -> None:
+        """When a metric already carries a node_id label (e.g. from MegatronAgent),
+        ingest_samples must NOT overwrite it with the scrape target_id."""
+        store = MiniPrometheus()
+        store.ingest_samples(
+            target_id="rank-0",
+            samples=[MetricSample(
+                name="training_iter",
+                labels={"rank": "0", "node_id": "real-node-hostname"},
+                value=100.0,
+            )],
+        )
+
+        df = store.query_latest("training_iter")
+        assert df["node_id"][0] == "real-node-hostname"
+
+    def test_ingest_fills_node_id_when_absent(self) -> None:
+        """When a metric has no node_id label, target_id should be used."""
+        store = MiniPrometheus()
+        store.ingest_samples(
+            target_id="scrape-target-0",
+            samples=[MetricSample(name="gpu_temp", labels={"gpu": "0"}, value=75.0)],
+        )
+
+        df = store.query_latest("gpu_temp")
+        assert df["node_id"][0] == "scrape-target-0"
+
     def test_ingest_empty_samples_is_noop(self) -> None:
         store = MiniPrometheus()
         store.ingest_samples(target_id="node-0", samples=[])

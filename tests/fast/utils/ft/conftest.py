@@ -258,6 +258,21 @@ class FixedDecisionDetector(BaseFaultDetector):
         return self._decision
 
 
+class TrackingDetector(BaseFaultDetector):
+    """Detector that tracks on_new_run calls and always returns NONE."""
+
+    def __init__(self) -> None:
+        self.on_new_run_calls: list[str] = []
+        self.call_count = 0
+
+    def evaluate(self, ctx: DetectorContext) -> Decision:
+        self.call_count += 1
+        return Decision(action=ActionType.NONE, reason="tracking")
+
+    def on_new_run(self, run_id: str) -> None:
+        self.on_new_run_calls.append(run_id)
+
+
 _ALWAYS_NONE_DECISION = Decision(action=ActionType.NONE, reason="always none")
 _ALWAYS_MARK_BAD_DECISION = Decision(
     action=ActionType.MARK_BAD_AND_RESTART,

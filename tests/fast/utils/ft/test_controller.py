@@ -14,6 +14,7 @@ from tests.fast.utils.ft.conftest import (
     AlwaysMarkBadDetector,
     AlwaysNoneDetector,
     FixedDecisionDetector,
+    TrackingDetector,
     get_sample_value,
     make_detector_context,
     make_test_controller,
@@ -286,6 +287,91 @@ class TestShutdown:
 
         assert harness.controller._shutting_down
         assert harness.controller._tick_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_run_starts_and_stops_scrape_loop(self) -> None:
+        """run() must start the scrape loop as a background task and
+        stop it on shutdown, even if the metric store supports start/stop."""
+        harness = make_test_controller(tick_interval=0.01)
+        store = harness.metric_store
+
+        started = False
+        stopped = False
+        original_start = store.start
+        original_stop = store.stop
+
+        async def tracking_start() -> None:
+            nonlocal started
+            started = True
+            await original_start()
+
+        async def tracking_stop() -> None:
+            nonlocal stopped
+            stopped = True
+            await original_stop()
+
+        store.start = tracking_start
+        store.stop = tracking_stop
+
+        async def _shutdown_soon() -> None:
+            await asyncio.sleep(0.05)
+            await harness.controller.shutdown()
+
+        shutdown_task = asyncio.create_task(_shutdown_soon())
+        await harness.controller.run()
+        await shutdown_task
+
+        assert started
+        assert stopped
+
+
+class TestOnNewRunBroadcast:
+    @pytest.mark.asyncio
+    async def test_register_rank_new_run_calls_on_new_run(self) -> None:
+        """When a new run_id arrives, all detectors receive on_new_run()."""
+        detector_a = TrackingDetector()
+        detector_b = TrackingDetector()
+        harness = make_test_controller(detectors=[detector_a, detector_b])
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+
+        assert detector_a.on_new_run_calls == ["run-1"]
+        assert detector_b.on_new_run_calls == ["run-1"]
+
+    @pytest.mark.asyncio
+    async def test_same_run_id_does_not_call_on_new_run_again(self) -> None:
+        detector = TrackingDetector()
+        harness = make_test_controller(detectors=[detector])
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+        await harness.controller.register_rank(
+            run_id="run-1", rank=1, world_size=2,
+            node_id="node-1", exporter_address="http://node-1:9090",
+        )
+
+        assert detector.on_new_run_calls == ["run-1"]
+
+    @pytest.mark.asyncio
+    async def test_second_run_triggers_second_on_new_run(self) -> None:
+        detector = TrackingDetector()
+        harness = make_test_controller(detectors=[detector])
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+        await harness.controller.register_rank(
+            run_id="run-2", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+
+        assert detector.on_new_run_calls == ["run-1", "run-2"]
 
 
 class TestDetectorChain:

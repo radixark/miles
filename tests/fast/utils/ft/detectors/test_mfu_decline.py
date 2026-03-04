@@ -136,6 +136,23 @@ class TestMfuDeclineDetector:
         assert decision.action == ActionType.NONE
         assert "monitoring" in decision.reason
 
+    def test_on_new_run_resets_dynamic_baseline_and_timer(self) -> None:
+        """on_new_run() must clear both _dynamic_baseline and _decline_start_time
+        so stale state from a previous run doesn't cause false positives."""
+        detector = MfuDeclineDetector(
+            mfu_baseline=0.0,
+            mfu_threshold_ratio=0.8,
+            consecutive_steps=10,
+        )
+
+        detector._dynamic_baseline = 0.5
+        detector._decline_start_time = datetime.now(timezone.utc)
+
+        detector.on_new_run("new-run-id")
+
+        assert detector._dynamic_baseline is None
+        assert detector._decline_start_time is None
+
     def test_mfu_recovers_resets_timer(self) -> None:
         store = make_fake_metric_store()
         for i in range(8):

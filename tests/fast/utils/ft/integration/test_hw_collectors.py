@@ -6,8 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.utils.ft.agents.collectors.disk import DiskCollector
 from miles.utils.ft.agents.collectors.gpu import GpuCollector
-from miles.utils.ft.agents.collectors.host import HostCollector
+from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
 from miles.utils.ft.agents.collectors.network import NetworkCollector
 from miles.utils.ft.agents.node_agent import FtNodeAgent
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
@@ -35,21 +36,21 @@ class TestNodeAgentAllCollectorsIntegration:
             gpu_collector = GpuCollector()
             gpu_collector.collect_interval = 0.05
 
-            host_collector = HostCollector(
-                kmsg_path=Path("/dev/null"),
-                disk_mounts=[tmp_path],
-            )
-            host_collector.collect_interval = 0.05
-            host_collector._kmsg_reader = FakeKmsgReader([
+            kmsg_collector = KmsgCollector(kmsg_path=Path("/dev/null"))
+            kmsg_collector.collect_interval = 0.05
+            kmsg_collector._reader = FakeKmsgReader([
                 "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
             ])
+
+            disk_collector = DiskCollector(disk_mounts=[tmp_path])
+            disk_collector.collect_interval = 0.05
 
             network_collector = NetworkCollector(sysfs_net_path=sysfs)
             network_collector.collect_interval = 0.05
 
             agent = FtNodeAgent(
                 node_id="integ-hw-node",
-                collectors=[gpu_collector, host_collector, network_collector],
+                collectors=[gpu_collector, kmsg_collector, disk_collector, network_collector],
             )
 
             try:
@@ -114,16 +115,16 @@ class TestNodeAgentAllCollectorsIntegration:
     async def test_per_collector_interval_with_hw_collectors(self, tmp_path: Path) -> None:
         sysfs = _create_sysfs(tmp_path)
 
-        host_collector = HostCollector(kmsg_path=Path("/dev/null"))
-        host_collector.collect_interval = 0.05
-        host_collector._kmsg_reader = FakeKmsgReader([])
+        kmsg_collector = KmsgCollector(kmsg_path=Path("/dev/null"))
+        kmsg_collector.collect_interval = 0.05
+        kmsg_collector._reader = FakeKmsgReader([])
 
         network_collector = NetworkCollector(sysfs_net_path=sysfs)
         network_collector.collect_interval = 0.3
 
         agent = FtNodeAgent(
             node_id="integ-interval-node",
-            collectors=[host_collector, network_collector],
+            collectors=[kmsg_collector, network_collector],
         )
         try:
             await agent.start()

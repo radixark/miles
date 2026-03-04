@@ -158,6 +158,47 @@ class TestMiniPrometheusScrapeReal:
         node_ids = sorted(df["node_id"].to_list())
         assert node_ids == ["node-0", "node-1"]
 
+    async def test_scrape_reuses_httpx_client(self) -> None:
+        """ScrapeLoop must reuse the same httpx.AsyncClient across calls
+        to avoid per-request connection setup overhead."""
+        port = _find_free_port()
+        _start_exporter(port)
+
+        store = MiniPrometheus(config=MiniPrometheusConfig(
+            retention=timedelta(minutes=60),
+        ))
+        store.add_scrape_target(
+            target_id="node-0",
+            address=f"http://localhost:{port}",
+        )
+
+        await store.scrape_once()
+        client_after_first = store._scrape_loop._client
+        assert client_after_first is not None
+
+        await store.scrape_once()
+        client_after_second = store._scrape_loop._client
+        assert client_after_second is client_after_first
+
+    async def test_stop_closes_httpx_client(self) -> None:
+        """ScrapeLoop.stop() must close the httpx client and set it to None."""
+        port = _find_free_port()
+        _start_exporter(port)
+
+        store = MiniPrometheus(config=MiniPrometheusConfig(
+            retention=timedelta(minutes=60),
+        ))
+        store.add_scrape_target(
+            target_id="node-0",
+            address=f"http://localhost:{port}",
+        )
+
+        await store.scrape_once()
+        assert store._scrape_loop._client is not None
+
+        await store._scrape_loop.stop()
+        assert store._scrape_loop._client is None
+
     async def test_scrape_bad_target_doesnt_affect_good(self) -> None:
         from prometheus_client import Gauge
         from prometheus_client.registry import CollectorRegistry
