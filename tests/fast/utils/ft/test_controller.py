@@ -374,11 +374,36 @@ class TestExecuteDecision:
         assert harness.controller._tick_count == 1
 
     @pytest.mark.asyncio
-    async def test_notify_human_does_not_raise(self) -> None:
+    async def test_notify_human_sends_notification(self) -> None:
         detector = FixedDecisionDetector(decision=Decision(
             action=ActionType.NOTIFY_HUMAN,
             reason="test notify",
         ))
         harness = make_test_controller(detectors=[detector])
         await harness.controller._tick()
+
         assert harness.controller._tick_count == 1
+        assert harness.notifier is not None
+        assert len(harness.notifier.calls) == 1
+        title, content, severity = harness.notifier.calls[0]
+        assert title == "Fault Alert"
+        assert content == "test notify"
+        assert severity == "critical"
+
+    @pytest.mark.asyncio
+    async def test_notify_human_without_notifier(self) -> None:
+        detector = FixedDecisionDetector(decision=Decision(
+            action=ActionType.NOTIFY_HUMAN,
+            reason="test notify no notifier",
+        ))
+        harness = make_test_controller(detectors=[detector], notifier=None)
+        await harness.controller._tick()
+        assert harness.controller._tick_count == 1
+
+    @pytest.mark.asyncio
+    async def test_none_decision_does_not_notify(self) -> None:
+        harness = make_test_controller(detectors=[AlwaysNoneDetector()])
+        await harness.controller._tick()
+
+        assert harness.notifier is not None
+        assert len(harness.notifier.calls) == 0
