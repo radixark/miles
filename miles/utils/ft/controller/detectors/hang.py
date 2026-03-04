@@ -69,7 +69,7 @@ class HangDetector(BaseFaultDetector):
     def _get_iteration_changes(
         self, metric_store: MetricStoreProtocol, window_minutes: int,
     ) -> float | None:
-        query = f'changes({TRAINING_ITERATION}{{rank="0"}}[{int(window_minutes)}m])'
+        query = f'changes({TRAINING_ITERATION}{{rank="0"}}[{window_minutes}m])'
         df = metric_store.instant_query(query)
         if df.is_empty():
             return None

@@ -70,12 +70,12 @@ class TestHangDetector:
         assert decision.trigger == "hang"
         assert "training" in decision.reason
 
-    def test_checkpoint_saving_within_timeout(self) -> None:
+    def test_checkpoint_saving_stalled(self) -> None:
+        """Checkpoint saving: iteration stalled within lookback window → hang detected."""
         store = make_fake_metric_store()
         inject_training_job_status(store, status_value=_RUNNING)
         _inject_phase(store, phase=2.0)
         now = datetime.now(timezone.utc)
-        # Iteration hasn't changed but within checkpoint timeout (30min)
         _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=5))
         _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=1))
         detector = HangDetector(
@@ -85,7 +85,6 @@ class TestHangDetector:
 
         decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
 
-        # Iteration constant within 30min window → hang detected even during checkpoint saving
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "hang"
         assert "checkpoint_saving" in decision.reason
