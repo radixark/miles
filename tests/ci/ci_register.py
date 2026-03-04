@@ -68,7 +68,7 @@ class RegistryVisitor(ast.NodeVisitor):
             return node.value
         return _UNSET
 
-    def _parse_call_args(self, func_call: ast.Call, param_order: tuple) -> dict:
+    def _parse_call_args(self, func_call: ast.Call, param_order: tuple) -> tuple[float, str, int, bool, Optional[str]]:
         args = {name: _UNSET for name in param_order}
         seen = set()
 

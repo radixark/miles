@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -76,16 +77,14 @@ def is_retriable_failure(output: str) -> tuple[bool, str]:
     return False, "unknown failure type"
 
 
-def _kill_process_tree(pid: int):
-    """Kill a process and all its children."""
+def _kill_process_tree(pgid: int):
+    """Kill a process group by its PGID."""
     try:
-        subprocess.run(
-            ["kill", "-9", str(pid)],
-            capture_output=True,
-            timeout=10,
-        )
-    except Exception:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
         pass
+    except Exception as e:
+        logger.warning(f"Error killing process group {pgid}: {e}")
 
 
 def run_with_timeout(
@@ -180,6 +179,7 @@ def run_unittest_files(
                     stderr=subprocess.STDOUT,
                     text=True,
                     errors="ignore",
+                    start_new_session=True,
                 )
                 output_lines = []
                 for line in process.stdout:
@@ -188,7 +188,8 @@ def run_unittest_files(
                 process.wait()
             else:
                 process = subprocess.Popen(
-                    ["python3", full_path], stdout=None, stderr=None
+                    ["python3", full_path], stdout=None, stderr=None,
+                    start_new_session=True,
                 )
                 process.wait()
 
