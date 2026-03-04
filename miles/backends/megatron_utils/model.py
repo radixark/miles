@@ -23,6 +23,8 @@ from megatron.training.training import get_model
 
 from miles.utils.memory_utils import clear_memory
 
+from .initialize import is_megatron_main_rank
+
 from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
@@ -543,11 +545,7 @@ def train(
     pre_hook_enabled = False
 
     if args.reset_optimizer_states:
-        if (
-            mpu.get_data_parallel_rank(with_context_parallel=True) == 0
-            and mpu.get_tensor_model_parallel_rank() == 0
-            and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
-        ):
+        if is_megatron_main_rank():
             print("Reset optimizer states")
         for chained_optimizer in optimizer.chained_optimizers:
             for group in chained_optimizer.optimizer.param_groups:
@@ -626,11 +624,7 @@ def train(
                     check_mtp_loss(mtp_losses)
 
         # per train step log.
-        if (
-            mpu.get_data_parallel_rank(with_context_parallel=True) == 0
-            and mpu.get_tensor_model_parallel_rank() == 0
-            and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
-        ):
+        if is_megatron_main_rank():
             accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
             role = getattr(model[0], "role", "actor")
             role_tag = "" if role == "actor" else f"{role}-"
