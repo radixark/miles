@@ -20,6 +20,7 @@ from miles.utils.ft.metric_names import (
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.mini_wandb import MiniWandb
@@ -346,6 +347,73 @@ def make_test_controller(
 
 
 # ---------------------------------------------------------------------------
+# Diagnostic test helpers (diag-framework milestone)
+# ---------------------------------------------------------------------------
+
+
+class StubDiagnostic(BaseDiagnostic):
+    """Test diagnostic that returns a configurable pass/fail result."""
+
+    diagnostic_type = "stub"
+
+    def __init__(
+        self, passed: bool = True, details: str = "stub passed",
+    ) -> None:
+        self._passed = passed
+        self._details = details
+
+    async def run(
+        self, node_id: str, timeout_seconds: int = 120,
+    ) -> DiagnosticResult:
+        return DiagnosticResult(
+            diagnostic_type=self.diagnostic_type,
+            node_id=node_id,
+            passed=self._passed,
+            details=self._details,
+        )
+
+
+class FailingDiagnostic(BaseDiagnostic):
+    """Test diagnostic that always reports failure."""
+
+    diagnostic_type = "failing"
+
+    def __init__(self, details: str = "diagnostic failed") -> None:
+        self._details = details
+
+    async def run(
+        self, node_id: str, timeout_seconds: int = 120,
+    ) -> DiagnosticResult:
+        return DiagnosticResult(
+            diagnostic_type=self.diagnostic_type,
+            node_id=node_id,
+            passed=False,
+            details=self._details,
+        )
+
+
+class SlowDiagnostic(BaseDiagnostic):
+    """Test diagnostic that sleeps longer than its timeout."""
+
+    diagnostic_type = "slow"
+
+    def __init__(self, sleep_seconds: float = 300.0) -> None:
+        self._sleep_seconds = sleep_seconds
+
+    async def run(
+        self, node_id: str, timeout_seconds: int = 120,
+    ) -> DiagnosticResult:
+        import asyncio
+        await asyncio.sleep(self._sleep_seconds)
+        return DiagnosticResult(
+            diagnostic_type=self.diagnostic_type,
+            node_id=node_id,
+            passed=True,
+            details="should not reach here",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Diagnostic scheduler fakes (recovery milestone)
 # ---------------------------------------------------------------------------
 
@@ -403,7 +471,9 @@ class FakeNodeAgent:
         self.cleanup_called: bool = False
         self.cleanup_job_id: str | None = None
 
-    async def run_diagnostic(self, diagnostic_type: str) -> DiagnosticResult:
+    async def run_diagnostic(
+        self, diagnostic_type: str, timeout_seconds: int = 120,
+    ) -> DiagnosticResult:
         return self._diagnostic_results[diagnostic_type]
 
     async def cleanup_training_processes(self, training_job_id: str) -> None:
