@@ -84,7 +84,12 @@ async def test_mfu_decline_detection(
         )
         assert final_status["mode"] == "monitoring"
 
-        if target_node in final_status.get("bad_nodes", []):
+        bad_nodes = await ft_system.node_manager.get_bad_nodes()
+        evicted = target_node in bad_nodes or any(
+            target_node in str(n) for n in bad_nodes
+        )
+
+        if evicted:
             logger.info("mfu_decline_evicted node=%s (temperature correlated)", target_node)
         else:
             logger.info("mfu_decline_notified (no temperature correlation)")
@@ -93,8 +98,7 @@ async def test_mfu_decline_detection(
         ray.get(injector.stop_gpu_stress.remote(pid=stress_pid))
 
     # If node was evicted, verify training recovers on remaining nodes
-    final = controller.get_status()
-    if target_node in final.get("bad_nodes", []):
+    if evicted:
         await wait_for_training_stable(
             controller=controller,
             mini_wandb=ft_system.mini_wandb,

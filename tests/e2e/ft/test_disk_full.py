@@ -50,14 +50,14 @@ async def test_disk_full_eviction(
 
     injector = fault_injector.deploy_to(node_id=target_node)
 
-    t_inject = time.monotonic()
-    ray.get(injector.fill_disk.remote(
-        path=_FILL_PATH,
-        size_bytes=_FILL_SIZE_BYTES,
-    ))
-    logger.info("disk_filled path=%s size=%d node=%s", _FILL_PATH, _FILL_SIZE_BYTES, target_node)
-
     try:
+        t_inject = time.monotonic()
+        ray.get(injector.fill_disk.remote(
+            path=_FILL_PATH,
+            size_bytes=_FILL_SIZE_BYTES,
+        ))
+        logger.info("disk_filled path=%s size=%d node=%s", _FILL_PATH, _FILL_SIZE_BYTES, target_node)
+
         # Wait for HighConfidenceHardwareDetector to trigger MARK_BAD_AND_RESTART
         status = await wait_for_recovery_complete(
             controller=controller,

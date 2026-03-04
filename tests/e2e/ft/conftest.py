@@ -12,8 +12,8 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import AsyncGenerator, Callable, Generator
 from dataclasses import dataclass, field
-from collections.abc import Callable, Generator
 from typing import Any
 
 import pytest
@@ -86,14 +86,17 @@ class FtSystem:
     async def shutdown(self) -> None:
         await self.controller.shutdown()
         if self._controller_task is not None:
+            self._controller_task.cancel()
             try:
-                await asyncio.wait_for(self._controller_task, timeout=10.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                self._controller_task.cancel()
+                await self._controller_task
+            except asyncio.CancelledError:
+                pass
 
 
 @pytest.fixture(scope="session")
-def ft_system(ray_cluster: None, ray_address: str) -> Generator[FtSystem, None, None]:
+async def ft_system(
+    ray_cluster: None, ray_address: str,
+) -> AsyncGenerator[FtSystem, None]:
     """Start FT Controller with mini metric store."""
     entrypoint = os.environ.get("FT_E2E_TRAINING_ENTRYPOINT", "").strip()
     if not entrypoint:
@@ -131,7 +134,9 @@ def ft_system(ray_cluster: None, ray_address: str) -> Generator[FtSystem, None, 
         node_manager=node_manager,
     )
 
+    await system.start()
     yield system
+    await system.shutdown()
 
 
 # ---------------------------------------------------------------------------

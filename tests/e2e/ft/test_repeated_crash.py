@@ -57,11 +57,15 @@ async def test_repeated_crash_enters_diagnosing(
         timeout=180.0,
     )
 
-    # Second kill during MONITORING phase
+    # Second kill during MONITORING phase — retry until processes are found
     await asyncio.sleep(5.0)
-    procs = ray.get(injector.find_training_processes.remote())
-    if procs:
-        ray.get(injector.kill_process.remote(pid=procs[0]["pid"], sig=9))
+    for _ in range(10):
+        procs = ray.get(injector.find_training_processes.remote())
+        if procs:
+            break
+        await asyncio.sleep(3.0)
+    assert len(procs) > 0, "No training processes found for second kill"
+    ray.get(injector.kill_process.remote(pid=procs[0]["pid"], sig=9))
 
     # Wait for Controller to enter DIAGNOSING
     status = await wait_for_recovery_phase(
