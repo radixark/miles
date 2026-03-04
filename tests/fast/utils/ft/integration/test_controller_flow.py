@@ -75,6 +75,31 @@ class TestRunIdIsolation:
         assert harness.controller._active_run_id == "run-2"
         assert harness.controller._rank_placement == {0: "node-0"}
 
+    @pytest.mark.asyncio
+    async def test_stale_log_step_after_run_switch_is_discarded(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+        await harness.controller.log_step(
+            run_id="run-1", rank=0, step=10,
+            metrics={"loss": 2.0},
+        )
+
+        await harness.controller.register_rank(
+            run_id="run-2", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+
+        await harness.controller.log_step(
+            run_id="run-1", rank=0, step=11,
+            metrics={"loss": 1.5},
+        )
+
+        assert harness.mini_wandb.latest(metric_name="loss", rank=0) is None
+
 
 class TestCustomDetectorInTick:
     @pytest.mark.asyncio
