@@ -195,3 +195,14 @@ class TestGetTrainingStatus:
         mock_client.get_job_status.return_value = "UNKNOWN_STATE"
         status = await job.get_training_status()
         assert status == JobStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_raises_on_client_failure(self) -> None:
+        job, mock_client = _make_job()
+        mock_client.submit_job.return_value = "job-1"
+        await job.submit_training()
+
+        mock_client.get_job_status.side_effect = ConnectionError("Ray unreachable")
+
+        with pytest.raises(ConnectionError, match="Ray unreachable"):
+            await job.get_training_status()
