@@ -10,12 +10,17 @@ import miles.utils.ft.metric_names as mn
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.models import ActionType, Decision, RecoveryPhase, TriggerType
 from miles.utils.ft.platform.protocols import JobStatus
+from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.mini_wandb import MiniWandb
 from tests.fast.utils.ft.conftest import (
     AlwaysMarkBadDetector,
     AlwaysNoneDetector,
+    FakeNodeManager,
+    FakeTrainingJob,
     FixedDecisionDetector,
     get_sample_value,
     make_detector_context,
+    make_fake_metric_store,
     make_test_controller,
 )
 
@@ -797,3 +802,20 @@ class TestAgentManagement:
         harness.controller.register_agent("node-0", agent2)
 
         assert harness.controller._agents["node-0"] is agent2
+
+
+class TestDefaultDiagnosticSchedulerWiring:
+    def test_default_scheduler_has_rank_pids_provider(self) -> None:
+        from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
+
+        controller = FtController(
+            node_manager=FakeNodeManager(),
+            training_job=FakeTrainingJob(),
+            metric_store=make_fake_metric_store(),
+            mini_wandb=MiniWandb(),
+        )
+
+        scheduler = controller._diagnostic_scheduler
+        assert isinstance(scheduler, DiagnosticScheduler)
+        assert scheduler._rank_pids_provider.__func__ is FtController.get_rank_pids_for_node
+        assert scheduler._rank_pids_provider.__self__ is controller

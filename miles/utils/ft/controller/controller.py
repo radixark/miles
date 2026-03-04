@@ -60,7 +60,10 @@ class FtController:
         self._agents: dict[str, Any] = {}
 
         self._diagnostic_scheduler: DiagnosticSchedulerProtocol = (
-            diagnostic_scheduler or DiagnosticScheduler(agents=self._agents)
+            diagnostic_scheduler or DiagnosticScheduler(
+                agents=self._agents,
+                rank_pids_provider=self.get_rank_pids_for_node,
+            )
         )
 
         self._active_run_id: str | None = None
