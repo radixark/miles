@@ -78,6 +78,45 @@ def _create_placement_group(num_gpus):
     return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids, gpu_ids
 
 
+def _parse_excluded_nodes(csv_string):
+    """Parse comma-separated node names into a set including resolved IPs."""
+    excluded = set()
+    for name in (csv_string or "").split(","):
+        name = name.strip()
+        if not name:
+            continue
+        excluded.add(name)
+        try:
+            excluded.add(socket.gethostbyname(name))
+        except (socket.gaierror, OSError):
+            pass
+    return excluded
+
+
+def _create_placement_group_excluding(num_gpus, excluded):
+    """Create a placement group, retrying if bundles land on excluded nodes."""
+    for attempt in range(_MAX_PLACEMENT_RETRIES + 1):
+        pg, reordered_indices, reordered_gpu_ids, gpu_ids = _create_placement_group(num_gpus)
+
+        if not excluded:
+            return pg, reordered_indices, reordered_gpu_ids
+
+        bad = {node for node, _gpu in gpu_ids} & excluded
+        if not bad:
+            return pg, reordered_indices, reordered_gpu_ids
+
+        logger.warning(
+            "Placement group has bundles on excluded nodes %s, retry %d/%d",
+            bad, attempt + 1, _MAX_PLACEMENT_RETRIES,
+        )
+        ray.util.remove_placement_group(pg)
+
+    raise RuntimeError(
+        f"Cannot create placement group avoiding excluded nodes {excluded} "
+        f"after {_MAX_PLACEMENT_RETRIES} retries"
+    )
+
+
 def create_placement_groups(args):
     """Create placement groups for actor and rollout engines."""
 
@@ -105,40 +144,12 @@ def create_placement_groups(args):
             critic_offset = args.actor_num_nodes * args.actor_num_gpus_per_node
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
-    excluded = set()
-    for name in (args.excluded_nodes or "").split(","):
-        name = name.strip()
-        if not name:
-            continue
-        excluded.add(name)
-        try:
-            excluded.add(socket.gethostbyname(name))
-        except (socket.gaierror, OSError):
-            pass
+    excluded = _parse_excluded_nodes(args.excluded_nodes)
     if excluded:
         logger.info("Excluding nodes from placement: %s", excluded)
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    for attempt in range(_MAX_PLACEMENT_RETRIES + 1):
-        pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids, gpu_ids = _create_placement_group(num_gpus)
-
-        if not excluded:
-            break
-        bad = {node for node, _gpu in gpu_ids} & excluded
-        if not bad:
-            break
-
-        logger.warning(
-            "Placement group has bundles on excluded nodes %s, retry %d/%d",
-            bad, attempt + 1, _MAX_PLACEMENT_RETRIES,
-        )
-        ray.util.remove_placement_group(pg)
-    else:
-        if excluded:
-            raise RuntimeError(
-                f"Cannot create placement group avoiding excluded nodes {excluded} "
-                f"after {_MAX_PLACEMENT_RETRIES} retries"
-            )
+    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group_excluding(num_gpus, excluded)
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
     rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]
