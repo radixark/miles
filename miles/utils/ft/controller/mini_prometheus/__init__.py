@@ -9,7 +9,10 @@ from miles.utils.ft.controller.mini_prometheus.promql import (
     RangeFunctionCompare,
     parse_promql,
 )
-from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
+from miles.utils.ft.controller.mini_prometheus.protocol import (
+    MetricStoreProtocol,
+    ScrapeTargetManagerProtocol,
+)
 from miles.utils.ft.controller.mini_prometheus.scraper import parse_prometheus_text
 from miles.utils.ft.controller.mini_prometheus.storage import (
     MiniPrometheus,
@@ -23,6 +26,7 @@ __all__ = [
     "LabelMatcher",
     "MetricSelector",
     "MetricStoreProtocol",
+    "ScrapeTargetManagerProtocol",
     "MiniPrometheus",
     "MiniPrometheusConfig",
     "PromQLExpr",

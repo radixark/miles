@@ -14,3 +14,9 @@ class MetricStoreProtocol(Protocol):
         end: datetime,
         step: timedelta,
     ) -> pl.DataFrame: ...
+
+
+class ScrapeTargetManagerProtocol(Protocol):
+    def add_scrape_target(self, target_id: str, address: str) -> None: ...
+
+    def remove_scrape_target(self, target_id: str) -> None: ...

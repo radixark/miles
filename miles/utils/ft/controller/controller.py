@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 
+from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
-from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
-from miles.utils.ft.controller.mini_prometheus.storage import MiniPrometheus
+from miles.utils.ft.controller.mini_prometheus.protocol import (
+    MetricStoreProtocol,
+    ScrapeTargetManagerProtocol,
+)
 from miles.utils.ft.controller.mini_wandb import MiniWandb
-from miles.utils.ft.models import ActionType, Decision, MetricSample
+from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import (
     JobStatus,
     NodeManagerProtocol,
@@ -23,9 +28,6 @@ _JOB_STATUS_TO_NUMERIC: dict[JobStatus, int] = {
 
 _ALL_DETECTORS_PASSED = Decision(action=ActionType.NONE, reason="all detectors passed")
 
-METRIC_TRAINING_JOB_STATUS = "training_job_status"
-_SYNTHETIC_TARGET_ID = "controller"
-
 
 class FtController:
     def __init__(
@@ -36,6 +38,8 @@ class FtController:
         mini_wandb: MiniWandb,
         detectors: list[BaseFaultDetector] | None = None,
         tick_interval: float = 30.0,
+        controller_exporter: ControllerExporter | None = None,
+        scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
     ) -> None:
         self._node_manager = node_manager
         self._training_job = training_job
@@ -43,6 +47,8 @@ class FtController:
         self._mini_wandb = mini_wandb
         self._detectors: list[BaseFaultDetector] = detectors or []
         self._tick_interval = tick_interval
+        self._controller_exporter = controller_exporter
+        self._scrape_target_manager = scrape_target_manager
 
         self._active_run_id: str | None = None
         self._expected_world_size: int | None = None
@@ -118,17 +124,16 @@ class FtController:
             run_id, rank, world_size, node_id,
         )
 
-        if isinstance(self._metric_store, MiniPrometheus):
-            target_id = f"rank-{rank}"
-            self._metric_store.add_scrape_target(
-                target_id=target_id,
+        if self._scrape_target_manager is not None:
+            self._scrape_target_manager.add_scrape_target(
+                target_id=f"rank-{rank}",
                 address=exporter_address,
             )
 
     def _remove_old_scrape_targets(self) -> None:
-        if isinstance(self._metric_store, MiniPrometheus):
+        if self._scrape_target_manager is not None:
             for old_rank in self._rank_placement:
-                self._metric_store.remove_scrape_target(f"rank-{old_rank}")
+                self._scrape_target_manager.remove_scrape_target(f"rank-{old_rank}")
 
     # -------------------------------------------------------------------
     # Main loop tick
@@ -146,7 +151,7 @@ class FtController:
                 len(self._rank_placement), self._expected_world_size, self._active_run_id,
             )
 
-        await self._inject_training_job_status()
+        await self._update_training_job_status()
 
         decision = self._evaluate_detectors()
 
@@ -156,6 +161,7 @@ class FtController:
             decision.action.value, decision.reason,
         )
 
+        self._update_exporter_metrics()
         await self._execute_decision(decision)
 
     # -------------------------------------------------------------------
@@ -173,24 +179,26 @@ class FtController:
         return _ALL_DETECTORS_PASSED
 
     # -------------------------------------------------------------------
-    # Internal: synthetic metric injection
+    # Internal: exporter metric updates
     # -------------------------------------------------------------------
 
-    async def _inject_training_job_status(self) -> None:
+    async def _update_training_job_status(self) -> None:
         status = await self._training_job.get_training_status()
         status_value = _JOB_STATUS_TO_NUMERIC.get(status, 0)
 
-        if isinstance(self._metric_store, MiniPrometheus):
-            self._metric_store.ingest_samples(
-                target_id=_SYNTHETIC_TARGET_ID,
-                samples=[
-                    MetricSample(
-                        name=METRIC_TRAINING_JOB_STATUS,
-                        labels={},
-                        value=status_value,
-                    )
-                ],
-            )
+        if self._controller_exporter is not None:
+            self._controller_exporter.update_training_job_status(status_value)
+
+    def _update_exporter_metrics(self) -> None:
+        if self._controller_exporter is None:
+            return
+
+        self._controller_exporter.update_tick_count()
+        self._controller_exporter.update_mode(0)
+
+        loss = self._mini_wandb.latest(metric_name="loss", rank=0)
+        mfu = self._mini_wandb.latest(metric_name="mfu", rank=0)
+        self._controller_exporter.update_training_metrics(loss=loss, mfu=mfu)
 
     # -------------------------------------------------------------------
     # Internal: decision execution (skeleton stubs)

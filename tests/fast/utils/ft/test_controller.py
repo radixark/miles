@@ -2,8 +2,8 @@ import asyncio
 import logging
 
 import pytest
+from prometheus_client import CollectorRegistry
 
-from miles.utils.ft.controller.controller import METRIC_TRAINING_JOB_STATUS
 from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
@@ -12,6 +12,17 @@ from tests.fast.utils.ft.conftest import (
     FixedDecisionDetector,
     make_test_controller,
 )
+
+
+def _get_sample_value(
+    registry: CollectorRegistry,
+    metric_name: str,
+) -> float | None:
+    for metric_family in registry.collect():
+        for sample in metric_family.samples:
+            if sample.name == metric_name:
+                return sample.value
+    return None
 
 
 class TestTickEmptyDetectorChain:
@@ -303,49 +314,73 @@ class TestDetectorChain:
         assert trailing_detector.call_count == 0
 
 
-class TestTrainingJobStatusInjection:
+class TestTrainingJobStatusExporter:
+    """Verify training job status is pushed to the ControllerExporter gauge."""
+
     @pytest.mark.asyncio
-    async def test_tick_injects_training_job_status(self) -> None:
-        harness = make_test_controller()
+    async def test_tick_updates_training_job_status_gauge(self) -> None:
+        registry = CollectorRegistry()
+        from miles.utils.ft.controller.controller_exporter import ControllerExporter
+        exporter = ControllerExporter(registry=registry)
+        harness = make_test_controller(controller_exporter=exporter)
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
-        assert not df.is_empty()
-        assert df["value"][0] == 1
+        assert _get_sample_value(registry, "ft_training_job_status") == 1.0
 
     @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
+        registry = CollectorRegistry()
+        from miles.utils.ft.controller.controller_exporter import ControllerExporter
+        exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(
             status_sequence=[JobStatus.FAILED],
+            controller_exporter=exporter,
         )
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
-        assert df["value"][0] == -1
+        assert _get_sample_value(registry, "ft_training_job_status") == -1.0
 
     @pytest.mark.asyncio
     async def test_stopped_status_maps_to_zero(self) -> None:
+        registry = CollectorRegistry()
+        from miles.utils.ft.controller.controller_exporter import ControllerExporter
+        exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(
             status_sequence=[JobStatus.STOPPED],
+            controller_exporter=exporter,
         )
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
-        assert df["value"][0] == 0
+        assert _get_sample_value(registry, "ft_training_job_status") == 0.0
 
     @pytest.mark.asyncio
     async def test_pending_status_maps_to_two(self) -> None:
+        registry = CollectorRegistry()
+        from miles.utils.ft.controller.controller_exporter import ControllerExporter
+        exporter = ControllerExporter(registry=registry)
         harness = make_test_controller(
             status_sequence=[JobStatus.PENDING],
+            controller_exporter=exporter,
         )
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
-        assert df["value"][0] == 2
+        assert _get_sample_value(registry, "ft_training_job_status") == 2.0
+
+    @pytest.mark.asyncio
+    async def test_tick_count_incremented(self) -> None:
+        registry = CollectorRegistry()
+        from miles.utils.ft.controller.controller_exporter import ControllerExporter
+        exporter = ControllerExporter(registry=registry)
+        harness = make_test_controller(controller_exporter=exporter)
+
+        await harness.controller._tick()
+        await harness.controller._tick()
+
+        assert _get_sample_value(registry, "ft_controller_tick_count_total") == 2.0
 
 
 class TestExecuteDecision:

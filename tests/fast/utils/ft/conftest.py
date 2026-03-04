@@ -5,7 +5,10 @@ from typing import NamedTuple
 from unittest.mock import MagicMock
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
+from prometheus_client import CollectorRegistry
+
 from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
@@ -151,18 +154,22 @@ class ControllerTestHarness(NamedTuple):
     training_job: FakeTrainingJob
     metric_store: MiniPrometheus
     mini_wandb: MiniWandb
+    controller_exporter: ControllerExporter
 
 
 def make_test_controller(
     detectors: list[BaseFaultDetector] | None = None,
     status_sequence: list[JobStatus] | None = None,
     tick_interval: float = 0.01,
+    controller_exporter: ControllerExporter | None = None,
 ) -> ControllerTestHarness:
     """Construct a Controller and all its dependencies for testing."""
     node_manager = FakeNodeManager()
     training_job = FakeTrainingJob(status_sequence=status_sequence)
     metric_store = MiniPrometheus(config=MiniPrometheusConfig())
     mini_wandb = MiniWandb()
+    if controller_exporter is None:
+        controller_exporter = ControllerExporter(registry=CollectorRegistry())
     controller = FtController(
         node_manager=node_manager,
         training_job=training_job,
@@ -170,6 +177,8 @@ def make_test_controller(
         mini_wandb=mini_wandb,
         detectors=detectors,
         tick_interval=tick_interval,
+        controller_exporter=controller_exporter,
+        scrape_target_manager=metric_store,
     )
     return ControllerTestHarness(
         controller=controller,
@@ -177,6 +186,7 @@ def make_test_controller(
         training_job=training_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
+        controller_exporter=controller_exporter,
     )
 
 
