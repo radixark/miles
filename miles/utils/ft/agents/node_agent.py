@@ -10,8 +10,6 @@ from miles.utils.ft.models import DiagnosticResult, MetricSample
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_COLLECT_INTERVAL_SECONDS = 10.0
-
 _GaugeKey = tuple[str, frozenset[str]]
 
 
@@ -20,12 +18,15 @@ class FtNodeAgent:
         self,
         node_id: str,
         collectors: list[BaseCollector] | None = None,
-        collect_interval_seconds: float = _DEFAULT_COLLECT_INTERVAL_SECONDS,
+        collect_interval_seconds: float | None = None,
     ) -> None:
         self._node_id = node_id
         self._collectors = collectors or []
-        self._collect_interval = collect_interval_seconds
         self._stopped = False
+
+        if collect_interval_seconds is not None:
+            for collector in self._collectors:
+                collector.collect_interval = collect_interval_seconds
 
         self._registry = CollectorRegistry()
         self._gauges: dict[_GaugeKey, Gauge] = {}
@@ -33,7 +34,7 @@ class FtNodeAgent:
         httpd, _thread = start_http_server(port=0, registry=self._registry)
         self._httpd = httpd
         self._port: int = httpd.server_port
-        self._loop_task: asyncio.Task[None] | None = None
+        self._collector_tasks: list[asyncio.Task[None]] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -43,25 +44,34 @@ class FtNodeAgent:
         return f"http://localhost:{self._port}"
 
     async def start(self) -> None:
-        if self._stopped or self._loop_task is not None:
+        if self._stopped or self._collector_tasks:
             return
-        if self._collectors:
-            self._loop_task = asyncio.get_running_loop().create_task(
-                self._collection_loop()
-            )
+
+        loop = asyncio.get_running_loop()
+        for collector in self._collectors:
+            task = loop.create_task(self._run_single_collector(collector))
+            self._collector_tasks.append(task)
 
     async def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
 
-        if self._loop_task is not None:
-            self._loop_task.cancel()
+        for task in self._collector_tasks:
+            task.cancel()
+        await asyncio.gather(*self._collector_tasks, return_exceptions=True)
+        self._collector_tasks.clear()
+
+        for collector in self._collectors:
             try:
-                await self._loop_task
-            except asyncio.CancelledError:
-                pass
-            self._loop_task = None
+                await collector.close()
+            except Exception:
+                logger.warning(
+                    "Collector %s.close() failed on node %s",
+                    type(collector).__name__,
+                    self._node_id,
+                    exc_info=True,
+                )
 
         self._httpd.shutdown()
         self._httpd.server_close()
@@ -86,30 +96,24 @@ class FtNodeAgent:
         )
 
     # ------------------------------------------------------------------
-    # Background collection loop
+    # Per-collector background task
     # ------------------------------------------------------------------
 
-    async def _collection_loop(self) -> None:
+    async def _run_single_collector(self, collector: BaseCollector) -> None:
+        collector_name = type(collector).__name__
         while True:
-            all_metrics: list[MetricSample] = []
+            try:
+                result = await collector.collect()
+                self._update_exporter(result.metrics)
+            except Exception:
+                logger.warning(
+                    "Collector %s failed on node %s",
+                    collector_name,
+                    self._node_id,
+                    exc_info=True,
+                )
 
-            results = await asyncio.gather(
-                *(collector.collect() for collector in self._collectors),
-                return_exceptions=True,
-            )
-            for collector, result in zip(self._collectors, results):
-                if isinstance(result, Exception):
-                    logger.warning(
-                        "Collector %s failed on node %s: %s",
-                        type(collector).__name__,
-                        self._node_id,
-                        result,
-                    )
-                else:
-                    all_metrics.extend(result.metrics)
-
-            self._update_exporter(all_metrics)
-            await asyncio.sleep(self._collect_interval)
+            await asyncio.sleep(collector.collect_interval)
 
     # ------------------------------------------------------------------
     # Exporter update

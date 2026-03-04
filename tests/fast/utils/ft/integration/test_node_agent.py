@@ -12,17 +12,19 @@ from tests.fast.utils.ft.conftest import TestCollector
 class TestNodeAgentMiniPrometheusIntegration:
     @pytest.mark.asyncio()
     async def test_scrape_and_instant_query(self) -> None:
-        test_collector = TestCollector(metrics=[
-            MetricSample(
-                name="gpu_temperature_celsius",
-                labels={"gpu": "0"},
-                value=72.5,
-            ),
-        ])
+        test_collector = TestCollector(
+            metrics=[
+                MetricSample(
+                    name="gpu_temperature_celsius",
+                    labels={"gpu": "0"},
+                    value=72.5,
+                ),
+            ],
+            collect_interval=0.1,
+        )
         agent = FtNodeAgent(
             node_id="integ-node-0",
             collectors=[test_collector],
-            collect_interval_seconds=0.1,
         )
         try:
             await agent.start()
@@ -42,17 +44,19 @@ class TestNodeAgentMiniPrometheusIntegration:
 
     @pytest.mark.asyncio()
     async def test_updated_values_visible_after_rescrape(self) -> None:
-        test_collector = TestCollector(metrics=[
-            MetricSample(
-                name="gpu_temperature_celsius",
-                labels={"gpu": "0"},
-                value=60.0,
-            ),
-        ])
+        test_collector = TestCollector(
+            metrics=[
+                MetricSample(
+                    name="gpu_temperature_celsius",
+                    labels={"gpu": "0"},
+                    value=60.0,
+                ),
+            ],
+            collect_interval=0.1,
+        )
         agent = FtNodeAgent(
             node_id="integ-node-1",
             collectors=[test_collector],
-            collect_interval_seconds=0.1,
         )
         try:
             await agent.start()
@@ -94,27 +98,29 @@ class TestNodeAgentMiniPrometheusIntegration:
 
     @pytest.mark.asyncio()
     async def test_multiple_metrics_all_queryable(self) -> None:
-        test_collector = TestCollector(metrics=[
-            MetricSample(
-                name="gpu_temperature_celsius",
-                labels={"gpu": "0"},
-                value=70.0,
-            ),
-            MetricSample(
-                name="gpu_memory_used_bytes",
-                labels={"gpu": "0"},
-                value=8192.0,
-            ),
-            MetricSample(
-                name="gpu_power_watts",
-                labels={"gpu": "0"},
-                value=250.0,
-            ),
-        ])
+        test_collector = TestCollector(
+            metrics=[
+                MetricSample(
+                    name="gpu_temperature_celsius",
+                    labels={"gpu": "0"},
+                    value=70.0,
+                ),
+                MetricSample(
+                    name="gpu_memory_used_bytes",
+                    labels={"gpu": "0"},
+                    value=8192.0,
+                ),
+                MetricSample(
+                    name="gpu_power_watts",
+                    labels={"gpu": "0"},
+                    value=250.0,
+                ),
+            ],
+            collect_interval=0.1,
+        )
         agent = FtNodeAgent(
             node_id="integ-node-2",
             collectors=[test_collector],
-            collect_interval_seconds=0.1,
         )
         try:
             await agent.start()
@@ -138,22 +144,24 @@ class TestNodeAgentMiniPrometheusIntegration:
 
     @pytest.mark.asyncio()
     async def test_label_filter_query(self) -> None:
-        test_collector = TestCollector(metrics=[
-            MetricSample(
-                name="gpu_temperature_celsius",
-                labels={"gpu": "0"},
-                value=65.0,
-            ),
-            MetricSample(
-                name="gpu_temperature_celsius",
-                labels={"gpu": "1"},
-                value=78.0,
-            ),
-        ])
+        test_collector = TestCollector(
+            metrics=[
+                MetricSample(
+                    name="gpu_temperature_celsius",
+                    labels={"gpu": "0"},
+                    value=65.0,
+                ),
+                MetricSample(
+                    name="gpu_temperature_celsius",
+                    labels={"gpu": "1"},
+                    value=78.0,
+                ),
+            ],
+            collect_interval=0.1,
+        )
         agent = FtNodeAgent(
             node_id="integ-node-3",
             collectors=[test_collector],
-            collect_interval_seconds=0.1,
         )
         try:
             await agent.start()
