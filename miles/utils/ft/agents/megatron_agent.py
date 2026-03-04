@@ -20,8 +20,11 @@ _PHASE_TO_NUMERIC: dict[str, float] = {
 class FtMegatronAgent:
     """Embedded fault-tolerance agent for Megatron training processes.
 
-    Each rank creates one instance. Exposes heartbeat gauges via a Prometheus
-    HTTP exporter and pushes per-step metrics to FtController (fire-and-forget).
+    Each rank creates one instance. Exposes heartbeat gauges (iteration, phase)
+    via a Prometheus HTTP exporter for the FtController to scrape.
+
+    Training metrics (loss, grad_norm, etc.) are forwarded separately through
+    FtTrackingAgent, which hooks into tracking_utils.log().
     """
 
     def __init__(self, rank: int, world_size: int) -> None:
@@ -92,21 +95,11 @@ class FtMegatronAgent:
     def step(
         self,
         iteration: int,
-        loss: float | None = None,
-        grad_norm: float | None = None,
-        mfu: float | None = None,
-        iteration_time: float | None = None,
         phase: Literal["idle", "training", "checkpoint_saving"] = "training",
     ) -> None:
         try:
-            self._step_inner(
-                iteration=iteration,
-                loss=loss,
-                grad_norm=grad_norm,
-                mfu=mfu,
-                iteration_time=iteration_time,
-                phase=phase,
-            )
+            self._iteration_child.set(iteration)
+            self._phase_child.set(_PHASE_TO_NUMERIC.get(phase, 0.0))
         except Exception:
             logger.warning(
                 "FtMegatronAgent.step() failed at iteration=%d", iteration,
@@ -116,42 +109,6 @@ class FtMegatronAgent:
     def shutdown(self) -> None:
         self._httpd.shutdown()
         self._httpd.server_close()
-
-    # ------------------------------------------------------------------
-    # Internal: step logic
-    # ------------------------------------------------------------------
-
-    def _step_inner(
-        self,
-        iteration: int,
-        loss: float | None,
-        grad_norm: float | None,
-        mfu: float | None,
-        iteration_time: float | None,
-        phase: Literal["idle", "training", "checkpoint_saving"],
-    ) -> None:
-        self._iteration_child.set(iteration)
-        self._phase_child.set(_PHASE_TO_NUMERIC.get(phase, 0.0))
-
-        metrics: dict[str, float] = {}
-        if loss is not None:
-            metrics["loss"] = loss
-        if grad_norm is not None:
-            metrics["grad_norm"] = grad_norm
-        if mfu is not None:
-            metrics["mfu"] = mfu
-        if iteration_time is not None:
-            metrics["iteration_time"] = iteration_time
-
-        if metrics and self._run_id:
-            controller = self._get_controller_handle()
-            if controller is not None:
-                controller.log_step.remote(
-                    run_id=self._run_id,
-                    rank=self._rank,
-                    step=iteration,
-                    metrics=metrics,
-                )
 
     # ------------------------------------------------------------------
     # Internal: controller communication

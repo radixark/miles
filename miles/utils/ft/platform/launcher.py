@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Annotated, NamedTuple
 
 import typer
@@ -19,7 +20,8 @@ from miles.utils.ft.controller.mini_prometheus.protocol import (
 )
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.controller.prometheus_client_store import PrometheusClient
-from miles.utils.ft.platform.stubs import StubNodeManager, StubTrainingJob
+from miles.utils.ft.platform.protocols import NotificationProtocol
+from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,19 @@ def _build_metric_components(
     raise typer.BadParameter(f"Unknown metric-store-backend: {backend}")
 
 
+def _build_notifier(platform_mode: str) -> NotificationProtocol | None:
+    webhook_url = (os.environ.get("FT_LARK_WEBHOOK_URL") or "").strip()
+    if webhook_url:
+        from miles.utils.ft.platform.lark_notifier import LarkWebhookNotifier
+
+        return LarkWebhookNotifier(webhook_url=webhook_url)
+
+    if platform_mode == "stub":
+        return StubNotifier()
+
+    return None
+
+
 @app.command()
 def main(
     tick_interval: Annotated[
@@ -122,6 +137,7 @@ def main(
         controller_exporter_port=controller_exporter_port,
     )
     mini_wandb = MiniWandb()
+    notifier = _build_notifier(platform_mode=platform)
 
     controller_exporter.start()
     logger.info(
@@ -135,6 +151,7 @@ def main(
         metric_store=metric_store,
         mini_wandb=mini_wandb,
         detectors=[],
+        notifier=notifier,
         tick_interval=tick_interval,
         controller_exporter=controller_exporter,
         scrape_target_manager=scrape_target_manager,

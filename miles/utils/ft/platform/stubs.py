@@ -32,3 +32,10 @@ class StubTrainingJob:
 
     async def get_training_status(self) -> JobStatus:
         return JobStatus.RUNNING
+
+
+class StubNotifier:
+    """Logs notifications but does not send them anywhere."""
+
+    async def send(self, title: str, content: str, severity: str) -> None:
+        logger.info("stub_send_notification title=%s severity=%s", title, severity)

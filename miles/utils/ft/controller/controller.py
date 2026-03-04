@@ -14,6 +14,7 @@ from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import (
     JobStatus,
     NodeManagerProtocol,
+    NotificationProtocol,
     TrainingJobProtocol,
 )
 
@@ -36,6 +37,7 @@ class FtController:
         training_job: TrainingJobProtocol,
         metric_store: MetricStoreProtocol,
         mini_wandb: MiniWandb,
+        notifier: NotificationProtocol | None = None,
         detectors: list[BaseFaultDetector] | None = None,
         tick_interval: float = 30.0,
         controller_exporter: ControllerExporter | None = None,
@@ -45,6 +47,7 @@ class FtController:
         self._training_job = training_job
         self._metric_store = metric_store
         self._mini_wandb = mini_wandb
+        self._notifier = notifier
         self._detectors: list[BaseFaultDetector] = detectors or []
         self._tick_interval = tick_interval
         self._controller_exporter = controller_exporter
@@ -229,6 +232,15 @@ class FtController:
                 "decision_notify_human reason=%s",
                 decision.reason,
             )
+            if self._notifier is not None:
+                try:
+                    await self._notifier.send(
+                        title="Fault Alert",
+                        content=decision.reason,
+                        severity="critical",
+                    )
+                except Exception:
+                    logger.exception("notifier_send_failed")
             return
 
         raise ValueError(f"Unknown action type: {decision.action}")

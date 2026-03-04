@@ -93,6 +93,16 @@ class FakeNodeManager:
         return sorted(self._bad_nodes)
 
 
+class FakeNotifier:
+    """Records all send() calls for assertion in tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def send(self, title: str, content: str, severity: str) -> None:
+        self.calls.append((title, content, severity))
+
+
 class FakeTrainingJob:
     """Programmable implementation of TrainingJobProtocol for testing."""
 
@@ -169,15 +179,22 @@ class ControllerTestHarness(NamedTuple):
     metric_store: MiniPrometheus
     mini_wandb: MiniWandb
     controller_exporter: ControllerExporter
+    notifier: FakeNotifier | None
 
 
 def make_test_controller(
     detectors: list[BaseFaultDetector] | None = None,
     status_sequence: list[JobStatus] | None = None,
+    notifier: FakeNotifier | None = FakeNotifier,
     tick_interval: float = 0.01,
     controller_exporter: ControllerExporter | None = None,
 ) -> ControllerTestHarness:
-    """Construct a Controller and all its dependencies for testing."""
+    """Construct a Controller and all its dependencies for testing.
+
+    ``notifier`` defaults to a fresh FakeNotifier instance. Pass ``None``
+    explicitly to create a Controller without a notifier.
+    """
+    real_notifier: FakeNotifier | None = FakeNotifier() if notifier is FakeNotifier else notifier
     node_manager = FakeNodeManager()
     training_job = FakeTrainingJob(status_sequence=status_sequence)
     metric_store = MiniPrometheus(config=MiniPrometheusConfig())
@@ -189,6 +206,7 @@ def make_test_controller(
         training_job=training_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
+        notifier=real_notifier,
         detectors=detectors,
         tick_interval=tick_interval,
         controller_exporter=controller_exporter,
@@ -201,6 +219,7 @@ def make_test_controller(
         metric_store=metric_store,
         mini_wandb=mini_wandb,
         controller_exporter=controller_exporter,
+        notifier=real_notifier,
     )
 
 

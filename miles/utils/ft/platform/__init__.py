@@ -4,13 +4,14 @@ from miles.utils.ft.platform.protocols import (
     NotificationProtocol,
     TrainingJobProtocol,
 )
-from miles.utils.ft.platform.stubs import StubNodeManager, StubTrainingJob
+from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
 
 __all__ = [
     "JobStatus",
     "NodeManagerProtocol",
     "NotificationProtocol",
     "StubNodeManager",
+    "StubNotifier",
     "StubTrainingJob",
     "TrainingJobProtocol",
 ]
