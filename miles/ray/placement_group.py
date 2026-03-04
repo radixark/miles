@@ -10,6 +10,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.actor_group import RayTrainGroup
 from miles.ray.rollout import RolloutManager
+from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,6 @@ def _get_excluded_node_ids() -> set[str]:
     Falls back gracefully on any error (returns empty set, logs warning).
     """
     try:
-        from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
-
         manager = K8sNodeManager()
         bad_nodes: list[str] = asyncio.run(manager.get_bad_nodes())
     except Exception:
