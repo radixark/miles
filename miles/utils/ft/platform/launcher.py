@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, NamedTuple
 
 import typer
 
@@ -43,11 +43,17 @@ def _build_k8s_ray_components(
     return node_manager, training_job
 
 
+class _MetricComponents(NamedTuple):
+    metric_store: MetricStoreProtocol
+    scrape_target_manager: ScrapeTargetManagerProtocol | None
+    controller_exporter: ControllerExporter
+
+
 def _build_metric_components(
     backend: str,
     prometheus_url: str,
     controller_exporter_port: int,
-) -> tuple[MetricStoreProtocol, ScrapeTargetManagerProtocol | None, ControllerExporter]:
+) -> _MetricComponents:
     """Build metric store, optional scrape target manager, and controller exporter."""
     controller_exporter = ControllerExporter(port=controller_exporter_port)
 
@@ -57,11 +63,19 @@ def _build_metric_components(
             target_id="controller",
             address=controller_exporter.address,
         )
-        return mini_prom, mini_prom, controller_exporter
+        return _MetricComponents(
+            metric_store=mini_prom,
+            scrape_target_manager=mini_prom,
+            controller_exporter=controller_exporter,
+        )
 
     if backend == "prometheus":
         prom_client = PrometheusClient(url=prometheus_url)
-        return prom_client, None, controller_exporter
+        return _MetricComponents(
+            metric_store=prom_client,
+            scrape_target_manager=None,
+            controller_exporter=controller_exporter,
+        )
 
     raise typer.BadParameter(f"Unknown metric-store-backend: {backend}")
 

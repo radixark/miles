@@ -4,9 +4,9 @@ from types import SimpleNamespace
 from typing import NamedTuple
 from unittest.mock import MagicMock
 
-from miles.utils.ft.agents.collectors.base import BaseCollector
 from prometheus_client import CollectorRegistry
 
+from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
@@ -21,6 +21,18 @@ from miles.utils.ft.models import (
     MetricSample,
 )
 from miles.utils.ft.platform.protocols import JobStatus
+
+
+def get_sample_value(
+    registry: CollectorRegistry,
+    metric_name: str,
+) -> float | None:
+    """Read the current value of a metric from a CollectorRegistry."""
+    for metric_family in registry.collect():
+        for sample in metric_family.samples:
+            if sample.name == metric_name:
+                return sample.value
+    return None
 
 
 def make_metric(

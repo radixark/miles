@@ -15,7 +15,7 @@ from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.controller.prometheus_client_store import PrometheusClient
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob
+from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob, get_sample_value
 
 
 def _make_prom_response(result_type: str = "vector", result: list | None = None) -> dict:
@@ -31,14 +31,6 @@ def _make_http_response(json_data: dict) -> httpx.Response:
         json=json_data,
         request=httpx.Request("GET", "http://fake:9090/api/v1/query"),
     )
-
-
-def _get_sample_value(registry: CollectorRegistry, metric_name: str) -> float | None:
-    for metric_family in registry.collect():
-        for sample in metric_family.samples:
-            if sample.name == metric_name:
-                return sample.value
-    return None
 
 
 class TestControllerPrometheusMode:
@@ -60,8 +52,8 @@ class TestControllerPrometheusMode:
         with patch.object(httpx.Client, "get", return_value=_make_http_response(_make_prom_response())):
             await controller._tick()
 
-        assert _get_sample_value(registry, "ft_training_job_status") == 1.0
-        assert _get_sample_value(registry, "ft_controller_tick_count_total") == 1.0
+        assert get_sample_value(registry, "ft_training_job_status") == 1.0
+        assert get_sample_value(registry, "ft_controller_tick_count_total") == 1.0
 
     @pytest.mark.asyncio
     async def test_no_scrape_target_manager_in_prometheus_mode(self) -> None:
@@ -113,5 +105,5 @@ class TestControllerPrometheusMode:
         with patch.object(httpx.Client, "get", return_value=_make_http_response(_make_prom_response())):
             await controller._tick()
 
-        assert _get_sample_value(registry, "ft_training_loss_latest") == 2.5
-        assert _get_sample_value(registry, "ft_training_mfu_latest") == 0.42
+        assert get_sample_value(registry, "ft_training_loss_latest") == 2.5
+        assert get_sample_value(registry, "ft_training_mfu_latest") == 0.42

@@ -171,7 +171,9 @@ class FtController:
     def _evaluate_detectors(self) -> Decision:
         for detector in self._detectors:
             decision = detector.evaluate(
-                self._metric_store, self._mini_wandb, self._rank_placement,
+                metric_store=self._metric_store,
+                mini_wandb=self._mini_wandb,
+                rank_placement=self._rank_placement,
             )
             if decision.action != ActionType.NONE:
                 return decision

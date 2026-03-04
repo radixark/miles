@@ -11,19 +11,9 @@ from tests.fast.utils.ft.conftest import (
     AlwaysMarkBadDetector,
     AlwaysNoneDetector,
     FixedDecisionDetector,
+    get_sample_value,
     make_test_controller,
 )
-
-
-def _get_sample_value(
-    registry: CollectorRegistry,
-    metric_name: str,
-) -> float | None:
-    for metric_family in registry.collect():
-        for sample in metric_family.samples:
-            if sample.name == metric_name:
-                return sample.value
-    return None
 
 
 class TestTickEmptyDetectorChain:
@@ -326,7 +316,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert _get_sample_value(registry, "ft_training_job_status") == 1.0
+        assert get_sample_value(registry, "ft_training_job_status") == 1.0
 
     @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
@@ -339,7 +329,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert _get_sample_value(registry, "ft_training_job_status") == -1.0
+        assert get_sample_value(registry, "ft_training_job_status") == -1.0
 
     @pytest.mark.asyncio
     async def test_stopped_status_maps_to_zero(self) -> None:
@@ -352,7 +342,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert _get_sample_value(registry, "ft_training_job_status") == 0.0
+        assert get_sample_value(registry, "ft_training_job_status") == 0.0
 
     @pytest.mark.asyncio
     async def test_pending_status_maps_to_two(self) -> None:
@@ -365,7 +355,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert _get_sample_value(registry, "ft_training_job_status") == 2.0
+        assert get_sample_value(registry, "ft_training_job_status") == 2.0
 
     @pytest.mark.asyncio
     async def test_tick_count_incremented(self) -> None:
@@ -376,7 +366,7 @@ class TestTrainingJobStatusExporter:
         await harness.controller._tick()
         await harness.controller._tick()
 
-        assert _get_sample_value(registry, "ft_controller_tick_count_total") == 2.0
+        assert get_sample_value(registry, "ft_controller_tick_count_total") == 2.0
 
 
 class TestExecuteDecision:

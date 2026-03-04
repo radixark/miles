@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
@@ -40,6 +42,7 @@ class ControllerExporter:
             "Recovery phase encoding (0=none, 1=check_alerts, 2=reattempting, ...)",
             registry=self._registry,
         )
+
         self._training_job_status = Gauge(
             "ft_training_job_status",
             "Training job status (-1=FAILED, 0=STOPPED, 1=RUNNING, 2=PENDING)",

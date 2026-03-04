@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from typing import Any
 
 import httpx
 import polars as pl
@@ -77,13 +78,13 @@ def _empty_range_dataframe() -> pl.DataFrame:
     })
 
 
-def _parse_instant_response(data: dict) -> pl.DataFrame:
+def _parse_instant_response(data: dict[str, Any]) -> pl.DataFrame:
     if data.get("status") != "success":
         logger.warning("prometheus_query_error response=%s", data)
         return _empty_instant_dataframe()
 
-    data_section = data.get("data", {})
-    result = data_section.get("result", [])
+    data_section = data.get("data") or {}
+    result = data_section.get("result") or []
     if not result:
         return _empty_instant_dataframe()
 
@@ -97,44 +98,52 @@ def _parse_instant_response(data: dict) -> pl.DataFrame:
     return _empty_instant_dataframe()
 
 
-def _parse_vector(result: list[dict]) -> pl.DataFrame:
-    rows: list[dict[str, object]] = []
+def _parse_vector(result: list[dict[str, Any]]) -> pl.DataFrame:
+    rows: list[tuple[dict[str, str], float]] = []
     all_label_keys: set[str] = set()
 
     for item in result:
-        metric = item.get("metric", {})
-        _, value_str = item.get("value", [0, "0"])
+        metric: dict[str, str] = item.get("metric") or {}
+        value_pair = item.get("value") or [0, "0"]
+        try:
+            parsed_value = float(value_pair[1])
+        except (IndexError, TypeError, ValueError):
+            continue
         all_label_keys.update(metric.keys())
-        rows.append({
-            "_metric": metric,
-            "_value": float(value_str),
-        })
+        rows.append((metric, parsed_value))
 
     records: list[dict[str, object]] = []
-    for row in rows:
-        metric: dict = row["_metric"]  # type: ignore[assignment]
+    sorted_label_keys = sorted(k for k in all_label_keys if k != "__name__")
+    for metric, value in rows:
         record: dict[str, object] = {"__name__": metric.get("__name__", "")}
-        for key in sorted(all_label_keys):
-            if key != "__name__":
-                record[key] = metric.get(key, "")
-        record["value"] = row["_value"]
+        for key in sorted_label_keys:
+            record[key] = metric.get(key, "")
+        record["value"] = value
         records.append(record)
+
+    if not records:
+        return _empty_instant_dataframe()
 
     return pl.DataFrame(records)
 
 
-def _parse_scalar(result: list) -> pl.DataFrame:
-    _, value_str = result
-    return pl.DataFrame({"__name__": [""], "value": [float(value_str)]})
+def _parse_scalar(result: list[Any]) -> pl.DataFrame:
+    if len(result) != 2:
+        return _empty_instant_dataframe()
+
+    try:
+        return pl.DataFrame({"__name__": [""], "value": [float(result[1])]})
+    except (TypeError, ValueError):
+        return _empty_instant_dataframe()
 
 
-def _parse_range_response(data: dict) -> pl.DataFrame:
+def _parse_range_response(data: dict[str, Any]) -> pl.DataFrame:
     if data.get("status") != "success":
         logger.warning("prometheus_query_error response=%s", data)
         return _empty_range_dataframe()
 
-    data_section = data.get("data", {})
-    result = data_section.get("result", [])
+    data_section = data.get("data") or {}
+    result = data_section.get("result") or []
     if not result:
         return _empty_range_dataframe()
 
@@ -146,21 +155,28 @@ def _parse_range_response(data: dict) -> pl.DataFrame:
     return _parse_matrix(result)
 
 
-def _parse_matrix(result: list[dict]) -> pl.DataFrame:
+def _parse_matrix(result: list[dict[str, Any]]) -> pl.DataFrame:
     all_label_keys: set[str] = set()
     for item in result:
-        all_label_keys.update(item.get("metric", {}).keys())
+        metric = item.get("metric") or {}
+        all_label_keys.update(metric.keys())
 
+    sorted_label_keys = sorted(k for k in all_label_keys if k != "__name__")
     records: list[dict[str, object]] = []
     for item in result:
-        metric = item.get("metric", {})
-        for ts, value_str in item.get("values", []):
+        metric: dict[str, str] = item.get("metric") or {}
+        for ts, value_str in (item.get("values") or []):
+            try:
+                parsed_value = float(value_str)
+                parsed_ts = float(ts)
+            except (TypeError, ValueError):
+                continue
+
             record: dict[str, object] = {"__name__": metric.get("__name__", "")}
-            for key in sorted(all_label_keys):
-                if key != "__name__":
-                    record[key] = metric.get(key, "")
-            record["timestamp"] = float(ts)
-            record["value"] = float(value_str)
+            for key in sorted_label_keys:
+                record[key] = metric.get(key, "")
+            record["timestamp"] = parsed_ts
+            record["value"] = parsed_value
             records.append(record)
 
     if not records:
