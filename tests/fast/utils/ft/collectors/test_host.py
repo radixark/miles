@@ -144,6 +144,55 @@ class TestHostCollectorDmesgFallback:
         assert xid_samples[0].labels["xid"] == "48"
 
 
+class TestDmesgTimeWindowBug:
+    @pytest.mark.asyncio()
+    async def test_dmesg_failure_does_not_advance_time_window(self) -> None:
+        """If dmesg subprocess fails, _last_dmesg_time must NOT advance,
+        so the same time window is retried on the next collection cycle.
+        """
+        collector = HostCollector(kmsg_path=Path("/nonexistent/kmsg"))
+        assert collector._kmsg_reader is None
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {
+                "returncode": 0,
+                "stdout": "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234\n",
+            })()
+            await collector.collect()
+
+        reader = collector._kmsg_reader
+        assert reader is not None
+        time_after_success = reader._last_dmesg_time
+
+        with patch("subprocess.run", side_effect=OSError("dmesg broken")):
+            await collector.collect()
+
+        assert reader._last_dmesg_time == time_after_success
+
+    @pytest.mark.asyncio()
+    async def test_dmesg_nonzero_returncode_does_not_advance(self) -> None:
+        """A non-zero returncode from dmesg should also preserve the time window."""
+        collector = HostCollector(kmsg_path=Path("/nonexistent/kmsg"))
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {
+                "returncode": 0, "stdout": "",
+            })()
+            await collector.collect()
+
+        reader = collector._kmsg_reader
+        assert reader is not None
+        time_after_first = reader._last_dmesg_time
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {
+                "returncode": 1, "stdout": "",
+            })()
+            await collector.collect()
+
+        assert reader._last_dmesg_time == time_after_first
+
+
 class TestHostCollectorInterval:
     def test_default_collect_interval(self) -> None:
         collector = HostCollector(kmsg_path=Path("/dev/null"))
