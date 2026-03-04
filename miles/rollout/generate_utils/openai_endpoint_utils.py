@@ -44,37 +44,112 @@ class OpenAIEndpointTracer:
 
 
 def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord], tokenizer) -> list[Sample]:
-    return [_compute_sample_from_openai_record(input_sample, record, tokenizer) for record in records]
+    if not records:
+        raise RuntimeError("No OAI session records were collected.")
+
+    samples: list[Sample] = []
+    for index, record in enumerate(records):
+        try:
+            samples.append(_compute_sample_from_openai_record(input_sample, record, tokenizer))
+        except (AssertionError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Failed to parse OAI session record at "
+                f"index={index}, timestamp={record.timestamp}, status_code={record.status_code}, path={record.path}"
+            ) from exc
+
+    return samples
+
+
+def _infer_input_token_ids(choice: dict, record: SessionRecord, tokenizer) -> list[int]:
+    request_input_ids = record.request.get("input_ids")
+    if request_input_ids is not None:
+        return list(request_input_ids)
+
+    input_token_ids = choice.get("input_token_ids")
+    if input_token_ids is not None:
+        return list(input_token_ids)
+
+    raise KeyError("missing input_token_ids and request.input_ids")
+
+
+def _extract_output_tokens(choice: dict, tokenizer) -> tuple[list[int], list[float]]:
+    logprob_items = choice.get("logprobs", {}).get("content")
+    if logprob_items is None:
+        raise KeyError("logprobs.content")
+
+    output_token_ids: list[int] = []
+    output_log_probs: list[float] = []
+    for item in logprob_items:
+        token_id = item.get("token_id")
+        if token_id is None:
+            token = item.get("token")
+            if token is None:
+                raise KeyError("token_id")
+            token_ids = tokenizer(token, add_special_tokens=False)["input_ids"]
+            if len(token_ids) != 1:
+                raise RuntimeError(f"Cannot infer stable token_id from token={token!r}")
+            token_id = token_ids[0]
+
+        output_token_ids.append(int(token_id))
+        output_log_probs.append(item["logprob"])
+
+    return output_token_ids, output_log_probs
+
+
+def _extract_choice_content(choice: dict) -> str:
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def _normalize_finish_reason(choice: dict) -> str | None:
+    finish_reason = choice.get("finish_reason")
+    if isinstance(finish_reason, dict):
+        return finish_reason.get("type")
+    return finish_reason
 
 
 def _compute_sample_from_openai_record(input_sample: Sample, record: SessionRecord, tokenizer) -> Sample:
     # TODO may refine after @guapisolo's implementation
     choice = record.response["choices"][0]
 
-    input_token_ids = choice["input_token_ids"]
-    output_token_ids = [item["token_id"] for item in choice["logprobs"]["content"]]
-    output_log_probs = [item["logprob"] for item in choice["logprobs"]["content"]]
+    input_token_ids = _infer_input_token_ids(choice, record, tokenizer)
+    # IMPORTANT: For multi-turn agentic tasks, later prompts are constructed by re-tokenizing
+    # the message content strings. Tokenization is not guaranteed to be invertible at the
+    # token-id level (decode->encode can change segmentation). To keep turn-to-turn token
+    # streams consistent for merge_samples(), derive output_token_ids from the returned
+    # message content, and only keep rollout logprobs when they align exactly.
+    content = _extract_choice_content(choice)
+    output_token_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
+    output_log_probs: list[float] | None = None
+    if isinstance(choice.get("logprobs", {}).get("content"), list):
+        extracted_ids, extracted_log_probs = _extract_output_tokens(choice, tokenizer)
+        if extracted_ids == output_token_ids:
+            output_log_probs = extracted_log_probs
 
     sample = deepcopy(input_sample)
-    # sample.tokens = record.request["input_ids"] + output_token_ids
     request_input_ids = record.request.get("input_ids")
     if request_input_ids is not None:
         assert (
             request_input_ids == input_token_ids
         ), "for prompt part, input_ids return by sglang should match with the request input_ids"
-    sample.tokens = input_token_ids + output_token_ids
+    sample.tokens = list(input_token_ids) + output_token_ids
     sample.rollout_log_probs = output_log_probs
-    sample.response = tokenizer.decode(output_token_ids)
+    sample.response = content
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
 
     # TODO unify with Sample.update_from_meta_info
-    match choice["finish_reason"]:
+    match _normalize_finish_reason(choice):
         case "stop" | "tool_calls":
             sample.status = Sample.Status.COMPLETED
         case "length":
             sample.status = Sample.Status.TRUNCATED
         case "abort":
+            sample.status = Sample.Status.ABORTED
+        case _:
             sample.status = Sample.Status.ABORTED
 
     return sample

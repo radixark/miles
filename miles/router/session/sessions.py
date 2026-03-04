@@ -52,16 +52,25 @@ def setup_session_routes(app, router: "MilesRouter"):
     async def chat_completions(request: Request, session_id: str):
         body = await request.body()
         request_body = json.loads(body) if body else {}
+        record_request = dict(request_body)
 
-        if router.args.miles_router_enable_token_input_for_chat_completions:
-            if "messages" in request_body and "input_ids" not in request_body:
-                prompt_token_ids = manager.calc_prompt_tokens(session_id, request_body["messages"])
-                if prompt_token_ids is None:
-                    return JSONResponse(status_code=404, content={"error": "session not found"})
+        if "messages" in request_body and "input_ids" not in request_body:
+            prompt_token_ids = manager.calc_prompt_tokens(
+                session_id,
+                request_body["messages"],
+            )
+            if prompt_token_ids is None:
+                return JSONResponse(status_code=404, content={"error": "session not found"})
+            record_request["input_ids"] = prompt_token_ids
+
+            if router.args.miles_router_enable_token_input_for_chat_completions:
                 request_body["input_ids"] = prompt_token_ids
                 body = json.dumps(request_body).encode("utf-8")
 
         result = await router._do_proxy(request, "v1/chat/completions", body=body)
+
+        if result["status_code"] != 200:
+            return router._build_proxy_response(result)
 
         response = json.loads(result["response_body"])
 
@@ -74,13 +83,19 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         for item in logprobs_content:
             if "token_id" not in item:
-                raise RuntimeError("token_id must be in item")
+                token = item.get("token")
+                if token is None:
+                    continue
+
+                token_ids = tokenizer(token, add_special_tokens=False)["input_ids"]
+                if len(token_ids) == 1:
+                    item["token_id"] = int(token_ids[0])
         record = SessionRecord(
             timestamp=time.time(),
             method=request.method,
             path="/v1/chat/completions",
             status_code=result["status_code"],
-            request=request_body,
+            request=record_request,
             response=response,
         )
         appended = manager.append_session_record(session_id, record)

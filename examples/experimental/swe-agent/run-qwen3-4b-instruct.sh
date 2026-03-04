@@ -14,6 +14,7 @@ set -ex
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=1
+export MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -25,9 +26,7 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-export SWE_AGENT_GYM_URL="${SWE_AGENT_GYM_URL:-http://swe_env:11000}"
-
-source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B-Instruct-2507.sh"
+source "${SCRIPT_DIR}/../../../scripts/models/qwen3-4B-Instruct-2507.sh"
 
 CKPT_ARGS=(
     --hf-checkpoint /root/qwen3-4B-Instruct-2507
@@ -51,6 +50,7 @@ PERF_ARGS=(
     # --micro-batch-size 1
     --use-dynamic-batch-size
     --max-tokens-per-gpu 2048
+    --log-probs-chunk-size 1024
 )
 
 ROLLOUT_ARGS=(
@@ -63,6 +63,7 @@ ROLLOUT_ARGS=(
     --n-samples-per-prompt 8
     --rollout-temperature 0.8
     --rollout-max-response-len 8192
+    --rollout-stop "'<|im_end|>'"
     
     --global-batch-size 64
     --balance-data
@@ -120,13 +121,14 @@ MISC_ARGS=(
     --attention-softmax-in-fp32
     # need to comment this when using model with MLA
     --attention-backend flash
+    --use-miles-router
 )
 
 CUSTOM_ARGS=(
     --custom-generate-function-path generate_with_swe_agent.generate
     --custom-rm-path generate_with_swe_agent.reward_func
-    --rollout-function-path generate_with_swe_agent.generate_rollout
     --dynamic-sampling-filter-path generate_with_swe_agent.dynamic_filter
+    --custom-rollout-log-function-path generate_with_swe_agent.log_rollout_data
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
@@ -135,15 +137,13 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-s
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"SWE_AGENT_GYM_URL\": \"${SWE_AGENT_GYM_URL}\"
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles:${SCRIPT_DIR}/mini-swe-agent/src\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
   }
 }"
 #      \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
 
 echo "Launching training..."
-echo "  SWE Agent URL: ${SWE_AGENT_GYM_URL}"
 
 ray job submit --address="http://127.0.0.1:8265" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \

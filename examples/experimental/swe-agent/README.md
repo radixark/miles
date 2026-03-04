@@ -1,25 +1,44 @@
-# SWE-agent training Example
+# SWE-agent Training Example
 
 ## Introduction
 
-This is an example for SWE-agent training. This example uses NVIDIA's Nemo-Gym as the Gym environment implement, SWE-Gym as the training data, and SWE-bench as the evaluation.
+This example demonstrates SWE-agent RL training in Miles using:
+- `mini-swe-agent` for agent execution
+- SWE-Gym data for training prompts
+- SWE-bench style evaluation via `swegym`
 
-This implementation of this example is partially in submodules below:
-- Nemo-Gym: https://github.com/yueming-yuan/Gym/tree/miles-swe-agent
+Implementation dependencies:
+- Nemo-Gym (Gym): https://github.com/yueming-yuan/Gym/tree/miles-swe-agent
 - mini-swe-agent: https://github.com/yueming-yuan/nv-mini-swe-agent/tree/miles-swe-agent
 
-
 ## Prepare environment
-### Update submodules
+
+### 1. Update submodules
 ```bash
-git submodule update --init --recursive .
+git submodule update --init --recursive
 ```
-### Docker settings
+
+### 2. Docker requirements
+SWE tasks run inside per-instance Docker containers. The Miles container must be able to launch Docker containers.
+
+Required when launching Miles:
 ```bash
-# 1. create a docker network
+-v /var/run/docker.sock:/var/run/docker.sock
+```
+
+Install Docker CLI in the Miles container if needed:
+```bash
+apt update && apt install -y docker.io
+```
+
+### 3. Optional two-container setup (environment + Miles)
+If you run Gym in a separate container, use a shared Docker network and mount Docker socket into the environment container.
+
+```bash
+# create network
 docker network create swe-net
 
-# 2. create environment docker
+# environment container (example)
 docker run -itd \
   --name swe_env \
   --shm-size 16g \
@@ -34,7 +53,7 @@ docker run -itd \
   ubuntu:latest \
   /bin/bash
 
-# 3. create miles docker
+# miles container (example)
 docker run -itd \
   --shm-size 32g \
   --gpus all \
@@ -50,24 +69,24 @@ docker run -itd \
   --name miles_<your_name> \
   radixark/miles:latest \
   /bin/zsh
-
-# 4. install utils in environment docker
-docker exec -it swe_env /bin/bash
-apt update && apt install -y zsh curl git python3 python3-pip docker.io
 ```
-note: `-v /var/run/docker.sock:/var/run/docker.sock` is required for Docker-in-Docker SWE environment execution; use `--network swe-net` to enable communication between training & environment.
 
-### Installation
+## Installation
 
-In **environment docker**, install Gym
+### In Miles container
+From the Miles repo root:
+```bash
+pip install -e . --no-deps
+pip install "swegym @ git+https://github.com/sdevare-nv/nv-SWE-Bench-Package.git@31e1cb8f0241da1707d00faa633c3d6ce1a8ba3b"
+```
+
+### Optional: in environment container (if running Gym server separately)
 ```bash
 cd /
 git clone https://github.com/yueming-yuan/Gym
 git clone https://github.com/yueming-yuan/nv-mini-swe-agent.git
-cd nv-mini-swe-agent
-git checkout -b miles-swe-agent origin/miles-swe-agent
-cd Gym
-git checkout -b miles-swe-agent origin/miles-swe-agent
+cd nv-mini-swe-agent && git checkout -b miles-swe-agent origin/miles-swe-agent
+cd /Gym && git checkout -b miles-swe-agent origin/miles-swe-agent
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
@@ -80,53 +99,57 @@ policy_api_key: your-openai-api-key
 policy_model_name: gpt-4.1-2025-04-14
 default_host: 0.0.0.0" > env.yaml
 ```
-note: set host IP to `0.0.0.0` to enable communications between dockers.
 
-then set up for SWE-agent server:
+## Prepare model and data
+
+### 1. Download model checkpoint
 ```bash
-cd /Gym/responses_api_agents/mini_swe_agent
-uv pip install -r requirements.txt
-```
-Now you should be able to run the SWE-agent server.
-
-For **miles docker** setup, please follow the standard setup process.
-
-## Preparing data
-In **miles docker**, download **SWE-Gym** data from huggingface and convert it to Miles' prompt data format with this script.
-```
-cd miles/examples/swe-agent
-python download_and_process_data.py --input SWE-Gym/SWE-Gym --output /root/swe_train.jsonl
+hf download Qwen/Qwen3-4B-Instruct-2507 --local-dir /root/qwen3-4B-Instruct-2507
 ```
 
-## Running train
-1. In environment docker, launch the agent server
+### 2. Convert HF checkpoint to Megatron torch_dist format
 ```bash
-cd /Gym
-source .venv/bin/activate
-cd responses_api_agents/mini_swe_agent
-#fix Gym location
-sed -i 's|cd /workspace/swe-agent/Gym|cd /Gym|' start_server.sh
-# Add port=12000 to the ng_run command
-sed -i "/skip_if_exists/a\\    '+mini_swe_simple_agent.responses_api_agents.mini_swe_agent.port=12000'" start_server.sh
-./start_server.sh
+source scripts/models/qwen3-4B-Instruct-2507.sh
+PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/qwen3-4B-Instruct-2507 \
+    --save /root/qwen3-4B-Instruct-2507_torch_dist
 ```
 
-
-2. In miles docker,
-(1) export `SWE_AGENT_GYM_URL` to be the port of the second server you started in Gym in environment docker, whose `server_type` is `responses_api_agents`. `swe_env` is the environment docker's name; replace it if you changed the name.
-(minor TODO: modify the port selections to avoid setting this every time.) (2) launch the training.
+### 3. Download and process SWE-Gym prompts
 ```bash
-export SWE_AGENT_GYM_URL="http://swe_env:<port_of_responses_api_agents>"
-bash examples/swe-agent/run-qwen3-4b-instruct.sh
+cd examples/experimental/swe-agent
+python3 download_and_process_data.py --input SWE-Gym/SWE-Gym --output /root/swe_train.jsonl
 ```
 
+## Run training
+
+From the Miles repo root:
+```bash
+bash examples/experimental/swe-agent/run-qwen3-4b-instruct.sh
+```
+
+Optional Weights & Biases:
+```bash
+export WANDB_KEY=<your_wandb_api_key>
+```
+
+## How this example works
+
+1. `generate_with_swe_agent.generate` creates a router session.
+2. `mini-swe-agent` runs task steps in a Docker environment.
+3. Router session records are converted to training samples (`tokens`, `logprobs`, `loss_mask`).
+4. SWE evaluation result is converted to reward and attached to sample metadata.
 
 ## Troubleshooting
-1. The first time of every SWE environment can be slow, and may need to wait before generation, because each SWE-Gym task has a specific docker, and `docker pull` takes time.
-2. Sometimes the environment may also be slow at evaluation. The timeout of evaluation is 10 minutes by default. If the server is stuck at `[EVAL]<instance> Running eval`, you may need to wait for it.
+
+1. First startup can be slow because task-specific Docker images are pulled on demand.
+2. Evaluation can take time (default timeout is 10 minutes); if logs show eval running, wait for completion.
+3. If runs stop with CUDA OOM, reduce sequence pressure first (for example, `--max-tokens-per-gpu`, `--rollout-max-response-len`, or rollout batch sizing).
 
 ## Metrics
-```
+
+```text
 agent/turns_mean, agent/turns_sum - Turn counts
 agent/tool_calls_mean, agent/tool_calls_sum - Tool call counts
 agent/total_time_mean/max/min - Total time statistics
@@ -137,5 +160,5 @@ agent/overhead_time_mean - Avg overhead time
 agent/time_per_turn - Avg time per turn
 agent/model_query_time_avg - Avg model query time per turn
 agent/env_execution_time_avg - Avg env execution time per turn
-agent/model_time_ratio, agent/env_time_ratio - Time ratios
+agent/model_time_ratio, agent/env_time_ratio, agent/eval_time_ratio - Time ratios
 ```
