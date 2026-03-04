@@ -27,8 +27,9 @@ class TestMetricSample:
             MetricSample(name="test", labels={"a": "b"})  # type: ignore[call-arg]
 
     def test_empty_labels(self) -> None:
-        sample = MetricSample(name="xid_count_recent", labels={}, value=3.0)
+        sample = MetricSample(name="xid_count_total", labels={}, value=3.0, metric_type="counter")
         assert sample.labels == {}
+        assert sample.metric_type == "counter"
 
 
 class TestFtBaseModelExtraForbid:

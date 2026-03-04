@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from prometheus_client import CollectorRegistry, Gauge, start_http_server
+from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.models import DiagnosticResult, MetricSample
 
 logger = logging.getLogger(__name__)
 
-_GaugeKey = tuple[str, frozenset[str]]
+_MetricKey = tuple[str, frozenset[str]]
+_CounterValueKey = tuple[str, tuple[tuple[str, str], ...]]
 
 
 class FtNodeAgent:
@@ -29,7 +30,9 @@ class FtNodeAgent:
                 collector.collect_interval = collect_interval_seconds
 
         self._registry = CollectorRegistry()
-        self._gauges: dict[_GaugeKey, Gauge] = {}
+        self._gauges: dict[_MetricKey, Gauge] = {}
+        self._counters: dict[_MetricKey, Counter] = {}
+        self._counter_last_values: dict[_CounterValueKey, float] = {}
 
         httpd, _thread = start_http_server(port=0, registry=self._registry)
         self._httpd = httpd
@@ -122,20 +125,50 @@ class FtNodeAgent:
     def _update_exporter(self, metrics: list[MetricSample]) -> None:
         for sample in metrics:
             label_keys = frozenset(sample.labels.keys())
-            key: _GaugeKey = (sample.name, label_keys)
 
-            gauge = self._gauges.get(key)
-            if gauge is None:
-                sorted_keys = sorted(label_keys)
-                gauge = Gauge(
-                    sample.name,
-                    f"FT node metric: {sample.name}",
-                    labelnames=sorted_keys,
-                    registry=self._registry,
-                )
-                self._gauges[key] = gauge
-
-            if sample.labels:
-                gauge.labels(**sample.labels).set(sample.value)
+            if sample.metric_type == "counter":
+                self._update_counter(sample, label_keys)
             else:
-                gauge.set(sample.value)
+                self._update_gauge(sample, label_keys)
+
+    def _update_gauge(self, sample: MetricSample, label_keys: frozenset[str]) -> None:
+        key: _MetricKey = (sample.name, label_keys)
+        gauge = self._gauges.get(key)
+        if gauge is None:
+            sorted_keys = sorted(label_keys)
+            gauge = Gauge(
+                sample.name,
+                f"FT node metric: {sample.name}",
+                labelnames=sorted_keys,
+                registry=self._registry,
+            )
+            self._gauges[key] = gauge
+
+        if sample.labels:
+            gauge.labels(**sample.labels).set(sample.value)
+        else:
+            gauge.set(sample.value)
+
+    def _update_counter(self, sample: MetricSample, label_keys: frozenset[str]) -> None:
+        metric_key: _MetricKey = (sample.name, label_keys)
+        counter = self._counters.get(metric_key)
+        if counter is None:
+            sorted_keys = sorted(label_keys)
+            base_name = sample.name.removesuffix("_total")
+            counter = Counter(
+                base_name,
+                f"FT node metric: {sample.name}",
+                labelnames=sorted_keys,
+                registry=self._registry,
+            )
+            self._counters[metric_key] = counter
+
+        value_key: _CounterValueKey = (sample.name, tuple(sorted(sample.labels.items())))
+        last = self._counter_last_values.get(value_key, 0.0)
+        delta = sample.value - last
+        if delta > 0:
+            if sample.labels:
+                counter.labels(**sample.labels).inc(delta)
+            else:
+                counter.inc(delta)
+            self._counter_last_values[value_key] = sample.value

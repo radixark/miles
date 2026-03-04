@@ -35,6 +35,7 @@ class HostCollector(BaseCollector):
         self._kmsg_path = kmsg_path
 
         self._xid_events: deque[tuple[datetime, int]] = deque()
+        self._xid_total_count: int = 0
         self._kmsg_reader: _KmsgReader | None = None
         self._collect_count = 0
 
@@ -59,6 +60,7 @@ class HostCollector(BaseCollector):
             if xid_match:
                 xid_code = int(xid_match.group(1))
                 self._xid_events.append((now, xid_code))
+                self._xid_total_count += 1
 
             line_lower = line.lower()
             for keyword in _KERNEL_EVENT_KEYWORDS:
@@ -82,9 +84,10 @@ class HostCollector(BaseCollector):
             ))
 
         samples.append(MetricSample(
-            name=mn.XID_COUNT_RECENT,
+            name=mn.XID_COUNT_TOTAL,
             labels={},
-            value=float(len(self._xid_events)),
+            value=float(self._xid_total_count),
+            metric_type="counter",
         ))
 
         samples.append(MetricSample(

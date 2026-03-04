@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,6 +12,7 @@ class MetricSample(FtBaseModel):
     name: str
     labels: dict[str, str]
     value: float
+    metric_type: Literal["gauge", "counter"] = "gauge"
 
 
 class CollectorOutput(FtBaseModel):

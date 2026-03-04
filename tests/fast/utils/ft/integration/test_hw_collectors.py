@@ -70,7 +70,7 @@ class TestNodeAgentAllCollectorsIntegration:
                 xid_df = prom.instant_query("miles_ft_xid_code_recent")
                 assert not xid_df.is_empty()
 
-                xid_count = prom.instant_query("miles_ft_xid_count_recent")
+                xid_count = prom.instant_query("miles_ft_xid_count_total")
                 assert not xid_count.is_empty()
 
                 nic_df = prom.instant_query("miles_ft_node_network_up")
@@ -134,7 +134,7 @@ class TestNodeAgentAllCollectorsIntegration:
             prom.add_scrape_target(target_id="integ-interval-node", address=address)
             await prom.scrape_once()
 
-            xid_count = prom.instant_query("miles_ft_xid_count_recent")
+            xid_count = prom.instant_query("miles_ft_xid_count_total")
             assert not xid_count.is_empty()
 
             nic_df = prom.instant_query("miles_ft_node_network_up")

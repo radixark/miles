@@ -54,11 +54,12 @@ class TestHostCollectorXid:
         xid_samples = [m for m in result.metrics if m.name == "miles_ft_xid_code_recent"]
         assert len(xid_samples) == 0
 
-        count_sample = [m for m in result.metrics if m.name == "miles_ft_xid_count_recent"]
+        count_sample = [m for m in result.metrics if m.name == "miles_ft_xid_count_total"]
         assert count_sample[0].value == 0.0
+        assert count_sample[0].metric_type == "counter"
 
     @pytest.mark.asyncio()
-    async def test_xid_count_recent(self) -> None:
+    async def test_xid_count_total(self) -> None:
         collector = HostCollector(kmsg_path=Path("/dev/null"))
         collector._kmsg_reader = FakeKmsgReader([
             "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
@@ -67,8 +68,9 @@ class TestHostCollectorXid:
         ])
 
         result = await collector.collect()
-        count = [m for m in result.metrics if m.name == "miles_ft_xid_count_recent"]
+        count = [m for m in result.metrics if m.name == "miles_ft_xid_count_total"]
         assert count[0].value == 3.0
+        assert count[0].metric_type == "counter"
 
 
 class TestHostCollectorKernelEvents:
