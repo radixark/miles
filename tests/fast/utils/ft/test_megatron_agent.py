@@ -226,3 +226,59 @@ class TestFtMegatronAgentRegisterRank:
         finally:
             agent._httpd.shutdown()
             agent._httpd.server_close()
+
+
+class TestFtMegatronAgentFaultTolerance:
+    def test_maybe_create_returns_agent_when_enabled(self) -> None:
+        agent = FtMegatronAgent.maybe_create(rank=0, world_size=4, enabled=True)
+        try:
+            assert agent is not None
+            assert isinstance(agent, FtMegatronAgent)
+        finally:
+            if agent is not None:
+                agent._httpd.shutdown()
+                agent._httpd.server_close()
+
+    def test_maybe_create_returns_none_when_disabled(self) -> None:
+        agent = FtMegatronAgent.maybe_create(rank=0, world_size=4, enabled=False)
+        assert agent is None
+
+    def test_maybe_create_returns_none_on_init_error(self) -> None:
+        with patch.object(
+            FtMegatronAgent, "__init__", side_effect=RuntimeError("init failed")
+        ):
+            agent = FtMegatronAgent.maybe_create(rank=0, world_size=4)
+            assert agent is None
+
+    def test_maybe_create_without_run_id_still_creates(self) -> None:
+        agent = FtMegatronAgent.maybe_create(rank=0, world_size=4)
+        try:
+            assert agent is not None
+            assert agent._run_id == ""
+        finally:
+            if agent is not None:
+                agent._httpd.shutdown()
+                agent._httpd.server_close()
+
+    def test_step_exception_does_not_propagate(self) -> None:
+        agent = FtMegatronAgent(rank=0, world_size=4)
+        try:
+            with patch.object(
+                agent, "_step_inner", side_effect=RuntimeError("boom")
+            ):
+                agent.step(iteration=1, loss=2.5)
+        finally:
+            agent._httpd.shutdown()
+            agent._httpd.server_close()
+
+    def test_reset_controller_handle(self) -> None:
+        agent = FtMegatronAgent(rank=0, world_size=4)
+        try:
+            agent._controller_handle = MagicMock()
+            assert agent._controller_handle is not None
+
+            agent._reset_controller_handle()
+            assert agent._controller_handle is None
+        finally:
+            agent._httpd.shutdown()
+            agent._httpd.server_close()

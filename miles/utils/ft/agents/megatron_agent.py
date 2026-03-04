@@ -60,6 +60,25 @@ class FtMegatronAgent:
         self._register_rank()
 
     # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def maybe_create(
+        cls,
+        rank: int,
+        world_size: int,
+        enabled: bool = True,
+    ) -> FtMegatronAgent | None:
+        if not enabled:
+            return None
+        try:
+            return cls(rank=rank, world_size=world_size)
+        except Exception:
+            logger.warning("Failed to create FtMegatronAgent", exc_info=True)
+            return None
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -74,6 +93,30 @@ class FtMegatronAgent:
         mfu: float | None = None,
         iteration_time: float | None = None,
         phase: str = "training",
+    ) -> None:
+        try:
+            self._step_inner(
+                iteration=iteration,
+                loss=loss,
+                grad_norm=grad_norm,
+                mfu=mfu,
+                iteration_time=iteration_time,
+                phase=phase,
+            )
+        except Exception:
+            logger.warning(
+                "FtMegatronAgent.step() failed at iteration=%d", iteration,
+                exc_info=True,
+            )
+
+    def _step_inner(
+        self,
+        iteration: int,
+        loss: float | None,
+        grad_norm: float | None,
+        mfu: float | None,
+        iteration_time: float | None,
+        phase: str,
     ) -> None:
         self._iteration_gauge.labels(
             rank=str(self._rank), node_id=self._node_id
@@ -158,3 +201,6 @@ class FtMegatronAgent:
             return None
 
         return self._controller_handle
+
+    def _reset_controller_handle(self) -> None:
+        self._controller_handle = None
