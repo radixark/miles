@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import miles.utils.ft.metric_names as mn
-from miles.utils.ft.agents.collectors._kernel_log_reader import (
+from miles.utils.ft.agents.collectors.kernel_log_reader import (
     DmesgSubprocessReader,
     KernelLogReader,
     KmsgFileReader,
