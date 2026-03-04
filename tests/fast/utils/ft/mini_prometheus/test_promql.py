@@ -17,15 +17,15 @@ from miles.utils.ft.controller.mini_prometheus.promql import (
 
 class TestParsePromQL:
     def test_simple_metric_name(self) -> None:
-        expr = parse_promql("ft_node_gpu_available")
+        expr = parse_promql("miles_ft_node_gpu_available")
         assert isinstance(expr, MetricSelector)
-        assert expr.name == "ft_node_gpu_available"
+        assert expr.name == "miles_ft_node_gpu_available"
         assert expr.matchers == []
 
     def test_metric_with_label_filter(self) -> None:
-        expr = parse_promql('ft_node_xid_code_recent{xid="48"}')
+        expr = parse_promql('miles_ft_node_xid_code_recent{xid="48"}')
         assert isinstance(expr, MetricSelector)
-        assert expr.name == "ft_node_xid_code_recent"
+        assert expr.name == "miles_ft_node_xid_code_recent"
         assert len(expr.matchers) == 1
         assert expr.matchers[0].label == "xid"
         assert expr.matchers[0].op == LabelMatchOp.EQ
@@ -43,9 +43,9 @@ class TestParsePromQL:
         assert expr.matchers[0].value == "node-.*"
 
     def test_compare_eq(self) -> None:
-        expr = parse_promql("ft_node_gpu_available == 0")
+        expr = parse_promql("miles_ft_node_gpu_available == 0")
         assert isinstance(expr, CompareExpr)
-        assert expr.selector.name == "ft_node_gpu_available"
+        assert expr.selector.name == "miles_ft_node_gpu_available"
         assert expr.op == CompareOp.EQ
         assert expr.threshold == 0.0
 

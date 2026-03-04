@@ -117,7 +117,7 @@ class FtNodeAgent:
 
     def _update_exporter(self, metrics: list[MetricSample]) -> None:
         for sample in metrics:
-            gauge_name = f"ft_node_{sample.name}"
+            gauge_name = f"miles_ft_node_{sample.name}"
             label_keys = frozenset(sample.labels.keys())
             key: _GaugeKey = (gauge_name, label_keys)
 

@@ -56,7 +56,7 @@ class TestFtNodeAgentExporter:
                 response = await client.get(f"{address}/metrics")
 
             assert response.status_code == 200
-            assert "ft_node_" not in response.text
+            assert "miles_ft_node_" not in response.text
         finally:
             await agent.stop()
 
@@ -83,8 +83,8 @@ class TestFtNodeAgentExporter:
                 response = await client.get(f"{address}/metrics")
 
             text = response.text
-            assert 'ft_node_gpu_temperature_celsius{gpu="0"}' in text
-            assert 'ft_node_gpu_temperature_celsius{gpu="1"}' in text
+            assert 'miles_ft_node_gpu_temperature_celsius{gpu="0"}' in text
+            assert 'miles_ft_node_gpu_temperature_celsius{gpu="1"}' in text
             assert "75.0" in text
             assert "80.0" in text
         finally:
@@ -103,7 +103,7 @@ class TestFtNodeAgentExporter:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
 
-            assert "ft_node_uptime_seconds" in response.text
+            assert "miles_ft_node_uptime_seconds" in response.text
             assert "123.0" in response.text
         finally:
             await agent.stop()
@@ -159,7 +159,7 @@ class TestFtNodeAgentCollectionLoop:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
 
-            assert 'ft_node_gpu_temperature_celsius{gpu="0"}' in response.text
+            assert 'miles_ft_node_gpu_temperature_celsius{gpu="0"}' in response.text
             assert "65.0" in response.text
         finally:
             await agent.stop()
@@ -198,7 +198,7 @@ class TestFtNodeAgentCollectionLoop:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
 
-            assert "ft_node_good_metric" in response.text
+            assert "miles_ft_node_good_metric" in response.text
             assert "42.0" in response.text
         finally:
             await agent.stop()
@@ -222,7 +222,7 @@ class TestFtNodeAgentCollectionLoop:
                 response = await client.get(f"{address}/metrics")
 
             assert response.status_code == 200
-            assert "ft_node_" not in response.text
+            assert "miles_ft_node_" not in response.text
         finally:
             await agent.stop()
 
@@ -253,8 +253,8 @@ class TestFtNodeAgentCollectionLoop:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
 
-            assert "ft_node_gpu_temperature_celsius" in response.text
-            assert "ft_node_gpu_memory_used_bytes" in response.text
+            assert "miles_ft_node_gpu_temperature_celsius" in response.text
+            assert "miles_ft_node_gpu_memory_used_bytes" in response.text
         finally:
             await agent.stop()
 
