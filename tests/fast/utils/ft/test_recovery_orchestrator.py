@@ -12,6 +12,7 @@ from miles.utils.ft.controller.recovery_orchestrator import (
     RecoveryContext,
     RecoveryOrchestrator,
 )
+from miles.utils.ft.metric_names import CONTROLLER_RECOVERY_PHASE
 from miles.utils.ft.models import (
     ActionType,
     Decision,
@@ -554,5 +555,5 @@ class TestExporterIntegration:
 
         asyncio.run(orch.step())
 
-        phase_value = get_sample_value(registry, "ft_controller_recovery_phase")
+        phase_value = get_sample_value(registry, CONTROLLER_RECOVERY_PHASE)
         assert phase_value == RECOVERY_PHASE_TO_INT[RecoveryPhase.REATTEMPTING]

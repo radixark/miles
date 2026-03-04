@@ -21,7 +21,9 @@ from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
+from miles.utils.ft.agents.tracking_agent import FtTrackingAgent
+from miles.utils.tracking_utils import init_tracking, set_ft_tracking_agent
 from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
@@ -103,10 +105,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
-        from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
-        from miles.utils.ft.agents.tracking_agent import FtTrackingAgent
-        from miles.utils import tracking_utils
-
         ft_enabled = getattr(self.args, "use_fault_tolerance", False)
 
         self._ft_agent = FtMegatronAgent.maybe_create(
@@ -116,7 +114,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         if ft_enabled:
-            tracking_utils.set_ft_tracking_agent(
+            set_ft_tracking_agent(
                 FtTrackingAgent(rank=dist.get_rank())
             )
 
