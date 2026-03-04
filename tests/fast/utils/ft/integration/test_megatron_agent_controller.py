@@ -1,8 +1,11 @@
 """Integration tests for FtMegatronAgent + FtController data flows.
 
 These tests directly instantiate both components (bypassing Ray) to verify
-the end-to-end data path: agent step() → controller log_step() → MiniWandb,
-and agent exporter → MiniPrometheus scrape.
+the heartbeat data path: agent step() → exporter gauges → MiniPrometheus scrape,
+and the controller's log_step() → MiniWandb store.
+
+Training metrics are forwarded by FtTrackingAgent (via tracking_utils.log()),
+not by FtMegatronAgent.step().
 """
 
 import httpx
@@ -152,8 +155,7 @@ class TestControllerUnreachable:
     def test_step_without_controller_does_not_raise(self) -> None:
         agent = _make_agent(rank=0, world_size=4)
         try:
-            agent._run_id = "test-run-unreachable"
-            agent.step(iteration=10, loss=2.5)
+            agent.step(iteration=10)
         finally:
             agent.shutdown()
 

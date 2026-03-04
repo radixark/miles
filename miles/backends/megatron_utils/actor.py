@@ -104,12 +104,21 @@ class MegatronTrainRayActor(TrainRayActor):
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
         from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
+        from miles.utils.ft.agents.tracking_agent import FtTrackingAgent
+        from miles.utils import tracking_utils
+
+        ft_enabled = getattr(self.args, "use_fault_tolerance", False)
 
         self._ft_agent = FtMegatronAgent.maybe_create(
             rank=dist.get_rank(),
             world_size=dist.get_world_size(),
-            enabled=getattr(self.args, "use_fault_tolerance", False),
+            enabled=ft_enabled,
         )
+
+        if ft_enabled:
+            tracking_utils.set_ft_tracking_agent(
+                FtTrackingAgent(rank=dist.get_rank())
+            )
 
         if role == "critic":
             if self.args.offload_train:
@@ -347,7 +356,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
         if self._ft_agent is not None:
-            self._ft_agent.step(iteration=rollout_id, phase="training")
+            self._ft_agent.step(iteration=rollout_id)
 
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, self.parallel_state, rollout_data)

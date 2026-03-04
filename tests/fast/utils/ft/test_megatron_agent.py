@@ -1,4 +1,9 @@
-"""Unit tests for FtMegatronAgent."""
+"""Unit tests for FtMegatronAgent.
+
+FtMegatronAgent is responsible only for heartbeat gauges (iteration + phase)
+exposed via a Prometheus HTTP exporter, and rank registration with FtController.
+Training metrics are forwarded separately by FtTrackingAgent via tracking_utils.
+"""
 
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
@@ -79,84 +84,12 @@ class TestFtMegatronAgentStep:
         text = response.text
         assert "2.0" in text
 
-    def test_step_with_nan_loss_does_not_raise(
+    def test_step_does_not_interact_with_controller(
         self, agent: FtMegatronAgent
     ) -> None:
-        agent.step(iteration=1, loss=float("nan"))
-
-    @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
-    def test_step_pushes_metrics_to_controller(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_controller = MagicMock()
-        mock_get_handle.return_value = mock_controller
-
-        agent = FtMegatronAgent(rank=0, world_size=4)
-        agent._run_id = "test-run-1"
-        try:
-            agent.step(iteration=10, loss=2.5, grad_norm=1.1)
-
-            mock_controller.log_step.remote.assert_called_once_with(
-                run_id="test-run-1",
-                rank=0,
-                step=10,
-                metrics={"loss": 2.5, "grad_norm": 1.1},
-            )
-        finally:
-            agent.shutdown()
-
-    @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
-    def test_step_pushes_mfu_and_iteration_time(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_controller = MagicMock()
-        mock_get_handle.return_value = mock_controller
-
-        agent = FtMegatronAgent(rank=0, world_size=4)
-        agent._run_id = "test-run-1"
-        try:
-            agent.step(iteration=5, mfu=0.45, iteration_time=1.2)
-
-            mock_controller.log_step.remote.assert_called_once_with(
-                run_id="test-run-1",
-                rank=0,
-                step=5,
-                metrics={"mfu": 0.45, "iteration_time": 1.2},
-            )
-        finally:
-            agent.shutdown()
-
-    def test_step_without_metrics_does_not_push(
-        self, agent: FtMegatronAgent
-    ) -> None:
-        agent._run_id = "test-run-1"
         agent._controller_handle = MagicMock()
-
         agent.step(iteration=10)
-
         agent._controller_handle.log_step.remote.assert_not_called()
-
-    def test_step_without_run_id_does_not_push(
-        self, agent: FtMegatronAgent
-    ) -> None:
-        agent._run_id = ""
-        agent._controller_handle = MagicMock()
-
-        agent.step(iteration=10, loss=2.5)
-
-        agent._controller_handle.log_step.remote.assert_not_called()
-
-    def test_controller_unreachable_does_not_raise(self) -> None:
-        with patch(
-            "miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle",
-            return_value=None,
-        ):
-            agent = FtMegatronAgent(rank=0, world_size=4)
-            agent._run_id = "test-run-1"
-            try:
-                agent.step(iteration=10, loss=2.5)
-            finally:
-                agent.shutdown()
 
 
 class TestFtMegatronAgentRegisterRank:
@@ -301,9 +234,9 @@ class TestFtMegatronAgentFaultTolerance:
         agent = FtMegatronAgent(rank=0, world_size=4)
         try:
             with patch.object(
-                agent, "_step_inner", side_effect=RuntimeError("boom")
+                agent, "_iteration_child", **{"set.side_effect": RuntimeError("boom")}
             ):
-                agent.step(iteration=1, loss=2.5)
+                agent.step(iteration=1)
         finally:
             agent.shutdown()
 
