@@ -445,3 +445,17 @@ class TestExecuteDecision:
         harness.notifier.send = _raise_runtime_error
         await harness.controller._tick()
         assert harness.controller._tick_count == 1
+
+    @pytest.mark.asyncio
+    async def test_notify_human_sends_on_every_tick(self) -> None:
+        detector = FixedDecisionDetector(decision=Decision(
+            action=ActionType.NOTIFY_HUMAN,
+            reason="persistent fault",
+        ))
+        harness = make_test_controller(detectors=[detector])
+
+        await harness.controller._tick()
+        await harness.controller._tick()
+
+        assert harness.notifier is not None
+        assert len(harness.notifier.calls) == 2

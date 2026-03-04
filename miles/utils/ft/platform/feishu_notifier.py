@@ -28,6 +28,7 @@ class FeishuWebhookNotifier:
                 "elements": [{"tag": "markdown", "content": content}],
             },
         }
+
         try:
             response = await self._client.post(self._webhook_url, json=payload)
             response.raise_for_status()
