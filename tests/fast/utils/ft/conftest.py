@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
+from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.mini_wandb import MiniWandb
-from miles.utils.ft.models import MetricSample
+from miles.utils.ft.models import ActionType, Decision, MetricSample
 from miles.utils.ft.platform.protocols import JobStatus
 
 
@@ -96,15 +98,62 @@ class FakeTrainingJob:
 
 
 # ---------------------------------------------------------------------------
+# Test detectors (controller-skeleton milestone)
+# ---------------------------------------------------------------------------
+
+
+class AlwaysNoneDetector(BaseFaultDetector):
+    """Detector that always returns NONE. Tracks call count."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def evaluate(
+        self,
+        metric_store: MetricStoreProtocol,
+        mini_wandb: MiniWandb,
+    ) -> Decision:
+        self.call_count += 1
+        return Decision(action=ActionType.NONE, reason="always none")
+
+
+class AlwaysMarkBadDetector(BaseFaultDetector):
+    """Detector that always returns MARK_BAD_AND_RESTART. Tracks call count."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def evaluate(
+        self,
+        metric_store: MetricStoreProtocol,
+        mini_wandb: MiniWandb,
+    ) -> Decision:
+        self.call_count += 1
+        return Decision(
+            action=ActionType.MARK_BAD_AND_RESTART,
+            bad_node_ids=["node-1"],
+            reason="test fault detected",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Controller factory (controller-skeleton milestone)
 # ---------------------------------------------------------------------------
+
+
+class ControllerTestHarness(NamedTuple):
+    controller: FtController
+    node_manager: FakeNodeManager
+    training_job: FakeTrainingJob
+    metric_store: MiniPrometheus
+    mini_wandb: MiniWandb
 
 
 def make_test_controller(
     detectors: list[BaseFaultDetector] | None = None,
     status_sequence: list[JobStatus] | None = None,
     tick_interval: float = 0.01,
-) -> tuple[FtController, FakeNodeManager, FakeTrainingJob, MiniPrometheus, MiniWandb]:
+) -> ControllerTestHarness:
     """Construct a Controller and all its dependencies for testing."""
     node_manager = FakeNodeManager()
     training_job = FakeTrainingJob(status_sequence=status_sequence)
@@ -118,4 +167,10 @@ def make_test_controller(
         detectors=detectors,
         tick_interval=tick_interval,
     )
-    return controller, node_manager, training_job, metric_store, mini_wandb
+    return ControllerTestHarness(
+        controller=controller,
+        node_manager=node_manager,
+        training_job=training_job,
+        metric_store=metric_store,
+        mini_wandb=mini_wandb,
+    )

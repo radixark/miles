@@ -7,9 +7,22 @@ from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtoc
 from miles.utils.ft.controller.mini_prometheus.storage import MiniPrometheus
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.models import ActionType, Decision, MetricSample
-from miles.utils.ft.platform.protocols import NodeManagerProtocol, TrainingJobProtocol
+from miles.utils.ft.platform.protocols import (
+    JobStatus,
+    NodeManagerProtocol,
+    TrainingJobProtocol,
+)
 
 log = structlog.get_logger(__name__)
+
+_JOB_STATUS_TO_NUMERIC: dict[JobStatus, float] = {
+    JobStatus.RUNNING: 1.0,
+    JobStatus.STOPPED: 0.0,
+    JobStatus.FAILED: -1.0,
+    JobStatus.PENDING: 0.5,
+}
+
+_ALL_DETECTORS_PASSED = Decision(action=ActionType.NONE, reason="all detectors passed")
 
 
 class FtController:
@@ -89,6 +102,7 @@ class FtController:
             self._active_run_id = run_id
             self._mini_wandb.set_active_run_id(run_id)
             self._mini_wandb.clear()
+            self._remove_old_scrape_targets()
             self._rank_placement = {}
 
         self._rank_placement[rank] = node_id
@@ -106,6 +120,11 @@ class FtController:
                 target_id=target_id,
                 address=exporter_address,
             )
+
+    def _remove_old_scrape_targets(self) -> None:
+        if isinstance(self._metric_store, MiniPrometheus):
+            for old_rank in self._rank_placement:
+                self._metric_store.remove_scrape_target(f"rank-{old_rank}")
 
     # -------------------------------------------------------------------
     # Main loop tick
@@ -138,7 +157,7 @@ class FtController:
             if decision.action != ActionType.NONE:
                 return decision
 
-        return Decision(action=ActionType.NONE, reason="all detectors passed")
+        return _ALL_DETECTORS_PASSED
 
     # -------------------------------------------------------------------
     # Internal: synthetic metric injection
@@ -146,12 +165,7 @@ class FtController:
 
     async def _inject_training_job_status(self) -> None:
         status = await self._training_job.get_training_status()
-        status_value = {
-            "running": 1.0,
-            "stopped": 0.0,
-            "failed": -1.0,
-            "pending": 0.5,
-        }.get(status.value, 0.0)
+        status_value = _JOB_STATUS_TO_NUMERIC.get(status, 0.0)
 
         if isinstance(self._metric_store, MiniPrometheus):
             self._metric_store.ingest_samples(
