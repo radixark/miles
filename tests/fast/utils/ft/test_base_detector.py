@@ -1,8 +1,6 @@
 import pytest
 
-from miles.utils.ft.controller.detectors.base import BaseFaultDetector
-from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
-from miles.utils.ft.controller.mini_wandb import MiniWandb
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.models import ActionType, Decision
 
 
@@ -20,11 +18,7 @@ class TestBaseFaultDetector:
 
     def test_subclass_with_evaluate_can_be_instantiated(self) -> None:
         class _CompleteDetector(BaseFaultDetector):
-            def evaluate(
-                self,
-                metric_store: MetricStoreProtocol,
-                mini_wandb: MiniWandb,
-            ) -> Decision:
+            def evaluate(self, ctx: DetectorContext) -> Decision:
                 return Decision(action=ActionType.NONE, reason="test")
 
         detector = _CompleteDetector()

@@ -253,12 +253,7 @@ class FixedDecisionDetector(BaseFaultDetector):
         self.call_count = 0
         self._decision = decision
 
-    def evaluate(
-        self,
-        metric_store: MetricStoreProtocol,
-        mini_wandb: MiniWandb,
-        rank_placement: dict[int, str],
-    ) -> Decision:
+    def evaluate(self, ctx: DetectorContext) -> Decision:
         self.call_count += 1
         return self._decision
 

@@ -30,8 +30,9 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        ctx = make_detector_context(mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(
+            mini_wandb=wandb, rank_placement=_RANK_PLACEMENT,
+        ))
 
         assert decision.action == ActionType.NONE
 
@@ -42,8 +43,9 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        ctx = make_detector_context(mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(
+            mini_wandb=wandb, rank_placement=_RANK_PLACEMENT,
+        ))
 
         assert decision.action == ActionType.NONE
 
@@ -61,8 +63,9 @@ class TestMfuDeclineDetector:
             temperature_delta_threshold=20.0,
         )
 
-        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(
+            metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT,
+        ))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-1" in decision.bad_node_ids
@@ -80,8 +83,9 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(
+            metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT,
+        ))
 
         assert decision.action == ActionType.NONE
         assert "monitoring" in decision.reason
@@ -100,23 +104,19 @@ class TestMfuDeclineDetector:
             decline_timeout_minutes=30.0,
         )
 
-        # First call starts the timer
-        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
+        ctx = make_detector_context(
+            metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT,
+        )
         detector.evaluate(ctx)
 
-        # Simulate time passing beyond timeout
         past_start = datetime.now(timezone.utc) - timedelta(minutes=35)
         detector._decline_start_time = past_start
 
-        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
         decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
     def test_dynamic_baseline(self) -> None:
-        # 50 steps of high mfu followed by 10 steps of low mfu
-        # Dynamic baseline = avg of last 50 steps = (40*0.5 + 10*0.3)/50 = 0.46
-        # Threshold = 0.46 * 0.8 = 0.368, avg of last 10 = 0.3 < 0.368 → decline
         high_mfu = [0.5] * 50
         low_mfu = [0.3] * 10
         all_steps = high_mfu + low_mfu
@@ -129,8 +129,9 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        ctx = make_detector_context(metric_store=store, mini_wandb=wandb)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(
+            metric_store=store, mini_wandb=wandb,
+        ))
 
         assert decision.action == ActionType.NONE
         assert "monitoring" in decision.reason
@@ -146,14 +147,14 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        # First: MFU declining
         wandb_low = _make_wandb_with_mfu([0.3] * 10)
-        ctx = make_detector_context(metric_store=store, mini_wandb=wandb_low, rank_placement={0: "node-0"})
-        detector.evaluate(ctx)
+        detector.evaluate(make_detector_context(
+            metric_store=store, mini_wandb=wandb_low, rank_placement={0: "node-0"},
+        ))
         assert detector._decline_start_time is not None
 
-        # Then: MFU recovers
         wandb_high = _make_wandb_with_mfu([0.45] * 10)
-        ctx = make_detector_context(metric_store=store, mini_wandb=wandb_high, rank_placement={0: "node-0"})
-        detector.evaluate(ctx)
+        detector.evaluate(make_detector_context(
+            metric_store=store, mini_wandb=wandb_high, rank_placement={0: "node-0"},
+        ))
         assert detector._decline_start_time is None

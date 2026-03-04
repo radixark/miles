@@ -5,7 +5,6 @@ import pytest
 from tests.fast.utils.ft.conftest import (
     inject_gpu_unavailable,
     inject_healthy_node,
-    inject_training_job_status,
     make_test_controller,
 )
 

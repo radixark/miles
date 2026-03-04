@@ -12,8 +12,7 @@ class TestNanLossDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": 2.5}})
         detector = NanLossDetector()
 
-        ctx = make_detector_context(mini_wandb=wandb)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
 
         assert decision.action == ActionType.NONE
 
@@ -21,8 +20,7 @@ class TestNanLossDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})
         detector = NanLossDetector()
 
-        ctx = make_detector_context(mini_wandb=wandb)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "nan_loss"
@@ -31,8 +29,7 @@ class TestNanLossDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("inf")}})
         detector = NanLossDetector()
 
-        ctx = make_detector_context(mini_wandb=wandb)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "nan_loss"
@@ -41,8 +38,7 @@ class TestNanLossDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("-inf")}})
         detector = NanLossDetector()
 
-        ctx = make_detector_context(mini_wandb=wandb)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "nan_loss"
@@ -51,7 +47,6 @@ class TestNanLossDetector:
         wandb = make_fake_mini_wandb()
         detector = NanLossDetector()
 
-        ctx = make_detector_context(mini_wandb=wandb)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
 
         assert decision.action == ActionType.NONE

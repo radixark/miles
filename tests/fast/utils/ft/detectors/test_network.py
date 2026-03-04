@@ -33,8 +33,7 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 1.0, now - timedelta(minutes=1))
 
         detector = NetworkAlertDetector()
-        ctx = make_detector_context(metric_store=store)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -44,8 +43,7 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=2))
 
         detector = NetworkAlertDetector()
-        ctx = make_detector_context(metric_store=store)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -56,8 +54,7 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=1))
 
         detector = NetworkAlertDetector()
-        ctx = make_detector_context(metric_store=store)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -69,8 +66,7 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-1", "ib0", 0.0, now - timedelta(minutes=2))
 
         detector = NetworkAlertDetector()
-        ctx = make_detector_context(metric_store=store)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -81,15 +77,13 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=8))
 
         detector = NetworkAlertDetector()
-        ctx = make_detector_context(metric_store=store)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
     def test_empty_store(self) -> None:
         store = make_fake_metric_store()
         detector = NetworkAlertDetector()
-        ctx = make_detector_context(metric_store=store)
-        decision = detector.evaluate(ctx)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
