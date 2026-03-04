@@ -1,0 +1,218 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"options": {"0": {"color": "blue", "index": 0, "text": "Monitoring"}}, "type": "value"},
+            {"options": {"1": {"color": "orange", "index": 0, "text": "Recovery"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ft_controller_mode",
+          "legendFormat": "Mode",
+          "refId": "A"
+        }
+      ],
+      "title": "Controller Mode",
+      "type": "stat",
+      "description": "0=Monitoring, 1=Recovery"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"options": {"0": {"color": "green", "index": 0, "text": "None"}}, "type": "value"},
+            {"options": {"1": {"color": "yellow", "index": 0, "text": "check_alerts"}}, "type": "value"},
+            {"options": {"2": {"color": "yellow", "index": 0, "text": "reattempting"}}, "type": "value"},
+            {"options": {"3": {"color": "blue", "index": 0, "text": "monitoring"}}, "type": "value"},
+            {"options": {"4": {"color": "orange", "index": 0, "text": "diagnosing"}}, "type": "value"},
+            {"options": {"5": {"color": "red", "index": 0, "text": "evict_and_restart"}}, "type": "value"},
+            {"options": {"6": {"color": "purple", "index": 0, "text": "notify"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ft_controller_recovery_phase",
+          "legendFormat": "Phase",
+          "refId": "A"
+        }
+      ],
+      "title": "Recovery Phase",
+      "type": "stat",
+      "description": "0=None, 1=check_alerts, 2=reattempting, 3=monitoring, 4=diagnosing, 5=evict_and_restart, 6=notify"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ft_controller_evicted_node_count",
+          "legendFormat": "Evicted",
+          "refId": "A"
+        }
+      ],
+      "title": "Evicted Node Count",
+      "type": "stat",
+      "description": "Number of evicted nodes"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ft_controller_tick_count",
+          "legendFormat": "Ticks",
+          "refId": "A"
+        }
+      ],
+      "title": "Tick Count",
+      "type": "stat",
+      "description": "Controller tick count"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"options": {"-1": {"color": "red", "index": 0, "text": "FAILED"}}, "type": "value"},
+            {"options": {"0": {"color": "gray", "index": 0, "text": "STOPPED"}}, "type": "value"},
+            {"options": {"1": {"color": "green", "index": 0, "text": "RUNNING"}}, "type": "value"},
+            {"options": {"2": {"color": "yellow", "index": 0, "text": "PENDING"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "gray", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 6},
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ft_training_job_status",
+          "legendFormat": "Status",
+          "refId": "A"
+        }
+      ],
+      "title": "Training Job Status",
+      "type": "stat",
+      "description": "-1=FAILED, 0=STOPPED, 1=RUNNING, 2=PENDING"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["ft", "controller"],
+  "templating": {
+    "list": []
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "FT Controller",
+  "uid": "ft-controller",
+  "version": 1,
+  "weekStart": ""
+}
