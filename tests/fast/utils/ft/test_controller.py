@@ -2,11 +2,13 @@ import asyncio
 
 import pytest
 
-from miles.utils.ft.models import ActionType
+from miles.utils.ft.controller.controller import METRIC_TRAINING_JOB_STATUS
+from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
     AlwaysMarkBadDetector,
     AlwaysNoneDetector,
+    FixedDecisionDetector,
     make_test_controller,
 )
 
@@ -244,7 +246,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query("training_job_status")
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert not df.is_empty()
         assert df["value"][0] == 1.0
 
@@ -256,7 +258,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query("training_job_status")
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert df["value"][0] == -1.0
 
     @pytest.mark.asyncio
@@ -267,7 +269,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query("training_job_status")
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert df["value"][0] == 0.0
 
     @pytest.mark.asyncio
@@ -278,7 +280,7 @@ class TestTrainingJobStatusInjection:
 
         await harness.controller._tick()
 
-        df = harness.metric_store.instant_query("training_job_status")
+        df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert df["value"][0] == 0.5
 
 
@@ -298,41 +300,21 @@ class TestExecuteDecision:
 
     @pytest.mark.asyncio
     async def test_enter_recovery_does_not_raise(self) -> None:
-        from miles.utils.ft.controller.detectors.base import BaseFaultDetector
-        from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
-        from miles.utils.ft.controller.mini_wandb import MiniWandb
-        from miles.utils.ft.models import Decision
-
-        class _EnterRecoveryDetector(BaseFaultDetector):
-            def evaluate(
-                self, metric_store: MetricStoreProtocol, mini_wandb: MiniWandb,
-            ) -> Decision:
-                return Decision(
-                    action=ActionType.ENTER_RECOVERY,
-                    trigger="crash",
-                    reason="test recovery",
-                )
-
-        harness = make_test_controller(detectors=[_EnterRecoveryDetector()])
+        detector = FixedDecisionDetector(decision=Decision(
+            action=ActionType.ENTER_RECOVERY,
+            trigger="crash",
+            reason="test recovery",
+        ))
+        harness = make_test_controller(detectors=[detector])
         await harness.controller._tick()
         assert harness.controller._tick_count == 1
 
     @pytest.mark.asyncio
     async def test_notify_human_does_not_raise(self) -> None:
-        from miles.utils.ft.controller.detectors.base import BaseFaultDetector
-        from miles.utils.ft.controller.mini_prometheus.protocol import MetricStoreProtocol
-        from miles.utils.ft.controller.mini_wandb import MiniWandb
-        from miles.utils.ft.models import Decision
-
-        class _NotifyHumanDetector(BaseFaultDetector):
-            def evaluate(
-                self, metric_store: MetricStoreProtocol, mini_wandb: MiniWandb,
-            ) -> Decision:
-                return Decision(
-                    action=ActionType.NOTIFY_HUMAN,
-                    reason="test notify",
-                )
-
-        harness = make_test_controller(detectors=[_NotifyHumanDetector()])
+        detector = FixedDecisionDetector(decision=Decision(
+            action=ActionType.NOTIFY_HUMAN,
+            reason="test notify",
+        ))
+        harness = make_test_controller(detectors=[detector])
         await harness.controller._tick()
         assert harness.controller._tick_count == 1

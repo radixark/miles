@@ -104,11 +104,12 @@ class FakeTrainingJob:
 # ---------------------------------------------------------------------------
 
 
-class AlwaysNoneDetector(BaseFaultDetector):
-    """Detector that always returns NONE. Tracks call count."""
+class FixedDecisionDetector(BaseFaultDetector):
+    """Detector that always returns a fixed Decision. Tracks call count."""
 
-    def __init__(self) -> None:
+    def __init__(self, decision: Decision) -> None:
         self.call_count = 0
+        self._decision = decision
 
     def evaluate(
         self,
@@ -116,26 +117,23 @@ class AlwaysNoneDetector(BaseFaultDetector):
         mini_wandb: MiniWandb,
     ) -> Decision:
         self.call_count += 1
-        return Decision(action=ActionType.NONE, reason="always none")
+        return self._decision
 
 
-class AlwaysMarkBadDetector(BaseFaultDetector):
-    """Detector that always returns MARK_BAD_AND_RESTART. Tracks call count."""
+_ALWAYS_NONE_DECISION = Decision(action=ActionType.NONE, reason="always none")
+_ALWAYS_MARK_BAD_DECISION = Decision(
+    action=ActionType.MARK_BAD_AND_RESTART,
+    bad_node_ids=["node-1"],
+    reason="test fault detected",
+)
 
-    def __init__(self) -> None:
-        self.call_count = 0
 
-    def evaluate(
-        self,
-        metric_store: MetricStoreProtocol,
-        mini_wandb: MiniWandb,
-    ) -> Decision:
-        self.call_count += 1
-        return Decision(
-            action=ActionType.MARK_BAD_AND_RESTART,
-            bad_node_ids=["node-1"],
-            reason="test fault detected",
-        )
+def AlwaysNoneDetector() -> FixedDecisionDetector:
+    return FixedDecisionDetector(decision=_ALWAYS_NONE_DECISION)
+
+
+def AlwaysMarkBadDetector() -> FixedDecisionDetector:
+    return FixedDecisionDetector(decision=_ALWAYS_MARK_BAD_DECISION)
 
 
 # ---------------------------------------------------------------------------

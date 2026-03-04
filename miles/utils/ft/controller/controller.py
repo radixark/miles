@@ -24,6 +24,9 @@ _JOB_STATUS_TO_NUMERIC: dict[JobStatus, float] = {
 
 _ALL_DETECTORS_PASSED = Decision(action=ActionType.NONE, reason="all detectors passed")
 
+METRIC_TRAINING_JOB_STATUS = "training_job_status"
+_SYNTHETIC_TARGET_ID = "controller"
+
 
 class FtController:
     def __init__(
@@ -169,10 +172,10 @@ class FtController:
 
         if isinstance(self._metric_store, MiniPrometheus):
             self._metric_store.ingest_samples(
-                target_id="controller",
+                target_id=_SYNTHETIC_TARGET_ID,
                 samples=[
                     MetricSample(
-                        name="training_job_status",
+                        name=METRIC_TRAINING_JOB_STATUS,
                         labels={},
                         value=status_value,
                     )
