@@ -120,7 +120,7 @@ class RegistryVisitor(ast.NodeVisitor):
         # num_gpus (CUDA only)
         num_gpus_value = args.get("num_gpus", _UNSET)
         if num_gpus_value is _UNSET:
-            num_gpus = 0
+            num_gpus = 8 if "num_gpus" in param_order else 0
         elif isinstance(num_gpus_value, int):
             num_gpus = num_gpus_value
         else:
@@ -181,7 +181,6 @@ class RegistryVisitor(ast.NodeVisitor):
             if cr is not None:
                 self.registries.append(cr)
 
-        self.generic_visit(node)
 
 
 def ut_parse_one_file(filename: str) -> List[CIRegistry]:
