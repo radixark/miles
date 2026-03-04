@@ -5,6 +5,7 @@ import logging
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.prometheus_exporter import PrometheusExporter
+from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
 from miles.utils.ft.models import DiagnosticResult
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ class FtNodeAgent:
         node_id: str,
         collectors: list[BaseCollector] | None = None,
         collect_interval_seconds: float | None = None,
+        diagnostics: list[BaseDiagnostic] | None = None,
     ) -> None:
         self._node_id = node_id
         self._collectors = collectors or []
@@ -24,6 +26,10 @@ class FtNodeAgent:
         if collect_interval_seconds is not None:
             for collector in self._collectors:
                 collector.collect_interval = collect_interval_seconds
+
+        self._diagnostics: dict[str, BaseDiagnostic] = {
+            d.diagnostic_type: d for d in (diagnostics or [])
+        }
 
         self._exporter = PrometheusExporter()
         self._collector_tasks: list[asyncio.Task[None]] = []
@@ -68,17 +74,59 @@ class FtNodeAgent:
         self._exporter.shutdown()
 
     # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    async def run_diagnostic(
+        self, diagnostic_type: str, timeout_seconds: int = 120,
+    ) -> DiagnosticResult:
+        diagnostic = self._diagnostics.get(diagnostic_type)
+        if diagnostic is None:
+            return DiagnosticResult(
+                diagnostic_type=diagnostic_type,
+                node_id=self._node_id,
+                passed=False,
+                details=f"unknown diagnostic type: {diagnostic_type}",
+            )
+
+        try:
+            return await asyncio.wait_for(
+                diagnostic.run(
+                    node_id=self._node_id, timeout_seconds=timeout_seconds,
+                ),
+                timeout=timeout_seconds + 5,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "diagnostic_timeout type=%s node_id=%s timeout=%d",
+                diagnostic_type, self._node_id, timeout_seconds,
+            )
+            return DiagnosticResult(
+                diagnostic_type=diagnostic_type,
+                node_id=self._node_id,
+                passed=False,
+                details=f"diagnostic timed out after {timeout_seconds}s",
+            )
+        except Exception:
+            logger.warning(
+                "diagnostic_error type=%s node_id=%s",
+                diagnostic_type, self._node_id,
+                exc_info=True,
+            )
+            return DiagnosticResult(
+                diagnostic_type=diagnostic_type,
+                node_id=self._node_id,
+                passed=False,
+                details=f"diagnostic raised exception",
+            )
+
+    # ------------------------------------------------------------------
     # Stub methods (future milestones)
     # ------------------------------------------------------------------
 
     async def collect_logs(self) -> dict[str, str]:
         raise NotImplementedError(
-            "collect_logs will be implemented in diag-framework milestone"
-        )
-
-    async def run_diagnostic(self, diagnostic_type: str) -> DiagnosticResult:
-        raise NotImplementedError(
-            "run_diagnostic will be implemented in diag-framework milestone"
+            "collect_logs will be implemented in a future milestone"
         )
 
     async def cleanup_training_processes(self, training_job_id: str) -> None:

@@ -9,7 +9,12 @@ from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.collectors.stub import StubCollector
 from miles.utils.ft.agents.node_agent import FtNodeAgent
 from miles.utils.ft.models import CollectorOutput, MetricSample
-from tests.fast.utils.ft.conftest import TestCollector
+from tests.fast.utils.ft.conftest import (
+    FailingDiagnostic,
+    SlowDiagnostic,
+    StubDiagnostic,
+    TestCollector,
+)
 
 
 class _FailingCollector(BaseCollector):
@@ -400,6 +405,84 @@ class TestFtNodeAgentLifecycle:
         assert good.closed
 
 
+class TestFtNodeAgentDiagnostics:
+    @pytest.mark.asyncio
+    async def test_known_type_dispatches_correctly(self) -> None:
+        diag = StubDiagnostic(passed=True, details="all good")
+        agent = FtNodeAgent(
+            node_id="test-diag-dispatch",
+            diagnostics=[diag],
+        )
+        try:
+            result = await agent.run_diagnostic("stub")
+
+            assert result.passed is True
+            assert result.node_id == "test-diag-dispatch"
+            assert result.diagnostic_type == "stub"
+            assert result.details == "all good"
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_returns_failed(self) -> None:
+        agent = FtNodeAgent(node_id="test-diag-unknown")
+        try:
+            result = await agent.run_diagnostic("nonexistent")
+
+            assert result.passed is False
+            assert "unknown diagnostic type" in result.details
+            assert result.diagnostic_type == "nonexistent"
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_failing_diagnostic_returns_failure(self) -> None:
+        diag = FailingDiagnostic(details="gpu broken")
+        agent = FtNodeAgent(
+            node_id="test-diag-fail",
+            diagnostics=[diag],
+        )
+        try:
+            result = await agent.run_diagnostic("failing")
+
+            assert result.passed is False
+            assert result.details == "gpu broken"
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failed(self) -> None:
+        diag = SlowDiagnostic(sleep_seconds=300.0)
+        agent = FtNodeAgent(
+            node_id="test-diag-timeout",
+            diagnostics=[diag],
+        )
+        try:
+            result = await agent.run_diagnostic("slow", timeout_seconds=0)
+
+            assert result.passed is False
+            assert "timed out" in result.details
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_multiple_diagnostics_registered(self) -> None:
+        stub = StubDiagnostic(passed=True)
+        failing = FailingDiagnostic()
+        agent = FtNodeAgent(
+            node_id="test-diag-multi",
+            diagnostics=[stub, failing],
+        )
+        try:
+            r1 = await agent.run_diagnostic("stub")
+            r2 = await agent.run_diagnostic("failing")
+
+            assert r1.passed is True
+            assert r2.passed is False
+        finally:
+            await agent.stop()
+
+
 class TestFtNodeAgentStubMethods:
     @pytest_asyncio.fixture()
     async def agent(self) -> AsyncIterator[FtNodeAgent]:
@@ -411,11 +494,6 @@ class TestFtNodeAgentStubMethods:
     async def test_collect_logs_raises(self, agent: FtNodeAgent) -> None:
         with pytest.raises(NotImplementedError, match="collect_logs"):
             await agent.collect_logs()
-
-    @pytest.mark.asyncio()
-    async def test_run_diagnostic_raises(self, agent: FtNodeAgent) -> None:
-        with pytest.raises(NotImplementedError, match="run_diagnostic"):
-            await agent.run_diagnostic("gpu_check")
 
     @pytest.mark.asyncio()
     async def test_cleanup_training_processes_noop(
