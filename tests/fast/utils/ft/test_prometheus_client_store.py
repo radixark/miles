@@ -1,7 +1,10 @@
 """Tests for PrometheusClient (MetricStoreProtocol backed by real Prometheus HTTP API)."""
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import patch
 
 import httpx
 import polars as pl
@@ -10,14 +13,13 @@ import pytest
 from miles.utils.ft.controller.prometheus_client_store import PrometheusClient
 
 
-def _make_response(json_data: dict, status_code: int = 200) -> httpx.Response:
+def _make_response(json_data: dict[str, Any], status_code: int = 200) -> httpx.Response:
     """Build a fake httpx.Response from a dict."""
-    response = httpx.Response(
+    return httpx.Response(
         status_code=status_code,
         json=json_data,
         request=httpx.Request("GET", "http://fake:9090/api/v1/query"),
     )
-    return response
 
 
 class TestInstantQueryVector:
@@ -247,3 +249,181 @@ class TestLabelColumns:
         assert "gpu" in df.columns
         assert df["node_id"][0] == "node-0"
         assert df["gpu"][0] == "0"
+
+
+class TestInstantQueryScalar:
+    def test_valid_scalar(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {"resultType": "scalar", "result": [1709000000, "42"]},
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.instant_query("scalar(up)")
+
+        assert df.shape[0] == 1
+        assert df["value"][0] == 42.0
+
+    def test_malformed_scalar_short_list(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {"resultType": "scalar", "result": [1709000000]},
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.instant_query("scalar(up)")
+
+        assert df.is_empty()
+
+    def test_non_numeric_scalar_value(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {"resultType": "scalar", "result": [1709000000, "not_a_number"]},
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.instant_query("scalar(up)")
+
+        assert df.is_empty()
+
+
+class TestUnsupportedResultTypes:
+    def test_unsupported_instant_result_type(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {"resultType": "string", "result": "hello"},
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.instant_query("some_string_query")
+
+        assert df.is_empty()
+        assert "__name__" in df.columns
+        assert "value" in df.columns
+
+    def test_unsupported_range_result_type(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {"resultType": "vector", "result": []},
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.range_query(
+                query="up",
+                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                step=timedelta(hours=1),
+            )
+
+        assert df.is_empty()
+
+    def test_null_data_section(self) -> None:
+        json_data: dict[str, Any] = {"status": "success", "data": None}
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.instant_query("up")
+
+        assert df.is_empty()
+
+
+class TestMalformedVectorValues:
+    def test_null_value_pair_skipped(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {
+                "resultType": "vector",
+                "result": [
+                    {"metric": {"__name__": "m"}, "value": None},
+                    {"metric": {"__name__": "m"}, "value": [1709000000, "1"]},
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.instant_query("m")
+
+        assert df.shape[0] == 1
+        assert df["value"][0] == 1.0
+
+    def test_non_numeric_value_skipped(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {
+                "resultType": "vector",
+                "result": [
+                    {"metric": {"__name__": "m"}, "value": [1709000000, "bad"]},
+                    {"metric": {"__name__": "m"}, "value": [1709000000, "2.5"]},
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.instant_query("m")
+
+        assert df.shape[0] == 1
+        assert df["value"][0] == 2.5
+
+
+class TestMalformedMatrixValues:
+    def test_non_numeric_value_str_skipped(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"__name__": "m"},
+                        "values": [
+                            [1709000000, "bad"],
+                            [1709000060, "1.5"],
+                        ],
+                    }
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.range_query(
+                query="m",
+                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                step=timedelta(hours=1),
+            )
+
+        assert df.shape[0] == 1
+        assert df["value"][0] == 1.5
+
+    def test_null_metric_uses_empty_name(self) -> None:
+        json_data: dict[str, Any] = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": None,
+                        "values": [[1709000000, "3.0"]],
+                    }
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.range_query(
+                query="m",
+                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                step=timedelta(hours=1),
+            )
+
+        assert df.shape[0] == 1
+        assert df["__name__"][0] == ""

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typer.testing import CliRunner
 
 from miles.utils.ft.platform.launcher import app

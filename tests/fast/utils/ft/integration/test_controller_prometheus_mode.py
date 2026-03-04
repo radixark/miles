@@ -4,6 +4,9 @@ Verifies that the Controller can tick with PrometheusClient as the metric store
 and that the ControllerExporter gauges are updated correctly.
 """
 
+from __future__ import annotations
+
+from typing import Any
 from unittest.mock import patch
 
 import httpx
@@ -18,14 +21,17 @@ from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob, get_sample_value
 
 
-def _make_prom_response(result_type: str = "vector", result: list | None = None) -> dict:
+def _make_prom_response(
+    result_type: str = "vector",
+    result: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "status": "success",
         "data": {"resultType": result_type, "result": result or []},
     }
 
 
-def _make_http_response(json_data: dict) -> httpx.Response:
+def _make_http_response(json_data: dict[str, Any]) -> httpx.Response:
     return httpx.Response(
         status_code=200,
         json=json_data,
