@@ -36,6 +36,17 @@ jobs:
       execute_command: "pytest tests/fast/ -x -v"
     secrets: inherit
 
+  # Stage A: Unit test (single FSDP test, 8 GPU)
+  stage-a-unit-test:
+    if: |
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-unit-test'))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      gpu_count: 8
+      execute_command: "pytest tests/e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py -x -v"
+    secrets: inherit
+
   # Stage B: SGLang patch tests (1 GPU)
   stage-b-sglang:
     needs: [stage-a-fast]
@@ -134,6 +145,20 @@ jobs:
     with:
       gpu_count: 8
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-lora-8-gpu"
+    secrets: inherit
+
+  # Stage C: GLM5 8-GPU tests (custom Docker image, no sglang/megatron deps)
+  stage-c-glm5:
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-glm5')))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      gpu_count: 8
+      container_image: "radixark/miles:glm5"
+      skip_dependency_install: true
+      execute_command: "python tests/ci/gpu_lock_exec.py --count 8 -- python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
     secrets: inherit
 
   # Stage C: All suites (triggered by run-ci-image label)
