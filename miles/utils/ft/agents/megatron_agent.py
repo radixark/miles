@@ -4,11 +4,12 @@ import logging
 import os
 import socket
 import time
-from typing import Any, Literal
+from typing import Literal
 
 from prometheus_client import CollectorRegistry, Gauge, start_http_server
 
 import miles.utils.ft.metric_names as mn
+from miles.utils.ft.agents._controller_handle import ControllerHandleMixin
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ _PHASE_TO_NUMERIC: dict[str, float] = {
 }
 
 
-class FtMegatronAgent:
+class FtMegatronAgent(ControllerHandleMixin):
     """Embedded fault-tolerance agent for Megatron training processes.
 
     Each rank creates one instance. Exposes heartbeat gauges (iteration, phase)
@@ -30,6 +31,7 @@ class FtMegatronAgent:
     """
 
     def __init__(self, rank: int, world_size: int) -> None:
+        super().__init__()
         self._rank = rank
         self._world_size = world_size
         self._run_id: str = os.environ.get("FT_TRAINING_RUN_ID", "")
@@ -58,9 +60,6 @@ class FtMegatronAgent:
         self._phase_child = phase_gauge.labels(**self._labels)
         self._iteration_child.set(0)
         self._phase_child.set(_PHASE_TO_NUMERIC["idle"])
-
-        self._controller_handle: Any | None = None
-        self._controller_lookup_failed: bool = False
 
         httpd, _thread = start_http_server(port=0, registry=self._registry)
         self._httpd = httpd
@@ -156,23 +155,3 @@ class FtMegatronAgent:
                         exc_info=True,
                     )
 
-    def _get_controller_handle(self) -> Any | None:
-        if self._controller_handle is not None:
-            return self._controller_handle
-        if self._controller_lookup_failed:
-            return None
-
-        try:
-            import ray
-
-            self._controller_handle = ray.get_actor("ft_controller")
-        except Exception:
-            self._controller_lookup_failed = True
-            logger.warning("Failed to get ft_controller actor handle", exc_info=True)
-            return None
-
-        return self._controller_handle
-
-    def _reset_controller_handle(self) -> None:
-        self._controller_handle = None
-        self._controller_lookup_failed = False
