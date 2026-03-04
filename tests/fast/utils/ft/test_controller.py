@@ -248,7 +248,7 @@ class TestTrainingJobStatusInjection:
 
         df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
         assert not df.is_empty()
-        assert df["value"][0] == 1.0
+        assert df["value"][0] == 1
 
     @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
@@ -259,7 +259,7 @@ class TestTrainingJobStatusInjection:
         await harness.controller._tick()
 
         df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
-        assert df["value"][0] == -1.0
+        assert df["value"][0] == -1
 
     @pytest.mark.asyncio
     async def test_stopped_status_maps_to_zero(self) -> None:
@@ -270,10 +270,10 @@ class TestTrainingJobStatusInjection:
         await harness.controller._tick()
 
         df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
-        assert df["value"][0] == 0.0
+        assert df["value"][0] == 0
 
     @pytest.mark.asyncio
-    async def test_pending_status_maps_to_half(self) -> None:
+    async def test_pending_status_maps_to_two(self) -> None:
         harness = make_test_controller(
             status_sequence=[JobStatus.PENDING],
         )
@@ -281,7 +281,7 @@ class TestTrainingJobStatusInjection:
         await harness.controller._tick()
 
         df = harness.metric_store.instant_query(METRIC_TRAINING_JOB_STATUS)
-        assert df["value"][0] == 0.5
+        assert df["value"][0] == 2
 
 
 class TestExecuteDecision:

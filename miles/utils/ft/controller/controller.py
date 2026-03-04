@@ -15,11 +15,11 @@ from miles.utils.ft.platform.protocols import (
 
 log = structlog.get_logger(__name__)
 
-_JOB_STATUS_TO_NUMERIC: dict[JobStatus, float] = {
-    JobStatus.RUNNING: 1.0,
-    JobStatus.STOPPED: 0.0,
-    JobStatus.FAILED: -1.0,
-    JobStatus.PENDING: 0.5,
+_JOB_STATUS_TO_NUMERIC: dict[JobStatus, int] = {
+    JobStatus.RUNNING: 1,
+    JobStatus.STOPPED: 0,
+    JobStatus.FAILED: -1,
+    JobStatus.PENDING: 2,
 }
 
 _ALL_DETECTORS_PASSED = Decision(action=ActionType.NONE, reason="all detectors passed")
@@ -172,7 +172,7 @@ class FtController:
 
     async def _inject_training_job_status(self) -> None:
         status = await self._training_job.get_training_status()
-        status_value = _JOB_STATUS_TO_NUMERIC.get(status, 0.0)
+        status_value = _JOB_STATUS_TO_NUMERIC.get(status, 0)
 
         if isinstance(self._metric_store, MiniPrometheus):
             self._metric_store.ingest_samples(
