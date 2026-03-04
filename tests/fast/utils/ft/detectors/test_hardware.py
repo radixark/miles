@@ -6,6 +6,7 @@ from tests.fast.utils.ft.conftest import (
     inject_healthy_node,
     inject_nic_down,
     inject_nic_up,
+    make_detector_context,
     make_fake_metric_store,
     make_fake_mini_wandb,
 )
@@ -20,7 +21,7 @@ class TestHighConfidenceHardwareDetector:
         inject_healthy_node(store, node_id="node-0")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -30,7 +31,7 @@ class TestHighConfidenceHardwareDetector:
         inject_gpu_unavailable(store, node_id="node-0", gpu="3")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -41,7 +42,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=48)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -52,7 +53,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=62)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -63,7 +64,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=64)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -74,7 +75,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=79)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -85,7 +86,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-0", xid_code=31)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -94,7 +95,7 @@ class TestHighConfidenceHardwareDetector:
         inject_disk_fault(store, node_id="node-0", available_bytes=500e6)  # 500MB < 1GB
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -105,7 +106,7 @@ class TestHighConfidenceHardwareDetector:
         inject_disk_fault(store, node_id="node-0", available_bytes=2e9)  # 2GB > 1GB
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -117,7 +118,7 @@ class TestHighConfidenceHardwareDetector:
         inject_nic_up(store, node_id="node-0", device="ib3")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -132,7 +133,7 @@ class TestHighConfidenceHardwareDetector:
         inject_nic_up(store, node_id="node-0", device="ib3")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -144,7 +145,7 @@ class TestHighConfidenceHardwareDetector:
         inject_nic_up(store, node_id="node-0", device="ib3")
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
 
@@ -154,7 +155,7 @@ class TestHighConfidenceHardwareDetector:
         inject_critical_xid(store, node_id="node-1", xid_code=48)
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -164,6 +165,6 @@ class TestHighConfidenceHardwareDetector:
         store = make_fake_metric_store()
         detector = HighConfidenceHardwareDetector()
 
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE

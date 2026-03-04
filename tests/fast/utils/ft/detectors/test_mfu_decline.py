@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from tests.fast.utils.ft.conftest import (
     inject_gpu_temperature,
+    make_detector_context,
     make_fake_metric_store,
     make_fake_mini_wandb,
 )
@@ -29,7 +30,8 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        decision = detector.evaluate(make_fake_metric_store(), wandb, _RANK_PLACEMENT)
+        ctx = make_detector_context(mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
 
@@ -40,7 +42,8 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        decision = detector.evaluate(make_fake_metric_store(), wandb, _RANK_PLACEMENT)
+        ctx = make_detector_context(mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
 
@@ -58,7 +61,8 @@ class TestMfuDeclineDetector:
             temperature_delta_threshold=20.0,
         )
 
-        decision = detector.evaluate(store, wandb, _RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-1" in decision.bad_node_ids
@@ -76,7 +80,8 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        decision = detector.evaluate(store, wandb, _RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
         assert "monitoring" in decision.reason
@@ -96,13 +101,15 @@ class TestMfuDeclineDetector:
         )
 
         # First call starts the timer
-        detector.evaluate(store, wandb, _RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
+        detector.evaluate(ctx)
 
         # Simulate time passing beyond timeout
         past_start = datetime.now(timezone.utc) - timedelta(minutes=35)
         detector._decline_start_time = past_start
 
-        decision = detector.evaluate(store, wandb, _RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, rank_placement=_RANK_PLACEMENT)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
@@ -122,7 +129,8 @@ class TestMfuDeclineDetector:
             consecutive_steps=10,
         )
 
-        decision = detector.evaluate(store, wandb, {})
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
         assert "monitoring" in decision.reason
@@ -140,10 +148,12 @@ class TestMfuDeclineDetector:
 
         # First: MFU declining
         wandb_low = _make_wandb_with_mfu([0.3] * 10)
-        detector.evaluate(store, wandb_low, {0: "node-0"})
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb_low, rank_placement={0: "node-0"})
+        detector.evaluate(ctx)
         assert detector._decline_start_time is not None
 
         # Then: MFU recovers
         wandb_high = _make_wandb_with_mfu([0.45] * 10)
-        detector.evaluate(store, wandb_high, {0: "node-0"})
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb_high, rank_placement={0: "node-0"})
+        detector.evaluate(ctx)
         assert detector._decline_start_time is None

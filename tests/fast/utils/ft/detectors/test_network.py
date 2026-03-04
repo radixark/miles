@@ -1,9 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 from tests.fast.utils.ft.conftest import (
-    EMPTY_RANK_PLACEMENT,
+    make_detector_context,
     make_fake_metric_store,
-    make_fake_mini_wandb,
 )
 
 from miles.utils.ft.metric_names import NODE_NETWORK_UP
@@ -34,7 +33,8 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 1.0, now - timedelta(minutes=1))
 
         detector = NetworkAlertDetector()
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
 
@@ -44,7 +44,8 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=2))
 
         detector = NetworkAlertDetector()
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
 
@@ -55,7 +56,8 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=1))
 
         detector = NetworkAlertDetector()
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
@@ -67,7 +69,8 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-1", "ib0", 0.0, now - timedelta(minutes=2))
 
         detector = NetworkAlertDetector()
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
 
@@ -78,13 +81,15 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=8))
 
         detector = NetworkAlertDetector()
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
 
     def test_empty_store(self) -> None:
         store = make_fake_metric_store()
         detector = NetworkAlertDetector()
-        decision = detector.evaluate(store, make_fake_mini_wandb(), EMPTY_RANK_PLACEMENT)
+        ctx = make_detector_context(metric_store=store)
+        decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
