@@ -14,12 +14,15 @@ If you are running miles on AMD's Instinct, please refer to the following materi
 
 You can download the prebuilt image from DockerHub: [rlsys/miles](https://hub.docker.com/r/rlsys/miles/tags).
 ```bash
-docker pull rlsys/miles:latest
+# MI350/MI355X
+docker pull rlsys/miles:MI350-355-latest
+# MI300
+docker pull rlsys/miles:MI300-latest
 ```
-Or you can use the [Dockerfile.rocm](https://github.com/radixark/miles/blob/main/docker/Dockerfile.rocm) to build it on your side.
+Or you can use the [Dockerfile.rocm](https://github.com/radixark/miles/blob/main/docker/Dockerfile.rocm_MI350-5) to build it on your side.
 ```bash
 cd docker
-docker build -f Dockerfile.rocm -t rlsys/miles:latest .
+docker build -f Dockerfile.rocm_MI350-5 -t rlsys/miles:latest .
 ```
 
 Acknowledgement: Thanks to [Yang Wang](https://www.microsoft.com/en-us/research/people/yangwang5/) for working on the patch for this [ROCm base Docker image](https://hub.docker.com/r/rlsys/rocm-6.3.4-patch/tags) to support virtual memory management on MI300X.
