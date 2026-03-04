@@ -5,12 +5,16 @@ import logging
 
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.controller.diagnostic_scheduler_stub import (
+    StubDiagnosticScheduler,
+)
 from miles.utils.ft.controller.mini_prometheus.protocol import (
     MetricStoreProtocol,
     ScrapeTargetManagerProtocol,
 )
 from miles.utils.ft.controller.mini_wandb import MiniWandb
-from miles.utils.ft.models import ActionType, Decision
+from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
+from miles.utils.ft.models import ActionType, Decision, RECOVERY_PHASE_TO_INT
 from miles.utils.ft.platform.protocols import (
     JobStatus,
     NodeManagerProtocol,
@@ -42,6 +46,7 @@ class FtController:
         tick_interval: float = 30.0,
         controller_exporter: ControllerExporter | None = None,
         scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
+        diagnostic_scheduler: StubDiagnosticScheduler | None = None,
     ) -> None:
         self._node_manager = node_manager
         self._training_job = training_job
@@ -52,12 +57,16 @@ class FtController:
         self._tick_interval = tick_interval
         self._controller_exporter = controller_exporter
         self._scrape_target_manager = scrape_target_manager
+        self._diagnostic_scheduler = diagnostic_scheduler or StubDiagnosticScheduler()
 
         self._active_run_id: str | None = None
         self._expected_world_size: int | None = None
         self._rank_placement: dict[int, str] = {}
         self._shutting_down: bool = False
         self._tick_count: int = 0
+
+        self._recovery_orchestrator: RecoveryOrchestrator | None = None
+        self._diagnosing_nodes: set[str] = set()
 
     # -------------------------------------------------------------------
     # Public API
@@ -156,6 +165,15 @@ class FtController:
 
         await self._update_training_job_status()
 
+        if self._recovery_orchestrator is not None:
+            await self._recovery_orchestrator.step()
+            if self._recovery_orchestrator.is_done():
+                logger.info("recovery_complete trigger=%s", self._recovery_orchestrator._context.trigger)
+                self._recovery_orchestrator = None
+                self._diagnosing_nodes.clear()
+            self._update_exporter_metrics()
+            return
+
         decision = self._evaluate_detectors()
 
         logger.info(
@@ -199,14 +217,21 @@ class FtController:
             return
 
         self._controller_exporter.update_tick_count()
-        self._controller_exporter.update_mode(0)
+
+        if self._recovery_orchestrator is not None:
+            self._controller_exporter.update_mode(1)
+            phase_int = RECOVERY_PHASE_TO_INT.get(self._recovery_orchestrator.phase, 0)
+            self._controller_exporter.update_recovery_phase(phase_int)
+        else:
+            self._controller_exporter.update_mode(0)
+            self._controller_exporter.update_recovery_phase(0)
 
         loss = self._mini_wandb.latest(metric_name="loss", rank=0)
         mfu = self._mini_wandb.latest(metric_name="mfu", rank=0)
         self._controller_exporter.update_training_metrics(loss=loss, mfu=mfu)
 
     # -------------------------------------------------------------------
-    # Internal: decision execution (skeleton stubs)
+    # Internal: decision execution
     # -------------------------------------------------------------------
 
     async def _execute_decision(self, decision: Decision) -> None:
@@ -218,12 +243,29 @@ class FtController:
                 "decision_mark_bad_and_restart bad_node_ids=%s reason=%s",
                 decision.bad_node_ids, decision.reason,
             )
+            for node_id in decision.bad_node_ids:
+                await self._node_manager.mark_node_bad(
+                    node_id, reason=decision.reason,
+                )
+            await self._training_job.stop_training()
+            self._mini_wandb.clear()
+            await self._training_job.submit_training()
             return
 
         if decision.action == ActionType.ENTER_RECOVERY:
             logger.warning(
                 "decision_enter_recovery trigger=%s reason=%s",
                 decision.trigger, decision.reason,
+            )
+            self._recovery_orchestrator = RecoveryOrchestrator(
+                trigger=decision.trigger,
+                node_manager=self._node_manager,
+                training_job=self._training_job,
+                metric_store=self._metric_store,
+                mini_wandb=self._mini_wandb,
+                notifier=self._notifier,
+                diagnostic_scheduler=self._diagnostic_scheduler,
+                controller_exporter=self._controller_exporter,
             )
             return
 
