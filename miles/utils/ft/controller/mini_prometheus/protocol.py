@@ -1,20 +1,44 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Protocol
 
 import polars as pl
 
 
 class MetricStoreProtocol(Protocol):
-    def instant_query(self, query: str) -> pl.DataFrame: ...
+    def query_latest(
+        self, metric_name: str, label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame: ...
 
-    def range_query(
-        self,
-        query: str,
-        start: datetime,
-        end: datetime,
-        step: timedelta,
+    def query_range(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame: ...
+
+    def changes(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame: ...
+
+    def count_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame: ...
+
+    def avg_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame: ...
+
+    def min_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame: ...
+
+    def max_over_time(
+        self, metric_name: str, window: timedelta,
+        label_filters: dict[str, str] | None = None,
     ) -> pl.DataFrame: ...
 
 

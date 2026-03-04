@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import polars as pl
 import pytest
 
 from miles.utils.ft.controller.mini_prometheus.storage import (
@@ -9,7 +10,7 @@ from miles.utils.ft.controller.mini_prometheus.storage import (
 from miles.utils.ft.models import MetricSample
 
 
-class TestMiniPrometheusInstantQuery:
+class TestMiniPrometheusQueryLatest:
     def _make_store(self) -> MiniPrometheus:
         return MiniPrometheus(config=MiniPrometheusConfig(
             retention=timedelta(minutes=60),
@@ -22,7 +23,7 @@ class TestMiniPrometheusInstantQuery:
             samples=[MetricSample(name="gpu_temp", labels={"gpu": "0"}, value=75.0)],
         )
 
-        df = store.instant_query("gpu_temp")
+        df = store.query_latest("gpu_temp")
         assert len(df) == 1
         assert df["value"][0] == 75.0
 
@@ -42,11 +43,11 @@ class TestMiniPrometheusInstantQuery:
             timestamp=t2,
         )
 
-        df = store.instant_query("gpu_temp")
+        df = store.query_latest("gpu_temp")
         assert len(df) == 1
         assert df["value"][0] == 80.0
 
-    def test_compare_eq_zero(self) -> None:
+    def test_filter_by_value_with_polars(self) -> None:
         store = self._make_store()
         store.ingest_samples(
             target_id="node-0",
@@ -56,7 +57,7 @@ class TestMiniPrometheusInstantQuery:
             ],
         )
 
-        df = store.instant_query("gpu_available == 0")
+        df = store.query_latest("gpu_available").filter(pl.col("value") == 0.0)
         assert len(df) == 1
         assert df["gpu"][0] == "1"
 
@@ -70,11 +71,11 @@ class TestMiniPrometheusInstantQuery:
             ],
         )
 
-        df = store.instant_query('xid_code_recent{xid="48"}')
+        df = store.query_latest("xid_code_recent", label_filters={"xid": "48"})
         assert len(df) == 1
         assert df["xid"][0] == "48"
 
-    def test_label_neq_filter(self) -> None:
+    def test_label_filter_by_node_id(self) -> None:
         store = self._make_store()
         store.ingest_samples(
             target_id="node-0",
@@ -89,7 +90,7 @@ class TestMiniPrometheusInstantQuery:
             ],
         )
 
-        df = store.instant_query('gpu_available{node_id!="node-0"}')
+        df = store.query_latest("gpu_available", label_filters={"node_id": "node-1"})
         assert len(df) == 1
         assert df["node_id"][0] == "node-1"
 
@@ -104,12 +105,12 @@ class TestMiniPrometheusInstantQuery:
             samples=[MetricSample(name="gpu_temp", labels={"gpu": "0"}, value=80.0)],
         )
 
-        df = store.instant_query("gpu_temp")
+        df = store.query_latest("gpu_temp")
         assert len(df) == 2
 
     def test_empty_result(self) -> None:
         store = self._make_store()
-        df = store.instant_query("nonexistent_metric")
+        df = store.query_latest("nonexistent_metric")
         assert df.is_empty()
 
 
@@ -131,13 +132,13 @@ class TestMiniPrometheusRangeFunctions:
 
     def test_count_over_time(self) -> None:
         store = self._make_store_with_samples()
-        df = store.instant_query("count_over_time(nic_alert[5m])")
+        df = store.count_over_time("nic_alert", window=timedelta(minutes=5))
         assert len(df) == 1
         assert df["value"][0] == 5.0
 
     def test_count_over_time_shorter_window(self) -> None:
         store = self._make_store_with_samples()
-        df = store.instant_query("count_over_time(nic_alert[2m])")
+        df = store.count_over_time("nic_alert", window=timedelta(minutes=2))
         assert len(df) == 1
         assert df["value"][0] <= 3.0
 
@@ -156,7 +157,7 @@ class TestMiniPrometheusRangeFunctions:
                 timestamp=now - timedelta(minutes=2 - i),
             )
 
-        df = store.instant_query("changes(miles_ft_training_iteration[5m])")
+        df = store.changes("miles_ft_training_iteration", window=timedelta(minutes=5))
         assert len(df) == 1
         assert df["value"][0] == 0.0
 
@@ -176,14 +177,15 @@ class TestMiniPrometheusRangeFunctions:
                 timestamp=now - timedelta(minutes=4 - i),
             )
 
-        df = store.instant_query("changes(miles_ft_training_iteration[5m])")
+        df = store.changes("miles_ft_training_iteration", window=timedelta(minutes=5))
         assert df["value"][0] == 3.0
 
-    def test_count_over_time_with_compare(self) -> None:
+    def test_count_over_time_with_polars_filter(self) -> None:
         store = self._make_store_with_samples()
-        df = store.instant_query("count_over_time(nic_alert[5m]) >= 2")
-        assert len(df) == 1
-        assert df["value"][0] >= 2.0
+        df = store.count_over_time("nic_alert", window=timedelta(minutes=5))
+        filtered = df.filter(pl.col("value") >= 2.0)
+        assert len(filtered) == 1
+        assert filtered["value"][0] >= 2.0
 
     def test_min_over_time(self) -> None:
         store = MiniPrometheus(config=MiniPrometheusConfig(
@@ -198,7 +200,7 @@ class TestMiniPrometheusRangeFunctions:
                 timestamp=now - timedelta(minutes=3 - i),
             )
 
-        df = store.instant_query("min_over_time(gpu_temp[5m])")
+        df = store.min_over_time("gpu_temp", window=timedelta(minutes=5))
         assert df["value"][0] == 70.0
 
     def test_avg_over_time(self) -> None:
@@ -214,7 +216,7 @@ class TestMiniPrometheusRangeFunctions:
                 timestamp=now - timedelta(minutes=2 - i),
             )
 
-        df = store.instant_query("avg_over_time(metric_a[5m])")
+        df = store.avg_over_time("metric_a", window=timedelta(minutes=5))
         assert df["value"][0] == pytest.approx(20.0)
 
     def test_max_over_time(self) -> None:
@@ -230,10 +232,10 @@ class TestMiniPrometheusRangeFunctions:
                 timestamp=now - timedelta(minutes=3 - i),
             )
 
-        df = store.instant_query("max_over_time(gpu_temp[5m])")
+        df = store.max_over_time("gpu_temp", window=timedelta(minutes=5))
         assert df["value"][0] == 85.0
 
-    def test_compare_with_label_selector(self) -> None:
+    def test_label_filter_with_polars_compare(self) -> None:
         store = MiniPrometheus(config=MiniPrometheusConfig(
             retention=timedelta(minutes=60),
         ))
@@ -245,14 +247,15 @@ class TestMiniPrometheusRangeFunctions:
             ],
         )
 
-        df = store.instant_query('gpu_temp{gpu="0"} > 90')
-        assert len(df) == 1
-        assert df["value"][0] == 95.0
-        assert df["gpu"][0] == "0"
+        df = store.query_latest("gpu_temp", label_filters={"gpu": "0"})
+        filtered = df.filter(pl.col("value") > 90.0)
+        assert len(filtered) == 1
+        assert filtered["value"][0] == 95.0
+        assert filtered["gpu"][0] == "0"
 
 
-class TestMiniPrometheusRangeQuery:
-    def test_range_query_returns_time_series(self) -> None:
+class TestMiniPrometheusQueryRange:
+    def test_query_range_returns_time_series(self) -> None:
         store = MiniPrometheus(config=MiniPrometheusConfig(
             retention=timedelta(minutes=60),
         ))
@@ -277,18 +280,12 @@ class TestMiniPrometheusRangeQuery:
             timestamp=t3,
         )
 
-        df = store.range_query(
-            query="gpu_temp",
-            start=now - timedelta(minutes=15),
-            end=now + timedelta(minutes=1),
-            step=timedelta(minutes=5),
-        )
+        df = store.query_range("gpu_temp", window=timedelta(minutes=15))
         assert len(df) == 3
         values = sorted(df["value"].to_list())
         assert values == [70.0, 75.0, 80.0]
 
-
-    def test_range_query_with_compare(self) -> None:
+    def test_query_range_with_polars_filter(self) -> None:
         store = MiniPrometheus(config=MiniPrometheusConfig(
             retention=timedelta(minutes=60),
         ))
@@ -301,34 +298,21 @@ class TestMiniPrometheusRangeQuery:
                 timestamp=now - timedelta(minutes=3 - i),
             )
 
-        df = store.range_query(
-            query="gpu_temp > 72",
-            start=now - timedelta(minutes=5),
-            end=now + timedelta(minutes=1),
-            step=timedelta(minutes=1),
-        )
-        assert len(df) == 3
-        values = sorted(df["value"].to_list())
+        df = store.query_range("gpu_temp", window=timedelta(minutes=5))
+        filtered = df.filter(pl.col("value") > 72.0)
+        assert len(filtered) == 3
+        values = sorted(filtered["value"].to_list())
         assert values == [75.0, 80.0, 85.0]
 
-    def test_range_query_unsupported_expr_raises(self) -> None:
+    def test_empty_range_query(self) -> None:
         store = MiniPrometheus(config=MiniPrometheusConfig(
             retention=timedelta(minutes=60),
         ))
-        now = datetime.now(timezone.utc)
-        store.ingest_samples(
-            target_id="node-0",
-            samples=[MetricSample(name="metric_a", labels={}, value=1.0)],
-            timestamp=now,
-        )
 
-        with pytest.raises(ValueError, match="range_query not yet supported"):
-            store.range_query(
-                query="count_over_time(metric_a[5m])",
-                start=now - timedelta(minutes=10),
-                end=now + timedelta(minutes=1),
-                step=timedelta(minutes=1),
-            )
+        df = store.query_range("nonexistent", window=timedelta(minutes=10))
+        assert df.is_empty()
+        assert "timestamp" in df.columns
+        assert "value" in df.columns
 
 
 class TestMiniPrometheusRetention:
@@ -349,7 +333,7 @@ class TestMiniPrometheusRetention:
             timestamp=now,
         )
 
-        df = store.instant_query("gpu_temp")
+        df = store.query_latest("gpu_temp")
         assert len(df) == 1
         assert df["value"][0] == 80.0
 
@@ -383,7 +367,7 @@ class TestMiniPrometheusIngestSamples:
             samples=[MetricSample(name="gpu_temp", labels={"gpu": "0"}, value=75.0)],
         )
 
-        df = store.instant_query("gpu_temp")
+        df = store.query_latest("gpu_temp")
         assert "node_id" in df.columns
         assert df["node_id"][0] == "node-42"
 
@@ -391,7 +375,7 @@ class TestMiniPrometheusIngestSamples:
         store = MiniPrometheus()
         store.ingest_samples(target_id="node-0", samples=[])
 
-        df = store.instant_query("any_metric")
+        df = store.query_latest("any_metric")
         assert df.is_empty()
 
     def test_ingest_multiple_targets_separate(self) -> None:
@@ -405,7 +389,7 @@ class TestMiniPrometheusIngestSamples:
             samples=[MetricSample(name="gpu_available", labels={"gpu": "0"}, value=0.0)],
         )
 
-        df = store.instant_query("gpu_available == 0")
+        df = store.query_latest("gpu_available").filter(pl.col("value") == 0.0)
         assert len(df) == 1
         assert df["node_id"][0] == "node-1"
 
@@ -439,7 +423,7 @@ class TestMiniPrometheusRangeFunctionEdgeCases:
             timestamp=now,
         )
 
-        df = store.instant_query("count_over_time(metric[5m])")
+        df = store.count_over_time("metric", window=timedelta(minutes=5))
         assert len(df) == 1
         assert df["value"][0] == 1.0
 
@@ -455,11 +439,11 @@ class TestMiniPrometheusRangeFunctionEdgeCases:
             timestamp=now,
         )
 
-        df = store.instant_query("changes(metric[5m])")
+        df = store.changes("metric", window=timedelta(minutes=5))
         assert len(df) == 1
         assert df["value"][0] == 0.0
 
-    def test_changes_with_compare_eq_zero(self) -> None:
+    def test_changes_with_polars_filter(self) -> None:
         store = MiniPrometheus(config=MiniPrometheusConfig(
             retention=timedelta(minutes=60),
         ))
@@ -472,11 +456,12 @@ class TestMiniPrometheusRangeFunctionEdgeCases:
                 timestamp=now - timedelta(minutes=2 - i),
             )
 
-        df = store.instant_query("changes(iter[5m]) == 0")
-        assert len(df) == 1
-        assert df["value"][0] == 0.0
+        df = store.changes("iter", window=timedelta(minutes=5))
+        filtered = df.filter(pl.col("value") == 0.0)
+        assert len(filtered) == 1
+        assert filtered["value"][0] == 0.0
 
-    def test_count_over_time_with_compare_filters(self) -> None:
+    def test_count_over_time_with_polars_filter(self) -> None:
         store = MiniPrometheus(config=MiniPrometheusConfig(
             retention=timedelta(minutes=60),
         ))
@@ -488,26 +473,9 @@ class TestMiniPrometheusRangeFunctionEdgeCases:
             timestamp=now,
         )
 
-        df_pass = store.instant_query("count_over_time(alert[5m]) >= 1")
+        df = store.count_over_time("alert", window=timedelta(minutes=5))
+        df_pass = df.filter(pl.col("value") >= 1.0)
         assert len(df_pass) == 1
 
-        df_fail = store.instant_query("count_over_time(alert[5m]) >= 10")
+        df_fail = df.filter(pl.col("value") >= 10.0)
         assert len(df_fail) == 0
-
-
-class TestMiniPrometheusRangeQueryEdgeCases:
-    def test_empty_range_query(self) -> None:
-        store = MiniPrometheus(config=MiniPrometheusConfig(
-            retention=timedelta(minutes=60),
-        ))
-        now = datetime.now(timezone.utc)
-
-        df = store.range_query(
-            query="nonexistent",
-            start=now - timedelta(minutes=10),
-            end=now,
-            step=timedelta(minutes=1),
-        )
-        assert df.is_empty()
-        assert "timestamp" in df.columns
-        assert "value" in df.columns

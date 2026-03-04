@@ -67,7 +67,7 @@ class TestMiniPrometheusScrapeReal:
 
         await store.scrape_once()
 
-        df = store.instant_query("gpu_temperature_celsius")
+        df = store.query_latest("gpu_temperature_celsius")
         assert len(df) >= 2
         values = sorted(df["value"].to_list())
         assert 75.0 in values
@@ -98,12 +98,12 @@ class TestMiniPrometheusScrapeReal:
         store.add_scrape_target(target_id="node-0", address=f"http://localhost:{port}")
 
         await store.scrape_once()
-        df1 = store.instant_query("test_temp")
+        df1 = store.query_latest("test_temp")
         assert df1["value"][0] == 60.0
 
         temp.labels(gpu="0").set(90.0)
         await store.scrape_once()
-        df2 = store.instant_query("test_temp")
+        df2 = store.query_latest("test_temp")
         assert df2["value"][0] == 90.0
 
     async def test_scrape_unreachable_target_warns(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -153,7 +153,7 @@ class TestMiniPrometheusScrapeReal:
 
         await store.scrape_once()
 
-        df = store.instant_query("node_metric")
+        df = store.query_latest("node_metric")
         assert len(df) == 2
         node_ids = sorted(df["node_id"].to_list())
         assert node_ids == ["node-0", "node-1"]
@@ -182,6 +182,6 @@ class TestMiniPrometheusScrapeReal:
 
         await store.scrape_once()
 
-        df = store.instant_query("good_metric")
+        df = store.query_latest("good_metric")
         assert len(df) == 1
         assert df["node_id"][0] == "good-node"

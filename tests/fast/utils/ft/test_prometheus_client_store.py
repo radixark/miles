@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -22,7 +22,7 @@ def _make_response(json_data: dict[str, Any], status_code: int = 200) -> httpx.R
     )
 
 
-class TestInstantQueryVector:
+class TestQueryLatestVector:
     def test_single_series(self) -> None:
         json_data = {
             "status": "success",
@@ -39,7 +39,7 @@ class TestInstantQueryVector:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("up")
+            df = client.query_latest("up")
 
         assert df.shape[0] == 1
         assert "__name__" in df.columns
@@ -67,7 +67,7 @@ class TestInstantQueryVector:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("cpu_usage")
+            df = client.query_latest("cpu_usage")
 
         assert df.shape[0] == 2
         assert "host" in df.columns
@@ -82,14 +82,14 @@ class TestInstantQueryVector:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("nonexistent")
+            df = client.query_latest("nonexistent")
 
         assert df.is_empty()
         assert "__name__" in df.columns
         assert "value" in df.columns
 
 
-class TestInstantQueryErrors:
+class TestQueryLatestErrors:
     def test_http_500_returns_empty(self) -> None:
         error_response = httpx.Response(
             status_code=500,
@@ -99,7 +99,7 @@ class TestInstantQueryErrors:
 
         with patch.object(httpx.Client, "get", return_value=error_response):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("up")
+            df = client.query_latest("up")
 
         assert df.is_empty()
         assert "__name__" in df.columns
@@ -108,7 +108,7 @@ class TestInstantQueryErrors:
     def test_timeout_returns_empty(self) -> None:
         with patch.object(httpx.Client, "get", side_effect=httpx.TimeoutException("timed out")):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("up")
+            df = client.query_latest("up")
 
         assert df.is_empty()
 
@@ -121,12 +121,12 @@ class TestInstantQueryErrors:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("bad{[query")
+            df = client.query_latest("some_metric")
 
         assert df.is_empty()
 
 
-class TestRangeQuery:
+class TestQueryRange:
     def test_matrix_result(self) -> None:
         json_data = {
             "status": "success",
@@ -147,12 +147,7 @@ class TestRangeQuery:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.range_query(
-                query="cpu_usage",
-                start=datetime(2024, 2, 27, tzinfo=timezone.utc),
-                end=datetime(2024, 2, 27, 1, tzinfo=timezone.utc),
-                step=timedelta(minutes=1),
-            )
+            df = client.query_range("cpu_usage", window=timedelta(hours=1))
 
         assert df.shape[0] == 3
         assert "__name__" in df.columns
@@ -180,12 +175,7 @@ class TestRangeQuery:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.range_query(
-                query="m",
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
-                step=timedelta(hours=1),
-            )
+            df = client.query_range("m", window=timedelta(hours=24))
 
         assert df.shape[0] == 2
         assert sorted(df["value"].to_list()) == [1.0, 2.0]
@@ -198,12 +188,7 @@ class TestRangeQuery:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.range_query(
-                query="nonexistent",
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
-                step=timedelta(hours=1),
-            )
+            df = client.query_range("nonexistent", window=timedelta(hours=24))
 
         assert df.is_empty()
         assert "__name__" in df.columns
@@ -211,16 +196,11 @@ class TestRangeQuery:
         assert "value" in df.columns
 
 
-class TestRangeQueryErrors:
+class TestQueryRangeErrors:
     def test_timeout_returns_empty(self) -> None:
         with patch.object(httpx.Client, "get", side_effect=httpx.TimeoutException("timed out")):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.range_query(
-                query="up",
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
-                step=timedelta(hours=1),
-            )
+            df = client.query_range("up", window=timedelta(hours=24))
 
         assert df.is_empty()
         assert "timestamp" in df.columns
@@ -243,7 +223,7 @@ class TestLabelColumns:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("up")
+            df = client.query_latest("up")
 
         assert "node_id" in df.columns
         assert "gpu" in df.columns
@@ -251,7 +231,7 @@ class TestLabelColumns:
         assert df["gpu"][0] == "0"
 
 
-class TestInstantQueryScalar:
+class TestQueryLatestScalar:
     def test_valid_scalar(self) -> None:
         json_data: dict[str, Any] = {
             "status": "success",
@@ -260,7 +240,7 @@ class TestInstantQueryScalar:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("scalar(up)")
+            df = client.query_latest("scalar_metric")
 
         assert df.shape[0] == 1
         assert df["value"][0] == 42.0
@@ -273,7 +253,7 @@ class TestInstantQueryScalar:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("scalar(up)")
+            df = client.query_latest("scalar_metric")
 
         assert df.is_empty()
 
@@ -285,7 +265,7 @@ class TestInstantQueryScalar:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("scalar(up)")
+            df = client.query_latest("scalar_metric")
 
         assert df.is_empty()
 
@@ -299,7 +279,7 @@ class TestUnsupportedResultTypes:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("some_string_query")
+            df = client.query_latest("some_metric")
 
         assert df.is_empty()
         assert "__name__" in df.columns
@@ -313,12 +293,7 @@ class TestUnsupportedResultTypes:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.range_query(
-                query="up",
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
-                step=timedelta(hours=1),
-            )
+            df = client.query_range("up", window=timedelta(hours=24))
 
         assert df.is_empty()
 
@@ -327,7 +302,7 @@ class TestUnsupportedResultTypes:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("up")
+            df = client.query_latest("up")
 
         assert df.is_empty()
 
@@ -347,7 +322,7 @@ class TestMalformedVectorValues:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("m")
+            df = client.query_latest("m")
 
         assert df.shape[0] == 2
         assert sorted(df["value"].to_list()) == [0.0, 1.0]
@@ -366,7 +341,7 @@ class TestMalformedVectorValues:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.instant_query("m")
+            df = client.query_latest("m")
 
         assert df.shape[0] == 1
         assert df["value"][0] == 2.5
@@ -392,12 +367,7 @@ class TestMalformedMatrixValues:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.range_query(
-                query="m",
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
-                step=timedelta(hours=1),
-            )
+            df = client.query_range("m", window=timedelta(hours=24))
 
         assert df.shape[0] == 1
         assert df["value"][0] == 1.5
@@ -418,12 +388,63 @@ class TestMalformedMatrixValues:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
             client = PrometheusClient(url="http://fake:9090")
-            df = client.range_query(
-                query="m",
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
-                step=timedelta(hours=1),
-            )
+            df = client.query_range("m", window=timedelta(hours=24))
 
         assert df.shape[0] == 1
         assert df["__name__"][0] == ""
+
+
+class TestRangeFunctionQueries:
+    def test_changes_builds_correct_promql(self) -> None:
+        json_data = {
+            "status": "success",
+            "data": {
+                "resultType": "vector",
+                "result": [
+                    {
+                        "metric": {"__name__": "training_iteration"},
+                        "value": [1709000000, "3"],
+                    }
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)) as mock_get:
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.changes("training_iteration", window=timedelta(minutes=10))
+
+            call_args = mock_get.call_args
+            params = call_args.kwargs.get("params") or call_args[1].get("params")
+            assert params["query"] == "changes(training_iteration[10m])"
+
+        assert df.shape[0] == 1
+        assert df["value"][0] == 3.0
+
+    def test_count_over_time_with_label_filters(self) -> None:
+        json_data = {
+            "status": "success",
+            "data": {
+                "resultType": "vector",
+                "result": [
+                    {
+                        "metric": {"__name__": "alerts", "node_id": "node-0"},
+                        "value": [1709000000, "5"],
+                    }
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)) as mock_get:
+            client = PrometheusClient(url="http://fake:9090")
+            df = client.count_over_time(
+                "alerts",
+                window=timedelta(minutes=5),
+                label_filters={"node_id": "node-0"},
+            )
+
+            call_args = mock_get.call_args
+            params = call_args.kwargs.get("params") or call_args[1].get("params")
+            assert params["query"] == 'count_over_time(alerts{node_id="node-0"}[5m])'
+
+        assert df.shape[0] == 1
+        assert df["value"][0] == 5.0

@@ -347,8 +347,8 @@ class TestCollector(BaseCollector):
     def set_metrics(self, metrics: list[MetricSample]) -> None:
         self._metrics = metrics
 
-    async def collect(self) -> CollectorOutput:
-        return CollectorOutput(metrics=self._metrics)
+    def _collect_sync(self) -> list[MetricSample]:
+        return list(self._metrics)
 
 
 class FakeNodeAgent:

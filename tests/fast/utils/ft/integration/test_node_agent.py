@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pytest
 
@@ -11,7 +11,7 @@ from tests.fast.utils.ft.conftest import TestCollector
 
 class TestNodeAgentMiniPrometheusIntegration:
     @pytest.mark.asyncio()
-    async def test_scrape_and_instant_query(self) -> None:
+    async def test_scrape_and_query_latest(self) -> None:
         test_collector = TestCollector(
             metrics=[
                 MetricSample(
@@ -35,7 +35,7 @@ class TestNodeAgentMiniPrometheusIntegration:
             prom.add_scrape_target(target_id="integ-node-0", address=address)
             await prom.scrape_once()
 
-            df = prom.instant_query("gpu_temperature_celsius")
+            df = prom.query_latest("gpu_temperature_celsius")
             assert not df.is_empty()
             values = df["value"].to_list()
             assert 72.5 in values
@@ -67,7 +67,7 @@ class TestNodeAgentMiniPrometheusIntegration:
             prom.add_scrape_target(target_id="integ-node-1", address=address)
 
             await prom.scrape_once()
-            df1 = prom.instant_query("gpu_temperature_celsius")
+            df1 = prom.query_latest("gpu_temperature_celsius")
             assert 60.0 in df1["value"].to_list()
 
             test_collector.set_metrics([
@@ -80,15 +80,12 @@ class TestNodeAgentMiniPrometheusIntegration:
             await asyncio.sleep(0.3)
             await prom.scrape_once()
 
-            df2 = prom.instant_query("gpu_temperature_celsius")
+            df2 = prom.query_latest("gpu_temperature_celsius")
             assert 85.0 in df2["value"].to_list()
 
-            now = datetime.now(timezone.utc)
-            df_range = prom.range_query(
+            df_range = prom.query_range(
                 "gpu_temperature_celsius",
-                start=now - timedelta(minutes=5),
-                end=now,
-                step=timedelta(seconds=10),
+                window=timedelta(minutes=5),
             )
             range_values = df_range["value"].to_list()
             assert 60.0 in range_values
@@ -131,13 +128,13 @@ class TestNodeAgentMiniPrometheusIntegration:
             prom.add_scrape_target(target_id="integ-node-2", address=address)
             await prom.scrape_once()
 
-            df_temp = prom.instant_query("gpu_temperature_celsius")
+            df_temp = prom.query_latest("gpu_temperature_celsius")
             assert 70.0 in df_temp["value"].to_list()
 
-            df_mem = prom.instant_query("gpu_memory_used_bytes")
+            df_mem = prom.query_latest("gpu_memory_used_bytes")
             assert 8192.0 in df_mem["value"].to_list()
 
-            df_power = prom.instant_query("gpu_power_watts")
+            df_power = prom.query_latest("gpu_power_watts")
             assert 250.0 in df_power["value"].to_list()
         finally:
             await agent.stop()
@@ -172,7 +169,7 @@ class TestNodeAgentMiniPrometheusIntegration:
             prom.add_scrape_target(target_id="integ-node-3", address=address)
             await prom.scrape_once()
 
-            df = prom.instant_query('gpu_temperature_celsius{gpu="1"}')
+            df = prom.query_latest("gpu_temperature_celsius", label_filters={"gpu": "1"})
             assert not df.is_empty()
             assert 78.0 in df["value"].to_list()
             assert len(df) == 1

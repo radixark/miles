@@ -31,7 +31,7 @@ class TestMakeMetric:
 class TestMakeFakeMetricStore:
     def test_empty_store(self) -> None:
         store = make_fake_metric_store()
-        df = store.instant_query("anything")
+        df = store.query_latest("anything")
         assert df.is_empty()
 
     def test_with_metrics(self) -> None:
@@ -40,7 +40,7 @@ class TestMakeFakeMetricStore:
             make_metric("gpu_temp", 82.0, labels={"gpu": "1"}),
         ]
         store = make_fake_metric_store(metrics=metrics)
-        df = store.instant_query("gpu_temp")
+        df = store.query_latest("gpu_temp")
         assert len(df) == 2
 
 

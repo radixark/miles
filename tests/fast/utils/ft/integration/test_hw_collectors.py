@@ -61,19 +61,19 @@ class TestNodeAgentAllCollectorsIntegration:
                 prom.add_scrape_target(target_id="integ-hw-node", address=address)
                 await prom.scrape_once()
 
-                gpu_df = prom.instant_query("miles_ft_gpu_available")
+                gpu_df = prom.query_latest("miles_ft_gpu_available")
                 assert not gpu_df.is_empty()
 
-                gpu_temp = prom.instant_query("miles_ft_dcgm_fi_dev_gpu_temp")
+                gpu_temp = prom.query_latest("miles_ft_dcgm_fi_dev_gpu_temp")
                 assert not gpu_temp.is_empty()
 
-                xid_df = prom.instant_query("miles_ft_xid_code_recent")
+                xid_df = prom.query_latest("miles_ft_xid_code_recent")
                 assert not xid_df.is_empty()
 
-                xid_count = prom.instant_query("miles_ft_xid_count_total")
+                xid_count = prom.query_latest("miles_ft_xid_count_total")
                 assert not xid_count.is_empty()
 
-                nic_df = prom.instant_query("miles_ft_node_network_up")
+                nic_df = prom.query_latest("miles_ft_node_network_up")
                 assert not nic_df.is_empty()
                 assert len(nic_df) == 2  # ib0 + ib1
             finally:
@@ -105,7 +105,7 @@ class TestNodeAgentAllCollectorsIntegration:
             prom.add_scrape_target(target_id="integ-fail-node", address=address)
             await prom.scrape_once()
 
-            nic_df = prom.instant_query("miles_ft_node_network_up")
+            nic_df = prom.query_latest("miles_ft_node_network_up")
             assert not nic_df.is_empty()
         finally:
             await agent.stop()
@@ -134,10 +134,10 @@ class TestNodeAgentAllCollectorsIntegration:
             prom.add_scrape_target(target_id="integ-interval-node", address=address)
             await prom.scrape_once()
 
-            xid_count = prom.instant_query("miles_ft_xid_count_total")
+            xid_count = prom.query_latest("miles_ft_xid_count_total")
             assert not xid_count.is_empty()
 
-            nic_df = prom.instant_query("miles_ft_node_network_up")
+            nic_df = prom.query_latest("miles_ft_node_network_up")
             assert not nic_df.is_empty()
         finally:
             await agent.stop()
