@@ -4,7 +4,7 @@ import logging
 import os
 import socket
 import time
-from typing import Any
+from typing import Any, Literal
 
 from prometheus_client import CollectorRegistry, Gauge, start_http_server
 
@@ -96,7 +96,7 @@ class FtMegatronAgent:
         grad_norm: float | None = None,
         mfu: float | None = None,
         iteration_time: float | None = None,
-        phase: str = "training",
+        phase: Literal["idle", "training", "checkpoint_saving"] = "training",
     ) -> None:
         try:
             self._step_inner(
@@ -128,7 +128,7 @@ class FtMegatronAgent:
         grad_norm: float | None,
         mfu: float | None,
         iteration_time: float | None,
-        phase: str,
+        phase: Literal["idle", "training", "checkpoint_saving"],
     ) -> None:
         self._iteration_child.set(iteration)
         self._phase_child.set(_PHASE_TO_NUMERIC.get(phase, 0.0))

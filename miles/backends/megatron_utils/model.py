@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import gc
 import logging
@@ -6,6 +8,7 @@ from argparse import Namespace
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 from megatron.core import mpu
@@ -32,6 +35,9 @@ from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_l
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
+
+if TYPE_CHECKING:
+    from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
 
 logger = logging.getLogger(__name__)
 
@@ -495,7 +501,7 @@ def train(
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
     parallel_state: ParallelState,
-    ft_agent: "FtMegatronAgent | None" = None,
+    ft_agent: FtMegatronAgent | None = None,
 ) -> None:
     """Run training over a rollout consisting of multiple steps.
 
@@ -638,7 +644,7 @@ def train(
         if ft_agent is not None:
             ft_agent.step(
                 iteration=accumulated_step_id,
-                loss=loss_dict.get("total_loss") if is_main_rank else None,
+                loss=loss_dict.get("loss") if is_main_rank else None,
                 grad_norm=grad_norm if is_main_rank else None,
                 phase="training",
             )

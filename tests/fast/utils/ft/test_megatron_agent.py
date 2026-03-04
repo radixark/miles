@@ -104,6 +104,27 @@ class TestFtMegatronAgentStep:
         finally:
             agent.shutdown()
 
+    @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
+    def test_step_pushes_mfu_and_iteration_time(
+        self, mock_get_handle: MagicMock
+    ) -> None:
+        mock_controller = MagicMock()
+        mock_get_handle.return_value = mock_controller
+
+        agent = FtMegatronAgent(rank=0, world_size=4)
+        agent._run_id = "test-run-1"
+        try:
+            agent.step(iteration=5, mfu=0.45, iteration_time=1.2)
+
+            mock_controller.log_step.remote.assert_called_once_with(
+                run_id="test-run-1",
+                rank=0,
+                step=5,
+                metrics={"mfu": 0.45, "iteration_time": 1.2},
+            )
+        finally:
+            agent.shutdown()
+
     def test_step_without_metrics_does_not_push(
         self, agent: FtMegatronAgent
     ) -> None:
@@ -212,6 +233,38 @@ class TestFtMegatronAgentRegisterRank:
         finally:
             agent.shutdown()
 
+    @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
+    def test_register_rank_skipped_when_controller_unavailable(
+        self, mock_get_handle: MagicMock
+    ) -> None:
+        mock_get_handle.return_value = None
+
+        with patch.dict("os.environ", {"FT_TRAINING_RUN_ID": "test-run-1"}):
+            agent = FtMegatronAgent(rank=0, world_size=4)
+            try:
+                assert agent._run_id == "test-run-1"
+            finally:
+                agent.shutdown()
+
+    @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
+    def test_register_rank_asserts_node_id_and_exporter_address(
+        self, mock_get_handle: MagicMock
+    ) -> None:
+        mock_controller = MagicMock()
+        mock_ray_get = MagicMock()
+        mock_get_handle.return_value = mock_controller
+
+        with patch.dict(
+            "os.environ", {"FT_TRAINING_RUN_ID": "test-run-1"}
+        ), patch("ray.get", mock_ray_get):
+            agent = FtMegatronAgent(rank=0, world_size=4)
+            try:
+                call_kwargs = mock_controller.register_rank.remote.call_args[1]
+                assert call_kwargs["node_id"] == agent._node_id
+                assert call_kwargs["exporter_address"] == agent.get_exporter_address()
+            finally:
+                agent.shutdown()
+
 
 class TestFtMegatronAgentFaultTolerance:
     def test_maybe_create_returns_agent_when_enabled(self) -> None:
@@ -263,5 +316,32 @@ class TestFtMegatronAgentFaultTolerance:
 
             assert agent._controller_handle is None
             assert agent._controller_lookup_failed is False
+        finally:
+            agent.shutdown()
+
+    def test_get_controller_handle_caches_result(self) -> None:
+        agent = FtMegatronAgent(rank=0, world_size=4)
+        try:
+            mock_handle = MagicMock()
+            agent._controller_handle = mock_handle
+
+            with patch("ray.get_actor") as mock_get_actor:
+                result = agent._get_controller_handle()
+
+                assert result is mock_handle
+                mock_get_actor.assert_not_called()
+        finally:
+            agent.shutdown()
+
+    def test_get_controller_handle_negative_cache(self) -> None:
+        agent = FtMegatronAgent(rank=0, world_size=4)
+        try:
+            agent._controller_lookup_failed = True
+
+            with patch("ray.get_actor") as mock_get_actor:
+                result = agent._get_controller_handle()
+
+                assert result is None
+                mock_get_actor.assert_not_called()
         finally:
             agent.shutdown()
