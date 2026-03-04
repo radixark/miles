@@ -219,7 +219,6 @@ def with_miles_router(backend_url: str, model_name: str):
         miles_router_middleware_paths=[],
         rollout_health_check_interval=60,
         miles_router_health_check_failure_threshold=3,
-        miles_router_enable_token_input_for_chat_completions=False,
         hf_checkpoint=model_name,
     )
     router = MilesRouter(router_args)
