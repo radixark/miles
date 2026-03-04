@@ -1,10 +1,10 @@
-#### Use the base image for ROCm 7 / gfx950 (MI355)
+#### Use the base image for ROCm 7 / gfx942 (MI300)
 
 # =====================================================================
 # Docker Image Version Information (Updated: Feb 5, 2026)
 # =====================================================================
-# Base image: ROCm 7 with vllm pre-built for gfx950
-# Target GPU: MI355 (gfx950)
+# Base image: ROCm 7 with vllm pre-built for gfx942
+# Target GPU: MI300 (gfx942)
 #
 # Key Dependencies:
 # - sglang: sglang-miles branch
@@ -33,11 +33,11 @@ ARG MEGATRON_BRANCH=miles-main
 ARG MEGATRON_COMMIT=""
 ENV MAX_JOBS=${MAX_JOBS}
 
-# Set environment variables for gfx950
-ENV GPU_ARCH=gfx950
-ENV PYTORCH_ROCM_ARCH=gfx950
-ENV GPU_ARCH_LIST=gfx950
-ENV AMDGPU_TARGET=gfx950
+# Set environment variables for gfx942
+ENV GPU_ARCH=gfx942
+ENV PYTORCH_ROCM_ARCH=gfx942
+ENV GPU_ARCH_LIST=gfx942
+ENV AMDGPU_TARGET=gfx942
 
 
 ###########################################
@@ -55,14 +55,14 @@ RUN git clone https://github.com/ROCm/aiter.git \
     && rm -f /tmp/aiter-pr2075.patch \
     && git submodule sync --recursive \
     && git submodule update --init --recursive \
-    && GPU_ARCHS=gfx950 python setup.py develop
+    && GPU_ARCHS=gfx942 python setup.py develop
 ###########################################
 ###########################################
 ###########################################
 
 
 ###########################################
-####2. Install TransformerEngine for gfx950
+####2. Install TransformerEngine for gfx942
 ###########################################
 WORKDIR /app
 
@@ -73,7 +73,7 @@ RUN git clone https://github.com/ROCm/TransformerEngine.git \
     && git submodule update --init --recursive
 
 ENV NVTE_FRAMEWORK=pytorch
-ENV NVTE_ROCM_ARCH=gfx950
+ENV NVTE_ROCM_ARCH=gfx942
 ENV NVTE_USE_HIPBLASLT=1
 ENV NVTE_USE_ROCM=1
 ENV CMAKE_PREFIX_PATH="/opt/rocm:/opt/rocm/hip:/usr/local:/usr"
@@ -204,11 +204,11 @@ RUN git clone https://github.com/${SGLANG_REPO}.git \
          git checkout FETCH_HEAD; \
        fi
 
-# Build sgl-kernel for gfx950
+# Build sgl-kernel for gfx942
 RUN cd sglang/sgl-kernel \
     && rm -f pyproject.toml \
     && mv pyproject_rocm.toml pyproject.toml \
-    && AMDGPU_TARGET=gfx950 python setup_rocm.py install
+    && AMDGPU_TARGET=gfx942 python setup_rocm.py install
 
 # Install SGLang
 RUN cd sglang \
@@ -226,7 +226,7 @@ RUN python -m pip cache purge
 
 
 ###########################################
-#### APPLY PATCHES (gfx950/MI355) #########
+#### APPLY PATCHES (gfx942/MI300) #########
 ###########################################
 
 # Copy patch from miles repo
@@ -235,7 +235,7 @@ COPY amd_patch/sglv0.5.7/sglang.patch /app/patch/sglang.patch
 
 # Apply Megatron patches
 RUN cd /app/Megatron-LM \
-    && git apply  --3way /app/patch/megatron.patch \
+    && git apply --3way /app/patch/megatron.patch \
     && if grep -R -n '^<<<<<<< ' .; then \
         echo "Patch failed to apply cleanly. Please resolve conflicts." && \
         exit 1; \
@@ -250,7 +250,7 @@ RUN cd /app/sglang \
         exit 1; \
     fi
 
-# Copy MOE configs for gfx950/MI355
+# Copy MOE configs for gfx942/MI300
 RUN find /app/sglang/python/sglang/srt/layers/quantization/configs/ \
          /app/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/ \
          -type f -name '*MI300X*' 2>/dev/null | while read f; do \
