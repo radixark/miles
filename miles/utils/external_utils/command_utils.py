@@ -92,6 +92,29 @@ class ExecuteTrainConfig:
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+    enable_elastic: bool = False
+
+
+def _submit_ft_controller_job(
+    ray_address: str,
+    train_entrypoint: str,
+    megatron_path: str,
+) -> None:
+    """Submit the FT Controller as a separate Ray job (fire-and-forget)."""
+    launcher_cmd = (
+        "python -m miles.utils.ft.platform.launcher main "
+        "--platform k8s-ray "
+        f"--ray-address {ray_address} "
+        f'--entrypoint "{train_entrypoint}" '
+        "--as-ray-actor"
+    )
+    runtime_env = json.dumps({"env_vars": {"PYTHONPATH": megatron_path}})
+    exec_command(
+        f'ray job submit --address="{ray_address}" '
+        f"--runtime-env-json='{runtime_env}' "
+        f"--no-wait "
+        f"-- {launcher_cmd}"
+    )
 
 
 def execute_train(
@@ -143,6 +166,20 @@ def execute_train(
     if (f := before_ray_job_submit) is not None:
         f()
 
+    ray_address = "http://127.0.0.1:8265"
+
+    if config.enable_elastic:
+        train_entrypoint = (
+            f"python3 {train_script} {train_args}"
+        )
+        _submit_ft_controller_job(
+            ray_address=ray_address,
+            train_entrypoint=train_entrypoint,
+            megatron_path=megatron_path,
+        )
+        if "--use-fault-tolerance" not in train_args:
+            train_args = f"--use-fault-tolerance {train_args}"
+
     runtime_env_json = json.dumps(
         {
             "env_vars": {
@@ -184,7 +221,7 @@ def execute_train(
         exec_command(
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
-            f'ray job submit --address="http://127.0.0.1:8265" '
+            f'ray job submit --address="{ray_address}" '
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
