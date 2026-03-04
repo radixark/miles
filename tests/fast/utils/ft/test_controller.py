@@ -6,6 +6,7 @@ import logging
 import pytest
 from prometheus_client import CollectorRegistry
 
+import miles.utils.ft.metric_names as mn
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import JobStatus
@@ -322,7 +323,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert get_sample_value(registry, "ft_training_job_status") == 1.0
+        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 1.0
 
     @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
@@ -335,7 +336,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert get_sample_value(registry, "ft_training_job_status") == -1.0
+        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == -1.0
 
     @pytest.mark.asyncio
     async def test_stopped_status_maps_to_zero(self) -> None:
@@ -348,7 +349,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert get_sample_value(registry, "ft_training_job_status") == 0.0
+        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 0.0
 
     @pytest.mark.asyncio
     async def test_pending_status_maps_to_two(self) -> None:
@@ -361,7 +362,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert get_sample_value(registry, "ft_training_job_status") == 2.0
+        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 2.0
 
     @pytest.mark.asyncio
     async def test_tick_count_incremented(self) -> None:
@@ -372,7 +373,7 @@ class TestTrainingJobStatusExporter:
         await harness.controller._tick()
         await harness.controller._tick()
 
-        assert get_sample_value(registry, "ft_controller_tick_count_total") == 2.0
+        assert get_sample_value(registry, mn.CONTROLLER_TICK_COUNT + "_total") == 2.0
 
 
 class TestExecuteDecision:

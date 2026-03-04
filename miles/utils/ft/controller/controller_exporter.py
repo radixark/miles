@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+from http.server import HTTPServer
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
+
+import miles.utils.ft.metric_names as mn
 
 logger = logging.getLogger(__name__)
 
@@ -21,40 +24,41 @@ class ControllerExporter:
     ) -> None:
         self._port = port
         self._registry = registry or CollectorRegistry()
+        self._httpd: HTTPServer | None = None
 
         self._mode = Gauge(
-            "ft_controller_mode",
+            mn.CONTROLLER_MODE,
             "Controller mode (0=monitoring, 1=recovery)",
             registry=self._registry,
         )
         self._tick_count = Counter(
-            "ft_controller_tick_count",
+            mn.CONTROLLER_TICK_COUNT,
             "Cumulative tick count",
             registry=self._registry,
         )
         self._evicted_node_count = Gauge(
-            "ft_controller_evicted_node_count",
+            mn.CONTROLLER_EVICTED_NODE_COUNT,
             "Number of currently evicted nodes",
             registry=self._registry,
         )
         self._recovery_phase = Gauge(
-            "ft_controller_recovery_phase",
+            mn.CONTROLLER_RECOVERY_PHASE,
             "Recovery phase encoding (0=none, 1=check_alerts, 2=reattempting, ...)",
             registry=self._registry,
         )
 
         self._training_job_status = Gauge(
-            "ft_training_job_status",
+            mn.TRAINING_JOB_STATUS,
             "Training job status (-1=FAILED, 0=STOPPED, 1=RUNNING, 2=PENDING)",
             registry=self._registry,
         )
         self._training_loss_latest = Gauge(
-            "ft_training_loss_latest",
+            mn.TRAINING_LOSS_LATEST,
             "Latest training loss (mean across ranks)",
             registry=self._registry,
         )
         self._training_mfu_latest = Gauge(
-            "ft_training_mfu_latest",
+            mn.TRAINING_MFU_LATEST,
             "Latest training MFU (mean across ranks)",
             registry=self._registry,
         )
@@ -64,8 +68,15 @@ class ControllerExporter:
         return f"http://localhost:{self._port}"
 
     def start(self) -> None:
-        start_http_server(port=self._port, registry=self._registry)
+        self._httpd, _thread = start_http_server(port=self._port, registry=self._registry)
         logger.info("controller_exporter_started port=%d", self._port)
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+            self._httpd = None
+            logger.info("controller_exporter_stopped")
 
     def update_mode(self, mode: int) -> None:
         self._mode.set(mode)
