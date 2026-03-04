@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import TYPE_CHECKING, Annotated
 
 import typer
@@ -12,7 +13,8 @@ if TYPE_CHECKING:
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.mini_wandb import MiniWandb
-from miles.utils.ft.platform.stubs import StubNodeManager, StubTrainingJob
+from miles.utils.ft.platform.protocols import NotificationProtocol
+from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
 
 app = typer.Typer()
 
@@ -32,6 +34,19 @@ def _build_k8s_ray_components(
         entrypoint=entrypoint,
     )
     return node_manager, training_job
+
+
+def _build_notifier(platform_mode: str) -> NotificationProtocol | None:
+    webhook_url = os.environ.get("FT_FEISHU_WEBHOOK_URL")
+    if webhook_url:
+        from miles.utils.ft.platform.feishu_notifier import FeishuWebhookNotifier
+
+        return FeishuWebhookNotifier(webhook_url=webhook_url)
+
+    if platform_mode == "stub":
+        return StubNotifier()
+
+    return None
 
 
 @app.command()
@@ -63,12 +78,14 @@ def main(
 
     metric_store = MiniPrometheus(config=MiniPrometheusConfig())
     mini_wandb = MiniWandb()
+    notifier = _build_notifier(platform_mode=platform)
 
     controller = FtController(
         node_manager=node_manager,
         training_job=training_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
+        notifier=notifier,
         tick_interval=tick_interval,
     )
 
