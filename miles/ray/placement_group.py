@@ -3,7 +3,7 @@ import socket
 
 import ray
 from ray.util.placement_group import placement_group
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy, PlacementGroupSchedulingStrategy
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
@@ -73,7 +73,66 @@ def _create_placement_group(num_gpus):
             f"node: {gpu_ids[actual_bundle_index][0]}, gpu: {gpu_ids[actual_bundle_index][1]}"
         )
 
-    return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
+    return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids, gpu_ids
+
+
+def _parse_excluded_nodes(csv_string):
+    """Parse comma-separated node names into a set including resolved IPs."""
+    excluded = set()
+    for name in (csv_string or "").split(","):
+        name = name.strip()
+        if not name:
+            continue
+        excluded.add(name)
+        try:
+            excluded.add(socket.gethostbyname(name))
+        except (socket.gaierror, OSError):
+            pass
+    return excluded
+
+
+@ray.remote(num_gpus=1)
+class _GpuBlocker:
+    def ready(self):
+        return True
+
+
+def _block_excluded_nodes(excluded):
+    """Occupy all GPUs on excluded nodes so PG bundles cannot land there."""
+    blockers = []
+    for node in ray.nodes():
+        if not node.get("Alive"):
+            continue
+        ip = node.get("NodeManagerAddress", "")
+        name = node.get("NodeName", "")
+        if ip not in excluded and name not in excluded:
+            continue
+
+        node_id = node["NodeID"]
+        num_gpus = int(node["Resources"].get("GPU", 0))
+        for _ in range(num_gpus):
+            blockers.append(
+                _GpuBlocker.options(
+                    scheduling_strategy=NodeAffinitySchedulingStrategy(
+                        node_id=node_id, soft=False,
+                    ),
+                ).remote()
+            )
+
+    if blockers:
+        ray.get([b.ready.remote() for b in blockers])
+    return blockers
+
+
+def _create_placement_group_excluding(num_gpus, excluded):
+    """Create a placement group, blocking GPUs on excluded nodes first."""
+    blockers = _block_excluded_nodes(excluded) if excluded else []
+    try:
+        pg, reordered_indices, reordered_gpu_ids, _gpu_ids = _create_placement_group(num_gpus)
+    finally:
+        for b in blockers:
+            ray.kill(b)
+    return pg, reordered_indices, reordered_gpu_ids
 
 
 def create_placement_groups(args):
@@ -103,8 +162,12 @@ def create_placement_groups(args):
             critic_offset = args.actor_num_nodes * args.actor_num_gpus_per_node
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
+    excluded = _parse_excluded_nodes(args.excluded_nodes)
+    if excluded:
+        logger.info("Excluding nodes from placement: %s", excluded)
+
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(num_gpus)
+    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group_excluding(num_gpus, excluded)
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
     rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]

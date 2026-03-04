@@ -17,4 +17,5 @@ tensorboard
 transformers
 kubernetes_asyncio
 psutil
+polars
 wandb

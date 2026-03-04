@@ -1,28 +1,26 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+import torch.distributed as dist
 import wandb
+
+from miles.utils.ft.agents.tracking_agent import FtTrackingAgent
 from miles.utils.tensorboard_utils import _TensorboardAdapter
 
 from . import wandb_utils
 
-if TYPE_CHECKING:
-    from miles.utils.ft.agents.tracking_agent import FtTrackingAgent
-
 _ft_tracking_agent: FtTrackingAgent | None = None
 
 
-def set_ft_tracking_agent(agent: FtTrackingAgent | None) -> None:
+def init_tracking(args, primary: bool = True, **kwargs) -> None:
     global _ft_tracking_agent
-    _ft_tracking_agent = agent
 
-
-def init_tracking(args, primary: bool = True, **kwargs):
     if primary:
         wandb_utils.init_wandb_primary(args, **kwargs)
     else:
         wandb_utils.init_wandb_secondary(args, **kwargs)
+
+    if args.use_fault_tolerance and _ft_tracking_agent is None and dist.is_initialized():
+        _ft_tracking_agent = FtTrackingAgent(rank=dist.get_rank())
 
 
 # TODO further refactor, e.g. put TensorBoard init to the "init" part

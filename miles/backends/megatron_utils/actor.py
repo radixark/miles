@@ -21,6 +21,7 @@ from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers
 from miles.utils.timer import Timer, inverse_timer, timer
+from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
 
@@ -103,22 +104,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
-        from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
-        from miles.utils.ft.agents.tracking_agent import FtTrackingAgent
-        from miles.utils import tracking_utils
-
-        ft_enabled = getattr(self.args, "use_fault_tolerance", False)
+        ft_enabled = self.args.use_fault_tolerance
 
         self._ft_agent = FtMegatronAgent.maybe_create(
             rank=dist.get_rank(),
             world_size=dist.get_world_size(),
             enabled=ft_enabled,
         )
-
-        if ft_enabled:
-            tracking_utils.set_ft_tracking_agent(
-                FtTrackingAgent(rank=dist.get_rank())
-            )
 
         if role == "critic":
             if self.args.offload_train:
@@ -356,7 +348,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
         if self._ft_agent is not None:
-            self._ft_agent.step(iteration=rollout_id)
+            self._ft_agent.step()
 
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, self.parallel_state, rollout_data)
@@ -460,6 +452,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         log_perf_data(rollout_id, self.args, self.parallel_state)
 
+        if self._ft_agent is not None:
+            self._ft_agent.step(phase="idle")
+
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only:
@@ -475,12 +470,12 @@ class MegatronTrainRayActor(TrainRayActor):
             maybe_finalize_async_save(blocking=True)
 
         if self._ft_agent is not None:
-            self._ft_agent.step(iteration=rollout_id, phase="checkpoint_saving")
+            self._ft_agent.step(phase="checkpoint_saving")
 
         save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
 
         if self._ft_agent is not None:
-            self._ft_agent.step(iteration=rollout_id, phase="training")
+            self._ft_agent.step(phase="idle")
 
         if force_sync and self.args.async_save:
             maybe_finalize_async_save(blocking=True)
