@@ -1,7 +1,8 @@
 import os
 
-import miles.utils.external_utils.command_utils as U
 from tests.ci.ci_register import register_cuda_ci
+
+import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=1200, suite="stage-c-precision-8-gpu", num_gpus=8)
 

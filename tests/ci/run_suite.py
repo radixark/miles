@@ -1,7 +1,6 @@
 import argparse
 import glob
 import sys
-from typing import List
 
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests
 from tests.ci.ci_utils import run_unittest_files
@@ -32,22 +31,14 @@ NIGHTLY_SUITES = {
 
 
 def filter_tests(
-    ci_tests: List[CIRegistry], hw: HWBackend, suite: str, nightly: bool = False
-) -> tuple[List[CIRegistry], List[CIRegistry]]:
-    ci_tests = [
-        t
-        for t in ci_tests
-        if t.backend == hw and t.suite == suite and t.nightly == nightly
-    ]
+    ci_tests: list[CIRegistry], hw: HWBackend, suite: str, nightly: bool = False
+) -> tuple[list[CIRegistry], list[CIRegistry]]:
+    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and t.nightly == nightly]
 
-    valid_suites = (
-        NIGHTLY_SUITES.get(hw, []) if nightly else PER_COMMIT_SUITES.get(hw, [])
-    )
+    valid_suites = NIGHTLY_SUITES.get(hw, []) if nightly else PER_COMMIT_SUITES.get(hw, [])
 
     if suite not in valid_suites:
-        print(
-            f"Warning: Unknown suite {suite} for backend {hw.name}, nightly={nightly}"
-        )
+        print(f"Warning: Unknown suite {suite} for backend {hw.name}, nightly={nightly}")
 
     enabled_tests = [t for t in ci_tests if t.disabled is None]
     skipped_tests = [t for t in ci_tests if t.disabled is not None]
@@ -55,7 +46,7 @@ def filter_tests(
     return enabled_tests, skipped_tests
 
 
-def auto_partition(files: List[CIRegistry], rank, size):
+def auto_partition(files: list[CIRegistry], rank, size):
     """
     Partition files into size sublists with approximately equal sums of estimated times
     using a greedy algorithm (LPT heuristic), and return the partition for the specified rank.
@@ -82,16 +73,13 @@ def auto_partition(files: List[CIRegistry], rank, size):
     return []
 
 
-def pretty_print_tests(
-    args, ci_tests: List[CIRegistry], skipped_tests: List[CIRegistry]
-):
+def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIRegistry]):
     hw = HW_MAPPING[args.hw]
     suite = args.suite
     nightly = args.nightly
     if args.auto_partition_size:
         partition_info = (
-            f"{args.auto_partition_id + 1}/{args.auto_partition_size} "
-            f"(0-based id={args.auto_partition_id})"
+            f"{args.auto_partition_id + 1}/{args.auto_partition_size} " f"(0-based id={args.auto_partition_id})"
         )
     else:
         partition_info = "full"
@@ -130,9 +118,7 @@ def run_a_suite(args):
     files = [
         f
         for f in glob.glob("tests/e2e/**/*.py", recursive=True)
-        if not f.endswith("/conftest.py")
-        and not f.endswith("/__init__.py")
-        and not f.endswith(".gitkeep")
+        if not f.endswith("/conftest.py") and not f.endswith("/__init__.py") and not f.endswith(".gitkeep")
         # Exclude helper modules that aren't test files
         and "/sglang_patch/sglang_server.py" not in f
     ]
@@ -169,9 +155,7 @@ def run_a_suite(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Run CI test suites from tests/e2e/"
-    )
+    parser = argparse.ArgumentParser(description="Run CI test suites from tests/e2e/")
     parser.add_argument(
         "--hw",
         type=str,
@@ -241,9 +225,7 @@ def main():
 
     # Validate auto-partition arguments
     if (args.auto_partition_id is not None) != (args.auto_partition_size is not None):
-        parser.error(
-            "--auto-partition-id and --auto-partition-size must be specified together."
-        )
+        parser.error("--auto-partition-id and --auto-partition-size must be specified together.")
     if args.auto_partition_size is not None:
         if args.auto_partition_size <= 0:
             parser.error("--auto-partition-size must be positive.")

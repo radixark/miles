@@ -10,8 +10,9 @@ to only the MTP layers when the main model loss is zero (due to truncation).
 
 import os
 
-import miles.utils.external_utils.command_utils as U
 from tests.ci.ci_register import register_cuda_ci
+
+import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=600, suite="stage-c-megatron-8-gpu", num_gpus=8)
 
