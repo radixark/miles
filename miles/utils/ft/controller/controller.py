@@ -206,6 +206,19 @@ class FtController:
             self._update_exporter_metrics(job_status)
             return
 
+        if len(self._rank_registry.rank_placement) == 0:
+            logger.info("skip_detectors_no_ranks tick=%d", self._tick_count)
+            self._update_exporter_metrics(job_status)
+            return
+
+        if self._tick_count <= self._registration_grace_ticks:
+            logger.info(
+                "skip_detectors_grace_period tick=%d grace_ticks=%d",
+                self._tick_count, self._registration_grace_ticks,
+            )
+            self._update_exporter_metrics(job_status)
+            return
+
         ctx = DetectorContext(
             metric_store=self._metric_store,
             mini_wandb=self._mini_wandb,

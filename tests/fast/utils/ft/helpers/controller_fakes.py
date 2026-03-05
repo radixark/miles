@@ -166,7 +166,8 @@ def make_test_controller(
     diagnostic_scheduler: object | None = None,
     recovery_cooldown_minutes: float = 30.0,
     recovery_cooldown_max_count: int = 3,
-    registration_grace_ticks: int = 5,
+    registration_grace_ticks: int = 0,
+    register_dummy_rank: bool = True,
 ) -> ControllerTestHarness:
     """Construct a Controller and all its dependencies for testing.
 
@@ -205,6 +206,9 @@ def make_test_controller(
         recovery_cooldown_max_count=recovery_cooldown_max_count,
         registration_grace_ticks=registration_grace_ticks,
     )
+
+    if register_dummy_rank:
+        rank_registry.rank_placement[0] = "node-0"
 
     return ControllerTestHarness(
         controller=controller,
