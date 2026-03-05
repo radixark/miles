@@ -241,13 +241,13 @@ class DiagnosticScheduler:
         except UnknownDiagnosticError:
             logger.error(
                 "diagnostic_type_not_registered node=%s type=%s — "
-                "this is a pipeline configuration error, not a node fault",
+                "this is a pipeline configuration error, treating as fail",
                 node_id, diagnostic_type,
                 exc_info=True,
             )
-            return DiagnosticResult.pass_result(
+            return DiagnosticResult.fail_result(
                 diagnostic_type=diagnostic_type, node_id=node_id,
-                details=f"config error: diagnostic type '{diagnostic_type}' not registered on node (treated as pass)",
+                details=f"config error: diagnostic type '{diagnostic_type}' not registered on node",
             )
 
         except Exception:

@@ -484,9 +484,9 @@ class TestDiagnosticSchedulerLiveAgents:
                 trigger_reason="crash",
             )
             # node-1 has diagnostic_type="failing", not "stub",
-            # so it gets "unknown diagnostic type" — config error, not node fault.
-            # Both nodes pass → NOTIFY_HUMAN (escalate to human)
-            assert decision.action == ActionType.NOTIFY_HUMAN
+            # so it gets "unknown diagnostic type" → treated as fail
+            assert decision.action == ActionType.MARK_BAD_AND_RESTART
+            assert "node-1" in decision.bad_node_ids
         finally:
             await agent0.stop()
             await agent1.stop()
