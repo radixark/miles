@@ -1,12 +1,32 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 from unittest.mock import patch
 
 import miles.utils.ft.metric_names as mn
 from miles.utils.ft.agents.collectors.disk import DiskCollector
+
+
+class TestDiskCollector:
+    async def test_disk_available_bytes(self, tmp_path: Path) -> None:
+        collector = DiskCollector(disk_mounts=[tmp_path])
+
+        result = await collector.collect()
+        disk = [m for m in result.metrics if m.name == "miles_ft_node_filesystem_avail_bytes"]
+        assert len(disk) == 1
+        assert disk[0].labels == {"mountpoint": str(tmp_path)}
+        assert disk[0].value > 0
+
+    def test_default_collect_interval(self) -> None:
+        collector = DiskCollector()
+        assert collector.collect_interval == 60.0
+
+
+# -------------------------------------------------------------------
+# _collect_disk_io_time
+# -------------------------------------------------------------------
 
 
 @contextmanager
@@ -19,7 +39,7 @@ def _patch_sys_block(fake_path: Path) -> Iterator[None]:
             return fake_path
         return real_path(p)
 
-    with patch("miles.utils.ft.agents.collectors.disk.Path", side_effect=_factory):
+    with patch("miles.utils.ft.agents._support.collectors.disk.Path", side_effect=_factory):
         yield
 
 
@@ -80,7 +100,6 @@ class TestCollectDiskIoTime:
         sys_block.mkdir(parents=True)
         device_dir = sys_block / "sda"
         device_dir.mkdir()
-        # no stat file → read_text raises FileNotFoundError
 
         collector = DiskCollector()
         with _patch_sys_block(sys_block):
