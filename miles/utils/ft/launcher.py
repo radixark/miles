@@ -7,7 +7,11 @@ from typing import Annotated
 import typer
 
 from miles.utils.ft.models import FT_CONTROLLER_ACTOR_NAME
-from miles.utils.ft.platform.controller_actor import FtControllerActor, build_ft_controller
+from miles.utils.ft.platform.controller_actor import (
+    FtControllerActor,
+    FtControllerConfig,
+    build_ft_controller,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +54,7 @@ def main(
     When --as-ray-actor is not set (dev/test mode), builds and runs the
     controller inline with asyncio.run().
     """
-    config_kwargs = dict(
+    config = FtControllerConfig(
         platform=platform,
         ray_address=ray_address,
         entrypoint=entrypoint,
@@ -64,19 +68,19 @@ def main(
         actor = FtControllerActor.options(
             name=FT_CONTROLLER_ACTOR_NAME,
             lifetime="detached",
-        ).remote(**config_kwargs)
+        ).remote(config=config)
         actor.run.remote()
         logger.info(
             "ft_controller actor created and started "
             "platform=%s backend=%s exporter_port=%d",
-            platform, metric_store_backend, controller_exporter_port,
+            config.platform, config.metric_store_backend, config.controller_exporter_port,
         )
         return
 
-    controller = build_ft_controller(**config_kwargs)
+    controller = build_ft_controller(config=config)
     logger.info(
         "launcher_started_inline platform=%s backend=%s exporter_port=%d",
-        platform, metric_store_backend, controller_exporter_port,
+        config.platform, config.metric_store_backend, config.controller_exporter_port,
     )
     asyncio.run(controller.run())
 
