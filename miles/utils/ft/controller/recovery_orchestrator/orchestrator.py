@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
@@ -87,27 +88,21 @@ class RecoveryOrchestrator:
 
     async def _dispatch_phase(self) -> RecoveryPhase | None:
         ctx = self._context
-        phase = ctx.phase
+        handlers: dict[RecoveryPhase, Callable[[], Awaitable[RecoveryPhase | None]]] = {
+            RecoveryPhase.CHECK_ALERTS: lambda: step_check_alerts(ctx, self._alert_checker),
+            RecoveryPhase.REATTEMPTING: lambda: step_reattempting(ctx, self._training_job, self._mini_wandb),
+            RecoveryPhase.MONITORING: lambda: step_monitoring(ctx, self._training_job, self._mini_wandb),
+            RecoveryPhase.DIAGNOSING: lambda: step_diagnosing(ctx, self._diagnostic_scheduler),
+            RecoveryPhase.EVICT_AND_RESTART: lambda: step_evict_and_restart(
+                ctx, self._node_manager, self._training_job, self._mini_wandb,
+            ),
+            RecoveryPhase.NOTIFY: lambda: step_notify(ctx, self._notifier),
+        }
 
-        if phase == RecoveryPhase.CHECK_ALERTS:
-            return await step_check_alerts(ctx, self._alert_checker)
-        if phase == RecoveryPhase.REATTEMPTING:
-            return await step_reattempting(ctx, self._training_job, self._mini_wandb)
-        if phase == RecoveryPhase.MONITORING:
-            return await step_monitoring(ctx, self._training_job, self._mini_wandb)
-        if phase == RecoveryPhase.DIAGNOSING:
-            return await step_diagnosing(ctx, self._diagnostic_scheduler)
-        if phase == RecoveryPhase.EVICT_AND_RESTART:
-            return await step_evict_and_restart(
-                ctx,
-                self._node_manager,
-                self._training_job,
-                self._mini_wandb,
-            )
-        if phase == RecoveryPhase.NOTIFY:
-            return await step_notify(ctx, self._notifier)
-
-        return None
+        handler = handlers.get(ctx.phase)
+        if handler is None:
+            return None
+        return await handler()
 
     def _check_global_timeout(self) -> bool:
         if self._context.phase in (RecoveryPhase.NOTIFY, RecoveryPhase.DONE):
