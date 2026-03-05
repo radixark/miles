@@ -50,6 +50,7 @@ class DiagnosticScheduler:
         self._default_timeout_seconds = default_timeout_seconds
         self._rank_pids_provider = rank_pids_provider
         self._inter_machine = InterMachineOrchestrator(
+            agents=agents,
             node_addresses=node_addresses,
         )
 

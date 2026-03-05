@@ -122,6 +122,7 @@ class UnknownDiagnosticError(Exception):
 class NodeAgentProtocol(Protocol):
     async def run_diagnostic(
         self, diagnostic_type: str, timeout_seconds: int = 120,
+        **kwargs: object,
     ) -> DiagnosticResult: ...
 
 

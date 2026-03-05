@@ -4,19 +4,18 @@ Tests the full diagnostic pipeline through the Controller's recovery flow.
 Note: CHECK_ALERTS phase is bypassed (set directly to DIAGNOSING) due to
 pre-existing instant_query gap in MiniPrometheus.
 """
-
 from __future__ import annotations
 
-from tests.fast.utils.ft.helpers import (
-    ControllerTestHarness,
-    make_fake_agents,
-    make_test_controller,
-    mock_inter_machine_run,
-)
+import pytest
 
 from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
 from miles.utils.ft.models import RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus
+from tests.fast.utils.ft.conftest import (
+    ControllerTestHarness,
+    make_fake_agents,
+    make_test_controller,
+)
 
 
 def _enter_recovery_and_skip_to_diagnosing(
@@ -43,13 +42,12 @@ def _enter_recovery_and_skip_to_diagnosing(
 class TestDiagnosticPipelineWithBadNode:
     """Diagnostics find bad node → EVICT_AND_RESTART."""
 
+    @pytest.mark.anyio
     async def test_diagnose_evict_bad_node(self) -> None:
-        agents = make_fake_agents(
-            {
-                "node-0": {"gpu": True},
-                "node-1": {"gpu": False},
-            }
-        )
+        agents = make_fake_agents({
+            "node-0": {"gpu": True},
+            "node-1": {"gpu": False},
+        })
         scheduler = DiagnosticScheduler(
             agents=agents,
             pipeline=["gpu"],
@@ -71,8 +69,7 @@ class TestDiagnosticPipelineWithBadNode:
         # DIAGNOSING → should find node-1 bad → EVICT_AND_RESTART
         await harness.controller._tick()
         assert orch.phase in (
-            RecoveryPhase.EVICT_AND_RESTART,
-            RecoveryPhase.DONE,
+            RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
         )
 
         # Advance to completion
@@ -89,13 +86,12 @@ class TestDiagnosticPipelineWithBadNode:
 class TestDiagnosticPipelineAllPass:
     """All diagnostics pass → NOTIFY_HUMAN."""
 
+    @pytest.mark.anyio
     async def test_all_pass_leads_to_notify(self) -> None:
-        agents = make_fake_agents(
-            {
-                "node-0": {"gpu": True},
-                "node-1": {"gpu": True},
-            }
-        )
+        agents = make_fake_agents({
+            "node-0": {"gpu": True},
+            "node-1": {"gpu": True},
+        })
         scheduler = DiagnosticScheduler(
             agents=agents,
             pipeline=["gpu"],
@@ -135,6 +131,7 @@ class TestDiagnosticPipelineAllPass:
 class TestDiagnosticPipelineEmptyPipeline:
     """Empty pipeline (no diagnostics) → NOTIFY (backward compat with stub)."""
 
+    @pytest.mark.anyio
     async def test_empty_pipeline_notifies(self) -> None:
         scheduler = DiagnosticScheduler(agents={}, pipeline=[])
 
@@ -156,17 +153,13 @@ class TestDiagnosticPipelineEmptyPipeline:
 class TestDiagnosticPipelineInterMachine:
     """Inter-machine step catches bad node through cross-comparison."""
 
+    @pytest.mark.anyio
     async def test_inter_machine_catches_bad_node(self) -> None:
-        # 3 nodes, gpu+intra pass for all, inter-machine isolates node-1
-        # node-1 fails → pairs (node-0,node-1) and (node-1,node-2) fail
-        # failure_count: node-0=1, node-1=2, node-2=1 → node-1 is bad
-        agents = make_fake_agents(
-            {
-                "node-0": {"gpu": True, "intra_machine": True},
-                "node-1": {"gpu": True, "intra_machine": True},
-                "node-2": {"gpu": True, "intra_machine": True},
-            }
-        )
+        agents = make_fake_agents({
+            "node-0": {"gpu": True, "intra_machine": True, "inter_machine": True},
+            "node-1": {"gpu": True, "intra_machine": True, "inter_machine": False},
+            "node-2": {"gpu": True, "intra_machine": True, "inter_machine": True},
+        })
         scheduler = DiagnosticScheduler(
             agents=agents,
             pipeline=["gpu", "intra_machine", "inter_machine"],
@@ -184,14 +177,10 @@ class TestDiagnosticPipelineInterMachine:
         orch = harness.controller._recovery_orchestrator
         assert orch is not None
 
-        with mock_inter_machine_run(
-            {"node-0": True, "node-1": False, "node-2": True},
-        ):
-            await harness.controller._tick()
+        await harness.controller._tick()
 
         assert orch.phase in (
-            RecoveryPhase.EVICT_AND_RESTART,
-            RecoveryPhase.DONE,
+            RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
         )
 
         for _ in range(10):
@@ -204,14 +193,13 @@ class TestDiagnosticPipelineInterMachine:
         assert not harness.node_manager.is_node_bad("node-0")
         assert not harness.node_manager.is_node_bad("node-2")
 
+    @pytest.mark.anyio
     async def test_full_pipeline_all_pass(self) -> None:
-        agents = make_fake_agents(
-            {
-                "node-0": {"gpu": True, "intra_machine": True},
-                "node-1": {"gpu": True, "intra_machine": True},
-                "node-2": {"gpu": True, "intra_machine": True},
-            }
-        )
+        agents = make_fake_agents({
+            "node-0": {"gpu": True, "intra_machine": True, "inter_machine": True},
+            "node-1": {"gpu": True, "intra_machine": True, "inter_machine": True},
+            "node-2": {"gpu": True, "intra_machine": True, "inter_machine": True},
+        })
         scheduler = DiagnosticScheduler(
             agents=agents,
             pipeline=["gpu", "intra_machine", "inter_machine"],
@@ -229,10 +217,7 @@ class TestDiagnosticPipelineInterMachine:
         orch = harness.controller._recovery_orchestrator
         assert orch is not None
 
-        with mock_inter_machine_run(
-            {"node-0": True, "node-1": True, "node-2": True},
-        ):
-            await harness.controller._tick()
+        await harness.controller._tick()
 
         assert orch.phase == RecoveryPhase.NOTIFY
 
@@ -254,13 +239,12 @@ class TestDiagnosticPipelineInterMachine:
 class TestDiagnosticPipelineMultiStep:
     """Multi-step pipeline catches bad node at second step."""
 
+    @pytest.mark.anyio
     async def test_multi_step_second_step_catches(self) -> None:
-        agents = make_fake_agents(
-            {
-                "node-0": {"gpu": True, "intra": True},
-                "node-1": {"gpu": True, "intra": False},
-            }
-        )
+        agents = make_fake_agents({
+            "node-0": {"gpu": True, "intra": True},
+            "node-1": {"gpu": True, "intra": False},
+        })
         scheduler = DiagnosticScheduler(
             agents=agents,
             pipeline=["gpu", "intra"],
@@ -281,8 +265,7 @@ class TestDiagnosticPipelineMultiStep:
         # DIAGNOSING → gpu passes, intra fails node-1 → EVICT_AND_RESTART
         await harness.controller._tick()
         assert orch.phase in (
-            RecoveryPhase.EVICT_AND_RESTART,
-            RecoveryPhase.DONE,
+            RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
         )
 
         for _ in range(10):
