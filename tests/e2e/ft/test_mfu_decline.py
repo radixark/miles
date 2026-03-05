@@ -5,12 +5,12 @@ Validates MfuDeclineDetector when GPU compute is contended:
   2. Start GPU stress workload on target node
   3. MFU drops → MfuDeclineDetector triggers
   4. Outcome depends on GPU temperature correlation:
-     - MARK_BAD_AND_RESTART: target node identified via temperature
-     - NOTIFY_HUMAN: temperature correlation insufficient (acceptable)
+     - Eviction path: temperature correlates → EVICT_AND_RESTART → node marked bad
+     - Notify path: no temperature correlation → NOTIFY → human notified
   5. Cleanup GPU stress
 
-See 9-testing.md §5.5: GPU stress may not always cause temperature rise,
-so both MARK_BAD and NOTIFY outcomes are acceptable.
+GPU stress may not always cause temperature rise, so both outcomes are
+valid — but each path has specific invariants that must hold.
 """
 
 from __future__ import annotations
@@ -21,8 +21,14 @@ import time
 
 import pytest
 import ray
-from miles.utils.ft.models import ControllerMode
-from tests.e2e.ft.conftest import FaultInjectorFactory, FtSystem, wait_for_recovery_complete, wait_for_training_stable
+from miles.utils.ft.models import ControllerMode, RecoveryPhase
+from tests.e2e.ft.conftest import (
+    FaultInjectorFactory,
+    FtSystem,
+    assert_phase_path_contains,
+    wait_for_recovery_complete,
+    wait_for_training_stable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +59,6 @@ async def test_mfu_decline_detection(
     logger.info("gpu_stress_started pid=%d node=%s", stress_pid, target_node)
 
     try:
-        # Wait for MfuDeclineDetector to trigger
-        # consecutive_decline_threshold × iteration_time + buffer
         timeout = 600.0
         poll_interval = 10.0
         deadline = time.monotonic() + timeout
@@ -70,29 +74,40 @@ async def test_mfu_decline_detection(
 
         assert detected, f"MfuDeclineDetector did not trigger within {timeout}s"
 
-        # Both outcomes are acceptable
         final_status = await wait_for_recovery_complete(
             controller=controller,
             timeout=300.0,
         )
         assert final_status.mode == ControllerMode.MONITORING
+        assert final_status.phase_history is not None
 
         bad_nodes = await ft_system.node_manager.get_bad_nodes()
         evicted = target_node in bad_nodes or any(target_node in str(n) for n in bad_nodes)
 
-        if evicted:
-            logger.info("mfu_decline_evicted node=%s (temperature correlated)", target_node)
-        else:
-            logger.info("mfu_decline_notified (no temperature correlation)")
-
     finally:
         ray.get(injector.stop_gpu_stress.remote(pid=stress_pid))
 
-    # If node was evicted, verify training recovers on remaining nodes
     if evicted:
+        logger.info("mfu_decline_evicted node=%s (temperature correlated)", target_node)
+        assert_phase_path_contains(final_status, [
+            RecoveryPhase.EVICT_AND_RESTART,
+            RecoveryPhase.DONE,
+        ])
+
         await wait_for_training_stable(
             controller=controller,
             mini_wandb=ft_system.mini_wandb,
             n_iterations=10,
             timeout=300.0,
+        )
+    else:
+        logger.info("mfu_decline_notified (no temperature correlation)")
+        assert_phase_path_contains(final_status, [
+            RecoveryPhase.NOTIFY,
+            RecoveryPhase.DONE,
+        ])
+
+        post_bad = await ft_system.node_manager.get_bad_nodes()
+        assert target_node not in post_bad, (
+            f"Notify path should not mark nodes bad, but {target_node} found in {post_bad}"
         )
