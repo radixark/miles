@@ -114,6 +114,46 @@ class TestWorkerManagement:
         assert len(router_env.router.worker_request_counts) == 1
         assert worker_url in router_env.router.worker_request_counts
 
+    def test_add_worker_clears_dead_state(self, router_env: RouterEnv):
+        worker_url = "http://127.0.0.1:30004"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        router_env.router.dead_workers.add(worker_url)
+        router_env.router.worker_failure_counts[worker_url] = 99
+
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        assert worker_url not in router_env.router.dead_workers
+        assert router_env.router.worker_failure_counts[worker_url] == 0
+
+    def test_remove_worker(self, router_env: RouterEnv):
+        worker_url = "http://127.0.0.1:30005"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        assert worker_url in router_env.router.worker_request_counts
+
+        r = requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0)
+        r.raise_for_status()
+        assert r.json()["status"] == "success"
+        assert worker_url not in router_env.router.worker_request_counts
+        assert worker_url not in router_env.router.worker_failure_counts
+        assert worker_url not in router_env.router.dead_workers
+
+    def test_remove_worker_clears_dead(self, router_env: RouterEnv):
+        worker_url = "http://127.0.0.1:30006"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        router_env.router.dead_workers.add(worker_url)
+
+        requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        assert worker_url not in router_env.router.dead_workers
+
+    def test_remove_worker_nonexistent(self, router_env: RouterEnv):
+        r = requests.post(f"{router_env.url}/remove_worker", params={"url": "http://nonexist:9999"}, timeout=5.0)
+        r.raise_for_status()
+        assert r.json()["status"] == "success"
+
+    def test_remove_worker_missing_url(self, router_env: RouterEnv):
+        r = requests.post(f"{router_env.url}/remove_worker", json={}, timeout=5.0)
+        assert r.status_code == 400
+
     def test_add_worker_missing_url(self, router_env: RouterEnv):
         r = requests.post(f"{router_env.url}/add_worker", json={}, timeout=5.0)
         assert r.status_code == 400

@@ -486,6 +486,38 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
+            parser.add_argument(
+                "--min-alive-engine-ratio",
+                type=float,
+                default=0.0,
+                help="Minimum ratio of alive rollout engines required to proceed with generation. "
+                "If the alive ratio drops below this threshold, generation is aborted. "
+                "Set to 0.0 to disable the circuit breaker (default). Recommended: 0.5 for large-scale training.",
+            )
+            parser.add_argument(
+                "--episode-timeout",
+                type=float,
+                default=0,
+                help="Timeout in seconds for a single episode (generate_and_rm_group). "
+                "If an episode exceeds this timeout it is marked as ABORTED. "
+                "Set to 0 to disable (default). Recommended for agentic scenarios: 1800 (30 min).",
+            )
+            parser.add_argument(
+                "--tool-execution-timeout",
+                type=float,
+                default=0,
+                help="Timeout in seconds for a single tool call execution during multi-turn generation. "
+                "On timeout the tool returns an error message to the model. "
+                "Set to 0 to disable (default). Recommended for Docker environments: 300 (5 min).",
+            )
+            parser.add_argument(
+                "--rollout-step-timeout",
+                type=float,
+                default=0,
+                help="Global timeout in seconds for the entire rollout generation step. "
+                "If exceeded, remaining tasks are aborted and training continues with collected data. "
+                "Set to 0 to disable (default). Recommended for large-scale: 7200 (2 hours).",
+            )
             return parser
 
         # data

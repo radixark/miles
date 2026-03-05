@@ -71,7 +71,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if len(tool_calls) == 0:
             break
 
-        tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
+        tool_timeout = getattr(args, "tool_execution_timeout", 0) or None
+        tool_messages = await execute_tool_calls(tool_calls, execute_tool_function, timeout=tool_timeout)
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
 
     return GenerateFnOutput(samples=multi_samples if args.generate_multi_samples else sample)
