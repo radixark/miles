@@ -6,9 +6,7 @@ complete decision → recovery → monitoring lifecycle.
 from __future__ import annotations
 
 import pytest
-from prometheus_client import CollectorRegistry
 
-from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.models import ActionType, Decision, RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
@@ -17,6 +15,7 @@ from tests.fast.utils.ft.conftest import (
     get_sample_value,
     inject_gpu_unavailable,
     make_test_controller,
+    make_test_exporter,
 )
 
 
@@ -209,8 +208,7 @@ class TestRecoveryCompleteBackToMonitoring:
 class TestExporterModeGauge:
     @pytest.mark.asyncio
     async def test_mode_gauge_during_recovery(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         enter_recovery = FixedDecisionDetector(decision=Decision(
             action=ActionType.ENTER_RECOVERY,
             trigger="crash",

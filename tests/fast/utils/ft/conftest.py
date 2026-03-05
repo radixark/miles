@@ -84,6 +84,12 @@ def make_fake_mini_wandb(
     return wandb
 
 
+def make_test_exporter() -> tuple[CollectorRegistry, ControllerExporter]:
+    registry = CollectorRegistry()
+    exporter = ControllerExporter(registry=registry)
+    return registry, exporter
+
+
 EMPTY_RANK_PLACEMENT: dict[int, str] = {}
 
 
@@ -501,7 +507,6 @@ class FakeNodeAgent:
                 details=f"unknown diagnostic type: {diagnostic_type}",
             )
         return result
-
 
 
 # ---------------------------------------------------------------------------

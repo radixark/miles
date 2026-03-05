@@ -11,14 +11,11 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from prometheus_client import CollectorRegistry
-
 from miles.utils.ft.controller.controller import FtController
-from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.controller.prometheus_client_store import PrometheusClient
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob, get_sample_value
+from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob, get_sample_value, make_test_exporter
 
 
 def _make_prom_response(
@@ -42,8 +39,7 @@ def _make_http_response(json_data: dict[str, Any]) -> httpx.Response:
 class TestControllerPrometheusMode:
     @pytest.mark.asyncio
     async def test_tick_with_prometheus_client_updates_exporter(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         prom_client = PrometheusClient(url="http://fake:9090")
 
         controller = FtController(
@@ -64,8 +60,7 @@ class TestControllerPrometheusMode:
     @pytest.mark.asyncio
     async def test_no_scrape_target_manager_in_prometheus_mode(self) -> None:
         """In prometheus mode, register_rank should not fail even without scrape_target_manager."""
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        _, exporter = make_test_exporter()
         prom_client = PrometheusClient(url="http://fake:9090")
 
         controller = FtController(
@@ -86,8 +81,7 @@ class TestControllerPrometheusMode:
 
     @pytest.mark.asyncio
     async def test_training_metrics_propagated_to_exporter(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         mini_wandb = MiniWandb()
 
         controller = FtController(

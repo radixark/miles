@@ -3,9 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from prometheus_client import CollectorRegistry
-
-from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.mini_wandb import MiniWandb as MiniWandbCls
 from miles.utils.ft.controller.recovery_orchestrator import (
@@ -33,6 +30,7 @@ from tests.fast.utils.ft.conftest import (
     inject_nic_up,
     make_fake_metric_store,
     make_fake_mini_wandb,
+    make_test_exporter,
 )
 
 
@@ -549,8 +547,7 @@ class TestPhaseBeforeNotify:
 
 class TestExporterIntegration:
     def test_exporter_updated_on_transition(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         orch, *_ = _make_orchestrator(controller_exporter=exporter)
 
         asyncio.run(orch.step())

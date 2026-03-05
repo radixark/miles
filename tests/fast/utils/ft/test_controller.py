@@ -4,10 +4,8 @@ import asyncio
 import logging
 
 import pytest
-from prometheus_client import CollectorRegistry
 
 import miles.utils.ft.metric_names as mn
-from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.models import ActionType, Decision, RecoveryPhase, TriggerType
 from miles.utils.ft.platform.protocols import JobStatus
 from miles.utils.ft.controller.controller import FtController
@@ -23,6 +21,7 @@ from tests.fast.utils.ft.conftest import (
     make_detector_context,
     make_fake_metric_store,
     make_test_controller,
+    make_test_exporter,
 )
 
 
@@ -459,8 +458,7 @@ class TestTrainingJobStatusExporter:
 
     @pytest.mark.asyncio
     async def test_tick_updates_training_job_status_gauge(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         harness = make_test_controller(controller_exporter=exporter)
 
         await harness.controller._tick()
@@ -469,8 +467,7 @@ class TestTrainingJobStatusExporter:
 
     @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         harness = make_test_controller(
             status_sequence=[JobStatus.FAILED],
             controller_exporter=exporter,
@@ -482,8 +479,7 @@ class TestTrainingJobStatusExporter:
 
     @pytest.mark.asyncio
     async def test_stopped_status_maps_to_zero(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         harness = make_test_controller(
             status_sequence=[JobStatus.STOPPED],
             controller_exporter=exporter,
@@ -495,8 +491,7 @@ class TestTrainingJobStatusExporter:
 
     @pytest.mark.asyncio
     async def test_pending_status_maps_to_two(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         harness = make_test_controller(
             status_sequence=[JobStatus.PENDING],
             controller_exporter=exporter,
@@ -508,8 +503,7 @@ class TestTrainingJobStatusExporter:
 
     @pytest.mark.asyncio
     async def test_tick_count_incremented(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         harness = make_test_controller(controller_exporter=exporter)
 
         await harness.controller._tick()
@@ -708,8 +702,7 @@ class TestEnterRecovery:
 
     @pytest.mark.asyncio
     async def test_exporter_mode_reflects_recovery(self) -> None:
-        registry = CollectorRegistry()
-        exporter = ControllerExporter(registry=registry)
+        registry, exporter = make_test_exporter()
         detector = FixedDecisionDetector(decision=Decision(
             action=ActionType.ENTER_RECOVERY,
             trigger="crash",
