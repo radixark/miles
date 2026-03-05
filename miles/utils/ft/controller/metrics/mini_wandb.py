@@ -68,8 +68,9 @@ class MiniWandb:
         last_n: int,
         rank: int | None = None,
     ) -> list[StepValue]:
+        snapshot = list(self._data)
         result: list[StepValue] = []
-        for record in reversed(self._data):
+        for record in reversed(snapshot):
             if metric_name in record.metrics and self._matches_rank(record, rank):
                 result.append(StepValue(step=record.step, value=record.metrics[metric_name]))
                 if len(result) >= last_n:
@@ -85,8 +86,9 @@ class MiniWandb:
         rank: int | None = None,
     ) -> list[TimedStepValue]:
         cutoff = datetime.now(timezone.utc) - window
+        snapshot = list(self._data)
         result: list[TimedStepValue] = []
-        for record in self._data:
+        for record in snapshot:
             if (
                 record.receive_time >= cutoff
                 and metric_name in record.metrics
@@ -101,7 +103,8 @@ class MiniWandb:
         return result
 
     def latest(self, metric_name: str, rank: int | None = None) -> float | None:
-        for record in reversed(self._data):
+        snapshot = list(self._data)
+        for record in reversed(snapshot):
             if metric_name in record.metrics and self._matches_rank(record, rank):
                 return record.metrics[metric_name]
 

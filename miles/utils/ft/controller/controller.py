@@ -209,7 +209,7 @@ class FtController:
         ctx = DetectorContext(
             metric_store=self._metric_store,
             mini_wandb=self._mini_wandb,
-            rank_placement=self._rank_registry.rank_placement,
+            rank_placement=dict(self._rank_registry.rank_placement),
             job_status=job_status,
         )
         decision = self._evaluate_detectors(ctx)
@@ -237,7 +237,7 @@ class FtController:
         ctx = DetectorContext(
             metric_store=self._metric_store,
             mini_wandb=self._mini_wandb,
-            rank_placement=self._rank_registry.rank_placement,
+            rank_placement=dict(self._rank_registry.rank_placement),
             job_status=job_status,
         )
 
