@@ -526,11 +526,17 @@ def make_mock_pynvml(
     pcie_throughput_kb: int = 1048576,
     utilization_gpu: int = 50,
     failing_handle_indices: set[int] | None = None,
+    ecc_uncorrectable: int = 0,
+    retired_pages: list[object] | None = None,
+    power_state: int = 0,
 ) -> MagicMock:
     failing = failing_handle_indices or set()
     mock = MagicMock()
     mock.NVML_TEMPERATURE_GPU = 0
     mock.NVML_PCIE_UTIL_TX_BYTES = 1
+    mock.NVML_MEMORY_ERROR_TYPE_UNCORRECTED = 1
+    mock.NVML_VOLATILE_ECC_COUNTER_TYPE = 0
+    mock.NVML_PAGE_RETIREMENT_CAUSE_DOUBLE_BIT_ECC_ERROR = 0
 
     mock.nvmlInit.return_value = None
     mock.nvmlShutdown.return_value = None
@@ -546,6 +552,9 @@ def make_mock_pynvml(
     mock.nvmlDeviceGetRemappedRows.return_value = remap_info
     mock.nvmlDeviceGetPcieThroughput.return_value = pcie_throughput_kb
     mock.nvmlDeviceGetUtilizationRates.return_value = SimpleNamespace(gpu=utilization_gpu)
+    mock.nvmlDeviceGetTotalEccErrors.return_value = ecc_uncorrectable
+    mock.nvmlDeviceGetRetiredPages.return_value = retired_pages or []
+    mock.nvmlDeviceGetPowerState.return_value = power_state
 
     return mock
 
