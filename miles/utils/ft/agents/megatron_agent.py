@@ -99,10 +99,14 @@ class FtMegatronAgent(ControllerHandleMixin):
             )
 
     def step(self, iteration: int) -> None:
-        assert iteration > self._last_iteration, (
-            f"iteration must be strictly increasing: got {iteration}, "
-            f"last was {self._last_iteration}"
-        )
+        if iteration <= self._last_iteration:
+            logger.warning(
+                "FtMegatronAgent.step() non-increasing iteration: got %d, last was %d",
+                iteration,
+                self._last_iteration,
+            )
+            return
+
         try:
             self._last_iteration = iteration
             self._iteration_child.set(self._last_iteration)
