@@ -5,13 +5,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from miles.utils.ft.models import Decision
-from miles.utils.ft.protocols.metrics import MetricStoreProtocol, TrainingMetricStoreProtocol
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol, TrainingMetricStoreProtocol
 from miles.utils.ft.protocols.platform import JobStatus
 
 
 @dataclass
 class DetectorContext:
-    metric_store: MetricStoreProtocol
+    metric_store: MetricQueryProtocol
     mini_wandb: TrainingMetricStoreProtocol
     rank_placement: dict[int, str]
     job_status: JobStatus

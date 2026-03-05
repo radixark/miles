@@ -11,7 +11,7 @@ import logging
 
 import polars as pl
 
-from miles.utils.ft.protocols.metrics import MetricStoreProtocol
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.metric_names import GPU_AVAILABLE, NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP, XID_CODE_RECENT
 from miles.utils.ft.models import NodeFault
 
@@ -21,7 +21,7 @@ CRITICAL_XID_CODES: frozenset[int] = frozenset({48, 62, 64, 79})
 DISK_AVAILABLE_THRESHOLD_BYTES: float = 1e9  # 1 GB
 
 
-def check_gpu_lost(metric_store: MetricStoreProtocol) -> list[NodeFault]:
+def check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(GPU_AVAILABLE)
     if df.is_empty():
         return []
@@ -37,7 +37,7 @@ def check_gpu_lost(metric_store: MetricStoreProtocol) -> list[NodeFault]:
 
 
 def check_critical_xid(
-    metric_store: MetricStoreProtocol,
+    metric_store: MetricQueryProtocol,
     critical_xid_codes: frozenset[int] = CRITICAL_XID_CODES,
 ) -> list[NodeFault]:
     df = metric_store.query_latest(XID_CODE_RECENT)
@@ -62,7 +62,7 @@ def check_critical_xid(
 
 
 def check_disk_fault(
-    metric_store: MetricStoreProtocol,
+    metric_store: MetricQueryProtocol,
     disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_FILESYSTEM_AVAIL_BYTES)
@@ -82,7 +82,7 @@ def check_disk_fault(
     ]
 
 
-def check_majority_nic_down(metric_store: MetricStoreProtocol) -> list[NodeFault]:
+def check_majority_nic_down(metric_store: MetricQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_NETWORK_UP)
     if df.is_empty():
         return []
@@ -104,7 +104,7 @@ def check_majority_nic_down(metric_store: MetricStoreProtocol) -> list[NodeFault
 
 
 def check_all_hardware_faults(
-    metric_store: MetricStoreProtocol,
+    metric_store: MetricQueryProtocol,
     critical_xid_codes: frozenset[int] = CRITICAL_XID_CODES,
     disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:

@@ -6,7 +6,7 @@ from datetime import timedelta
 import polars as pl
 
 from miles.utils.ft.controller.detectors.hardware_checks import check_all_hardware_faults
-from miles.utils.ft.protocols.metrics import MetricStoreProtocol
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.metric_names import NODE_NETWORK_UP
 from miles.utils.ft.models import NodeFault, unique_node_ids
 
@@ -19,7 +19,7 @@ _DEFAULT_NETWORK_ALERT_THRESHOLD = 2
 class AlertChecker:
     def __init__(
         self,
-        metric_store: MetricStoreProtocol,
+        metric_store: MetricQueryProtocol,
         network_alert_window: timedelta = _DEFAULT_NETWORK_ALERT_WINDOW,
         network_alert_threshold: int = _DEFAULT_NETWORK_ALERT_THRESHOLD,
     ) -> None:

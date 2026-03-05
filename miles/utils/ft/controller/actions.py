@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
-from miles.utils.ft.protocols.metrics import MetricStoreProtocol
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_orchestrator.helpers import (
     retry_async,
@@ -64,7 +64,7 @@ async def handle_enter_recovery(
     decision: Decision,
     node_manager: NodeManagerProtocol,
     training_job: TrainingJobProtocol,
-    metric_store: MetricStoreProtocol,
+    metric_store: MetricQueryProtocol,
     mini_wandb: MiniWandb,
     notifier: NotificationProtocol | None,
     diagnostic_scheduler: DiagnosticSchedulerProtocol,

@@ -1,4 +1,6 @@
 from miles.utils.ft.protocols.metrics import (
+    MetricQueryProtocol,
+    MetricStoreLifecycle,
     MetricStoreProtocol,
     ScrapeTargetManagerProtocol,
 )
@@ -9,6 +11,8 @@ from miles.utils.ft.controller.metrics.mini_prometheus.storage import (
 )
 
 __all__ = [
+    "MetricQueryProtocol",
+    "MetricStoreLifecycle",
     "MetricStoreProtocol",
     "ScrapeTargetManagerProtocol",
     "MiniPrometheus",

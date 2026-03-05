@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from miles.utils.ft.metric_names import DCGM_FI_DEV_GPU_TEMP
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.models import ActionType, Decision
-from miles.utils.ft.protocols.metrics import MetricStoreProtocol, TrainingMetricStoreProtocol
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol, TrainingMetricStoreProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ class MfuDeclineDetector(BaseFaultDetector):
 
     def _find_high_temperature_node(
         self,
-        metric_store: MetricStoreProtocol,
+        metric_store: MetricQueryProtocol,
         rank_placement: dict[int, str],
     ) -> str | None:
         if not rank_placement:

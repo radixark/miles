@@ -7,7 +7,7 @@ from miles.utils.ft.metric_names import (
 )
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.models import ActionType, Decision, TriggerType
-from miles.utils.ft.protocols.metrics import MetricStoreProtocol
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.protocols.platform import JobStatus
 
 
@@ -50,7 +50,7 @@ class HangDetector(BaseFaultDetector):
 
         return Decision(action=ActionType.NONE, reason="iteration progressing normally")
 
-    def _is_checkpoint_saving(self, metric_store: MetricStoreProtocol) -> bool:
+    def _is_checkpoint_saving(self, metric_store: MetricQueryProtocol) -> bool:
         df = metric_store.query_latest(TRAINING_PHASE, label_filters={"rank": "0"})
         if df.is_empty():
             return False
@@ -62,7 +62,7 @@ class HangDetector(BaseFaultDetector):
         return False
 
     def _get_iteration_changes(
-        self, metric_store: MetricStoreProtocol, window_minutes: int,
+        self, metric_store: MetricQueryProtocol, window_minutes: int,
     ) -> float | None:
         df = metric_store.changes(
             TRAINING_ITERATION,
