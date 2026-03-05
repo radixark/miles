@@ -50,7 +50,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         custom_agent_function is not None
     ), f"Custom agent function {input.args.custom_agent_function_path} not found"
 
-    # Get agent result from custom agent function
     agent_metadata = await custom_agent_function(
         base_url=tracer.base_url,
         prompt=input.sample.prompt,
