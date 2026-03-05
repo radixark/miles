@@ -101,14 +101,35 @@ async def run_nccl_test(
     stdout = stdout_bytes.decode(errors="replace")
     stderr = stderr_bytes.decode(errors="replace")
 
-    if process.returncode != 0:
+    return _interpret_nccl_output(
+        stdout=stdout,
+        stderr=stderr,
+        returncode=process.returncode,
+        node_id=node_id,
+        diagnostic_type=diagnostic_type,
+        expected_bandwidth_gbps=expected_bandwidth_gbps,
+        log_prefix=log_prefix,
+    )
+
+
+def _interpret_nccl_output(
+    *,
+    stdout: str,
+    stderr: str,
+    returncode: int | None,
+    node_id: str,
+    diagnostic_type: str,
+    expected_bandwidth_gbps: float,
+    log_prefix: str,
+) -> DiagnosticResult:
+    if returncode != 0:
         logger.warning(
             "%s_nonzero_exit node=%s rc=%s stderr=%s",
-            log_prefix, node_id, process.returncode, stderr[:500],
+            log_prefix, node_id, returncode, stderr[:500],
         )
         return DiagnosticResult.fail_result(
             diagnostic_type=diagnostic_type, node_id=node_id,
-            details=f"exit code {process.returncode}: {stderr[:500]}",
+            details=f"exit code {returncode}: {stderr[:500]}",
         )
 
     bandwidth = parse_avg_bus_bandwidth(stdout)
