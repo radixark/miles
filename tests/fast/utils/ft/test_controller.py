@@ -10,12 +10,18 @@ import miles.utils.ft.metric_names as mn
 from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.models import ActionType, Decision, RecoveryPhase, TriggerType
 from miles.utils.ft.platform.protocols import JobStatus
+from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
+from miles.utils.ft.controller.mini_wandb import MiniWandb
 from tests.fast.utils.ft.conftest import (
     AlwaysMarkBadDetector,
     AlwaysNoneDetector,
+    FakeNodeManager,
+    FakeTrainingJob,
     FixedDecisionDetector,
     get_sample_value,
     make_detector_context,
+    make_fake_metric_store,
     make_test_controller,
 )
 
@@ -269,6 +275,102 @@ class TestRegisterRank:
         )
         assert harness.controller._expected_world_size == 4
         assert harness.controller._rank_placement == {0: "node-0"}
+
+    @pytest.mark.asyncio
+    async def test_register_rank_stores_pid(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=1234,
+        )
+
+        assert harness.controller._rank_pids == {0: 1234}
+
+    @pytest.mark.asyncio
+    async def test_new_run_id_clears_rank_pids(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=1234,
+        )
+        assert harness.controller._rank_pids == {0: 1234}
+
+        await harness.controller.register_rank(
+            run_id="run-2", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=5678,
+        )
+        assert harness.controller._rank_pids == {0: 5678}
+
+    @pytest.mark.asyncio
+    async def test_register_rank_without_pid_does_not_store(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+        )
+
+        assert harness.controller._rank_pids == {}
+
+
+class TestGetRankPidsForNode:
+    @pytest.mark.asyncio
+    async def test_returns_pids_for_matching_node(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=4,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=100,
+        )
+        await harness.controller.register_rank(
+            run_id="run-1", rank=1, world_size=4,
+            node_id="node-0", exporter_address="http://node-0:9091",
+            pid=101,
+        )
+        await harness.controller.register_rank(
+            run_id="run-1", rank=2, world_size=4,
+            node_id="node-1", exporter_address="http://node-1:9090",
+            pid=200,
+        )
+
+        result = harness.controller._get_rank_pids_for_node("node-0")
+        assert result == {0: 100, 1: 101}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_unknown_node(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=100,
+        )
+
+        result = harness.controller._get_rank_pids_for_node("node-999")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_excludes_ranks_without_pid(self) -> None:
+        harness = make_test_controller()
+
+        await harness.controller.register_rank(
+            run_id="run-1", rank=0, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9090",
+            pid=100,
+        )
+        await harness.controller.register_rank(
+            run_id="run-1", rank=1, world_size=2,
+            node_id="node-0", exporter_address="http://node-0:9091",
+        )
+
+        result = harness.controller._get_rank_pids_for_node("node-0")
+        assert result == {0: 100}
 
 
 class TestShutdown:
@@ -701,3 +803,25 @@ class TestAgentManagement:
         harness.controller.register_agent("node-0", agent2)
 
         assert harness.controller._agents["node-0"] is agent2
+
+
+class TestDefaultDiagnosticSchedulerWiring:
+    def test_default_scheduler_has_rank_pids_provider(self) -> None:
+        controller = FtController(
+            node_manager=FakeNodeManager(),
+            training_job=FakeTrainingJob(),
+            metric_store=make_fake_metric_store(),
+            mini_wandb=MiniWandb(),
+        )
+
+        scheduler = controller._diagnostic_scheduler
+        assert isinstance(scheduler, DiagnosticScheduler)
+        assert scheduler._rank_pids_provider.__func__ is FtController._get_rank_pids_for_node
+        assert scheduler._rank_pids_provider.__self__ is controller
+
+
+class TestDefaultDiagnosticPipeline:
+    def test_default_scheduler_has_gpu_pipeline(self) -> None:
+        harness = make_test_controller()
+        scheduler = harness.controller._diagnostic_scheduler
+        assert "gpu" in scheduler._pipeline

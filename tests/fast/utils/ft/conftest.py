@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -563,11 +564,17 @@ def make_mock_pynvml(
     pcie_throughput_kb: int = 1048576,
     utilization_gpu: int = 50,
     failing_handle_indices: set[int] | None = None,
+    ecc_uncorrectable: int = 0,
+    retired_pages: list[object] | None = None,
+    power_state: int = 0,
 ) -> MagicMock:
     failing = failing_handle_indices or set()
     mock = MagicMock()
     mock.NVML_TEMPERATURE_GPU = 0
     mock.NVML_PCIE_UTIL_TX_BYTES = 1
+    mock.NVML_MEMORY_ERROR_TYPE_UNCORRECTED = 1
+    mock.NVML_VOLATILE_ECC_COUNTER_TYPE = 0
+    mock.NVML_PAGE_RETIREMENT_CAUSE_DOUBLE_BIT_ECC_ERROR = 0
 
     mock.nvmlInit.return_value = None
     mock.nvmlShutdown.return_value = None
@@ -583,6 +590,9 @@ def make_mock_pynvml(
     mock.nvmlDeviceGetRemappedRows.return_value = remap_info
     mock.nvmlDeviceGetPcieThroughput.return_value = pcie_throughput_kb
     mock.nvmlDeviceGetUtilizationRates.return_value = SimpleNamespace(gpu=utilization_gpu)
+    mock.nvmlDeviceGetTotalEccErrors.return_value = ecc_uncorrectable
+    mock.nvmlDeviceGetRetiredPages.return_value = retired_pages or []
+    mock.nvmlDeviceGetPowerState.return_value = power_state
 
     return mock
 
@@ -607,3 +617,65 @@ def create_sysfs_interface(
     (stats_dir / "tx_errors").write_text(str(tx_errors) + "\n")
     (stats_dir / "rx_dropped").write_text(str(rx_dropped) + "\n")
     (stats_dir / "tx_dropped").write_text(str(tx_dropped) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Stack trace test helpers and fixtures (stack-trace milestone)
+# ---------------------------------------------------------------------------
+
+SAMPLE_PYSPY_OUTPUT_NORMAL = """\
+Thread 0x7F1234 (active): "MainThread"
+    _wait_for_data (selectors.py:451)
+    select (selectors.py:469)
+    _run_once (asyncio/base_events.py:1922)
+    run_forever (asyncio/base_events.py:604)
+Thread 0x7F5678 (idle): "WorkerThread-1"
+    wait (threading.py:320)
+    get (queue.py:171)
+    _worker (concurrent/futures/thread.py:83)
+"""
+
+SAMPLE_PYSPY_OUTPUT_STUCK = """\
+Thread 0x7F1234 (active): "MainThread"
+    nccl_allreduce (nccl_ops.py:42)
+    all_reduce (torch/distributed/distributed_c10d.py:1234)
+    forward (model.py:100)
+    train_step (train.py:50)
+Thread 0x7F5678 (idle): "WorkerThread-1"
+    wait (threading.py:320)
+    get (queue.py:171)
+    _worker (concurrent/futures/thread.py:83)
+"""
+
+SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK = """\
+Thread 0x7F1234 (active): "MainThread"
+    recv (socket.py:123)
+    _receive_data (network.py:456)
+    fetch_batch (dataloader.py:78)
+Thread 0x7F5678 (idle): "WorkerThread-1"
+    wait (threading.py:320)
+    get (queue.py:171)
+    _worker (concurrent/futures/thread.py:83)
+"""
+
+
+def make_rank_pids_provider(
+    mapping: dict[str, dict[int, int]],
+) -> Callable[[str], dict[int, int]]:
+    def provider(node_id: str) -> dict[int, int]:
+        return mapping.get(node_id, {})
+
+    return provider
+
+
+def make_trace_result(
+    node_id: str,
+    passed: bool = True,
+    details: str = "trace output",
+) -> DiagnosticResult:
+    return DiagnosticResult(
+        diagnostic_type="stack_trace",
+        node_id=node_id,
+        passed=passed,
+        details=details,
+    )

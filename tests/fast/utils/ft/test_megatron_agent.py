@@ -293,6 +293,26 @@ class TestFtMegatronAgentRegisterRank:
             finally:
                 agent.shutdown()
 
+    @patch("miles.utils.ft.agents.megatron_agent.FtMegatronAgent._get_controller_handle")
+    def test_register_rank_includes_pid(
+        self, mock_get_handle: MagicMock
+    ) -> None:
+        import os as _os
+
+        mock_controller = MagicMock()
+        mock_ray_get = MagicMock()
+        mock_get_handle.return_value = mock_controller
+
+        with patch.dict(
+            "os.environ", {"FT_TRAINING_RUN_ID": "test-run-1"}
+        ), patch("ray.get", mock_ray_get):
+            agent = FtMegatronAgent(rank=0, world_size=4)
+            try:
+                call_kwargs = mock_controller.register_rank.remote.call_args[1]
+                assert call_kwargs["pid"] == _os.getpid()
+            finally:
+                agent.shutdown()
+
 
 class TestFtMegatronAgentFaultTolerance:
     def test_maybe_create_returns_agent_when_enabled(self) -> None:

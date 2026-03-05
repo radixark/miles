@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any, NamedTuple
 
 from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
     InterMachineCommDiagnostic,
 )
-from miles.utils.ft.models import ActionType, Decision, DiagnosticResult
+from miles.utils.ft.controller.diagnostics.stack_trace import (
+    StackTraceAggregator,
+    StackTraceDiagnostic,
+)
+from miles.utils.ft.models import ActionType, Decision, DiagnosticResult, TriggerType
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +42,13 @@ class DiagnosticScheduler:
         pipeline: list[str] | None = None,
         default_timeout_seconds: int = 120,
         node_addresses: dict[str, str] | None = None,
+        rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
     ) -> None:
         self._agents = agents
         self._pipeline = pipeline or []
         self._default_timeout_seconds = default_timeout_seconds
         self._node_addresses = node_addresses
+        self._rank_pids_provider = rank_pids_provider
 
     async def run_diagnostic_pipeline(
         self,
@@ -52,6 +59,14 @@ class DiagnosticScheduler:
             "diagnostic_pipeline_start trigger=%s suspect_nodes=%s pipeline=%s",
             trigger_reason, suspect_node_ids, self._pipeline,
         )
+
+        if trigger_reason == TriggerType.HANG and self._rank_pids_provider is not None:
+            suspect_from_trace = await self._run_stack_trace_pre_step()
+            if suspect_from_trace:
+                if suspect_node_ids is not None:
+                    suspect_node_ids = sorted(set(suspect_node_ids) | set(suspect_from_trace))
+                else:
+                    suspect_node_ids = suspect_from_trace
 
         if not self._pipeline:
             logger.info("diagnostic_pipeline_empty — all pass by default")
@@ -100,6 +115,51 @@ class DiagnosticScheduler:
             action=ActionType.NOTIFY_HUMAN,
             reason="all diagnostics passed — no bad nodes found",
         )
+
+    async def _run_stack_trace_pre_step(self) -> list[str]:
+        assert self._rank_pids_provider is not None
+
+        traces: dict[str, str] = {}
+        suspect_from_failures: list[str] = []
+
+        async def _collect_node(node_id: str) -> None:
+            rank_pids = self._rank_pids_provider(node_id)
+            if not rank_pids:
+                return
+
+            pids = list(rank_pids.values())
+            diag = StackTraceDiagnostic(pids=pids)
+            try:
+                result = await diag.run(
+                    node_id=node_id,
+                    timeout_seconds=self._default_timeout_seconds,
+                )
+                if result.passed:
+                    traces[node_id] = result.details
+                else:
+                    suspect_from_failures.append(node_id)
+                    logger.info(
+                        "stack_trace_collection_failed node=%s details=%s",
+                        node_id, result.details,
+                    )
+            except Exception:
+                suspect_from_failures.append(node_id)
+                logger.warning(
+                    "stack_trace_pre_step_exception node=%s",
+                    node_id,
+                    exc_info=True,
+                )
+
+        await asyncio.gather(*(_collect_node(nid) for nid in self._agents))
+
+        suspect_from_aggregation = StackTraceAggregator().aggregate(traces=traces)
+
+        all_suspects = sorted(set(suspect_from_failures) | set(suspect_from_aggregation))
+        logger.info(
+            "stack_trace_pre_step_done traces_collected=%d suspect_from_failures=%s suspect_from_aggregation=%s",
+            len(traces), suspect_from_failures, suspect_from_aggregation,
+        )
+        return all_suspects
 
     # ------------------------------------------------------------------
     # Single-node step (gpu, intra_machine, etc.)

@@ -139,6 +139,7 @@ class FtMegatronAgent(ControllerHandleMixin):
                         world_size=self._world_size,
                         node_id=self._node_id,
                         exporter_address=self.get_exporter_address(),
+                        pid=os.getpid(),
                     ),
                     timeout=10,
                 )
