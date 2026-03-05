@@ -125,14 +125,18 @@ class FaultInjectorActor:
         self._filled_paths.clear()
 
 
-def deploy_fault_injector(node_id: str) -> ray.actor.ActorHandle:
+def deploy_fault_injector(
+    node_id: str,
+    ft_id: str = "",
+) -> ray.actor.ActorHandle:
     """Create and deploy a FaultInjectorActor to a specific node."""
     scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
         node_id=node_id,
         soft=False,
     )
+    name_prefix = f"fault_injector_{ft_id}_" if ft_id else "fault_injector_"
     actor = FaultInjectorActor.options(  # type: ignore[attr-defined]
         scheduling_strategy=scheduling_strategy,
-        name=f"fault_injector_{node_id}",
+        name=f"{name_prefix}{node_id}",
     ).remote()
     return actor
