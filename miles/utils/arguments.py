@@ -17,19 +17,6 @@ from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
-_FT_CHOICES = ["rollout", "train"]
-_FT_DEFAULT_COMPONENTS: frozenset[str] = frozenset({"rollout"})
-
-
-def _resolve_ft_components(args: argparse.Namespace) -> frozenset[str]:
-    if not args.use_fault_tolerance:
-        if args.ft_components is not None:
-            logger.warning("--ft-components is ignored without --use-fault-tolerance")
-        return frozenset()
-    if args.ft_components is None:
-        return _FT_DEFAULT_COMPONENTS
-    return frozenset(args.ft_components)
-
 
 def reset_arg(parser, name, **kwargs):
     """
@@ -45,6 +32,9 @@ def reset_arg(parser, name, **kwargs):
             break
     else:
         parser.add_argument(name, **kwargs)
+
+
+_FT_CHOICES = ["rollout", "train"]
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
@@ -1633,6 +1623,19 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+_FT_DEFAULT_COMPONENTS: frozenset[str] = frozenset({"rollout"})
+
+
+def _resolve_ft_components(args: argparse.Namespace) -> frozenset[str]:
+    if not args.use_fault_tolerance:
+        if args.ft_components is not None:
+            logger.warning("--ft-components is ignored without --use-fault-tolerance")
+        return frozenset()
+    if args.ft_components is None:
+        return _FT_DEFAULT_COMPONENTS
+    return frozenset(args.ft_components)
 
 
 def miles_validate_args(args):
