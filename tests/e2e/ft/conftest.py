@@ -209,16 +209,24 @@ def fault_injector(ray_cluster: None) -> Generator[FaultInjectorFactory, None, N
 
 
 @pytest.fixture
-def target_node(ray_cluster: None) -> str:
-    """Pick the first alive non-head node from the cluster."""
+async def target_node(ray_cluster: None) -> str:
+    """Pick the first alive GPU node that is not already marked bad in K8s."""
+    node_mgr = K8sNodeManager()
+    try:
+        bad_nodes = set(await node_mgr.get_bad_nodes())
+    finally:
+        await node_mgr.aclose()
+
     nodes = ray.nodes()
-    alive_nodes = [
+    candidates = [
         n for n in nodes
-        if n.get("Alive") and n.get("Resources", {}).get("GPU", 0) > 0
+        if n.get("Alive")
+        and n.get("Resources", {}).get("GPU", 0) > 0
+        and n["NodeID"] not in bad_nodes
     ]
-    if not alive_nodes:
-        pytest.skip("No alive GPU nodes found")
-    return alive_nodes[0]["NodeID"]
+    if not candidates:
+        pytest.skip("No available healthy GPU nodes")
+    return candidates[0]["NodeID"]
 
 
 # ---------------------------------------------------------------------------
