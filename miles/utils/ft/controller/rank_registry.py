@@ -85,13 +85,11 @@ class RankRegistry:
         run_id: str,
         step: int,
         metrics: dict[str, float],
-        rank: int | None = None,
     ) -> None:
         self._mini_wandb.log_step(
             run_id=run_id,
             step=step,
             metrics=metrics,
-            rank=rank,
         )
 
     def get_rank_pids_for_node(self, node_id: str) -> dict[int, int]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import NamedTuple, Protocol
+from typing import NamedTuple, Protocol, runtime_checkable
 
 import polars as pl
 
@@ -17,7 +17,8 @@ class TimedStepValue(NamedTuple):
     value: float
 
 
-class MetricStoreProtocol(Protocol):
+@runtime_checkable
+class MetricQueryProtocol(Protocol):
     def query_latest(
         self,
         metric_name: str,
@@ -66,9 +67,17 @@ class MetricStoreProtocol(Protocol):
         label_filters: dict[str, str] | None = None,
     ) -> pl.DataFrame: ...
 
+
+@runtime_checkable
+class MetricStoreLifecycle(Protocol):
     async def start(self) -> None: ...
 
     async def stop(self) -> None: ...
+
+
+@runtime_checkable
+class MetricStoreProtocol(MetricQueryProtocol, MetricStoreLifecycle, Protocol):
+    ...
 
 
 class ScrapeTargetManagerProtocol(Protocol):
@@ -78,12 +87,12 @@ class ScrapeTargetManagerProtocol(Protocol):
 
 
 class TrainingMetricStoreProtocol(Protocol):
-    def latest(self, metric_name: str, rank: int | None = None) -> float | None: ...
+    def latest(self, metric_name: str) -> float | None: ...
 
     def query_last_n_steps(
-        self, metric_name: str, last_n: int, rank: int | None = None,
+        self, metric_name: str, last_n: int,
     ) -> list[StepValue]: ...
 
     def query_time_window(
-        self, metric_name: str, window: timedelta, rank: int | None = None,
+        self, metric_name: str, window: timedelta,
     ) -> list[TimedStepValue]: ...

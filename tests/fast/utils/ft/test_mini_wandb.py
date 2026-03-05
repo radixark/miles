@@ -158,49 +158,6 @@ class TestMiniWandbNoActiveRunId:
         assert result[1] == (3, 3.0)
 
 
-class TestMiniWandbRankDimension:
-    def test_log_step_with_rank_and_query_specific_rank(self) -> None:
-        wandb = MiniWandb()
-        wandb.log_step(run_id="r", step=1, metrics={"loss": 1.0}, rank=0)
-        wandb.log_step(run_id="r", step=1, metrics={"loss": 2.0}, rank=1)
-
-        assert wandb.latest(metric_name="loss", rank=0) == 1.0
-        assert wandb.latest(metric_name="loss", rank=1) == 2.0
-
-    def test_latest_rank_none_returns_any(self) -> None:
-        wandb = MiniWandb()
-        wandb.log_step(run_id="r", step=1, metrics={"loss": 1.0}, rank=0)
-        wandb.log_step(run_id="r", step=2, metrics={"loss": 2.0}, rank=1)
-
-        assert wandb.latest(metric_name="loss") == 2.0
-
-    def test_query_last_n_steps_with_rank_filter(self) -> None:
-        wandb = MiniWandb()
-        wandb.log_step(run_id="r", step=1, metrics={"loss": 10.0}, rank=0)
-        wandb.log_step(run_id="r", step=1, metrics={"loss": 20.0}, rank=1)
-        wandb.log_step(run_id="r", step=2, metrics={"loss": 11.0}, rank=0)
-        wandb.log_step(run_id="r", step=2, metrics={"loss": 21.0}, rank=1)
-
-        r0 = wandb.query_last_n_steps(metric_name="loss", last_n=5, rank=0)
-        assert len(r0) == 2
-        assert r0[0].value == 10.0
-        assert r0[1].value == 11.0
-
-        r1 = wandb.query_last_n_steps(metric_name="loss", last_n=5, rank=1)
-        assert len(r1) == 2
-        assert r1[0].value == 20.0
-        assert r1[1].value == 21.0
-
-    def test_backward_compat_no_rank_returns_all(self) -> None:
-        wandb = MiniWandb()
-        wandb.log_step(run_id="r", step=1, metrics={"loss": 1.0})
-        wandb.log_step(run_id="r", step=2, metrics={"loss": 2.0})
-
-        assert wandb.latest(metric_name="loss") == 2.0
-        result = wandb.query_last_n_steps(metric_name="loss", last_n=10)
-        assert len(result) == 2
-
-
 class TestMiniWandbStepMonotonicity:
     def test_out_of_order_step_discarded(self) -> None:
         wandb = MiniWandb(active_run_id="run-1")

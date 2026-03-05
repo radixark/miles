@@ -128,28 +128,6 @@ class TestRunIdClear:
         assert harness.mini_wandb.latest(metric_name="loss") is None
 
 
-class TestMultiRankConcurrentStep:
-    @pytest.mark.anyio
-    async def test_multi_rank_independent_metrics(self) -> None:
-        harness = make_test_controller()
-        run_id = "integ-megatron-multirank"
-
-        for rank in range(4):
-            await harness.controller.register_rank(
-                run_id=run_id, rank=rank, world_size=4,
-                node_id=f"node-{rank}", exporter_address=f"http://node-{rank}:9090",
-            )
-
-        for rank in range(4):
-            await harness.controller.log_step(
-                run_id=run_id, step=1,
-                metrics={"loss": float(rank) + 1.0},
-                rank=rank,
-            )
-
-        assert harness.mini_wandb.latest(metric_name="loss", rank=3) == 4.0
-
-
 class TestControllerUnreachable:
     def test_step_without_controller_does_not_raise(self) -> None:
         agent = _make_agent(rank=0, world_size=4)
