@@ -1,9 +1,7 @@
 import asyncio
-from collections.abc import AsyncIterator
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.collectors.stub import StubCollector
@@ -38,29 +36,29 @@ class _CountingCollector(BaseCollector):
 
 
 class TestFtNodeAgentExporter:
-    @pytest_asyncio.fixture()
-    async def agent(self) -> AsyncIterator[FtNodeAgent]:
+    @pytest.mark.asyncio()
+    async def test_exporter_returns_prometheus_format(self) -> None:
         agent = FtNodeAgent(node_id="test-node-0")
-        yield agent
-        await agent.stop()
+        try:
+            address = agent.get_exporter_address()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{address}/metrics")
+
+            assert response.status_code == 200
+            assert "text/plain" in response.headers.get("content-type", "")
+        finally:
+            await agent.stop()
 
     @pytest.mark.asyncio()
-    async def test_exporter_returns_prometheus_format(
-        self, agent: FtNodeAgent
-    ) -> None:
-        address = agent.get_exporter_address()
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{address}/metrics")
-
-        assert response.status_code == 200
-        assert "text/plain" in response.headers.get("content-type", "")
-
-    @pytest.mark.asyncio()
-    async def test_exporter_address_has_port(self, agent: FtNodeAgent) -> None:
-        address = agent.get_exporter_address()
-        assert address.startswith("http://localhost:")
-        port = int(address.split(":")[-1])
-        assert port > 0
+    async def test_exporter_address_has_port(self) -> None:
+        agent = FtNodeAgent(node_id="test-node-0")
+        try:
+            address = agent.get_exporter_address()
+            assert address.startswith("http://localhost:")
+            port = int(address.split(":")[-1])
+            assert port > 0
+        finally:
+            await agent.stop()
 
     @pytest.mark.asyncio()
     async def test_stub_collector_no_custom_metrics(self) -> None:
