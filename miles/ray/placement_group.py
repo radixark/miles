@@ -38,10 +38,26 @@ def sort_key(x):
     return (node_ip_parts, gpu_id)
 
 
-def _create_placement_group(num_gpus):
-    """Create a placement group with the specified number of GPUs."""
+def _create_placement_group(
+    num_gpus: int,
+    excluded_node_ids: set[str] | None = None,
+):
+    """Create a placement group with the specified number of GPUs.
+
+    *excluded_node_ids*, if provided, is a set of Ray hex node IDs to avoid.
+    Uses ``bundle_label_selector`` (Ray 2.49+).
+    """
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
-    pg = placement_group(bundles, strategy="PACK")
+
+    bundle_label_selector = None
+    if excluded_node_ids:
+        exclusion_expr = f"!in({','.join(sorted(excluded_node_ids))})"
+        bundle_label_selector = [{"ray.io/node-id": exclusion_expr}] * len(bundles)
+        logger.info("Excluding Ray node IDs from placement: %s", excluded_node_ids)
+
+    pg = placement_group(
+        bundles, strategy="PACK", bundle_label_selector=bundle_label_selector,
+    )
     num_bundles = len(bundles)
 
     ray.get(pg.ready())
@@ -76,7 +92,10 @@ def _create_placement_group(num_gpus):
     return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
 
 
-def create_placement_groups(args):
+def create_placement_groups(
+    args,
+    excluded_node_ids: set[str] | None = None,
+):
     """Create placement groups for actor and rollout engines."""
 
     num_gpus = 0
@@ -104,7 +123,9 @@ def create_placement_groups(args):
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(num_gpus)
+    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(
+        num_gpus, excluded_node_ids=excluded_node_ids,
+    )
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
     rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]
