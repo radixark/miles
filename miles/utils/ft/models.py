@@ -115,6 +115,10 @@ class DiagnosticResult(FtBaseModel):
         return cls(diagnostic_type=diagnostic_type, node_id=node_id, passed=False, details=details)
 
 
+class UnknownDiagnosticError(Exception):
+    """Raised when a node agent is asked to run a diagnostic type it does not have."""
+
+
 class NodeAgentProtocol(Protocol):
     async def run_diagnostic(
         self, diagnostic_type: str, timeout_seconds: int = 120,

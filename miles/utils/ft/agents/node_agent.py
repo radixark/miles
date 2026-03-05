@@ -6,7 +6,7 @@ import logging
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
-from miles.utils.ft.models import DiagnosticResult
+from miles.utils.ft.models import DiagnosticResult, UnknownDiagnosticError
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +90,9 @@ class FtNodeAgent:
     ) -> DiagnosticResult:
         diagnostic = self._diagnostics.get(diagnostic_type)
         if diagnostic is None:
-            return DiagnosticResult(
-                diagnostic_type=diagnostic_type,
-                node_id=self._node_id,
-                passed=False,
-                details=f"unknown diagnostic type: {diagnostic_type}",
+            raise UnknownDiagnosticError(
+                f"node {self._node_id}: unknown diagnostic type '{diagnostic_type}', "
+                f"registered types: {sorted(self._diagnostics.keys())}"
             )
 
         try:

@@ -20,6 +20,7 @@ from miles.utils.ft.models import (
     DiagnosticResult,
     NodeAgentProtocol,
     TriggerType,
+    UnknownDiagnosticError,
 )
 
 logger = logging.getLogger(__name__)
@@ -222,6 +223,17 @@ class DiagnosticScheduler:
         try:
             return await agent.run_diagnostic(
                 diagnostic_type, timeout_seconds=timeout_seconds,
+            )
+        except UnknownDiagnosticError:
+            logger.error(
+                "diagnostic_type_not_registered node=%s type=%s — "
+                "this is a pipeline configuration error, not a node fault",
+                node_id, diagnostic_type,
+                exc_info=True,
+            )
+            return DiagnosticResult.pass_result(
+                diagnostic_type=diagnostic_type, node_id=node_id,
+                details=f"skipped: diagnostic type '{diagnostic_type}' not registered on node",
             )
         except Exception:
             logger.warning(
