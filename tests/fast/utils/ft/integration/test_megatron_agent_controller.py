@@ -144,9 +144,10 @@ class TestMultiRankConcurrentStep:
             await harness.controller.log_step(
                 run_id=run_id, step=1,
                 metrics={"loss": float(rank) + 1.0},
+                rank=rank,
             )
 
-        assert harness.mini_wandb.latest(metric_name="loss") == 4.0
+        assert harness.mini_wandb.latest(metric_name="loss", rank=3) == 4.0
 
 
 class TestControllerUnreachable:
