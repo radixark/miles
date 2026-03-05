@@ -1,6 +1,5 @@
 import logging
 import threading
-from collections import defaultdict
 
 import ray
 
@@ -11,7 +10,6 @@ logger = logging.getLogger(__name__)
 def compute_kill_list(
     failed_engine_ids: list[int],
     total_engines: int,
-    engines_per_node: int,
     max_kill_ratio: float,
 ) -> list[int]:
     """Determine which engines to kill given failure list and anti-cascade constraints.
@@ -19,7 +17,6 @@ def compute_kill_list(
     Args:
         failed_engine_ids: Engine IDs that failed health checks this round.
         total_engines: Total number of rollout engines (including dead ones).
-        engines_per_node: Number of rollout engines per physical node.
         max_kill_ratio: Maximum fraction of total engines to kill in a single round (anti-cascade).
 
     Returns:
@@ -28,22 +25,7 @@ def compute_kill_list(
     if not failed_engine_ids:
         return []
 
-    kill_set = set(failed_engine_ids)
-
-    # Node-level expansion: if majority of engines on a node failed, kill all on that node
-    if engines_per_node > 1:
-        node_failures: dict[int, list[int]] = defaultdict(list)
-        for eid in failed_engine_ids:
-            node_failures[eid // engines_per_node].append(eid)
-
-        for node_id, failed_ids in node_failures.items():
-            if len(failed_ids) > engines_per_node // 2:
-                start = node_id * engines_per_node
-                end = min(start + engines_per_node, total_engines)
-                for eid in range(start, end):
-                    kill_set.add(eid)
-
-    kill_list = sorted(kill_set)
+    kill_list = sorted(set(failed_engine_ids))
 
     # Anti-cascade: cap kills per round to prevent mass kill from transient failures
     max_kills = max(1, int(total_engines * max_kill_ratio))
@@ -84,14 +66,6 @@ class RolloutHealthMonitor:
         self._is_checking_enabled = False  # Track if health checking should be active
 
         self._max_kill_ratio_per_round = getattr(args, "rollout_max_kill_ratio_per_round", 0.5)
-
-        nodes_per_engine = getattr(rollout_manager, "nodes_per_engine", 1)
-        if nodes_per_engine == 1:
-            gpus_per_node = getattr(args, "num_gpus_per_node", 1)
-            gpus_per_engine = getattr(args, "rollout_num_gpus_per_engine", 1)
-            self._engines_per_node = max(1, gpus_per_node // gpus_per_engine)
-        else:
-            self._engines_per_node = 1
 
         self.total_kills = 0
         self.total_cascade_limited = 0
@@ -262,7 +236,6 @@ class RolloutHealthMonitor:
         kill_list = compute_kill_list(
             failed_engine_ids=failed_engine_ids,
             total_engines=total_engines,
-            engines_per_node=self._engines_per_node,
             max_kill_ratio=self._max_kill_ratio_per_round,
         )
 
