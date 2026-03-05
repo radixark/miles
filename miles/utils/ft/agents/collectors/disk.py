@@ -16,6 +16,11 @@ class DiskCollector(BaseCollector):
 
     def __init__(self, *, disk_mounts: list[Path] | None = None) -> None:
         self._disk_mounts = disk_mounts or []
+        if not self._disk_mounts:
+            logger.warning(
+                "DiskCollector initialized with no disk_mounts — "
+                "filesystem metrics will not be collected"
+            )
 
     def _collect_sync(self) -> list[MetricSample]:
         samples: list[MetricSample] = []
