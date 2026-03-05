@@ -204,6 +204,13 @@ class RolloutHealthMonitor:
         for engine_id in kill_list:
             self._kill_engine(rollout_engine_id=engine_id)
 
+        # Start warming replacements asynchronously (model loading begins immediately)
+        if kill_list:
+            try:
+                self._rollout_manager.start_warming_engines()
+            except Exception as e:
+                logger.warning(f"Failed to start warming engines: {e}")
+
     def _kill_engine(self, rollout_engine_id: int):
         logger.info(f"Killing engine group {rollout_engine_id}...")
         for i in range(

@@ -90,6 +90,10 @@ class RolloutManager:
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
+        # Warming engines: started asynchronously after kill, pending promotion at update_weights.
+        # Maps engine index -> (ActorHandle, init ObjectRef).
+        self._warming_engines: dict[int, tuple] = {}
+
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
         if self.args.use_fault_tolerance:
@@ -207,22 +211,125 @@ class RolloutManager:
     def onload_kv(self):
         self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
 
+    def start_warming_engines(self):
+        """Start new engines asynchronously for dead slots. Called from health monitor after kills.
+
+        Engines are created and begin loading the model in the background, but are NOT registered
+        to the router (they have stale weights). At update_weights time, recover_rollout_engines()
+        promotes them: waits for init to finish, syncs weights, and registers to router.
+        """
+        if self.args.debug_train_only or self.args.rollout_external:
+            return
+
+        num_gpu_per_engine = min(self.args.rollout_num_gpus_per_engine, self.args.num_gpus_per_node)
+        num_engines = self.args.rollout_num_gpus // num_gpu_per_engine
+        if self.args.prefill_num_servers is not None:
+            prefill_num_servers = self.args.prefill_num_servers * self.args.rollout_num_gpus_per_engine // num_gpu_per_engine
+        else:
+            prefill_num_servers = 0
+
+        pg, reordered_bundle_indices, reordered_gpu_ids = self.pg
+        RolloutRayActor = ray.remote(SGLangEngine)
+
+        new_engines = []
+        for i in range(num_engines):
+            if self.all_rollout_engines[i] is not None or i in self._warming_engines:
+                continue
+
+            base_gpu_id = int(reordered_gpu_ids[i * num_gpu_per_engine])
+            scheduling_strategy = PlacementGroupSchedulingStrategy(
+                placement_group=pg,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=reordered_bundle_indices[i * num_gpu_per_engine],
+            )
+            env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
+                "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
+                "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
+                "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+                "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+                "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+                "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+                "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
+                "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+                "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            }
+
+            worker_type = "regular"
+            if self.args.prefill_num_servers is not None:
+                worker_type = "prefill" if i < prefill_num_servers else "decode"
+
+            engine = RolloutRayActor.options(
+                num_cpus=0.2, num_gpus=0.2,
+                scheduling_strategy=scheduling_strategy,
+                runtime_env={"env_vars": env_vars},
+            ).remote(self.args, rank=i, worker_type=worker_type, base_gpu_id=base_gpu_id)
+
+            new_engines.append((i, engine))
+
+        if not new_engines:
+            return
+
+        addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
+            args=self.args, num_engines=num_engines, rollout_engines=new_engines,
+        )
+
+        for rank, engine in new_engines:
+            init_ref = engine.init.remote(skip_router_registration=True, **(addr_and_ports[rank]))
+            self._warming_engines[rank] = (engine, init_ref)
+
+        logger.info(f"Started {len(new_engines)} warming engines (async, not yet registered to router)")
+
     def recover_rollout_engines(self):
-        """Restart any dead rollout engines and update num_new_engines for update_weights detection."""
+        """Promote warming engines and/or sync-recover remaining dead slots."""
         self.health_monitoring_pause()
         if self.rollout_id == -1:
             return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
-        dead_indices = [i for i, engine in enumerate(self.all_rollout_engines) if engine is None]
         recover_start = time.time()
-        self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
+        promoted_indices = []
+
+        # Phase 1: promote warming engines that have finished init
+        if self._warming_engines:
+            logger.info(f"Promoting {len(self._warming_engines)} warming engines...")
+            for idx, (engine, init_ref) in list(self._warming_engines.items()):
+                try:
+                    ray.get(init_ref)
+                    self.all_rollout_engines[idx] = engine
+                    promoted_indices.append(idx)
+                except Exception as e:
+                    logger.warning(f"Warming engine at index {idx} failed init: {e}")
+                    try:
+                        ray.kill(engine)
+                    except Exception:
+                        pass
+            self._warming_engines.clear()
+            if promoted_indices:
+                logger.info(f"Promoted {len(promoted_indices)} warming engines at indices {promoted_indices}")
+
+        # Phase 2: sync-recover any remaining dead slots (warming failed or wasn't started)
+        remaining_dead = [i for i, e in enumerate(self.all_rollout_engines) if e is None]
+        sync_recovered = 0
+        if remaining_dead:
+            logger.info(f"Sync-recovering {len(remaining_dead)} remaining dead engines...")
+            sync_recovered = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
+
+        self.num_new_engines = len(promoted_indices) + sync_recovered
         recover_elapsed = time.time() - recover_start
-        logger.info(f"Recovered {self.num_new_engines} dead rollout engines in {recover_elapsed:.1f}s")
-        assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
-        if self.args.offload_rollout and dead_indices:
-            new_engines = [self.all_rollout_engines[i] for i in dead_indices]
-            ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
-            ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
+        logger.info(
+            f"Recovered {self.num_new_engines} engines "
+            f"({len(promoted_indices)} from warming, {sync_recovered} sync) in {recover_elapsed:.1f}s"
+        )
+
+        if self.args.offload_rollout and self.num_new_engines > 0:
+            all_new_indices = promoted_indices + remaining_dead
+            new_engines = [self.all_rollout_engines[i] for i in all_new_indices if self.all_rollout_engines[i] is not None]
+            if new_engines:
+                ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
+                ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
+
+        # Register promoted warming engines to router (sync-recovered ones are already registered by init)
+        if promoted_indices:
+            ray.get([self.all_rollout_engines[i].register_to_router.remote() for i in promoted_indices])
 
         if self.num_new_engines > 0:
             step = compute_rollout_step(self.args, self.rollout_id)
@@ -230,6 +337,8 @@ class RolloutManager:
                 self.args,
                 {
                     "fault_tolerance/num_recovered": self.num_new_engines,
+                    "fault_tolerance/num_from_warming": len(promoted_indices),
+                    "fault_tolerance/num_from_sync": sync_recovered,
                     "fault_tolerance/recovery_time_seconds": recover_elapsed,
                     "rollout/step": step,
                 },
