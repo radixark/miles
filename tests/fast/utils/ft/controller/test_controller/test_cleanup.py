@@ -126,7 +126,8 @@ class TestExecuteDecisionUnknownAction:
         harness = make_test_controller()
 
         bogus_decision = Decision(action=ActionType.NONE, reason="should not happen")
-        object.__setattr__(bogus_decision, "action", "totally_unknown_action")
+        fake_action = type("FakeAction", (), {"value": "totally_unknown_action"})()
+        object.__setattr__(bogus_decision, "action", fake_action)
 
         with pytest.raises(ValueError, match="Unknown action type"):
             await harness.controller._execute_decision(bogus_decision)

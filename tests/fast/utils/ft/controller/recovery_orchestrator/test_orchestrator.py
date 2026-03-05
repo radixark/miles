@@ -232,7 +232,7 @@ class TestReattempting:
 
     def test_stop_training_exception_continues(self) -> None:
         orch, _, training_job, _, _ = _make_orchestrator(
-            status_sequence=[JobStatus.RUNNING],
+            status_sequence=[JobStatus.STOPPED],
         )
         orch._context.phase = RecoveryPhase.REATTEMPTING
 
@@ -517,7 +517,7 @@ class TestNotifyWithBrokenNotifier:
 class TestEvictStopTrainingFailure:
     def test_stop_failure_continues_to_submit(self) -> None:
         orch, _, training_job, _, _ = _make_orchestrator(
-            status_sequence=[JobStatus.RUNNING],
+            status_sequence=[JobStatus.STOPPED],
         )
         orch._context.phase = RecoveryPhase.EVICT_AND_RESTART
         orch._context.bad_node_ids = ["node-0"]

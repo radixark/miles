@@ -134,7 +134,8 @@ class TestExecuteDecisionUnknownAction:
     @pytest.mark.anyio
     async def test_unknown_action_type_raises_value_error(self) -> None:
         decision = Decision(action=ActionType.NONE, reason="fabricated unknown action")
-        object.__setattr__(decision, "action", "fabricated_unknown")
+        fake_action = type("FakeAction", (), {"value": "fabricated_unknown"})()
+        object.__setattr__(decision, "action", fake_action)
 
         harness = make_test_controller()
         with pytest.raises(ValueError, match="Unknown action type"):

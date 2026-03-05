@@ -102,11 +102,11 @@ class TestControllerExporterDecisionCounter:
         exporter.record_decision(action="mark_bad_and_restart", trigger="hardware")
 
         assert get_sample_value(
-            registry, mn.CONTROLLER_DECISION_TOTAL + "_total",
+            registry, mn.CONTROLLER_DECISION_TOTAL,
             labels={"action": "enter_recovery", "trigger": "training_crash"},
         ) == 2.0
         assert get_sample_value(
-            registry, mn.CONTROLLER_DECISION_TOTAL + "_total",
+            registry, mn.CONTROLLER_DECISION_TOTAL,
             labels={"action": "mark_bad_and_restart", "trigger": "hardware"},
         ) == 1.0
 
@@ -116,7 +116,7 @@ class TestControllerExporterDecisionCounter:
         exporter.record_decision(action="enter_recovery", trigger="unknown")
 
         assert get_sample_value(
-            registry, mn.CONTROLLER_DECISION_TOTAL + "_total",
+            registry, mn.CONTROLLER_DECISION_TOTAL,
             labels={"action": "enter_recovery", "trigger": "unknown"},
         ) == 1.0
 
