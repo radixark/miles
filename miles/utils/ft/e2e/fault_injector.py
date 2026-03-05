@@ -49,6 +49,7 @@ class FaultInjectorActor:
             try:
                 cmdline = proc.info.get("cmdline") or []
                 cmdline_str = " ".join(cmdline).lower()
+
                 if any(pattern in cmdline_str for pattern in _TRAINING_CMDLINE_PATTERNS):
                     results.append({
                         "pid": proc.info["pid"],
