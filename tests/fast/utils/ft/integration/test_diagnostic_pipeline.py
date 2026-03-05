@@ -150,6 +150,91 @@ class TestDiagnosticPipelineEmptyPipeline:
         assert orch.phase == RecoveryPhase.NOTIFY
 
 
+class TestGpuDiagnosticPipelineBadNode:
+    """GPU diagnostic finds bad node → EVICT_AND_RESTART via default pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_gpu_diagnostic_bad_node_evicted(self) -> None:
+        agents = make_fake_agents({
+            "node-0": {"gpu": True},
+            "node-1": {"gpu": False},
+            "node-2": {"gpu": True},
+        })
+        scheduler = DiagnosticScheduler(
+            agents=agents,
+            pipeline=["gpu"],
+        )
+
+        harness = make_test_controller(
+            status_sequence=[JobStatus.RUNNING] * 50,
+            diagnostic_scheduler=scheduler,
+        )
+
+        for node_id, agent in agents.items():
+            harness.controller.register_agent(node_id, agent)
+
+        _enter_recovery_and_skip_to_diagnosing(harness, scheduler)
+        orch = harness.controller._recovery_orchestrator
+        assert orch is not None
+
+        await harness.controller._tick()
+        assert orch.phase in (
+            RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
+        )
+
+        for _ in range(10):
+            if harness.controller._recovery_orchestrator is None:
+                break
+            await harness.controller._tick()
+
+        assert harness.controller._recovery_orchestrator is None
+        assert harness.node_manager.is_node_bad("node-1")
+        assert not harness.node_manager.is_node_bad("node-0")
+        assert not harness.node_manager.is_node_bad("node-2")
+
+
+class TestGpuDiagnosticPipelineAllPass:
+    """GPU diagnostic all pass → NOTIFY_HUMAN."""
+
+    @pytest.mark.asyncio
+    async def test_gpu_diagnostic_all_pass_notifies(self) -> None:
+        agents = make_fake_agents({
+            "node-0": {"gpu": True},
+            "node-1": {"gpu": True},
+            "node-2": {"gpu": True},
+        })
+        scheduler = DiagnosticScheduler(
+            agents=agents,
+            pipeline=["gpu"],
+        )
+
+        harness = make_test_controller(
+            status_sequence=[JobStatus.RUNNING] * 50,
+            diagnostic_scheduler=scheduler,
+        )
+
+        for node_id, agent in agents.items():
+            harness.controller.register_agent(node_id, agent)
+
+        _enter_recovery_and_skip_to_diagnosing(harness, scheduler)
+        orch = harness.controller._recovery_orchestrator
+        assert orch is not None
+
+        await harness.controller._tick()
+        assert orch.phase == RecoveryPhase.NOTIFY
+
+        for _ in range(5):
+            if harness.controller._recovery_orchestrator is None:
+                break
+            await harness.controller._tick()
+
+        assert harness.controller._recovery_orchestrator is None
+        assert harness.notifier is not None
+        assert len(harness.notifier.calls) >= 1
+        for nid in ("node-0", "node-1", "node-2"):
+            assert not harness.node_manager.is_node_bad(nid)
+
+
 class TestDiagnosticPipelineMultiStep:
     """Multi-step pipeline catches bad node at second step."""
 

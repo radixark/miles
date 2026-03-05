@@ -701,3 +701,11 @@ class TestAgentManagement:
         harness.controller.register_agent("node-0", agent2)
 
         assert harness.controller._agents["node-0"] is agent2
+
+
+class TestDefaultDiagnosticPipeline:
+    def test_default_scheduler_has_gpu_pipeline(self) -> None:
+        harness = make_test_controller()
+        scheduler = harness.controller._diagnostic_scheduler
+        assert hasattr(scheduler, "_pipeline")
+        assert "gpu" in scheduler._pipeline
