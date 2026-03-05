@@ -6,10 +6,8 @@ import pytest
 
 from miles.utils.ft.controller.detectors import build_detector_chain
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus
-from miles.utils.ft.platform.controller_actor import (
-    _FtControllerActorCls,
-    build_ft_controller,
-)
+from miles.utils.ft.platform.controller_actor import _FtControllerActorCls
+from miles.utils.ft.platform.controller_factory import build_ft_controller
 from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
 from tests.fast.utils.ft.conftest import make_test_controller
 
@@ -87,10 +85,10 @@ class TestBuildFtController:
 
 class TestBuildPlatformComponentsK8sRay:
     def test_k8s_ray_creates_correct_types(self) -> None:
-        from miles.utils.ft.platform.controller_actor import _build_platform_components
+        from miles.utils.ft.platform.controller_factory import _build_platform_components
 
         with (
-            patch("miles.utils.ft.platform.controller_actor.K8sNodeManager") as mock_k8s,
+            patch("miles.utils.ft.platform.controller_factory.K8sNodeManager") as mock_k8s,
             patch("miles.utils.ft.platform.ray_training_job.JobSubmissionClient") as mock_jsc,
         ):
             mock_k8s.return_value = MagicMock()

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from miles.utils.ft.platform.controller_actor import _build_notifier
+from miles.utils.ft.platform.controller_factory import _build_notifier
 from miles.utils.ft.platform.lark_notifier import LarkWebhookNotifier
 from miles.utils.ft.launcher import app
 from miles.utils.ft.platform.stubs import StubNotifier

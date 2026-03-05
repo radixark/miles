@@ -7,8 +7,8 @@ from typing import Annotated
 import typer
 
 from miles.utils.ft.models import FT_CONTROLLER_ACTOR_NAME
-from miles.utils.ft.platform.controller_actor import (
-    FtControllerActor,
+from miles.utils.ft.platform.controller_actor import FtControllerActor
+from miles.utils.ft.platform.controller_factory import (
     FtControllerConfig,
     build_ft_controller,
 )
