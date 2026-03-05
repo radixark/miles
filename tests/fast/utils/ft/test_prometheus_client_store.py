@@ -453,6 +453,74 @@ class TestRangeFunctionQueries:
         assert df["value"][0] == 5.0
 
 
+class TestAsyncQueryLatest:
+    @pytest.mark.asyncio
+    async def test_aquery_latest_delegates_to_fetch_json(self) -> None:
+        json_data = {
+            "status": "success",
+            "data": {
+                "resultType": "vector",
+                "result": [
+                    {
+                        "metric": {"__name__": "up", "node_id": "node-0"},
+                        "value": [1709000000, "1"],
+                    }
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = await client.aquery_latest("up")
+
+        assert df.shape[0] == 1
+        assert df["value"][0] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_aquery_latest_returns_empty_on_error(self) -> None:
+        with patch.object(httpx.Client, "get", side_effect=httpx.TimeoutException("timed out")):
+            client = PrometheusClient(url="http://fake:9090")
+            df = await client.aquery_latest("up")
+
+        assert df.is_empty()
+
+
+class TestAsyncQueryRange:
+    @pytest.mark.asyncio
+    async def test_aquery_range_returns_data(self) -> None:
+        json_data = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"__name__": "cpu", "host": "a"},
+                        "values": [
+                            [1709000000, "0.3"],
+                            [1709000060, "0.5"],
+                        ],
+                    }
+                ],
+            },
+        }
+
+        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
+            client = PrometheusClient(url="http://fake:9090")
+            df = await client.aquery_range("cpu", window=timedelta(hours=1))
+
+        assert df.shape[0] == 2
+        assert df["value"].to_list() == [0.3, 0.5]
+
+    @pytest.mark.asyncio
+    async def test_aquery_range_returns_empty_on_error(self) -> None:
+        with patch.object(httpx.Client, "get", side_effect=httpx.TimeoutException("timed out")):
+            client = PrometheusClient(url="http://fake:9090")
+            df = await client.aquery_range("up", window=timedelta(hours=1))
+
+        assert df.is_empty()
+        assert "timestamp" in df.columns
+
+
 class TestFormatDuration:
     def test_exact_days(self) -> None:
         assert _format_duration(timedelta(days=1)) == "1d"

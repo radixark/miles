@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import timedelta
@@ -39,7 +40,7 @@ class PrometheusClient(RangeAggregationMixin):
         self._range_query_step_seconds = range_query_step_seconds
 
     # -------------------------------------------------------------------
-    # MetricStoreProtocol implementation
+    # MetricStoreProtocol implementation (sync)
     # -------------------------------------------------------------------
 
     def query_latest(
@@ -64,6 +65,38 @@ class PrometheusClient(RangeAggregationMixin):
 
     async def stop(self) -> None:
         self._client.close()
+
+    # -------------------------------------------------------------------
+    # Async query helpers (non-blocking for callers on the event loop)
+    # -------------------------------------------------------------------
+
+    async def aquery_latest(
+        self,
+        metric_name: str,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        promql = _build_selector(metric_name, label_filters)
+        data = await self._afetch_json("/api/v1/query", params={"query": promql})
+        if data is None:
+            return EMPTY_INSTANT
+        return parse_instant_response(data)
+
+    async def aquery_range(
+        self,
+        metric_name: str,
+        window: timedelta,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        promql = _build_selector(metric_name, label_filters)
+        now = time.time()
+        start = now - window.total_seconds()
+        data = await self._afetch_json(
+            "/api/v1/query_range",
+            params={"query": promql, "start": start, "end": now, "step": self._range_query_step_seconds},
+        )
+        if data is None:
+            return EMPTY_RANGE
+        return parse_range_response(data)
 
     # -------------------------------------------------------------------
     # Internal: query execution
@@ -106,6 +139,9 @@ class PrometheusClient(RangeAggregationMixin):
         except Exception:
             logger.warning("prometheus_query_failed path=%s params=%s", path, params, exc_info=True)
             return None
+
+    async def _afetch_json(self, path: str, params: dict[str, object]) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._fetch_json, path, params)
 
 
 # ---------------------------------------------------------------------------
