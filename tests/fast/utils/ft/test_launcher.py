@@ -5,12 +5,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from miles.utils.ft.launcher import app
 from miles.utils.ft.platform.controller_factory import _build_notifier
 from miles.utils.ft.platform.lark_notifier import LarkWebhookNotifier
-from miles.utils.ft.launcher import app
 from miles.utils.ft.platform.stubs import StubNotifier
 
 runner = CliRunner()
+
+
+# ---------------------------------------------------------------------------
+# FT Controller CLI tests
+# ---------------------------------------------------------------------------
 
 
 class TestLauncherCli:
@@ -25,7 +30,6 @@ class TestLauncherCli:
         assert result.exit_code == 0
         assert "--platform" in result.output
         assert "--ray-address" in result.output
-        assert "--entrypoint" in result.output
 
     def test_help_includes_metric_store_options(self) -> None:
         result = runner.invoke(app, ["--help"])
@@ -34,10 +38,10 @@ class TestLauncherCli:
         assert "--prometheus-url" in result.output
         assert "--controller-exporte" in result.output
 
-    def test_help_includes_as_ray_actor_option(self) -> None:
+    def test_help_includes_runtime_env_json_option(self) -> None:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "--as-ray-actor" in result.output
+        assert "--runtime-env-json" in result.output
 
 
 class TestBuildNotifier:
@@ -65,42 +69,60 @@ class TestBuildNotifier:
         import logging
         with patch.dict("os.environ", {}, clear=True):
             with caplog.at_level(logging.WARNING):
-                notifier = _build_notifier(platform_mode="k8s-ray")
+                notifier = _build_notifier(platform="k8s-ray")
         assert notifier is None
-        assert "no_notifier_configured" in caplog.text
+        assert "FT_LARK_WEBHOOK_URL" in caplog.text
 
 
-class TestLauncherAsRayActor:
-    def test_as_ray_actor_creates_detached_actor(self) -> None:
-        mock_actor_handle = MagicMock()
-        mock_options = MagicMock()
-        mock_options.remote.return_value = mock_actor_handle
-
-        with (
-            patch("miles.utils.ft.launcher.FtControllerActor") as mock_cls,
-            patch("miles.utils.ft.launcher.asyncio.run") as mock_asyncio_run,
-        ):
-            mock_cls.options.return_value = mock_options
-            result = runner.invoke(app, ["--platform", "stub", "--as-ray-actor"])
-
-        assert result.exit_code == 0, result.output
-        mock_cls.options.assert_called_once_with(name="ft_controller", lifetime="detached")
-        mock_options.remote.assert_called_once()
-        mock_actor_handle.run.remote.assert_called_once()
-        mock_asyncio_run.assert_not_called()
-
-    def test_inline_mode_calls_asyncio_run(self) -> None:
+class TestLauncherSubmitAndRun:
+    def test_inline_mode_calls_submit_and_run(self) -> None:
         with (
             patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
             patch("miles.utils.ft.launcher.asyncio.run") as mock_asyncio_run,
-            patch("miles.utils.ft.launcher.ControllerExporter.start"),
+            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
         ):
             mock_controller = MagicMock()
             mock_build.return_value = mock_controller
-            result = runner.invoke(app, ["--platform", "stub"])
+            result = runner.invoke(app, ["--platform", "stub", "--", "python3", "train.py"])
 
         assert result.exit_code == 0, result.output
-        mock_asyncio_run.assert_called_once_with(mock_controller.run())
+        mock_asyncio_run.assert_called_once()
+
+    def test_entrypoint_passed_to_config(self) -> None:
+        with (
+            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
+            patch("miles.utils.ft.launcher.asyncio.run"),
+            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
+        ):
+            mock_build.return_value = MagicMock()
+            result = runner.invoke(app, [
+                "--platform", "stub",
+                "--", "python3", "train.py", "--lr", "0.001",
+            ])
+
+        assert result.exit_code == 0, result.output
+        config = mock_build.call_args.kwargs["config"]
+        assert "python3" in config.entrypoint
+        assert "train.py" in config.entrypoint
+        assert "--lr" in config.entrypoint
+
+    def test_runtime_env_json_parsed_to_config(self) -> None:
+        runtime_env = {"env_vars": {"PYTHONPATH": "/root/Megatron-LM"}}
+        with (
+            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
+            patch("miles.utils.ft.launcher.asyncio.run"),
+            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
+        ):
+            mock_build.return_value = MagicMock()
+            result = runner.invoke(app, [
+                "--platform", "stub",
+                "--runtime-env-json", '{"env_vars": {"PYTHONPATH": "/root/Megatron-LM"}}',
+                "--", "python3", "train.py",
+            ])
+
+        assert result.exit_code == 0, result.output
+        config = mock_build.call_args.kwargs["config"]
+        assert config.runtime_env == runtime_env
 
 
 class TestLauncherWiring:
@@ -112,8 +134,9 @@ class TestLauncherWiring:
             captured_kwargs.update(kwargs)
 
         with patch("miles.utils.ft.launcher.FtController.__init__", fake_controller_init), \
+             patch("miles.utils.ft.launcher.FtController.submit_initial_training"), \
              patch("miles.utils.ft.launcher.FtController.run"), \
-             patch("miles.utils.ft.launcher.ControllerExporter.start"), \
+             patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"), \
              patch("miles.utils.ft.launcher.asyncio.run"):
             result = runner.invoke(app, ["--platform", "stub"])
 
