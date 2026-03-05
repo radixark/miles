@@ -90,12 +90,14 @@ class FaultInjectorActor:
 
     def fill_disk(self, path: str, size_bytes: int) -> None:
         logger.info("fill_disk path=%s size_bytes=%d", path, size_bytes)
+        chunk_size = 64 * 1024 * 1024
+        chunk = b"\0" * chunk_size
+
         with open(path, "wb") as f:
             remaining = size_bytes
-            chunk_size = 64 * 1024 * 1024
             while remaining > 0:
                 write_size = min(chunk_size, remaining)
-                f.write(b"\0" * write_size)
+                f.write(chunk[:write_size])
                 remaining -= write_size
         self._filled_paths.append(path)
 
