@@ -79,6 +79,24 @@ class TestSubmitTraining:
         assert call_kwargs["entrypoint"] == "python train.py"
 
     @pytest.mark.anyio
+    async def test_injects_ft_id_and_label_suffix_into_env(self) -> None:
+        mock_client = MagicMock()
+        job = RayTrainingJob(
+            client=mock_client,
+            entrypoint="python train.py",
+            ft_id="myft",
+            k8s_label_suffix="sfx1",
+        )
+        mock_client.submit_job.return_value = "ray-job-ft"
+
+        await job.submit_training()
+
+        call_kwargs = mock_client.submit_job.call_args.kwargs
+        env_vars = call_kwargs["runtime_env"]["env_vars"]
+        assert env_vars["FT_ID"] == "myft"
+        assert env_vars["FT_K8S_LABEL_SUFFIX"] == "sfx1"
+
+    @pytest.mark.anyio
     async def test_does_not_mutate_original_runtime_env(self) -> None:
         original_env: dict[str, Any] = {"working_dir": "/data", "env_vars": {"MY_VAR": "1"}}
         original_env_copy = {

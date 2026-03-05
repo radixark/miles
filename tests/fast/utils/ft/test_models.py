@@ -6,9 +6,11 @@ from miles.utils.ft.models import (
     CollectorOutput,
     Decision,
     DiagnosticResult,
+    FtBaseModel,
     MetricSample,
     NodeFault,
     TriggerType,
+    ft_controller_actor_name,
 )
 
 
@@ -156,3 +158,16 @@ class TestDiagnosticResult:
             details="GPU 3 bandwidth below threshold: 120 GB/s vs 180 GB/s baseline",
         )
         assert result.passed is False
+
+
+class TestFtControllerActorName:
+    def test_empty_ft_id_returns_default(self) -> None:
+        assert ft_controller_actor_name("") == "ft_controller"
+
+    def test_ft_id_appended_as_suffix(self) -> None:
+        assert ft_controller_actor_name("abc123") == "ft_controller_abc123"
+
+    def test_different_ids_produce_different_names(self) -> None:
+        name_a = ft_controller_actor_name("exp_a")
+        name_b = ft_controller_actor_name("exp_b")
+        assert name_a != name_b
