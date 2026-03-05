@@ -272,7 +272,9 @@ def generation_env(request, variant):
             )
             if variant.startswith("agentic_tool_call"):
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
+                mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)
 
     mock_tools.AGENTIC_MAX_TURNS = None
+    mock_tools.AGENTIC_RETURN_METADATA = None
     SingletonMeta.clear_all_instances()
