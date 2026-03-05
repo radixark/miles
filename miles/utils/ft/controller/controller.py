@@ -18,7 +18,7 @@ from miles.utils.ft.controller.recovery_helpers import (
     stop_clear_submit,
 )
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
-from miles.utils.ft.models import ActionType, Decision
+from miles.utils.ft.models import ActionType, Decision, NodeAgentProtocol
 from miles.utils.ft.platform.protocols import (
     DiagnosticSchedulerProtocol,
     JobStatus,
@@ -62,7 +62,7 @@ class FtController:
         self._tick_interval = tick_interval
         self._controller_exporter = controller_exporter
         self._scrape_target_manager = scrape_target_manager
-        self._agents: dict[str, Any] = {}
+        self._agents: dict[str, NodeAgentProtocol] = {}
 
         self._diagnostic_scheduler: DiagnosticSchedulerProtocol = (
             diagnostic_scheduler
@@ -126,7 +126,7 @@ class FtController:
     # Agent management
     # -------------------------------------------------------------------
 
-    def register_agent(self, node_id: str, agent: Any) -> None:
+    def register_agent(self, node_id: str, agent: NodeAgentProtocol) -> None:
         self._agents[node_id] = agent
         logger.info("agent_registered node_id=%s", node_id)
 

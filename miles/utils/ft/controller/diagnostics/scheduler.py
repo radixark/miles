@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
     InterMachineCommDiagnostic,
@@ -344,7 +344,7 @@ class DiagnosticScheduler:
 
     async def _call_agent_diagnostic(
         self,
-        agent: Any,
+        agent: NodeAgentProtocol,
         node_id: str,
         diagnostic_type: str,
         timeout_seconds: int,
