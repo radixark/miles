@@ -42,11 +42,7 @@ def _create_placement_group(
     num_gpus: int,
     excluded_node_ids: set[str] | None = None,
 ):
-    """Create a placement group with the specified number of GPUs.
-
-    *excluded_node_ids*, if provided, is a set of Ray hex node IDs to avoid.
-    Uses ``bundle_label_selector`` (Ray 2.49+).
-    """
+    """Create a placement group with the specified number of GPUs."""
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
 
     bundle_label_selector = None
