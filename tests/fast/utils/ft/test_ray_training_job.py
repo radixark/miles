@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from miles.utils.ft.platform.protocols import JobStatus
-from miles.utils.ft.platform.ray_training_job import RayTrainingJob
+from miles.utils.ft.platform.ray_training_job import RayTrainingJob, _parse_ray_status
 
 
 def _make_job(
@@ -206,3 +206,20 @@ class TestGetTrainingStatus:
 
         with pytest.raises(ConnectionError, match="Ray unreachable"):
             await job.get_training_status()
+
+
+class TestParseRayStatus:
+    def test_plain_string(self) -> None:
+        assert _parse_ray_status("RUNNING") == "RUNNING"
+
+    def test_enum_style_dotted_string(self) -> None:
+        assert _parse_ray_status("JobStatus.RUNNING") == "RUNNING"
+
+    def test_deeply_dotted(self) -> None:
+        assert _parse_ray_status("ray.job_submission.JobSubmissionStatus.FAILED") == "FAILED"
+
+    def test_mock_enum_object(self) -> None:
+        class FakeEnum:
+            def __str__(self) -> str:
+                return "JobSubmissionStatus.SUCCEEDED"
+        assert _parse_ray_status(FakeEnum()) == "SUCCEEDED"

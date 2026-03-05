@@ -12,6 +12,8 @@ from miles.utils.ft.platform.controller_actor import (
 from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
 from tests.fast.utils.ft.conftest import make_test_controller
 
+from unittest.mock import MagicMock
+
 
 class TestBuildFtController:
     def test_stub_platform_creates_correct_components(self) -> None:
@@ -68,6 +70,28 @@ class TestBuildFtController:
             start_exporter=False,
         )
         assert ctrl._scrape_target_manager is None
+
+
+class TestBuildPlatformComponentsK8sRay:
+    def test_k8s_ray_creates_correct_types(self) -> None:
+        from miles.utils.ft.platform.controller_actor import _build_platform_components
+
+        with (
+            patch("miles.utils.ft.platform.controller_actor.K8sNodeManager") as mock_k8s,
+            patch("miles.utils.ft.platform.ray_training_job.JobSubmissionClient") as mock_jsc,
+        ):
+            mock_k8s.return_value = MagicMock()
+            mock_jsc.return_value = MagicMock()
+
+            node_mgr, training_job = _build_platform_components(
+                platform="k8s-ray",
+                ray_address="http://ray:8265",
+                entrypoint="python train.py",
+            )
+
+        mock_k8s.assert_called_once()
+        mock_jsc.assert_called_once_with(address="http://ray:8265")
+        assert node_mgr is mock_k8s.return_value
 
 
 class TestFtControllerActorProxy:
