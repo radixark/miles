@@ -56,8 +56,10 @@ def check_critical_xid(
         except (ValueError, TypeError):
             logger.warning("check_critical_xid: unparseable row %s", row, exc_info=True)
             continue
+
         if node_id is None:
             continue
+
         if xid_code in critical_xid_codes:
             faults.append(NodeFault(node_id=node_id, reason=f"critical XID {xid_code} on {node_id}"))
     return faults
