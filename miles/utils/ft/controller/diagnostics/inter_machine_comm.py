@@ -4,8 +4,8 @@ import asyncio
 import logging
 import os
 
+from miles.utils.ft.controller.diagnostics._nccl_utils import parse_avg_bus_bandwidth
 from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
-from miles.utils.ft.controller.diagnostics.intra_machine_comm import _parse_avg_bus_bandwidth
 from miles.utils.ft.models import DiagnosticResult
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ class InterMachineCommDiagnostic(BaseDiagnostic):
                 details=f"exit code {process.returncode}: {stderr[:500]}",
             )
 
-        bandwidth = _parse_avg_bus_bandwidth(stdout)
+        bandwidth = parse_avg_bus_bandwidth(stdout)
         if bandwidth is None:
             logger.warning(
                 "inter_machine_parse_failure node=%s output_len=%d",

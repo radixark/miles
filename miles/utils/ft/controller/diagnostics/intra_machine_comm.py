@@ -2,48 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 
+from miles.utils.ft.controller.diagnostics._nccl_utils import parse_avg_bus_bandwidth
 from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
 from miles.utils.ft.models import DiagnosticResult
 
 logger = logging.getLogger(__name__)
-
-_AVG_BUS_BW_PATTERN = re.compile(r"#\s*Avg bus bandwidth\s*:\s*([\d.]+)")
-_BUSBW_COLUMN_INDEX = 7
-
-
-def _parse_avg_bus_bandwidth(output: str) -> float | None:
-    """Parse average bus bandwidth (GB/s) from nccl-tests text output.
-
-    Primary path: look for the ``# Avg bus bandwidth`` summary line.
-    Fallback: parse the last data row and extract the busbw column
-    (column index 7, out-of-place, 0-indexed).
-    """
-    match = _AVG_BUS_BW_PATTERN.search(output)
-    if match:
-        return float(match.group(1))
-
-    last_data_row: list[str] | None = None
-    for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts = stripped.split()
-        if len(parts) > _BUSBW_COLUMN_INDEX:
-            try:
-                float(parts[0])
-                last_data_row = parts
-            except ValueError:
-                continue
-
-    if last_data_row is not None:
-        try:
-            return float(last_data_row[_BUSBW_COLUMN_INDEX])
-        except (IndexError, ValueError):
-            return None
-
-    return None
 
 
 class IntraMachineCommDiagnostic(BaseDiagnostic):
@@ -127,7 +91,7 @@ class IntraMachineCommDiagnostic(BaseDiagnostic):
                 details=f"exit code {process.returncode}: {stderr[:500]}",
             )
 
-        bandwidth = _parse_avg_bus_bandwidth(stdout)
+        bandwidth = parse_avg_bus_bandwidth(stdout)
         if bandwidth is None:
             logger.warning(
                 "intra_machine_parse_failure node=%s output_len=%d",

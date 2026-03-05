@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from miles.utils.ft.controller.diagnostics._nccl_utils import parse_avg_bus_bandwidth
 from miles.utils.ft.controller.diagnostics.intra_machine_comm import (
     IntraMachineCommDiagnostic,
-    _parse_avg_bus_bandwidth,
 )
 
 # ---------------------------------------------------------------------------
@@ -70,30 +70,30 @@ Some random text here
 
 
 # ---------------------------------------------------------------------------
-# _parse_avg_bus_bandwidth unit tests
+# parse_avg_bus_bandwidth unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestParseAvgBusBandwidth:
     def test_parse_from_summary_line(self) -> None:
-        result = _parse_avg_bus_bandwidth(NCCL_OUTPUT_WITH_SUMMARY)
+        result = parse_avg_bus_bandwidth(NCCL_OUTPUT_WITH_SUMMARY)
         assert result == pytest.approx(380.50)
 
     def test_parse_from_low_bw_summary(self) -> None:
-        result = _parse_avg_bus_bandwidth(NCCL_OUTPUT_LOW_BW)
+        result = parse_avg_bus_bandwidth(NCCL_OUTPUT_LOW_BW)
         assert result == pytest.approx(120.30)
 
     def test_fallback_to_last_row(self) -> None:
-        result = _parse_avg_bus_bandwidth(NCCL_OUTPUT_NO_SUMMARY)
+        result = parse_avg_bus_bandwidth(NCCL_OUTPUT_NO_SUMMARY)
         # Last data row busbw column (index 7) = 339.55
         assert result == pytest.approx(339.55)
 
     def test_garbage_output_returns_none(self) -> None:
-        result = _parse_avg_bus_bandwidth(NCCL_OUTPUT_GARBAGE)
+        result = parse_avg_bus_bandwidth(NCCL_OUTPUT_GARBAGE)
         assert result is None
 
     def test_empty_output_returns_none(self) -> None:
-        result = _parse_avg_bus_bandwidth("")
+        result = parse_avg_bus_bandwidth("")
         assert result is None
 
 
