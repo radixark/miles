@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from datetime import datetime, timezone
@@ -191,15 +192,17 @@ async def step_evict_and_restart(
     training_job: TrainingJobProtocol,
     mini_wandb: MiniWandb,
 ) -> RecoveryPhase:
-    for node_id in ctx.bad_node_ids:
-        result = await retry_async(
+    results = await asyncio.gather(*(
+        retry_async(
             lambda nid=node_id: node_manager.mark_node_bad(
                 nid, reason=f"recovery eviction: {ctx.trigger}",
             ),
             description=f"mark_node_bad({node_id})",
         )
-        if not retry_succeeded(result):
-            return RecoveryPhase.NOTIFY
+        for node_id in ctx.bad_node_ids
+    ))
+    if not all(retry_succeeded(r) for r in results):
+        return RecoveryPhase.NOTIFY
 
     success = await stop_clear_submit(training_job, mini_wandb)
     if not success:
