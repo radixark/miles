@@ -68,9 +68,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     samples = compute_samples_from_openai_records(input.sample, records, input.state.tokenizer)
 
-    if agent_metadata:
-        for s in samples:
-            s.metadata.update(agent_metadata)
+    for s in samples:
+        s.metadata.update(agent_metadata or {})
 
     if not input.args.generate_multi_samples:
         merged = merge_samples(samples, input.state.tokenizer)
@@ -87,8 +86,8 @@ def _add_arguments(parser: argparse.ArgumentParser):
 generate.add_arguments = _add_arguments
 
 
+# Process keys to match ChatCompletionRequest input
 def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]:
-    """Convert Miles sampling params to OpenAI chat completion format."""
     request_kwargs = dict(sampling_params)
     key_map = {
         "max_new_tokens": "max_tokens",
@@ -101,7 +100,8 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
 
-    # Force logprobs so the inference backend returns token IDs from position 0.
+    # Notice: Here we force the inference backend to return token information and start from 0
+    # The start len should be 0 to make sure prompt token ids and be correctly returned from SGLang.
     request_kwargs["logprobs"] = True
     request_kwargs["logprob_start_len"] = 0
 
