@@ -42,7 +42,11 @@ def _create_placement_group(
     num_gpus: int,
     excluded_node_ids: set[str] | None = None,
 ):
-    """Create a placement group with the specified number of GPUs."""
+    """Create a placement group with the specified number of GPUs.
+
+    *excluded_node_ids*, if provided, is a set of Ray hex node IDs to avoid.
+    Uses ``bundle_label_selector`` (Ray 2.49+).
+    """
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
 
     bundle_label_selector = None
@@ -88,11 +92,18 @@ def _create_placement_group(
     return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
 
 
-def create_placement_groups(
-    args,
-    excluded_node_ids: set[str] | None = None,
-):
+def _parse_excluded_node_ids(csv_string: str) -> set[str] | None:
+    """Parse comma-separated Ray node IDs into a set, or None if empty."""
+    ids = {s.strip() for s in csv_string.split(",") if s.strip()} if csv_string else set()
+    return ids or None
+
+
+def create_placement_groups(args):
     """Create placement groups for actor and rollout engines."""
+
+    excluded_node_ids = _parse_excluded_node_ids(getattr(args, "excluded_node_ids", ""))
+    if excluded_node_ids:
+        logger.info("Excluding node IDs from placement: %s", excluded_node_ids)
 
     num_gpus = 0
     if args.debug_train_only:
