@@ -40,10 +40,6 @@ setup(
         "fsdp": [
             "torch>=2.0",
         ],
-        "test": [
-            "pytest",
-            "pytest-asyncio",
-        ],
     },
     python_requires=">=3.10",
     classifiers=[
