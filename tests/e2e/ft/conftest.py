@@ -25,7 +25,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_registry import RankRegistry
-from miles.utils.ft.e2e.fault_injector import deploy_fault_injector
+from miles.utils.ft.fault_injectors.fault_injector import deploy_fault_injector
 from miles.utils.ft.models import ControllerMode, ControllerStatus, RecoveryPhase
 from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
 from miles.utils.ft.platform.ray_training_job import RayTrainingJob
