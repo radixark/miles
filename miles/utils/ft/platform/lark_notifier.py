@@ -53,5 +53,7 @@ class LarkWebhookNotifier:
         logger.error(
             "lark_webhook_send_failed_all_retries url=%s",
             self._webhook_url,
-            exc_info=last_error is not None,
+            exc_info=last_error,
         )
+        if last_error is not None:
+            raise last_error

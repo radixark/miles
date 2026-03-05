@@ -42,26 +42,27 @@ class TestLarkWebhookNotifier:
             assert payload["card"]["header"]["title"]["content"].startswith(f"[{severity}]")
 
     @pytest.mark.asyncio
-    async def test_send_http_error_does_not_raise(
+    async def test_send_http_error_raises_after_retries(
         self, notifier: LarkWebhookNotifier, caplog: pytest.LogCaptureFixture,
     ) -> None:
         mock_response = httpx.Response(status_code=500, request=httpx.Request("POST", "https://example.com"))
-        with patch.object(notifier._client, "post", new_callable=AsyncMock, return_value=mock_response):
-            with caplog.at_level(logging.WARNING):
+        with patch.object(notifier._client, "post", new_callable=AsyncMock, return_value=mock_response), \
+             patch("miles.utils.ft.platform.lark_notifier.asyncio.sleep", new_callable=AsyncMock):
+            with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
                 await notifier.send(title="Fault Alert", content="test error", severity="critical")
 
             assert "lark_webhook_send_failed" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_send_connect_error_does_not_raise(
+    async def test_send_connect_error_raises_after_retries(
         self, notifier: LarkWebhookNotifier, caplog: pytest.LogCaptureFixture,
     ) -> None:
         with patch.object(
             notifier._client, "post",
             new_callable=AsyncMock,
             side_effect=httpx.ConnectError("connection refused"),
-        ):
-            with caplog.at_level(logging.WARNING):
+        ), patch("miles.utils.ft.platform.lark_notifier.asyncio.sleep", new_callable=AsyncMock):
+            with caplog.at_level(logging.WARNING), pytest.raises(httpx.ConnectError):
                 await notifier.send(title="Alert", content="unreachable", severity="warning")
 
             assert "lark_webhook_send_failed" in caplog.text
@@ -95,7 +96,7 @@ class TestLarkWebhookNotifier:
         ) as mock_post, patch(
             "miles.utils.ft.platform.lark_notifier.asyncio.sleep", new_callable=AsyncMock,
         ):
-            with caplog.at_level(logging.ERROR):
+            with caplog.at_level(logging.ERROR), pytest.raises(httpx.HTTPStatusError):
                 await notifier.send(title="Alert", content="fail all", severity="critical")
 
         assert mock_post.call_count == 3
@@ -113,7 +114,7 @@ class TestLarkWebhookNotifier:
             side_effect=err,
         ), patch(
             "miles.utils.ft.platform.lark_notifier.asyncio.sleep", new_callable=AsyncMock,
-        ) as mock_sleep:
+        ) as mock_sleep, pytest.raises(httpx.ConnectError):
             await notifier.send(title="Alert", content="backoff", severity="critical")
 
         assert mock_sleep.call_count == 2
