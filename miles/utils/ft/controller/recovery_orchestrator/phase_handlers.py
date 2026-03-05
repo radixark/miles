@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_helpers import (
     retry_async,
+    retry_succeeded,
     safe_notify,
     stop_clear_submit,
 )
@@ -184,13 +185,13 @@ async def step_evict_and_restart(
     mini_wandb: MiniWandb,
 ) -> RecoveryPhase:
     for node_id in ctx.bad_node_ids:
-        success = await retry_async(
+        result = await retry_async(
             lambda nid=node_id: node_manager.mark_node_bad(
                 nid, reason=f"recovery eviction: {ctx.trigger}",
             ),
             description=f"mark_node_bad({node_id})",
         )
-        if not success:
+        if not retry_succeeded(result):
             return RecoveryPhase.NOTIFY
 
     success = await stop_clear_submit(training_job, mini_wandb)
