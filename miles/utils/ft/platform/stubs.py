@@ -25,9 +25,11 @@ class StubTrainingJob:
     async def stop_training(self, timeout_seconds: int = 300) -> None:
         logger.info("stub_stop_training timeout_seconds=%d", timeout_seconds)
 
-    async def submit_training(self) -> str:
+    async def submit_training(
+        self, excluded_node_ids: list[str] | None = None,
+    ) -> str:
         run_id = uuid4().hex[:8]
-        logger.info("stub_submit_training run_id=%s", run_id)
+        logger.info("stub_submit_training run_id=%s excluded_node_ids=%s", run_id, excluded_node_ids)
         return run_id
 
     async def get_training_status(self) -> JobStatus:
@@ -40,9 +42,7 @@ class StubNotifier:
     async def send(self, title: str, content: str, severity: str) -> None:
         logger.info(
             "stub_send_notification title=%s severity=%s content=%s",
-            title,
-            severity,
-            content,
+            title, severity, content,
         )
 
     async def aclose(self) -> None:

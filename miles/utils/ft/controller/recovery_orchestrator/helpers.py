@@ -1,5 +1,4 @@
 """Shared recovery primitives used by both FtController and RecoveryOrchestrator."""
-
 from __future__ import annotations
 
 import logging
@@ -46,9 +45,7 @@ async def retry_async(
             last_error = str(exc)
             logger.warning(
                 "retry_failed description=%s attempt=%d/%d",
-                description,
-                attempt + 1,
-                max_retries,
+                description, attempt + 1, max_retries,
                 exc_info=True,
             )
 
@@ -59,6 +56,7 @@ async def retry_async(
 async def stop_clear_submit(
     training_job: TrainingJobProtocol,
     mini_wandb: MiniWandb,
+    excluded_node_ids: list[str] | None = None,
 ) -> bool:
     """Stop training, clear metrics, submit new job. Returns True on success."""
     try:
@@ -69,7 +67,7 @@ async def stop_clear_submit(
     mini_wandb.clear()
 
     result = await retry_async(
-        training_job.submit_training,
+        lambda: training_job.submit_training(excluded_node_ids=excluded_node_ids),
         description="submit_training",
     )
     return result.ok

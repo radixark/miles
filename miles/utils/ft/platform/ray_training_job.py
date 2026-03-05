@@ -50,7 +50,9 @@ class RayTrainingJob:
         self._poll_interval = poll_interval_seconds
         self._job_id: str | None = None
 
-    async def submit_training(self) -> str:
+    async def submit_training(
+        self, excluded_node_ids: list[str] | None = None,
+    ) -> str:
         run_id = uuid4().hex[:8]
         env_override = {
             **self._runtime_env.get("env_vars", {}),
@@ -58,10 +60,14 @@ class RayTrainingJob:
         }
         runtime_env = {**self._runtime_env, "env_vars": env_override}
 
+        entrypoint = self._entrypoint
+        if excluded_node_ids:
+            entrypoint += f" --excluded-node-ids {','.join(excluded_node_ids)}"
+
         start = time.monotonic()
         job_id = await asyncio.to_thread(
             self._client.submit_job,
-            entrypoint=self._entrypoint,
+            entrypoint=entrypoint,
             runtime_env=runtime_env,
         )
         elapsed = time.monotonic() - start

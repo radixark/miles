@@ -218,7 +218,9 @@ async def step_evict_and_restart(
     if not all(r.ok for r in results):
         return RecoveryPhase.NOTIFY
 
-    success = await stop_clear_submit(training_job, mini_wandb)
+    success = await stop_clear_submit(
+        training_job, mini_wandb, excluded_node_ids=ctx.bad_node_ids,
+    )
     if not success:
         return RecoveryPhase.NOTIFY
 
