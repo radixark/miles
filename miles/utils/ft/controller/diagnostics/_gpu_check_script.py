@@ -41,6 +41,11 @@ class GpuCheckResult:
 
 _ABNORMAL_POWER_STATES = frozenset({8, 15})
 
+_MATMUL_SEED = 42
+_MATMUL_SIZE = 1024
+_MATMUL_ATOL = 1e-2
+_MATMUL_RTOL = 1e-3
+
 
 def _check_nvml(handle: object) -> NvmlCheckResult:
     """Run pynvml extended checks on a single GPU handle."""
@@ -76,11 +81,10 @@ def _generate_matmul_reference() -> tuple[Any, Any, Any]:
     """
     import torch
 
-    generator = torch.Generator(device="cpu").manual_seed(42)
+    generator = torch.Generator(device="cpu").manual_seed(_MATMUL_SEED)
 
-    size = 1024
-    a_fp32 = torch.randn(size, size, generator=generator)
-    b_fp32 = torch.randn(size, size, generator=generator)
+    a_fp32 = torch.randn(_MATMUL_SIZE, _MATMUL_SIZE, generator=generator)
+    b_fp32 = torch.randn(_MATMUL_SIZE, _MATMUL_SIZE, generator=generator)
 
     a_fp16 = a_fp32.half()
     b_fp16 = b_fp32.half()
@@ -104,7 +108,7 @@ def _check_matmul(
     device = torch.device(f"cuda:{gpu_index}")
     actual = (a_fp16.to(device) @ b_fp16.to(device)).float().cpu()
 
-    return bool(torch.allclose(actual, expected, atol=1e-2, rtol=1e-3))
+    return bool(torch.allclose(actual, expected, atol=_MATMUL_ATOL, rtol=_MATMUL_RTOL))
 
 
 def _check_single_gpu(
