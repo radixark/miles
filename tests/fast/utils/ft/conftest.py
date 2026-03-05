@@ -42,4 +42,5 @@ from tests.fast.utils.ft.helpers import (  # noqa: F401
     make_test_exporter,
     make_trace_result,
     mock_inter_machine_run,
+    mock_stack_trace_diagnostic,
 )

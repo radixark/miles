@@ -34,6 +34,7 @@ from tests.fast.utils.ft.helpers.diagnostic_fakes import (
     StubDiagnostic,
     make_fake_agents,
     mock_inter_machine_run,
+    mock_stack_trace_diagnostic,
 )
 from tests.fast.utils.ft.helpers.metric_injectors import (
     EMPTY_RANK_PLACEMENT,
@@ -92,4 +93,5 @@ __all__ = [
     "make_test_exporter",
     "make_trace_result",
     "mock_inter_machine_run",
+    "mock_stack_trace_diagnostic",
 ]

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from unittest.mock import patch
+from typing import Generator
+from unittest.mock import AsyncMock, patch
 
 from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
@@ -171,3 +172,22 @@ def mock_inter_machine_run(
         )
 
     return patch.object(InterMachineCommDiagnostic, "run", _fake_run)
+
+
+# ---------------------------------------------------------------------------
+# Stack trace diagnostic mock helper
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def mock_stack_trace_diagnostic(
+    side_effects: list[DiagnosticResult | Exception],
+) -> Generator[AsyncMock, None, None]:
+    """Patch StackTraceDiagnostic and wire an AsyncMock with the given side_effects."""
+    with patch(
+        "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
+    ) as mock_diag_cls:
+        mock_instance = AsyncMock()
+        mock_instance.run = AsyncMock(side_effect=side_effects)
+        mock_diag_cls.return_value = mock_instance
+        yield mock_diag_cls

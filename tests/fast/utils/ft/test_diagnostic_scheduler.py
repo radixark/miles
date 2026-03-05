@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -27,6 +27,7 @@ from tests.fast.utils.ft.conftest import (
     make_rank_pids_provider,
     make_trace_result,
     mock_inter_machine_run,
+    mock_stack_trace_diagnostic,
 )
 
 
@@ -50,7 +51,7 @@ class _ConcreteDiagnostic(BaseDiagnostic):
 
 
 class TestBaseDiagnostic:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_concrete_subclass_can_run(self) -> None:
         diag = _ConcreteDiagnostic()
         result = await diag.run(node_id="node-0")
@@ -70,7 +71,7 @@ class TestBaseDiagnostic:
 
 
 class TestDiagnosticSchedulerEmptyPipeline:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_empty_pipeline_returns_notify_human(self) -> None:
         agents = make_fake_agents({"node-0": {}})
         scheduler = DiagnosticScheduler(agents=agents, pipeline=[])
@@ -78,7 +79,7 @@ class TestDiagnosticSchedulerEmptyPipeline:
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_no_pipeline_arg_returns_notify_human(self) -> None:
         scheduler = DiagnosticScheduler(agents={})
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="hang")
@@ -87,7 +88,7 @@ class TestDiagnosticSchedulerEmptyPipeline:
 
 
 class TestDiagnosticSchedulerSingleStep:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_all_pass_returns_notify_human(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -98,7 +99,7 @@ class TestDiagnosticSchedulerSingleStep:
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_one_node_fails_returns_mark_bad(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -111,7 +112,7 @@ class TestDiagnosticSchedulerSingleStep:
         assert "node-1" in decision.bad_node_ids
         assert "node-0" not in decision.bad_node_ids
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_all_nodes_fail_returns_mark_bad(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": False},
@@ -125,7 +126,7 @@ class TestDiagnosticSchedulerSingleStep:
 
 
 class TestDiagnosticSchedulerMultiStep:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_first_step_catches_bad_node(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": False, "intra": True},
@@ -140,7 +141,7 @@ class TestDiagnosticSchedulerMultiStep:
         assert decision.bad_node_ids == ["node-0"]
         assert "gpu" in decision.reason
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_first_passes_second_catches(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True, "intra": True},
@@ -155,7 +156,7 @@ class TestDiagnosticSchedulerMultiStep:
         assert decision.bad_node_ids == ["node-1"]
         assert "intra" in decision.reason
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_all_steps_pass_returns_notify(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True, "intra": True},
@@ -170,7 +171,7 @@ class TestDiagnosticSchedulerMultiStep:
 
 
 class TestDiagnosticSchedulerErrorHandling:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_agent_exception_treated_as_failure(self) -> None:
         class _RaisingAgent:
             async def run_diagnostic(
@@ -189,7 +190,7 @@ class TestDiagnosticSchedulerErrorHandling:
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-1" in decision.bad_node_ids
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_trigger_reason_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         agents: dict[str, FakeNodeAgent] = {}
         scheduler = DiagnosticScheduler(agents=agents, pipeline=[])
@@ -202,14 +203,14 @@ class TestDiagnosticSchedulerErrorHandling:
 
         assert "hang" in caplog.text
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_no_agents_returns_notify(self) -> None:
         scheduler = DiagnosticScheduler(agents={}, pipeline=["gpu"])
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="crash")
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_suspect_node_ids_limits_scope(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": False},
@@ -231,7 +232,7 @@ class TestDiagnosticSchedulerErrorHandling:
 class TestNodeAgentDynamicDiagnostics:
     """Test FtNodeAgent.set_diagnostic / remove_diagnostic."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_set_diagnostic_overrides_existing(self) -> None:
         original = StubDiagnostic(passed=True, details="original")
         agent = FtNodeAgent(node_id="node-0", diagnostics=[original])
@@ -250,7 +251,7 @@ class TestNodeAgentDynamicDiagnostics:
         finally:
             await agent.stop()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_remove_diagnostic(self) -> None:
         stub = StubDiagnostic(passed=True)
         agent = FtNodeAgent(node_id="node-0", diagnostics=[stub])
@@ -267,7 +268,7 @@ class TestNodeAgentDynamicDiagnostics:
         finally:
             await agent.stop()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_remove_nonexistent_is_noop(self) -> None:
         agent = FtNodeAgent(node_id="node-0")
         try:
@@ -279,7 +280,7 @@ class TestNodeAgentDynamicDiagnostics:
 class TestDiagnosticSchedulerInterMachine:
     """Tests for the inter-machine diagnostic step with cross-comparison."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_inter_machine_all_pass(self) -> None:
         agents = make_fake_agents({
             "node-0": {}, "node-1": {}, "node-2": {},
@@ -293,7 +294,7 @@ class TestDiagnosticSchedulerInterMachine:
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_inter_machine_one_bad_node(self) -> None:
         # 3 nodes: A, B, C. Pairs: (A,B), (B,C), (C,A)
         # A is bad → pairs (A,B) and (C,A) fail, (B,C) passes
@@ -311,7 +312,7 @@ class TestDiagnosticSchedulerInterMachine:
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_inter_machine_cannot_localize_all_fail(self) -> None:
         agents = make_fake_agents({
             "node-0": {}, "node-1": {}, "node-2": {},
@@ -325,7 +326,7 @@ class TestDiagnosticSchedulerInterMachine:
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_inter_machine_two_nodes_pair_fails(self) -> None:
         agents = make_fake_agents({"node-0": {}, "node-1": {}})
         scheduler = DiagnosticScheduler(
@@ -338,7 +339,7 @@ class TestDiagnosticSchedulerInterMachine:
         # 2 nodes, both fail → all nodes equal failure count → can't localize
         assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_inter_machine_single_node_skipped(self) -> None:
         agents = make_fake_agents({"node-0": {}})
         scheduler = DiagnosticScheduler(
@@ -371,7 +372,7 @@ class TestDiagnosticSchedulerInterMachine:
 
         assert _BASE_PORT == 29500
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_inter_machine_diagnostic_exception(self) -> None:
         # If diag.run() raises, the pair should fail
         agents = make_fake_agents({
@@ -467,7 +468,7 @@ class TestCrossCompare:
 class TestDiagnosticSchedulerLiveAgents:
     """Test scheduler with real FtNodeAgent instances (not FakeNodeAgent)."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_scheduler_with_real_node_agents(self) -> None:
         stub = StubDiagnostic(passed=True, details="all good")
         agent0 = FtNodeAgent(node_id="node-0", diagnostics=[stub])
@@ -485,7 +486,7 @@ class TestDiagnosticSchedulerLiveAgents:
             await agent0.stop()
             await agent1.stop()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_scheduler_with_mismatched_diagnostic_type(self) -> None:
         good = StubDiagnostic(passed=True)
         bad = StubDiagnostic(passed=False, details="gpu broken", diagnostic_type="failing")
@@ -516,7 +517,7 @@ class TestDiagnosticSchedulerLiveAgents:
 
 
 class TestStackTracePreStep:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_hang_trigger_runs_stack_trace(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -527,16 +528,10 @@ class TestStackTracePreStep:
             "node-1": {1: 200},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+        ]) as mock_diag_cls:
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
@@ -549,7 +544,7 @@ class TestStackTracePreStep:
             assert mock_diag_cls.call_count == 2
             assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_crash_trigger_skips_stack_trace(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -575,7 +570,7 @@ class TestStackTracePreStep:
             mock_diag_cls.assert_not_called()
             assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_no_rank_pids_provider_skips_stack_trace(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -595,7 +590,7 @@ class TestStackTracePreStep:
             mock_diag_cls.assert_not_called()
             assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_stack_trace_suspect_limits_pipeline_scope(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": False},
@@ -608,17 +603,11 @@ class TestStackTracePreStep:
             "node-2": {2: 300},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
@@ -631,7 +620,7 @@ class TestStackTracePreStep:
             assert decision.action == ActionType.MARK_BAD_AND_RESTART
             assert decision.bad_node_ids == ["node-2"]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_stack_trace_no_suspect_runs_on_all(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -642,16 +631,10 @@ class TestStackTracePreStep:
             "node-1": {1: 200},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
@@ -663,7 +646,7 @@ class TestStackTracePreStep:
 
             assert decision.action == ActionType.NOTIFY_HUMAN
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_collection_failure_makes_node_suspect(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -674,16 +657,10 @@ class TestStackTracePreStep:
             "node-1": {1: 200},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=False, details="failed to collect"),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=False, details="failed to collect"),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
@@ -696,7 +673,7 @@ class TestStackTracePreStep:
             assert decision.action == ActionType.MARK_BAD_AND_RESTART
             assert "node-1" in decision.bad_node_ids
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_stack_trace_exception_makes_node_suspect(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -709,17 +686,11 @@ class TestStackTracePreStep:
             "node-2": {2: 300},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                RuntimeError("py-spy crashed"),
-                make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            RuntimeError("py-spy crashed"),
+            make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
@@ -733,7 +704,7 @@ class TestStackTracePreStep:
             assert "node-1" in decision.bad_node_ids
             assert "node-0" not in decision.bad_node_ids
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_hang_merges_trace_suspects_with_existing(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -746,17 +717,11 @@ class TestStackTracePreStep:
             "node-2": {2: 300},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],

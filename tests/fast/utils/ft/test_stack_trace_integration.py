@@ -6,7 +6,7 @@ stack trace results.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -18,13 +18,14 @@ from tests.fast.utils.ft.conftest import (
     make_fake_agents,
     make_rank_pids_provider,
     make_trace_result,
+    mock_stack_trace_diagnostic,
 )
 
 
 class TestHangWithStackTraceSuspect:
     """Full pipeline: hang trigger → stack trace identifies suspect → pipeline runs on suspect only."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_hang_suspects_from_trace_only_run_gpu_diagnostic(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -37,17 +38,11 @@ class TestHangWithStackTraceSuspect:
             "node-2": {4: 300, 5: 301},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
@@ -60,7 +55,7 @@ class TestHangWithStackTraceSuspect:
             assert decision.action == ActionType.MARK_BAD_AND_RESTART
             assert decision.bad_node_ids == ["node-2"]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_hang_all_traces_same_runs_pipeline_on_all(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -73,17 +68,11 @@ class TestHangWithStackTraceSuspect:
             "node-2": {2: 300},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
@@ -99,7 +88,7 @@ class TestHangWithStackTraceSuspect:
 class TestCrashSkipsStackTrace:
     """Non-hang triggers should skip the stack trace pre-step entirely."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_crash_trigger_no_stack_trace(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -130,7 +119,7 @@ class TestCrashSkipsStackTrace:
 class TestHangWithCollectionFailure:
     """When stack trace collection fails for a node, that node becomes suspect."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_failed_collection_node_is_suspect(self) -> None:
         agents = make_fake_agents({
             "node-0": {"gpu": True},
@@ -143,17 +132,11 @@ class TestHangWithCollectionFailure:
             "node-2": {2: 300},
         })
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.scheduler.StackTraceDiagnostic"
-        ) as mock_diag_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(side_effect=[
-                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                make_trace_result("node-1", passed=False, details="py-spy failed"),
-                make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-            ])
-            mock_diag_cls.return_value = mock_instance
-
+        with mock_stack_trace_diagnostic([
+            make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+            make_trace_result("node-1", passed=False, details="py-spy failed"),
+            make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+        ]):
             scheduler = DiagnosticScheduler(
                 agents=agents,
                 pipeline=["gpu"],
