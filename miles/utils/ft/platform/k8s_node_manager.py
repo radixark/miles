@@ -8,8 +8,8 @@ from kubernetes_asyncio.client import ApiClient, CoreV1Api
 
 logger = logging.getLogger(__name__)
 
-LABEL_KEY = "ft.miles/disabled"
-REASON_LABEL_KEY = "ft.miles/disabled-reason"
+LABEL_KEY = "ft.miles.io/disabled"
+REASON_LABEL_KEY = "ft.miles.io/disabled-reason"
 
 
 class K8sNodeManager:
