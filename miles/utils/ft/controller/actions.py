@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
-from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_orchestrator.helpers import (
     retry_async,
@@ -12,6 +12,7 @@ from miles.utils.ft.controller.recovery_orchestrator.helpers import (
 )
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models._fault import Decision
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.protocols.platform import (
     DiagnosticSchedulerProtocol,
     NodeManagerProtocol,
@@ -22,12 +23,22 @@ from miles.utils.ft.protocols.platform import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class PlatformDeps:
+    """Bundles platform-level dependencies shared across action handlers."""
+
+    node_manager: NodeManagerProtocol
+    training_job: TrainingJobProtocol
+    metric_store: MetricQueryProtocol
+    mini_wandb: MiniWandb
+    notifier: NotificationProtocol | None
+    diagnostic_scheduler: DiagnosticSchedulerProtocol
+    controller_exporter: ControllerExporter | None
+
+
 async def handle_mark_bad_and_restart(
     decision: Decision,
-    node_manager: NodeManagerProtocol,
-    training_job: TrainingJobProtocol,
-    mini_wandb: MiniWandb,
-    notifier: NotificationProtocol | None,
+    deps: PlatformDeps,
 ) -> None:
     logger.warning(
         "decision_mark_bad_and_restart bad_node_ids=%s reason=%s",
@@ -36,7 +47,7 @@ async def handle_mark_bad_and_restart(
     failed_nodes: list[str] = []
     for node_id in decision.bad_node_ids:
         result = await retry_async(
-            lambda nid=node_id: node_manager.mark_node_bad(
+            lambda nid=node_id: deps.node_manager.mark_node_bad(
                 nid, reason=decision.reason,
             ),
             description=f"mark_node_bad({node_id})",
@@ -48,27 +59,21 @@ async def handle_mark_bad_and_restart(
         msg = f"mark_node_bad failed for nodes: {failed_nodes}"
         logger.error("mark_bad_partial_failure %s", msg)
         await safe_notify(
-            notifier, title="Mark-Bad Failure", content=msg,
+            deps.notifier, title="Mark-Bad Failure", content=msg,
         )
 
-    restart_ok = await stop_clear_submit(training_job, mini_wandb)
+    restart_ok = await stop_clear_submit(deps.training_job, deps.mini_wandb)
     if not restart_ok:
         msg = "stop_clear_submit failed after mark_bad_and_restart"
         logger.error(msg)
         await safe_notify(
-            notifier, title="Restart Failure", content=msg,
+            deps.notifier, title="Restart Failure", content=msg,
         )
 
 
 async def handle_enter_recovery(
     decision: Decision,
-    node_manager: NodeManagerProtocol,
-    training_job: TrainingJobProtocol,
-    metric_store: MetricQueryProtocol,
-    mini_wandb: MiniWandb,
-    notifier: NotificationProtocol | None,
-    diagnostic_scheduler: DiagnosticSchedulerProtocol,
-    controller_exporter: ControllerExporter | None,
+    deps: PlatformDeps,
 ) -> RecoveryOrchestrator:
     logger.warning(
         "decision_enter_recovery trigger=%s reason=%s",
@@ -76,13 +81,13 @@ async def handle_enter_recovery(
     )
     return RecoveryOrchestrator(
         trigger=decision.trigger,
-        node_manager=node_manager,
-        training_job=training_job,
-        metric_store=metric_store,
-        mini_wandb=mini_wandb,
-        notifier=notifier,
-        diagnostic_scheduler=diagnostic_scheduler,
-        controller_exporter=controller_exporter,
+        node_manager=deps.node_manager,
+        training_job=deps.training_job,
+        metric_store=deps.metric_store,
+        mini_wandb=deps.mini_wandb,
+        notifier=deps.notifier,
+        diagnostic_scheduler=deps.diagnostic_scheduler,
+        controller_exporter=deps.controller_exporter,
     )
 
 

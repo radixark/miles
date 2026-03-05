@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from miles.utils.ft.controller.actions import (
+    PlatformDeps,
     handle_enter_recovery,
     handle_mark_bad_and_restart,
     handle_notify_human,
@@ -355,14 +356,18 @@ class FtController:
                 action=decision.action.value, trigger=trigger_str,
             )
 
+        deps = PlatformDeps(
+            node_manager=self._node_manager,
+            training_job=self._training_job,
+            metric_store=self._metric_store,
+            mini_wandb=self._mini_wandb,
+            notifier=self._notifier,
+            diagnostic_scheduler=self._diagnostic_scheduler,
+            controller_exporter=self._controller_exporter,
+        )
+
         if decision.action == ActionType.MARK_BAD_AND_RESTART:
-            await handle_mark_bad_and_restart(
-                decision=decision,
-                node_manager=self._node_manager,
-                training_job=self._training_job,
-                mini_wandb=self._mini_wandb,
-                notifier=self._notifier,
-            )
+            await handle_mark_bad_and_restart(decision=decision, deps=deps)
         elif decision.action == ActionType.ENTER_RECOVERY:
             now = datetime.now(timezone.utc)
             self._recovery_history.append((decision.trigger, now))
@@ -391,14 +396,7 @@ class FtController:
 
             self._recovery_start_time = time.monotonic()
             self._recovery_orchestrator = await handle_enter_recovery(
-                decision=decision,
-                node_manager=self._node_manager,
-                training_job=self._training_job,
-                metric_store=self._metric_store,
-                mini_wandb=self._mini_wandb,
-                notifier=self._notifier,
-                diagnostic_scheduler=self._diagnostic_scheduler,
-                controller_exporter=self._controller_exporter,
+                decision=decision, deps=deps,
             )
         elif decision.action == ActionType.NOTIFY_HUMAN:
             await handle_notify_human(
