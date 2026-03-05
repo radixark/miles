@@ -83,8 +83,22 @@ class K8sNodeManager:
 
 
 def query_bad_nodes() -> list[str]:
-    """Synchronous helper: query K8s for bad-node names. Returns [] on failure."""
+    """Synchronous helper: query K8s for bad-node names. Returns [] on failure.
+
+    Raises RuntimeError if called from within an async context (running event
+    loop) since asyncio.run() cannot be nested.
+    """
     import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "query_bad_nodes() cannot be called from within a running event loop; "
+            "use 'await K8sNodeManager().get_bad_nodes()' instead"
+        )
 
     try:
         return asyncio.run(K8sNodeManager().get_bad_nodes())
