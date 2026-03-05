@@ -102,6 +102,7 @@ class RecoveryOrchestrator:
         handler = handlers.get(ctx.phase)
         if handler is None:
             return None
+
         return await handler()
 
     def _check_global_timeout(self) -> bool:
