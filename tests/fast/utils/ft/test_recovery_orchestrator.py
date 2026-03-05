@@ -575,3 +575,67 @@ class TestExporterIntegration:
 
         phase_value = get_sample_value(registry, CONTROLLER_RECOVERY_PHASE)
         assert phase_value == RECOVERY_PHASE_TO_INT[RecoveryPhase.REATTEMPTING]
+
+
+class TestStepWhenDoneIsNoop:
+    def test_step_after_done_does_not_change_state(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator()
+        orch._context.phase = RecoveryPhase.DONE
+        history_before = list(orch.phase_history)
+
+        asyncio.run(orch.step())
+
+        assert orch.phase == RecoveryPhase.DONE
+        assert orch.phase_history == history_before
+
+
+class TestDispatchPhaseUnknown:
+    def test_unknown_phase_returns_none_no_transition(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator()
+        orch._context.phase = RecoveryPhase.DONE
+        asyncio.run(orch.step())
+        assert orch.phase == RecoveryPhase.DONE
+
+
+class TestAddBadNodesEscalation:
+    def test_add_bad_nodes_during_reattempting_escalates(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator()
+        orch._context.phase = RecoveryPhase.REATTEMPTING
+        orch._context.bad_node_ids = ["node-0"]
+
+        orch.add_bad_nodes(["node-1"])
+
+        assert orch.phase == RecoveryPhase.EVICT_AND_RESTART
+        assert "node-0" in orch.bad_node_ids
+        assert "node-1" in orch.bad_node_ids
+
+    def test_add_bad_nodes_during_monitoring_escalates(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator()
+        orch._context.phase = RecoveryPhase.MONITORING
+        orch._context.bad_node_ids = []
+
+        orch.add_bad_nodes(["node-2"])
+
+        assert orch.phase == RecoveryPhase.EVICT_AND_RESTART
+        assert "node-2" in orch.bad_node_ids
+
+    def test_add_duplicate_bad_nodes_is_noop(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator()
+        orch._context.phase = RecoveryPhase.REATTEMPTING
+        orch._context.bad_node_ids = ["node-0"]
+        phase_before = orch.phase
+
+        orch.add_bad_nodes(["node-0"])
+
+        assert orch.phase == phase_before
+        assert orch.bad_node_ids == ["node-0"]
+
+    def test_add_bad_nodes_during_diagnosing_does_not_escalate(self) -> None:
+        orch, _, _, _, _ = _make_orchestrator()
+        orch._context.phase = RecoveryPhase.DIAGNOSING
+        orch._context.bad_node_ids = []
+
+        orch.add_bad_nodes(["node-3"])
+
+        assert orch.phase == RecoveryPhase.DIAGNOSING
+        assert "node-3" in orch.bad_node_ids
