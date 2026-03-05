@@ -157,6 +157,15 @@ class FtController:
         exporter_address: str,
         pid: int | None = None,
     ) -> None:
+        if not run_id:
+            raise ValueError("run_id must be non-empty")
+        if not node_id:
+            raise ValueError("node_id must be non-empty")
+        if world_size <= 0:
+            raise ValueError(f"world_size must be positive, got {world_size}")
+        if rank < 0 or rank >= world_size:
+            raise ValueError(f"rank must be in [0, {world_size}), got {rank}")
+
         if run_id != self._active_run_id:
             logger.info(
                 "new_run_registered run_id=%s previous_run_id=%s",
