@@ -10,7 +10,10 @@ import httpx
 import polars as pl
 import pytest
 
-from miles.utils.ft.controller.prometheus_client_store import PrometheusClient
+from miles.utils.ft.controller.prometheus_client_store import (
+    PrometheusClient,
+    _format_duration,
+)
 
 
 def _make_response(json_data: dict[str, Any], status_code: int = 200) -> httpx.Response:
@@ -448,3 +451,24 @@ class TestRangeFunctionQueries:
 
         assert df.shape[0] == 1
         assert df["value"][0] == 5.0
+
+
+class TestFormatDuration:
+    def test_exact_days(self) -> None:
+        assert _format_duration(timedelta(days=1)) == "1d"
+        assert _format_duration(timedelta(days=7)) == "7d"
+
+    def test_exact_hours(self) -> None:
+        assert _format_duration(timedelta(hours=1)) == "1h"
+        assert _format_duration(timedelta(hours=12)) == "12h"
+
+    def test_exact_minutes(self) -> None:
+        assert _format_duration(timedelta(minutes=5)) == "5m"
+        assert _format_duration(timedelta(minutes=30)) == "30m"
+
+    def test_fallback_to_seconds(self) -> None:
+        assert _format_duration(timedelta(seconds=45)) == "45s"
+        assert _format_duration(timedelta(minutes=1, seconds=30)) == "90s"
+
+    def test_non_even_hours_falls_to_seconds(self) -> None:
+        assert _format_duration(timedelta(hours=1, minutes=30)) == "5400s"

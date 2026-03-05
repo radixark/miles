@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -68,6 +68,39 @@ class TestBuildNotifier:
                 notifier = _build_notifier(platform_mode="k8s-ray")
         assert notifier is None
         assert "no_notifier_configured" in caplog.text
+
+
+class TestLauncherAsRayActor:
+    def test_as_ray_actor_creates_detached_actor(self) -> None:
+        mock_actor_handle = MagicMock()
+        mock_options = MagicMock()
+        mock_options.remote.return_value = mock_actor_handle
+
+        with (
+            patch("miles.utils.ft.launcher.FtControllerActor") as mock_cls,
+            patch("miles.utils.ft.launcher.asyncio.run") as mock_asyncio_run,
+        ):
+            mock_cls.options.return_value = mock_options
+            result = runner.invoke(app, ["--platform", "stub", "--as-ray-actor"])
+
+        assert result.exit_code == 0, result.output
+        mock_cls.options.assert_called_once_with(name="ft_controller", lifetime="detached")
+        mock_options.remote.assert_called_once()
+        mock_actor_handle.run.remote.assert_called_once()
+        mock_asyncio_run.assert_not_called()
+
+    def test_inline_mode_calls_asyncio_run(self) -> None:
+        with (
+            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
+            patch("miles.utils.ft.launcher.asyncio.run") as mock_asyncio_run,
+            patch("miles.utils.ft.launcher.ControllerExporter.start"),
+        ):
+            mock_controller = MagicMock()
+            mock_build.return_value = mock_controller
+            result = runner.invoke(app, ["--platform", "stub"])
+
+        assert result.exit_code == 0, result.output
+        mock_asyncio_run.assert_called_once_with(mock_controller.run())
 
 
 class TestLauncherWiring:
