@@ -37,7 +37,7 @@ from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
 if TYPE_CHECKING:
-    from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
+    from miles.utils.ft.agents.core.megatron_agent import FtMegatronAgent
 
 logger = logging.getLogger(__name__)
 
