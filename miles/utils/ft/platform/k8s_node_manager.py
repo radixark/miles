@@ -88,9 +88,10 @@ class K8sNodeManager:
         return names
 
 
-def query_bad_nodes() -> list[str]:
-    """Synchronous helper: query K8s for bad-node names. Returns [] on failure.
+def query_bad_nodes() -> list[str] | None:
+    """Synchronous helper: query K8s for bad-node names.
 
+    Returns a list of node names on success, or None if the query failed.
     Raises RuntimeError if called from within an async context (running event
     loop) since asyncio.run() cannot be nested.
     """
@@ -117,4 +118,4 @@ def query_bad_nodes() -> list[str]:
         return asyncio.run(_query())
     except Exception:
         logger.warning("Failed to query K8s bad nodes", exc_info=True)
-        return []
+        return None

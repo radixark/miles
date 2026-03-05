@@ -135,7 +135,7 @@ class TestQueryBadNodesSyncHelper:
 
         assert result == ["node-a", "node-b"]
 
-    def test_returns_empty_on_exception(self) -> None:
+    def test_returns_none_on_exception(self) -> None:
         with patch(
             "miles.utils.ft.platform.k8s_node_manager.K8sNodeManager"
         ) as mock_cls:
@@ -147,4 +147,4 @@ class TestQueryBadNodesSyncHelper:
 
             result = query_bad_nodes()
 
-        assert result == []
+        assert result is None
