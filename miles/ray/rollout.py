@@ -247,7 +247,6 @@ class RolloutManager:
             return
         total = len(self.all_rollout_engines)
         alive = sum(1 for e in self.all_rollout_engines if e is not None)
-        monitor_stats = self._health_monitor.get_stats()
         step = compute_rollout_step(self.args, rollout_id)
         tracking_utils.log(
             self.args,
@@ -255,8 +254,7 @@ class RolloutManager:
                 "fault_tolerance/alive_engines": alive,
                 "fault_tolerance/dead_engines": total - alive,
                 "fault_tolerance/alive_ratio": alive / total if total > 0 else 1.0,
-                "fault_tolerance/cumulative_kills": monitor_stats["total_kills"],
-                "fault_tolerance/cumulative_cascade_limited": monitor_stats["total_cascade_limited"],
+                "fault_tolerance/cumulative_kills": self._health_monitor.total_kills,
                 "rollout/step": step,
             },
             step_key="rollout/step",

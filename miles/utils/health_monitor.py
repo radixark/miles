@@ -7,38 +7,6 @@ import ray
 logger = logging.getLogger(__name__)
 
 
-def compute_kill_list(
-    failed_engine_ids: list[int],
-    total_engines: int,
-    max_kill_ratio: float,
-) -> list[int]:
-    """Determine which engines to kill given failure list and anti-cascade constraints.
-
-    Args:
-        failed_engine_ids: Engine IDs that failed health checks this round.
-        total_engines: Total number of rollout engines (including dead ones).
-        max_kill_ratio: Maximum fraction of total engines to kill in a single round (anti-cascade).
-
-    Returns:
-        Sorted list of engine IDs to actually kill.
-    """
-    if not failed_engine_ids:
-        return []
-
-    kill_list = sorted(set(failed_engine_ids))
-
-    # Anti-cascade: cap kills per round to prevent mass kill from transient failures
-    max_kills = max(1, int(total_engines * max_kill_ratio))
-    if len(kill_list) > max_kills:
-        logger.warning(
-            f"Anti-cascade: {len(kill_list)} engines to kill but limiting to {max_kills} this round "
-            f"(max_kill_ratio={max_kill_ratio})"
-        )
-        kill_list = kill_list[:max_kills]
-
-    return kill_list
-
-
 class RolloutHealthMonitor:
     """Health monitor for rollout engines.
 
@@ -66,9 +34,7 @@ class RolloutHealthMonitor:
         self._is_checking_enabled = False  # Track if health checking should be active
 
         self._max_kill_ratio_per_round = getattr(args, "rollout_max_kill_ratio_per_round", 0.5)
-
         self.total_kills = 0
-        self.total_cascade_limited = 0
 
     def start(self) -> bool:
         """Start the health monitor thread. Called once during initialization.
@@ -139,13 +105,6 @@ class RolloutHealthMonitor:
     def is_checking_enabled(self) -> bool:
         """Return whether health checking is currently enabled (not paused)."""
         return self._is_checking_enabled
-
-    def get_stats(self) -> dict:
-        """Return fault tolerance statistics for metrics reporting."""
-        return {
-            "total_kills": self.total_kills,
-            "total_cascade_limited": self.total_cascade_limited,
-        }
 
     def _should_stop(self) -> bool:
         return (self._stop_event is not None and self._stop_event.is_set()) or (
@@ -230,17 +189,15 @@ class RolloutHealthMonitor:
         if not failed_engine_ids:
             return
 
-        total_engines = len(engines)
-        raw_count = len(failed_engine_ids)
-
-        kill_list = compute_kill_list(
-            failed_engine_ids=failed_engine_ids,
-            total_engines=total_engines,
-            max_kill_ratio=self._max_kill_ratio_per_round,
-        )
-
-        if len(kill_list) < raw_count:
-            self.total_cascade_limited += raw_count - len(kill_list)
+        # Anti-cascade: cap kills per round to prevent mass kill from transient failures
+        kill_list = sorted(set(failed_engine_ids))
+        max_kills = max(1, int(len(engines) * self._max_kill_ratio_per_round))
+        if len(kill_list) > max_kills:
+            logger.warning(
+                f"Anti-cascade: {len(kill_list)} engines to kill but limiting to {max_kills} this round "
+                f"(max_kill_ratio={self._max_kill_ratio_per_round})"
+            )
+            kill_list = kill_list[:max_kills]
 
         self.total_kills += len(kill_list)
 
