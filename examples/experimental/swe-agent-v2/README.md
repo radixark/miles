@@ -383,7 +383,7 @@ Harbor's Docker containers are configured with `--network swe-net` via the `HARB
 
 1. **Harbor install**: `python -c "from harbor.trial.trial import Trial"` in swe-env
 2. **Task prep**: `ls /root/harbor_tasks/swebench/ | head` — verify directories exist
-3. **Single trial**: `curl -X POST http://localhost:11000/run -d '{"base_url": "http://miles:30000/sessions/test/v1", "model": "hosted_vserllm/model", "instance_id": "django__django-13741"}'`
+3. **Single trial**: `curl -X POST http://localhost:11000/run -d '{"base_url": "http://miles:30000/sessions/test/v1", "model": "hosted_vllm/model", "instance_id": "django__django-13741"}'`
 4. **Token format**: Verify session records contain TITO fields
 5. **Full training**: Launch run.sh, verify rollouts with non-zero rewards
 6. **Comparison**: Reward distribution should be similar to previous swegym_runner baseline

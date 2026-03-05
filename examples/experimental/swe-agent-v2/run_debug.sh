@@ -19,10 +19,10 @@ export PYTHONBUFFERED=1
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 # Harbor server URL
-export SWE_AGENT_URL="${SWE_AGENT_URL:-http://swe-env-maocheng:11000}"
+export SWE_AGENT_URL="${SWE_AGENT_URL:-http://swe_env:11000}"
 export HARBOR_TASKS_DIR="${HARBOR_TASKS_DIR:-/root/harbor_tasks/swebench}"
 # Docker containers spawned by Harbor need to reach Miles Router via Docker network
-export MILES_ROUTER_EXTERNAL_HOST="${MILES_ROUTER_EXTERNAL_HOST:-miles-maocheng}"
+export MILES_ROUTER_EXTERNAL_HOST="${MILES_ROUTER_EXTERNAL_HOST:-miles}"
 
 source /root/miles/scripts/models/qwen3-4B.sh
 

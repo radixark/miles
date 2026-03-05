@@ -171,6 +171,17 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
 
     try:
         tasks_dir = os.getenv("HARBOR_TASKS_DIR", "/root/harbor_tasks/swebench")
+
+        # Validate instance_id to prevent path traversal
+        if not request.instance_id or "/" in request.instance_id or request.instance_id.startswith("."):
+            logger.error(f"Invalid instance_id: {request.instance_id!r}")
+            return {
+                "reward": 0.0,
+                "exit_status": "InvalidInstanceId",
+                "agent_metrics": {},
+                "eval_report": {},
+            }
+
         task_path = Path(tasks_dir) / request.instance_id
 
         if not task_path.exists():

@@ -40,7 +40,7 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
 # -- Dynamic Filter --
 
 
-def dynamic_filter(args, samples: list[Sample], **kwargs) -> DynamicFilterOutput:
+def dynamic_filter(args, samples: list[Sample] | list[list[Sample]], **kwargs) -> DynamicFilterOutput:
     """Reject entire group if any sample is aborted."""
     flat = samples if not isinstance(samples[0], list) else [s for group in samples for s in group]
     if any(s.status == Sample.Status.ABORTED for s in flat):

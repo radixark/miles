@@ -27,7 +27,7 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 # Harbor server URL (mini-swe-agent server with Harbor Trial API)
-export SWE_AGENT_URL="${SWE_AGENT_URL:-http://swe-env-maocheng:11000}"
+export SWE_AGENT_URL="${SWE_AGENT_URL:-http://swe_env:11000}"
 # Harbor task directories (created by prepare_harbor_tasks.py --docker-network swe-net)
 export HARBOR_TASKS_DIR="${HARBOR_TASKS_DIR:-/root/harbor_tasks/swebench}"
 
