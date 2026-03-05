@@ -203,9 +203,9 @@ class TestFtNodeAgentCollectionLoop:
         )
         await agent.start()
 
-        assert len(agent._collector_tasks) == 1
+        assert len(agent._collection_loop.tasks) == 1
         await agent.stop()
-        assert len(agent._collector_tasks) == 0
+        assert len(agent._collection_loop.tasks) == 0
 
     @pytest.mark.anyio
     async def test_failing_collector_does_not_crash_loop(self) -> None:
@@ -246,8 +246,8 @@ class TestFtNodeAgentCollectionLoop:
             await agent.start()
             await asyncio.sleep(0.3)
 
-            assert len(agent._collector_tasks) == 2
-            assert all(not t.done() for t in agent._collector_tasks)
+            assert len(agent._collection_loop.tasks) == 2
+            assert all(not t.done() for t in agent._collection_loop.tasks)
 
             address = agent.get_exporter_address()
             async with httpx.AsyncClient() as client:
@@ -338,10 +338,10 @@ class TestFtNodeAgentLifecycle:
         )
         try:
             await agent.start()
-            first_tasks = list(agent._collector_tasks)
+            first_tasks = list(agent._collection_loop.tasks)
             await agent.start()
 
-            assert agent._collector_tasks == first_tasks
+            assert agent._collection_loop.tasks == first_tasks
         finally:
             await agent.stop()
 
@@ -365,7 +365,7 @@ class TestFtNodeAgentLifecycle:
         agent = FtNodeAgent(node_id="test-node-empty-collectors", collectors=[])
         try:
             await agent.start()
-            assert len(agent._collector_tasks) == 0
+            assert len(agent._collection_loop.tasks) == 0
         finally:
             await agent.stop()
 

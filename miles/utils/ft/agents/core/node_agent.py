@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
+from miles.utils.ft.agents.utils.metric_collection_loop import MetricCollectionLoop
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.models import DiagnosticResult, UnknownDiagnosticError
 from miles.utils.ft.protocols.agents import DiagnosticProtocol
@@ -20,17 +21,20 @@ class FtNodeAgent:
         diagnostics: list[DiagnosticProtocol] | None = None,
     ) -> None:
         self._node_id = node_id
-        self._collectors = collectors or []
-        self._stopped = False
 
+        prepared_collectors = list(collectors or [])
         if collect_interval_seconds is not None:
-            for collector in self._collectors:
+            for collector in prepared_collectors:
                 collector.collect_interval = collect_interval_seconds
 
         self._diagnostics: dict[str, DiagnosticProtocol] = {d.diagnostic_type: d for d in (diagnostics or [])}
 
         self._exporter = PrometheusExporter()
-        self._collector_tasks: list[asyncio.Task[None]] = []
+        self._collection_loop = MetricCollectionLoop(
+            node_id=node_id,
+            collectors=prepared_collectors,
+            exporter=self._exporter,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -40,35 +44,10 @@ class FtNodeAgent:
         return self._exporter.get_address()
 
     async def start(self) -> None:
-        if self._stopped or self._collector_tasks:
-            return
-
-        loop = asyncio.get_running_loop()
-        for collector in self._collectors:
-            task = loop.create_task(self._run_single_collector(collector))
-            self._collector_tasks.append(task)
+        await self._collection_loop.start()
 
     async def stop(self) -> None:
-        if self._stopped:
-            return
-        self._stopped = True
-
-        for task in self._collector_tasks:
-            task.cancel()
-        await asyncio.gather(*self._collector_tasks, return_exceptions=True)
-        self._collector_tasks.clear()
-
-        for collector in self._collectors:
-            try:
-                await collector.close()
-            except Exception:
-                logger.warning(
-                    "Collector %s.close() failed on node %s",
-                    type(collector).__name__,
-                    self._node_id,
-                    exc_info=True,
-                )
-
+        await self._collection_loop.stop()
         self._exporter.shutdown()
 
     # ------------------------------------------------------------------
@@ -130,22 +109,3 @@ class FtNodeAgent:
                 details="diagnostic raised exception",
             )
 
-    # ------------------------------------------------------------------
-    # Per-collector background task
-    # ------------------------------------------------------------------
-
-    async def _run_single_collector(self, collector: BaseCollector) -> None:
-        collector_name = type(collector).__name__
-        while True:
-            try:
-                result = await collector.collect()
-                self._exporter.update_metrics(result.metrics)
-            except Exception:
-                logger.warning(
-                    "Collector %s failed on node %s",
-                    collector_name,
-                    self._node_id,
-                    exc_info=True,
-                )
-
-            await asyncio.sleep(collector.collect_interval)
