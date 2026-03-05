@@ -104,12 +104,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
-        ft_enabled = self.args.use_fault_tolerance
-
         self._ft_agent = FtMegatronAgent.maybe_create(
             rank=dist.get_rank(),
             world_size=dist.get_world_size(),
-            enabled=ft_enabled,
+            enabled="train" in self.args.ft_components,
         )
 
         if role == "critic":
@@ -493,7 +491,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if self.args.use_fault_tolerance:
+        if "rollout" in self.args.ft_components:
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.recover_rollout_engines.remote())
             dist.barrier(group=get_gloo_group())

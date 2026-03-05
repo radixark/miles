@@ -23,7 +23,7 @@ def init_tracking(args, primary: bool = True, **kwargs) -> None:
     else:
         wandb_utils.init_wandb_secondary(args, **kwargs)
 
-    if args.use_fault_tolerance and _ft_tracking_agent is None:
+    if "train" in args.ft_components and _ft_tracking_agent is None:
         _ft_tracking_agent = FtTrackingAgent()
 
 

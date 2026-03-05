@@ -92,10 +92,10 @@ class RolloutManager:
 
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
-        if self.args.use_fault_tolerance:
+        if "rollout" in self.args.ft_components:
             self._health_monitor = RolloutHealthMonitor(self, args)
-            self._health_monitor.start()  # Start the monitor thread (in paused state)
-            self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
+            self._health_monitor.start()
+            self._ci_fault_injection_pending = self.args.ci_test
 
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -193,11 +193,11 @@ class RolloutManager:
         )
 
     def health_monitoring_pause(self):
-        if self.args.use_fault_tolerance and self._health_monitor is not None:
+        if "rollout" in self.args.ft_components and self._health_monitor is not None:
             self._health_monitor.pause()
 
     def health_monitoring_resume(self):
-        if self.args.use_fault_tolerance and self._health_monitor is not None:
+        if "rollout" in self.args.ft_components and self._health_monitor is not None:
             self._health_monitor.resume()
 
     def onload_weights(self):

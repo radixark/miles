@@ -17,6 +17,19 @@ from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
+_FT_CHOICES = ["rollout", "train"]
+_FT_DEFAULT_COMPONENTS: frozenset[str] = frozenset({"rollout"})
+
+
+def _resolve_ft_components(args: argparse.Namespace) -> frozenset[str]:
+    if not args.use_fault_tolerance:
+        if args.ft_components is not None:
+            logger.warning("--ft-components is ignored without --use-fault-tolerance")
+        return frozenset()
+    if args.ft_components is None:
+        return _FT_DEFAULT_COMPONENTS
+    return frozenset(args.ft_components)
+
 
 def reset_arg(parser, name, **kwargs):
     """
@@ -466,7 +479,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-fault-tolerance",
                 action="store_true",
                 default=False,
-                help="Whether to enable the fault tolerance function during rollout.",
+                help="Enable fault tolerance. Use --ft-components to select which components.",
+            )
+            parser.add_argument(
+                "--ft-components",
+                nargs="+",
+                default=None,
+                choices=_FT_CHOICES,
+                help="FT components to enable (requires --use-fault-tolerance). "
+                "Choices: rollout, train. Default when omitted: rollout.",
             )
             parser.add_argument(
                 "--rollout-health-check-interval",
@@ -1845,6 +1866,8 @@ def miles_validate_args(args):
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+
+    args.ft_components = _resolve_ft_components(args)
 
 
 def hf_validate_args(args, hf_config):
