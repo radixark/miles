@@ -39,7 +39,7 @@ def _patch_sys_block(fake_path: Path) -> Iterator[None]:
             return fake_path
         return real_path(p)
 
-    with patch("miles.utils.ft.agents._support.collectors.disk.Path", side_effect=_factory):
+    with patch("miles.utils.ft.agents.collectors.disk.Path", side_effect=_factory):
         yield
 
 
