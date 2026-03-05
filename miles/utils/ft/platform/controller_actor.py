@@ -81,6 +81,11 @@ def build_ft_controller(
     Accepts either an ``FtControllerConfig`` or keyword arguments that
     are forwarded to the config constructor.
     """
+    if config is not None and kwargs:
+        raise ValueError(
+            "Cannot provide both 'config' and keyword arguments to build_ft_controller; "
+            "use one or the other"
+        )
     if config is None:
         config = FtControllerConfig(**kwargs)  # type: ignore[arg-type]
 
