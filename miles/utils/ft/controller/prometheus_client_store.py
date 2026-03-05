@@ -8,12 +8,13 @@ from typing import Any
 import httpx
 import polars as pl
 
+from miles.utils.ft.controller.metric_store_mixin import RangeAggregationMixin
 from miles.utils.ft.controller.mini_prometheus.query import EMPTY_INSTANT, EMPTY_RANGE
 
 logger = logging.getLogger(__name__)
 
 
-class PrometheusClient:
+class PrometheusClient(RangeAggregationMixin):
     """MetricStoreProtocol implementation backed by a real Prometheus HTTP API.
 
     Each typed method builds the corresponding PromQL query internally,
@@ -42,36 +43,6 @@ class PrometheusClient:
         promql = _build_selector(metric_name, label_filters)
         return self._range_query_raw(promql, window)
 
-    def changes(
-        self, metric_name: str, window: timedelta,
-        label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame:
-        return self._range_function_query("changes", metric_name, window, label_filters)
-
-    def count_over_time(
-        self, metric_name: str, window: timedelta,
-        label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame:
-        return self._range_function_query("count_over_time", metric_name, window, label_filters)
-
-    def avg_over_time(
-        self, metric_name: str, window: timedelta,
-        label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame:
-        return self._range_function_query("avg_over_time", metric_name, window, label_filters)
-
-    def min_over_time(
-        self, metric_name: str, window: timedelta,
-        label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame:
-        return self._range_function_query("min_over_time", metric_name, window, label_filters)
-
-    def max_over_time(
-        self, metric_name: str, window: timedelta,
-        label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame:
-        return self._range_function_query("max_over_time", metric_name, window, label_filters)
-
     async def start(self) -> None:
         pass
 
@@ -82,7 +53,7 @@ class PrometheusClient:
     # Internal: query execution
     # -------------------------------------------------------------------
 
-    def _range_function_query(
+    def _dispatch_range_function(
         self,
         func_name: str,
         metric_name: str,
