@@ -36,6 +36,7 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 # durations=0 will display all tests execution time, sorted in ascending order starting from from the slowest one.
 # -vv will also display tests with duration = 0.00s
 addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
