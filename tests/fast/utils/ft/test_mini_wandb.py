@@ -1,5 +1,4 @@
-import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 
@@ -126,8 +125,11 @@ class TestMiniWandbMaxAgeEviction:
     def test_max_age_evicts_old_records(self) -> None:
         wandb = MiniWandb(active_run_id="run-1", max_age=timedelta(seconds=1))
 
-        wandb.log_step(run_id="run-1", rank=0, step=1, metrics={"loss": 3.0})
-        time.sleep(1.5)
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=2)
+        wandb.log_step(
+            run_id="run-1", rank=0, step=1, metrics={"loss": 3.0},
+            receive_time=old_time,
+        )
         wandb.log_step(run_id="run-1", rank=0, step=2, metrics={"loss": 2.0})
 
         result = wandb.query_last_n_steps(metric_name="loss", rank=0, last_n=10)
