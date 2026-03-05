@@ -71,6 +71,9 @@ class FtController:
     # Public API
     # -------------------------------------------------------------------
 
+    async def submit_initial_training(self) -> str:
+        return await self._training_job.submit_training()
+
     async def run(self) -> None:
         logger.info("controller_start tick_interval=%s", self._tick_interval)
         scrape_task = await start_metric_store_task(self._metric_store)
