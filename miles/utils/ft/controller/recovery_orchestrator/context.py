@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from miles.utils.ft.models import RecoveryPhase
 
 PENDING_TIMEOUT_SECONDS: int = 300
-MAX_RETRIES: int = 3
 
 
 @dataclass

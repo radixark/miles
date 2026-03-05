@@ -12,6 +12,11 @@ from miles.utils.ft.controller.mini_prometheus.protocol import (
     ScrapeTargetManagerProtocol,
 )
 from miles.utils.ft.controller.mini_wandb import MiniWandb
+from miles.utils.ft.controller.recovery_helpers import (
+    retry_async,
+    safe_notify,
+    stop_clear_submit,
+)
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models import ActionType, Decision, RECOVERY_PHASE_TO_INT
 from miles.utils.ft.platform.protocols import (
@@ -322,12 +327,13 @@ class FtController:
                 decision.bad_node_ids, decision.reason,
             )
             for node_id in decision.bad_node_ids:
-                await self._node_manager.mark_node_bad(
-                    node_id, reason=decision.reason,
+                await retry_async(
+                    lambda nid=node_id: self._node_manager.mark_node_bad(
+                        nid, reason=decision.reason,
+                    ),
+                    description=f"mark_node_bad({node_id})",
                 )
-            await self._training_job.stop_training()
-            self._mini_wandb.clear()
-            await self._training_job.submit_training()
+            await stop_clear_submit(self._training_job, self._mini_wandb)
             return
 
         if decision.action == ActionType.ENTER_RECOVERY:
@@ -352,15 +358,9 @@ class FtController:
                 "decision_notify_human reason=%s",
                 decision.reason,
             )
-            if self._notifier is not None:
-                try:
-                    await self._notifier.send(
-                        title="Fault Alert",
-                        content=decision.reason,
-                        severity="critical",
-                    )
-                except Exception:
-                    logger.exception("notifier_send_failed")
+            await safe_notify(
+                self._notifier, title="Fault Alert", content=decision.reason,
+            )
             return
 
         raise ValueError(f"Unknown action type: {decision.action}")
