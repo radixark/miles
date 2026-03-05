@@ -158,17 +158,10 @@ def _extract_metrics(result) -> dict[str, Any]:
 async def _run_trial(request: RunRequest) -> dict[str, Any]:
     """Run a Harbor trial for a single SWE-bench instance."""
     try:
+        from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
         from harbor.trial.trial import Trial
-        from harbor.models.trial.config import (
-            AgentConfig,
-            EnvironmentConfig,
-            TaskConfig,
-            TrialConfig,
-        )
     except ImportError:
-        logger.error(
-            "Harbor not installed. Install with: pip install harbor-framework"
-        )
+        logger.error("Harbor not installed. Install with: pip install harbor-framework")
         return {
             "reward": 0.0,
             "exit_status": "ImportError",
@@ -241,8 +234,7 @@ async def run_instance(request: RunRequest) -> RunResponse:
     async with get_semaphore():
         result = await _run_trial(request)
     logger.info(
-        f"Instance {request.instance_id} finished: "
-        f"exit_status={result['exit_status']}, reward={result['reward']}"
+        f"Instance {request.instance_id} finished: " f"exit_status={result['exit_status']}, reward={result['reward']}"
     )
     return RunResponse(**result)
 

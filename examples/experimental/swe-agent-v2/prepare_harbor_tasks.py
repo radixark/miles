@@ -67,7 +67,10 @@ def _get_docker_image(instance_id: str, metadata: dict) -> str:
 
 
 def _create_task_dir(
-    instance_id: str, metadata: dict, output_dir: Path, docker_network: str | None = None,
+    instance_id: str,
+    metadata: dict,
+    output_dir: Path,
+    docker_network: str | None = None,
 ) -> Path:
     """Create a Harbor task directory for a single SWE-bench instance."""
     task_dir = output_dir / instance_id
@@ -80,7 +83,8 @@ def _create_task_dir(
     # task.toml — metadata
     repo = metadata.get("repo", "")
     version = metadata.get("version", "")
-    task_toml = textwrap.dedent(f"""\
+    task_toml = textwrap.dedent(
+        f"""\
         [task]
         name = "{instance_id}"
         repo = "{repo}"
@@ -90,25 +94,29 @@ def _create_task_dir(
         timeout = 1800
         step_limit = 250
         cost_limit = 3
-    """)
+    """
+    )
     (task_dir / "task.toml").write_text(task_toml)
 
     # environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir(exist_ok=True)
     docker_image = _get_docker_image(instance_id, metadata)
-    dockerfile = textwrap.dedent(f"""\
+    dockerfile = textwrap.dedent(
+        f"""\
         FROM {docker_image}
         # SWE-bench evaluation environment for {instance_id}
         # Base image contains the repo at the correct commit with conda env set up.
-    """)
+    """
+    )
     (env_dir / "Dockerfile").write_text(dockerfile)
 
     # environment/docker-compose.yaml — network override so the container
     # can reach Miles Router.  Harbor's DockerEnvironment merges this file
     # with its base compose files automatically.
     if docker_network:
-        compose_yaml = textwrap.dedent(f"""\
+        compose_yaml = textwrap.dedent(
+            f"""\
             services:
               main:
                 networks:
@@ -116,7 +124,8 @@ def _create_task_dir(
             networks:
               {docker_network}:
                 external: true
-        """)
+        """
+        )
         (env_dir / "docker-compose.yaml").write_text(compose_yaml)
 
     # tests/
@@ -137,7 +146,8 @@ def _create_task_dir(
     (tests_dir / "config.json").write_text(json.dumps(test_config, indent=2))
 
     # tests/test.sh — grading script using swebench harness
-    test_sh = textwrap.dedent(f"""\
+    test_sh = textwrap.dedent(
+        f"""\
         #!/bin/bash
         # Run tests and grade using swebench harness
         set -e
@@ -166,7 +176,8 @@ def _create_task_dir(
         result = grade_instance(config)
         print(json.dumps(result))
         "
-    """)
+    """
+    )
     (tests_dir / "test.sh").write_text(test_sh)
     os.chmod(tests_dir / "test.sh", 0o755)
 
@@ -175,13 +186,15 @@ def _create_task_dir(
     if patch:
         sol_dir = task_dir / "solution"
         sol_dir.mkdir(exist_ok=True)
-        solve_sh = textwrap.dedent(f"""\
+        solve_sh = textwrap.dedent(
+            f"""\
             #!/bin/bash
             # Oracle solution — apply gold patch
             cat << 'PATCH_EOF' | git apply
             {patch}
             PATCH_EOF
-        """)
+        """
+        )
         (sol_dir / "solve.sh").write_text(solve_sh)
         os.chmod(sol_dir / "solve.sh", 0o755)
 
@@ -236,19 +249,20 @@ def convert(input_path: str, output_dir: str, docker_network: str | None = None)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert SWE-bench JSONL to Harbor task directories"
-    )
+    parser = argparse.ArgumentParser(description="Convert SWE-bench JSONL to Harbor task directories")
     parser.add_argument(
-        "--input", required=True,
+        "--input",
+        required=True,
         help="Path to SWE-bench training JSONL (e.g. /root/swe_train.jsonl)",
     )
     parser.add_argument(
-        "--output", required=True,
+        "--output",
+        required=True,
         help="Output directory for Harbor tasks (e.g. /root/harbor_tasks/swebench/)",
     )
     parser.add_argument(
-        "--docker-network", default=None,
+        "--docker-network",
+        default=None,
         help="External Docker network for containers to join (e.g. swe-net). "
         "Generates a docker-compose.yaml override in each task's environment/ dir.",
     )
