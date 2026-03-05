@@ -128,6 +128,111 @@ class TestGetStatus:
         status = harness.controller.get_status()
         assert status.active_run_id == "run-42"
 
+    def test_recovery_in_progress_false_during_monitoring(self) -> None:
+        harness = make_test_controller()
+        status = harness.controller.get_status()
+        assert status.recovery_in_progress is False
+        assert status.bad_nodes_confirmed is False
+
+    @pytest.mark.asyncio
+    async def test_recovery_in_progress_true_during_recovery(self) -> None:
+        detector = FixedDecisionDetector(decision=Decision(
+            action=ActionType.ENTER_RECOVERY,
+            trigger="crash",
+            reason="test",
+        ))
+        harness = make_test_controller(detectors=[detector])
+
+        await harness.controller._tick()
+        await harness.controller._tick()
+        status = harness.controller.get_status()
+
+        assert status.recovery_in_progress is True
+
+    @pytest.mark.asyncio
+    async def test_bad_nodes_confirmed_false_in_early_phases(self) -> None:
+        """During REATTEMPTING/MONITORING/DIAGNOSING, bad_nodes_confirmed is False."""
+        detector = FixedDecisionDetector(decision=Decision(
+            action=ActionType.ENTER_RECOVERY,
+            trigger="crash",
+            reason="test",
+        ))
+        harness = make_test_controller(detectors=[detector])
+
+        await harness.controller._tick()
+        await harness.controller._tick()
+        status = harness.controller.get_status()
+
+        assert status.recovery_in_progress is True
+        assert status.recovery_phase in {
+            RecoveryPhase.CHECK_ALERTS,
+            RecoveryPhase.REATTEMPTING,
+            RecoveryPhase.MONITORING,
+            RecoveryPhase.DIAGNOSING,
+        }
+        assert status.bad_nodes_confirmed is False
+
+    def test_bad_nodes_confirmed_true_in_evict_phase(self) -> None:
+        """When recovery phase is EVICT_AND_RESTART, bad_nodes_confirmed is True."""
+        harness = make_test_controller()
+        controller = harness.controller
+
+        mock_orch = _MockOrchestrator(
+            phase=RecoveryPhase.EVICT_AND_RESTART,
+            phase_history=[RecoveryPhase.CHECK_ALERTS, RecoveryPhase.EVICT_AND_RESTART],
+            bad_node_ids=["node-1"],
+        )
+        controller._recovery_orchestrator = mock_orch
+
+        status = controller.get_status()
+        assert status.recovery_in_progress is True
+        assert status.bad_nodes_confirmed is True
+
+    def test_bad_nodes_confirmed_true_in_notify_phase(self) -> None:
+        harness = make_test_controller()
+        controller = harness.controller
+
+        mock_orch = _MockOrchestrator(
+            phase=RecoveryPhase.NOTIFY,
+            phase_history=[RecoveryPhase.CHECK_ALERTS, RecoveryPhase.NOTIFY],
+            bad_node_ids=["node-2"],
+        )
+        controller._recovery_orchestrator = mock_orch
+
+        status = controller.get_status()
+        assert status.recovery_in_progress is True
+        assert status.bad_nodes_confirmed is True
+
+    def test_bad_nodes_confirmed_false_in_diagnosing_phase(self) -> None:
+        harness = make_test_controller()
+        controller = harness.controller
+
+        mock_orch = _MockOrchestrator(
+            phase=RecoveryPhase.DIAGNOSING,
+            phase_history=[RecoveryPhase.CHECK_ALERTS, RecoveryPhase.DIAGNOSING],
+            bad_node_ids=["node-3"],
+        )
+        controller._recovery_orchestrator = mock_orch
+
+        status = controller.get_status()
+        assert status.recovery_in_progress is True
+        assert status.bad_nodes_confirmed is False
+
+
+class _MockOrchestrator:
+    """Minimal stand-in for RecoveryOrchestrator used in get_status() tests."""
+
+    def __init__(
+        self,
+        *,
+        phase: RecoveryPhase,
+        phase_history: list[RecoveryPhase],
+        bad_node_ids: list[str],
+    ) -> None:
+        self.phase = phase
+        self.phase_history = phase_history
+        self.bad_node_ids = bad_node_ids
+
 
 class TestAgentManagement:
     def test_register_agent_adds_to_dict(self) -> None:
