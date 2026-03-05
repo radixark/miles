@@ -32,6 +32,7 @@ class RolloutHealthMonitor:
         self._check_interval = args.rollout_health_check_interval
         self._check_timeout = args.rollout_health_check_timeout
         self._check_first_wait = args.rollout_health_check_first_wait
+        self._max_kills_per_round = getattr(args, "max_engine_kills_per_round", 0) or 0
         self._need_first_wait = True  # Need to wait after each resume
         self._is_checking_enabled = False  # Track if health checking should be active
 
@@ -138,17 +139,27 @@ class RolloutHealthMonitor:
                 break
 
     def _run_health_checks(self) -> None:
+        kills_this_round = 0
         for rollout_engine_id, engine in enumerate(self._rollout_manager.rollout_engines):
             if self._stop_event is not None and self._stop_event.is_set():
                 break
             if self._pause_event is not None and self._pause_event.is_set():
                 break
-            self._check_engine_health(rollout_engine_id, engine)
+            if self._max_kills_per_round > 0 and kills_this_round >= self._max_kills_per_round:
+                logger.warning(
+                    f"Reached max kills per round ({self._max_kills_per_round}), "
+                    f"deferring remaining checks to next round"
+                )
+                break
+            killed = self._check_engine_health(rollout_engine_id, engine)
+            if killed:
+                kills_this_round += 1
 
-    def _check_engine_health(self, rollout_engine_id, engine) -> None:
+    def _check_engine_health(self, rollout_engine_id, engine) -> bool:
+        """Check health of a single engine. Returns True if the engine was killed."""
         if engine is None:
             logger.info(f"Skipping health check for engine {rollout_engine_id} (None)")
-            return
+            return False
 
         try:
             ray.get(engine.health_generate.remote(timeout=self._check_timeout))
@@ -157,8 +168,10 @@ class RolloutHealthMonitor:
                 f"Health check failed for rollout engine {rollout_engine_id} (ray timeout or error). Killing actor. Exception: {e}"
             )
             self._kill_engine(rollout_engine_id=rollout_engine_id)
+            return True
         else:
             logger.debug(f"Health check passed for rollout engine {rollout_engine_id}")
+            return False
 
     def _kill_engine(self, rollout_engine_id: int):
         logger.info(f"Killing engine group {rollout_engine_id}...")

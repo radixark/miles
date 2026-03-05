@@ -321,6 +321,17 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     logger.info(f"Abort request for {urls}")
     await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
 
+    cleanup_path = getattr(args, "abort_env_cleanup_function_path", None)
+    if cleanup_path:
+        try:
+            cleanup_fn = load_function(cleanup_path)
+            await asyncio.wait_for(cleanup_fn(rollout_id=rollout_id), timeout=60)
+            logger.info("Environment cleanup completed")
+        except asyncio.TimeoutError:
+            logger.warning("Environment cleanup timed out after 60s")
+        except Exception as e:
+            logger.warning(f"Environment cleanup failed: {e}")
+
     # make sure all the pending tasks are finished
     count = 0
     while state.pendings:
@@ -375,6 +386,12 @@ async def generate_rollout_async(
 
     rollout_step_timeout = getattr(args, "rollout_step_timeout", 0) or 0
     rollout_start_time = time.monotonic()
+    max_episode_retries = getattr(args, "max_episode_retries", 0) or 0
+    straggler_multiplier = getattr(args, "straggler_timeout_multiplier", 0) or 0
+
+    task_start_times: dict[asyncio.Task, float] = {}
+    completed_durations: list[float] = []
+    ft_metrics = {"retries": 0, "retries_exhausted": 0, "stragglers_cancelled": 0}
 
     data = []
     all_data = []
@@ -391,22 +408,45 @@ async def generate_rollout_async(
                 break
 
         while state.remaining_batch_size < target_data_size:
-            # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
             state.submit_generate_tasks(samples)
+            now = time.monotonic()
+            for t in state.pendings:
+                if t not in task_start_times:
+                    task_start_times[t] = now
 
         wait_timeout = None
         if rollout_step_timeout > 0:
             wait_timeout = max(0.1, rollout_step_timeout - (time.monotonic() - rollout_start_time))
 
-        # wait for the generation to finish
         done, state.pendings = await asyncio.wait(
             state.pendings, return_when=asyncio.FIRST_COMPLETED, timeout=wait_timeout
         )
         if not done:
             continue
+
+        _cancel_stragglers(state, task_start_times, completed_durations, straggler_multiplier, ft_metrics)
+
         for task in done:
+            elapsed_task = time.monotonic() - task_start_times.pop(task, time.monotonic())
             group: list[Sample] = task.result()
+
+            if _is_env_failure(group) and max_episode_retries > 0:
+                retry_count = _get_retry_count(group)
+                if retry_count < max_episode_retries:
+                    _prepare_group_for_retry(group, retry_count + 1)
+                    state.submit_generate_tasks([group])
+                    now = time.monotonic()
+                    for t in state.pendings:
+                        if t not in task_start_times:
+                            task_start_times[t] = now
+                    ft_metrics["retries"] += 1
+                    logger.info(f"Retrying episode (attempt {retry_count + 1}/{max_episode_retries})")
+                    continue
+                else:
+                    ft_metrics["retries_exhausted"] += 1
+
+            completed_durations.append(elapsed_task)
 
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
@@ -423,11 +463,12 @@ async def generate_rollout_async(
                 state.remaining_batch_size -= 1
                 continue
 
-            # add the samples to the data
-            # NOTE: here we have not stored all the unused samples back to the data buffer.
             if len(data) < target_data_size:
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
+
+    if any(v > 0 for v in ft_metrics.values()):
+        logger.info(f"Fault tolerance metrics: {ft_metrics}")
 
     pbar.close()
     if data:
@@ -465,6 +506,69 @@ async def generate_rollout_async(
         process_func(args, all_samples, data_source)
 
     return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
+
+
+def _is_env_failure(group: list[Sample]) -> bool:
+    """Check if a group failed due to an environment issue (worth retrying)."""
+    return any(
+        getattr(s, "metadata", None)
+        and isinstance(s.metadata, dict)
+        and s.metadata.get("abort_reason") in ("episode_timeout", "tool_timeout", "env_crash")
+        for s in (group if not isinstance(group[0], list) else [s for sub in group for s in sub])
+    )
+
+
+def _get_retry_count(group: list[Sample]) -> int:
+    sample = group[0][0] if isinstance(group[0], list) else group[0]
+    return (getattr(sample, "metadata", None) or {}).get("_retry_count", 0)
+
+
+def _prepare_group_for_retry(group: list[Sample], retry_count: int) -> None:
+    for sample in (group if not isinstance(group[0], list) else [s for sub in group for s in sub]):
+        sample.status = Sample.Status.PENDING
+        sample.response = ""
+        sample.response_length = 0
+        sample.tokens = []
+        sample.rollout_log_probs = []
+        sample.loss_mask = []
+        sample.reward = None
+        if not hasattr(sample, "metadata") or sample.metadata is None:
+            sample.metadata = {}
+        sample.metadata["_retry_count"] = retry_count
+        sample.metadata.pop("abort_reason", None)
+
+
+def _cancel_stragglers(
+    state,
+    task_start_times: dict,
+    completed_durations: list[float],
+    multiplier: float,
+    ft_metrics: dict,
+) -> None:
+    """Cancel tasks that are taking much longer than the P90 of completed tasks."""
+    if multiplier <= 0 or len(completed_durations) < 10:
+        return
+
+    total_submitted = len(completed_durations) + len(state.pendings)
+    if total_submitted == 0 or len(completed_durations) / total_submitted < 0.8:
+        return
+
+    p90 = float(np.percentile(completed_durations, 90))
+    threshold = p90 * multiplier
+    now = time.monotonic()
+
+    to_cancel = []
+    for task in list(state.pendings):
+        start = task_start_times.get(task)
+        if start and (now - start) > threshold:
+            to_cancel.append(task)
+
+    for task in to_cancel:
+        task.cancel()
+        state.pendings.discard(task)
+        task_start_times.pop(task, None)
+        ft_metrics["stragglers_cancelled"] += 1
+        logger.warning(f"Cancelled straggler task (threshold={threshold:.1f}s, p90={p90:.1f}s)")
 
 
 EVAL_PROMPT_DATASET = {}

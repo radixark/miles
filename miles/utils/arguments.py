@@ -518,6 +518,35 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "If exceeded, remaining tasks are aborted and training continues with collected data. "
                 "Set to 0 to disable (default). Recommended for large-scale: 7200 (2 hours).",
             )
+            parser.add_argument(
+                "--max-episode-retries",
+                type=int,
+                default=0,
+                help="Max number of retries for an episode that fails due to environment errors "
+                "(e.g. Docker crash, tool timeout). Set to 0 to disable (default). Recommended: 2.",
+            )
+            parser.add_argument(
+                "--max-engine-kills-per-round",
+                type=int,
+                default=0,
+                help="Max number of engines the health monitor can kill in a single check round. "
+                "Prevents cascading kills from transient network issues. "
+                "Set to 0 for unlimited (default). Recommended: total_engines // 4.",
+            )
+            parser.add_argument(
+                "--straggler-timeout-multiplier",
+                type=float,
+                default=0,
+                help="Cancel episodes that exceed P90_completion_time * this multiplier once 80%% of "
+                "episodes are done. Set to 0 to disable (default). Recommended: 3.0.",
+            )
+            parser.add_argument(
+                "--abort-env-cleanup-function-path",
+                type=str,
+                default=None,
+                help="Path to an async cleanup function called during abort to release external "
+                "environment resources (e.g. Docker containers). Signature: async def cleanup(rollout_id: int).",
+            )
             return parser
 
         # data
