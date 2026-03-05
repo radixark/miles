@@ -1,5 +1,25 @@
 """
-Simple agentic demo with tool calling.
+Generic agentic generate function for agent-environment RL training.
+
+The agent logic is fully encapsulated in a user-provided async function
+(--custom-agent-function-path). This generate function only handles:
+  1. TITO session tracing (OpenAIEndpointTracer)
+  2. Converting session records to training samples
+  3. Multi-turn merge
+
+Agent function contract:
+  async def my_agent(
+      base_url: str,
+      prompt: ...,
+      request_kwargs: dict,
+      metadata: dict,       # sample.metadata — env-specific fields
+      **kwargs,
+  ) -> dict | None:
+      ...
+
+  Returning None means no extra metadata to attach.
+  Returning a dict merges it into every sample's metadata, so downstream
+  reward models (--custom-rm-path) can read whatever the agent left there.
 """
 
 import argparse
@@ -11,7 +31,6 @@ from typing import Any
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_hub.agentic_types import AgentResult
 from miles.rollout.generate_utils.openai_endpoint_utils import (
     OpenAIEndpointTracer,
     compute_samples_from_openai_records,
@@ -21,12 +40,6 @@ from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
-
-_STATUS_MAP = {
-    "completed": Sample.Status.COMPLETED,
-    "truncated": Sample.Status.TRUNCATED,
-    "aborted": Sample.Status.ABORTED,
-}
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
@@ -38,15 +51,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     ), f"Custom agent function {input.args.custom_agent_function_path} not found"
 
     # Get agent result from custom agent function
-    agent_result = await custom_agent_function(
+    agent_metadata = await custom_agent_function(
         base_url=tracer.base_url,
         prompt=input.sample.prompt,
         request_kwargs=build_chat_request_kwargs(input.sampling_params),
         metadata=input.sample.metadata,
     )
-
-    if agent_result is None:
-        agent_result = AgentResult()
 
     records = await tracer.collect_records()
 
@@ -54,43 +64,19 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
-        sample.reward = 0.0
         return GenerateFnOutput(samples=sample)
 
-    # Convert session records to samples, but now all rewards are 0.0
     samples = compute_samples_from_openai_records(input.sample, records, input.state.tokenizer)
-    
-    # Apply agent result to samples
-    _apply_agent_result(samples, agent_result)
+
+    if agent_metadata:
+        for s in samples:
+            s.metadata.update(agent_metadata)
 
     if not input.args.generate_multi_samples:
-        if any(s.status == Sample.Status.ABORTED for s in samples):
-            return GenerateFnOutput(samples=samples[-1])
         merged = merge_samples(samples, input.state.tokenizer)
         return GenerateFnOutput(samples=merged)
 
     return GenerateFnOutput(samples=samples)
-
-
-def _apply_agent_result(samples: list[Sample], result: AgentResult) -> None:
-    """Apply agent result (reward, status, metrics) to all samples."""
-    status = _STATUS_MAP.get(result.status)
-
-    for s in samples:
-        s.reward = result.reward
-        s.metadata.update({"reward": result.reward, **result.metadata})
-        if result.metrics:
-            s.metadata["agent_metrics"] = result.metrics
-
-    if status == Sample.Status.COMPLETED:
-        for s in samples[:-1]:
-            s.status = Sample.Status.COMPLETED
-    elif status == Sample.Status.TRUNCATED:
-        samples[-1].status = Sample.Status.TRUNCATED
-    elif status == Sample.Status.ABORTED:
-        for s in samples:
-            s.status = Sample.Status.ABORTED
-            s.reward = 0.0
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
@@ -101,8 +87,8 @@ def _add_arguments(parser: argparse.ArgumentParser):
 generate.add_arguments = _add_arguments
 
 
-# Process keys to match ChatCompletionRequest input
 def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]:
+    """Convert Miles sampling params to OpenAI chat completion format."""
     request_kwargs = dict(sampling_params)
     key_map = {
         "max_new_tokens": "max_tokens",
@@ -115,8 +101,7 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
 
-    # Notice: Here we force the inference backend to return token information and start from 0
-    # The start len should be 0 to make sure prompt token ids and be correctly returned from SGLang.
+    # Force logprobs so the inference backend returns token IDs from position 0.
     request_kwargs["logprobs"] = True
     request_kwargs["logprob_start_len"] = 0
 
