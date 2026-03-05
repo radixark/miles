@@ -23,14 +23,18 @@ class K8sNodeManager:
         self._core_v1: CoreV1Api | None = None
 
     async def _ensure_client(self) -> CoreV1Api:
-        if self._core_v1 is None:
-            if self._api_client is None:
-                try:
-                    k8s_config.load_incluster_config()
-                except k8s_config.ConfigException:
-                    await k8s_config.load_kube_config()
-                self._api_client = ApiClient()
-            self._core_v1 = CoreV1Api(self._api_client)
+        if self._core_v1 is not None:
+            return self._core_v1
+
+        if self._api_client is None:
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                await k8s_config.load_kube_config()
+
+            self._api_client = ApiClient()
+
+        self._core_v1 = CoreV1Api(self._api_client)
         return self._core_v1
 
     async def mark_node_bad(self, node_id: str, reason: str) -> None:
@@ -40,9 +44,7 @@ class K8sNodeManager:
         )
         logger.info(
             "mark_node_bad node_id=%s reason=%s elapsed_seconds=%.3f",
-            node_id,
-            reason,
-            elapsed,
+            node_id, reason, elapsed,
         )
 
     async def unmark_node_bad(self, node_id: str) -> None:
@@ -52,8 +54,7 @@ class K8sNodeManager:
         )
         logger.info(
             "unmark_node_bad node_id=%s elapsed_seconds=%.3f",
-            node_id,
-            elapsed,
+            node_id, elapsed,
         )
 
     async def _patch_node_labels(
@@ -86,8 +87,7 @@ class K8sNodeManager:
         names = [node.metadata.name for node in node_list.items]
         logger.info(
             "get_bad_nodes count=%d elapsed_seconds=%.3f",
-            len(names),
-            elapsed,
+            len(names), elapsed,
         )
         return names
 
