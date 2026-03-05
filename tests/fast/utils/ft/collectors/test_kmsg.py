@@ -4,19 +4,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.fast.utils.ft.helpers import FakeKmsgReader
+import pytest
 
 from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
+from tests.fast.utils.ft.conftest import FakeKmsgReader
 
 
 class TestKmsgCollectorXid:
+    @pytest.mark.anyio
     async def test_xid_48_detected(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))
-        collector._reader = FakeKmsgReader(
-            [
-                "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
-            ]
-        )
+        collector._reader = FakeKmsgReader([
+            "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
+        ])
 
         result = await collector.collect()
         xid_samples = [m for m in result.metrics if m.name == "miles_ft_xid_code_recent"]
@@ -24,14 +24,13 @@ class TestKmsgCollectorXid:
         assert xid_samples[0].labels == {"xid": "48"}
         assert xid_samples[0].value == 1.0
 
+    @pytest.mark.anyio
     async def test_multiple_xid_codes(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))
-        collector._reader = FakeKmsgReader(
-            [
-                "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
-                "NVRM: Xid (PCI:0000:5e:00): 31, pid=5678",
-            ]
-        )
+        collector._reader = FakeKmsgReader([
+            "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
+            "NVRM: Xid (PCI:0000:5e:00): 31, pid=5678",
+        ])
 
         result = await collector.collect()
         xid_samples = [m for m in result.metrics if m.name == "miles_ft_xid_code_recent"]
@@ -39,6 +38,7 @@ class TestKmsgCollectorXid:
         xid_codes = {m.labels["xid"] for m in xid_samples}
         assert xid_codes == {"31", "48"}
 
+    @pytest.mark.anyio
     async def test_xid_window_expiry(self) -> None:
         collector = KmsgCollector(
             kmsg_path=Path("/dev/null"),
@@ -58,15 +58,14 @@ class TestKmsgCollectorXid:
         assert count_sample[0].value == 0.0
         assert count_sample[0].metric_type == "counter"
 
+    @pytest.mark.anyio
     async def test_xid_count_total(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))
-        collector._reader = FakeKmsgReader(
-            [
-                "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
-                "NVRM: Xid (PCI:0000:3b:00): 48, pid=5678",
-                "NVRM: Xid (PCI:0000:5e:00): 31, pid=9012",
-            ]
-        )
+        collector._reader = FakeKmsgReader([
+            "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
+            "NVRM: Xid (PCI:0000:3b:00): 48, pid=5678",
+            "NVRM: Xid (PCI:0000:5e:00): 31, pid=9012",
+        ])
 
         result = await collector.collect()
         count = [m for m in result.metrics if m.name == "miles_ft_xid_count_total"]
@@ -74,38 +73,61 @@ class TestKmsgCollectorXid:
         assert count[0].metric_type == "counter"
 
 
+    @pytest.mark.anyio
+    async def test_xid_stale_gauge_cleared(self) -> None:
+        collector = KmsgCollector(
+            kmsg_path=Path("/dev/null"),
+            xid_window_seconds=60.0,
+        )
+        collector._reader = FakeKmsgReader([
+            "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
+        ])
+
+        result1 = await collector.collect()
+        xid_samples_1 = [m for m in result1.metrics if m.name == "miles_ft_xid_code_recent"]
+        assert len(xid_samples_1) == 1
+        assert xid_samples_1[0].labels == {"xid": "48"}
+        assert xid_samples_1[0].value == 1.0
+
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        collector._xid_events[0] = (old_time, collector._xid_events[0][1])
+
+        result2 = await collector.collect()
+        xid_samples_2 = [m for m in result2.metrics if m.name == "miles_ft_xid_code_recent"]
+        assert len(xid_samples_2) == 1
+        assert xid_samples_2[0].labels == {"xid": "48"}
+        assert xid_samples_2[0].value == 0.0
+
+
 class TestKmsgCollectorKernelEvents:
+    @pytest.mark.anyio
     async def test_kernel_panic_detected(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))
-        collector._reader = FakeKmsgReader(
-            [
-                "6,1234,5678;Kernel panic - not syncing: Fatal exception",
-            ]
-        )
+        collector._reader = FakeKmsgReader([
+            "6,1234,5678;Kernel panic - not syncing: Fatal exception",
+        ])
 
         result = await collector.collect()
         kernel = [m for m in result.metrics if m.name == "miles_ft_kernel_event_count"]
         assert kernel[0].value == 1.0
 
+    @pytest.mark.anyio
     async def test_mce_detected(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))
-        collector._reader = FakeKmsgReader(
-            [
-                "MCE: CPU 0: Machine Check Exception: 4 Bank 5",
-            ]
-        )
+        collector._reader = FakeKmsgReader([
+            "MCE: CPU 0: Machine Check Exception: 4 Bank 5",
+        ])
 
         result = await collector.collect()
         kernel = [m for m in result.metrics if m.name == "miles_ft_kernel_event_count"]
         assert kernel[0].value == 1.0
 
+    @pytest.mark.anyio
     async def test_no_kernel_events(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))
-        collector._reader = FakeKmsgReader(
-            [
-                "Normal log message here",
-            ]
-        )
+        collector._reader = FakeKmsgReader([
+            "Normal log message here",
+        ])
 
         result = await collector.collect()
         kernel = [m for m in result.metrics if m.name == "miles_ft_kernel_event_count"]
@@ -113,19 +135,16 @@ class TestKmsgCollectorKernelEvents:
 
 
 class TestKmsgCollectorDmesgFallback:
+    @pytest.mark.anyio
     async def test_fallback_when_kmsg_unavailable(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/nonexistent/kmsg"))
         assert collector._reader is None
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = type(
-                "Result",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234\n",
-                },
-            )()
+            mock_run.return_value = type("Result", (), {
+                "returncode": 0,
+                "stdout": "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234\n",
+            })()
 
             result = await collector.collect()
 
@@ -135,6 +154,7 @@ class TestKmsgCollectorDmesgFallback:
 
 
 class TestDmesgTimeWindowBug:
+    @pytest.mark.anyio
     async def test_dmesg_failure_does_not_advance_time_window(self) -> None:
         """If dmesg subprocess fails, _last_dmesg_time must NOT advance,
         so the same time window is retried on the next collection cycle.
@@ -143,14 +163,10 @@ class TestDmesgTimeWindowBug:
         assert collector._reader is None
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = type(
-                "Result",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234\n",
-                },
-            )()
+            mock_run.return_value = type("Result", (), {
+                "returncode": 0,
+                "stdout": "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234\n",
+            })()
             await collector.collect()
 
         reader = collector._reader
@@ -162,19 +178,15 @@ class TestDmesgTimeWindowBug:
 
         assert reader._last_dmesg_time == time_after_success
 
+    @pytest.mark.anyio
     async def test_dmesg_nonzero_returncode_does_not_advance(self) -> None:
         """A non-zero returncode from dmesg should also preserve the time window."""
         collector = KmsgCollector(kmsg_path=Path("/nonexistent/kmsg"))
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = type(
-                "Result",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": "",
-                },
-            )()
+            mock_run.return_value = type("Result", (), {
+                "returncode": 0, "stdout": "",
+            })()
             await collector.collect()
 
         reader = collector._reader
@@ -182,14 +194,9 @@ class TestDmesgTimeWindowBug:
         time_after_first = reader._last_dmesg_time
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = type(
-                "Result",
-                (),
-                {
-                    "returncode": 1,
-                    "stdout": "",
-                },
-            )()
+            mock_run.return_value = type("Result", (), {
+                "returncode": 1, "stdout": "",
+            })()
             await collector.collect()
 
         assert reader._last_dmesg_time == time_after_first
