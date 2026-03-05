@@ -468,7 +468,10 @@ def make_fake_agents(
             )
             for diag_type, passed in results.items()
         }
-        agents[node_id] = FakeNodeAgent(diagnostic_results=diagnostic_results)
+        agents[node_id] = FakeNodeAgent(
+            diagnostic_results=diagnostic_results,
+            node_id=node_id,
+        )
     return agents
 
 
@@ -476,10 +479,35 @@ class FakeNodeAgent:
     def __init__(
         self,
         diagnostic_results: dict[str, DiagnosticResult] | None = None,
+        node_id: str = "fake",
     ) -> None:
         self._diagnostic_results = diagnostic_results or {}
+        self._base_results = dict(self._diagnostic_results)
+        self._node_id = node_id
         self.cleanup_called: bool = False
         self.cleanup_job_id: str | None = None
+
+    def set_diagnostic(self, diagnostic: BaseDiagnostic) -> None:
+        """Support dynamic diagnostic injection for inter-machine tests.
+
+        If a result for this diagnostic_type was already pre-configured
+        (e.g. via make_fake_agents), keep it.  Otherwise set a passing default.
+        """
+        if diagnostic.diagnostic_type not in self._diagnostic_results:
+            self._diagnostic_results[diagnostic.diagnostic_type] = DiagnosticResult(
+                diagnostic_type=diagnostic.diagnostic_type,
+                node_id=self._node_id,
+                passed=True,
+                details="dynamically injected",
+            )
+
+    def remove_diagnostic(self, diagnostic_type: str) -> None:
+        """Remove a dynamically injected diagnostic, restoring base config."""
+        base = self._base_results.get(diagnostic_type)
+        if base is not None:
+            self._diagnostic_results[diagnostic_type] = base
+        else:
+            self._diagnostic_results.pop(diagnostic_type, None)
 
     async def run_diagnostic(
         self, diagnostic_type: str, timeout_seconds: int = 120,
@@ -488,7 +516,7 @@ class FakeNodeAgent:
         if result is None:
             return DiagnosticResult(
                 diagnostic_type=diagnostic_type,
-                node_id="fake",
+                node_id=self._node_id,
                 passed=False,
                 details=f"unknown diagnostic type: {diagnostic_type}",
             )
