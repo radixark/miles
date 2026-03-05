@@ -65,6 +65,12 @@ class K8sNodeManager:
         await core_v1.patch_node(name=node_id, body=body)
         return time.monotonic() - start
 
+    async def aclose(self) -> None:
+        if self._api_client is not None:
+            await self._api_client.close()
+            self._api_client = None
+            self._core_v1 = None
+
     async def get_bad_nodes(self) -> list[str]:
         core_v1 = await self._ensure_client()
 
@@ -100,8 +106,15 @@ def query_bad_nodes() -> list[str]:
             "use 'await K8sNodeManager().get_bad_nodes()' instead"
         )
 
+    async def _query() -> list[str]:
+        manager = K8sNodeManager()
+        try:
+            return await manager.get_bad_nodes()
+        finally:
+            await manager.aclose()
+
     try:
-        return asyncio.run(K8sNodeManager().get_bad_nodes())
+        return asyncio.run(_query())
     except Exception:
         logger.warning("Failed to query K8s bad nodes", exc_info=True)
         return []
