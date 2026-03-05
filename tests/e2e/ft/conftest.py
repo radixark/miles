@@ -241,10 +241,18 @@ async def wait_for_recovery_complete(
 ) -> dict[str, Any]:
     """Poll get_status() until mode returns to 'monitoring'."""
     deadline = time.monotonic() + timeout
+    poll_count = 0
     while time.monotonic() < deadline:
         status = controller.get_status()
+        poll_count += 1
         if status["mode"] == "monitoring":
             return status
+        if poll_count % 6 == 0:
+            elapsed = timeout - (deadline - time.monotonic())
+            logger.info(
+                "wait_for_recovery_complete elapsed=%.0fs status=%s",
+                elapsed, status,
+            )
         await asyncio.sleep(poll_interval)
     raise TimeoutError(
         f"Recovery did not complete within {timeout}s, "
@@ -262,10 +270,18 @@ async def wait_for_training_stable(
     """Poll MiniWandb for N consecutive successful iterations."""
     baseline = get_iteration_count(mini_wandb=mini_wandb)
     deadline = time.monotonic() + timeout
+    poll_count = 0
     while time.monotonic() < deadline:
         current = get_iteration_count(mini_wandb=mini_wandb)
+        poll_count += 1
         if current - baseline >= n_iterations:
             return
+        if poll_count % 6 == 0:
+            elapsed = timeout - (deadline - time.monotonic())
+            logger.info(
+                "wait_for_training_stable elapsed=%.0fs progress=%d/%d",
+                elapsed, current - baseline, n_iterations,
+            )
         await asyncio.sleep(poll_interval)
     current = get_iteration_count(mini_wandb=mini_wandb)
     raise TimeoutError(
@@ -290,10 +306,18 @@ async def wait_for_recovery_phase(
 ) -> dict[str, Any]:
     """Poll get_status() until recovery_phase matches."""
     deadline = time.monotonic() + timeout
+    poll_count = 0
     while time.monotonic() < deadline:
         status = controller.get_status()
+        poll_count += 1
         if status.get("recovery_phase") == phase:
             return status
+        if poll_count % 6 == 0:
+            elapsed = timeout - (deadline - time.monotonic())
+            logger.info(
+                "wait_for_recovery_phase target='%s' elapsed=%.0fs status=%s",
+                phase, elapsed, status,
+            )
         await asyncio.sleep(poll_interval)
     raise TimeoutError(
         f"Did not reach recovery phase '{phase}' within {timeout}s, "
