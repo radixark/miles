@@ -4,7 +4,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from miles.utils.ft.models import Decision
+    from miles.utils.ft.models import Decision, TriggerType
 
 
 class JobStatus(str, Enum):
@@ -37,6 +37,6 @@ class NotificationProtocol(Protocol):
 class DiagnosticSchedulerProtocol(Protocol):
     async def run_diagnostic_pipeline(
         self,
-        trigger_reason: str,
+        trigger_reason: TriggerType,
         suspect_node_ids: list[str] | None = None,
     ) -> Decision: ...

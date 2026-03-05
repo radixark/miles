@@ -16,7 +16,7 @@ from miles.utils.ft.controller.recovery_orchestrator.phase_handlers import (
     step_notify,
     step_reattempting,
 )
-from miles.utils.ft.models import RecoveryPhase, RECOVERY_PHASE_TO_INT
+from miles.utils.ft.models import RecoveryPhase, RECOVERY_PHASE_TO_INT, TriggerType
 from miles.utils.ft.platform.protocols import (
     DiagnosticSchedulerProtocol,
     NodeManagerProtocol,
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class RecoveryOrchestrator:
     def __init__(
         self,
-        trigger: str,
+        trigger: TriggerType,
         node_manager: NodeManagerProtocol,
         training_job: TrainingJobProtocol,
         metric_store: MetricStoreProtocol,
@@ -62,7 +62,7 @@ class RecoveryOrchestrator:
         return self._context.phase
 
     @property
-    def trigger(self) -> str:
+    def trigger(self) -> TriggerType:
         return self._context.trigger
 
     @property

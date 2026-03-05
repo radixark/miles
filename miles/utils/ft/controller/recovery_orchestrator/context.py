@@ -3,14 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from miles.utils.ft.models import RecoveryPhase
+from miles.utils.ft.models import RecoveryPhase, TriggerType
 
 PENDING_TIMEOUT_SECONDS: int = 300
 
 
 @dataclass
 class RecoveryContext:
-    trigger: str
+    trigger: TriggerType
     phase: RecoveryPhase = RecoveryPhase.CHECK_ALERTS
     recovery_start_time: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc),
