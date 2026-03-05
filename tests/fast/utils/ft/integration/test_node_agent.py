@@ -4,7 +4,7 @@ from datetime import timedelta
 import pytest
 
 from miles.utils.ft.agents.core.node_agent import FtNodeAgent
-from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.models import MetricSample
 from tests.fast.utils.ft.conftest import TestCollector
 

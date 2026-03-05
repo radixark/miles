@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import polars as pl
 
-from miles.utils.ft.controller.hardware_checks import check_all_hardware_faults
+from miles.utils.ft.controller.detectors.hardware_checks import check_all_hardware_faults
 from miles.utils.ft.protocols.metrics import MetricStoreProtocol
 from miles.utils.ft.metric_names import NODE_NETWORK_UP
 from miles.utils.ft.models import NodeFault, unique_node_ids

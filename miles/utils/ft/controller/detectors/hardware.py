@@ -1,5 +1,5 @@
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.hardware_checks import (
+from miles.utils.ft.controller.detectors.hardware_checks import (
     CRITICAL_XID_CODES,
     DISK_AVAILABLE_THRESHOLD_BYTES,
     check_all_hardware_faults,

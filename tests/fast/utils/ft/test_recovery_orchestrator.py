@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from miles.utils.ft.controller.mini_prometheus import MiniPrometheus
-from miles.utils.ft.controller.mini_wandb import MiniWandb as MiniWandbCls
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb as MiniWandbCls
 from miles.utils.ft.controller.recovery_orchestrator import (
     RecoveryContext,
     RecoveryOrchestrator,
@@ -16,7 +16,7 @@ from miles.utils.ft.models import (
     RECOVERY_PHASE_TO_INT,
     RecoveryPhase,
 )
-from miles.utils.ft.protocols.platform import JobStatus
+from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticScheduler,
     FakeNodeManager,
