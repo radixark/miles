@@ -90,6 +90,7 @@ def get_batch(
     pad_multiplier: int = 128,
     qkv_format: str = "thd",
     get_position_ids: bool = False,
+    allgather_cp: bool = False,
 ) -> dict[str, torch.Tensor | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -135,22 +136,45 @@ def get_batch(
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
-        tokens = [slice_with_cp(t, pad_token_id, parallel_state, qkv_format) for t in tokens]
+        cp_rank = parallel_state.cp_rank
 
-        cu_seqlens = [0]
-        for t in tokens:
-            cu_seqlens.append(cu_seqlens[-1] + t.size(0))
+        if allgather_cp:
+            # DSA mode: concatenate all sequences first, then slice once with CP.
+            # We also pad the *global* concatenated stream to make per-rank chunks equal.
+            cu_seqlens_list: list[int] = [0]
+            for t in tokens:
+                cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
 
-        tokens = torch.cat(tokens)
+            tokens = torch.cat(tokens, dim=0)
 
-        # Always pad to reduce memory fragmentation and maybe make the computation faster
-        pad = (pad_size - tokens.size(0) % pad_size) % pad_size
-        if pad != 0:
-            tokens = F.pad(tokens, (0, pad), value=pad_token_id)
-            cu_seqlens.append(cu_seqlens[-1] + pad)
+            # Pad global stream so (1) divisible by cp_size (equal chunks),
+            # (2) divisible by pad_size (reduce fragmentation).
+            global_pad_size = cp_size * pad_size
+            pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
+            if pad != 0:
+                tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+                cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
-        # thd requires the cu_seqlens to be of the origin length
-        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
+            tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
+        else:
+            tokens = [slice_with_cp(t, pad_token_id, parallel_state, qkv_format) for t in tokens]
+
+            cu_seqlens = [0]
+            for t in tokens:
+                cu_seqlens.append(cu_seqlens[-1] + t.size(0))
+
+            tokens = torch.cat(tokens)
+
+            # Always pad to reduce memory fragmentation and maybe make the computation faster
+            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+            if pad != 0:
+                tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+                cu_seqlens.append(cu_seqlens[-1] + pad)
+
+            # thd requires the cu_seqlens to be of the origin length
+            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
 
         tokens = tokens.unsqueeze(0)
@@ -163,6 +187,7 @@ def get_batch(
     batch["tokens"] = tokens
 
     if get_position_ids:
+        assert not allgather_cp, "allgather CP is not supported for FSDP"
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
             seq_len = t.size(0)
@@ -190,12 +215,22 @@ def get_batch(
         strict=True,
     ):
         prompt_length = total_length - response_length
+        # Align mask to token stream positions (prompt_length-1 left pad, 1 right pad)
         loss_mask = F.pad(loss_mask, (prompt_length - 1, 1), value=0)
+        if allgather_cp:
+            loss_masks.append(loss_mask)
+            continue
         loss_mask = slice_with_cp(loss_mask, 0, parallel_state, qkv_format, max_seqlen)
         loss_masks.append(loss_mask)
 
     if qkv_format == "bshd":
         loss_masks = torch.stack(loss_masks)
+    elif qkv_format == "thd" and allgather_cp:
+        # DSA: concatenate first (same as tokens), pad globally (same pad as above), then slice once.
+        loss_masks = torch.cat(loss_masks, dim=0)
+        if pad != 0:
+            loss_masks = F.pad(loss_masks, (0, pad), value=0)
+        loss_masks = loss_masks.chunk(cp_size, dim=0)[cp_rank].unsqueeze(0)
     elif qkv_format == "thd":
         loss_masks = torch.cat(loss_masks)
         loss_masks = F.pad(loss_masks, (0, pad), value=0).unsqueeze(0)

@@ -59,12 +59,16 @@ async def execute_tool_call(name: str, params: dict) -> str:
     return TOOL_EXECUTORS[name](params)
 
 
+AGENTIC_RETURN_METADATA: dict[str, Any] | None = None
+
+
 async def run_agentic_tool_call(
     base_url: str,
     prompt: list[dict[str, Any]] | str,
     request_kwargs: dict[str, Any] | None = None,
     max_turns: int = 8,
-) -> None:
+    **kwargs,
+) -> dict[str, Any] | None:
     if AGENTIC_MAX_TURNS is not None:
         max_turns = AGENTIC_MAX_TURNS
     messages = deepcopy(prompt) if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
@@ -107,6 +111,13 @@ async def run_agentic_tool_call(
                     "name": name,
                 }
             )
+
+    return AGENTIC_RETURN_METADATA
+
+
+async def run_agentic_noop(**kwargs) -> None:
+    """Agent function that makes no model calls — for testing the no-records path."""
+    return None
 
 
 _SYSTEM_PROMPT = (

@@ -53,14 +53,6 @@ def setup_session_routes(app, router: "MilesRouter"):
         body = await request.body()
         request_body = json.loads(body) if body else {}
 
-        if router.args.miles_router_enable_token_input_for_chat_completions:
-            if "messages" in request_body and "input_ids" not in request_body:
-                prompt_token_ids = manager.calc_prompt_tokens(session_id, request_body["messages"])
-                if prompt_token_ids is None:
-                    return JSONResponse(status_code=404, content={"error": "session not found"})
-                request_body["input_ids"] = prompt_token_ids
-                body = json.dumps(request_body).encode("utf-8")
-
         result = await router._do_proxy(request, "v1/chat/completions", body=body)
 
         response = json.loads(result["response_body"])
@@ -71,10 +63,9 @@ def setup_session_routes(app, router: "MilesRouter"):
         if "logprobs" not in choice or "content" not in choice["logprobs"]:
             raise RuntimeError("logprobs must be in choice")
         logprobs_content = choice["logprobs"]["content"]
-
         for item in logprobs_content:
             if "token_id" not in item:
-                raise RuntimeError("token_id must be in item")
+                raise RuntimeError("token_id must be in choice's logprobs content item")
         record = SessionRecord(
             timestamp=time.time(),
             method=request.method,
