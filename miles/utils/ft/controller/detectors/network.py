@@ -16,6 +16,11 @@ class NetworkAlertDetector(BaseFaultDetector):
         alert_window: timedelta = _DEFAULT_ALERT_WINDOW,
         alert_threshold: int = _DEFAULT_ALERT_THRESHOLD,
     ) -> None:
+        if alert_window.total_seconds() <= 0:
+            raise ValueError(f"alert_window must be positive, got {alert_window}")
+        if alert_threshold < 1:
+            raise ValueError(f"alert_threshold must be >= 1, got {alert_threshold}")
+
         self._alert_window = alert_window
         self._alert_threshold = alert_threshold
 

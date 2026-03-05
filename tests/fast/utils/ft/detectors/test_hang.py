@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from tests.fast.utils.ft.helpers import (
     EMPTY_RANK_PLACEMENT,
     make_detector_context,
@@ -140,3 +142,21 @@ class TestHangDetector:
         decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
+
+
+class TestHangDetectorValidation:
+    def test_zero_training_timeout_rejected(self) -> None:
+        with pytest.raises(ValueError, match="training_timeout_minutes"):
+            HangDetector(training_timeout_minutes=0)
+
+    def test_negative_training_timeout_rejected(self) -> None:
+        with pytest.raises(ValueError, match="training_timeout_minutes"):
+            HangDetector(training_timeout_minutes=-5)
+
+    def test_zero_checkpoint_timeout_rejected(self) -> None:
+        with pytest.raises(ValueError, match="checkpoint_saving_timeout_minutes"):
+            HangDetector(checkpoint_saving_timeout_minutes=0)
+
+    def test_negative_checkpoint_timeout_rejected(self) -> None:
+        with pytest.raises(ValueError, match="checkpoint_saving_timeout_minutes"):
+            HangDetector(checkpoint_saving_timeout_minutes=-10)

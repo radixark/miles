@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from tests.fast.utils.ft.helpers import (
     inject_gpu_temperature,
     make_detector_context,
@@ -205,3 +207,33 @@ class TestMfuDeclineDetector:
 
         assert decision.action == ActionType.NONE
         assert "monitoring" in decision.reason
+
+
+class TestMfuDeclineDetectorValidation:
+    def test_zero_threshold_ratio_rejected(self) -> None:
+        with pytest.raises(ValueError, match="mfu_threshold_ratio"):
+            MfuDeclineDetector(mfu_threshold_ratio=0.0)
+
+    def test_negative_threshold_ratio_rejected(self) -> None:
+        with pytest.raises(ValueError, match="mfu_threshold_ratio"):
+            MfuDeclineDetector(mfu_threshold_ratio=-0.5)
+
+    def test_threshold_ratio_above_one_rejected(self) -> None:
+        with pytest.raises(ValueError, match="mfu_threshold_ratio"):
+            MfuDeclineDetector(mfu_threshold_ratio=1.5)
+
+    def test_zero_consecutive_steps_rejected(self) -> None:
+        with pytest.raises(ValueError, match="consecutive_steps"):
+            MfuDeclineDetector(consecutive_steps=0)
+
+    def test_zero_decline_timeout_rejected(self) -> None:
+        with pytest.raises(ValueError, match="decline_timeout_minutes"):
+            MfuDeclineDetector(decline_timeout_minutes=0.0)
+
+    def test_zero_baseline_steps_rejected(self) -> None:
+        with pytest.raises(ValueError, match="baseline_steps"):
+            MfuDeclineDetector(baseline_steps=0)
+
+    def test_zero_temperature_delta_rejected(self) -> None:
+        with pytest.raises(ValueError, match="temperature_delta_threshold"):
+            MfuDeclineDetector(temperature_delta_threshold=0.0)

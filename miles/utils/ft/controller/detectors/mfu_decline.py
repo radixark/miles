@@ -22,6 +22,17 @@ class MfuDeclineDetector(BaseFaultDetector):
         decline_timeout_minutes: float = _DEFAULT_DECLINE_TIMEOUT_MINUTES,
         baseline_steps: int = _DEFAULT_BASELINE_STEPS,
     ) -> None:
+        if mfu_threshold_ratio <= 0 or mfu_threshold_ratio > 1:
+            raise ValueError(f"mfu_threshold_ratio must be in (0, 1], got {mfu_threshold_ratio}")
+        if consecutive_steps < 1:
+            raise ValueError(f"consecutive_steps must be >= 1, got {consecutive_steps}")
+        if temperature_delta_threshold <= 0:
+            raise ValueError(f"temperature_delta_threshold must be > 0, got {temperature_delta_threshold}")
+        if decline_timeout_minutes <= 0:
+            raise ValueError(f"decline_timeout_minutes must be > 0, got {decline_timeout_minutes}")
+        if baseline_steps < 1:
+            raise ValueError(f"baseline_steps must be >= 1, got {baseline_steps}")
+
         self._mfu_baseline = mfu_baseline
         self._mfu_threshold_ratio = mfu_threshold_ratio
         self._consecutive_steps = consecutive_steps

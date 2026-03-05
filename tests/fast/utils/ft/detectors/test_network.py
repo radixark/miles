@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from tests.fast.utils.ft.helpers import (
     make_detector_context,
     make_fake_metric_store,
@@ -87,3 +89,21 @@ class TestNetworkAlertDetector:
         decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.NONE
+
+
+class TestNetworkAlertDetectorValidation:
+    def test_zero_alert_window_rejected(self) -> None:
+        with pytest.raises(ValueError, match="alert_window"):
+            NetworkAlertDetector(alert_window=timedelta(0))
+
+    def test_negative_alert_window_rejected(self) -> None:
+        with pytest.raises(ValueError, match="alert_window"):
+            NetworkAlertDetector(alert_window=timedelta(minutes=-1))
+
+    def test_zero_alert_threshold_rejected(self) -> None:
+        with pytest.raises(ValueError, match="alert_threshold"):
+            NetworkAlertDetector(alert_threshold=0)
+
+    def test_negative_alert_threshold_rejected(self) -> None:
+        with pytest.raises(ValueError, match="alert_threshold"):
+            NetworkAlertDetector(alert_threshold=-1)
