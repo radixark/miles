@@ -15,6 +15,7 @@ import time
 
 import pytest
 import ray
+from miles.utils.ft.models import ControllerMode
 from tests.e2e.ft.conftest import FaultInjectorFactory, FtSystem, wait_for_recovery_complete, wait_for_training_stable
 
 logger = logging.getLogger(__name__)
@@ -63,12 +64,9 @@ async def test_disk_full_eviction(
         t_evict = time.monotonic() - t_inject
         logger.info("disk_full_eviction_complete t_evict=%.1fs", t_evict)
 
-        assert status["mode"] == "monitoring"
+        assert status.mode == ControllerMode.MONITORING
 
-        # Verify target node was marked as bad
-        final_status = controller.get_status()
-        bad_nodes = final_status.get("bad_nodes", [])
-        # Note: bad_nodes in get_status() reflects _diagnosing_nodes which is
+        # bad_nodes in get_status() reflects _diagnosing_nodes which is
         # cleared after recovery completes. Check node_manager directly.
         node_bad = await ft_system.node_manager.get_bad_nodes()
         assert target_node in node_bad or any(

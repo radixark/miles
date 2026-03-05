@@ -14,6 +14,7 @@ import time
 
 import pytest
 import ray
+from miles.utils.ft.models import ControllerMode
 from tests.e2e.ft.conftest import FaultInjectorFactory, FtSystem, wait_for_recovery_complete, wait_for_training_stable
 
 pytestmark = [
@@ -37,7 +38,7 @@ async def test_transient_crash_auto_recovery(
         timeout=300.0,
     )
     pre_status = controller.get_status()
-    assert pre_status["mode"] == "monitoring"
+    assert pre_status.mode == ControllerMode.MONITORING
 
     # Deploy fault injector and kill one training process
     injector = fault_injector.deploy_to(node_id=target_node)
@@ -55,7 +56,7 @@ async def test_transient_crash_auto_recovery(
     )
 
     t_recover = time.monotonic() - t_inject
-    assert status["mode"] == "monitoring"
+    assert status.mode == ControllerMode.MONITORING
 
     # Training should be running again and stable
     await wait_for_training_stable(
@@ -68,8 +69,8 @@ async def test_transient_crash_auto_recovery(
     # No nodes should be marked as bad (transient fault)
     final_status = controller.get_status()
     assert (
-        final_status["bad_nodes"] == []
-    ), f"Expected no bad nodes for transient crash, got: {final_status['bad_nodes']}"
+        final_status.bad_nodes == []
+    ), f"Expected no bad nodes for transient crash, got: {final_status.bad_nodes}"
 
     # Sanity check: recovery time should be reasonable (< 5 min)
     assert t_recover < 300.0, f"Recovery took too long: {t_recover:.1f}s"

@@ -58,7 +58,7 @@ class _FtControllerActorCls:
     def register_agent(self, node_id: str, agent: object) -> None:
         self._ctrl.register_agent(node_id=node_id, agent=agent)
 
-    def get_status(self) -> dict[str, object]:
+    def get_status(self) -> object:
         return self._ctrl.get_status()
 
 

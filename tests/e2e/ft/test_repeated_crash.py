@@ -15,6 +15,7 @@ import asyncio
 import pytest
 import ray
 
+from miles.utils.ft.models import ControllerMode, RecoveryPhase
 from tests.e2e.ft.conftest import (
     FaultInjectorFactory,
     FtSystem,
@@ -55,7 +56,7 @@ async def test_repeated_crash_enters_diagnosing(
     # Using wait_for_mode_transition avoids matching the pre-injection state.
     await wait_for_mode_transition(
         controller=controller,
-        target_mode="monitoring",
+        target_mode=ControllerMode.MONITORING,
         timeout=180.0,
     )
 
@@ -72,14 +73,14 @@ async def test_repeated_crash_enters_diagnosing(
     # Wait for Controller to enter DIAGNOSING
     status = await wait_for_recovery_phase(
         controller=controller,
-        phase="diagnosing",
+        phase=RecoveryPhase.DIAGNOSING,
         timeout=180.0,
     )
-    assert status["recovery_phase"] == "diagnosing"
+    assert status.recovery_phase == RecoveryPhase.DIAGNOSING
 
     # Wait for recovery to complete (with stub scheduler → NOTIFY → DONE)
     final_status = await wait_for_recovery_complete(
         controller=controller,
         timeout=300.0,
     )
-    assert final_status["mode"] == "monitoring"
+    assert final_status.mode == ControllerMode.MONITORING

@@ -21,6 +21,7 @@ import time
 
 import pytest
 import ray
+from miles.utils.ft.models import ControllerMode
 from tests.e2e.ft.conftest import FaultInjectorFactory, FtSystem, wait_for_recovery_complete, wait_for_training_stable
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ async def test_mfu_decline_detection(
 
         while time.monotonic() < deadline:
             status = controller.get_status()
-            if status["mode"] == "recovery":
+            if status.mode == ControllerMode.RECOVERY:
                 detected = True
                 logger.info("mfu_decline_detected status=%s", status)
                 break
@@ -74,7 +75,7 @@ async def test_mfu_decline_detection(
             controller=controller,
             timeout=300.0,
         )
-        assert final_status["mode"] == "monitoring"
+        assert final_status.mode == ControllerMode.MONITORING
 
         bad_nodes = await ft_system.node_manager.get_bad_nodes()
         evicted = target_node in bad_nodes or any(target_node in str(n) for n in bad_nodes)

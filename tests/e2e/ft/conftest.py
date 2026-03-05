@@ -14,7 +14,6 @@ import os
 import time
 from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass, field
-from typing import Any
 
 import pytest
 import ray
@@ -27,6 +26,7 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, Mi
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_registry import RankRegistry
 from miles.utils.ft.e2e.fault_injector import deploy_fault_injector
+from miles.utils.ft.models import ControllerMode, ControllerStatus, RecoveryPhase
 from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
 from miles.utils.ft.platform.ray_training_job import RayTrainingJob
 
@@ -238,14 +238,14 @@ async def wait_for_recovery_complete(
     controller: FtController,
     timeout: float = 300.0,
     poll_interval: float = 5.0,
-) -> dict[str, Any]:
-    """Poll get_status() until mode returns to 'monitoring'."""
+) -> ControllerStatus:
+    """Poll get_status() until mode returns to MONITORING."""
     deadline = time.monotonic() + timeout
     poll_count = 0
     while time.monotonic() < deadline:
         status = controller.get_status()
         poll_count += 1
-        if status["mode"] == "monitoring":
+        if status.mode == ControllerMode.MONITORING:
             return status
         if poll_count % 6 == 0:
             elapsed = timeout - (deadline - time.monotonic())
@@ -300,17 +300,17 @@ def get_iteration_count(mini_wandb: MiniWandb) -> int:
 
 async def wait_for_recovery_phase(
     controller: FtController,
-    phase: str,
+    phase: RecoveryPhase,
     timeout: float = 300.0,
     poll_interval: float = 5.0,
-) -> dict[str, Any]:
+) -> ControllerStatus:
     """Poll get_status() until recovery_phase matches."""
     deadline = time.monotonic() + timeout
     poll_count = 0
     while time.monotonic() < deadline:
         status = controller.get_status()
         poll_count += 1
-        if status.get("recovery_phase") == phase:
+        if status.recovery_phase == phase:
             return status
         if poll_count % 6 == 0:
             elapsed = timeout - (deadline - time.monotonic())
@@ -327,10 +327,10 @@ async def wait_for_recovery_phase(
 
 async def wait_for_mode_transition(
     controller: FtController,
-    target_mode: str,
+    target_mode: ControllerMode,
     timeout: float = 300.0,
     poll_interval: float = 5.0,
-) -> dict[str, Any]:
+) -> ControllerStatus:
     """Wait for mode to leave *target_mode*, then return to it.
 
     Avoids the race where polling for a mode that is already active
@@ -340,10 +340,10 @@ async def wait_for_mode_transition(
 
     while time.monotonic() < deadline:
         status = controller.get_status()
-        if status["mode"] != target_mode:
+        if status.mode != target_mode:
             logger.info(
                 "wait_for_mode_transition mode left '%s' → '%s'",
-                target_mode, status["mode"],
+                target_mode, status.mode,
             )
             break
         await asyncio.sleep(poll_interval)
@@ -355,7 +355,7 @@ async def wait_for_mode_transition(
 
     while time.monotonic() < deadline:
         status = controller.get_status()
-        if status["mode"] == target_mode:
+        if status.mode == target_mode:
             return status
         await asyncio.sleep(poll_interval)
 

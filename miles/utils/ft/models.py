@@ -135,6 +135,20 @@ class RecoveryPhase(str, Enum):
     DONE = "done"
 
 
+class ControllerMode(str, Enum):
+    MONITORING = "monitoring"
+    RECOVERY = "recovery"
+
+
+class ControllerStatus(FtBaseModel):
+    mode: ControllerMode
+    recovery_phase: RecoveryPhase | None
+    phase_history: list[RecoveryPhase] | None
+    tick_count: int
+    active_run_id: str | None
+    bad_nodes: list[str]
+
+
 FT_CONTROLLER_ACTOR_NAME: str = "ft_controller"  # deprecated: use ft_controller_actor_name()
 
 

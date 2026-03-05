@@ -4,7 +4,16 @@ import asyncio
 import logging
 
 import pytest
-from tests.fast.utils.ft.helpers import (
+
+import miles.utils.ft.metric_names as mn
+from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
+from miles.utils.ft.controller.metrics import start_metric_store_task, stop_metric_store_task
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.rank_registry import RankRegistry
+from miles.utils.ft.models import ActionType, ControllerMode, Decision
+from miles.utils.ft.platform.protocols import JobStatus
+from tests.fast.utils.ft.conftest import (
     FakeNodeManager,
     FakeTrainingJob,
     FixedDecisionDetector,
@@ -14,19 +23,11 @@ from tests.fast.utils.ft.helpers import (
     make_test_exporter,
 )
 
-import miles.utils.ft.metric_names as mn
-from miles.utils.ft.controller.controller import FtController
-from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
-from miles.utils.ft.controller.metrics import start_metric_store_task
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.rank_registry import RankRegistry
-from miles.utils.ft.models import ActionType, Decision
-from miles.utils.ft.platform.protocols import JobStatus
-
 
 class TestTrainingJobStatusExporter:
     """Verify training job status is pushed to the ControllerExporter gauge."""
 
+    @pytest.mark.asyncio
     async def test_tick_updates_training_job_status_gauge(self) -> None:
         registry, exporter = make_test_exporter()
         harness = make_test_controller(controller_exporter=exporter)
@@ -35,6 +36,7 @@ class TestTrainingJobStatusExporter:
 
         assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 1.0
 
+    @pytest.mark.asyncio
     async def test_failed_status_maps_to_negative(self) -> None:
         registry, exporter = make_test_exporter()
         harness = make_test_controller(
@@ -46,6 +48,7 @@ class TestTrainingJobStatusExporter:
 
         assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == -1.0
 
+    @pytest.mark.asyncio
     async def test_stopped_status_maps_to_zero(self) -> None:
         registry, exporter = make_test_exporter()
         harness = make_test_controller(
@@ -57,6 +60,7 @@ class TestTrainingJobStatusExporter:
 
         assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 0.0
 
+    @pytest.mark.asyncio
     async def test_pending_status_maps_to_two(self) -> None:
         registry, exporter = make_test_exporter()
         harness = make_test_controller(
@@ -68,6 +72,7 @@ class TestTrainingJobStatusExporter:
 
         assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 2.0
 
+    @pytest.mark.asyncio
     async def test_tick_count_incremented(self) -> None:
         registry, exporter = make_test_exporter()
         harness = make_test_controller(controller_exporter=exporter)
@@ -82,47 +87,46 @@ class TestGetStatus:
     def test_monitoring_mode_default(self) -> None:
         harness = make_test_controller()
         status = harness.controller.get_status()
-        assert status["mode"] == "monitoring"
-        assert status["recovery_phase"] is None
-        assert status["tick_count"] == 0
-        assert status["active_run_id"] is None
-        assert status["bad_nodes"] == []
+        assert status.mode == ControllerMode.MONITORING
+        assert status.recovery_phase is None
+        assert status.phase_history is None
+        assert status.tick_count == 0
+        assert status.active_run_id is None
+        assert status.bad_nodes == []
 
+    @pytest.mark.asyncio
     async def test_monitoring_mode_after_tick(self) -> None:
         harness = make_test_controller()
         await harness.controller._tick()
         status = harness.controller.get_status()
-        assert status["mode"] == "monitoring"
-        assert status["tick_count"] == 1
+        assert status.mode == ControllerMode.MONITORING
+        assert status.tick_count == 1
 
+    @pytest.mark.asyncio
     async def test_recovery_mode(self) -> None:
-        detector = FixedDecisionDetector(
-            decision=Decision(
-                action=ActionType.ENTER_RECOVERY,
-                trigger="crash",
-                reason="test",
-            )
-        )
+        detector = FixedDecisionDetector(decision=Decision(
+            action=ActionType.ENTER_RECOVERY,
+            trigger="crash",
+            reason="test",
+        ))
         harness = make_test_controller(detectors=[detector])
 
         await harness.controller._tick()
         await harness.controller._tick()
         status = harness.controller.get_status()
 
-        assert status["mode"] == "recovery"
-        assert status["recovery_phase"] is not None
+        assert status.mode == ControllerMode.RECOVERY
+        assert status.recovery_phase is not None
 
+    @pytest.mark.asyncio
     async def test_active_run_id_after_register(self) -> None:
         harness = make_test_controller()
         await harness.controller.register_rank(
-            run_id="run-42",
-            rank=0,
-            world_size=1,
-            node_id="node-0",
-            exporter_address="http://node-0:9090",
+            run_id="run-42", rank=0, world_size=1,
+            node_id="node-0", exporter_address="http://node-0:9090",
         )
         status = harness.controller.get_status()
-        assert status["active_run_id"] == "run-42"
+        assert status.active_run_id == "run-42"
 
 
 class TestAgentManagement:
@@ -170,6 +174,7 @@ class TestDefaultDiagnosticPipeline:
 
 
 class TestShutdown:
+    @pytest.mark.asyncio
     async def test_shutdown_stops_run_loop(self) -> None:
         harness = make_test_controller(tick_interval=0.01)
 
@@ -184,6 +189,7 @@ class TestShutdown:
         assert harness.controller._shutting_down
         assert harness.controller._tick_count >= 1
 
+    @pytest.mark.asyncio
     async def test_run_starts_and_stops_scrape_loop(self) -> None:
         """run() must start the scrape loop as a background task and
         stop it on shutdown, even if the metric store supports start/stop."""
@@ -221,6 +227,7 @@ class TestShutdown:
 
 
 class TestScrapeLoopDefensiveBranches:
+    @pytest.mark.asyncio
     async def test_scrape_loop_logs_error_on_crash(self, caplog: pytest.LogCaptureFixture) -> None:
         harness = make_test_controller()
 

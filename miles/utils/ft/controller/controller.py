@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 
 from miles.utils.ft.controller.actions import (
     handle_enter_recovery,
@@ -16,7 +15,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.protocol import MetricStoreProtocol
 from miles.utils.ft.controller.rank_registry import RankRegistry
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
-from miles.utils.ft.models import ActionType, Decision, NodeAgentProtocol
+from miles.utils.ft.models import ActionType, ControllerMode, ControllerStatus, Decision, NodeAgentProtocol
 from miles.utils.ft.platform.protocols import (
     DiagnosticSchedulerProtocol,
     JobStatus,
@@ -97,22 +96,24 @@ class FtController:
         logger.info("controller_shutdown_requested")
         self._shutting_down = True
 
-    def get_status(self) -> dict[str, Any]:
-        recovery_phase: str | None = None
+    def get_status(self) -> ControllerStatus:
         if self._recovery_orchestrator is not None:
-            mode = "recovery"
-            recovery_phase = self._recovery_orchestrator.phase.value
+            mode = ControllerMode.RECOVERY
+            recovery_phase = self._recovery_orchestrator.phase
+            phase_history: list = list(self._recovery_orchestrator.phase_history)
         else:
-            mode = "monitoring"
+            mode = ControllerMode.MONITORING
+            recovery_phase = None
+            phase_history = None
 
-        bad_nodes: list[str] = sorted(self._diagnosing_nodes)
-        return {
-            "mode": mode,
-            "recovery_phase": recovery_phase,
-            "tick_count": self._tick_count,
-            "active_run_id": self._rank_registry.active_run_id,
-            "bad_nodes": bad_nodes,
-        }
+        return ControllerStatus(
+            mode=mode,
+            recovery_phase=recovery_phase,
+            phase_history=phase_history,
+            tick_count=self._tick_count,
+            active_run_id=self._rank_registry.active_run_id,
+            bad_nodes=sorted(self._diagnosing_nodes),
+        )
 
     # -------------------------------------------------------------------
     # Agent management (delegated to RankRegistry)
