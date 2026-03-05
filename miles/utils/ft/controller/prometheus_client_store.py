@@ -97,10 +97,17 @@ class PrometheusClient(RangeAggregationMixin):
 # ---------------------------------------------------------------------------
 
 
+def _escape_promql_label_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _build_selector(metric_name: str, label_filters: dict[str, str] | None) -> str:
     if not label_filters:
         return metric_name
-    labels_str = ", ".join(f'{k}="{v}"' for k, v in sorted(label_filters.items()))
+    labels_str = ", ".join(
+        f'{k}="{_escape_promql_label_value(v)}"'
+        for k, v in sorted(label_filters.items())
+    )
     return f"{metric_name}{{{labels_str}}}"
 
 
