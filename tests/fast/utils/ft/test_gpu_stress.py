@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from miles.utils.ft.fault_injectors.gpu_stress import _stress_loop, app
+from miles.utils.ft.e2e.gpu_stress import _stress_loop, app
 
 runner = CliRunner()
 
@@ -45,14 +45,14 @@ class TestStressLoop:
 
 class TestMain:
     def test_main_parses_duration(self) -> None:
-        with patch("miles.utils.ft.fault_injectors.gpu_stress._stress_loop") as mock_loop:
+        with patch("miles.utils.ft.e2e.gpu_stress._stress_loop") as mock_loop:
             result = runner.invoke(app, ["--duration", "42.0"])
 
             assert result.exit_code == 0
             mock_loop.assert_called_once_with(duration=42.0, matrix_size=4096)
 
     def test_main_parses_matrix_size(self) -> None:
-        with patch("miles.utils.ft.fault_injectors.gpu_stress._stress_loop") as mock_loop:
+        with patch("miles.utils.ft.e2e.gpu_stress._stress_loop") as mock_loop:
             result = runner.invoke(app, ["--matrix-size", "2048"])
 
             assert result.exit_code == 0

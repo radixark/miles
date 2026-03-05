@@ -25,7 +25,7 @@ from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.controller.detectors import build_detector_chain
 from miles.utils.ft.controller.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.mini_wandb import MiniWandb
-from miles.utils.ft.fault_injectors.fault_injector import FaultInjectorActor, deploy_fault_injector
+from miles.utils.ft.e2e.fault_injector import FaultInjectorActor, deploy_fault_injector
 from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
 from miles.utils.ft.platform.protocols import JobStatus
 from miles.utils.ft.platform.ray_training_job import RayTrainingJob

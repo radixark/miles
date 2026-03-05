@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import psutil
 import pytest
 
-from miles.utils.ft.fault_injectors.fault_injector import (
+from miles.utils.ft.e2e.fault_injector import (
     FaultInjectorActor,
     _TRAINING_CMDLINE_PATTERNS,
 )
