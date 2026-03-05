@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
 from pydantic import ConfigDict, Field
 
@@ -27,13 +28,15 @@ logger = logging.getLogger(__name__)
 class FtControllerConfig(FtBaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    ft_id: str = ""
+    k8s_label_suffix: str = ""
     platform: Literal["stub", "k8s-ray"] = "stub"
     ray_address: str = "http://127.0.0.1:8265"
     entrypoint: str = ""
     runtime_env: dict[str, Any] = Field(default_factory=dict)
     metric_store_backend: Literal["mini", "prometheus"] = "mini"
     prometheus_url: str = "http://prometheus:9090"
-    controller_exporter_port: int = 9400
+    controller_exporter_port: int = 0
     tick_interval: float = 30.0
 
 
@@ -42,21 +45,24 @@ def _build_platform_components(
     ray_address: str,
     entrypoint: str,
     runtime_env: dict[str, Any] | None = None,
+    ft_id: str = "",
+    k8s_label_suffix: str = "",
 ) -> tuple[StubNodeManager | K8sNodeManager, StubTrainingJob | RayTrainingJob]:
     if platform == "stub":
         return StubNodeManager(), StubTrainingJob()
 
     if platform == "k8s-ray":
-        from ray.job_submission import JobSubmissionClient
-
         from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
         from miles.utils.ft.platform.ray_training_job import RayTrainingJob
+        from ray.job_submission import JobSubmissionClient
 
-        node_manager = K8sNodeManager()
+        node_manager = K8sNodeManager(label_suffix=k8s_label_suffix)
         training_job = RayTrainingJob(
             client=JobSubmissionClient(address=ray_address),
             entrypoint=entrypoint,
             runtime_env=runtime_env,
+            ft_id=ft_id,
+            k8s_label_suffix=k8s_label_suffix,
         )
         return node_manager, training_job
 
@@ -94,16 +100,21 @@ def build_ft_controller(
     """
     if config is not None and kwargs:
         raise ValueError(
-            "Cannot provide both 'config' and keyword arguments to build_ft_controller; " "use one or the other"
+            "Cannot provide both 'config' and keyword arguments to build_ft_controller; "
+            "use one or the other"
         )
     if config is None:
         config = FtControllerConfig(**kwargs)  # type: ignore[arg-type]
+
+    ft_id = config.ft_id or uuid4().hex[:8]
 
     node_manager, training_job = _build_platform_components(
         platform=config.platform,
         ray_address=config.ray_address,
         entrypoint=config.entrypoint,
         runtime_env=config.runtime_env,
+        ft_id=ft_id,
+        k8s_label_suffix=config.k8s_label_suffix,
     )
 
     controller_exporter = ControllerExporter(port=config.controller_exporter_port)
@@ -135,10 +146,9 @@ def build_ft_controller(
         controller_exporter.start()
 
     logger.info(
-        "build_ft_controller platform=%s backend=%s exporter_port=%d",
-        config.platform,
-        config.metric_store_backend,
-        config.controller_exporter_port,
+        "build_ft_controller ft_id=%s platform=%s backend=%s exporter_port=%d k8s_label_suffix=%s",
+        ft_id, config.platform, config.metric_store_backend,
+        config.controller_exporter_port, config.k8s_label_suffix or "(none)",
     )
 
     return FtController(
