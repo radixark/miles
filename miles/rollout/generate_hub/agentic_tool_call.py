@@ -72,9 +72,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         s.metadata.update(agent_metadata or {})
 
     if not input.args.generate_multi_samples:
-        merged = merge_samples(samples, input.state.tokenizer)
-        return GenerateFnOutput(samples=merged)
-
+        samples = merge_samples(samples, input.state.tokenizer)
     return GenerateFnOutput(samples=samples)
 
 
