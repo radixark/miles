@@ -7,7 +7,7 @@ from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.collectors.stub import StubCollector
 from miles.utils.ft.agents.node_agent import FtNodeAgent
 from miles.utils.ft.models import CollectorOutput, MetricSample
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     SlowDiagnostic,
     StubDiagnostic,
     TestCollector,

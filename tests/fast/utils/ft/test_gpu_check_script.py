@@ -18,7 +18,7 @@ from miles.utils.ft.controller.diagnostics.gpu_check_script import (
     _generate_matmul_reference,
     main,
 )
-from tests.fast.utils.ft.conftest import make_mock_pynvml
+from tests.fast.utils.ft.helpers import make_mock_pynvml
 
 _MOCK_MATMUL_REF = (None, None, None)
 _GPU_SCRIPT = "miles.utils.ft.controller.diagnostics.gpu_check_script"

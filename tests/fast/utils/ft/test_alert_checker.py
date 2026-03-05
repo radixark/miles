@@ -2,7 +2,7 @@
 from miles.utils.ft.controller.recovery_orchestrator.alert_checker import AlertChecker
 from miles.utils.ft.metric_names import GPU_AVAILABLE, XID_CODE_RECENT
 from miles.utils.ft.models import MetricSample
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     inject_critical_xid,
     inject_gpu_unavailable,
     make_fake_metric_store,

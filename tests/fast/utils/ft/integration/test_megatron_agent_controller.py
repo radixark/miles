@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from miles.utils.ft.agents.megatron_agent import FtMegatronAgent
-from tests.fast.utils.ft.conftest import make_test_controller
+from tests.fast.utils.ft.helpers import make_test_controller
 
 
 def _make_agent(rank: int = 0, world_size: int = 4) -> FtMegatronAgent:

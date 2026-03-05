@@ -13,7 +13,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_registry import RankRegistry
 from miles.utils.ft.models import ActionType, Decision
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     FakeNodeManager,
     FakeTrainingJob,
     FixedDecisionDetector,

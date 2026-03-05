@@ -6,7 +6,7 @@ import pytest
 from miles.utils.ft.agents.node_agent import FtNodeAgent
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.models import MetricSample
-from tests.fast.utils.ft.conftest import TestCollector
+from tests.fast.utils.ft.helpers import TestCollector
 
 
 class TestNodeAgentMiniPrometheusIntegration:

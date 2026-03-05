@@ -1,4 +1,4 @@
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     make_detector_context,
     make_fake_mini_wandb,
 )

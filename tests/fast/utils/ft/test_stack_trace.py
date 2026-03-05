@@ -10,7 +10,7 @@ from miles.utils.ft.controller.diagnostics.stack_trace import (
     StackTraceAggregator,
     StackTraceDiagnostic,
 )
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
     SAMPLE_PYSPY_OUTPUT_NORMAL,
     SAMPLE_PYSPY_OUTPUT_STUCK,

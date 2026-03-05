@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     inject_gpu_unavailable,
     inject_healthy_node,
     make_detector_context,

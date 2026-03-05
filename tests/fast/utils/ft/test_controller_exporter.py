@@ -6,7 +6,7 @@ import miles.utils.ft.metric_names as mn
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.models import RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import get_sample_value, make_test_exporter
+from tests.fast.utils.ft.helpers import get_sample_value, make_test_exporter
 
 
 class TestControllerExporterGauges:

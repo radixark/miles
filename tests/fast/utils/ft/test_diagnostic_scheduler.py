@@ -18,7 +18,7 @@ from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
 )
 from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
 from miles.utils.ft.models import ActionType, DiagnosticResult
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     FakeNodeAgent,
     SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
     SAMPLE_PYSPY_OUTPUT_STUCK,

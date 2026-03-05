@@ -1,4 +1,4 @@
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     EMPTY_RANK_PLACEMENT,
     inject_critical_xid,
     inject_disk_fault,

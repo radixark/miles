@@ -3,7 +3,7 @@
 import pytest
 
 from miles.utils.ft.models import ActionType
-from tests.fast.utils.ft.conftest import AlwaysMarkBadDetector, make_test_controller
+from tests.fast.utils.ft.helpers import AlwaysMarkBadDetector, make_test_controller
 
 
 class TestEmptyDetectorChainMultipleTicks:

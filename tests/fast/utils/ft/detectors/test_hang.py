@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     EMPTY_RANK_PLACEMENT,
     make_detector_context,
     make_fake_metric_store,

@@ -17,7 +17,7 @@ from miles.utils.ft.models import (
     RecoveryPhase,
 )
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     FakeDiagnosticScheduler,
     FakeNodeManager,
     FakeNotifier,

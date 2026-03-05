@@ -13,7 +13,7 @@ import pytest
 
 from miles.utils.ft.controller.detectors import build_detector_chain
 from miles.utils.ft.models import MetricSample
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     ControllerTestHarness,
     inject_healthy_node,
     make_test_controller,

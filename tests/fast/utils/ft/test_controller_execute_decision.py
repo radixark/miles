@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from miles.utils.ft.models import ActionType, Decision, TriggerType
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     AlwaysMarkBadDetector,
     AlwaysNoneDetector,
     FixedDecisionDetector,

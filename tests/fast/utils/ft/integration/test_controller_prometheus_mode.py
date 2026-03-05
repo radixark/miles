@@ -18,7 +18,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.store import PrometheusClient
 from miles.utils.ft.controller.rank_registry import RankRegistry
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob, get_sample_value, make_test_exporter
+from tests.fast.utils.ft.helpers import FakeNodeManager, FakeTrainingJob, get_sample_value, make_test_exporter
 
 
 def _make_prom_response(

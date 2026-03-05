@@ -12,7 +12,7 @@ from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
 from miles.utils.ft.agents.collectors.network import NetworkCollector
 from miles.utils.ft.agents.node_agent import FtNodeAgent
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     FakeKmsgReader,
     create_sysfs_interface,
     make_mock_pynvml,

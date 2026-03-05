@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from miles.utils.ft.agents.collectors.gpu import GpuCollector
-from tests.fast.utils.ft.conftest import make_mock_pynvml
+from tests.fast.utils.ft.helpers import make_mock_pynvml
 
 
 class TestGpuCollector:

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from tests.fast.utils.ft.conftest import make_test_controller
+from tests.fast.utils.ft.helpers import make_test_controller
 
 
 class TestRegisterRank:

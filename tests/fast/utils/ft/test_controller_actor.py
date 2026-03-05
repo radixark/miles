@@ -9,7 +9,7 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.platform.controller_actor import _FtControllerActorCls
 from miles.utils.ft.platform.controller_factory import build_ft_controller
 from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
-from tests.fast.utils.ft.conftest import make_test_controller
+from tests.fast.utils.ft.helpers import make_test_controller
 
 from unittest.mock import MagicMock
 

@@ -10,7 +10,7 @@ import pytest
 import miles.utils.ft.metric_names as mn
 from miles.utils.ft.models import ActionType, Decision, RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus
-from tests.fast.utils.ft.conftest import (
+from tests.fast.utils.ft.helpers import (
     AlwaysNoneDetector,
     FixedDecisionDetector,
     get_sample_value,

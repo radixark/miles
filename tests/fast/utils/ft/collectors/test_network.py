@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from miles.utils.ft.agents.collectors.network import NetworkCollector
-from tests.fast.utils.ft.conftest import create_sysfs_interface
+from tests.fast.utils.ft.helpers import create_sysfs_interface
 
 
 class TestNetworkCollector:
