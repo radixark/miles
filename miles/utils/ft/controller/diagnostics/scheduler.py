@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import NamedTuple
 
 from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
     InterMachineCommDiagnostic,
+)
+from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
+    InterMachineOrchestrator,
 )
 from miles.utils.ft.controller.diagnostics.stack_trace import (
     StackTraceAggregator,
@@ -21,14 +23,6 @@ from miles.utils.ft.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-_INTER_MACHINE_BASE_PORT = 29500
-
-
-class PairResult(NamedTuple):
-    master_id: str
-    worker_id: str
-    passed: bool
 
 
 class DiagnosticScheduler:
@@ -53,8 +47,10 @@ class DiagnosticScheduler:
         self._agents = agents
         self._pipeline = pipeline or []
         self._default_timeout_seconds = default_timeout_seconds
-        self._node_addresses = node_addresses
         self._rank_pids_provider = rank_pids_provider
+        self._inter_machine = InterMachineOrchestrator(
+            node_addresses=node_addresses,
+        )
 
     async def run_diagnostic_pipeline(
         self,
@@ -94,8 +90,8 @@ class DiagnosticScheduler:
                 break
 
             if diagnostic_type == InterMachineCommDiagnostic.diagnostic_type:
-                bad_node_ids = await self._run_inter_machine_step(
-                    agents=remaining_agents,
+                bad_node_ids = await self._inter_machine.run(
+                    node_ids=list(remaining_agents.keys()),
                     timeout_seconds=self._default_timeout_seconds,
                 )
             else:
@@ -213,134 +209,8 @@ class DiagnosticScheduler:
         return bad_node_ids, remaining
 
     # ------------------------------------------------------------------
-    # Inter-machine step (multi-node coordination)
-    # ------------------------------------------------------------------
-
-    async def _run_inter_machine_step(
-        self,
-        agents: dict[str, NodeAgentProtocol],
-        timeout_seconds: int,
-    ) -> list[str]:
-        """Run inter-machine communication diagnostics with cross-comparison.
-
-        Pairs nodes in a round-robin ring, runs all_gather_perf on each
-        pair simultaneously, then uses failure counts to isolate the bad
-        node.
-
-        Each pair gets its own diagnostic instance called directly (not
-        injected into agents) to avoid race conditions when a node
-        participates in multiple concurrent pairs.
-
-        Returns list of bad node IDs (empty if all pass or cannot localize).
-        """
-        node_ids = sorted(agents.keys())
-
-        if len(node_ids) < 2:
-            logger.info("inter_machine_skip — fewer than 2 nodes")
-            return []
-
-        pairs = [
-            (node_ids[i], node_ids[(i + 1) % len(node_ids)])
-            for i in range(len(node_ids))
-        ]
-        logger.info("inter_machine_step_start pairs=%s", pairs)
-
-        tasks = []
-        for pair_index, (master_id, worker_id) in enumerate(pairs):
-            port = _INTER_MACHINE_BASE_PORT + pair_index
-            master_addr = self._get_node_address(master_id)
-            tasks.append(self._run_single_pair(
-                master_id=master_id,
-                worker_id=worker_id,
-                master_addr=master_addr,
-                port=port,
-                timeout_seconds=timeout_seconds,
-            ))
-
-        results = await asyncio.gather(*tasks)
-
-        return self._cross_compare(node_ids=node_ids, pair_results=results)
-
-    async def _run_single_pair(
-        self,
-        master_id: str,
-        worker_id: str,
-        master_addr: str,
-        port: int,
-        timeout_seconds: int,
-    ) -> PairResult:
-        """Run one pair test.
-
-        Creates a single diagnostic instance per pair and calls run()
-        directly for each side (no agent injection needed).
-        """
-        diag = InterMachineCommDiagnostic(
-            master_addr=master_addr, master_port=port,
-        )
-
-        try:
-            master_result, worker_result = await asyncio.gather(
-                diag.run(node_id=master_id, timeout_seconds=timeout_seconds),
-                diag.run(node_id=worker_id, timeout_seconds=timeout_seconds),
-            )
-            passed = master_result.passed and worker_result.passed
-        except Exception:
-            logger.warning(
-                "inter_machine_pair_failed master=%s worker=%s",
-                master_id, worker_id,
-                exc_info=True,
-            )
-            passed = False
-
-        logger.info(
-            "inter_machine_pair_result master=%s worker=%s passed=%s",
-            master_id, worker_id, passed,
-        )
-        return PairResult(master_id=master_id, worker_id=worker_id, passed=passed)
-
-    @staticmethod
-    def _cross_compare(
-        node_ids: list[str],
-        pair_results: list[PairResult],
-    ) -> list[str]:
-        """Cross-compare pair results to isolate bad nodes.
-
-        Algorithm:
-        1. Count failures per node across all pairs.
-        2. If no failures → return empty (all healthy).
-        3. Find nodes with the highest failure count.
-        4. If ALL nodes share the same (non-zero) failure count → cannot
-           localize → return empty (NOTIFY_HUMAN).
-        5. Otherwise → return nodes with the highest failure count.
-        """
-        failure_count: dict[str, int] = {nid: 0 for nid in node_ids}
-        for result in pair_results:
-            if not result.passed:
-                failure_count[result.master_id] += 1
-                failure_count[result.worker_id] += 1
-
-        counts = list(failure_count.values())
-        max_count = max(counts)
-        if max_count == 0:
-            return []
-
-        if min(counts) == max_count:
-            logger.warning("inter_machine_all_failed — cannot localize bad node")
-            return []
-
-        bad_nodes = sorted(
-            nid for nid, count in failure_count.items() if count == max_count
-        )
-        return bad_nodes
-
-    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _get_node_address(self, node_id: str) -> str:
-        if self._node_addresses and node_id in self._node_addresses:
-            return self._node_addresses[node_id]
-        return node_id
 
     async def _call_agent_diagnostic(
         self,

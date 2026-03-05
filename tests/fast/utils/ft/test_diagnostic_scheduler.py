@@ -12,10 +12,11 @@ from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
 from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
     InterMachineCommDiagnostic,
 )
-from miles.utils.ft.controller.diagnostics.scheduler import (
-    DiagnosticScheduler,
+from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
     PairResult,
+    cross_compare,
 )
+from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
 from miles.utils.ft.models import ActionType, DiagnosticResult
 from tests.fast.utils.ft.conftest import (
     FailingDiagnostic,
@@ -365,11 +366,11 @@ class TestDiagnosticSchedulerInterMachine:
         assert pairs == expected_pairs
 
     def test_inter_machine_port_assignment(self) -> None:
-        from miles.utils.ft.controller.diagnostics.scheduler import (
-            _INTER_MACHINE_BASE_PORT,
+        from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
+            _BASE_PORT,
         )
 
-        assert _INTER_MACHINE_BASE_PORT == 29500
+        assert _BASE_PORT == 29500
 
     @pytest.mark.asyncio
     async def test_inter_machine_diagnostic_exception(self) -> None:
@@ -409,10 +410,10 @@ class TestDiagnosticSchedulerInterMachine:
 
 
 class TestCrossCompare:
-    """Direct unit tests for DiagnosticScheduler._cross_compare."""
+    """Direct unit tests for cross_compare."""
 
     def test_all_pass(self) -> None:
-        result = DiagnosticScheduler._cross_compare(
+        result = cross_compare(
             node_ids=["A", "B", "C"],
             pair_results=[
                 PairResult(master_id="A", worker_id="B", passed=True),
@@ -423,8 +424,7 @@ class TestCrossCompare:
         assert result == []
 
     def test_single_bad_node(self) -> None:
-        # A is bad → pairs (A,B) and (C,A) fail
-        result = DiagnosticScheduler._cross_compare(
+        result = cross_compare(
             node_ids=["A", "B", "C"],
             pair_results=[
                 PairResult(master_id="A", worker_id="B", passed=False),
@@ -435,7 +435,7 @@ class TestCrossCompare:
         assert result == ["A"]
 
     def test_all_equal_failure_count_cannot_localize(self) -> None:
-        result = DiagnosticScheduler._cross_compare(
+        result = cross_compare(
             node_ids=["A", "B", "C"],
             pair_results=[
                 PairResult(master_id="A", worker_id="B", passed=False),
@@ -446,10 +446,7 @@ class TestCrossCompare:
         assert result == []
 
     def test_multiple_bad_nodes_with_highest_count(self) -> None:
-        # 4 nodes: A, B, C, D. Both A and B are bad.
-        # Pairs: (A,B) fail, (B,C) fail, (C,D) pass, (D,A) fail
-        # Counts: A=2, B=2, C=1, D=1 → A and B are bad
-        result = DiagnosticScheduler._cross_compare(
+        result = cross_compare(
             node_ids=["A", "B", "C", "D"],
             pair_results=[
                 PairResult(master_id="A", worker_id="B", passed=False),
@@ -461,7 +458,7 @@ class TestCrossCompare:
         assert result == ["A", "B"]
 
     def test_empty_pair_results(self) -> None:
-        result = DiagnosticScheduler._cross_compare(
+        result = cross_compare(
             node_ids=["A", "B"],
             pair_results=[],
         )
