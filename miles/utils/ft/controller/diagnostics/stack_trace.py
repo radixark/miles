@@ -24,10 +24,8 @@ class StackTraceDiagnostic(BaseDiagnostic):
         self, node_id: str, timeout_seconds: int = 30,
     ) -> DiagnosticResult:
         if not self._pids:
-            return DiagnosticResult(
-                diagnostic_type=self.diagnostic_type,
-                node_id=node_id,
-                passed=False,
+            return DiagnosticResult.fail_result(
+                diagnostic_type=self.diagnostic_type, node_id=node_id,
                 details="no PIDs provided",
             )
 

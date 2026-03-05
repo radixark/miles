@@ -12,7 +12,13 @@ from miles.utils.ft.controller.diagnostics.stack_trace import (
     StackTraceAggregator,
     StackTraceDiagnostic,
 )
-from miles.utils.ft.models import ActionType, Decision, DiagnosticResult, TriggerType
+from miles.utils.ft.models import (
+    ActionType,
+    Decision,
+    DiagnosticResult,
+    NodeAgentProtocol,
+    TriggerType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +44,7 @@ class DiagnosticScheduler:
 
     def __init__(
         self,
-        agents: dict[str, Any],
+        agents: dict[str, NodeAgentProtocol],
         pipeline: list[str] | None = None,
         default_timeout_seconds: int = 120,
         node_addresses: dict[str, str] | None = None,
@@ -76,12 +82,12 @@ class DiagnosticScheduler:
             )
 
         if suspect_node_ids is not None:
-            remaining_agents = {
+            remaining_agents: dict[str, NodeAgentProtocol] = {
                 nid: agent for nid, agent in self._agents.items()
                 if nid in suspect_node_ids
             }
         else:
-            remaining_agents = dict(self._agents)
+            remaining_agents: dict[str, NodeAgentProtocol] = dict(self._agents)
 
         for diagnostic_type in self._pipeline:
             if not remaining_agents:
@@ -168,9 +174,9 @@ class DiagnosticScheduler:
     async def _run_step(
         self,
         diagnostic_type: str,
-        agents: dict[str, Any],
+        agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
-    ) -> tuple[list[str], dict[str, Any]]:
+    ) -> tuple[list[str], dict[str, NodeAgentProtocol]]:
         """Run one diagnostic step on all agents.
 
         Returns (bad_node_ids, remaining_agents_without_bad_nodes).
@@ -193,7 +199,7 @@ class DiagnosticScheduler:
         results = dict(zip(node_ids, raw_results))
 
         bad_node_ids: list[str] = []
-        remaining: dict[str, Any] = {}
+        remaining: dict[str, NodeAgentProtocol] = {}
         for node_id, result in results.items():
             if result.passed:
                 remaining[node_id] = agents[node_id]
@@ -212,7 +218,7 @@ class DiagnosticScheduler:
 
     async def _run_inter_machine_step(
         self,
-        agents: dict[str, Any],
+        agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
     ) -> list[str]:
         """Run inter-machine communication diagnostics with cross-comparison.
@@ -353,9 +359,7 @@ class DiagnosticScheduler:
                 node_id, diagnostic_type,
                 exc_info=True,
             )
-            return DiagnosticResult(
-                diagnostic_type=diagnostic_type,
-                node_id=node_id,
-                passed=False,
+            return DiagnosticResult.fail_result(
+                diagnostic_type=diagnostic_type, node_id=node_id,
                 details="agent call raised exception",
             )

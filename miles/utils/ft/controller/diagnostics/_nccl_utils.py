@@ -76,10 +76,8 @@ async def run_nccl_test(
             log_prefix, node_id, cmd[0],
             exc_info=True,
         )
-        return DiagnosticResult(
-            diagnostic_type=diagnostic_type,
-            node_id=node_id,
-            passed=False,
+        return DiagnosticResult.fail_result(
+            diagnostic_type=diagnostic_type, node_id=node_id,
             details=f"failed to execute {cmd[0]}",
         )
 
@@ -95,10 +93,8 @@ async def run_nccl_test(
             log_prefix, node_id, timeout_seconds,
             exc_info=True,
         )
-        return DiagnosticResult(
-            diagnostic_type=diagnostic_type,
-            node_id=node_id,
-            passed=False,
+        return DiagnosticResult.fail_result(
+            diagnostic_type=diagnostic_type, node_id=node_id,
             details=f"timed out after {timeout_seconds}s",
         )
 
@@ -110,10 +106,8 @@ async def run_nccl_test(
             "%s_nonzero_exit node=%s rc=%s stderr=%s",
             log_prefix, node_id, process.returncode, stderr[:500],
         )
-        return DiagnosticResult(
-            diagnostic_type=diagnostic_type,
-            node_id=node_id,
-            passed=False,
+        return DiagnosticResult.fail_result(
+            diagnostic_type=diagnostic_type, node_id=node_id,
             details=f"exit code {process.returncode}: {stderr[:500]}",
         )
 
@@ -123,10 +117,8 @@ async def run_nccl_test(
             "%s_parse_failure node=%s output_len=%d",
             log_prefix, node_id, len(stdout),
         )
-        return DiagnosticResult(
-            diagnostic_type=diagnostic_type,
-            node_id=node_id,
-            passed=False,
+        return DiagnosticResult.fail_result(
+            diagnostic_type=diagnostic_type, node_id=node_id,
             details="failed to parse bandwidth from output",
         )
 

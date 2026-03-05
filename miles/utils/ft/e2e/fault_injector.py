@@ -18,6 +18,20 @@ _TRAINING_CMDLINE_PATTERNS = ("megatron", "run_deepseek", "run_train", "torchrun
 _GPU_STRESS_SCRIPT = Path(__file__).parent / "gpu_stress.py"
 
 
+def _kill_if_exists(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _remove_if_exists(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
 @ray.remote(num_gpus=0)
 class FaultInjectorActor:
     """Ray Actor for injecting faults on a specific node during E2E tests.
@@ -69,10 +83,7 @@ class FaultInjectorActor:
 
     def stop_gpu_stress(self, pid: int) -> None:
         logger.info("stop_gpu_stress pid=%d", pid)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_if_exists(pid)
         if pid in self._stress_pids:
             self._stress_pids.remove(pid)
 
@@ -89,27 +100,18 @@ class FaultInjectorActor:
 
     def cleanup_disk(self, path: str) -> None:
         logger.info("cleanup_disk path=%s", path)
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+        _remove_if_exists(path)
         if path in self._filled_paths:
             self._filled_paths.remove(path)
 
     def cleanup_all(self) -> None:
         logger.info("cleanup_all stress_pids=%s filled_paths=%s", self._stress_pids, self._filled_paths)
         for pid in list(self._stress_pids):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _kill_if_exists(pid)
         self._stress_pids.clear()
 
         for path in list(self._filled_paths):
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+            _remove_if_exists(path)
         self._filled_paths.clear()
 
 

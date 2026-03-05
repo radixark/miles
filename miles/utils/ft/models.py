@@ -111,6 +111,12 @@ class DiagnosticResult(FtBaseModel):
         return cls(diagnostic_type=diagnostic_type, node_id=node_id, passed=False, details=details)
 
 
+class NodeAgentProtocol(Protocol):
+    async def run_diagnostic(
+        self, diagnostic_type: str, timeout_seconds: int = 120,
+    ) -> DiagnosticResult: ...
+
+
 class RecoveryPhase(str, Enum):
     CHECK_ALERTS = "check_alerts"
     REATTEMPTING = "reattempting"
