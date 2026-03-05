@@ -148,6 +148,32 @@ async def ft_system(
 
 
 # ---------------------------------------------------------------------------
+# Function-scoped: Cluster state cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+async def _restore_cluster_state(ray_cluster: None) -> AsyncGenerator[None, None]:
+    """Uncordon any nodes marked bad during the test, even on failure."""
+    yield
+    node_mgr = K8sNodeManager()
+    try:
+        bad_nodes = await node_mgr.get_bad_nodes()
+        for node_id in bad_nodes:
+            try:
+                await node_mgr.unmark_node_bad(node_id=node_id)
+            except Exception:
+                logger.warning(
+                    "restore_cluster_unmark_failed node_id=%s", node_id,
+                    exc_info=True,
+                )
+    except Exception:
+        logger.warning("restore_cluster_get_bad_nodes_failed", exc_info=True)
+    finally:
+        await node_mgr.aclose()
+
+
+# ---------------------------------------------------------------------------
 # Function-scoped: Fault injector factory
 # ---------------------------------------------------------------------------
 
