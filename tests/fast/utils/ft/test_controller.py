@@ -11,6 +11,7 @@ from miles.utils.ft.controller.controller_exporter import ControllerExporter
 from miles.utils.ft.models import ActionType, Decision, RecoveryPhase, TriggerType
 from miles.utils.ft.platform.protocols import JobStatus
 from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
 from miles.utils.ft.controller.mini_wandb import MiniWandb
 from tests.fast.utils.ft.conftest import (
     AlwaysMarkBadDetector,
@@ -338,7 +339,7 @@ class TestGetRankPidsForNode:
             pid=200,
         )
 
-        result = harness.controller.get_rank_pids_for_node("node-0")
+        result = harness.controller._get_rank_pids_for_node("node-0")
         assert result == {0: 100, 1: 101}
 
     @pytest.mark.asyncio
@@ -351,7 +352,7 @@ class TestGetRankPidsForNode:
             pid=100,
         )
 
-        result = harness.controller.get_rank_pids_for_node("node-999")
+        result = harness.controller._get_rank_pids_for_node("node-999")
         assert result == {}
 
     @pytest.mark.asyncio
@@ -368,7 +369,7 @@ class TestGetRankPidsForNode:
             node_id="node-0", exporter_address="http://node-0:9091",
         )
 
-        result = harness.controller.get_rank_pids_for_node("node-0")
+        result = harness.controller._get_rank_pids_for_node("node-0")
         assert result == {0: 100}
 
 
@@ -806,8 +807,6 @@ class TestAgentManagement:
 
 class TestDefaultDiagnosticSchedulerWiring:
     def test_default_scheduler_has_rank_pids_provider(self) -> None:
-        from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
-
         controller = FtController(
             node_manager=FakeNodeManager(),
             training_job=FakeTrainingJob(),
@@ -817,5 +816,5 @@ class TestDefaultDiagnosticSchedulerWiring:
 
         scheduler = controller._diagnostic_scheduler
         assert isinstance(scheduler, DiagnosticScheduler)
-        assert scheduler._rank_pids_provider.__func__ is FtController.get_rank_pids_for_node
+        assert scheduler._rank_pids_provider.__func__ is FtController._get_rank_pids_for_node
         assert scheduler._rank_pids_provider.__self__ is controller

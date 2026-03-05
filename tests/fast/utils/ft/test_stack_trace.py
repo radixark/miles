@@ -226,3 +226,26 @@ Thread 0x1 (active): "MainThread"
         fp = agg._extract_fingerprint(SAMPLE_PYSPY_OUTPUT_NORMAL)
         assert fp != ""
         assert "(" in fp
+
+    def test_fingerprint_captures_innermost_frame(self) -> None:
+        agg = StackTraceAggregator()
+        trace = """\
+Thread 0x1 (active): "MainThread"
+    innermost_func (inner.py:1)
+    middle_func (mid.py:2)
+    outermost_func (outer.py:3)
+"""
+        fp = agg._extract_fingerprint(trace)
+        assert "innermost_func" in fp
+        assert "outermost_func" not in fp
+
+    def test_tied_groups_returns_empty(self) -> None:
+        agg = StackTraceAggregator()
+        traces = {
+            "node-0": SAMPLE_PYSPY_OUTPUT_STUCK,
+            "node-1": SAMPLE_PYSPY_OUTPUT_STUCK,
+            "node-2": SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
+            "node-3": SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
+        }
+        result = agg.aggregate(traces=traces)
+        assert result == []

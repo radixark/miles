@@ -66,9 +66,14 @@ class StackTraceDiagnostic(BaseDiagnostic):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_seconds,
-        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise
         if proc.returncode != 0:
             raise RuntimeError(f"py-spy failed: {stderr.decode()}")
         return stdout.decode()
@@ -124,9 +129,10 @@ class StackTraceAggregator:
                 current_top_frame = None
                 continue
 
-            frame_sig = self._parse_frame_line(stripped)
-            if frame_sig is not None:
-                current_top_frame = frame_sig
+            if current_top_frame is None:
+                frame_sig = self._parse_frame_line(stripped)
+                if frame_sig is not None:
+                    current_top_frame = frame_sig
 
         if current_top_frame is not None:
             top_frames.append(current_top_frame)

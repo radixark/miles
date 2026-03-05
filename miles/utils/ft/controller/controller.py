@@ -62,7 +62,7 @@ class FtController:
         self._diagnostic_scheduler: DiagnosticSchedulerProtocol = (
             diagnostic_scheduler or DiagnosticScheduler(
                 agents=self._agents,
-                rank_pids_provider=self.get_rank_pids_for_node,
+                rank_pids_provider=self._get_rank_pids_for_node,
             )
         )
 
@@ -158,7 +158,7 @@ class FtController:
         world_size: int,
         node_id: str,
         exporter_address: str,
-        pid: int = 0,
+        pid: int | None = None,
     ) -> None:
         if run_id != self._active_run_id:
             logger.info(
@@ -175,7 +175,7 @@ class FtController:
 
         self._expected_world_size = world_size
         self._rank_placement[rank] = node_id
-        if pid:
+        if pid is not None:
             self._rank_pids[rank] = pid
         logger.info(
             "rank_registered run_id=%s rank=%d world_size=%d node_id=%s",
@@ -188,7 +188,7 @@ class FtController:
                 address=exporter_address,
             )
 
-    def get_rank_pids_for_node(self, node_id: str) -> dict[int, int]:
+    def _get_rank_pids_for_node(self, node_id: str) -> dict[int, int]:
         return {
             rank: self._rank_pids[rank]
             for rank, nid in self._rank_placement.items()
