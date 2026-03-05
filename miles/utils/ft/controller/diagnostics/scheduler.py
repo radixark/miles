@@ -9,7 +9,7 @@ from miles.utils.ft.controller.diagnostics.stack_trace import (
     StackTraceAggregator,
     StackTraceDiagnostic,
 )
-from miles.utils.ft.models import ActionType, Decision, DiagnosticResult
+from miles.utils.ft.models import ActionType, Decision, DiagnosticResult, TriggerType
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class DiagnosticScheduler:
             trigger_reason, suspect_node_ids, self._pipeline,
         )
 
-        if trigger_reason == "hang" and self._rank_pids_provider is not None:
+        if trigger_reason == TriggerType.HANG and self._rank_pids_provider is not None:
             suspect_from_trace = await self._run_stack_trace_pre_step()
             if suspect_from_trace:
                 if suspect_node_ids is not None:

@@ -13,12 +13,12 @@ from miles.utils.ft.models import ActionType, DiagnosticResult
 from tests.fast.utils.ft.conftest import (
     FailingDiagnostic,
     FakeNodeAgent,
-    StubDiagnostic,
-    make_fake_agents,
-)
-from tests.fast.utils.ft.test_stack_trace import (
     SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
     SAMPLE_PYSPY_OUTPUT_STUCK,
+    StubDiagnostic,
+    make_fake_agents,
+    make_rank_pids_provider,
+    make_trace_result,
 )
 
 
@@ -275,30 +275,6 @@ class TestDiagnosticSchedulerLiveAgents:
 # ---------------------------------------------------------------------------
 
 
-def _make_rank_pids_provider(
-    mapping: dict[str, dict[int, int]],
-) -> "Callable[[str], dict[int, int]]":
-    from collections.abc import Callable
-
-    def provider(node_id: str) -> dict[int, int]:
-        return mapping.get(node_id, {})
-
-    return provider
-
-
-def _make_trace_result(
-    node_id: str,
-    passed: bool = True,
-    details: str = "trace output",
-) -> DiagnosticResult:
-    return DiagnosticResult(
-        diagnostic_type="stack_trace",
-        node_id=node_id,
-        passed=passed,
-        details=details,
-    )
-
-
 class TestStackTracePreStep:
     @pytest.mark.asyncio
     async def test_hang_trigger_runs_stack_trace(self) -> None:
@@ -306,7 +282,7 @@ class TestStackTracePreStep:
             "node-0": {"gpu": True},
             "node-1": {"gpu": True},
         })
-        pids_provider = _make_rank_pids_provider({
+        pids_provider = make_rank_pids_provider({
             "node-0": {0: 100},
             "node-1": {1: 200},
         })
@@ -316,8 +292,8 @@ class TestStackTracePreStep:
         ) as mock_diag_cls:
             mock_instance = AsyncMock()
             mock_instance.run = AsyncMock(side_effect=[
-                _make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                _make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
             ])
             mock_diag_cls.return_value = mock_instance
 
@@ -339,7 +315,7 @@ class TestStackTracePreStep:
             "node-0": {"gpu": True},
             "node-1": {"gpu": True},
         })
-        pids_provider = _make_rank_pids_provider({
+        pids_provider = make_rank_pids_provider({
             "node-0": {0: 100},
             "node-1": {1: 200},
         })
@@ -386,7 +362,7 @@ class TestStackTracePreStep:
             "node-1": {"gpu": False},
             "node-2": {"gpu": False},
         })
-        pids_provider = _make_rank_pids_provider({
+        pids_provider = make_rank_pids_provider({
             "node-0": {0: 100},
             "node-1": {1: 200},
             "node-2": {2: 300},
@@ -397,9 +373,9 @@ class TestStackTracePreStep:
         ) as mock_diag_cls:
             mock_instance = AsyncMock()
             mock_instance.run = AsyncMock(side_effect=[
-                _make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                _make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                _make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
+                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+                make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK),
             ])
             mock_diag_cls.return_value = mock_instance
 
@@ -421,7 +397,7 @@ class TestStackTracePreStep:
             "node-0": {"gpu": True},
             "node-1": {"gpu": True},
         })
-        pids_provider = _make_rank_pids_provider({
+        pids_provider = make_rank_pids_provider({
             "node-0": {0: 100},
             "node-1": {1: 200},
         })
@@ -431,8 +407,8 @@ class TestStackTracePreStep:
         ) as mock_diag_cls:
             mock_instance = AsyncMock()
             mock_instance.run = AsyncMock(side_effect=[
-                _make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                _make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+                make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
             ])
             mock_diag_cls.return_value = mock_instance
 
@@ -453,7 +429,7 @@ class TestStackTracePreStep:
             "node-0": {"gpu": True},
             "node-1": {"gpu": False},
         })
-        pids_provider = _make_rank_pids_provider({
+        pids_provider = make_rank_pids_provider({
             "node-0": {0: 100},
             "node-1": {1: 200},
         })
@@ -463,8 +439,8 @@ class TestStackTracePreStep:
         ) as mock_diag_cls:
             mock_instance = AsyncMock()
             mock_instance.run = AsyncMock(side_effect=[
-                _make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
-                _make_trace_result("node-1", passed=False, details="failed to collect"),
+                make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_OUTPUT_STUCK),
+                make_trace_result("node-1", passed=False, details="failed to collect"),
             ])
             mock_diag_cls.return_value = mock_instance
 

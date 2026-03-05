@@ -10,46 +10,11 @@ from miles.utils.ft.controller.diagnostics.stack_trace import (
     StackTraceAggregator,
     StackTraceDiagnostic,
 )
-
-
-# ---------------------------------------------------------------------------
-# Sample py-spy dump outputs for test fixtures
-# ---------------------------------------------------------------------------
-
-SAMPLE_PYSPY_OUTPUT_NORMAL = """\
-Thread 0x7F1234 (active): "MainThread"
-    _wait_for_data (selectors.py:451)
-    select (selectors.py:469)
-    _run_once (asyncio/base_events.py:1922)
-    run_forever (asyncio/base_events.py:604)
-Thread 0x7F5678 (idle): "WorkerThread-1"
-    wait (threading.py:320)
-    get (queue.py:171)
-    _worker (concurrent/futures/thread.py:83)
-"""
-
-SAMPLE_PYSPY_OUTPUT_STUCK = """\
-Thread 0x7F1234 (active): "MainThread"
-    nccl_allreduce (nccl_ops.py:42)
-    all_reduce (torch/distributed/distributed_c10d.py:1234)
-    forward (model.py:100)
-    train_step (train.py:50)
-Thread 0x7F5678 (idle): "WorkerThread-1"
-    wait (threading.py:320)
-    get (queue.py:171)
-    _worker (concurrent/futures/thread.py:83)
-"""
-
-SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK = """\
-Thread 0x7F1234 (active): "MainThread"
-    recv (socket.py:123)
-    _receive_data (network.py:456)
-    fetch_batch (dataloader.py:78)
-Thread 0x7F5678 (idle): "WorkerThread-1"
-    wait (threading.py:320)
-    get (queue.py:171)
-    _worker (concurrent/futures/thread.py:83)
-"""
+from tests.fast.utils.ft.conftest import (
+    SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
+    SAMPLE_PYSPY_OUTPUT_NORMAL,
+    SAMPLE_PYSPY_OUTPUT_STUCK,
+)
 
 
 # ---------------------------------------------------------------------------

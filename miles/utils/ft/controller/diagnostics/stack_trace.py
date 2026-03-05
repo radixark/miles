@@ -9,6 +9,8 @@ from miles.utils.ft.models import DiagnosticResult
 
 logger = logging.getLogger(__name__)
 
+_FRAME_RE = re.compile(r"^(\S+)\s+\((.+?)(?::\d+)?\)$")
+
 
 class StackTraceDiagnostic(BaseDiagnostic):
     """Collect stack traces from training processes via py-spy dump."""
@@ -29,22 +31,26 @@ class StackTraceDiagnostic(BaseDiagnostic):
                 details="no PIDs provided",
             )
 
-        traces: list[str] = []
-        failures: int = 0
-        per_pid_timeout = max(timeout_seconds // len(self._pids), 10)
-
-        for pid in self._pids:
+        async def _collect_one(pid: int) -> tuple[str, bool]:
             try:
-                trace = await self._dump_pid(pid, timeout_seconds=per_pid_timeout)
-                traces.append(f"=== PID {pid} ===\n{trace}")
+                trace = await self._dump_pid(pid, timeout_seconds=timeout_seconds)
+                return f"=== PID {pid} ===\n{trace}", True
             except Exception:
-                failures += 1
-                traces.append(f"=== PID {pid} ===\nFAILED: could not collect stack trace")
                 logger.warning(
                     "stack_trace_dump_failed pid=%d node=%s",
                     pid, node_id,
                     exc_info=True,
                 )
+                return f"=== PID {pid} ===\nFAILED: could not collect stack trace", False
+
+        results = await asyncio.gather(*(_collect_one(pid) for pid in self._pids))
+
+        traces: list[str] = []
+        failures: int = 0
+        for trace_text, success in results:
+            traces.append(trace_text)
+            if not success:
+                failures += 1
 
         all_failed = failures == len(self._pids)
         return DiagnosticResult(
@@ -145,7 +151,7 @@ class StackTraceAggregator:
         if not cleaned:
             return None
 
-        match = re.match(r"^(\S+)\s+\((.+?)(?::\d+)?\)$", cleaned)
+        match = _FRAME_RE.match(cleaned)
         if match:
             func_name = match.group(1)
             file_path = match.group(2)
