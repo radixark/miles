@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.platform.protocols import NotificationProtocol, TrainingJobProtocol
+from miles.utils.ft.platform.protocols import JobStatus, NotificationProtocol, TrainingJobProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +63,21 @@ async def stop_clear_submit(
         await training_job.stop_training()
     except Exception:
         logger.warning("stop_training_failed", exc_info=True)
-
-    mini_wandb.clear()
+        status = await training_job.get_training_status()
+        if status not in (JobStatus.STOPPED, JobStatus.FAILED):
+            logger.error(
+                "stop_training_failed_job_still_active status=%s, skipping submit",
+                status.value,
+            )
+            return False
 
     result = await retry_async(
         lambda: training_job.submit_training(excluded_node_ids=excluded_node_ids),
         description="submit_training",
     )
+    if result.ok:
+        mini_wandb.clear()
+
     return result.ok
 
 
