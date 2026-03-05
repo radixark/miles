@@ -7,8 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import miles.utils.ft.metric_names as mn
+from miles.utils.ft.agents.collectors.kernel_log_reader import (
+    DmesgSubprocessReader,
+    KernelLogReader,
+    KmsgFileReader,
+)
 from miles.utils.ft.agents.collectors.base import BaseCollector
-from miles.utils.ft.agents.collectors.kernel_log_reader import DmesgSubprocessReader, KernelLogReader, KmsgFileReader
 from miles.utils.ft.models import MetricSample
 
 logger = logging.getLogger(__name__)
@@ -30,6 +34,7 @@ class KmsgCollector(BaseCollector):
         self._kmsg_path = kmsg_path
 
         self._xid_events: deque[tuple[datetime, int]] = deque()
+        self._prev_xid_codes: set[int] = set()
         self._reader: KernelLogReader | None = None
 
     async def close(self) -> None:
@@ -72,39 +77,45 @@ class KmsgCollector(BaseCollector):
         while self._xid_events and self._xid_events[0][0].timestamp() < cutoff:
             self._xid_events.popleft()
 
+        current_xid_codes = {code for _, code in self._xid_events}
+
         samples = [
             MetricSample(
                 name=mn.XID_CODE_RECENT,
                 labels={"xid": str(code)},
                 value=1.0,
             )
-            for code in sorted({code for _, code in self._xid_events})
+            for code in sorted(current_xid_codes)
         ]
-        samples.append(
-            MetricSample(
-                name=mn.XID_COUNT_TOTAL,
-                labels={},
-                value=float(new_xid_count),
-                metric_type="counter",
-            )
-        )
+        for gone_code in self._prev_xid_codes - current_xid_codes:
+            samples.append(MetricSample(
+                name=mn.XID_CODE_RECENT,
+                labels={"xid": str(gone_code)},
+                value=0.0,
+            ))
+
+        self._prev_xid_codes = current_xid_codes
+
+        samples.append(MetricSample(
+            name=mn.XID_COUNT_TOTAL,
+            labels={},
+            value=float(new_xid_count),
+            metric_type="counter",
+        ))
         return samples
 
     def _count_kernel_events(self, lines: list[str]) -> list[MetricSample]:
         count = sum(
-            1
-            for line in lines
+            1 for line in lines
             for line_lower in (line.lower(),)
             if any(kw in line_lower for kw in _KERNEL_EVENT_KEYWORDS)
         )
-        return [
-            MetricSample(
-                name=mn.KERNEL_EVENT_COUNT,
-                labels={},
-                value=float(count),
-                metric_type="counter",
-            )
-        ]
+        return [MetricSample(
+            name=mn.KERNEL_EVENT_COUNT,
+            labels={},
+            value=float(count),
+            metric_type="counter",
+        )]
 
 
 def _create_reader(kmsg_path: Path) -> KernelLogReader:
