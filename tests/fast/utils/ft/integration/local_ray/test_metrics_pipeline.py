@@ -2,20 +2,24 @@
 from __future__ import annotations
 
 import time
+from datetime import timedelta
 
 import pytest
 import ray
 from prometheus_client import Gauge
 
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
-from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
-
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.nan_loss import NanLossDetector
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.models import ControllerMode
+from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
+from miles.utils.ft.models.metric_names import TRAINING_ITERATION
 from miles.utils.ft.platform.controller_actor import FtControllerActor
 from miles.utils.ft.platform.controller_factory import FtControllerConfig
 from miles.utils.ft.platform.stubs import StubTrainingJob
-from miles.utils.ft.protocols.platform import ft_controller_actor_name
+from miles.utils.ft.protocols.platform import JobStatus, ft_controller_actor_name
 
 from tests.fast.utils.ft.helpers.controller_fakes import FakeNodeManager
 from tests.fast.utils.ft.integration.local_ray.conftest import get_status, poll_for_run_id
@@ -23,6 +27,33 @@ from tests.fast.utils.ft.integration.local_ray.conftest import get_status, poll_
 pytestmark = [
     pytest.mark.local_ray,
 ]
+
+
+class _FastHangDetector(BaseFaultDetector):
+    """HangDetector with sub-minute timeout for fast testing."""
+
+    def __init__(self, timeout_seconds: float = 3.0) -> None:
+        self._timeout = timedelta(seconds=timeout_seconds)
+
+    def evaluate(self, ctx: DetectorContext) -> Decision:
+        if ctx.job_status != JobStatus.RUNNING:
+            return Decision(action=ActionType.NONE, reason="not running")
+
+        df = ctx.metric_store.changes(
+            TRAINING_ITERATION,
+            window=self._timeout,
+            label_filters={"rank": "0"},
+        )
+        if df.is_empty():
+            return Decision(action=ActionType.NONE, reason="no iteration data")
+
+        if df["value"][0] == 0:
+            return Decision(
+                action=ActionType.ENTER_RECOVERY,
+                reason=f"iteration stalled for {self._timeout.total_seconds()}s",
+                trigger=TriggerType.HANG,
+            )
+        return Decision(action=ActionType.NONE, reason="progressing")
 
 
 class TestLogStepArrivesInMiniWandb:
@@ -163,6 +194,109 @@ class TestNanLossTriggersRecovery:
                 time.sleep(0.2)
 
             assert entered_recovery, "NanLossDetector did not trigger recovery"
+        finally:
+            try:
+                ray.get(handle.shutdown.remote(), timeout=5)
+            except Exception:
+                pass
+            try:
+                ray.kill(ray.get_actor(name), no_restart=True)
+            except ValueError:
+                pass
+
+
+class TestHangDetectionFullPath:
+    """Exporter reports stale iteration → HangDetector triggers recovery (M3)."""
+
+    def test_stale_iteration_triggers_hang_recovery(
+        self, local_ray: None,
+    ) -> None:
+        name = ft_controller_actor_name("hang-det")
+        handle = FtControllerActor.options(name=name).remote(
+            config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="hang-det"),
+            node_manager_override=FakeNodeManager(),
+            training_job_override=StubTrainingJob(),
+            notifier_override=None,
+            detectors_override=[_FastHangDetector(timeout_seconds=3.0)],
+        )
+
+        try:
+            handle.submit_and_run.remote()
+            run_id = poll_for_run_id(handle)
+
+            exporter = PrometheusExporter()
+            gauge = Gauge(
+                TRAINING_ITERATION,
+                "iteration gauge for hang test",
+                labelnames=["rank", "node_id"],
+                registry=exporter.registry,
+            )
+            gauge.labels(rank="0", node_id="hang-node").set(42.0)
+
+            try:
+                ray.get(handle.register_training_rank.remote(
+                    run_id=run_id, rank=0, world_size=1,
+                    node_id="hang-node", exporter_address=exporter.get_address(),
+                ), timeout=5)
+
+                deadline = time.monotonic() + 20.0
+                entered_recovery = False
+                while time.monotonic() < deadline:
+                    s = get_status(handle)
+                    if s.mode == ControllerMode.RECOVERY:
+                        entered_recovery = True
+                        break
+                    time.sleep(0.3)
+
+                assert entered_recovery, "_FastHangDetector did not trigger recovery"
+            finally:
+                exporter.shutdown()
+        finally:
+            try:
+                ray.get(handle.shutdown.remote(), timeout=5)
+            except Exception:
+                pass
+            try:
+                ray.kill(ray.get_actor(name), no_restart=True)
+            except ValueError:
+                pass
+
+
+class TestRegisterNodeAgentSerialization:
+    """register_node_agent.remote() serializes a Python object via cloudpickle (M5)."""
+
+    def test_node_agent_survives_cloudpickle_serialization(
+        self, local_ray: None,
+    ) -> None:
+
+        class _FakeNodeAgent:
+            async def run_diagnostic(
+                self, diagnostic_type: str, timeout_seconds: int = 120,
+                **kwargs: object,
+            ) -> DiagnosticResult:
+                return DiagnosticResult(
+                    passed=True,
+                    details="fake diagnostic pass",
+                    diagnostic_type=diagnostic_type,
+                    node_id="fake-node",
+                )
+
+        name = ft_controller_actor_name("m5-agent")
+        handle = FtControllerActor.options(name=name).remote(
+            config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="m5-agent"),
+        )
+
+        try:
+            handle.submit_and_run.remote()
+            run_id = poll_for_run_id(handle)
+
+            ray.get(handle.register_node_agent.remote(
+                node_id="fake-node",
+                agent=_FakeNodeAgent(),
+            ), timeout=5)
+
+            status = get_status(handle)
+            assert status.mode == ControllerMode.MONITORING
         finally:
             try:
                 ray.get(handle.shutdown.remote(), timeout=5)

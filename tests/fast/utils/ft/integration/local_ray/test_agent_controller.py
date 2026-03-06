@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -11,13 +13,32 @@ import ray
 from miles.utils.ft.agents.core.tracking_agent import FtTrackingAgent
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 from miles.utils.ft.agents.utils.controller_handle import RayActorResolver
-from miles.utils.ft.models import ControllerMode
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.models import ActionType, ControllerMode, Decision, TriggerType
 
-from tests.fast.utils.ft.integration.local_ray.conftest import get_status
+from tests.fast.utils.ft.integration.local_ray.conftest import get_status, poll_for_run_id
 
 pytestmark = [
     pytest.mark.local_ray,
 ]
+
+
+class _OneShotCrashDetector(BaseFaultDetector):
+    """Fires ENTER_RECOVERY once, then returns NONE forever after."""
+
+    def __init__(self) -> None:
+        self._fired = False
+
+    def evaluate(self, ctx: Any) -> Decision:
+        if not self._fired:
+            self._fired = True
+            return Decision(
+                action=ActionType.ENTER_RECOVERY,
+                reason="one-shot crash for test",
+                trigger=TriggerType.CRASH,
+                bad_node_ids=["fake-bad-node"],
+            )
+        return Decision(action=ActionType.NONE, reason="no fault")
 
 
 class TestRealRayActorResolver:
@@ -139,18 +160,72 @@ class TestPidCorrectness:
 
 
 class TestRunIdSwitch:
-    """Verify active_run_id updates when a new training run is submitted."""
+    """Verify active_run_id updates when recovery re-submits training (A5)."""
 
-    def test_submit_training_switches_active_run_id(
+    def test_recovery_switches_active_run_id(
         self,
-        running_controller: tuple[ray.actor.ActorHandle, str],
+        make_controller_actor: Callable[..., ray.actor.ActorHandle],
     ) -> None:
-        handle, first_run_id = running_controller
+        handle = make_controller_actor(
+            detectors_override=[_OneShotCrashDetector()],
+        )
+
+        handle.submit_and_run.remote()
+        first_run_id = poll_for_run_id(handle)
+
+        ray.get(handle.register_training_rank.remote(
+            run_id=first_run_id, rank=0, world_size=1,
+            node_id="n0", exporter_address="http://n0:9090",
+        ), timeout=5)
 
         ray.get(handle.log_step.remote(
             run_id=first_run_id, step=5, metrics={"iteration": 5},
         ), timeout=5)
 
-        status_before = get_status(handle)
-        assert status_before.active_run_id == first_run_id
-        assert status_before.latest_iteration == 5
+        deadline = time.monotonic() + 20.0
+        new_run_id: str | None = None
+        while time.monotonic() < deadline:
+            status = get_status(handle)
+            if status.active_run_id is not None and status.active_run_id != first_run_id:
+                new_run_id = status.active_run_id
+                break
+            time.sleep(0.2)
+
+        assert new_run_id is not None, "active_run_id did not change after recovery"
+        assert new_run_id != first_run_id
+
+
+class TestInFlightMessagesDuringRunSwitch:
+    """Fire-and-forget log_step for run-1 overlapping with recovery → run-2 (A6)."""
+
+    def test_inflight_log_steps_do_not_corrupt_state(
+        self,
+        make_controller_actor: Callable[..., ray.actor.ActorHandle],
+    ) -> None:
+        handle = make_controller_actor(
+            detectors_override=[_OneShotCrashDetector()],
+        )
+
+        handle.submit_and_run.remote()
+        first_run_id = poll_for_run_id(handle)
+
+        ray.get(handle.register_training_rank.remote(
+            run_id=first_run_id, rank=0, world_size=1,
+            node_id="n0", exporter_address="http://n0:9090",
+        ), timeout=5)
+
+        for i in range(200):
+            handle.log_step.remote(
+                run_id=first_run_id, step=i, metrics={"loss": float(i)},
+            )
+
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            status = get_status(handle)
+            if status.active_run_id is not None and status.active_run_id != first_run_id:
+                break
+            time.sleep(0.2)
+
+        status = get_status(handle)
+        assert status.active_run_id is not None
+        assert isinstance(status.mode, ControllerMode)

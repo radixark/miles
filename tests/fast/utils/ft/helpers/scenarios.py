@@ -161,6 +161,31 @@ async def scenario_no_false_positive(
     raise TimeoutError(f"Controller did not reach {target_ticks} ticks")
 
 
+async def scenario_hang_detection(
+    handle: ray.actor.ActorHandle,
+    injector: FaultInjectionProtocol,
+    *,
+    hang_timeout: float = 30.0,
+) -> ControllerStatus:
+    """Inject hang → controller detects stale iteration → ENTER_RECOVERY.
+
+    Returns the ControllerStatus after recovery is triggered.
+    """
+    pre_status = get_status(handle)
+    assert pre_status.mode == ControllerMode.MONITORING
+
+    await injector.inject_hang()
+
+    status = await wait_for_mode(
+        handle=handle,
+        target_mode=ControllerMode.RECOVERY,
+        timeout=hang_timeout,
+    )
+
+    assert status.mode == ControllerMode.RECOVERY
+    return status
+
+
 async def _async_sleep(seconds: float) -> None:
     import asyncio
     await asyncio.sleep(seconds)

@@ -23,6 +23,10 @@ class FaultInjectionProtocol(Protocol):
         """Restore training to RUNNING state (for testing false-positive avoidance)."""
         ...
 
+    async def inject_hang(self) -> None:
+        """Simulate a training hang (job reports RUNNING but iteration stalls)."""
+        ...
+
 
 class LocalRayFaultInjector:
     """Fault injector for local_ray tests.
@@ -38,4 +42,13 @@ class LocalRayFaultInjector:
         await self._state.set_status.remote(JobStatus.FAILED.value)
 
     async def recover_training(self) -> None:
+        await self._state.set_status.remote(JobStatus.RUNNING.value)
+
+    async def inject_hang(self) -> None:
+        """Training reports RUNNING but iterations stop advancing.
+
+        Since the simulated env never advances iteration metrics anyway,
+        this is effectively a no-op — the training is already 'hung' from
+        the metric perspective. We just ensure status stays RUNNING.
+        """
         await self._state.set_status.remote(JobStatus.RUNNING.value)

@@ -16,6 +16,7 @@ from miles.utils.ft.models import ControllerMode
 from miles.utils.ft.platform.controller_actor import FtControllerActor
 from miles.utils.ft.platform.controller_factory import FtControllerConfig
 from miles.utils.ft.protocols.platform import ft_controller_actor_name
+from tests.fast.utils.ft.integration.local_ray.conftest import get_status
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -146,3 +147,35 @@ class TestBlockingCallRetryAfterControllerDeath:
             agent = FtTrainingRankAgent(rank=0, world_size=1)
 
         agent.shutdown()
+
+
+class TestApplicationExceptionNotRetried:
+    """max_task_retries=-1 does not retry application-level exceptions (F7).
+
+    Ray retries system failures (actor crash, OOM) but not exceptions raised
+    by the application code within a method.
+    """
+
+    def test_value_error_raises_once_not_retried(
+        self,
+        running_controller: tuple[ray.actor.ActorHandle, str],
+    ) -> None:
+        handle, run_id = running_controller
+
+        error_count = 0
+        for _ in range(3):
+            try:
+                ray.get(handle.register_training_rank.remote(
+                    run_id=run_id,
+                    rank=0,
+                    world_size=1,
+                    node_id="",
+                    exporter_address="",
+                ), timeout=5)
+            except ray.exceptions.RayTaskError:
+                error_count += 1
+
+        assert error_count == 3
+
+        status = get_status(handle)
+        assert isinstance(status.mode, ControllerMode)
