@@ -1,4 +1,4 @@
-"""Local Ray: Agent ↔ Controller — real RayActorResolver, rank registration, tracking."""
+"""Local Ray: Agent ↔ Controller — rank registration, tracking."""
 from __future__ import annotations
 
 import os
@@ -12,7 +12,7 @@ import ray
 
 from miles.utils.ft.agents.core.tracking_agent import FtTrackingAgent
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
-from miles.utils.ft.agents.utils.controller_handle import RayActorResolver
+from miles.utils.ft.agents.utils.controller_handle import get_controller_handle
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.models import ActionType, ControllerMode, Decision, TriggerType
 
@@ -41,19 +41,18 @@ class _OneShotCrashDetector(BaseFaultDetector):
         return Decision(action=ActionType.NONE, reason="no fault")
 
 
-class TestRealRayActorResolver:
-    def test_resolver_finds_controller_actor(
+class TestGetControllerHandle:
+    def test_finds_controller_actor(
         self, controller_actor: ray.actor.ActorHandle,
     ) -> None:
-        resolver = RayActorResolver()
-        handle = resolver.get_actor("ft_controller")
+        handle = get_controller_handle("")
+        assert handle is not None
         status = ray.get(handle.get_status.remote(), timeout=5)
         assert status.mode == ControllerMode.MONITORING
 
-    def test_resolver_raises_for_missing_actor(self, local_ray: None) -> None:
-        resolver = RayActorResolver()
-        with pytest.raises(ValueError):
-            resolver.get_actor("ft_controller_nonexistent_xyz")
+    def test_returns_none_for_missing_actor(self, local_ray: None) -> None:
+        result = get_controller_handle("nonexistent_xyz")
+        assert result is None
 
 
 class TestTrainingRankAgentRegistration:

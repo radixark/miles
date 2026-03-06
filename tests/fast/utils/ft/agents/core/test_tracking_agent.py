@@ -8,7 +8,7 @@ from miles.utils.ft.agents.core.tracking_agent import FtTrackingAgent
 
 
 class TestFtTrackingAgentLog:
-    @patch("miles.utils.ft.agents.core.tracking_agent.FtTrackingAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
     def test_log_pushes_metrics_to_controller(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -24,7 +24,7 @@ class TestFtTrackingAgentLog:
             metrics={"loss": 2.5, "grad_norm": 1.1},
         )
 
-    @patch("miles.utils.ft.agents.core.tracking_agent.FtTrackingAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
     def test_log_multiple_calls_accumulate(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -55,7 +55,7 @@ class TestFtTrackingAgentLog:
             agent = FtTrackingAgent(run_id="explicit-run")
             assert agent._run_id == "explicit-run"
 
-    @patch("miles.utils.ft.agents.core.tracking_agent.FtTrackingAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
     def test_log_exception_does_not_propagate(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -68,7 +68,7 @@ class TestFtTrackingAgentLog:
 
     def test_log_controller_unreachable_is_noop(self) -> None:
         with patch(
-            "miles.utils.ft.agents.core.tracking_agent.FtTrackingAgent._get_controller_handle",
+            "miles.utils.ft.agents.core.tracking_agent.get_controller_handle",
             return_value=None,
         ):
             agent = FtTrackingAgent(run_id="test-run-1")
@@ -78,7 +78,7 @@ class TestFtTrackingAgentLog:
 class TestTrackingUtilsIntegration:
     """Test FtTrackingAgent integration with tracking_utils.log()."""
 
-    @patch("miles.utils.ft.agents.core.tracking_agent.FtTrackingAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
     def test_tracking_utils_log_forwards_to_ft_agent(
         self, mock_get_handle: MagicMock
     ) -> None:

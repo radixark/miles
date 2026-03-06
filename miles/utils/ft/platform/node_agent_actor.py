@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 import socket
-from typing import Any
-
 import ray
 
 from miles.utils.ft.agents.collectors.disk import DiskCollector
@@ -11,6 +9,7 @@ from miles.utils.ft.agents.collectors.gpu import GpuCollector
 from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
 from miles.utils.ft.agents.collectors.network import NetworkCollector
 from miles.utils.ft.agents.core.node_agent import FtNodeAgent
+from miles.utils.ft.agents.utils.controller_handle import get_controller_handle
 from miles.utils.ft.controller.diagnostics.gpu_diagnostic import GpuDiagnostic
 from miles.utils.ft.controller.diagnostics.nccl.inter_machine import (
     InterMachineCommDiagnostic,
@@ -19,10 +18,6 @@ from miles.utils.ft.controller.diagnostics.nccl.intra_machine import (
     IntraMachineCommDiagnostic,
 )
 from miles.utils.ft.models.diagnostics import DiagnosticResult
-from miles.utils.ft.protocols.platform import (
-    ft_controller_actor_name,
-    ft_node_agent_actor_name,
-)
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)
@@ -94,7 +89,7 @@ class _FtNodeAgentActorCls:
         return self._agent.get_exporter_address()
 
     def _register_with_controller(self) -> None:
-        controller = self._get_controller_handle()
+        controller = get_controller_handle(self._ft_id)
         if controller is None:
             logger.warning(
                 "Cannot register node agent: controller not available node_id=%s",
@@ -127,15 +122,6 @@ class _FtNodeAgentActorCls:
                 "Node agent registered node_id=%s exporter=%s",
                 self._node_id, exporter_address,
             )
-
-    def _get_controller_handle(self) -> Any | None:
-        try:
-            actor_name = ft_controller_actor_name(self._ft_id)
-            return ray.get_actor(actor_name)
-        except Exception:
-            logger.warning("Failed to get ft_controller actor handle", exc_info=True)
-            return None
-
 
 FtNodeAgentActor = ray.remote(
     num_gpus=0,

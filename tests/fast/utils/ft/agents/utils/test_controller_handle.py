@@ -1,107 +1,33 @@
-"""Unit tests for ControllerHandleMixin.
+"""Unit tests for get_controller_handle."""
 
-Uses a minimal concrete subclass so the mixin is tested in isolation
-rather than indirectly through each agent class.
-"""
+from unittest.mock import MagicMock, patch
 
-from typing import Any
-from unittest.mock import MagicMock
-
-import pytest
-
-from miles.utils.ft.agents.utils.controller_handle import (
-    ActorResolverProtocol,
-    ControllerHandleMixin,
-)
+from miles.utils.ft.agents.utils.controller_handle import get_controller_handle
 
 
-class _FakeResolver:
-    """Test resolver that records calls and returns a configurable handle."""
-
-    def __init__(self, handle: Any = None, *, should_fail: bool = False) -> None:
-        self.handle = handle
-        self.should_fail = should_fail
-        self.calls: list[str] = []
-
-    def get_actor(self, name: str) -> Any:
-        self.calls.append(name)
-        if self.should_fail:
-            raise RuntimeError("resolver failure")
-        return self.handle
-
-
-class _StubAgent(ControllerHandleMixin):
-    def __init__(
-        self,
-        ft_id: str = "",
-        actor_resolver: ActorResolverProtocol | None = None,
-    ) -> None:
-        super().__init__(ft_id=ft_id, actor_resolver=actor_resolver)
-
-
-class TestControllerHandleMixin:
-    def test_caches_result(self) -> None:
-        resolver = _FakeResolver()
-        agent = _StubAgent(actor_resolver=resolver)
+class TestGetControllerHandle:
+    @patch("ray.get_actor")
+    def test_returns_actor_handle(self, mock_get_actor: MagicMock) -> None:
         mock_handle = MagicMock()
-        agent._controller_handle = mock_handle
+        mock_get_actor.return_value = mock_handle
 
-        result = agent._get_controller_handle()
+        result = get_controller_handle("abc123")
 
         assert result is mock_handle
-        assert len(resolver.calls) == 0
+        mock_get_actor.assert_called_once_with("ft_controller_abc123")
 
-    def test_lookup_on_cache_miss(self) -> None:
-        mock_handle = MagicMock()
-        resolver = _FakeResolver(handle=mock_handle)
-        agent = _StubAgent(actor_resolver=resolver)
+    @patch("ray.get_actor")
+    def test_returns_none_on_failure(self, mock_get_actor: MagicMock) -> None:
+        mock_get_actor.side_effect = RuntimeError("not found")
 
-        result = agent._get_controller_handle()
-
-        assert result is mock_handle
-        assert len(resolver.calls) == 1
-
-    def test_failure_returns_none(self) -> None:
-        resolver = _FakeResolver(should_fail=True)
-        agent = _StubAgent(actor_resolver=resolver)
-
-        result = agent._get_controller_handle()
+        result = get_controller_handle("abc123")
 
         assert result is None
-        assert len(resolver.calls) == 1
 
-    def test_retries_on_every_call_after_failure(self) -> None:
-        resolver = _FakeResolver(should_fail=True)
-        agent = _StubAgent(actor_resolver=resolver)
+    @patch("ray.get_actor")
+    def test_empty_ft_id_uses_default_name(self, mock_get_actor: MagicMock) -> None:
+        mock_get_actor.return_value = MagicMock()
 
-        agent._get_controller_handle()
-        agent._get_controller_handle()
-        agent._get_controller_handle()
+        get_controller_handle("")
 
-        assert len(resolver.calls) == 3
-
-    def test_ft_id_scopes_actor_name(self) -> None:
-        resolver = _FakeResolver(handle=MagicMock())
-        agent = _StubAgent(ft_id="abc123", actor_resolver=resolver)
-
-        result = agent._get_controller_handle()
-
-        assert result is not None
-        assert resolver.calls == ["ft_controller_abc123"]
-
-    def test_empty_ft_id_uses_default_name(self) -> None:
-        resolver = _FakeResolver(handle=MagicMock())
-        agent = _StubAgent(ft_id="", actor_resolver=resolver)
-
-        result = agent._get_controller_handle()
-
-        assert result is not None
-        assert resolver.calls == ["ft_controller"]
-
-    def test_ft_id_from_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MILES_FT_ID", "env789")
-        resolver = _FakeResolver(handle=MagicMock())
-        agent = _StubAgent(actor_resolver=resolver)
-
-        agent._get_controller_handle()
-        assert resolver.calls == ["ft_controller_env789"]
+        mock_get_actor.assert_called_once_with("ft_controller")
