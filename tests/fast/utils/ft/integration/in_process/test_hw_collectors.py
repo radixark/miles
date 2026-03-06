@@ -117,7 +117,7 @@ class TestNodeAgentAllCollectorsIntegration:
 
         kmsg_collector = KmsgCollector(kmsg_path=Path("/dev/null"))
         kmsg_collector.collect_interval = 0.05
-        kmsg_collector._reader = FakeKmsgReader([])
+        kmsg_collector._reader = FakeKmsgReader(["NVRM: Xid (PCI:0000:00:00): 79, pid=1234"])
 
         network_collector = NetworkCollector(sysfs_net_path=sysfs)
         network_collector.collect_interval = 0.3

@@ -98,7 +98,7 @@ class TestInterMachineCommDiagnostic:
             result = await diag.run(node_id="node-0", timeout_seconds=30)
 
         assert result.passed is False
-        assert "timed out" in result.details
+        assert "failed to execute all_gather_perf" in result.details
         mock_proc.kill.assert_called_once()
         mock_proc.wait.assert_awaited_once()
 

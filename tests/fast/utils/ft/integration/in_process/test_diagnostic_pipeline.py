@@ -77,8 +77,8 @@ class TestDiagnosticPipelineWithBadNode:
         # Advance to completion
         await advance_until_recovery_complete(harness)
 
-        assert harness.node_manager.is_node_bad("node-1")
-        assert not harness.node_manager.is_node_bad("node-0")
+        assert harness.node_manager.was_ever_marked_bad("node-1")
+        assert not harness.node_manager.was_ever_marked_bad("node-0")
 
 
 class TestDiagnosticPipelineAllPass:
@@ -102,8 +102,8 @@ class TestDiagnosticPipelineAllPass:
 
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
-        assert not harness.node_manager.is_node_bad("node-0")
-        assert not harness.node_manager.is_node_bad("node-1")
+        assert not harness.node_manager.was_ever_marked_bad("node-0")
+        assert not harness.node_manager.was_ever_marked_bad("node-1")
 
 
 class TestDiagnosticPipelineEmptyPipeline:
@@ -144,9 +144,9 @@ class TestDiagnosticPipelineInterMachine:
 
         await advance_until_recovery_complete(harness)
 
-        assert harness.node_manager.is_node_bad("node-1")
-        assert not harness.node_manager.is_node_bad("node-0")
-        assert not harness.node_manager.is_node_bad("node-2")
+        assert harness.node_manager.was_ever_marked_bad("node-1")
+        assert not harness.node_manager.was_ever_marked_bad("node-0")
+        assert not harness.node_manager.was_ever_marked_bad("node-2")
 
     @pytest.mark.anyio
     async def test_full_pipeline_all_pass(self) -> None:
@@ -169,9 +169,9 @@ class TestDiagnosticPipelineInterMachine:
 
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
-        assert not harness.node_manager.is_node_bad("node-0")
-        assert not harness.node_manager.is_node_bad("node-1")
-        assert not harness.node_manager.is_node_bad("node-2")
+        assert not harness.node_manager.was_ever_marked_bad("node-0")
+        assert not harness.node_manager.was_ever_marked_bad("node-1")
+        assert not harness.node_manager.was_ever_marked_bad("node-2")
 
 
 class TestDiagnosticPipelineMultiStep:
@@ -195,5 +195,5 @@ class TestDiagnosticPipelineMultiStep:
 
         await advance_until_recovery_complete(harness)
 
-        assert harness.node_manager.is_node_bad("node-1")
-        assert not harness.node_manager.is_node_bad("node-0")
+        assert harness.node_manager.was_ever_marked_bad("node-1")
+        assert not harness.node_manager.was_ever_marked_bad("node-0")

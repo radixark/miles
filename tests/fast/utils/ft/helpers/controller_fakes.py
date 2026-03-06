@@ -30,15 +30,20 @@ class FakeNodeManager:
 
     def __init__(self) -> None:
         self._bad_nodes: set[str] = set()
+        self._ever_marked_bad: set[str] = set()
 
     async def mark_node_bad(self, node_id: str, reason: str = "") -> None:
         self._bad_nodes.add(node_id)
+        self._ever_marked_bad.add(node_id)
 
     async def unmark_node_bad(self, node_id: str) -> None:
         self._bad_nodes.discard(node_id)
 
     def is_node_bad(self, node_id: str) -> bool:
         return node_id in self._bad_nodes
+
+    def was_ever_marked_bad(self, node_id: str) -> bool:
+        return node_id in self._ever_marked_bad
 
     async def get_bad_nodes(self) -> list[str]:
         return sorted(self._bad_nodes)

@@ -25,7 +25,7 @@ _FETCH_MAX_RETRIES: int = 2
 _FETCH_RETRY_DELAY_SECONDS: float = 0.5
 
 
-class PrometheusClient(MetricStoreProtocol, RangeAggregationMixin):
+class PrometheusClient(RangeAggregationMixin, MetricStoreProtocol):
     """MetricStoreProtocol implementation backed by a real Prometheus HTTP API.
 
     Each typed method builds the corresponding PromQL query internally,

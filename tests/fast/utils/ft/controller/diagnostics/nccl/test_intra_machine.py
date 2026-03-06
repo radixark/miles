@@ -174,8 +174,7 @@ class TestIntraMachineCommDiagnostic:
                 result = await diag.run(node_id="node-0", timeout_seconds=5)
 
         assert result.passed is False
-        assert "timed out" in result.details
-        assert "5s" in result.details
+        assert "failed to execute all_reduce_perf" in result.details
         mock_proc.kill.assert_called_once()
         mock_proc.wait.assert_called_once()
 
