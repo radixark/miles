@@ -1,10 +1,11 @@
 """E2E test fixtures for FT system integration tests.
 
+Each test is fully independent: clean environment → launch training via
+launch_standard_run.main() → verify behavior → tear down.
+
 Required environment variables:
   RAY_ADDRESS              — Ray cluster dashboard URL (e.g. http://head-node:8265)
   MILES_SCRIPT_EXTERNAL_RAY — Must be "1" (uses existing Ray cluster)
-
-Training is launched automatically via launch_standard_run.py.
 """
 from __future__ import annotations
 
@@ -13,9 +14,8 @@ import logging
 import os
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass, field
-from typing import TypeVar
 
 import pytest
 import ray
@@ -28,14 +28,12 @@ from miles.utils.ft.protocols.platform import ft_controller_actor_name
 
 logger = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
-
 _EXPECTED_CLUSTER_NODES = 3
 _ACTOR_POLL_INTERVAL: float = 5.0
 
 
 # ---------------------------------------------------------------------------
-# Session-scoped: environment validation
+# Session-scoped: environment validation + Ray cluster connection
 # ---------------------------------------------------------------------------
 
 
@@ -44,11 +42,6 @@ def _assert_external_ray() -> None:
     assert get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"), (
         "MILES_SCRIPT_EXTERNAL_RAY must be '1' for FT e2e tests"
     )
-
-
-# ---------------------------------------------------------------------------
-# Session-scoped: Ray cluster
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session")
@@ -83,47 +76,36 @@ def ray_cluster(ray_address: str) -> Generator[None, None, None]:
 
 
 # ---------------------------------------------------------------------------
-# Session-scoped: prepare + launch training in background thread
+# Environment cleanup helpers
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-def _prepare(ray_cluster: None) -> None:
-    """Download model and dataset (same as short tests)."""
-    from tests.e2e.ft.launch_standard_run import prepare
-
-    prepare()
-
-
-@pytest.fixture(scope="session")
-def ft_controller_handle(
-    _assert_external_ray: None,
-    _prepare: None,
-) -> Generator[ray.actor.ActorHandle, None, None]:
-    """Launch training + FT Controller in a background thread.
-
-    Waits for the named actor to appear, then yields the handle for
-    tests to interact with the controller via ray.get(handle.xxx.remote()).
-    """
-    from tests.e2e.ft.launch_standard_run import ScriptArgs, execute
-
-    args = ScriptArgs()
-    thread = threading.Thread(target=execute, args=(args,), daemon=True)
-    thread.start()
-
-    handle = _wait_for_named_actor(
-        name=ft_controller_actor_name(""),
-        timeout=300.0,
-    )
-    yield handle
-
+async def _cleanup_environment() -> None:
+    """Shut down any leftover FtController and uncordon K8s nodes."""
     try:
-        ray.get(handle.shutdown.remote(), timeout=60)
+        old_handle = ray.get_actor(ft_controller_actor_name(""))
+        ray.get(old_handle.shutdown.remote(), timeout=60)
+        logger.info("cleanup_shut_down_existing_controller")
+    except ValueError:
+        pass
     except Exception:
-        logger.warning("ft_controller_handle_teardown_failed", exc_info=True)
+        logger.warning("cleanup_shutdown_existing_controller_failed", exc_info=True)
+
+    node_mgr = K8sNodeManager()
+    try:
+        bad_nodes = await node_mgr.get_bad_nodes()
+        for node_id in bad_nodes:
+            try:
+                await node_mgr.unmark_node_bad(node_id=node_id)
+            except Exception:
+                logger.warning("cleanup_uncordon_failed node_id=%s", node_id, exc_info=True)
+    except Exception:
+        logger.warning("cleanup_get_bad_nodes_failed", exc_info=True)
+    finally:
+        await node_mgr.aclose()
 
 
-def _wait_for_named_actor(
+async def _wait_for_named_actor(
     name: str,
     timeout: float,
 ) -> ray.actor.ActorHandle:
@@ -135,7 +117,7 @@ def _wait_for_named_actor(
             return ray.get_actor(name)
         except ValueError as exc:
             last_error = exc
-            time.sleep(_ACTOR_POLL_INTERVAL)
+            await asyncio.sleep(_ACTOR_POLL_INTERVAL)
 
     raise TimeoutError(
         f"Named actor '{name}' did not appear within {timeout}s: {last_error}"
@@ -143,48 +125,54 @@ def _wait_for_named_actor(
 
 
 # ---------------------------------------------------------------------------
-# Function-scoped: K8sNodeManager for cleanup & node selection
+# Function-scoped: independent training launch per test
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def _cleanup_node_manager(ray_cluster: None) -> AsyncGenerator[K8sNodeManager, None]:
-    """Shared K8sNodeManager for test-infrastructure fixtures (not the SUT)."""
+async def ft_controller_handle(
+    ray_cluster: None,
+) -> AsyncGenerator[ray.actor.ActorHandle, None]:
+    """Launch independent training + FT Controller for a single test.
+
+    1. Clean up leftover state (controller, K8s node cordons)
+    2. Launch launch_standard_run.main() in background thread
+    3. Wait for FtController actor to appear
+    4. Yield controller handle
+    5. Tear down controller and clean up
+    """
+    await _cleanup_environment()
+
+    from tests.e2e.ft.launch_standard_run import main
+
+    thread = threading.Thread(target=main, daemon=True)
+    thread.start()
+
+    handle = await _wait_for_named_actor(
+        name=ft_controller_actor_name(""),
+        timeout=300.0,
+    )
+    yield handle
+
+    try:
+        ray.get(handle.shutdown.remote(), timeout=60)
+    except Exception:
+        logger.warning("ft_controller_teardown_failed", exc_info=True)
+
+    await _cleanup_environment()
+
+
+# ---------------------------------------------------------------------------
+# Function-scoped: K8sNodeManager
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def k8s_node_manager(ray_cluster: None) -> AsyncGenerator[K8sNodeManager, None]:
+    """Shared K8sNodeManager for test use (e.g. checking bad nodes)."""
     node_mgr = K8sNodeManager()
     yield node_mgr
     await node_mgr.aclose()
-
-
-@pytest.fixture(autouse=True)
-async def _restore_cluster_state(
-    ft_controller_handle: ray.actor.ActorHandle,
-    _cleanup_node_manager: K8sNodeManager,
-) -> AsyncGenerator[None, None]:
-    """Reset controller test state before, and uncordon nodes after each test.
-
-    Pre-test: clears RecoveryCooldown history and last_phase_history so that
-    tests do not interfere with each other via the session-scoped controller.
-    Post-test: uncordons any K8s nodes marked bad during the test.
-    """
-    try:
-        ray.get(ft_controller_handle.reset_test_state.remote(), timeout=10)
-    except Exception:
-        logger.warning("reset_test_state_failed", exc_info=True)
-
-    yield
-
-    try:
-        bad_nodes = await _cleanup_node_manager.get_bad_nodes()
-        for node_id in bad_nodes:
-            try:
-                await _cleanup_node_manager.unmark_node_bad(node_id=node_id)
-            except Exception:
-                logger.warning(
-                    "restore_cluster_unmark_failed node_id=%s", node_id,
-                    exc_info=True,
-                )
-    except Exception:
-        logger.warning("restore_cluster_get_bad_nodes_failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +211,9 @@ def fault_injector(ray_cluster: None) -> Generator[FaultInjectorFactory, None, N
 
 
 @pytest.fixture
-async def target_node(_cleanup_node_manager: K8sNodeManager) -> str:
+async def target_node(k8s_node_manager: K8sNodeManager) -> str:
     """Pick the first alive GPU node that is not already marked bad in K8s."""
-    bad_nodes = set(await _cleanup_node_manager.get_bad_nodes())
+    bad_nodes = set(await k8s_node_manager.get_bad_nodes())
 
     nodes = ray.nodes()
     candidates = [
@@ -260,47 +248,29 @@ def get_iteration_count(handle: ray.actor.ActorHandle) -> int:
 # ---------------------------------------------------------------------------
 
 
-async def _poll_until(
-    poll_fn: Callable[[], _T],
-    done: Callable[[_T], bool],
-    timeout: float,
-    poll_interval: float,
-    description: str,
-    *,
-    deadline: float | None = None,
-) -> _T:
-    """Generic deadline-based polling loop with periodic logging."""
-    if deadline is None:
-        deadline = time.monotonic() + timeout
-
-    poll_count = 0
-    while time.monotonic() < deadline:
-        value = poll_fn()
-        poll_count += 1
-        if done(value):
-            return value
-        if poll_count % 6 == 0:
-            elapsed = timeout - (deadline - time.monotonic())
-            logger.info("%s elapsed=%.0fs value=%s", description, elapsed, value)
-        await asyncio.sleep(poll_interval)
-
-    raise TimeoutError(
-        f"{description} did not complete within {timeout}s, last value: {poll_fn()}"
-    )
-
-
 async def wait_for_recovery_complete(
     handle: ray.actor.ActorHandle,
     timeout: float = 300.0,
     poll_interval: float = 5.0,
 ) -> ControllerStatus:
     """Poll get_status() until mode returns to MONITORING."""
-    return await _poll_until(
-        poll_fn=lambda: get_status(handle),
-        done=lambda s: s.mode == ControllerMode.MONITORING,
-        timeout=timeout,
-        poll_interval=poll_interval,
-        description="wait_for_recovery_complete",
+    deadline = time.monotonic() + timeout
+    poll_count = 0
+    while time.monotonic() < deadline:
+        status = get_status(handle)
+        poll_count += 1
+        if status.mode == ControllerMode.MONITORING:
+            return status
+        if poll_count % 6 == 0:
+            elapsed = timeout - (deadline - time.monotonic())
+            logger.info(
+                "wait_for_recovery_complete elapsed=%.0fs status=%s",
+                elapsed, status,
+            )
+        await asyncio.sleep(poll_interval)
+    raise TimeoutError(
+        f"Recovery did not complete within {timeout}s, "
+        f"last status: {get_status(handle)}"
     )
 
 
@@ -312,12 +282,24 @@ async def wait_for_training_stable(
 ) -> None:
     """Poll controller for N consecutive successful iterations."""
     baseline = get_iteration_count(handle)
-    await _poll_until(
-        poll_fn=lambda: get_iteration_count(handle),
-        done=lambda current: current - baseline >= n_iterations,
-        timeout=timeout,
-        poll_interval=poll_interval,
-        description=f"wait_for_training_stable(n={n_iterations})",
+    deadline = time.monotonic() + timeout
+    poll_count = 0
+    while time.monotonic() < deadline:
+        current = get_iteration_count(handle)
+        poll_count += 1
+        if current - baseline >= n_iterations:
+            return
+        if poll_count % 6 == 0:
+            elapsed = timeout - (deadline - time.monotonic())
+            logger.info(
+                "wait_for_training_stable elapsed=%.0fs progress=%d/%d",
+                elapsed, current - baseline, n_iterations,
+            )
+        await asyncio.sleep(poll_interval)
+    current = get_iteration_count(handle)
+    raise TimeoutError(
+        f"Training did not stabilize: need {n_iterations} iterations, "
+        f"got {current - baseline} in {timeout}s"
     )
 
 
@@ -328,12 +310,23 @@ async def wait_for_recovery_phase(
     poll_interval: float = 5.0,
 ) -> ControllerStatus:
     """Poll get_status() until recovery_phase matches."""
-    return await _poll_until(
-        poll_fn=lambda: get_status(handle),
-        done=lambda s: s.recovery_phase == phase,
-        timeout=timeout,
-        poll_interval=poll_interval,
-        description=f"wait_for_recovery_phase(target={phase})",
+    deadline = time.monotonic() + timeout
+    poll_count = 0
+    while time.monotonic() < deadline:
+        status = get_status(handle)
+        poll_count += 1
+        if status.recovery_phase == phase:
+            return status
+        if poll_count % 6 == 0:
+            elapsed = timeout - (deadline - time.monotonic())
+            logger.info(
+                "wait_for_recovery_phase target='%s' elapsed=%.0fs status=%s",
+                phase, elapsed, status,
+            )
+        await asyncio.sleep(poll_interval)
+    raise TimeoutError(
+        f"Did not reach recovery phase '{phase}' within {timeout}s, "
+        f"last status: {get_status(handle)}"
     )
 
 
@@ -350,22 +343,30 @@ async def wait_for_mode_transition(
     """
     deadline = time.monotonic() + timeout
 
-    await _poll_until(
-        poll_fn=lambda: get_status(handle),
-        done=lambda s: s.mode != target_mode,
-        timeout=timeout,
-        poll_interval=poll_interval,
-        description=f"wait_for_mode_transition(leave {target_mode})",
-        deadline=deadline,
-    )
+    while time.monotonic() < deadline:
+        status = get_status(handle)
+        if status.mode != target_mode:
+            logger.info(
+                "wait_for_mode_transition mode left '%s' → '%s'",
+                target_mode, status.mode,
+            )
+            break
+        await asyncio.sleep(poll_interval)
+    else:
+        raise TimeoutError(
+            f"Mode never left '{target_mode}' within {timeout}s, "
+            f"last status: {get_status(handle)}"
+        )
 
-    return await _poll_until(
-        poll_fn=lambda: get_status(handle),
-        done=lambda s: s.mode == target_mode,
-        timeout=timeout,
-        poll_interval=poll_interval,
-        description=f"wait_for_mode_transition(return to {target_mode})",
-        deadline=deadline,
+    while time.monotonic() < deadline:
+        status = get_status(handle)
+        if status.mode == target_mode:
+            return status
+        await asyncio.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Mode did not return to '{target_mode}' within {timeout}s, "
+        f"last status: {get_status(handle)}"
     )
 
 

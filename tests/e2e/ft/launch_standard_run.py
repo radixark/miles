@@ -29,7 +29,7 @@ class ScriptArgs(ExecuteTrainConfig):
         return 4 if self.few_gpu else 8
 
 
-def _prepare() -> None:
+def prepare() -> None:
     U.exec_command_all_ray_node("mkdir -p /root/models /root/datasets")
     U.exec_command_all_ray_node(
         f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}"
@@ -39,7 +39,7 @@ def _prepare() -> None:
     )
 
 
-def _execute(args: ScriptArgs) -> None:
+def execute(args: ScriptArgs) -> None:
     num_gpus = args.num_gpus
 
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
@@ -146,10 +146,14 @@ def _execute(args: ScriptArgs) -> None:
     )
 
 
-def main():
+def main() -> None:
     assert U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"), "MILES_SCRIPT_EXTERNAL_RAY must be set"
     args = ScriptArgs()
-    _prepare()
+    prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    _execute(args)
+    execute(args)
+
+
+if __name__ == "__main__":
+    main()

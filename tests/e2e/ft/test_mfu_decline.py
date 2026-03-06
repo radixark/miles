@@ -47,7 +47,7 @@ async def test_mfu_decline_detection(
     ft_controller_handle: ray.actor.ActorHandle,
     fault_injector: FaultInjectorFactory,
     target_node: str,
-    _cleanup_node_manager: K8sNodeManager,
+    k8s_node_manager: K8sNodeManager,
 ) -> None:
     await wait_for_training_stable(
         handle=ft_controller_handle,
@@ -65,7 +65,7 @@ async def test_mfu_decline_detection(
         deadline = time.monotonic() + _DETECTION_TIMEOUT
 
         while time.monotonic() < deadline:
-            bad_nodes = set(await _cleanup_node_manager.get_bad_nodes())
+            bad_nodes = set(await k8s_node_manager.get_bad_nodes())
             if target_node in bad_nodes:
                 evicted = True
                 break
