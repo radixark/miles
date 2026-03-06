@@ -22,6 +22,7 @@ class TriggerType(str, Enum):
 class NodeFault(FtBaseModel):
     node_id: str
     reason: str
+    ephemeral: bool = False
 
 
 class Decision(FtBaseModel):
