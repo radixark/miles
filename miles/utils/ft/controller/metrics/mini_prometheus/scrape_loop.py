@@ -5,8 +5,8 @@ import logging
 from typing import Protocol
 
 import httpx
+from prometheus_client.parser import text_string_to_metric_families
 
-from miles.utils.ft.controller.metrics.mini_prometheus.scraper import parse_prometheus_text
 from miles.utils.ft.models.metrics import MetricSample
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,20 @@ class ScrapeLoop:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=10.0)
         return self._client
+
+
+def parse_prometheus_text(text: str) -> list[MetricSample]:
+    samples: list[MetricSample] = []
+    for family in text_string_to_metric_families(text):
+        for sample in family.samples:
+            samples.append(
+                MetricSample(
+                    name=sample.name,
+                    labels=dict(sample.labels),
+                    value=sample.value,
+                )
+            )
+    return samples
 
 
 class _IngestTarget(Protocol):
