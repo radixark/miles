@@ -58,21 +58,29 @@ def check_critical_xid(
     if df.is_empty():
         return []
 
-    faults: list[NodeFault] = []
-    for row in df.iter_rows(named=True):
-        try:
-            xid_code = int(row.get("xid", -1))
-            node_id = row.get("node_id")
-        except (ValueError, TypeError):
-            logger.warning("check_critical_xid: unparseable row %s", row, exc_info=True)
-            continue
+    return [
+        f for row in df.iter_rows(named=True)
+        if (f := _parse_xid_row(row, critical_xid_codes)) is not None
+    ]
 
-        if node_id is None:
-            continue
 
-        if xid_code in critical_xid_codes:
-            faults.append(NodeFault(node_id=node_id, reason=f"critical XID {xid_code} on {node_id}"))
-    return faults
+def _parse_xid_row(
+    row: dict[str, object],
+    critical_xid_codes: frozenset[int],
+) -> NodeFault | None:
+    try:
+        xid_code = int(row.get("xid", -1))  # type: ignore[arg-type]
+        node_id = row.get("node_id")
+    except (ValueError, TypeError):
+        logger.warning("check_critical_xid: unparseable row %s", row, exc_info=True)
+        return None
+
+    if node_id is None:
+        return None
+
+    if xid_code in critical_xid_codes:
+        return NodeFault(node_id=node_id, reason=f"critical XID {xid_code} on {node_id}")
+    return None
 
 
 def check_disk_fault(
@@ -130,17 +138,18 @@ def check_majority_nic_down(metric_store: MetricQueryProtocol) -> list[NodeFault
     if df.is_empty():
         return []
 
-    node_stats: dict[str, tuple[int, int]] = {}
-    for row in df.iter_rows(named=True):
-        node_id = row["node_id"]
-        down_count, total_count = node_stats.get(node_id, (0, 0))
-        total_count += 1
-        if row["value"] == 0.0:
-            down_count += 1
-        node_stats[node_id] = (down_count, total_count)
-
+    stats = (
+        df.group_by("node_id")
+        .agg(
+            total_count=pl.len(),
+            down_count=(pl.col("value") == 0.0).sum(),
+        )
+        .filter(pl.col("down_count") > pl.col("total_count") / 2)
+    )
     return [
-        NodeFault(node_id=node_id, reason=f"majority NIC down on {node_id} ({down_count}/{total_count})")
-        for node_id, (down_count, total_count) in node_stats.items()
-        if total_count > 0 and down_count > total_count / 2
+        NodeFault(
+            node_id=row["node_id"],
+            reason=f"majority NIC down on {row['node_id']} ({row['down_count']}/{row['total_count']})",
+        )
+        for row in stats.iter_rows(named=True)
     ]
