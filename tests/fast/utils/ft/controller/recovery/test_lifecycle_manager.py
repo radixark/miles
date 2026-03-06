@@ -7,7 +7,7 @@ import pytest
 from miles.utils.ft.controller.actions import PlatformDeps
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
-from miles.utils.ft.controller.lifecycle_manager import RecoveryLifecycleManager
+from miles.utils.ft.controller.recovery.lifecycle_manager import RecoveryLifecycleManager
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.recovery import RecoveryPhase
 from tests.fast.utils.ft.conftest import (
@@ -138,7 +138,7 @@ class TestRecoveryLifecycleManagerStep:
         manager._orchestrator = fake_orch
         manager._start_time = 100.0
 
-        with patch("miles.utils.ft.controller.recovery_lifecycle.time") as mock_time:
+        with patch("miles.utils.ft.controller.recovery.lifecycle_manager.time") as mock_time:
             mock_time.monotonic.return_value = 145.0
             await manager.step()
 

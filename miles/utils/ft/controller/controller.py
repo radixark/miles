@@ -17,7 +17,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_roster import RankRoster
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
-from miles.utils.ft.controller.lifecycle_manager import RecoveryLifecycleManager
+from miles.utils.ft.controller.recovery.lifecycle_manager import RecoveryLifecycleManager
 from miles.utils.ft.models.fault import ActionType, Decision
 from miles.utils.ft.models.recovery import (
     ControllerMode,
@@ -94,6 +94,7 @@ class FtController:
             or DiagnosticOrchestrator(
                 agents=agents,
                 pipeline=["gpu"],
+                rank_pids_provider=lambda node_id: rank_roster.get_rank_pids_for_node(node_id),
             )
         )
 
@@ -130,7 +131,6 @@ class FtController:
         )
 
         platform_deps.on_new_run = instance._activate_run
-        platform_deps.rank_pids_provider = lambda node_id: instance._rank_roster.get_rank_pids_for_node(node_id)
         return instance
 
     # ------------------------------------------------------------------
@@ -219,14 +219,15 @@ class FtController:
         except Exception:
             logger.error("tick_failed tick=%d", self._tick_count, exc_info=True)
         finally:
-            tick_duration = time.monotonic() - t0
-            self._update_exporter_metrics(job_status, tick_duration=tick_duration)
+            duration = time.monotonic() - t0
+            self._controller_exporter.update_tick_duration(duration)
+            self._controller_exporter.update_last_tick_timestamp(time.time())
+            if job_status is not None:
+                self._update_exporter_metrics(job_status)
 
     async def _tick_inner(self, job_status: JobStatus) -> None:
         if self._recovery_manager.in_progress:
-            new_bad_nodes = self._collect_critical_bad_nodes(job_status)
-            if new_bad_nodes:
-                self._recovery_manager.add_bad_nodes(new_bad_nodes)
+            self._run_critical_detectors_during_recovery(job_status)
             await self._recovery_manager.step()
             return
 
@@ -234,7 +235,7 @@ class FtController:
             return
 
         ctx = self._build_detector_context(job_status)
-        decision = self._run_detectors(ctx)
+        decision = self._evaluate_detectors(ctx)
 
         logger.info(
             "loop_tick tick=%d active_run_id=%s decision_action=%s decision_reason=%s",
@@ -270,25 +271,26 @@ class FtController:
             job_status=job_status,
         )
 
-    def _run_detectors(self, ctx: DetectorContext) -> Decision:
-        for decision in self._run_detectors_raw(ctx):
+    def _evaluate_detectors(self, ctx: DetectorContext) -> Decision:
+        for decision in self._safe_evaluate_detectors(ctx):
             if decision.action != ActionType.NONE:
                 return decision
 
         return _ALL_DETECTORS_PASSED
 
-    def _collect_critical_bad_nodes(self, job_status: JobStatus) -> set[str]:
-        """Run is_critical detectors and return any newly discovered bad node ids."""
+    def _run_critical_detectors_during_recovery(self, job_status: JobStatus) -> None:
+        """Run is_critical detectors even while recovery is active.
+
+        If a critical detector fires MARK_BAD_AND_RESTART with new bad nodes,
+        merge them into the orchestrator's eviction list.
+        """
         ctx = self._build_detector_context(job_status)
-        bad_nodes: set[str] = set()
 
-        for decision in self._run_detectors_raw(ctx, critical_only=True):
+        for decision in self._safe_evaluate_detectors(ctx, critical_only=True):
             if decision.action == ActionType.MARK_BAD_AND_RESTART and decision.bad_node_ids:
-                bad_nodes.update(decision.bad_node_ids)
+                self._recovery_manager.add_bad_nodes(decision.bad_node_ids)
 
-        return bad_nodes
-
-    def _run_detectors_raw(
+    def _safe_evaluate_detectors(
         self,
         ctx: DetectorContext,
         *,
@@ -353,13 +355,7 @@ class FtController:
     # Exporter metrics
     # ------------------------------------------------------------------
 
-    def _update_exporter_metrics(self, job_status: JobStatus | None, *, tick_duration: float) -> None:
-        self._controller_exporter.update_tick_duration(tick_duration)
-        self._controller_exporter.update_last_tick_timestamp(time.time())
-
-        if job_status is None:
-            return
-
+    def _update_exporter_metrics(self, job_status: JobStatus) -> None:
         is_recovery = self._recovery_manager.in_progress
         self._controller_exporter.update_from_state(
             job_status=job_status,
