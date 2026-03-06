@@ -24,17 +24,6 @@ class NodeFault(FtBaseModel):
     reason: str
 
 
-def unique_node_ids(faults: list["NodeFault"]) -> list[str]:
-    """Return deduplicated node IDs from faults, preserving first-seen order."""
-    seen: set[str] = set()
-    result: list[str] = []
-    for fault in faults:
-        if fault.node_id not in seen:
-            seen.add(fault.node_id)
-            result.append(fault.node_id)
-    return result
-
-
 class Decision(FtBaseModel):
     action: ActionType
     bad_node_ids: list[str] = Field(default_factory=list)
@@ -56,3 +45,14 @@ class Decision(FtBaseModel):
             bad_node_ids=sorted(unique_node_ids(faults)),
             reason="; ".join(f.reason for f in faults),
         )
+
+
+def unique_node_ids(faults: list["NodeFault"]) -> list[str]:
+    """Return deduplicated node IDs from faults, preserving first-seen order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for fault in faults:
+        if fault.node_id not in seen:
+            seen.add(fault.node_id)
+            result.append(fault.node_id)
+    return result

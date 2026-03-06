@@ -19,13 +19,6 @@ class ControllerMode(str, Enum):
     RECOVERY = "recovery"
 
 
-_BAD_NODES_CONFIRMED_PHASES: frozenset[RecoveryPhase] = frozenset({
-    RecoveryPhase.EVICT_AND_RESTART,
-    RecoveryPhase.NOTIFY,
-    RecoveryPhase.DONE,
-})
-
-
 @dataclass(frozen=True)
 class RecoverySnapshot:
     in_progress: bool
@@ -56,3 +49,9 @@ RECOVERY_PHASE_TO_INT: dict[RecoveryPhase, int] = {
     RecoveryPhase.NOTIFY: 6,
     RecoveryPhase.DONE: 7,
 }
+
+_BAD_NODES_CONFIRMED_PHASES: frozenset[RecoveryPhase] = frozenset({
+    RecoveryPhase.EVICT_AND_RESTART,
+    RecoveryPhase.NOTIFY,
+    RecoveryPhase.DONE,
+})
