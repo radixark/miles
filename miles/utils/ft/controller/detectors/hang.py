@@ -52,7 +52,7 @@ class HangDetector(BaseFaultDetector):
 
     def _is_checkpoint_saving(self, metric_store: MetricQueryProtocol) -> bool:
         df = metric_store.query_latest(TRAINING_PHASE, label_filters={"rank": "0"})
-        if df.is_empty():
+        if df is None or df.is_empty():
             return False
 
         for row in df.iter_rows(named=True):
@@ -69,7 +69,7 @@ class HangDetector(BaseFaultDetector):
             window=timedelta(minutes=window_minutes),
             label_filters={"rank": "0"},
         )
-        if df.is_empty():
+        if df is None or df.is_empty():
             return None
 
         return df["value"][0]

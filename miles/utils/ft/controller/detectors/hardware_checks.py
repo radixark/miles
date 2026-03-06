@@ -37,7 +37,7 @@ def check_all_hardware_faults(
 
 def _check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(GPU_AVAILABLE)
-    if df.is_empty():
+    if df is None or df.is_empty():
         return []
 
     bad = df.filter(pl.col("value") == 0.0)
@@ -55,7 +55,7 @@ def _check_critical_xid(
     critical_xid_codes: frozenset[int] = CRITICAL_XID_CODES,
 ) -> list[NodeFault]:
     df = metric_store.query_latest(XID_CODE_RECENT)
-    if df.is_empty():
+    if df is None or df.is_empty():
         return []
 
     return [
@@ -88,7 +88,7 @@ def _check_disk_fault(
     disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_FILESYSTEM_AVAIL_BYTES)
-    if df.is_empty():
+    if df is None or df.is_empty():
         return []
 
     bad = df.filter(pl.col("value") < disk_available_threshold_bytes)
@@ -111,7 +111,7 @@ def check_nic_down_in_window(
 ) -> list[NodeFault]:
     """Count NIC-down samples per node over *window*; fault nodes at or above *threshold*."""
     df = metric_store.query_range(NODE_NETWORK_UP, window=window)
-    if df.is_empty():
+    if df is None or df.is_empty():
         return []
 
     down_samples = df.filter(pl.col("value") == 0.0)
@@ -135,7 +135,7 @@ def check_nic_down_in_window(
 
 def _check_majority_nic_down(metric_store: MetricQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_NETWORK_UP)
-    if df.is_empty():
+    if df is None or df.is_empty():
         return []
 
     stats = (

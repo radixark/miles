@@ -23,35 +23,35 @@ class MetricQueryProtocol(Protocol):
         self,
         metric_name: str,
         label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame: ...
+    ) -> pl.DataFrame | None: ...
 
     def query_range(
         self,
         metric_name: str,
         window: timedelta,
         label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame: ...
+    ) -> pl.DataFrame | None: ...
 
     def changes(
         self,
         metric_name: str,
         window: timedelta,
         label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame: ...
+    ) -> pl.DataFrame | None: ...
 
     def count_over_time(
         self,
         metric_name: str,
         window: timedelta,
         label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame: ...
+    ) -> pl.DataFrame | None: ...
 
     def avg_over_time(
         self,
         metric_name: str,
         window: timedelta,
         label_filters: dict[str, str] | None = None,
-    ) -> pl.DataFrame: ...
+    ) -> pl.DataFrame | None: ...
 
 
 

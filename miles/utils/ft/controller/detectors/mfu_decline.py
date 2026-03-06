@@ -152,7 +152,7 @@ class MfuDeclineDetector(BaseFaultDetector):
             return None
 
         df = metric_store.query_latest(DCGM_FI_DEV_GPU_TEMP)
-        if df.is_empty():
+        if df is None or df.is_empty():
             return None
 
         node_ids = set(rank_placement.values())
