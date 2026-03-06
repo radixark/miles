@@ -28,15 +28,19 @@ def _resolve_to_ray_node_ids(identifiers: list[str]) -> list[str]:
             continue
         ray_id = node["NodeID"]
         lookup[ray_id] = ray_id
-        lookup[node.get("NodeName", "")] = ray_id
-        lookup[node.get("NodeManagerAddress", "")] = ray_id
+        if name := node.get("NodeName"):
+            lookup[name] = ray_id
+        if addr := node.get("NodeManagerAddress"):
+            lookup[addr] = ray_id
 
+    seen: set[str] = set()
     resolved: list[str] = []
     for ident in identifiers:
         ray_id = lookup.get(ident)
-        if ray_id is not None:
+        if ray_id is not None and ray_id not in seen:
+            seen.add(ray_id)
             resolved.append(ray_id)
-        else:
+        elif ray_id is None:
             logger.warning("_resolve_to_ray_node_ids: %s not found in Ray cluster, skipping", ident)
     return resolved
 
@@ -51,13 +55,12 @@ _RAY_STATUS_TO_JOB_STATUS: dict[str, JobStatus] = {
 
 _TERMINAL_STATUSES = frozenset(("STOPPED", "FAILED", "SUCCEEDED"))
 
-_DEFAULT_POLL_INTERVAL_SECONDS = 5
+_DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 _DEFAULT_TIMEOUT_SECONDS = 300
 
 _SUBMIT_TIMEOUT_SECONDS = 60
 _GET_STATUS_TIMEOUT_SECONDS = 30
 _STOP_JOB_TIMEOUT_SECONDS = 30
-_SUBMIT_MAX_ATTEMPTS = 3
 
 
 async def stop_all_active_jobs(
@@ -70,14 +73,16 @@ async def stop_all_active_jobs(
     if not active:
         return 0
 
+    stopped = 0
     for job in active:
         try:
             await _stop_job(client, job.job_id, timeout_seconds=timeout_seconds)
+            stopped += 1
         except Exception:
             logger.warning("stop_all_active_jobs_failed job_id=%s", job.job_id, exc_info=True)
 
-    logger.info("stop_all_active_jobs stopped=%d", len(active))
-    return len(active)
+    logger.info("stop_all_active_jobs stopped=%d attempted=%d", stopped, len(active))
+    return stopped
 
 
 class RayTrainingJob(TrainingJobProtocol):
@@ -92,7 +97,7 @@ class RayTrainingJob(TrainingJobProtocol):
         client: JobSubmissionClient,
         entrypoint: str,
         runtime_env: dict[str, Any] | None = None,
-        poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
+        poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
         ft_id: str = "",
         k8s_label_prefix: str = "",
     ) -> None:
@@ -104,9 +109,19 @@ class RayTrainingJob(TrainingJobProtocol):
         self._k8s_label_prefix = k8s_label_prefix
         self._job_id: str | None = None
 
+    @property
+    def job_id(self) -> str | None:
+        return self._job_id
+
     async def submit_training(
         self, excluded_node_ids: list[str] | None = None,
     ) -> str:
+        if self._job_id is not None:
+            raise RuntimeError(
+                f"Cannot submit: previous job {self._job_id} still tracked. "
+                "Call stop_training() first."
+            )
+
         run_id = uuid4().hex[:8]
         env_override = {
             **self._runtime_env.get("env_vars", {}),
@@ -118,75 +133,29 @@ class RayTrainingJob(TrainingJobProtocol):
 
         entrypoint = self._entrypoint
         if excluded_node_ids:
-            ray_node_ids = _resolve_to_ray_node_ids(excluded_node_ids)
+            ray_node_ids = await asyncio.to_thread(_resolve_to_ray_node_ids, excluded_node_ids)
             if ray_node_ids:
                 entrypoint += f" --excluded-node-ids {','.join(ray_node_ids)}"
 
-        last_submission_id: str | None = None
-        last_error: Exception | None = None
+        start = time.monotonic()
+        job_id = await asyncio.wait_for(
+            asyncio.to_thread(
+                self._client.submit_job,
+                entrypoint=entrypoint,
+                runtime_env=runtime_env,
+            ),
+            timeout=_SUBMIT_TIMEOUT_SECONDS,
+        )
+        elapsed = time.monotonic() - start
 
-        for attempt in range(_SUBMIT_MAX_ATTEMPTS):
-            submission_id = f"miles-{self._ft_id}-{run_id}-{attempt}"
-
-            if attempt > 0 and last_submission_id is not None:
-                recovered_job_id = await self._check_job_exists(last_submission_id)
-                if recovered_job_id is not None:
-                    self._job_id = recovered_job_id
-                    logger.info(
-                        "submit_training_recovered job_id=%s submission_id=%s run_id=%s",
-                        recovered_job_id, last_submission_id, run_id,
-                    )
-                    return run_id
-
-            last_submission_id = submission_id
-            try:
-                start = time.monotonic()
-                job_id = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._client.submit_job,
-                        entrypoint=entrypoint,
-                        runtime_env=runtime_env,
-                        submission_id=submission_id,
-                    ),
-                    timeout=_SUBMIT_TIMEOUT_SECONDS,
-                )
-                elapsed = time.monotonic() - start
-                self._job_id = job_id
-                logger.info(
-                    "submit_training job_id=%s run_id=%s elapsed_seconds=%.3f",
-                    job_id, run_id, elapsed,
-                )
-                return run_id
-            except Exception as exc:
-                last_error = exc
-                logger.warning(
-                    "submit_training_attempt_failed attempt=%d/%d submission_id=%s",
-                    attempt + 1, _SUBMIT_MAX_ATTEMPTS, submission_id,
-                    exc_info=True,
-                )
-
-        if last_submission_id is not None:
-            recovered_job_id = await self._check_job_exists(last_submission_id)
-            if recovered_job_id is not None:
-                self._job_id = recovered_job_id
-                logger.info("submit_training_recovered_final job_id=%s", recovered_job_id)
-                return run_id
-
-        raise last_error  # type: ignore[misc]
-
-    async def _check_job_exists(self, submission_id: str) -> str | None:
-        """Query whether a job with the given submission_id exists on Ray. Returns submission_id or None."""
-        try:
-            info = await asyncio.wait_for(
-                asyncio.to_thread(self._client.get_job_info, submission_id),
-                timeout=_GET_STATUS_TIMEOUT_SECONDS,
-            )
-            if info is not None:
-                return submission_id
-            return None
-        except Exception:
-            logger.warning("_check_job_exists_failed submission_id=%s", submission_id, exc_info=True)
-            return None
+        self._job_id = job_id
+        logger.info(
+            "submit_training job_id=%s run_id=%s elapsed_seconds=%.3f",
+            job_id,
+            run_id,
+            elapsed,
+        )
+        return run_id
 
     async def stop_training(self, timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS) -> None:
         if self._job_id is None:
@@ -199,6 +168,7 @@ class RayTrainingJob(TrainingJobProtocol):
             timeout_seconds=timeout_seconds,
             poll_interval=self._poll_interval,
         )
+        self._job_id = None
 
     async def get_training_status(self) -> JobStatus:
         if self._job_id is None:
@@ -252,10 +222,16 @@ async def _stop_job(
         )
         return _parse_ray_status(raw_status)
 
+    remaining = timeout_seconds - (time.monotonic() - start)
+    if remaining <= 0:
+        raise TimeoutError(
+            f"stop_job({job_id}): no time left for polling after stop_job RPC"
+        )
+
     await poll_until(
         probe=_probe,
         predicate=lambda s: s in _TERMINAL_STATUSES,
-        timeout=timeout_seconds - (time.monotonic() - start),
+        timeout=remaining,
         poll_interval=poll_interval,
         description=f"stop_job({job_id})",
     )
