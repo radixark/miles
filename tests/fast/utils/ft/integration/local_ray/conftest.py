@@ -24,7 +24,7 @@ pytestmark = [
 def local_ray() -> Generator[None, None, None]:
     if ray.is_initialized():
         ray.shutdown()
-    ray.init(num_cpus=4, num_gpus=0, include_dashboard=False)
+    ray.init(address="local", num_cpus=4, num_gpus=0, include_dashboard=False)
     yield
     ray.shutdown()
 
