@@ -219,7 +219,7 @@ def execute(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 8} "
+                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 1 if args.rollout_int4 else 8} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
             )
