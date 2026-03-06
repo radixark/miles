@@ -329,6 +329,9 @@ class RolloutManager:
         if self.custom_reward_post_process_func is not None:
             return self.custom_reward_post_process_func(self.args, samples)
 
+        if self.args.advantage_estimator == "gdpo":
+            return self._post_process_rewards_gdpo(samples)
+
         raw_rewards = [sample.get_reward_value(self.args) for sample in samples]
         if (
             self.args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"]
@@ -351,6 +354,46 @@ class RolloutManager:
             return raw_rewards, rewards.flatten().tolist()
 
         return raw_rewards, raw_rewards
+
+    def _post_process_rewards_gdpo(self, samples: list[Sample] | list[list[Sample]]):
+        """GDPO: normalize each reward dimension independently within groups, then combine with weights.
+
+        Instead of sum-then-normalize (GRPO), we normalize-then-sum (GDPO).
+        This prevents one reward dimension from dominating the learning signal.
+        """
+        args = self.args
+        reward_keys = args.gdpo_reward_keys
+        reward_weights = args.gdpo_reward_weights
+        n_samples = args.n_samples_per_prompt
+
+        # Extract raw rewards (sum of weighted raw values for logging)
+        raw_rewards = []
+        for sample in samples:
+            r = sum(w * sample.reward[k] for k, w in zip(reward_keys, reward_weights))
+            raw_rewards.append(r)
+
+        # Per-dimension group normalization, then weighted sum
+        num_samples = len(samples)
+        combined = torch.zeros(num_samples, dtype=torch.float)
+
+        for key, weight in zip(reward_keys, reward_weights):
+            dim_rewards = torch.tensor([sample.reward[key] for sample in samples], dtype=torch.float)
+            dim_rewards = torch.nan_to_num(dim_rewards)
+
+            # Per-dimension group normalization is the core of GDPO and should always be performed.
+            dim_rewards = dim_rewards.view(-1, n_samples)
+
+            mean = dim_rewards.mean(dim=-1, keepdim=True)
+            dim_rewards = dim_rewards - mean
+
+            std = dim_rewards.std(dim=-1, keepdim=True)
+            dim_rewards = dim_rewards / (std + 1e-6)
+
+            dim_rewards = dim_rewards.flatten()
+
+            combined += weight * dim_rewards
+
+        return raw_rewards, combined.tolist()
 
     def _convert_samples_to_train_data(self, samples: list[Sample] | list[list[Sample]]):
         """

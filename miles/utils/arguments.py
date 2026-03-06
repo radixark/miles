@@ -803,6 +803,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=[
                     "grpo",
                     "gspo",
+                    "gdpo",
                     "reinforce_plus_plus",
                     "reinforce_plus_plus_baseline",
                     "ppo",
@@ -1235,6 +1236,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="The eval variant for --reward-key",
+            )
+            parser.add_argument(
+                "--gdpo-reward-keys",
+                type=str,
+                nargs="+",
+                default=None,
+                help=(
+                    "Reward keys for GDPO per-dimension normalization. "
+                    "Each key extracts a reward dimension from the reward dict. "
+                    "Required when --advantage-estimator is gdpo."
+                ),
+            )
+            parser.add_argument(
+                "--gdpo-reward-weights",
+                type=float,
+                nargs="+",
+                default=None,
+                help=(
+                    "Weights for each GDPO reward dimension. "
+                    "Must match the length of --gdpo-reward-keys. "
+                    "Defaults to uniform weights (1.0 for each dimension)."
+                ),
             )
             parser.add_argument(
                 "--group-rm", action="store_true", default=False, help="Whether to do rm on a whole group."
@@ -1774,6 +1797,22 @@ def miles_validate_args(args):
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False
         logger.info("n_samples_per_prompt is set to 1, grpo_std_normalization will be set to False.")
+
+    if args.advantage_estimator == "gdpo":
+        if args.gdpo_reward_keys is None:
+            raise ValueError("--gdpo-reward-keys is required when using gdpo advantage estimator")
+        if args.gdpo_reward_weights is None:
+            args.gdpo_reward_weights = [1.0] * len(args.gdpo_reward_keys)
+        if len(args.gdpo_reward_weights) != len(args.gdpo_reward_keys):
+            raise ValueError(
+                f"--gdpo-reward-weights length ({len(args.gdpo_reward_weights)}) must match "
+                f"--gdpo-reward-keys length ({len(args.gdpo_reward_keys)})"
+            )
+        # GDPO requires batch-wise normalization after per-dimension group normalization
+        # (consistent with NVlabs reference implementation)
+        if not args.normalize_advantages:
+            args.normalize_advantages = True
+            logger.info("GDPO: enabling normalize_advantages for batch-wise normalization.")
 
     if args.over_sampling_batch_size is None:
         args.over_sampling_batch_size = args.rollout_batch_size
