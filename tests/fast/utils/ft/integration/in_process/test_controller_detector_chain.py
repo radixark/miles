@@ -2,7 +2,7 @@
 
 from tests.fast.utils.ft.helpers import inject_gpu_unavailable, inject_healthy_node, make_test_controller
 
-from miles.utils.ft.controller.detectors import build_detector_chain
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.protocols.platform import JobStatus
 
 

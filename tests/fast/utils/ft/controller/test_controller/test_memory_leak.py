@@ -12,7 +12,7 @@ import gc
 import psutil
 from tests.fast.utils.ft.conftest import ControllerTestHarness, inject_healthy_node, make_test_controller
 
-from miles.utils.ft.controller.detectors import build_detector_chain
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
 
 _WARMUP_TICKS = 10
 _TEST_TICKS = 500

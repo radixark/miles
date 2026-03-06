@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.controller import FtController
-from miles.utils.ft.controller.detectors import build_detector_chain
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig

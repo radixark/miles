@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.ft.controller.detectors import build_detector_chain
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.platform.controller_actor import _FtControllerActorCls
 from miles.utils.ft.platform.controller_factory import build_ft_controller

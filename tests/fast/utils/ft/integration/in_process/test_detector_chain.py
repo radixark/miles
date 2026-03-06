@@ -10,12 +10,10 @@ from tests.fast.utils.ft.helpers import (
     make_fake_mini_wandb,
 )
 
-from miles.utils.ft.controller.detectors import (
-    HangDetector,
-    MfuDeclineDetector,
-    NetworkAlertDetector,
-    build_detector_chain,
-)
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.detectors.hang import HangDetector
+from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector
+from miles.utils.ft.controller.detectors.network import NetworkAlertDetector
 from miles.utils.ft.models.metric_names import NODE_NETWORK_UP, TRAINING_ITERATION
 from miles.utils.ft.models import ActionType, GaugeSample
 from miles.utils.ft.protocols.platform import JobStatus
