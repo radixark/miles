@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.ft.controller.recovery_orchestrator.helpers import SlidingWindowThrottle, stop_and_submit
+from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle, stop_and_submit
 from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.utils.retry import RetryResult, retry_async
 from miles.utils.ft.protocols.platform import JobStatus

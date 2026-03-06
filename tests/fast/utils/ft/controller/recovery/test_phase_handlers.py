@@ -6,11 +6,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery_orchestrator.context import (
+from miles.utils.ft.controller.recovery.context import (
     PENDING_TIMEOUT_SECONDS,
     RecoveryContext,
 )
-from miles.utils.ft.controller.recovery_orchestrator.phase_handlers import (
+from miles.utils.ft.controller.recovery.phase_handlers import (
     _iteration_progress,
     _reattempt_poll,
     step_check_alerts,

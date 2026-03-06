@@ -7,8 +7,8 @@ import pytest
 
 from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb as MiniWandbCls
-from miles.utils.ft.controller.recovery_orchestrator.context import RecoveryContext
-from miles.utils.ft.controller.recovery_orchestrator.orchestrator import RecoveryOrchestrator
+from miles.utils.ft.controller.recovery.context import RecoveryContext
+from miles.utils.ft.controller.recovery.orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models.metric_names import CONTROLLER_RECOVERY_PHASE
 from miles.utils.ft.models.fault import ActionType, Decision
 from miles.utils.ft.models.recovery import RECOVERY_PHASE_TO_INT, RecoveryPhase

@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.protocols.metrics import MetricQueryProtocol
-from miles.utils.ft.controller.recovery_orchestrator.alert_checker import AlertChecker
-from miles.utils.ft.controller.recovery_orchestrator.context import RecoveryContext
-from miles.utils.ft.controller.recovery_orchestrator.phase_handlers import (
+from miles.utils.ft.controller.recovery.alert_checker import AlertChecker
+from miles.utils.ft.controller.recovery.context import RecoveryContext
+from miles.utils.ft.controller.recovery.phase_handlers import (
     step_check_alerts,
     step_diagnosing,
     step_evict_and_restart,

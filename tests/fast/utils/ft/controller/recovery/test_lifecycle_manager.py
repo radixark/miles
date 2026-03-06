@@ -6,8 +6,8 @@ import pytest
 
 from miles.utils.ft.controller.actions import PlatformDeps
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery_orchestrator.helpers import SlidingWindowThrottle
-from miles.utils.ft.controller.recovery_lifecycle import RecoveryLifecycleManager
+from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
+from miles.utils.ft.controller.lifecycle_manager import RecoveryLifecycleManager
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.recovery import RecoveryPhase
 from tests.fast.utils.ft.conftest import (

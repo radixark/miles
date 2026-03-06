@@ -5,8 +5,8 @@ import time
 from collections.abc import Callable
 
 from miles.utils.ft.controller.actions import PlatformDeps
-from miles.utils.ft.controller.recovery_orchestrator.helpers import SlidingWindowThrottle
-from miles.utils.ft.controller.recovery_orchestrator.orchestrator import RecoveryOrchestrator
+from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
+from miles.utils.ft.controller.recovery.orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models.fault import Decision
 from miles.utils.ft.models.recovery import RecoveryPhase, RecoverySnapshot, _BAD_NODES_CONFIRMED_PHASES
 

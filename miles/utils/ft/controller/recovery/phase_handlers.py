@@ -7,14 +7,14 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery_orchestrator.helpers import (
+from miles.utils.ft.controller.recovery.helpers import (
     get_already_bad_nodes,
     retry_mark_node_bad,
     safe_notify,
     stop_and_submit,
 )
-from miles.utils.ft.controller.recovery_orchestrator.alert_checker import AlertChecker
-from miles.utils.ft.controller.recovery_orchestrator.context import (
+from miles.utils.ft.controller.recovery.alert_checker import AlertChecker
+from miles.utils.ft.controller.recovery.context import (
     PENDING_TIMEOUT_SECONDS,
     RecoveryContext,
 )

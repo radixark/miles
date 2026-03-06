@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery_orchestrator.helpers import (
+from miles.utils.ft.controller.recovery.helpers import (
     get_already_bad_nodes,
     retry_mark_node_bad,
     safe_notify,

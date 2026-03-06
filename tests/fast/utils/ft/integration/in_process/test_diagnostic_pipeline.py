@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.recovery_orchestrator.orchestrator import RecoveryOrchestrator
+from miles.utils.ft.controller.recovery.orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models.recovery import RecoveryPhase
 from miles.utils.ft.protocols.platform import JobStatus
 from tests.fast.utils.ft.conftest import (
