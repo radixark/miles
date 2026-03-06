@@ -101,7 +101,7 @@ class TestResolveAddress:
         assert orch._resolve_address("n1") == "10.0.0.1"
 
     def test_fallback_to_node_id(self) -> None:
-        orch = InterMachineOrchestrator(agents={}, node_addresses=None)
+        orch = InterMachineOrchestrator(node_agents={}, node_addresses=None)
 
         assert orch._resolve_address("n1") == "n1"
 
@@ -123,7 +123,7 @@ class TestRunSinglePairMissingAgent:
     @pytest.mark.anyio
     async def test_missing_master_agent_returns_failed(self) -> None:
         agents = {"worker": _make_inter_machine_agent("worker")}
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         result = await orch._run_single_pair(
             master_id="master", worker_id="worker",
@@ -136,7 +136,7 @@ class TestRunSinglePairMissingAgent:
     @pytest.mark.anyio
     async def test_missing_worker_agent_returns_failed(self) -> None:
         agents = {"master": _make_inter_machine_agent("master")}
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         result = await orch._run_single_pair(
             master_id="master", worker_id="worker",
@@ -147,7 +147,7 @@ class TestRunSinglePairMissingAgent:
 
     @pytest.mark.anyio
     async def test_both_agents_missing_returns_failed(self) -> None:
-        orch = InterMachineOrchestrator(agents={})
+        orch = InterMachineOrchestrator(node_agents={})
 
         result = await orch._run_single_pair(
             master_id="A", worker_id="B",
@@ -166,7 +166,7 @@ class TestRunEdgeCases:
     @pytest.mark.anyio
     async def test_single_node_returns_empty(self) -> None:
         agents = {"A": _make_inter_machine_agent("A")}
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         bad = await orch.run(node_ids=["A"], timeout_seconds=30)
 
@@ -174,7 +174,7 @@ class TestRunEdgeCases:
 
     @pytest.mark.anyio
     async def test_empty_nodes_returns_empty(self) -> None:
-        orch = InterMachineOrchestrator(agents={})
+        orch = InterMachineOrchestrator(node_agents={})
 
         bad = await orch.run(node_ids=[], timeout_seconds=30)
 
@@ -186,7 +186,7 @@ class TestRunEdgeCases:
             "A": _make_inter_machine_agent("A"),
             "B": _make_inter_machine_agent("B"),
         }
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         bad = await orch.run(node_ids=["A", "B"], timeout_seconds=30)
 
@@ -206,7 +206,7 @@ class TestRunSinglePairAgentHang:
             "master": HangingNodeAgent(node_id="master"),
             "worker": _make_inter_machine_agent("worker"),
         }
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         result = await orch._run_single_pair(
             master_id="master", worker_id="worker",
@@ -223,7 +223,7 @@ class TestRunSinglePairAgentHang:
             "master": _make_inter_machine_agent("master"),
             "worker": HangingNodeAgent(node_id="worker"),
         }
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         result = await orch._run_single_pair(
             master_id="master", worker_id="worker",
@@ -238,7 +238,7 @@ class TestRunSinglePairAgentHang:
             "A": HangingNodeAgent(node_id="A"),
             "B": HangingNodeAgent(node_id="B"),
         }
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         result = await orch._run_single_pair(
             master_id="A", worker_id="B",
@@ -255,7 +255,7 @@ class TestRunSinglePairAgentHang:
             "B": HangingNodeAgent(node_id="B"),
             "C": _make_inter_machine_agent("C"),
         }
-        orch = InterMachineOrchestrator(agents=agents)
+        orch = InterMachineOrchestrator(node_agents=agents)
 
         bad = await orch.run(node_ids=["A", "B", "C"], timeout_seconds=0)
 

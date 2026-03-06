@@ -181,8 +181,8 @@ class TestAgentManagement:
         agent = object()
         harness.controller.register_node_agent("node-0", agent)
 
-        assert "node-0" in harness.controller._agents
-        assert harness.controller._agents["node-0"] is agent
+        assert "node-0" in harness.controller._node_agents
+        assert harness.controller._node_agents["node-0"] is agent
 
     def test_register_overwrites_existing(self) -> None:
         harness = make_test_controller()
@@ -191,7 +191,7 @@ class TestAgentManagement:
         harness.controller.register_node_agent("node-0", agent1)
         harness.controller.register_node_agent("node-0", agent2)
 
-        assert harness.controller._agents["node-0"] is agent2
+        assert harness.controller._node_agents["node-0"] is agent2
 
 
 class TestDefaultDiagnosticSchedulerWiring:

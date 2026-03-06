@@ -44,7 +44,7 @@ def _make_diagnostic_test_env(
     pipeline: list[str],
 ) -> tuple[ControllerTestHarness, RecoveryOrchestrator]:
     agents = make_fake_agents(node_results)
-    scheduler = DiagnosticScheduler(agents=agents, pipeline=pipeline)
+    scheduler = DiagnosticScheduler(node_agents=agents, pipeline=pipeline)
     harness = make_test_controller(
         status_sequence=[JobStatus.RUNNING] * 50,
         diagnostic_scheduler=scheduler,

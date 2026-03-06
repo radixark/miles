@@ -28,11 +28,11 @@ class PairResult(NamedTuple):
 class InterMachineOrchestrator:
     def __init__(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         node_addresses: dict[str, str] | None = None,
         base_port: int = _BASE_PORT,
     ) -> None:
-        self._agents = agents
+        self._node_agents = node_agents
         self._node_addresses = node_addresses
         self._base_port = base_port
 
@@ -78,8 +78,8 @@ class InterMachineOrchestrator:
         port: int,
         timeout_seconds: int,
     ) -> PairResult:
-        master_agent = self._agents.get(master_id)
-        worker_agent = self._agents.get(worker_id)
+        master_agent = self._node_agents.get(master_id)
+        worker_agent = self._node_agents.get(worker_id)
 
         if master_agent is None or worker_agent is None:
             logger.warning(

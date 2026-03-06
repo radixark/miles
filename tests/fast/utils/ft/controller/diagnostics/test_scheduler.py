@@ -67,14 +67,14 @@ class TestDiagnosticSchedulerEmptyPipeline:
     @pytest.mark.anyio
     async def test_empty_pipeline_returns_notify_human(self) -> None:
         agents = make_fake_agents({"node-0": {}})
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=[])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=[])
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="crash")
 
         assert decision.action == ActionType.NOTIFY_HUMAN
 
     @pytest.mark.anyio
     async def test_no_pipeline_arg_returns_notify_human(self) -> None:
-        scheduler = DiagnosticScheduler(agents={})
+        scheduler = DiagnosticScheduler(node_agents={})
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="hang")
 
         assert decision.action == ActionType.NOTIFY_HUMAN
@@ -87,7 +87,7 @@ class TestDiagnosticSchedulerSingleStep:
             "node-0": {"gpu": True},
             "node-1": {"gpu": True},
         })
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=["gpu"])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=["gpu"])
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="crash")
 
         assert decision.action == ActionType.NOTIFY_HUMAN
@@ -98,7 +98,7 @@ class TestDiagnosticSchedulerSingleStep:
             "node-0": {"gpu": True},
             "node-1": {"gpu": False},
         })
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=["gpu"])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=["gpu"])
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="crash")
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
@@ -111,7 +111,7 @@ class TestDiagnosticSchedulerSingleStep:
             "node-0": {"gpu": False},
             "node-1": {"gpu": False},
         })
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=["gpu"])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=["gpu"])
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="crash")
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
@@ -177,7 +177,7 @@ class TestDiagnosticSchedulerErrorHandling:
             **good_agents,
             "node-1": _RaisingAgent(),
         }
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=["gpu"])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=["gpu"])
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="crash")
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
@@ -186,7 +186,7 @@ class TestDiagnosticSchedulerErrorHandling:
     @pytest.mark.anyio
     async def test_trigger_reason_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         agents: dict[str, FakeNodeAgent] = {}
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=[])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=[])
 
         with caplog.at_level(logging.INFO):
             await scheduler.run_diagnostic_pipeline(
@@ -198,7 +198,7 @@ class TestDiagnosticSchedulerErrorHandling:
 
     @pytest.mark.anyio
     async def test_no_agents_returns_notify(self) -> None:
-        scheduler = DiagnosticScheduler(agents={}, pipeline=["gpu"])
+        scheduler = DiagnosticScheduler(node_agents={}, pipeline=["gpu"])
         decision = await scheduler.run_diagnostic_pipeline(trigger_reason="crash")
 
         assert decision.action == ActionType.NOTIFY_HUMAN
@@ -210,7 +210,7 @@ class TestDiagnosticSchedulerErrorHandling:
             "node-1": {"gpu": False},
             "node-2": {"gpu": True},
         })
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=["gpu"])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=["gpu"])
         decision = await scheduler.run_diagnostic_pipeline(
             trigger_reason="crash",
             suspect_node_ids=["node-0", "node-2"],
@@ -397,7 +397,7 @@ class TestDiagnosticSchedulerLiveAgents:
         agent1 = FtNodeAgent(node_id="node-1", diagnostics=[stub])
 
         agents = {"node-0": agent0, "node-1": agent1}
-        scheduler = DiagnosticScheduler(agents=agents, pipeline=["stub"])
+        scheduler = DiagnosticScheduler(node_agents=agents, pipeline=["stub"])
 
         try:
             decision = await scheduler.run_diagnostic_pipeline(

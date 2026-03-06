@@ -34,20 +34,20 @@ class DiagnosticScheduler:
 
     def __init__(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         pipeline: list[str] | None = None,
         default_timeout_seconds: int = 120,
         pipeline_timeout_seconds: int = 900,
         node_addresses: dict[str, str] | None = None,
         rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
     ) -> None:
-        self._agents = agents
+        self._node_agents = node_agents
         self._pipeline = pipeline or []
         self._default_timeout_seconds = default_timeout_seconds
         self._pipeline_timeout_seconds = pipeline_timeout_seconds
         self._rank_pids_provider = rank_pids_provider
         self._inter_machine = InterMachineOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             node_addresses=node_addresses,
         )
 
@@ -102,11 +102,11 @@ class DiagnosticScheduler:
         if suspect_node_ids is not None:
             suspect_set = set(suspect_node_ids)
             remaining_agents: dict[str, NodeAgentProtocol] = {
-                nid: agent for nid, agent in self._agents.items()
+                nid: agent for nid, agent in self._node_agents.items()
                 if nid in suspect_set
             }
         else:
-            remaining_agents: dict[str, NodeAgentProtocol] = dict(self._agents)
+            remaining_agents: dict[str, NodeAgentProtocol] = dict(self._node_agents)
 
         for diagnostic_type in self._pipeline:
             if not remaining_agents:
@@ -186,7 +186,7 @@ class DiagnosticScheduler:
                     exc_info=True,
                 )
 
-        await asyncio.gather(*(_collect_node(nid) for nid in self._agents))
+        await asyncio.gather(*(_collect_node(nid) for nid in self._node_agents))
 
         suspect_from_aggregation = StackTraceAggregator().aggregate(traces=traces)
         all_suspects = sorted(set(suspect_from_failures) | set(suspect_from_aggregation))

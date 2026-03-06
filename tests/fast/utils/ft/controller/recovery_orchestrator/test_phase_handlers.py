@@ -303,7 +303,7 @@ class TestStepDiagnosing:
 
         agents: dict = {"node-0": HangingNodeAgent(node_id="node-0")}
         scheduler = DiagnosticScheduler(
-            agents=agents,
+            node_agents=agents,
             pipeline=["gpu"],
             default_timeout_seconds=9999,
             pipeline_timeout_seconds=0,
