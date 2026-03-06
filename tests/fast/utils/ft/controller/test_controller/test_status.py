@@ -8,7 +8,7 @@ import pytest
 import miles.utils.ft.models.metric_names as mn
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.metrics import start_metric_store_task, stop_metric_store_task
+from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.models import ControllerMode, RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus

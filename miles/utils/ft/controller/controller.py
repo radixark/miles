@@ -12,7 +12,7 @@ from miles.utils.ft.controller.actions import (
 )
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.metrics import start_metric_store_task, stop_metric_store_task
+from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_roster import RankRoster
