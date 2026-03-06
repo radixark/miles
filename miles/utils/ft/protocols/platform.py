@@ -54,3 +54,8 @@ def ft_controller_actor_name(ft_id: str) -> str:
     if not ft_id:
         return "ft_controller"
     return f"ft_controller_{ft_id}"
+
+
+def ft_node_agent_actor_name(ft_id: str, node_id: str) -> str:
+    prefix = f"ft_node_agent_{ft_id}" if ft_id else "ft_node_agent"
+    return f"{prefix}_{node_id}"
