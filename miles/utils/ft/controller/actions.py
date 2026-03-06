@@ -46,8 +46,17 @@ async def handle_mark_bad_and_restart(
         "decision_mark_bad_and_restart bad_node_ids=%s reason=%s",
         decision.bad_node_ids, decision.reason,
     )
+
+    already_bad = await _get_already_bad_nodes(deps.node_manager)
+    nodes_to_mark = [nid for nid in decision.bad_node_ids if nid not in already_bad]
+    if len(nodes_to_mark) < len(decision.bad_node_ids):
+        logger.info(
+            "mark_bad_skipped_already_bad skipped=%s",
+            sorted(set(decision.bad_node_ids) - set(nodes_to_mark)),
+        )
+
     failed_nodes: list[str] = []
-    for node_id in decision.bad_node_ids:
+    for node_id in nodes_to_mark:
         result = await retry_async(
             lambda nid=node_id: deps.node_manager.mark_node_bad(
                 nid, reason=decision.reason,
@@ -92,6 +101,14 @@ async def handle_enter_recovery(
         controller_exporter=deps.controller_exporter,
         on_new_run=deps.on_new_run,
     )
+
+
+async def _get_already_bad_nodes(node_manager: NodeManagerProtocol) -> set[str]:
+    try:
+        return set(await node_manager.get_bad_nodes())
+    except Exception:
+        logger.warning("get_bad_nodes_failed, proceeding without filter", exc_info=True)
+        return set()
 
 
 async def handle_notify_human(

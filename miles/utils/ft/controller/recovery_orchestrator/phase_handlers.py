@@ -142,9 +142,17 @@ async def step_evict_and_restart(
         logger.warning("evict_and_restart called with empty bad_node_ids — skipping to NOTIFY")
         return RecoveryPhase.NOTIFY
 
+    already_bad = await _get_already_bad_nodes(node_manager)
+    nodes_to_mark = [nid for nid in ctx.bad_node_ids if nid not in already_bad]
+    if len(nodes_to_mark) < len(ctx.bad_node_ids):
+        logger.info(
+            "evict_skipped_already_bad skipped=%s",
+            sorted(set(ctx.bad_node_ids) - set(nodes_to_mark)),
+        )
+
     results = await asyncio.gather(*(
         _evict_node(node_manager, node_id=node_id, trigger=ctx.trigger)
-        for node_id in ctx.bad_node_ids
+        for node_id in nodes_to_mark
     ))
     if not all(r.ok for r in results):
         return RecoveryPhase.NOTIFY
@@ -244,6 +252,14 @@ def _iteration_progress(ctx: RecoveryContext, mini_wandb: MiniWandb) -> int:
         )
         return 0
     return raw
+
+
+async def _get_already_bad_nodes(node_manager: NodeManagerProtocol) -> set[str]:
+    try:
+        return set(await node_manager.get_bad_nodes())
+    except Exception:
+        logger.warning("get_bad_nodes_failed, proceeding without filter", exc_info=True)
+        return set()
 
 
 async def _evict_node(
