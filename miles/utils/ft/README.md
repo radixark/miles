@@ -1,6 +1,6 @@
 # Fault Tolerance (`miles.utils.ft`)
 
-Fault tolerance for Megatron distributed training on Ray + K8s. Detects faulty nodes, evicts them via K8s node labels, and auto-restarts training from the latest checkpoint.
+Fault tolerance for Miles.
 
 ## Architecture
 
