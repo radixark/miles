@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +13,17 @@ from miles.utils.ft.platform.notifiers.lark_notifier import LarkWebhookNotifier
 from miles.utils.ft.platform.stubs import StubNotifier
 
 runner = CliRunner()
+
+
+@contextmanager
+def _patch_build_and_run() -> Generator[tuple[MagicMock, MagicMock], None, None]:
+    with (
+        patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
+        patch("miles.utils.ft.launcher.asyncio.run") as mock_asyncio_run,
+        patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
+    ):
+        mock_build.return_value = MagicMock()
+        yield mock_build, mock_asyncio_run
 
 
 # ---------------------------------------------------------------------------
@@ -69,25 +82,14 @@ class TestBuildNotifier:
 
 class TestLauncherSubmitAndRun:
     def test_inline_mode_calls_submit_and_run(self) -> None:
-        with (
-            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
-            patch("miles.utils.ft.launcher.asyncio.run") as mock_asyncio_run,
-            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
-        ):
-            mock_controller = MagicMock()
-            mock_build.return_value = mock_controller
+        with _patch_build_and_run() as (_, mock_asyncio_run):
             result = runner.invoke(app, ["--platform", "stub", "--", "python3", "train.py"])
 
         assert result.exit_code == 0, result.output
         mock_asyncio_run.assert_called_once()
 
     def test_entrypoint_passed_to_config(self) -> None:
-        with (
-            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
-            patch("miles.utils.ft.launcher.asyncio.run"),
-            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
-        ):
-            mock_build.return_value = MagicMock()
+        with _patch_build_and_run() as (mock_build, _):
             result = runner.invoke(app, [
                 "--platform", "stub",
                 "--", "python3", "train.py", "--lr", "0.001",
@@ -100,12 +102,7 @@ class TestLauncherSubmitAndRun:
         assert "--lr" in config.entrypoint
 
     def test_ft_id_and_label_suffix_passed_to_config(self) -> None:
-        with (
-            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
-            patch("miles.utils.ft.launcher.asyncio.run"),
-            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
-        ):
-            mock_build.return_value = MagicMock()
+        with _patch_build_and_run() as (mock_build, _):
             result = runner.invoke(app, [
                 "--platform", "stub",
                 "--ft-id", "myft",
@@ -120,12 +117,7 @@ class TestLauncherSubmitAndRun:
 
     def test_runtime_env_json_parsed_to_config(self) -> None:
         runtime_env = {"env_vars": {"PYTHONPATH": "/root/Megatron-LM"}}
-        with (
-            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
-            patch("miles.utils.ft.launcher.asyncio.run"),
-            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
-        ):
-            mock_build.return_value = MagicMock()
+        with _patch_build_and_run() as (mock_build, _):
             result = runner.invoke(app, [
                 "--platform", "stub",
                 "--runtime-env-json", '{"env_vars": {"PYTHONPATH": "/root/Megatron-LM"}}',
@@ -147,12 +139,7 @@ class TestLauncherInvalidInput:
         assert result.exit_code != 0
 
     def test_empty_entrypoint_produces_empty_string(self) -> None:
-        with (
-            patch("miles.utils.ft.launcher.build_ft_controller") as mock_build,
-            patch("miles.utils.ft.launcher.asyncio.run"),
-            patch("miles.utils.ft.controller.metrics.exporter.ControllerExporter.start"),
-        ):
-            mock_build.return_value = MagicMock()
+        with _patch_build_and_run() as (mock_build, _):
             result = runner.invoke(app, ["--platform", "stub"])
 
         assert result.exit_code == 0, result.output

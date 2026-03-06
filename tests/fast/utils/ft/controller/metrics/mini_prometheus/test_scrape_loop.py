@@ -17,40 +17,39 @@ class _FakeStore:
         self.ingested.append((target_id, samples))
 
 
+@pytest.fixture
+def scrape_loop() -> ScrapeLoop:
+    return ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
+
+
 # ===================================================================
 # Target management
 # ===================================================================
 
 
 class TestTargetManagement:
-    def test_add_target(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
+    def test_add_target(self, scrape_loop: ScrapeLoop) -> None:
+        scrape_loop.add_target("t1", "http://host:9090")
 
-        loop.add_target("t1", "http://host:9090")
+        assert scrape_loop.targets == {"t1": "http://host:9090"}
 
-        assert loop.targets == {"t1": "http://host:9090"}
+    def test_remove_target(self, scrape_loop: ScrapeLoop) -> None:
+        scrape_loop.add_target("t1", "http://host:9090")
 
-    def test_remove_target(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        loop.add_target("t1", "http://host:9090")
+        scrape_loop.remove_target("t1")
 
-        loop.remove_target("t1")
+        assert scrape_loop.targets == {}
 
-        assert loop.targets == {}
+    def test_remove_nonexistent_target_is_safe(self, scrape_loop: ScrapeLoop) -> None:
+        scrape_loop.remove_target("nonexistent")
 
-    def test_remove_nonexistent_target_is_safe(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
+    def test_targets_property_returns_copy(self, scrape_loop: ScrapeLoop) -> None:
+        scrape_loop.add_target("t1", "http://host:9090")
 
-        loop.remove_target("nonexistent")
-
-    def test_targets_property_returns_copy(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        loop.add_target("t1", "http://host:9090")
-
-        targets = loop.targets
+        targets = scrape_loop.targets
         targets["t2"] = "http://other:9090"
 
-        assert "t2" not in loop.targets
+        assert "t2" not in scrape_loop.targets
 
 
 # ===================================================================
@@ -60,12 +59,10 @@ class TestTargetManagement:
 
 class TestScrapeOnce:
     @pytest.mark.anyio
-    async def test_empty_targets_is_noop(self) -> None:
-        store = _FakeStore()
-        loop = ScrapeLoop(store=store, scrape_interval_seconds=1.0)
+    async def test_empty_targets_is_noop(self, scrape_loop: ScrapeLoop) -> None:
+        await scrape_loop.scrape_once()
 
-        await loop.scrape_once()
-
+        store: _FakeStore = scrape_loop._store  # type: ignore[assignment]
         assert len(store.ingested) == 0
 
 
@@ -75,30 +72,27 @@ class TestScrapeOnce:
 
 
 class TestEnsureClient:
-    def test_creates_client_when_none(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        assert loop._client is None
+    def test_creates_client_when_none(self, scrape_loop: ScrapeLoop) -> None:
+        assert scrape_loop._client is None
 
-        client = loop._ensure_client()
+        client = scrape_loop._ensure_client()
 
         assert client is not None
         assert not client.is_closed
 
-    def test_reuses_existing_open_client(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        client1 = loop._ensure_client()
-        client2 = loop._ensure_client()
+    def test_reuses_existing_open_client(self, scrape_loop: ScrapeLoop) -> None:
+        client1 = scrape_loop._ensure_client()
+        client2 = scrape_loop._ensure_client()
 
         assert client1 is client2
 
     @pytest.mark.anyio
-    async def test_recreates_client_after_close(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        client1 = loop._ensure_client()
+    async def test_recreates_client_after_close(self, scrape_loop: ScrapeLoop) -> None:
+        client1 = scrape_loop._ensure_client()
         await client1.aclose()
         assert client1.is_closed
 
-        client2 = loop._ensure_client()
+        client2 = scrape_loop._ensure_client()
 
         assert client2 is not client1
         assert not client2.is_closed
@@ -112,35 +106,30 @@ class TestEnsureClient:
 
 class TestStop:
     @pytest.mark.anyio
-    async def test_stop_sets_running_false(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        loop._running = True
+    async def test_stop_sets_running_false(self, scrape_loop: ScrapeLoop) -> None:
+        scrape_loop._running = True
 
-        await loop.stop()
+        await scrape_loop.stop()
 
-        assert loop._running is False
+        assert scrape_loop._running is False
 
     @pytest.mark.anyio
-    async def test_stop_closes_client(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        client = loop._ensure_client()
+    async def test_stop_closes_client(self, scrape_loop: ScrapeLoop) -> None:
+        client = scrape_loop._ensure_client()
         assert not client.is_closed
 
-        await loop.stop()
+        await scrape_loop.stop()
 
         assert client.is_closed
-        assert loop._client is None
+        assert scrape_loop._client is None
 
     @pytest.mark.anyio
-    async def test_stop_when_client_is_none(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-
-        await loop.stop()
+    async def test_stop_when_client_is_none(self, scrape_loop: ScrapeLoop) -> None:
+        await scrape_loop.stop()
 
     @pytest.mark.anyio
-    async def test_stop_when_client_already_closed(self) -> None:
-        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=1.0)
-        client = loop._ensure_client()
+    async def test_stop_when_client_already_closed(self, scrape_loop: ScrapeLoop) -> None:
+        client = scrape_loop._ensure_client()
         await client.aclose()
 
-        await loop.stop()
+        await scrape_loop.stop()

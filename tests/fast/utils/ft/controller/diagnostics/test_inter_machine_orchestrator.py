@@ -12,28 +12,14 @@ from miles.utils.ft.models._diagnostics import DiagnosticResult
 from tests.fast.utils.ft.conftest import FakeNodeAgent, HangingNodeAgent
 
 
-def _make_passing_agent(node_id: str) -> FakeNodeAgent:
+def _make_inter_machine_agent(node_id: str, *, passed: bool = True) -> FakeNodeAgent:
     return FakeNodeAgent(
         diagnostic_results={
             "inter_machine": DiagnosticResult(
                 diagnostic_type="inter_machine",
                 node_id=node_id,
-                passed=True,
-                details="pass",
-            ),
-        },
-        node_id=node_id,
-    )
-
-
-def _make_failing_agent(node_id: str) -> FakeNodeAgent:
-    return FakeNodeAgent(
-        diagnostic_results={
-            "inter_machine": DiagnosticResult(
-                diagnostic_type="inter_machine",
-                node_id=node_id,
-                passed=False,
-                details="fail",
+                passed=passed,
+                details="pass" if passed else "fail",
             ),
         },
         node_id=node_id,
@@ -136,7 +122,7 @@ class TestResolveAddress:
 class TestRunSinglePairMissingAgent:
     @pytest.mark.anyio
     async def test_missing_master_agent_returns_failed(self) -> None:
-        agents = {"worker": _make_passing_agent("worker")}
+        agents = {"worker": _make_inter_machine_agent("worker")}
         orch = InterMachineOrchestrator(agents=agents)
 
         result = await orch._run_single_pair(
@@ -149,7 +135,7 @@ class TestRunSinglePairMissingAgent:
 
     @pytest.mark.anyio
     async def test_missing_worker_agent_returns_failed(self) -> None:
-        agents = {"master": _make_passing_agent("master")}
+        agents = {"master": _make_inter_machine_agent("master")}
         orch = InterMachineOrchestrator(agents=agents)
 
         result = await orch._run_single_pair(
@@ -179,7 +165,7 @@ class TestRunSinglePairMissingAgent:
 class TestRunEdgeCases:
     @pytest.mark.anyio
     async def test_single_node_returns_empty(self) -> None:
-        agents = {"A": _make_passing_agent("A")}
+        agents = {"A": _make_inter_machine_agent("A")}
         orch = InterMachineOrchestrator(agents=agents)
 
         bad = await orch.run(node_ids=["A"], timeout_seconds=30)
@@ -197,8 +183,8 @@ class TestRunEdgeCases:
     @pytest.mark.anyio
     async def test_two_nodes_all_pass(self) -> None:
         agents = {
-            "A": _make_passing_agent("A"),
-            "B": _make_passing_agent("B"),
+            "A": _make_inter_machine_agent("A"),
+            "B": _make_inter_machine_agent("B"),
         }
         orch = InterMachineOrchestrator(agents=agents)
 
@@ -218,7 +204,7 @@ class TestRunSinglePairAgentHang:
         """When master agent RPC hangs, the pair should fail after timeout."""
         agents: dict = {
             "master": HangingNodeAgent(node_id="master"),
-            "worker": _make_passing_agent("worker"),
+            "worker": _make_inter_machine_agent("worker"),
         }
         orch = InterMachineOrchestrator(agents=agents)
 
@@ -234,7 +220,7 @@ class TestRunSinglePairAgentHang:
     @pytest.mark.anyio
     async def test_hanging_worker_agent_times_out(self) -> None:
         agents: dict = {
-            "master": _make_passing_agent("master"),
+            "master": _make_inter_machine_agent("master"),
             "worker": HangingNodeAgent(node_id="worker"),
         }
         orch = InterMachineOrchestrator(agents=agents)
@@ -265,9 +251,9 @@ class TestRunSinglePairAgentHang:
     async def test_run_with_hanging_agent_isolates_bad_node(self) -> None:
         """Full run() with one hanging node should localize it as the bad node."""
         agents: dict = {
-            "A": _make_passing_agent("A"),
+            "A": _make_inter_machine_agent("A"),
             "B": HangingNodeAgent(node_id="B"),
-            "C": _make_passing_agent("C"),
+            "C": _make_inter_machine_agent("C"),
         }
         orch = InterMachineOrchestrator(agents=agents)
 
