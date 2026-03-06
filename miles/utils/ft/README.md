@@ -8,13 +8,9 @@ training from the latest checkpoint.
 
 ```mermaid
 graph LR
-    Agents["Agents"]
-    Controller["Controller"]
-    Platform["Platform"]
-
-    Agents -- "metrics" --> Controller
-    Controller -- "diagnostics" --> Agents
-    Controller -- "evict / restart / notify" --> Platform
+    Agents -->|metrics| Controller
+    Controller -->|diagnostics| Agents
+    Controller -->|evict / restart / notify| Platform
 ```
 
 Two layers inside this module:
