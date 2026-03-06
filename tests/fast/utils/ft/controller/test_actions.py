@@ -5,7 +5,6 @@ import pytest
 
 from miles.utils.ft.controller.actions import (
     PlatformDeps,
-    handle_enter_recovery,
     handle_mark_bad_and_restart,
     handle_notify_human,
 )
@@ -256,41 +255,6 @@ class TestMarkBadWithoutNotifier:
         )
 
         assert training_job._submitted
-
-
-# ===================================================================
-# handle_enter_recovery
-# ===================================================================
-
-
-class TestHandleEnterRecovery:
-    @pytest.mark.anyio
-    async def test_returns_orchestrator_with_correct_trigger(self) -> None:
-        deps = _make_deps()
-        decision = _make_decision(
-            bad_node_ids=[],
-            action=ActionType.ENTER_RECOVERY,
-            trigger=TriggerType.HANG,
-        )
-
-        orchestrator = await handle_enter_recovery(decision=decision, deps=deps)
-
-        assert orchestrator.trigger == TriggerType.HANG
-
-    @pytest.mark.anyio
-    async def test_passes_deps_through(self) -> None:
-        node_manager = FakeNodeManager()
-        notifier = FakeNotifier()
-        deps = _make_deps(node_manager=node_manager, notifier=notifier)
-        decision = _make_decision(
-            bad_node_ids=[],
-            action=ActionType.ENTER_RECOVERY,
-            trigger=TriggerType.CRASH,
-        )
-
-        orchestrator = await handle_enter_recovery(decision=decision, deps=deps)
-
-        assert orchestrator is not None
 
 
 # ===================================================================

@@ -4,8 +4,8 @@ import logging
 import time
 from collections.abc import Callable
 
-from miles.utils.ft.controller.actions import PlatformDeps, handle_enter_recovery
-from miles.utils.ft.controller.recovery_cooldown import RecoveryCooldown
+from miles.utils.ft.controller.actions import PlatformDeps
+from miles.utils.ft.controller.recovery_orchestrator.helpers import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery_orchestrator.orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models.fault import Decision
 from miles.utils.ft.models.recovery import RecoveryPhase, RecoverySnapshot, _BAD_NODES_CONFIRMED_PHASES
@@ -20,7 +20,7 @@ class RecoveryLifecycleManager:
 
     def __init__(
         self,
-        cooldown: RecoveryCooldown,
+        cooldown: SlidingWindowThrottle,
         on_recovery_duration: Callable[[float], None] | None = None,
     ) -> None:
         self._cooldown = cooldown
@@ -83,8 +83,21 @@ class RecoveryLifecycleManager:
             return False
 
         self._start_time = time.monotonic()
-        self._orchestrator = await handle_enter_recovery(
-            decision=decision, deps=deps,
+        logger.warning(
+            "decision_enter_recovery trigger=%s reason=%s",
+            decision.trigger, decision.reason,
+        )
+        self._orchestrator = RecoveryOrchestrator(
+            trigger=decision.trigger,
+            node_manager=deps.node_manager,
+            training_job=deps.training_job,
+            metric_store=deps.metric_store,
+            mini_wandb=deps.mini_wandb,
+            notifier=deps.notifier,
+            diagnostic_orchestrator=deps.diagnostic_orchestrator,
+            controller_exporter=deps.controller_exporter,
+            on_new_run=deps.on_new_run,
+            rank_pids_provider=deps.rank_pids_provider,
         )
         return True
 

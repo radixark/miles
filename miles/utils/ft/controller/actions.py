@@ -12,7 +12,6 @@ from miles.utils.ft.controller.recovery_orchestrator.helpers import (
     safe_notify,
     stop_and_submit,
 )
-from miles.utils.ft.controller.recovery_orchestrator.orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models.fault import Decision
 from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.protocols.platform import (
@@ -37,6 +36,7 @@ class PlatformDeps:
     diagnostic_orchestrator: DiagnosticOrchestratorProtocol
     controller_exporter: ControllerExporter | None
     on_new_run: Callable[[str], None] | None = field(default=None)
+    rank_pids_provider: Callable[[str], dict[int, int]] | None = field(default=None)
 
 
 async def handle_mark_bad_and_restart(
@@ -77,27 +77,6 @@ async def handle_mark_bad_and_restart(
         await safe_notify(
             deps.notifier, title="Restart Failure", content=msg,
         )
-
-
-async def handle_enter_recovery(
-    decision: Decision,
-    deps: PlatformDeps,
-) -> RecoveryOrchestrator:
-    logger.warning(
-        "decision_enter_recovery trigger=%s reason=%s",
-        decision.trigger, decision.reason,
-    )
-    return RecoveryOrchestrator(
-        trigger=decision.trigger,
-        node_manager=deps.node_manager,
-        training_job=deps.training_job,
-        metric_store=deps.metric_store,
-        mini_wandb=deps.mini_wandb,
-        notifier=deps.notifier,
-        diagnostic_orchestrator=deps.diagnostic_orchestrator,
-        controller_exporter=deps.controller_exporter,
-        on_new_run=deps.on_new_run,
-    )
 
 
 async def handle_notify_human(

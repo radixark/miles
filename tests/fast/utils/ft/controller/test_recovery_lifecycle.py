@@ -4,10 +4,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from miles.utils.ft.controller.recovery_cooldown import RecoveryCooldown
+from miles.utils.ft.controller.actions import PlatformDeps
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.recovery_orchestrator.helpers import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery_lifecycle import RecoveryLifecycleManager
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.recovery import RecoveryPhase
+from tests.fast.utils.ft.conftest import (
+    FakeDiagnosticOrchestrator,
+    FakeNodeManager,
+    FakeNotifier,
+    FakeTrainingJob,
+)
 
 
 def _make_manager(
@@ -16,10 +24,22 @@ def _make_manager(
     max_count: int = 3,
     on_recovery_duration: MagicMock | None = None,
 ) -> RecoveryLifecycleManager:
-    cooldown = RecoveryCooldown(window_minutes=window_minutes, max_count=max_count)
+    cooldown = SlidingWindowThrottle(window_minutes=window_minutes, max_count=max_count)
     return RecoveryLifecycleManager(
         cooldown=cooldown,
         on_recovery_duration=on_recovery_duration,
+    )
+
+
+def _make_deps() -> PlatformDeps:
+    return PlatformDeps(
+        node_manager=FakeNodeManager(),
+        training_job=FakeTrainingJob(),
+        metric_store=None,  # type: ignore[arg-type]
+        mini_wandb=MiniWandb(),
+        notifier=FakeNotifier(),
+        diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        controller_exporter=None,
     )
 
 
@@ -58,62 +78,43 @@ class TestRecoveryLifecycleManagerStart:
     @pytest.mark.anyio
     async def test_start_creates_orchestrator(self) -> None:
         manager = _make_manager()
-        fake_orch = _make_fake_orchestrator()
-        deps = MagicMock()
+        deps = _make_deps()
 
-        with patch(
-            "miles.utils.ft.controller.recovery_lifecycle.handle_enter_recovery",
-            new_callable=AsyncMock,
-            return_value=fake_orch,
-        ):
-            result = await manager.start(decision=_make_decision(), deps=deps)
+        result = await manager.start(decision=_make_decision(), deps=deps)
 
         assert result is True
         assert manager.in_progress
-        assert manager._orchestrator is fake_orch
+        assert manager._orchestrator is not None
 
     @pytest.mark.anyio
     async def test_start_throttled_returns_false(self) -> None:
         manager = _make_manager(max_count=2)
-        deps = MagicMock()
-        fake_orch = _make_fake_orchestrator()
+        deps = _make_deps()
 
-        with patch(
-            "miles.utils.ft.controller.recovery_lifecycle.handle_enter_recovery",
-            new_callable=AsyncMock,
-            return_value=fake_orch,
-        ) as mock_enter:
-            await manager.start(decision=_make_decision(), deps=deps)
-            assert manager.in_progress
-            manager._orchestrator = None
+        await manager.start(decision=_make_decision(), deps=deps)
+        assert manager.in_progress
+        manager._orchestrator = None
 
-            result = await manager.start(decision=_make_decision(), deps=deps)
+        result = await manager.start(decision=_make_decision(), deps=deps)
 
         assert result is False
         assert not manager.in_progress
-        assert mock_enter.call_count == 1
 
     @pytest.mark.anyio
     async def test_different_triggers_not_throttled(self) -> None:
         manager = _make_manager(max_count=2)
-        deps = MagicMock()
-        fake_orch = _make_fake_orchestrator()
+        deps = _make_deps()
 
-        with patch(
-            "miles.utils.ft.controller.recovery_lifecycle.handle_enter_recovery",
-            new_callable=AsyncMock,
-            return_value=fake_orch,
-        ):
-            result_crash = await manager.start(
-                decision=_make_decision(TriggerType.CRASH), deps=deps,
-            )
-            assert result_crash is True
-            manager._orchestrator = None
+        result_crash = await manager.start(
+            decision=_make_decision(TriggerType.CRASH), deps=deps,
+        )
+        assert result_crash is True
+        manager._orchestrator = None
 
-            result_hang = await manager.start(
-                decision=_make_decision(TriggerType.HANG), deps=deps,
-            )
-            assert result_hang is True
+        result_hang = await manager.start(
+            decision=_make_decision(TriggerType.HANG), deps=deps,
+        )
+        assert result_hang is True
 
 
 class TestRecoveryLifecycleManagerStep:
