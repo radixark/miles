@@ -50,10 +50,11 @@ async def handle_mark_bad_and_restart(
 
     already_bad = await get_already_bad_nodes(deps.node_manager)
     nodes_to_mark = [nid for nid in decision.bad_node_ids if nid not in already_bad]
-    if len(nodes_to_mark) < len(decision.bad_node_ids):
+    skipped = set(decision.bad_node_ids) - set(nodes_to_mark)
+    if len(skipped) > 0:
         logger.info(
             "mark_bad_skipped_already_bad skipped=%s",
-            sorted(set(decision.bad_node_ids) - set(nodes_to_mark)),
+            sorted(skipped),
         )
 
     failed_nodes: list[str] = []
