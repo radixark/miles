@@ -36,10 +36,7 @@ class GpuDiagnostic(BaseDiagnostic):
                 "gpu_check_process_failed node_id=%s returncode=%d stderr=%s",
                 node_id, returncode, stderr_text[:500],
             )
-            return DiagnosticResult.fail_result(
-                diagnostic_type=self.diagnostic_type, node_id=node_id,
-                details=f"gpu check process failed: {stderr_text[:500]}",
-            )
+            return self._fail(node_id, f"gpu check process failed: {stderr_text[:500]}")
 
         gpu_results = self._parse_gpu_results(
             stdout_bytes=stdout_bytes, node_id=node_id,
@@ -74,16 +71,10 @@ class GpuDiagnostic(BaseDiagnostic):
                 await process.wait()
             except Exception:
                 logger.warning("gpu_check_kill_failed node_id=%s", node_id, exc_info=True)
-            return DiagnosticResult.fail_result(
-                diagnostic_type=self.diagnostic_type, node_id=node_id,
-                details="gpu check timed out",
-            )
+            return self._fail(node_id, "gpu check timed out")
         except Exception:
             logger.warning("gpu_check_launch_failed node_id=%s", node_id, exc_info=True)
-            return DiagnosticResult.fail_result(
-                diagnostic_type=self.diagnostic_type, node_id=node_id,
-                details="gpu check process failed to launch",
-            )
+            return self._fail(node_id, "gpu check process failed to launch")
 
         assert process.returncode is not None
         return stdout_bytes, stderr_bytes, process.returncode
@@ -99,20 +90,14 @@ class GpuDiagnostic(BaseDiagnostic):
                 "gpu_check_invalid_json node_id=%s output=%s",
                 node_id, stdout_text[:200],
             )
-            return DiagnosticResult.fail_result(
-                diagnostic_type=self.diagnostic_type, node_id=node_id,
-                details="invalid output from gpu check",
-            )
+            return self._fail(node_id, "invalid output from gpu check")
 
     def _collect_failures(
         self, gpu_results: list[dict[str, object]], node_id: str,
     ) -> DiagnosticResult:
         if not gpu_results:
             logger.warning("gpu_check_empty_results node_id=%s", node_id)
-            return DiagnosticResult.fail_result(
-                diagnostic_type=self.diagnostic_type, node_id=node_id,
-                details="gpu check returned no results",
-            )
+            return self._fail(node_id, "gpu check returned no results")
 
         failed_gpus: list[str] = []
         for gpu_result in gpu_results:
@@ -127,12 +112,6 @@ class GpuDiagnostic(BaseDiagnostic):
                 "gpu_check_failures node_id=%s failures=%s",
                 node_id, all_details,
             )
-            return DiagnosticResult.fail_result(
-                diagnostic_type=self.diagnostic_type, node_id=node_id,
-                details=all_details,
-            )
+            return self._fail(node_id, all_details)
 
-        return DiagnosticResult.pass_result(
-            diagnostic_type=self.diagnostic_type, node_id=node_id,
-            details="all GPU checks passed",
-        )
+        return self._pass(node_id, "all GPU checks passed")
