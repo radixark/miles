@@ -19,6 +19,7 @@ MODEL_TYPE = "qwen2.5-0.5B"
 
 @dataclass
 class ScriptArgs(ExecuteTrainConfig):
+    num_nodes: int = 2  # 2 training nodes + 1 spare for eviction in 3-node cluster
     tight_device_memory: bool = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
     few_gpu: bool = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
     full_fault_tolerance: bool = True

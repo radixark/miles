@@ -27,7 +27,7 @@ from miles.utils.ft.protocols.platform import ft_controller_actor_name
 
 logger = logging.getLogger(__name__)
 
-_MIN_CLUSTER_NODES = 4
+_EXPECTED_CLUSTER_NODES = 3
 _ACTOR_POLL_INTERVAL: float = 5.0
 
 
@@ -64,12 +64,18 @@ def ray_cluster(ray_address: str) -> Generator[None, None, None]:
 
     nodes = ray.nodes()
     alive_nodes = [n for n in nodes if n.get("Alive")]
-    if len(alive_nodes) < _MIN_CLUSTER_NODES:
-        pytest.skip(
-            f"Need >= {_MIN_CLUSTER_NODES} alive nodes, got {len(alive_nodes)}"
-        )
+    assert len(alive_nodes) == _EXPECTED_CLUSTER_NODES, (
+        f"FT E2E tests require exactly {_EXPECTED_CLUSTER_NODES} cluster nodes "
+        f"(2 training + 1 spare for eviction), got {len(alive_nodes)}"
+    )
 
-    logger.info("ray_cluster_connected nodes=%d", len(alive_nodes))
+    gpu_nodes = [n for n in alive_nodes if n.get("Resources", {}).get("GPU", 0) > 0]
+    assert len(gpu_nodes) == _EXPECTED_CLUSTER_NODES, (
+        f"All {_EXPECTED_CLUSTER_NODES} cluster nodes must have GPUs, "
+        f"but only {len(gpu_nodes)} of {len(alive_nodes)} have GPUs"
+    )
+
+    logger.info("ray_cluster_connected nodes=%d gpu_nodes=%d", len(alive_nodes), len(gpu_nodes))
     yield
 
 
@@ -96,9 +102,10 @@ def ft_controller_handle(
     Waits for the named actor to appear, then yields the handle for
     tests to interact with the controller via ray.get(handle.xxx.remote()).
     """
-    from tests.e2e.ft.launch_standard_run import execute
+    from tests.e2e.ft.launch_standard_run import ScriptArgs, execute
 
-    thread = threading.Thread(target=execute, daemon=True)
+    args = ScriptArgs()
+    thread = threading.Thread(target=execute, args=(args,), daemon=True)
     thread.start()
 
     handle = _wait_for_named_actor(
