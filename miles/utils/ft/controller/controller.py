@@ -129,6 +129,9 @@ class FtController:
             phase_history = rm.last_phase_history
             bad_nodes_confirmed = False
 
+        iteration_val = self._mini_wandb.latest(metric_name="iteration")
+        latest_iteration = int(iteration_val) if iteration_val is not None else None
+
         return ControllerStatus(
             mode=mode,
             recovery_phase=recovery_phase,
@@ -138,6 +141,7 @@ class FtController:
             bad_nodes=sorted(rm.diagnosing_nodes),
             recovery_in_progress=rm.in_progress,
             bad_nodes_confirmed=bad_nodes_confirmed,
+            latest_iteration=latest_iteration,
         )
 
     # -------------------------------------------------------------------

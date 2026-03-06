@@ -34,6 +34,7 @@ class ControllerStatus(FtBaseModel):
     bad_nodes: list[str]
     recovery_in_progress: bool
     bad_nodes_confirmed: bool
+    latest_iteration: int | None
 
 
 RECOVERY_PHASE_TO_INT: dict[RecoveryPhase, int] = {
