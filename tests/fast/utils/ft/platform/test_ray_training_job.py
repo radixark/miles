@@ -144,7 +144,7 @@ class TestStopTraining:
         mock_client.get_job_status.return_value = "RUNNING"
 
         with patch("miles.utils.ft.platform.ray_training_job.time") as mock_time, \
-             patch("miles.utils.ft.polling.time") as mock_poll_time:
+             patch("miles.utils.ft.utils.polling.time") as mock_poll_time:
             call_count = 0
 
             def advancing_monotonic() -> float:
@@ -312,7 +312,7 @@ class TestStopJob:
         mock_client.get_job_status.return_value = "RUNNING"
 
         with patch("miles.utils.ft.platform.ray_training_job.time") as mock_time, \
-             patch("miles.utils.ft.polling.time") as mock_poll_time:
+             patch("miles.utils.ft.utils.polling.time") as mock_poll_time:
             call_count = 0
 
             def advancing_monotonic() -> float:
