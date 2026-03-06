@@ -3,6 +3,13 @@ GLM-5 744B-A40B Training Script
 
 =====================
 
+Tested on H200, B200, GB300
+
+For H200, B200, please use `radixark/miles:glm5` docker
+For GB300, please use `radixark/miles:glm5-gb300` docker
+
+=====================
+
 Args:
   --model-name: Model variant to use.
       GLM-5         Full 744B model (requires >=16 nodes)
@@ -70,6 +77,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "glm5-744B-A40B"
     num_gpus_per_node: int = 8
     fp8_rollout: bool = False
+    use_deepep: bool = True
+    megatron_use_deepep: bool = True
     enable_eval: bool = False
     enable_mtp: bool = False
     enable_pd: bool = True
@@ -77,10 +86,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    model_local_dir: str = "/root/local_data"
+    model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
+    hardware: Literal["H200", "B200", "GB300"] = "H200"
 
     def __post_init__(self):
+        if self.hardware == "GB300":
+            assert not self.megatron_use_deepep, (
+                "Known issue: Megatron's DeepEP fail on GB300. " "Please specify --no-megatron-use-deepep."
+            )
+        if not self.use_deepep:
+            self.megatron_use_deepep = False
         if self.num_nodes == 1:
             self.enable_pd = False
             self.mode = "debug_minimal"
@@ -231,7 +247,7 @@ def _execute_train(args: ScriptArgs):
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
             "--context-parallel-size 1 "
-            "--expert-model-parallel-size 8 "
+            f"--expert-model-parallel-size {args.num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
     elif args.num_nodes == 6:  # for 20 layers model, to test multi-node
@@ -301,7 +317,7 @@ def _execute_train(args: ScriptArgs):
 
     else:
         sglang_decode_max_bs = 256
-        sglang_world_size = 8
+        sglang_world_size = min(8, args.num_gpus_per_node)
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
@@ -312,7 +328,7 @@ def _execute_train(args: ScriptArgs):
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
     )
-    if args.fp8_rollout:
+    if args.fp8_rollout and args.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
     if args.enable_mtp:
         sglang_args += (
@@ -337,6 +353,7 @@ def _execute_train(args: ScriptArgs):
     )
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{32 if args.enable_pd else 256}",
+        "SGLANG_NSA_FORCE_MLA": "1",
     }
 
     misc_args = (
@@ -348,9 +365,6 @@ def _execute_train(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
-        # use deepep for megatron
-        "--moe-enable-deepep "
-        "--moe-token-dispatcher-type flex "
         "--allgather-cp "
         # ------------
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
@@ -358,10 +372,12 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--use-fault-tolerance "
-        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
-        "--disable-weights-backuper "
     )
+
+    if args.megatron_use_deepep:
+        misc_args += "--moe-enable-deepep " "--moe-token-dispatcher-type flex "
+    else:
+        misc_args += "--moe-token-dispatcher-type alltoall "
 
     train_args = (
         f"{ckpt_args} "

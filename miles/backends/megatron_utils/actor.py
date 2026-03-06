@@ -83,6 +83,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 torch_memory_saver.memory_margin_bytes = x
 
         if self.args.debug_rollout_only:
+            self.parallel_state = create_megatron_parallel_state(model=None)
             return 0
 
         if role == "critic":

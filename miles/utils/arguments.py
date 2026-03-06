@@ -1033,17 +1033,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=3,
                 help="Number of consecutive failures before marking a worker as unhealthy.",
             )
-            parser.add_argument(
-                "--miles-router-enable-token-input-for-chat-completions",
-                action="store_true",
-                default=False,
-                help=(
-                    "This is an experimental feature, and only supports for text model."
-                    "Whether to enable token input for chat completions. If set, we will calculate "
-                    "the input_ids for the prompt part inside miles and add it to the request body."
-                    "This is reserved for cross turn token in under OAI format."
-                ),
-            )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
 
@@ -1414,6 +1403,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-disable-logprobs-checker",
+                action="store_true",
+            )
+            parser.add_argument(
                 "--ci-metric-checker-key",
                 type=str,
                 default=None,
@@ -1432,6 +1425,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--ci-load-grad-norm",
                 type=str,
                 default=None,
+            )
+            parser.add_argument(
+                "--ci-save-model-hash",
+                action="store_true",
+            )
+            parser.add_argument(
+                "--ci-check-model-hash",
+                action="store_true",
             )
             return parser
 
@@ -1857,7 +1858,11 @@ def hf_validate_args(args, hf_config):
         ("num_hidden_layers", "num_layers", equal),
         ("intermediate_size", "ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
-        ("rms_norm_eps", "norm_epsilon", equal),
+        (
+            "rms_norm_eps",
+            "norm_epsilon" if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1" else "layernorm_epsilon",
+            equal,
+        ),
         ("rope_theta", "rotary_base", equal),
     ]:
         if hasattr(hf_config, hf_config_name):
