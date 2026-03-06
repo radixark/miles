@@ -176,18 +176,12 @@ class TestHangDetector:
 
 
 class TestHangDetectorValidation:
-    def test_zero_training_timeout_rejected(self) -> None:
-        with pytest.raises(ValueError, match="training_timeout_minutes"):
-            HangDetector(training_timeout_minutes=0)
-
-    def test_negative_training_timeout_rejected(self) -> None:
-        with pytest.raises(ValueError, match="training_timeout_minutes"):
-            HangDetector(training_timeout_minutes=-5)
-
-    def test_zero_checkpoint_timeout_rejected(self) -> None:
-        with pytest.raises(ValueError, match="checkpoint_saving_timeout_minutes"):
-            HangDetector(checkpoint_saving_timeout_minutes=0)
-
-    def test_negative_checkpoint_timeout_rejected(self) -> None:
-        with pytest.raises(ValueError, match="checkpoint_saving_timeout_minutes"):
-            HangDetector(checkpoint_saving_timeout_minutes=-10)
+    @pytest.mark.parametrize("kwargs,match", [
+        (dict(training_timeout_minutes=0), "training_timeout_minutes"),
+        (dict(training_timeout_minutes=-5), "training_timeout_minutes"),
+        (dict(checkpoint_saving_timeout_minutes=0), "checkpoint_saving_timeout_minutes"),
+        (dict(checkpoint_saving_timeout_minutes=-10), "checkpoint_saving_timeout_minutes"),
+    ])
+    def test_invalid_parameter_rejected(self, kwargs: dict, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            HangDetector(**kwargs)

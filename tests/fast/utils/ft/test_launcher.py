@@ -19,35 +19,22 @@ runner = CliRunner()
 
 
 class TestLauncherCli:
-    def test_help_output(self) -> None:
+    @pytest.mark.parametrize("expected_text", [
+        "tick-interval",
+        "FT Controller",
+        "--platform",
+        "--ray-address",
+        "--metric-store-backe",
+        "--prometheus-url",
+        "--controller-exporte",
+        "--runtime-env-json",
+        "--ft-id",
+        "--k8s-label-suffix",
+    ])
+    def test_help_includes_option(self, expected_text: str) -> None:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "tick-interval" in result.output
-        assert "FT Controller" in result.output
-
-    def test_help_includes_platform_option(self) -> None:
-        result = runner.invoke(app, ["--help"])
-        assert result.exit_code == 0
-        assert "--platform" in result.output
-        assert "--ray-address" in result.output
-
-    def test_help_includes_metric_store_options(self) -> None:
-        result = runner.invoke(app, ["--help"])
-        assert result.exit_code == 0
-        assert "--metric-store-backe" in result.output
-        assert "--prometheus-url" in result.output
-        assert "--controller-exporte" in result.output
-
-    def test_help_includes_runtime_env_json_option(self) -> None:
-        result = runner.invoke(app, ["--help"])
-        assert result.exit_code == 0
-        assert "--runtime-env-json" in result.output
-
-    def test_help_includes_ft_id_and_label_suffix_options(self) -> None:
-        result = runner.invoke(app, ["--help"])
-        assert result.exit_code == 0
-        assert "--ft-id" in result.output
-        assert "--k8s-label-suffix" in result.output
+        assert expected_text in result.output
 
 
 class TestBuildNotifier:

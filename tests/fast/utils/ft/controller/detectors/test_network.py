@@ -88,18 +88,12 @@ class TestNetworkAlertDetector:
 
 
 class TestNetworkAlertDetectorValidation:
-    def test_zero_alert_window_rejected(self) -> None:
-        with pytest.raises(ValueError, match="alert_window"):
-            NetworkAlertDetector(alert_window=timedelta(0))
-
-    def test_negative_alert_window_rejected(self) -> None:
-        with pytest.raises(ValueError, match="alert_window"):
-            NetworkAlertDetector(alert_window=timedelta(minutes=-1))
-
-    def test_zero_alert_threshold_rejected(self) -> None:
-        with pytest.raises(ValueError, match="alert_threshold"):
-            NetworkAlertDetector(alert_threshold=0)
-
-    def test_negative_alert_threshold_rejected(self) -> None:
-        with pytest.raises(ValueError, match="alert_threshold"):
-            NetworkAlertDetector(alert_threshold=-1)
+    @pytest.mark.parametrize("kwargs,match", [
+        (dict(alert_window=timedelta(0)), "alert_window"),
+        (dict(alert_window=timedelta(minutes=-1)), "alert_window"),
+        (dict(alert_threshold=0), "alert_threshold"),
+        (dict(alert_threshold=-1), "alert_threshold"),
+    ])
+    def test_invalid_parameter_rejected(self, kwargs: dict, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            NetworkAlertDetector(**kwargs)

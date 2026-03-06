@@ -28,50 +28,25 @@ from tests.fast.utils.ft.conftest import (
 class TestTrainingJobStatusExporter:
     """Verify training job status is pushed to the ControllerExporter gauge."""
 
+    @pytest.mark.parametrize("status_sequence,expected_value", [
+        ([JobStatus.RUNNING], 1.0),
+        ([JobStatus.FAILED], -1.0),
+        ([JobStatus.STOPPED], 0.0),
+        ([JobStatus.PENDING], 2.0),
+    ])
     @pytest.mark.asyncio
-    async def test_tick_updates_training_job_status_gauge(self) -> None:
-        registry, exporter = make_test_exporter()
-        harness = make_test_controller(controller_exporter=exporter)
-
-        await harness.controller._tick()
-
-        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 1.0
-
-    @pytest.mark.asyncio
-    async def test_failed_status_maps_to_negative(self) -> None:
+    async def test_status_maps_to_gauge_value(
+        self, status_sequence: list[JobStatus], expected_value: float,
+    ) -> None:
         registry, exporter = make_test_exporter()
         harness = make_test_controller(
-            status_sequence=[JobStatus.FAILED],
+            status_sequence=status_sequence,
             controller_exporter=exporter,
         )
 
         await harness.controller._tick()
 
-        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == -1.0
-
-    @pytest.mark.asyncio
-    async def test_stopped_status_maps_to_zero(self) -> None:
-        registry, exporter = make_test_exporter()
-        harness = make_test_controller(
-            status_sequence=[JobStatus.STOPPED],
-            controller_exporter=exporter,
-        )
-
-        await harness.controller._tick()
-
-        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 0.0
-
-    @pytest.mark.asyncio
-    async def test_pending_status_maps_to_two(self) -> None:
-        registry, exporter = make_test_exporter()
-        harness = make_test_controller(
-            status_sequence=[JobStatus.PENDING],
-            controller_exporter=exporter,
-        )
-
-        await harness.controller._tick()
-
-        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 2.0
+        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == expected_value
 
     @pytest.mark.asyncio
     async def test_tick_count_incremented(self) -> None:
@@ -161,54 +136,28 @@ class TestGetStatus:
         }
         assert status.bad_nodes_confirmed is False
 
-    def test_bad_nodes_confirmed_true_in_evict_phase(self) -> None:
-        """When recovery phase is EVICT_AND_RESTART, bad_nodes_confirmed is True."""
+    @pytest.mark.parametrize("phase,expected_confirmed", [
+        (RecoveryPhase.EVICT_AND_RESTART, True),
+        (RecoveryPhase.NOTIFY, True),
+        (RecoveryPhase.DIAGNOSING, False),
+    ])
+    def test_bad_nodes_confirmed_by_phase(
+        self, phase: RecoveryPhase, expected_confirmed: bool,
+    ) -> None:
         harness = make_test_controller()
         controller = harness.controller
 
         mock_orch = _MockOrchestrator(
-            phase=RecoveryPhase.EVICT_AND_RESTART,
-            phase_history=[RecoveryPhase.CHECK_ALERTS, RecoveryPhase.EVICT_AND_RESTART],
-            bad_node_ids=["node-1"],
+            phase=phase,
+            phase_history=[RecoveryPhase.CHECK_ALERTS, phase],
+            bad_node_ids=["node-0"],
         )
         controller._recovery_manager._orchestrator = mock_orch
         controller._recovery_manager._diagnosing_nodes = set(mock_orch.bad_node_ids)
 
         status = controller.get_status()
         assert status.recovery_in_progress is True
-        assert status.bad_nodes_confirmed is True
-
-    def test_bad_nodes_confirmed_true_in_notify_phase(self) -> None:
-        harness = make_test_controller()
-        controller = harness.controller
-
-        mock_orch = _MockOrchestrator(
-            phase=RecoveryPhase.NOTIFY,
-            phase_history=[RecoveryPhase.CHECK_ALERTS, RecoveryPhase.NOTIFY],
-            bad_node_ids=["node-2"],
-        )
-        controller._recovery_manager._orchestrator = mock_orch
-        controller._recovery_manager._diagnosing_nodes = set(mock_orch.bad_node_ids)
-
-        status = controller.get_status()
-        assert status.recovery_in_progress is True
-        assert status.bad_nodes_confirmed is True
-
-    def test_bad_nodes_confirmed_false_in_diagnosing_phase(self) -> None:
-        harness = make_test_controller()
-        controller = harness.controller
-
-        mock_orch = _MockOrchestrator(
-            phase=RecoveryPhase.DIAGNOSING,
-            phase_history=[RecoveryPhase.CHECK_ALERTS, RecoveryPhase.DIAGNOSING],
-            bad_node_ids=["node-3"],
-        )
-        controller._recovery_manager._orchestrator = mock_orch
-        controller._recovery_manager._diagnosing_nodes = set(mock_orch.bad_node_ids)
-
-        status = controller.get_status()
-        assert status.recovery_in_progress is True
-        assert status.bad_nodes_confirmed is False
+        assert status.bad_nodes_confirmed is expected_confirmed
 
 
 class _MockOrchestrator:
