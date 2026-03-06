@@ -5,9 +5,9 @@
 The directory layout also tightly follows the architecture.
 
 - **Platform layer**: Platform-specific details, such as Kubernetes node-label adapter and Ray job adapter.
-- **Controller**: Central control logic.
+- **Controller**: Central control logic. When **detectors** observe issues, controller will let **recovery** manager to take over. The latter will try to restart, run **diagnostics**, notify humans, etc.
   - **Detectors**: Detect faults based on metrics.
-  - **Recovery Orchestrator**: Multi-phase recovery state machine.
+  - **Recovery**: Multi-phase recovery state machine.
   - **Diagnostics**: On-demand diagnostics tools.
 - **Agents**: Per-node and per-rank objects to collect metric and do actions.
   - **Collectors**: Collect various metrics.
