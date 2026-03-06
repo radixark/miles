@@ -14,6 +14,7 @@ from miles.utils.ft.models import ControllerMode, RecoveryPhase
 from tests.e2e.ft.conftest import (
     FaultInjectorFactory,
     assert_phase_path_contains,
+    find_training_pid,
     get_status,
     wait_for_mode_transition,
     wait_for_training_stable,
@@ -43,11 +44,7 @@ async def test_hang_detection_and_recovery(
     )
 
     injector = fault_injector.deploy_to(node_id=target_node)
-
-    procs = ray.get(injector.find_training_processes.remote())
-    assert len(procs) > 0, f"No training processes found on {target_node}"
-
-    target_pid = procs[0]["pid"]
+    target_pid = find_training_pid(injector, node_id=target_node)
     t_inject = time.monotonic()
     ray.get(injector.stop_process.remote(pid=target_pid))
     logger.info("SIGSTOP sent to pid=%d on node=%s", target_pid, target_node)

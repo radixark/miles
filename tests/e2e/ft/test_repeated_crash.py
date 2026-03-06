@@ -11,10 +11,11 @@ from miles.utils.ft.models import ControllerMode, RecoveryPhase
 from tests.e2e.ft.conftest import (
     FaultInjectorFactory,
     assert_phase_path_contains,
-    get_status,
+    find_training_pid,
     wait_for_mode_transition,
     wait_for_recovery_complete,
     wait_for_recovery_phase,
+    wait_for_training_pid,
     wait_for_training_stable,
 )
 
@@ -39,9 +40,8 @@ async def test_repeated_crash_enters_diagnosing(
     injector = fault_injector.deploy_to(node_id=target_node)
 
     # Step 2: First kill
-    procs = ray.get(injector.find_training_processes.remote())
-    assert len(procs) > 0
-    ray.get(injector.kill_process.remote(pid=procs[0]["pid"], sig=9))
+    first_pid = find_training_pid(injector)
+    ray.get(injector.kill_process.remote(pid=first_pid, sig=9))
 
     await wait_for_mode_transition(
         handle=ft_controller_handle,
@@ -51,13 +51,8 @@ async def test_repeated_crash_enters_diagnosing(
 
     # Step 3: Second kill during MONITORING phase
     await asyncio.sleep(5.0)
-    for _ in range(10):
-        procs = ray.get(injector.find_training_processes.remote())
-        if procs:
-            break
-        await asyncio.sleep(3.0)
-    assert len(procs) > 0, "No training processes found for second kill"
-    ray.get(injector.kill_process.remote(pid=procs[0]["pid"], sig=9))
+    second_pid = await wait_for_training_pid(injector)
+    ray.get(injector.kill_process.remote(pid=second_pid, sig=9))
 
     # Step 4: Verify escalation to DIAGNOSING → NOTIFY
     status = await wait_for_recovery_phase(

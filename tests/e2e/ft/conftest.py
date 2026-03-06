@@ -247,6 +247,33 @@ def get_iteration_count(handle: ray.actor.ActorHandle) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Helper: fault injection utilities
+# ---------------------------------------------------------------------------
+
+
+def find_training_pid(injector: ray.actor.ActorHandle, node_id: str = "") -> int:
+    """Find first training process PID on the injector's node. Fails if none found."""
+    procs = ray.get(injector.find_training_processes.remote())
+    assert procs, f"No training processes found{f' on node {node_id}' if node_id else ''}"
+    return procs[0]["pid"]
+
+
+async def wait_for_training_pid(
+    injector: ray.actor.ActorHandle,
+    timeout: float = 30.0,
+    poll_interval: float = 3.0,
+) -> int:
+    """Poll until a training process appears on the injector's node, then return its PID."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        procs = ray.get(injector.find_training_processes.remote())
+        if procs:
+            return procs[0]["pid"]
+        await asyncio.sleep(poll_interval)
+    raise TimeoutError(f"No training processes appeared within {timeout}s")
+
+
+# ---------------------------------------------------------------------------
 # Helper functions for E2E assertions
 # ---------------------------------------------------------------------------
 
