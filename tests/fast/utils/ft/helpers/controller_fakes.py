@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import NamedTuple
 
 from prometheus_client import CollectorRegistry
@@ -281,3 +282,29 @@ def make_failing_node_manager() -> FakeNodeManager:
     mgr = FakeNodeManager()
     mgr.mark_node_bad = failing_mark_node_bad  # type: ignore[assignment]
     return mgr
+
+
+# ---------------------------------------------------------------------------
+# Async test-flow helpers
+# ---------------------------------------------------------------------------
+
+
+async def run_controller_briefly(harness: ControllerTestHarness, delay: float = 0.03) -> None:
+    """Run the controller loop and shut it down after a short delay."""
+
+    async def _shutdown_soon() -> None:
+        await asyncio.sleep(delay)
+        await harness.controller.shutdown()
+
+    task = asyncio.create_task(_shutdown_soon())
+    await harness.controller.run()
+    await task
+
+
+async def advance_until_recovery_complete(harness: ControllerTestHarness, max_ticks: int = 10) -> None:
+    """Tick the controller until recovery is no longer in progress."""
+    for _ in range(max_ticks):
+        if not harness.controller.recovery_manager.in_progress:
+            return
+        await harness.controller._tick()
+    assert not harness.controller.recovery_manager.in_progress

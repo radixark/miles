@@ -13,6 +13,7 @@ from miles.utils.ft.models import RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
     ControllerTestHarness,
+    advance_until_recovery_complete,
     make_fake_agents,
     make_test_controller,
 )
@@ -73,12 +74,8 @@ class TestDiagnosticPipelineWithBadNode:
         )
 
         # Advance to completion
-        for _ in range(10):
-            if not harness.controller.recovery_manager.in_progress:
-                break
-            await harness.controller._tick()
+        await advance_until_recovery_complete(harness)
 
-        assert not harness.controller.recovery_manager.in_progress
         assert harness.node_manager.is_node_bad("node-1")
         assert not harness.node_manager.is_node_bad("node-0")
 
@@ -116,12 +113,8 @@ class TestDiagnosticPipelineAllPass:
         # NOTIFY → DONE
         await harness.controller._tick()
 
-        for _ in range(5):
-            if not harness.controller.recovery_manager.in_progress:
-                break
-            await harness.controller._tick()
+        await advance_until_recovery_complete(harness)
 
-        assert not harness.controller.recovery_manager.in_progress
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.is_node_bad("node-0")
@@ -183,12 +176,8 @@ class TestDiagnosticPipelineInterMachine:
             RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
         )
 
-        for _ in range(10):
-            if not harness.controller.recovery_manager.in_progress:
-                break
-            await harness.controller._tick()
+        await advance_until_recovery_complete(harness)
 
-        assert not harness.controller.recovery_manager.in_progress
         assert harness.node_manager.is_node_bad("node-1")
         assert not harness.node_manager.is_node_bad("node-0")
         assert not harness.node_manager.is_node_bad("node-2")
@@ -223,12 +212,8 @@ class TestDiagnosticPipelineInterMachine:
 
         await harness.controller._tick()
 
-        for _ in range(5):
-            if not harness.controller.recovery_manager.in_progress:
-                break
-            await harness.controller._tick()
+        await advance_until_recovery_complete(harness)
 
-        assert not harness.controller.recovery_manager.in_progress
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.is_node_bad("node-0")
@@ -268,11 +253,7 @@ class TestDiagnosticPipelineMultiStep:
             RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
         )
 
-        for _ in range(10):
-            if not harness.controller.recovery_manager.in_progress:
-                break
-            await harness.controller._tick()
+        await advance_until_recovery_complete(harness)
 
-        assert not harness.controller.recovery_manager.in_progress
         assert harness.node_manager.is_node_bad("node-1")
         assert not harness.node_manager.is_node_bad("node-0")

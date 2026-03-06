@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from tests.fast.utils.ft.conftest import make_test_controller
+from tests.fast.utils.ft.conftest import make_test_controller, run_controller_briefly
 
 
 class TestRunCleanupNotifierAclose:
@@ -22,13 +22,7 @@ class TestRunCleanupNotifierAclose:
 
         harness.notifier.aclose = failing_aclose  # type: ignore[assignment]
 
-        async def _shutdown_soon() -> None:
-            await asyncio.sleep(0.03)
-            await harness.controller.shutdown()
-
-        task = asyncio.create_task(_shutdown_soon())
-        await harness.controller.run()
-        await task
+        await run_controller_briefly(harness)
 
         assert harness.controller._shutting_down
 
@@ -46,13 +40,7 @@ class TestRunCleanupNotifierAclose:
 
         harness.controller_exporter.stop = tracking_stop  # type: ignore[assignment]
 
-        async def _shutdown_soon() -> None:
-            await asyncio.sleep(0.03)
-            await harness.controller.shutdown()
-
-        task = asyncio.create_task(_shutdown_soon())
-        await harness.controller.run()
-        await task
+        await run_controller_briefly(harness)
 
         assert stop_called
 
@@ -102,13 +90,7 @@ class TestRunLoopSurviveTickFailure:
 
         harness.metric_store.stop = tracking_stop  # type: ignore[assignment]
 
-        async def _shutdown_soon() -> None:
-            await asyncio.sleep(0.03)
-            await harness.controller.shutdown()
-
-        task = asyncio.create_task(_shutdown_soon())
-        await harness.controller.run()
-        await task
+        await run_controller_briefly(harness)
 
         assert stop_called
 

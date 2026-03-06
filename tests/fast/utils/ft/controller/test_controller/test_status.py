@@ -21,6 +21,7 @@ from tests.fast.utils.ft.conftest import (
     make_fake_metric_store,
     make_test_controller,
     make_test_exporter,
+    run_controller_briefly,
 )
 
 
@@ -274,13 +275,7 @@ class TestShutdown:
     async def test_shutdown_stops_run_loop(self) -> None:
         harness = make_test_controller(tick_interval=0.01)
 
-        async def _shutdown_after_delay() -> None:
-            await asyncio.sleep(0.05)
-            await harness.controller.shutdown()
-
-        task = asyncio.create_task(_shutdown_after_delay())
-        await harness.controller.run()
-        await task
+        await run_controller_briefly(harness, delay=0.05)
 
         assert harness.controller._shutting_down
         assert harness.controller._tick_count >= 1
@@ -310,13 +305,7 @@ class TestShutdown:
         store.start = tracking_start
         store.stop = tracking_stop
 
-        async def _shutdown_soon() -> None:
-            await asyncio.sleep(0.05)
-            await harness.controller.shutdown()
-
-        shutdown_task = asyncio.create_task(_shutdown_soon())
-        await harness.controller.run()
-        await shutdown_task
+        await run_controller_briefly(harness, delay=0.05)
 
         assert started
         assert stopped

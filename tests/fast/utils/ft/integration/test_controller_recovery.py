@@ -14,6 +14,7 @@ from tests.fast.utils.ft.conftest import (
     AlwaysEnterRecoveryDetector,
     AlwaysNoneDetector,
     FixedDecisionDetector,
+    advance_until_recovery_complete,
     get_sample_value,
     inject_gpu_unavailable,
     make_test_controller,
@@ -141,12 +142,7 @@ class TestGlobalTimeout:
         await harness.controller._tick()
         assert orch.phase in (RecoveryPhase.NOTIFY, RecoveryPhase.DONE)
 
-        for _ in range(5):
-            if not harness.controller.recovery_manager.in_progress:
-                break
-            await harness.controller._tick()
-
-        assert not harness.controller.recovery_manager.in_progress
+        await advance_until_recovery_complete(harness)
 
 
 # -------------------------------------------------------------------
