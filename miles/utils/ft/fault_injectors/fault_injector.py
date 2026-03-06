@@ -90,6 +90,29 @@ class FaultInjectorActor:
             self._filled_paths.remove(path)
             raise
 
+    def trigger_gpu_xid(self) -> None:
+        """Trigger XID 13 (Graphics Engine Exception) via illegal memory access.
+
+        Compiles trigger_xid.cu on first call (cached at /tmp/trigger_xid),
+        then runs the binary.  The short-lived process creates its own CUDA
+        context which is destroyed on exit, so other GPU workloads are not
+        affected.  XID 13 should appear in /dev/kmsg within ~1 s.
+        """
+        _ensure_trigger_xid_binary()
+        logger.info("trigger_gpu_xid: running %s", _TRIGGER_XID_BINARY)
+        result = subprocess.run(
+            [str(_TRIGGER_XID_BINARY)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        logger.info(
+            "trigger_gpu_xid: exit=%d stdout=%s stderr=%s",
+            result.returncode,
+            result.stdout[:500] if result.stdout else "",
+            result.stderr[:500] if result.stderr else "",
+        )
+
     def cleanup_disk(self, path: str) -> None:
         logger.info("cleanup_disk path=%s", path)
         _remove_if_exists(path)
@@ -127,6 +150,22 @@ def deploy_fault_injector(
 _TRAINING_CMDLINE_PATTERNS = ("megatron", "run_deepseek", "run_train", "torchrun")
 
 _GPU_STRESS_SCRIPT = Path(__file__).parent / "gpu_stress.py"
+_TRIGGER_XID_SOURCE = Path(__file__).parent / "trigger_xid.cu"
+_TRIGGER_XID_BINARY = Path("/tmp/trigger_xid")
+
+
+def _ensure_trigger_xid_binary() -> None:
+    if _TRIGGER_XID_BINARY.exists():
+        return
+
+    logger.info("Compiling %s -> %s", _TRIGGER_XID_SOURCE, _TRIGGER_XID_BINARY)
+    subprocess.run(
+        ["nvcc", "-o", str(_TRIGGER_XID_BINARY), str(_TRIGGER_XID_SOURCE)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
 
 
 def _kill_if_exists(pid: int) -> None:
