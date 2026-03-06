@@ -18,13 +18,13 @@ import pytest
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
+from miles.utils.ft.controller.diagnostics.nccl.inter_machine import (
     InterMachineCommDiagnostic,
 )
-from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
+from miles.utils.ft.controller.diagnostics.nccl.orchestrator import (
     InterMachineOrchestrator,
 )
-from miles.utils.ft.controller.diagnostics.intra_machine_comm import (
+from miles.utils.ft.controller.diagnostics.nccl.intra_machine import (
     IntraMachineCommDiagnostic,
 )
 from miles.utils.ft.models._diagnostics import DiagnosticResult

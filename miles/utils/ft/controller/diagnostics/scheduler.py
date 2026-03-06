@@ -4,10 +4,10 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
+from miles.utils.ft.controller.diagnostics.nccl.inter_machine import (
     InterMachineCommDiagnostic,
 )
-from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
+from miles.utils.ft.controller.diagnostics.nccl.orchestrator import (
     InterMachineOrchestrator,
 )
 from miles.utils.ft.controller.diagnostics.stack_trace import (

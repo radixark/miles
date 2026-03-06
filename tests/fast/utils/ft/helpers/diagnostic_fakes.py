@@ -6,7 +6,7 @@ from typing import Generator
 from unittest.mock import AsyncMock, patch
 
 from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
-from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
+from miles.utils.ft.controller.diagnostics.nccl.inter_machine import (
     InterMachineCommDiagnostic,
 )
 from miles.utils.ft.models import (

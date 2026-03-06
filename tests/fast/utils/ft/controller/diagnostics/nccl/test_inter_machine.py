@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from miles.utils.ft.controller.diagnostics.inter_machine_comm import InterMachineCommDiagnostic
+from miles.utils.ft.controller.diagnostics.nccl.inter_machine import InterMachineCommDiagnostic
 from tests.fast.utils.ft.helpers import make_mock_subprocess
 
 SAMPLE_NCCL_OUTPUT_HIGH_BW = """\

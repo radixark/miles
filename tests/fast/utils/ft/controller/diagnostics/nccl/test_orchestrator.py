@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
+from miles.utils.ft.controller.diagnostics.nccl.orchestrator import (
     InterMachineOrchestrator,
     PairResult,
     cross_compare,

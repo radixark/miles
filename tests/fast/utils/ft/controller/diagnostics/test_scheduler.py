@@ -351,7 +351,7 @@ class TestDiagnosticSchedulerInterMachine:
         assert pairs == expected_pairs
 
     def test_inter_machine_port_assignment(self) -> None:
-        from miles.utils.ft.controller.diagnostics.inter_machine_orchestrator import (
+        from miles.utils.ft.controller.diagnostics.nccl.orchestrator import (
             _BASE_PORT,
         )
 

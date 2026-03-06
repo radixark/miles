@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from miles.utils.ft.controller.diagnostics.intra_machine_comm import IntraMachineCommDiagnostic
-from miles.utils.ft.controller.diagnostics.nccl_utils import parse_avg_bus_bandwidth
+from miles.utils.ft.controller.diagnostics.nccl.intra_machine import IntraMachineCommDiagnostic
+from miles.utils.ft.controller.diagnostics.nccl.utils import parse_avg_bus_bandwidth
 from tests.fast.utils.ft.helpers import make_mock_subprocess
 
 # ---------------------------------------------------------------------------
