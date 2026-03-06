@@ -154,7 +154,6 @@ class TestGetStatus:
             bad_node_ids=["node-0"],
         )
         controller._recovery_manager._orchestrator = mock_orch
-        controller._recovery_manager._diagnosing_nodes = set(mock_orch.bad_node_ids)
 
         status = controller.get_status()
         assert status.recovery_in_progress is True

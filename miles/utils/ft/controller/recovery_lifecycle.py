@@ -28,7 +28,6 @@ class RecoveryLifecycleManager:
 
         self._orchestrator: RecoveryOrchestrator | None = None
         self._start_time: float | None = None
-        self._diagnosing_nodes: set[str] = set()
         self._last_phase_history: list[RecoveryPhase] | None = None
 
     # ------------------------------------------------------------------
@@ -50,16 +49,18 @@ class RecoveryLifecycleManager:
             phase = self._orchestrator.phase
             phase_history = list(self._orchestrator.phase_history)
             bad_nodes_confirmed = phase in _BAD_NODES_CONFIRMED_PHASES
+            diagnosing_nodes = sorted(self._orchestrator.bad_node_ids)
         else:
             phase = None
             phase_history = self._last_phase_history
             bad_nodes_confirmed = False
+            diagnosing_nodes = []
 
         return RecoverySnapshot(
             in_progress=self.in_progress,
             phase=phase,
             phase_history=phase_history,
-            diagnosing_nodes=sorted(self._diagnosing_nodes),
+            diagnosing_nodes=diagnosing_nodes,
             bad_nodes_confirmed=bad_nodes_confirmed,
         )
 
@@ -109,7 +110,6 @@ class RecoveryLifecycleManager:
 
         try:
             await self._orchestrator.step()
-            self._diagnosing_nodes = set(self._orchestrator.bad_node_ids)
         except Exception:
             logger.error("recovery_step_failed, forcing NOTIFY", exc_info=True)
             self._orchestrator.force_notify("recovery step exception")
@@ -145,4 +145,3 @@ class RecoveryLifecycleManager:
         self._last_phase_history = list(self._orchestrator.phase_history)
         self._orchestrator = None
         self._start_time = None
-        self._diagnosing_nodes.clear()
