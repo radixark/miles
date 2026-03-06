@@ -1,8 +1,6 @@
 """Local Ray: E2E-like shared scenarios — transient crash, no false positive, hang."""
 from __future__ import annotations
 
-import asyncio
-import time
 from collections.abc import Generator
 from datetime import timedelta
 from typing import Any
@@ -23,9 +21,9 @@ from miles.utils.ft.protocols.platform import JobStatus, ft_controller_actor_nam
 
 from tests.fast.utils.ft.helpers.fault_injection import LocalRayFaultInjector
 from tests.fast.utils.ft.helpers.scenarios import (
-    get_status,
     scenario_hang_detection,
     scenario_no_false_positive,
+    scenario_repeated_crash,
     scenario_transient_crash,
 )
 from tests.fast.utils.ft.helpers.training_simulator import (
@@ -205,40 +203,18 @@ class TestNoFalsePositive:
 
 
 class TestRepeatedCrash:
-    async def test_two_crashes_both_trigger_recovery(
+    async def test_two_crashes_escalate_to_diagnosing(
         self,
         simulated_env: tuple[ray.actor.ActorHandle, ray.actor.ActorHandle, LocalRayFaultInjector],
     ) -> None:
-        controller, state_actor, injector = simulated_env
+        controller, _state_actor, injector = simulated_env
 
-        await injector.crash_training()
-
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
-            s = get_status(controller)
-            if s.mode == ControllerMode.RECOVERY:
-                break
-            await asyncio.sleep(0.2)
-
-        deadline2 = time.monotonic() + 30.0
-        while time.monotonic() < deadline2:
-            s = get_status(controller)
-            if s.mode == ControllerMode.MONITORING and s.tick_count > 5:
-                break
-            await asyncio.sleep(0.3)
-
-        await injector.crash_training()
-
-        deadline3 = time.monotonic() + 15.0
-        entered_recovery_again = False
-        while time.monotonic() < deadline3:
-            s = get_status(controller)
-            if s.mode == ControllerMode.RECOVERY:
-                entered_recovery_again = True
-                break
-            await asyncio.sleep(0.2)
-
-        assert entered_recovery_again, "Second crash did not trigger recovery"
+        await scenario_repeated_crash(
+            handle=controller,
+            injector=injector,
+            stable_iterations=0,
+            recovery_timeout=30.0,
+        )
 
 
 class TestHangDetection:
