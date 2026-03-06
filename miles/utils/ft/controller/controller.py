@@ -231,8 +231,8 @@ class FtController:
 
     async def _tick_mode_recovery(self, job_status: JobStatus) -> None:
         new_bad_nodes = self._collect_critical_bad_nodes(job_status)
-        if new_bad_nodes:
-            self._recovery_manager.add_bad_nodes(new_bad_nodes)
+        self._recovery_manager.add_bad_nodes(new_bad_nodes)
+
         await self._recovery_manager.step()
 
     async def _tick_mode_monitoring(self, job_status: JobStatus) -> None:
