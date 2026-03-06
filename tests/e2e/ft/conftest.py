@@ -142,14 +142,16 @@ async def ft_controller_handle(
         name=ft_controller_actor_name(""),
         timeout=300.0,
     )
-    yield handle
 
     try:
-        ray.get(handle.shutdown.remote(), timeout=60)
-    except Exception:
-        logger.warning("ft_controller_teardown_failed", exc_info=True)
+        yield handle
+    finally:
+        try:
+            ray.get(handle.shutdown.remote(), timeout=60)
+        except Exception:
+            logger.warning("ft_controller_teardown_failed", exc_info=True)
 
-    await _cleanup_environment()
+        await _cleanup_environment()
 
 
 async def _wait_for_named_actor(
