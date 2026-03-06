@@ -56,16 +56,9 @@ def _parse_vector(result: list[dict[str, Any]]) -> pl.DataFrame:
     records: list[dict[str, object]] = []
 
     for item in result:
-        metric: dict[str, str] = item.get("metric") or {}
-        value_pair = item.get("value") or [0, "0"]
-        try:
-            parsed_value = float(value_pair[1])
-        except (IndexError, TypeError, ValueError):
-            continue
-
-        record = _build_label_record(metric, sorted_label_keys)
-        record["value"] = parsed_value
-        records.append(record)
+        record = _parse_vector_item(item, sorted_label_keys)
+        if record is not None:
+            records.append(record)
 
     if not records:
         return EMPTY_INSTANT
@@ -88,23 +81,48 @@ def _parse_matrix(result: list[dict[str, Any]]) -> pl.DataFrame:
     records: list[dict[str, object]] = []
 
     for item in result:
-        metric: dict[str, str] = item.get("metric") or {}
-        for ts, value_str in item.get("values") or []:
-            try:
-                parsed_value = float(value_str)
-                parsed_ts = float(ts)
-            except (TypeError, ValueError):
-                continue
-
-            record = _build_label_record(metric, sorted_label_keys)
-            record["timestamp"] = parsed_ts
-            record["value"] = parsed_value
-            records.append(record)
+        records.extend(_parse_matrix_item(item, sorted_label_keys))
 
     if not records:
         return EMPTY_RANGE
 
     return pl.DataFrame(records)
+
+
+def _parse_vector_item(
+    item: dict[str, Any],
+    sorted_label_keys: list[str],
+) -> dict[str, object] | None:
+    metric: dict[str, str] = item.get("metric") or {}
+    value_pair = item.get("value") or [0, "0"]
+    try:
+        parsed_value = float(value_pair[1])
+    except (IndexError, TypeError, ValueError):
+        return None
+
+    record = _build_label_record(metric, sorted_label_keys)
+    record["value"] = parsed_value
+    return record
+
+
+def _parse_matrix_item(
+    item: dict[str, Any],
+    sorted_label_keys: list[str],
+) -> list[dict[str, object]]:
+    metric: dict[str, str] = item.get("metric") or {}
+    records: list[dict[str, object]] = []
+    for ts, value_str in item.get("values") or []:
+        try:
+            parsed_value = float(value_str)
+            parsed_ts = float(ts)
+        except (TypeError, ValueError):
+            continue
+
+        record = _build_label_record(metric, sorted_label_keys)
+        record["timestamp"] = parsed_ts
+        record["value"] = parsed_value
+        records.append(record)
+    return records
 
 
 def _collect_sorted_label_keys(result: list[dict[str, Any]]) -> list[str]:
