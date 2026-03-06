@@ -219,11 +219,8 @@ class FtController:
         except Exception:
             logger.error("tick_failed tick=%d", self._tick_count, exc_info=True)
         finally:
-            duration = time.monotonic() - t0
-            self._controller_exporter.update_tick_duration(duration)
-            self._controller_exporter.update_last_tick_timestamp(time.time())
-            if job_status is not None:
-                self._update_exporter_metrics(job_status)
+            tick_duration = time.monotonic() - t0
+            self._update_exporter_metrics(job_status, tick_duration=tick_duration)
 
     async def _tick_inner(self, job_status: JobStatus) -> None:
         if self._recovery_manager.in_progress:
@@ -355,7 +352,13 @@ class FtController:
     # Exporter metrics
     # ------------------------------------------------------------------
 
-    def _update_exporter_metrics(self, job_status: JobStatus) -> None:
+    def _update_exporter_metrics(self, job_status: JobStatus | None, *, tick_duration: float) -> None:
+        self._controller_exporter.update_tick_duration(tick_duration)
+        self._controller_exporter.update_last_tick_timestamp(time.time())
+
+        if job_status is None:
+            return
+
         is_recovery = self._recovery_manager.in_progress
         self._controller_exporter.update_from_state(
             job_status=job_status,
