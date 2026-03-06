@@ -83,10 +83,9 @@ class FtNodeAgent(NodeAgentProtocol):
                 self._node_id,
                 timeout_seconds,
             )
-            return DiagnosticResult(
+            return DiagnosticResult.fail_result(
                 diagnostic_type=diagnostic_type,
                 node_id=self._node_id,
-                passed=False,
                 details=f"diagnostic timed out after {timeout_seconds}s",
             )
         except Exception:
@@ -96,10 +95,9 @@ class FtNodeAgent(NodeAgentProtocol):
                 self._node_id,
                 exc_info=True,
             )
-            return DiagnosticResult(
+            return DiagnosticResult.fail_result(
                 diagnostic_type=diagnostic_type,
                 node_id=self._node_id,
-                passed=False,
                 details="diagnostic raised exception",
             )
 
