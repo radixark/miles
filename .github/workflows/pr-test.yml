@@ -1157,7 +1157,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"name": "qwen3-30B-A3B-bf16", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0"}, {"name": "qwen3-30B-A3B-int4", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0", "use_int4_rollout": "1"}, {"name": "qwen3-30B-A3B-fp8-deepep", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}]
+        info: [{"name": "qwen3-30B-A3B-bf16", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0"}, {"name": "qwen3-30B-A3B-rollout-fp8", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"name": "qwen3-30B-A3B-rollout-int4", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0", "use_int4_rollout": "1"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
