@@ -1,3 +1,5 @@
+import pytest
+
 from tests.fast.utils.ft.helpers import (
     EMPTY_RANK_PLACEMENT,
     make_detector_context,
@@ -11,14 +13,15 @@ from miles.utils.ft.protocols.platform import JobStatus
 
 
 class TestTrainingCrashDetector:
-    def test_job_running(self) -> None:
+    @pytest.mark.parametrize("status", [JobStatus.RUNNING, JobStatus.PENDING, JobStatus.STOPPED])
+    def test_non_failed_status_is_noop(self, status: JobStatus) -> None:
         store = make_fake_metric_store()
         detector = TrainingCrashDetector()
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             rank_placement=EMPTY_RANK_PLACEMENT,
-            job_status=JobStatus.RUNNING,
+            job_status=status,
         )
 
         decision = detector.evaluate(ctx)
@@ -38,9 +41,10 @@ class TestTrainingCrashDetector:
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "crash"
 
-    def test_job_failed_nan_loss(self) -> None:
+    @pytest.mark.parametrize("bad_loss", [float("nan"), float("inf")], ids=["nan", "inf"])
+    def test_job_failed_with_non_finite_loss(self, bad_loss: float) -> None:
         store = make_fake_metric_store()
-        wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})
+        wandb = make_fake_mini_wandb(steps={1: {"loss": bad_loss}})
         detector = TrainingCrashDetector()
         ctx = make_detector_context(
             metric_store=store, mini_wandb=wandb, rank_placement=EMPTY_RANK_PLACEMENT, job_status=JobStatus.FAILED
@@ -50,47 +54,6 @@ class TestTrainingCrashDetector:
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "nan_loss"
-
-    def test_job_failed_inf_loss(self) -> None:
-        store = make_fake_metric_store()
-        wandb = make_fake_mini_wandb(steps={1: {"loss": float("inf")}})
-        detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, rank_placement=EMPTY_RANK_PLACEMENT, job_status=JobStatus.FAILED
-        )
-
-        decision = detector.evaluate(ctx)
-
-        assert decision.action == ActionType.ENTER_RECOVERY
-        assert decision.trigger == "nan_loss"
-
-    def test_job_pending(self) -> None:
-        store = make_fake_metric_store()
-        detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store,
-            mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
-            job_status=JobStatus.PENDING,
-        )
-
-        decision = detector.evaluate(ctx)
-
-        assert decision.action == ActionType.NONE
-
-    def test_job_stopped(self) -> None:
-        store = make_fake_metric_store()
-        detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store,
-            mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
-            job_status=JobStatus.STOPPED,
-        )
-
-        decision = detector.evaluate(ctx)
-
-        assert decision.action == ActionType.NONE
 
     def test_job_failed_no_loss_data(self) -> None:
         store = make_fake_metric_store()
@@ -104,17 +67,3 @@ class TestTrainingCrashDetector:
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "crash"
-
-    def test_empty_metric_store(self) -> None:
-        store = make_fake_metric_store()
-        detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store,
-            mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
-            job_status=JobStatus.RUNNING,
-        )
-
-        decision = detector.evaluate(ctx)
-
-        assert decision.action == ActionType.NONE

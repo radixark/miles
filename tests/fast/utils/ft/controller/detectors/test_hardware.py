@@ -1,3 +1,5 @@
+import pytest
+
 from tests.fast.utils.ft.helpers import (
     inject_critical_xid,
     inject_disk_fault,
@@ -35,49 +37,17 @@ class TestHighConfidenceHardwareDetector:
         assert "node-0" in decision.bad_node_ids
         assert "GPU unavailable" in decision.reason
 
-    def test_critical_xid_48(self) -> None:
+    @pytest.mark.parametrize("xid_code", [48, 62, 64, 79])
+    def test_critical_xid_triggers_mark_bad(self, xid_code: int) -> None:
         store = make_fake_metric_store()
-        inject_critical_xid(store, node_id="node-0", xid_code=48)
+        inject_critical_xid(store, node_id="node-0", xid_code=xid_code)
         detector = HighConfidenceHardwareDetector()
 
         decision = detector.evaluate(make_detector_context(metric_store=store))
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
-        assert "XID 48" in decision.reason
-
-    def test_critical_xid_62(self) -> None:
-        store = make_fake_metric_store()
-        inject_critical_xid(store, node_id="node-0", xid_code=62)
-        detector = HighConfidenceHardwareDetector()
-
-        decision = detector.evaluate(make_detector_context(metric_store=store))
-
-        assert decision.action == ActionType.MARK_BAD_AND_RESTART
-        assert "node-0" in decision.bad_node_ids
-        assert "XID 62" in decision.reason
-
-    def test_critical_xid_64(self) -> None:
-        store = make_fake_metric_store()
-        inject_critical_xid(store, node_id="node-0", xid_code=64)
-        detector = HighConfidenceHardwareDetector()
-
-        decision = detector.evaluate(make_detector_context(metric_store=store))
-
-        assert decision.action == ActionType.MARK_BAD_AND_RESTART
-        assert "node-0" in decision.bad_node_ids
-        assert "XID 64" in decision.reason
-
-    def test_critical_xid_79(self) -> None:
-        store = make_fake_metric_store()
-        inject_critical_xid(store, node_id="node-0", xid_code=79)
-        detector = HighConfidenceHardwareDetector()
-
-        decision = detector.evaluate(make_detector_context(metric_store=store))
-
-        assert decision.action == ActionType.MARK_BAD_AND_RESTART
-        assert "node-0" in decision.bad_node_ids
-        assert "XID 79" in decision.reason
+        assert f"XID {xid_code}" in decision.reason
 
     def test_non_critical_xid_ignored(self) -> None:
         store = make_fake_metric_store()

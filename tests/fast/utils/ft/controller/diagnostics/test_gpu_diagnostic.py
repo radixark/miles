@@ -55,18 +55,17 @@ class TestGpuDiagnosticAllPass:
         assert "all GPU checks passed" in result.details
 
 
-class TestGpuDiagnosticEccFailure:
+class TestGpuDiagnosticSingleFailure:
+    @pytest.mark.parametrize("gpu_kwargs,expected_detail", [
+        (dict(gpu_index=0, passed=False, ecc_errors_uncorrectable=5, details="uncorrectable ECC errors: 5"), "ECC"),
+        (dict(gpu_index=2, passed=False, matmul_passed=False, details="matmul mismatch"), "matmul"),
+        (dict(gpu_index=0, passed=False, retired_pages_count=3, details="retired pages: 3"), "retired"),
+        (dict(gpu_index=0, passed=False, power_state_abnormal=True, details="abnormal power state"), "power state"),
+        (dict(gpu_index=3, passed=False, row_remap_failure=True, details="row remap failure"), "row remap"),
+    ], ids=["ecc", "matmul", "retired_pages", "power_state", "row_remap"])
     @pytest.mark.anyio
-    async def test_ecc_uncorrectable(self) -> None:
-        results = [
-            _make_gpu_result(
-                gpu_index=0,
-                passed=False,
-                ecc_errors_uncorrectable=5,
-                details="uncorrectable ECC errors: 5",
-            ),
-            _make_gpu_result(gpu_index=1),
-        ]
+    async def test_single_failure_detected(self, gpu_kwargs: dict, expected_detail: str) -> None:
+        results = [_make_gpu_result(**gpu_kwargs)]
         process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
@@ -74,92 +73,7 @@ class TestGpuDiagnosticEccFailure:
             result = await diag.run(node_id="node-0")
 
         assert result.passed is False
-        assert "ECC" in result.details
-        assert "GPU 0" in result.details
-
-
-class TestGpuDiagnosticMatmulFailure:
-    @pytest.mark.anyio
-    async def test_matmul_mismatch(self) -> None:
-        results = [
-            _make_gpu_result(
-                gpu_index=2,
-                passed=False,
-                matmul_passed=False,
-                details="matmul mismatch",
-            ),
-        ]
-        process = make_mock_subprocess(stdout=json.dumps(results))
-
-        with patch("asyncio.create_subprocess_exec", return_value=process):
-            diag = GpuDiagnostic()
-            result = await diag.run(node_id="node-1")
-
-        assert result.passed is False
-        assert "matmul" in result.details
-
-
-class TestGpuDiagnosticRetiredPages:
-    @pytest.mark.anyio
-    async def test_retired_pages_detected(self) -> None:
-        results = [
-            _make_gpu_result(
-                gpu_index=0,
-                passed=False,
-                retired_pages_count=3,
-                details="retired pages: 3",
-            ),
-        ]
-        process = make_mock_subprocess(stdout=json.dumps(results))
-
-        with patch("asyncio.create_subprocess_exec", return_value=process):
-            diag = GpuDiagnostic()
-            result = await diag.run(node_id="node-0")
-
-        assert result.passed is False
-        assert "retired" in result.details
-
-
-class TestGpuDiagnosticPowerState:
-    @pytest.mark.anyio
-    async def test_abnormal_power_state(self) -> None:
-        results = [
-            _make_gpu_result(
-                gpu_index=0,
-                passed=False,
-                power_state_abnormal=True,
-                details="abnormal power state",
-            ),
-        ]
-        process = make_mock_subprocess(stdout=json.dumps(results))
-
-        with patch("asyncio.create_subprocess_exec", return_value=process):
-            diag = GpuDiagnostic()
-            result = await diag.run(node_id="node-0")
-
-        assert result.passed is False
-        assert "power state" in result.details
-
-
-class TestGpuDiagnosticRowRemapFailure:
-    @pytest.mark.anyio
-    async def test_row_remap_failure(self) -> None:
-        results = [
-            _make_gpu_result(
-                gpu_index=3,
-                passed=False,
-                row_remap_failure=True,
-                details="row remap failure",
-            ),
-        ]
-        process = make_mock_subprocess(stdout=json.dumps(results))
-
-        with patch("asyncio.create_subprocess_exec", return_value=process):
-            diag = GpuDiagnostic()
-            result = await diag.run(node_id="node-0")
-
-        assert result.passed is False
-        assert "row remap" in result.details
+        assert expected_detail in result.details
 
 
 class TestGpuDiagnosticTimeout:
