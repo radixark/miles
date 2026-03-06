@@ -1,5 +1,7 @@
 """Integration tests: MiniPrometheus scraping real prometheus_client exporters."""
 
+from __future__ import annotations
+
 import logging
 import socket
 from threading import Thread
@@ -15,46 +17,50 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _start_exporter(port: int) -> Thread:
+def _start_exporter(
+    metrics: list[tuple[str, dict[str, str], float]] | None = None,
+    port: int | None = None,
+) -> tuple[int, CollectorRegistry]:
+    import time
+
     from prometheus_client import Gauge, start_http_server
     from prometheus_client.registry import CollectorRegistry
 
+    if port is None:
+        port = _find_free_port()
+
     registry = CollectorRegistry()
-    gpu_temp = Gauge(
-        "gpu_temperature_celsius",
-        "GPU temperature",
-        ["gpu"],
-        registry=registry,
-    )
-    gpu_temp.labels(gpu="0").set(75.0)
-    gpu_temp.labels(gpu="1").set(82.0)
 
-    gpu_avail = Gauge(
-        "gpu_available",
-        "GPU availability",
-        ["gpu"],
-        registry=registry,
-    )
-    gpu_avail.labels(gpu="0").set(1.0)
-    gpu_avail.labels(gpu="1").set(1.0)
+    if metrics is None:
+        metrics = [
+            ("gpu_temperature_celsius", {"gpu": "0"}, 75.0),
+            ("gpu_temperature_celsius", {"gpu": "1"}, 82.0),
+            ("gpu_available", {"gpu": "0"}, 1.0),
+            ("gpu_available", {"gpu": "1"}, 1.0),
+        ]
 
-    def _serve() -> None:
-        start_http_server(port=port, registry=registry)
+    gauges: dict[str, Gauge] = {}
+    for name, labels, value in metrics:
+        if name not in gauges:
+            label_keys = sorted(labels.keys()) if labels else []
+            gauges[name] = Gauge(name, name, label_keys, registry=registry)
+        if labels:
+            gauges[name].labels(**labels).set(value)
+        else:
+            gauges[name].set(value)
 
-    thread = Thread(target=_serve, daemon=True)
-    thread.start()
-
-    import time
-
+    Thread(
+        target=lambda: start_http_server(port=port, registry=registry),
+        daemon=True,
+    ).start()
     time.sleep(0.5)
 
-    return thread
+    return port, registry
 
 
 class TestMiniPrometheusScrapeReal:
     async def test_scrape_single_exporter(self) -> None:
-        port = _find_free_port()
-        _start_exporter(port)
+        port, _ = _start_exporter()
 
         store = make_fake_metric_store()
         store.add_scrape_target(
@@ -115,29 +121,8 @@ class TestMiniPrometheusScrapeReal:
         assert any("Failed to scrape" in r.message for r in caplog.records)
 
     async def test_scrape_multiple_exporters(self) -> None:
-        import time
-        from threading import Thread
-
-        from prometheus_client import Gauge, start_http_server
-        from prometheus_client.registry import CollectorRegistry
-
-        port1 = _find_free_port()
-        reg1 = CollectorRegistry()
-        Gauge("node_metric", "m", ["type"], registry=reg1).labels(type="a").set(1.0)
-        Thread(
-            target=lambda: start_http_server(port=port1, registry=reg1),
-            daemon=True,
-        ).start()
-
-        port2 = _find_free_port()
-        reg2 = CollectorRegistry()
-        Gauge("node_metric", "m", ["type"], registry=reg2).labels(type="a").set(2.0)
-        Thread(
-            target=lambda: start_http_server(port=port2, registry=reg2),
-            daemon=True,
-        ).start()
-
-        time.sleep(0.5)
+        port1, _ = _start_exporter(metrics=[("node_metric", {"type": "a"}, 1.0)])
+        port2, _ = _start_exporter(metrics=[("node_metric", {"type": "a"}, 2.0)])
 
         store = make_fake_metric_store()
         store.add_scrape_target(target_id="node-0", address=f"http://localhost:{port1}")
@@ -153,8 +138,7 @@ class TestMiniPrometheusScrapeReal:
     async def test_scrape_reuses_httpx_client(self) -> None:
         """ScrapeLoop must reuse the same httpx.AsyncClient across calls
         to avoid per-request connection setup overhead."""
-        port = _find_free_port()
-        _start_exporter(port)
+        port, _ = _start_exporter()
 
         store = make_fake_metric_store()
         store.add_scrape_target(
@@ -172,8 +156,7 @@ class TestMiniPrometheusScrapeReal:
 
     async def test_stop_closes_httpx_client(self) -> None:
         """ScrapeLoop.stop() must close the httpx client and set it to None."""
-        port = _find_free_port()
-        _start_exporter(port)
+        port, _ = _start_exporter()
 
         store = make_fake_metric_store()
         store.add_scrape_target(
@@ -188,20 +171,7 @@ class TestMiniPrometheusScrapeReal:
         assert store._scrape_loop._client is None
 
     async def test_scrape_bad_target_doesnt_affect_good(self) -> None:
-        import time
-        from threading import Thread
-
-        from prometheus_client import Gauge, start_http_server
-        from prometheus_client.registry import CollectorRegistry
-
-        port = _find_free_port()
-        reg = CollectorRegistry()
-        Gauge("good_metric", "m", registry=reg).set(42.0)
-        Thread(
-            target=lambda: start_http_server(port=port, registry=reg),
-            daemon=True,
-        ).start()
-        time.sleep(0.5)
+        port, _ = _start_exporter(metrics=[("good_metric", {}, 42.0)])
 
         store = make_fake_metric_store()
         store.add_scrape_target(target_id="bad-node", address="http://localhost:19999")

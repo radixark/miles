@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Any
 from unittest.mock import patch
@@ -25,6 +27,12 @@ def _make_response(json_data: dict[str, Any], status_code: int = 200) -> httpx.R
     )
 
 
+@contextmanager
+def _mock_prometheus_client(response_json: dict[str, Any]) -> Iterator[PrometheusClient]:
+    with patch.object(httpx.Client, "get", return_value=_make_response(response_json)):
+        yield PrometheusClient(url="http://fake:9090")
+
+
 class TestQueryLatestVector:
     def test_single_series(self) -> None:
         json_data = {
@@ -40,8 +48,7 @@ class TestQueryLatestVector:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("up")
 
         assert df.shape[0] == 1
@@ -68,8 +75,7 @@ class TestQueryLatestVector:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("cpu_usage")
 
         assert df.shape[0] == 2
@@ -83,8 +89,7 @@ class TestQueryLatestVector:
             "data": {"resultType": "vector", "result": []},
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("nonexistent")
 
         assert df.is_empty()
@@ -122,8 +127,7 @@ class TestQueryLatestErrors:
             "error": "invalid query",
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("some_metric")
 
         assert df.is_empty()
@@ -148,8 +152,7 @@ class TestQueryRange:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_range("cpu_usage", window=timedelta(hours=1))
 
         assert df.shape[0] == 3
@@ -176,8 +179,7 @@ class TestQueryRange:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_range("m", window=timedelta(hours=24))
 
         assert df.shape[0] == 2
@@ -189,8 +191,7 @@ class TestQueryRange:
             "data": {"resultType": "matrix", "result": []},
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_range("nonexistent", window=timedelta(hours=24))
 
         assert df.is_empty()
@@ -224,8 +225,7 @@ class TestLabelColumns:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("up")
 
         assert "node_id" in df.columns
@@ -241,8 +241,7 @@ class TestQueryLatestScalar:
             "data": {"resultType": "scalar", "result": [1709000000, "42"]},
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("scalar_metric")
 
         assert df.shape[0] == 1
@@ -254,8 +253,7 @@ class TestQueryLatestScalar:
             "data": {"resultType": "scalar", "result": [1709000000]},
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("scalar_metric")
 
         assert df.is_empty()
@@ -266,8 +264,7 @@ class TestQueryLatestScalar:
             "data": {"resultType": "scalar", "result": [1709000000, "not_a_number"]},
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("scalar_metric")
 
         assert df.is_empty()
@@ -280,8 +277,7 @@ class TestUnsupportedResultTypes:
             "data": {"resultType": "string", "result": "hello"},
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("some_metric")
 
         assert df.is_empty()
@@ -294,8 +290,7 @@ class TestUnsupportedResultTypes:
             "data": {"resultType": "vector", "result": []},
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_range("up", window=timedelta(hours=24))
 
         assert df.is_empty()
@@ -303,8 +298,7 @@ class TestUnsupportedResultTypes:
     def test_null_data_section(self) -> None:
         json_data: dict[str, Any] = {"status": "success", "data": None}
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("up")
 
         assert df.is_empty()
@@ -323,8 +317,7 @@ class TestMalformedVectorValues:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("m")
 
         assert df.shape[0] == 2
@@ -342,8 +335,7 @@ class TestMalformedVectorValues:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_latest("m")
 
         assert df.shape[0] == 1
@@ -368,8 +360,7 @@ class TestMalformedMatrixValues:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_range("m", window=timedelta(hours=24))
 
         assert df.shape[0] == 1
@@ -389,8 +380,7 @@ class TestMalformedMatrixValues:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = client.query_range("m", window=timedelta(hours=24))
 
         assert df.shape[0] == 1
@@ -469,8 +459,7 @@ class TestAsyncQueryLatest:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = await client.aquery_latest("up")
 
         assert df.shape[0] == 1
@@ -504,8 +493,7 @@ class TestAsyncQueryRange:
             },
         }
 
-        with patch.object(httpx.Client, "get", return_value=_make_response(json_data)):
-            client = PrometheusClient(url="http://fake:9090")
+        with _mock_prometheus_client(json_data) as client:
             df = await client.aquery_range("cpu", window=timedelta(hours=1))
 
         assert df.shape[0] == 2

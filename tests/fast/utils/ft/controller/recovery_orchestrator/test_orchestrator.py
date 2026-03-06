@@ -645,15 +645,9 @@ def _make_timed_out_orchestrator(
     phase: RecoveryPhase,
 ) -> RecoveryOrchestrator:
     """Create an orchestrator that has already exceeded global_timeout."""
-    orch = RecoveryOrchestrator(
-        trigger="crash",
-        node_manager=FakeNodeManager(),
-        training_job=FakeTrainingJob(),
-        metric_store=make_fake_metric_store(),
-        mini_wandb=make_fake_mini_wandb(),
-        notifier=FakeNotifier(),
-        diagnostic_scheduler=FakeDiagnosticScheduler(),
+    orch, *_ = _make_orchestrator_with_store(
         global_timeout_seconds=0,
+        notifier=FakeNotifier(),
     )
     orch._context.phase = phase
     orch._context.recovery_start_time = datetime.now(timezone.utc) - timedelta(seconds=10)
