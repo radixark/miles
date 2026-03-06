@@ -9,6 +9,7 @@ from uuid import uuid4
 import ray
 from ray.job_submission import JobSubmissionClient
 
+from miles.utils.ft.polling import poll_until
 from miles.utils.ft.protocols.platform import JobStatus
 
 logger = logging.getLogger(__name__)
@@ -75,25 +76,23 @@ async def _stop_job(
     )
     logger.info("stop_job_requested job_id=%s", job_id)
 
-    deadline = start + timeout_seconds
-    while True:
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"Job {job_id} did not stop within {timeout_seconds}s")
-
+    async def _probe() -> str:
         raw_status = await asyncio.wait_for(
             asyncio.to_thread(client.get_job_status, job_id),
             timeout=_GET_STATUS_TIMEOUT_SECONDS,
         )
-        if _parse_ray_status(raw_status) in _TERMINAL_STATUSES:
-            elapsed = time.monotonic() - start
-            logger.info(
-                "stop_job_completed job_id=%s elapsed_seconds=%.3f",
-                job_id,
-                elapsed,
-            )
-            return
+        return _parse_ray_status(raw_status)
 
-        await asyncio.sleep(poll_interval)
+    await poll_until(
+        probe=_probe,
+        predicate=lambda s: s in _TERMINAL_STATUSES,
+        timeout=timeout_seconds - (time.monotonic() - start),
+        poll_interval=poll_interval,
+        description=f"stop_job({job_id})",
+    )
+
+    elapsed = time.monotonic() - start
+    logger.info("stop_job_completed job_id=%s elapsed_seconds=%.3f", job_id, elapsed)
 
 
 async def stop_all_active_jobs(
