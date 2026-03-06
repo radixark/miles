@@ -25,10 +25,12 @@ async def test_no_false_positive_during_normal_training(
     ft_controller_handle: ray.actor.ActorHandle,
 ) -> None:
     """Controller should not trigger recovery when training runs normally."""
+    # Step 1: Run 50 iterations with no fault injection
     baseline = get_iteration_count(ft_controller_handle)
     recovery_triggered = False
 
     while True:
+        # Step 2: Check controller never enters RECOVERY
         status = get_status(ft_controller_handle)
 
         if status.mode == ControllerMode.RECOVERY:

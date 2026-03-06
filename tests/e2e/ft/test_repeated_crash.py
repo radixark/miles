@@ -29,6 +29,7 @@ async def test_repeated_crash_enters_diagnosing(
     fault_injector: FaultInjectorFactory,
     target_node: str,
 ) -> None:
+    # Step 1: Wait for stable baseline
     await wait_for_training_stable(
         handle=ft_controller_handle,
         n_iterations=5,
@@ -37,7 +38,7 @@ async def test_repeated_crash_enters_diagnosing(
 
     injector = fault_injector.deploy_to(node_id=target_node)
 
-    # First kill
+    # Step 2: First kill
     procs = ray.get(injector.find_training_processes.remote())
     assert len(procs) > 0
     ray.get(injector.kill_process.remote(pid=procs[0]["pid"], sig=9))
@@ -48,7 +49,7 @@ async def test_repeated_crash_enters_diagnosing(
         timeout=180.0,
     )
 
-    # Second kill during MONITORING phase — retry until processes are found
+    # Step 3: Second kill during MONITORING phase
     await asyncio.sleep(5.0)
     for _ in range(10):
         procs = ray.get(injector.find_training_processes.remote())
@@ -58,6 +59,7 @@ async def test_repeated_crash_enters_diagnosing(
     assert len(procs) > 0, "No training processes found for second kill"
     ray.get(injector.kill_process.remote(pid=procs[0]["pid"], sig=9))
 
+    # Step 4: Verify escalation to DIAGNOSING → NOTIFY
     status = await wait_for_recovery_phase(
         handle=ft_controller_handle,
         phase=RecoveryPhase.DIAGNOSING,

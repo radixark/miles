@@ -36,17 +36,20 @@ async def test_mfu_decline_detection(
     target_node: str,
     _cleanup_node_manager: K8sNodeManager,
 ) -> None:
+    # Step 1: Wait for baseline MFU to stabilize
     await wait_for_training_stable(
         handle=ft_controller_handle,
         n_iterations=20,
         timeout=600.0,
     )
 
+    # Step 2: Start GPU stress workload
     injector = fault_injector.deploy_to(node_id=target_node)
     stress_pid = ray.get(injector.start_gpu_stress.remote())
     logger.info("gpu_stress_started pid=%d node=%s", stress_pid, target_node)
 
     try:
+        # Step 3: Wait for MfuDeclineDetector to trigger
         timeout = 600.0
         poll_interval = 10.0
         deadline = time.monotonic() + timeout
@@ -75,6 +78,7 @@ async def test_mfu_decline_detection(
     finally:
         ray.get(injector.stop_gpu_stress.remote(pid=stress_pid))
 
+    # Step 4: Verify outcome (eviction or notify, both valid)
     if evicted:
         logger.info("mfu_decline_evicted node=%s (temperature correlated)", target_node)
         assert_phase_path_contains(final_status, [

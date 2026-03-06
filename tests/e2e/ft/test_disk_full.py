@@ -34,6 +34,7 @@ async def test_disk_full_eviction(
     target_node: str,
     _cleanup_node_manager: K8sNodeManager,
 ) -> None:
+    # Step 1: Wait for stable baseline
     await wait_for_training_stable(
         handle=ft_controller_handle,
         n_iterations=5,
@@ -43,6 +44,7 @@ async def test_disk_full_eviction(
     injector = fault_injector.deploy_to(node_id=target_node)
 
     try:
+        # Step 2: Fill disk on target node
         t_inject = time.monotonic()
         ray.get(
             injector.fill_disk.remote(
@@ -52,6 +54,7 @@ async def test_disk_full_eviction(
         )
         logger.info("disk_filled path=%s size=%d node=%s", _FILL_PATH, _FILL_SIZE_BYTES, target_node)
 
+        # Step 3: Wait for detection → eviction → recovery
         status = await wait_for_recovery_complete(
             handle=ft_controller_handle,
             timeout=300.0,
@@ -62,6 +65,7 @@ async def test_disk_full_eviction(
 
         assert status.mode == ControllerMode.MONITORING
 
+        # Step 4: Verify node marked bad and training resumes
         node_bad = await _cleanup_node_manager.get_bad_nodes()
         assert target_node in node_bad or any(
             target_node in str(n) for n in node_bad
