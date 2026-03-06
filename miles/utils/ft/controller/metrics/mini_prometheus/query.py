@@ -60,18 +60,7 @@ def query_range(
     rows: list[dict] = []
 
     for labels, samples in _iter_matching(series, label_maps, name_index, metric_name, label_filters):
-        for sample in reversed(samples):
-            if sample.timestamp > now:
-                continue
-            if sample.timestamp < start:
-                break
-            row: dict = {
-                "__name__": metric_name,
-                "timestamp": sample.timestamp,
-                "value": sample.value,
-            }
-            row.update(labels)
-            rows.append(row)
+        rows.extend(_collect_range_rows_for_series(metric_name, labels, samples, now=now, start=start))
 
     if not rows:
         return EMPTY_RANGE
@@ -118,6 +107,31 @@ def range_aggregate(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _collect_range_rows_for_series(
+    metric_name: str,
+    labels: dict[str, str],
+    samples: deque[TimeSeriesSample],
+    *,
+    now: datetime,
+    start: datetime,
+) -> list[dict]:
+    rows: list[dict] = []
+    for sample in reversed(samples):
+        if sample.timestamp > now:
+            continue
+        if sample.timestamp < start:
+            break
+
+        row: dict = {
+            "__name__": metric_name,
+            "timestamp": sample.timestamp,
+            "value": sample.value,
+        }
+        row.update(labels)
+        rows.append(row)
+    return rows
 
 
 def _instant_query(
