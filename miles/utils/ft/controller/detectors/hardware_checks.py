@@ -12,23 +12,17 @@ from datetime import timedelta
 
 import polars as pl
 
-from miles.utils.ft.protocols.metrics import MetricQueryProtocol
-from miles.utils.ft.models.metric_names import GPU_AVAILABLE, NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP, XID_CODE_RECENT
+from miles.utils.ft.controller.detectors.gpu.checks import (
+    CRITICAL_XID_CODES,
+    check_gpu_faults,
+)
 from miles.utils.ft.models.fault import NodeFault
+from miles.utils.ft.models.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
+from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 
 logger = logging.getLogger(__name__)
 
-CRITICAL_XID_CODES: frozenset[int] = frozenset({
-    # Double Bit ECC error — uncorrectable memory error, GPU reset required
-    48,
-    # Internal micro-controller halt (PMU_HALT_ERROR), GPU reset required
-    62,
-    # ECC page retirement / row remapping recording failure, potential data corruption
-    64,
-    # GPU has fallen off the bus — PCIe link lost, reboot/replace required
-    79,
-})
-DISK_AVAILABLE_THRESHOLD_BYTES: float = 1e8  # 100MB
+DISK_AVAILABLE_THRESHOLD_BYTES: float = 1e9  # 1 GB
 
 
 def check_all_hardware_faults(
@@ -37,59 +31,10 @@ def check_all_hardware_faults(
     disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:
     return [
-        *_check_gpu_lost(metric_store),
-        *_check_critical_xid(metric_store, critical_xid_codes=critical_xid_codes),
+        *check_gpu_faults(metric_store, critical_xid_codes=critical_xid_codes),
         *_check_disk_fault(metric_store, disk_available_threshold_bytes=disk_available_threshold_bytes),
         *_check_majority_nic_down(metric_store),
     ]
-
-
-def _check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
-    df = metric_store.query_latest(GPU_AVAILABLE)
-    if df is None or df.is_empty():
-        return []
-
-    bad = df.filter(pl.col("value") == 0.0)
-    if bad.is_empty():
-        return []
-
-    return [
-        NodeFault(node_id=node_id, reason=f"GPU unavailable on {node_id}")
-        for node_id in bad["node_id"].unique().to_list()
-    ]
-
-
-def _check_critical_xid(
-    metric_store: MetricQueryProtocol,
-    critical_xid_codes: frozenset[int] = CRITICAL_XID_CODES,
-) -> list[NodeFault]:
-    df = metric_store.query_latest(XID_CODE_RECENT)
-    if df is None or df.is_empty():
-        return []
-
-    return [
-        f for row in df.iter_rows(named=True)
-        if (f := _parse_xid_row(row, critical_xid_codes)) is not None
-    ]
-
-
-def _parse_xid_row(
-    row: dict[str, object],
-    critical_xid_codes: frozenset[int],
-) -> NodeFault | None:
-    try:
-        xid_code = int(row.get("xid", -1))  # type: ignore[arg-type]
-        node_id = row.get("node_id")
-    except (ValueError, TypeError):
-        logger.warning("_check_critical_xid: unparseable row %s", row, exc_info=True)
-        return None
-
-    if node_id is None:
-        return None
-
-    if xid_code in critical_xid_codes:
-        return NodeFault(node_id=node_id, reason=f"critical XID {xid_code} on {node_id}")
-    return None
 
 
 def _check_disk_fault(
