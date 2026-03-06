@@ -115,8 +115,6 @@ class RecoveryLifecycleManager:
             self._orchestrator.force_notify("recovery step exception")
 
         if self._orchestrator.is_done():
-            if self._orchestrator.bad_node_ids:
-                await self._orchestrator.unmark_evicted_nodes()
             self._complete_recovery()
 
     def add_bad_nodes(self, node_ids: list[str]) -> None:

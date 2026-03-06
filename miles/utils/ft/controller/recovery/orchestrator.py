@@ -82,22 +82,6 @@ class RecoveryOrchestrator:
     def is_done(self) -> bool:
         return self._context.phase == RecoveryPhase.DONE
 
-    async def unmark_evicted_nodes(self) -> None:
-        """Remove K8s bad-node labels for nodes evicted during this recovery.
-
-        Called after recovery completes so evicted nodes can participate
-        in future training runs.  If they are still unhealthy the
-        detectors will catch them again.
-        """
-        for node_id in self._context.bad_node_ids:
-            try:
-                await self._node_manager.unmark_node_bad(node_id)
-                logger.info("unmark_evicted_node node_id=%s", node_id)
-            except Exception:
-                logger.warning(
-                    "unmark_node_bad_failed node_id=%s", node_id, exc_info=True,
-                )
-
     def force_notify(self, reason: str) -> None:
         """Force-transition to NOTIFY phase, e.g. after an unrecoverable step error."""
         logger.warning("recovery_force_notify reason=%s phase=%s", reason, self._context.phase.value)
