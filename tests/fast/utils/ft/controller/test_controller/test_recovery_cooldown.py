@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.ft.models import ActionType, Decision, TriggerType
+from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from tests.fast.utils.ft.conftest import (
     AlwaysEnterRecoveryDetector,
     make_test_controller,

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from miles.utils.ft.models import ActionType, Decision
+from miles.utils.ft.models.fault import ActionType, Decision
 from tests.fast.utils.ft.conftest import (
     AlwaysEnterRecoveryDetector,
     AlwaysMarkBadDetector,

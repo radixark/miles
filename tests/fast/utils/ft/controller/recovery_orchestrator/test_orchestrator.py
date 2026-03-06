@@ -12,7 +12,7 @@ from miles.utils.ft.controller.recovery_orchestrator.orchestrator import Recover
 from miles.utils.ft.models.metric_names import CONTROLLER_RECOVERY_PHASE
 from miles.utils.ft.models.fault import ActionType, Decision
 from miles.utils.ft.models.recovery import RECOVERY_PHASE_TO_INT, RecoveryPhase
-from miles.utils.ft.platform.protocols import JobStatus
+from miles.utils.ft.protocols.platform import JobStatus
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticOrchestrator,
     FakeNodeManager,

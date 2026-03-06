@@ -11,7 +11,7 @@ from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchest
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
-from miles.utils.ft.platform.protocols import JobStatus
+from miles.utils.ft.protocols.platform import JobStatus
 from tests.fast.utils.ft.conftest import (
     AlwaysEnterRecoveryDetector,
     FakeNodeManager,

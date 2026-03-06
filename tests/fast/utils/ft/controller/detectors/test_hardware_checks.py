@@ -9,7 +9,7 @@ from miles.utils.ft.controller.detectors.hardware_checks import (
     _check_majority_nic_down,
 )
 from miles.utils.ft.models.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP, XID_CODE_RECENT
-from miles.utils.ft.models import GaugeSample
+from miles.utils.ft.models.metrics import GaugeSample
 from tests.fast.utils.ft.conftest import make_fake_metric_store
 
 

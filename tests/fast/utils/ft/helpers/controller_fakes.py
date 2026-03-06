@@ -11,7 +11,7 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_cooldown import RecoveryCooldown
-from miles.utils.ft.models import ActionType, Decision, TriggerType
+from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import (
     DiagnosticOrchestratorProtocol,
     JobStatus,
