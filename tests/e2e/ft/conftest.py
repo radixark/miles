@@ -1,3 +1,12 @@
+"""E2E test fixtures for FT system integration tests.
+
+Each test is fully independent: clean environment → launch training via
+launch_standard_run.main() → verify behavior → tear down.
+
+Required environment variables:
+  RAY_ADDRESS              — Ray cluster dashboard URL (e.g. http://head-node:8265)
+  MILES_SCRIPT_EXTERNAL_RAY — Must be "1" (uses existing Ray cluster)
+"""
 from __future__ import annotations
 
 import asyncio
@@ -46,7 +55,8 @@ def _assert_external_ray() -> None:
 @pytest.fixture(scope="session")
 def ray_address() -> str:
     addr = os.environ.get("RAY_ADDRESS", "").strip()
-    assert addr, "Ray address must be provided"
+    if not addr:
+        pytest.skip("RAY_ADDRESS not set — skipping E2E tests")
     return addr
 
 
@@ -85,7 +95,7 @@ async def _cleanup_environment() -> None:
         ray.get(old_handle.shutdown.remote(), timeout=60)
         logger.info("cleanup_shut_down_existing_controller")
     except ValueError:
-        pass
+        logger.debug("cleanup_no_existing_controller")
     except Exception:
         logger.warning("cleanup_shutdown_existing_controller_failed", exc_info=True)
 
