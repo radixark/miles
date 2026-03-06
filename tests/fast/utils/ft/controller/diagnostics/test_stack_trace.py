@@ -3,30 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
+from miles.utils.ft.controller.diagnostics.stack_trace import StackTraceAggregator, StackTraceDiagnostic
 from tests.fast.utils.ft.helpers import (
     SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
     SAMPLE_PYSPY_OUTPUT_NORMAL,
     SAMPLE_PYSPY_OUTPUT_STUCK,
+    make_mock_subprocess,
 )
-
-from miles.utils.ft.controller.diagnostics.stack_trace import StackTraceAggregator, StackTraceDiagnostic
-
-# ---------------------------------------------------------------------------
-# StackTraceDiagnostic tests
-# ---------------------------------------------------------------------------
-
-
-def _make_mock_process(
-    stdout: bytes = b"mock trace output",
-    stderr: bytes = b"",
-    returncode: int = 0,
-) -> AsyncMock:
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(stdout, stderr))
-    mock_proc.returncode = returncode
-    return mock_proc
 
 
 class TestStackTraceDiagnosticEmptyPids:
@@ -47,7 +32,7 @@ class TestStackTraceDiagnosticEmptyPids:
 
 class TestStackTraceDiagnosticSinglePid:
     async def test_single_pid_success(self) -> None:
-        mock_proc = _make_mock_process(stdout=b"stack trace here")
+        mock_proc = make_mock_subprocess(stdout=b"stack trace here")
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             diag = StackTraceDiagnostic(pids=[1234])
@@ -58,7 +43,7 @@ class TestStackTraceDiagnosticSinglePid:
         assert "stack trace here" in result.details
 
     async def test_single_pid_pyspy_failure(self) -> None:
-        mock_proc = _make_mock_process(
+        mock_proc = make_mock_subprocess(
             stdout=b"",
             stderr=b"process not found",
             returncode=1,
@@ -74,8 +59,8 @@ class TestStackTraceDiagnosticSinglePid:
 
 class TestStackTraceDiagnosticMultiplePids:
     async def test_partial_failure_still_passes(self) -> None:
-        good_proc = _make_mock_process(stdout=b"good trace")
-        bad_proc = _make_mock_process(
+        good_proc = make_mock_subprocess(stdout=b"good trace")
+        bad_proc = make_mock_subprocess(
             stdout=b"",
             stderr=b"error",
             returncode=1,
@@ -98,7 +83,7 @@ class TestStackTraceDiagnosticMultiplePids:
         assert "FAILED" in result.details
 
     async def test_all_pids_fail_returns_not_passed(self) -> None:
-        bad_proc = _make_mock_process(
+        bad_proc = make_mock_subprocess(
             stdout=b"",
             stderr=b"error",
             returncode=1,
@@ -111,10 +96,8 @@ class TestStackTraceDiagnosticMultiplePids:
         assert result.passed is False
 
     async def test_timeout_treated_as_failure(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(
-            side_effect=asyncio.TimeoutError(),
-        )
+        mock_proc = make_mock_subprocess()
+        mock_proc.communicate.side_effect = asyncio.TimeoutError()
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             diag = StackTraceDiagnostic(pids=[1234])

@@ -5,7 +5,6 @@ import contextlib
 from typing import Generator
 from unittest.mock import AsyncMock, patch
 
-from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
 from miles.utils.ft.controller.diagnostics.inter_machine_comm import (
     InterMachineCommDiagnostic,
@@ -204,6 +203,22 @@ def mock_inter_machine_run(
 # ---------------------------------------------------------------------------
 # Stack trace diagnostic mock helper
 # ---------------------------------------------------------------------------
+
+
+def make_mock_subprocess(
+    stdout: str | bytes = b"",
+    stderr: str | bytes = b"",
+    returncode: int = 0,
+) -> AsyncMock:
+    """Unified async subprocess mock for diagnostic tests."""
+    process = AsyncMock()
+    stdout_bytes = stdout.encode() if isinstance(stdout, str) else stdout
+    stderr_bytes = stderr.encode() if isinstance(stderr, str) else stderr
+    process.communicate.return_value = (stdout_bytes, stderr_bytes)
+    process.returncode = returncode
+    process.kill = AsyncMock()
+    process.wait = AsyncMock()
+    return process
 
 
 @contextlib.contextmanager

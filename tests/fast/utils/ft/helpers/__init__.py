@@ -37,6 +37,7 @@ from tests.fast.utils.ft.helpers.diagnostic_fakes import (
     SlowDiagnostic,
     StubDiagnostic,
     make_fake_agents,
+    make_mock_subprocess,
     mock_inter_machine_run,
     mock_stack_trace_diagnostic,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "make_detector_context",
     "make_fake_agents",
     "make_fake_metric_store",
+    "make_mock_subprocess",
     "make_fake_mini_wandb",
     "make_metric",
     "make_mock_pynvml",

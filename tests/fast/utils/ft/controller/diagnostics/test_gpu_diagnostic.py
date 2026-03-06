@@ -10,6 +10,7 @@ import pytest
 
 from miles.utils.ft.controller.diagnostics.gpu_check_script import GpuCheckResult
 from miles.utils.ft.controller.diagnostics.gpu_diagnostic import GpuDiagnostic
+from tests.fast.utils.ft.helpers import make_mock_subprocess
 
 
 def _make_gpu_result(
@@ -35,22 +36,6 @@ def _make_gpu_result(
     ))
 
 
-def _mock_subprocess(
-    stdout: str = "[]",
-    returncode: int = 0,
-    stderr: str = "",
-) -> AsyncMock:
-    process = AsyncMock()
-    process.communicate.return_value = (
-        stdout.encode(),
-        stderr.encode(),
-    )
-    process.returncode = returncode
-    process.kill = AsyncMock()
-    process.wait = AsyncMock()
-    return process
-
-
 class TestGpuDiagnosticAllPass:
     @pytest.mark.anyio
     async def test_all_gpus_pass(self) -> None:
@@ -58,7 +43,7 @@ class TestGpuDiagnosticAllPass:
             _make_gpu_result(gpu_index=0),
             _make_gpu_result(gpu_index=1),
         ]
-        process = _mock_subprocess(stdout=json.dumps(results))
+        process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -82,7 +67,7 @@ class TestGpuDiagnosticEccFailure:
             ),
             _make_gpu_result(gpu_index=1),
         ]
-        process = _mock_subprocess(stdout=json.dumps(results))
+        process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -104,7 +89,7 @@ class TestGpuDiagnosticMatmulFailure:
                 details="matmul mismatch",
             ),
         ]
-        process = _mock_subprocess(stdout=json.dumps(results))
+        process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -125,7 +110,7 @@ class TestGpuDiagnosticRetiredPages:
                 details="retired pages: 3",
             ),
         ]
-        process = _mock_subprocess(stdout=json.dumps(results))
+        process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -146,7 +131,7 @@ class TestGpuDiagnosticPowerState:
                 details="abnormal power state",
             ),
         ]
-        process = _mock_subprocess(stdout=json.dumps(results))
+        process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -167,7 +152,7 @@ class TestGpuDiagnosticRowRemapFailure:
                 details="row remap failure",
             ),
         ]
-        process = _mock_subprocess(stdout=json.dumps(results))
+        process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -212,7 +197,7 @@ class TestGpuDiagnosticTimeout:
 class TestGpuDiagnosticEmptyResults:
     @pytest.mark.anyio
     async def test_empty_gpu_list_fails(self) -> None:
-        process = _mock_subprocess(stdout="[]")
+        process = make_mock_subprocess(stdout="[]")
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -225,7 +210,7 @@ class TestGpuDiagnosticEmptyResults:
 class TestGpuDiagnosticProcessCrash:
     @pytest.mark.anyio
     async def test_nonzero_exit_code(self) -> None:
-        process = _mock_subprocess(
+        process = make_mock_subprocess(
             stdout="",
             returncode=1,
             stderr="Traceback: pynvml not found",
@@ -243,7 +228,7 @@ class TestGpuDiagnosticProcessCrash:
 class TestGpuDiagnosticInvalidJson:
     @pytest.mark.anyio
     async def test_invalid_json_output(self) -> None:
-        process = _mock_subprocess(stdout="not json at all")
+        process = make_mock_subprocess(stdout="not json at all")
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()
@@ -272,7 +257,7 @@ class TestGpuDiagnosticMultiGpuPartialFail:
                 details="matmul mismatch",
             ),
         ]
-        process = _mock_subprocess(stdout=json.dumps(results))
+        process = make_mock_subprocess(stdout=json.dumps(results))
 
         with patch("asyncio.create_subprocess_exec", return_value=process):
             diag = GpuDiagnostic()

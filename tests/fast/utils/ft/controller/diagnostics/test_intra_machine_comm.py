@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from miles.utils.ft.controller.diagnostics.intra_machine_comm import IntraMachineCommDiagnostic
 from miles.utils.ft.controller.diagnostics.nccl_utils import parse_avg_bus_bandwidth
+from tests.fast.utils.ft.helpers import make_mock_subprocess
 
 # ---------------------------------------------------------------------------
 # Sample nccl-tests output fixtures
@@ -97,25 +98,6 @@ class TestParseAvgBusBandwidth:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess mock helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_mock_process(
-    stdout: str = "",
-    stderr: str = "",
-    returncode: int = 0,
-) -> AsyncMock:
-    process = AsyncMock()
-    process.communicate.return_value = (
-        stdout.encode(),
-        stderr.encode(),
-    )
-    process.returncode = returncode
-    return process
-
-
-# ---------------------------------------------------------------------------
 # IntraMachineCommDiagnostic.run() tests
 # ---------------------------------------------------------------------------
 
@@ -123,7 +105,7 @@ def _make_mock_process(
 class TestIntraMachineCommDiagnostic:
     async def test_pass_when_bandwidth_above_threshold(self) -> None:
         diag = IntraMachineCommDiagnostic(expected_bandwidth_gbps=350.0)
-        mock_proc = _make_mock_process(stdout=NCCL_OUTPUT_WITH_SUMMARY)
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await diag.run(node_id="node-0")
@@ -136,7 +118,7 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_fail_when_bandwidth_below_threshold(self) -> None:
         diag = IntraMachineCommDiagnostic(expected_bandwidth_gbps=350.0)
-        mock_proc = _make_mock_process(stdout=NCCL_OUTPUT_LOW_BW)
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_LOW_BW)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await diag.run(node_id="node-1")
@@ -159,7 +141,7 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_fail_when_subprocess_returns_nonzero(self) -> None:
         diag = IntraMachineCommDiagnostic()
-        mock_proc = _make_mock_process(
+        mock_proc = make_mock_subprocess(
             stdout="",
             stderr="NCCL WARN: some error",
             returncode=1,
@@ -174,7 +156,7 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_fail_when_output_unparseable(self) -> None:
         diag = IntraMachineCommDiagnostic()
-        mock_proc = _make_mock_process(stdout=NCCL_OUTPUT_GARBAGE)
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_GARBAGE)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await diag.run(node_id="node-0")
@@ -184,10 +166,8 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_fail_on_timeout(self) -> None:
         diag = IntraMachineCommDiagnostic()
-        mock_proc = AsyncMock()
+        mock_proc = make_mock_subprocess()
         mock_proc.communicate.side_effect = asyncio.TimeoutError()
-        mock_proc.kill = MagicMock()
-        mock_proc.wait = AsyncMock()
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
@@ -201,7 +181,7 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_custom_num_gpus(self) -> None:
         diag = IntraMachineCommDiagnostic(num_gpus=4)
-        mock_proc = _make_mock_process(stdout=NCCL_OUTPUT_WITH_SUMMARY)
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
             await diag.run(node_id="node-0")
@@ -213,7 +193,7 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_node_id_in_result(self) -> None:
         diag = IntraMachineCommDiagnostic(expected_bandwidth_gbps=100.0)
-        mock_proc = _make_mock_process(stdout=NCCL_OUTPUT_WITH_SUMMARY)
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await diag.run(node_id="my-special-node")
@@ -223,7 +203,7 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_custom_binary_name(self) -> None:
         diag = IntraMachineCommDiagnostic(nccl_test_binary="/opt/nccl/all_reduce_perf")
-        mock_proc = _make_mock_process(stdout=NCCL_OUTPUT_WITH_SUMMARY)
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
             await diag.run(node_id="node-0")
@@ -232,7 +212,7 @@ class TestIntraMachineCommDiagnostic:
 
     async def test_bandwidth_exactly_at_threshold_passes(self) -> None:
         diag = IntraMachineCommDiagnostic(expected_bandwidth_gbps=380.50)
-        mock_proc = _make_mock_process(stdout=NCCL_OUTPUT_WITH_SUMMARY)
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await diag.run(node_id="node-0")
@@ -254,7 +234,7 @@ class TestIntraMachineCommDiagnostic:
     async def test_stderr_truncated_at_500_chars(self) -> None:
         diag = IntraMachineCommDiagnostic()
         long_stderr = "E" * 600
-        mock_proc = _make_mock_process(
+        mock_proc = make_mock_subprocess(
             stdout="",
             stderr=long_stderr,
             returncode=1,
