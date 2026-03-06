@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
 
 from kubernetes_asyncio import config as k8s_config
 from kubernetes_asyncio.client import ApiClient, CoreV1Api
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
 _BASE_LABEL_KEY = "ft.miles.io/disabled"
 _BASE_REASON_LABEL_KEY = "ft.miles.io/disabled-reason"
+
+_K8S_API_TIMEOUT_SECONDS = 30
+_K8S_API_MAX_RETRIES = 3
+_K8S_API_BACKOFF_BASE = 1.0
 
 LABEL_KEY = _BASE_LABEL_KEY
 REASON_LABEL_KEY = _BASE_REASON_LABEL_KEY
@@ -80,7 +89,10 @@ class K8sNodeManager:
         body = {"metadata": {"labels": labels}}
 
         start = time.monotonic()
-        await core_v1.patch_node(name=node_id, body=body)
+        await self._retry_k8s_call(
+            lambda: core_v1.patch_node(name=node_id, body=body),
+            description=f"patch_node({node_id})",
+        )
         return time.monotonic() - start
 
     async def aclose(self) -> None:
@@ -93,8 +105,9 @@ class K8sNodeManager:
         core_v1 = await self._ensure_client()
 
         start = time.monotonic()
-        node_list = await core_v1.list_node(
-            label_selector=f"{self._label_key}=true",
+        node_list = await self._retry_k8s_call(
+            lambda: core_v1.list_node(label_selector=f"{self._label_key}=true"),
+            description="list_node(bad)",
         )
         elapsed = time.monotonic() - start
 
@@ -104,6 +117,31 @@ class K8sNodeManager:
             len(names), elapsed,
         )
         return names
+
+    @staticmethod
+    async def _retry_k8s_call(
+        func: Callable[[], Coroutine[Any, Any, _T]],
+        description: str,
+    ) -> _T:
+        last_exc: Exception | None = None
+
+        for attempt in range(_K8S_API_MAX_RETRIES):
+            try:
+                return await asyncio.wait_for(
+                    func(),
+                    timeout=_K8S_API_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "k8s_api_call_failed description=%s attempt=%d/%d",
+                    description, attempt + 1, _K8S_API_MAX_RETRIES,
+                    exc_info=True,
+                )
+                if attempt < _K8S_API_MAX_RETRIES - 1:
+                    await asyncio.sleep(_K8S_API_BACKOFF_BASE * (2 ** attempt))
+
+        raise last_exc  # type: ignore[misc]
 
 
 def query_bad_nodes(label_suffix: str | None = None) -> list[str] | None:
