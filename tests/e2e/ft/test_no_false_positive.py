@@ -17,6 +17,9 @@ pytestmark = [
     pytest.mark.timeout(600),
 ]
 
+# 50 iterations provides ~95% confidence to detect a per-iteration false-positive
+# rate >= 6%, but cannot reliably detect rates around 1%.  Increase to ~300 for
+# 95% confidence at the 1% level.  Kept low to bound E2E test runtime.
 _TARGET_ITERATIONS = 50
 _POLL_INTERVAL = 5.0
 
