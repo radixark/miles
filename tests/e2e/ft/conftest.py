@@ -1,12 +1,3 @@
-"""E2E test fixtures for FT system integration tests.
-
-Each test is fully independent: clean environment → launch training via
-launch_standard_run.main() → verify behavior → tear down.
-
-Required environment variables:
-  RAY_ADDRESS              — Ray cluster dashboard URL (e.g. http://head-node:8265)
-  MILES_SCRIPT_EXTERNAL_RAY — Must be "1" (uses existing Ray cluster)
-"""
 from __future__ import annotations
 
 import asyncio
