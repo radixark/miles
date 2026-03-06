@@ -707,6 +707,19 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
     log_dict = extra_metrics or {}
     for key in data.keys():
         rewards = data[key]["rewards"]
+        # When rewards are non-scalar (e.g., dicts from OPD teacher model),
+        # fall back to extracting scalar rewards from samples via get_reward_value.
+        if rewards and not isinstance(rewards[0], (int, float)):
+            samples_list = data[key].get("samples")
+            if samples_list is not None:
+                reward_key = args.eval_reward_key or args.reward_key
+                rewards = [
+                    s.reward if not reward_key else s.reward[reward_key]
+                    for s in samples_list
+                    if isinstance(s.reward if not reward_key else s.reward.get(reward_key), (int, float))
+                ]
+            if not rewards:
+                rewards = [0.0]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards)
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(compute_metrics_from_samples(args, samples), f"eval/{key}/")
