@@ -158,8 +158,9 @@ class FtController:
     async def _tick(self) -> None:
         self._tick_count += 1
         t0 = time.monotonic()
+        job_status: JobStatus | None = None
         try:
-            await self._tick_inner()
+            job_status = await self._tick_inner()
         except Exception:
             logger.error("tick_failed tick=%d", self._tick_count, exc_info=True)
         finally:
@@ -167,20 +168,20 @@ class FtController:
             if self._controller_exporter is not None:
                 self._controller_exporter.update_tick_duration(duration)
                 self._controller_exporter.update_last_tick_timestamp(time.time())
+            if job_status is not None:
+                self._update_exporter_metrics(job_status)
 
-    async def _tick_inner(self) -> None:
+    async def _tick_inner(self) -> JobStatus:
         self._rank_registry.warn_if_incomplete()
         job_status = await self._training_job.get_training_status()
 
         if self._recovery_manager.in_progress:
             self._run_critical_detectors_during_recovery(job_status)
             await self._recovery_manager.step()
-            self._update_exporter_metrics(job_status)
-            return
+            return job_status
 
         if not self._should_run_detectors():
-            self._update_exporter_metrics(job_status)
-            return
+            return job_status
 
         ctx = self._build_detector_context(job_status)
         decision = self._evaluate_detectors(ctx)
@@ -191,8 +192,8 @@ class FtController:
             decision.action.value, decision.reason,
         )
 
-        self._update_exporter_metrics(job_status)
         await self._execute_decision(decision)
+        return job_status
 
     def _should_run_detectors(self) -> bool:
         if len(self._rank_registry.rank_placement) == 0:
