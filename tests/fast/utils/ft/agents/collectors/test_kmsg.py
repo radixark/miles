@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
+from miles.utils.ft.agents.collectors.kmsg import (
+    KmsgCollector,
+    _build_xid_samples,
+    _count_kernel_events,
+    _kernel_event_samples,
+    _parse_xid_codes,
+    _prune_xid_window,
+)
 from miles.utils.ft.models.metrics import CollectorOutput, MetricSample
 from tests.fast.utils.ft.conftest import FakeKmsgReader
 
@@ -20,6 +28,156 @@ def _make_kmsg_collector(lines: list[str], **kwargs: Any) -> KmsgCollector:
 
 def _filter_metrics(result: CollectorOutput, name: str) -> list[MetricSample]:
     return [m for m in result.metrics if m.name == name]
+
+
+# ---------------------------------------------------------------------------
+# Pure function tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseXidCodes:
+    def test_single_xid(self) -> None:
+        lines = ["NVRM: Xid (PCI:0000:3b:00): 48, pid=1234"]
+        assert _parse_xid_codes(lines) == [48]
+
+    def test_multiple_xids(self) -> None:
+        lines = [
+            "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
+            "normal log line",
+            "NVRM: Xid (PCI:0000:5e:00): 31, pid=5678",
+        ]
+        assert _parse_xid_codes(lines) == [48, 31]
+
+    def test_no_xids(self) -> None:
+        assert _parse_xid_codes(["normal log", "another line"]) == []
+
+    def test_empty_lines(self) -> None:
+        assert _parse_xid_codes([]) == []
+
+
+class TestPruneXidWindow:
+    def test_removes_old_events(self) -> None:
+        now = datetime.now(timezone.utc)
+        events: deque[tuple[datetime, int]] = deque([
+            (now - timedelta(seconds=120), 48),
+            (now - timedelta(seconds=30), 31),
+        ])
+
+        _prune_xid_window(events, window=timedelta(seconds=60), now=now)
+
+        assert len(events) == 1
+        assert events[0][1] == 31
+
+    def test_keeps_all_when_within_window(self) -> None:
+        now = datetime.now(timezone.utc)
+        events: deque[tuple[datetime, int]] = deque([
+            (now - timedelta(seconds=10), 48),
+            (now - timedelta(seconds=5), 31),
+        ])
+
+        _prune_xid_window(events, window=timedelta(seconds=60), now=now)
+
+        assert len(events) == 2
+
+    def test_removes_all_when_expired(self) -> None:
+        now = datetime.now(timezone.utc)
+        events: deque[tuple[datetime, int]] = deque([
+            (now - timedelta(seconds=200), 48),
+            (now - timedelta(seconds=100), 31),
+        ])
+
+        _prune_xid_window(events, window=timedelta(seconds=60), now=now)
+
+        assert len(events) == 0
+
+    def test_empty_deque(self) -> None:
+        now = datetime.now(timezone.utc)
+        events: deque[tuple[datetime, int]] = deque()
+
+        _prune_xid_window(events, window=timedelta(seconds=60), now=now)
+
+        assert len(events) == 0
+
+
+class TestBuildXidSamples:
+    def test_active_codes_emitted_as_gauge_1(self) -> None:
+        samples = _build_xid_samples(
+            current_codes={48, 31},
+            prev_codes=set(),
+            new_count=2,
+        )
+
+        gauge_samples = [s for s in samples if s.name == "miles_ft_xid_code_recent"]
+        assert len(gauge_samples) == 2
+        codes = {s.labels["xid"] for s in gauge_samples}
+        assert codes == {"31", "48"}
+        assert all(s.value == 1.0 for s in gauge_samples)
+
+    def test_gone_codes_emitted_as_gauge_0(self) -> None:
+        samples = _build_xid_samples(
+            current_codes=set(),
+            prev_codes={48},
+            new_count=0,
+        )
+
+        gauge_samples = [s for s in samples if s.name == "miles_ft_xid_code_recent"]
+        assert len(gauge_samples) == 1
+        assert gauge_samples[0].labels == {"xid": "48"}
+        assert gauge_samples[0].value == 0.0
+
+    def test_counter_reflects_new_count(self) -> None:
+        samples = _build_xid_samples(
+            current_codes={48},
+            prev_codes=set(),
+            new_count=5,
+        )
+
+        counter = [s for s in samples if s.name == "miles_ft_xid_count_total"]
+        assert len(counter) == 1
+        assert counter[0].value == 5.0
+        assert counter[0].metric_type == "counter"
+
+
+class TestCountKernelEvents:
+    def test_kernel_panic(self) -> None:
+        assert _count_kernel_events([
+            "Kernel panic - not syncing: Fatal exception",
+        ]) == 1
+
+    def test_mce(self) -> None:
+        assert _count_kernel_events([
+            "MCE: CPU 0: Machine Check Exception: 4 Bank 5",
+        ]) == 1
+
+    def test_oom_killer(self) -> None:
+        assert _count_kernel_events(["oom-killer invoked"]) == 1
+
+    def test_hardware_error(self) -> None:
+        assert _count_kernel_events(["HARDWARE ERROR detected"]) == 1
+
+    def test_no_events(self) -> None:
+        assert _count_kernel_events(["normal log message"]) == 0
+
+    def test_multiple_events(self) -> None:
+        assert _count_kernel_events([
+            "Kernel panic",
+            "normal line",
+            "MCE detected",
+        ]) == 2
+
+
+class TestKernelEventSamples:
+    def test_builds_counter_sample(self) -> None:
+        samples = _kernel_event_samples(3)
+        assert len(samples) == 1
+        assert samples[0].name == "miles_ft_kernel_event_count"
+        assert samples[0].value == 3.0
+        assert samples[0].metric_type == "counter"
+
+
+# ---------------------------------------------------------------------------
+# Integration tests (KmsgCollector.collect)
+# ---------------------------------------------------------------------------
 
 
 class TestKmsgCollectorXid:
@@ -203,8 +361,8 @@ class TestDmesgTimeWindowBug:
 class TestKmsgCollectorReadLinesNoFallback:
     @pytest.mark.anyio
     async def test_reader_oserror_propagates(self) -> None:
-        """After removing the dead OSError fallback, reader errors must
-        propagate so the upper-level collection loop can log and retry."""
+        """Reader errors must propagate so the upper-level collection
+        loop can log and retry."""
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))
         reader = FakeKmsgReader([])
         reader.read_new_lines = lambda: (_ for _ in ()).throw(OSError("fd gone"))  # type: ignore[assignment]
