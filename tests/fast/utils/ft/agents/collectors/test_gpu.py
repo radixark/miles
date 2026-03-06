@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -109,3 +110,34 @@ class TestGpuCollector:
             pass
 
         assert collector.collect_interval == 10.0
+
+
+class TestGpuCollectorRealHardware:
+    """Zero-mock tests against real NVML. Run on GPU nodes."""
+
+    @pytest.mark.anyio
+    async def test_collect_returns_gpu_metrics(self) -> None:
+        collector = GpuCollector()
+        result = await collector.collect()
+        assert len(result.metrics) > 0
+
+        names = {s.name for s in result.metrics}
+        assert "miles_ft_gpu_available" in names
+        assert "miles_ft_dcgm_fi_dev_gpu_temp" in names
+
+    @pytest.mark.anyio
+    async def test_gpu_temperature_in_sane_range(self) -> None:
+        collector = GpuCollector()
+        result = await collector.collect()
+        for s in result.metrics:
+            if s.name == "miles_ft_dcgm_fi_dev_gpu_temp":
+                assert 0 < s.value < 120
+            if s.name == "miles_ft_gpu_available":
+                assert s.value == 1.0
+
+    @pytest.mark.anyio
+    async def test_all_metric_values_are_finite(self) -> None:
+        collector = GpuCollector()
+        result = await collector.collect()
+        for s in result.metrics:
+            assert math.isfinite(s.value)
