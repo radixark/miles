@@ -28,14 +28,14 @@ def check_all_hardware_faults(
     disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:
     return [
-        *check_gpu_lost(metric_store),
-        *check_critical_xid(metric_store, critical_xid_codes=critical_xid_codes),
-        *check_disk_fault(metric_store, disk_available_threshold_bytes=disk_available_threshold_bytes),
-        *check_majority_nic_down(metric_store),
+        *_check_gpu_lost(metric_store),
+        *_check_critical_xid(metric_store, critical_xid_codes=critical_xid_codes),
+        *_check_disk_fault(metric_store, disk_available_threshold_bytes=disk_available_threshold_bytes),
+        *_check_majority_nic_down(metric_store),
     ]
 
 
-def check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
+def _check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(GPU_AVAILABLE)
     if df.is_empty():
         return []
@@ -50,7 +50,7 @@ def check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
     ]
 
 
-def check_critical_xid(
+def _check_critical_xid(
     metric_store: MetricQueryProtocol,
     critical_xid_codes: frozenset[int] = CRITICAL_XID_CODES,
 ) -> list[NodeFault]:
@@ -72,7 +72,7 @@ def _parse_xid_row(
         xid_code = int(row.get("xid", -1))  # type: ignore[arg-type]
         node_id = row.get("node_id")
     except (ValueError, TypeError):
-        logger.warning("check_critical_xid: unparseable row %s", row, exc_info=True)
+        logger.warning("_check_critical_xid: unparseable row %s", row, exc_info=True)
         return None
 
     if node_id is None:
@@ -83,7 +83,7 @@ def _parse_xid_row(
     return None
 
 
-def check_disk_fault(
+def _check_disk_fault(
     metric_store: MetricQueryProtocol,
     disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:
@@ -133,7 +133,7 @@ def check_nic_down_in_window(
     ]
 
 
-def check_majority_nic_down(metric_store: MetricQueryProtocol) -> list[NodeFault]:
+def _check_majority_nic_down(metric_store: MetricQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_NETWORK_UP)
     if df.is_empty():
         return []

@@ -4,12 +4,12 @@ import logging
 import pytest
 
 from miles.utils.ft.controller.detectors.hardware_checks import (
-    check_critical_xid,
-    check_disk_fault,
-    check_majority_nic_down,
+    _check_critical_xid,
+    _check_disk_fault,
+    _check_majority_nic_down,
 )
 from miles.utils.ft.models.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP, XID_CODE_RECENT
-from miles.utils.ft.models.metrics import GaugeSample
+from miles.utils.ft.models import GaugeSample
 from tests.fast.utils.ft.conftest import make_fake_metric_store
 
 
@@ -23,7 +23,7 @@ class TestCheckCriticalXidErrorPaths:
         ])
 
         with caplog.at_level(logging.WARNING):
-            result = check_critical_xid(store)
+            result = _check_critical_xid(store)
 
         assert result == []
         assert "unparseable" in caplog.text
@@ -34,7 +34,7 @@ class TestCheckCriticalXidErrorPaths:
             GaugeSample(name=XID_CODE_RECENT, labels={"xid": "999"}, value=1.0),
         ])
 
-        result = check_critical_xid(store)
+        result = _check_critical_xid(store)
 
         assert result == []
 
@@ -44,7 +44,7 @@ class TestCheckCriticalXidErrorPaths:
             GaugeSample(name=XID_CODE_RECENT, labels={"xid": "48"}, value=1.0),
         ])
 
-        result = check_critical_xid(store)
+        result = _check_critical_xid(store)
 
         assert len(result) == 1
         assert result[0].node_id == "node-0"
@@ -62,7 +62,7 @@ class TestCheckCriticalXidErrorPaths:
         ])
 
         with caplog.at_level(logging.WARNING):
-            result = check_critical_xid(store)
+            result = _check_critical_xid(store)
 
         assert len(result) == 1
         assert result[0].node_id == "node-0"
@@ -77,7 +77,7 @@ class TestCheckCriticalXidErrorPaths:
         ])
 
         with caplog.at_level(logging.WARNING):
-            result = check_critical_xid(store)
+            result = _check_critical_xid(store)
 
         assert result == []
         assert "unparseable" in caplog.text
@@ -85,7 +85,7 @@ class TestCheckCriticalXidErrorPaths:
     def test_no_xid_data_returns_empty(self) -> None:
         store = make_fake_metric_store()
 
-        result = check_critical_xid(store)
+        result = _check_critical_xid(store)
 
         assert result == []
 
@@ -95,7 +95,7 @@ class TestCheckCriticalXidErrorPaths:
             GaugeSample(name=XID_CODE_RECENT, labels={"xid": "999"}, value=1.0),
         ])
 
-        result = check_critical_xid(store, critical_xid_codes=frozenset({999}))
+        result = _check_critical_xid(store, critical_xid_codes=frozenset({999}))
         assert len(result) == 1
         assert result[0].node_id == "node-0"
 
@@ -107,7 +107,7 @@ class TestCheckCriticalXidErrorPaths:
         df = store.query_latest(XID_CODE_RECENT)
         assert not df.is_empty()
 
-        result = check_critical_xid(store)
+        result = _check_critical_xid(store)
         assert len(result) == 1
 
 
@@ -119,7 +119,7 @@ class TestCheckMajorityNicDown:
             GaugeSample(name=NODE_NETWORK_UP, labels={"interface": "eth1"}, value=0.0),
         ])
 
-        result = check_majority_nic_down(store)
+        result = _check_majority_nic_down(store)
         assert result == []
 
     def test_majority_nics_down_triggers(self) -> None:
@@ -130,7 +130,7 @@ class TestCheckMajorityNicDown:
             GaugeSample(name=NODE_NETWORK_UP, labels={"interface": "eth2"}, value=1.0),
         ])
 
-        result = check_majority_nic_down(store)
+        result = _check_majority_nic_down(store)
         assert len(result) == 1
         assert result[0].node_id == "node-0"
 
@@ -141,12 +141,12 @@ class TestCheckMajorityNicDown:
             GaugeSample(name=NODE_NETWORK_UP, labels={"interface": "eth1"}, value=1.0),
         ])
 
-        result = check_majority_nic_down(store)
+        result = _check_majority_nic_down(store)
         assert result == []
 
     def test_empty_metric_store_returns_empty(self) -> None:
         store = make_fake_metric_store()
-        result = check_majority_nic_down(store)
+        result = _check_majority_nic_down(store)
         assert result == []
 
 
@@ -157,7 +157,7 @@ class TestCheckDiskFault:
             GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=500e6),
         ])
 
-        result = check_disk_fault(store)
+        result = _check_disk_fault(store)
 
         assert len(result) == 1
         assert result[0].node_id == "node-0"
@@ -169,12 +169,12 @@ class TestCheckDiskFault:
             GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=100e9),
         ])
 
-        assert check_disk_fault(store) == []
+        assert _check_disk_fault(store) == []
 
     def test_empty_store_returns_empty(self) -> None:
         store = make_fake_metric_store()
 
-        assert check_disk_fault(store) == []
+        assert _check_disk_fault(store) == []
 
     def test_multiple_nodes_only_low_ones_flagged(self) -> None:
         store = make_fake_metric_store()
@@ -185,7 +185,7 @@ class TestCheckDiskFault:
             GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=50e9),
         ])
 
-        result = check_disk_fault(store)
+        result = _check_disk_fault(store)
 
         assert len(result) == 1
         assert result[0].node_id == "node-0"
@@ -196,10 +196,10 @@ class TestCheckDiskFault:
             GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=5e9),
         ])
 
-        result_default = check_disk_fault(store)
+        result_default = _check_disk_fault(store)
         assert result_default == []
 
-        result_high = check_disk_fault(store, disk_available_threshold_bytes=10e9)
+        result_high = _check_disk_fault(store, disk_available_threshold_bytes=10e9)
         assert len(result_high) == 1
         assert result_high[0].node_id == "node-0"
 
@@ -209,5 +209,5 @@ class TestCheckDiskFault:
             GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=1e9),
         ])
 
-        result = check_disk_fault(store, disk_available_threshold_bytes=1e9)
+        result = _check_disk_fault(store, disk_available_threshold_bytes=1e9)
         assert result == []
