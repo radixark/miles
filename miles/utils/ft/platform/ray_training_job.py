@@ -10,7 +10,7 @@ import ray
 from ray.job_submission import JobSubmissionClient
 
 from miles.utils.ft.utils.polling import poll_until
-from miles.utils.ft.protocols.platform import JobStatus
+from miles.utils.ft.protocols.platform import JobStatus, TrainingJobProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ async def stop_all_active_jobs(
     return len(active)
 
 
-class RayTrainingJob:
+class RayTrainingJob(TrainingJobProtocol):
     """Manage training jobs via the Ray Job Submission API.
 
     Implements TrainingJobProtocol. All synchronous Ray client calls are
