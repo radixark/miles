@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from miles.utils.ft.utils.graceful_degrade import graceful_degrade
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,28 +57,26 @@ class DmesgSubprocessReader:
     def __init__(self) -> None:
         self._last_dmesg_time: datetime = datetime.now(timezone.utc)
 
+    @graceful_degrade(default=[])
     def read_new_lines(self) -> list[str]:
         since_str = self._last_dmesg_time.strftime("%Y-%m-%d %H:%M:%S")
         new_time = datetime.now(timezone.utc)
 
-        try:
-            result = subprocess.run(
-                ["dmesg", "--since", since_str],
-                capture_output=True,
-                text=True,
-                timeout=5,
+        result = subprocess.run(
+            ["dmesg", "--since", since_str],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            self._last_dmesg_time = new_time
+            if result.stdout:
+                return result.stdout.strip().splitlines()
+        else:
+            logger.warning(
+                "dmesg returned non-zero returncode=%d stderr=%s",
+                result.returncode, result.stderr[:500] if result.stderr else "",
             )
-            if result.returncode == 0:
-                self._last_dmesg_time = new_time
-                if result.stdout:
-                    return result.stdout.strip().splitlines()
-            else:
-                logger.warning(
-                    "dmesg returned non-zero returncode=%d stderr=%s",
-                    result.returncode, result.stderr[:500] if result.stderr else "",
-                )
-        except Exception:
-            logger.warning("dmesg fallback failed", exc_info=True)
 
         return []
 

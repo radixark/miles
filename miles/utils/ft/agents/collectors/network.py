@@ -7,6 +7,7 @@ from pathlib import Path
 import miles.utils.ft.models.metric_names as mn
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.models.metrics import MetricSample
+from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 
 logger = logging.getLogger(__name__)
 
@@ -64,18 +65,15 @@ class NetworkCollector(BaseCollector):
         return False
 
     @staticmethod
+    @graceful_degrade(default=[])
     def _collect_operstate(
         iface_dir: Path,
         iface_label: dict[str, str],
     ) -> list[MetricSample]:
         operstate_file = iface_dir / "operstate"
-        try:
-            state = operstate_file.read_text().strip().lower()
-            value = 1.0 if state == "up" else 0.0
-            return [MetricSample(name=mn.NODE_NETWORK_UP, labels=iface_label, value=value)]
-        except Exception:
-            logger.warning("Failed to read operstate for %s", iface_label["device"], exc_info=True)
-            return []
+        state = operstate_file.read_text().strip().lower()
+        value = 1.0 if state == "up" else 0.0
+        return [MetricSample(name=mn.NODE_NETWORK_UP, labels=iface_label, value=value)]
 
     @staticmethod
     def _collect_statistics(

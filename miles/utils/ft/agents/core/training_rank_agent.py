@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from miles.utils.ft.agents.utils.controller_handle import get_controller_handle
 from miles.utils.ft.agents.utils.training_rank_heartbeat import TrainingRankHeartbeat
+from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class FtTrainingRankAgent:
     # ------------------------------------------------------------------
 
     @classmethod
+    @graceful_degrade()
     def maybe_create(
         cls,
         rank: int,
@@ -48,11 +50,7 @@ class FtTrainingRankAgent:
     ) -> FtTrainingRankAgent | None:
         if not enabled:
             return None
-        try:
-            return cls(rank=rank, world_size=world_size)
-        except Exception:
-            logger.warning("Failed to create FtTrainingRankAgent", exc_info=True)
-            return None
+        return cls(rank=rank, world_size=world_size)
 
     # ------------------------------------------------------------------
     # Public API — delegated to TrainingRankHeartbeat
