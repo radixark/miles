@@ -28,13 +28,9 @@ from miles.utils.ft.controller.diagnostics.intra_machine_comm import (
     IntraMachineCommDiagnostic,
 )
 from miles.utils.ft.models._diagnostics import DiagnosticResult
+from tests.e2e.ft.conftest import gpu_nodes
 
 logger = logging.getLogger(__name__)
-
-pytestmark = [
-    pytest.mark.e2e,
-    pytest.mark.timeout(600),
-]
 
 _MIN_NODES = 2
 
@@ -89,19 +85,12 @@ class _DiagnosticOnlyAgent:
 # ---------------------------------------------------------------------------
 
 
-def _gpu_nodes() -> list[dict]:
-    return [
-        n for n in ray.nodes()
-        if n.get("Alive") and n.get("Resources", {}).get("GPU", 0) > 0
-    ]
-
-
 @pytest.fixture(scope="module")
 def diagnostic_agents(
     ray_cluster: None,
 ) -> Generator[dict[str, ray.actor.ActorHandle], None, None]:
     """Deploy diagnostic-only agents on all GPU nodes."""
-    nodes = _gpu_nodes()
+    nodes = gpu_nodes()
     if len(nodes) < _MIN_NODES:
         pytest.skip(
             f"Need >= {_MIN_NODES} GPU nodes for NCCL diagnostics, got {len(nodes)}"
@@ -129,7 +118,7 @@ def diagnostic_agents(
 def node_addresses(ray_cluster: None) -> dict[str, str]:
     """Build node_id → IP address mapping from Ray cluster metadata."""
     mapping: dict[str, str] = {}
-    for node in _gpu_nodes():
+    for node in gpu_nodes():
         addr = node.get("NodeManagerAddress", "")
         if addr:
             mapping[node["NodeID"]] = addr

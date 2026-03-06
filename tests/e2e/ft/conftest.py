@@ -210,18 +210,21 @@ def fault_injector(ray_cluster: None) -> Generator[FaultInjectorFactory, None, N
 # ---------------------------------------------------------------------------
 
 
+def gpu_nodes(*, exclude: set[str] | None = None) -> list[dict]:
+    """Return alive Ray nodes that have GPUs, optionally excluding node IDs."""
+    return [
+        n for n in ray.nodes()
+        if n.get("Alive")
+        and n.get("Resources", {}).get("GPU", 0) > 0
+        and (exclude is None or n["NodeID"] not in exclude)
+    ]
+
+
 @pytest.fixture
 async def target_node(k8s_node_manager: K8sNodeManager) -> str:
     """Pick the first alive GPU node that is not already marked bad in K8s."""
     bad_nodes = set(await k8s_node_manager.get_bad_nodes())
-
-    nodes = ray.nodes()
-    candidates = [
-        n for n in nodes
-        if n.get("Alive")
-        and n.get("Resources", {}).get("GPU", 0) > 0
-        and n["NodeID"] not in bad_nodes
-    ]
+    candidates = gpu_nodes(exclude=bad_nodes)
     if not candidates:
         pytest.skip("No available healthy GPU nodes")
     return candidates[0]["NodeID"]
