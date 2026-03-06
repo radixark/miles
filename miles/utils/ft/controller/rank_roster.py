@@ -8,7 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 class RankRoster:
-    """Tracks rank placement for a single training run."""
+    """Tracks rank placement for a single training run.
+
+    Each run gets a fresh instance; the FtController creates a new
+    RankRoster via ``_activate_run`` whenever a training job is
+    (re)submitted.
+    """
 
     def __init__(
         self,
@@ -28,7 +33,7 @@ class RankRoster:
         world_size: int,
         node_id: str,
         exporter_address: str,
-        pid: int | None = None,
+        pid: int,
     ) -> None:
         if run_id != self.run_id:
             logger.warning(
@@ -39,8 +44,7 @@ class RankRoster:
         _validate_rank(rank=rank, world_size=world_size, node_id=node_id)
         self.expected_world_size = world_size
         self.rank_placement[rank] = node_id
-        if pid is not None:
-            self.rank_pids[rank] = pid
+        self.rank_pids[rank] = pid
         logger.info(
             "rank_registered run_id=%s rank=%d world_size=%d node_id=%s",
             run_id, rank, world_size, node_id,

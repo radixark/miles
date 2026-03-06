@@ -232,19 +232,6 @@ class TestRegisterRank:
         )
         assert harness.controller._rank_roster.rank_pids == {0: 5678}
 
-    @pytest.mark.anyio
-    async def test_register_rank_without_pid_does_not_store(self) -> None:
-        harness = make_test_controller()
-
-        harness.controller._activate_run("run-1")
-        harness.controller.rank_roster.register_training_rank(
-            run_id="run-1", rank=0, world_size=2,
-            node_id="node-0", exporter_address="http://node-0:9090",
-        )
-
-        assert harness.controller._rank_roster.rank_pids == {}
-
-
 class TestGetRankPidsForNode:
     @pytest.mark.anyio
     async def test_returns_pids_for_matching_node(self) -> None:
@@ -283,25 +270,6 @@ class TestGetRankPidsForNode:
 
         result = harness.controller._rank_roster.get_rank_pids_for_node("node-999")
         assert result == {}
-
-    @pytest.mark.anyio
-    async def test_excludes_ranks_without_pid(self) -> None:
-        harness = make_test_controller()
-
-        harness.controller._activate_run("run-1")
-        harness.controller.rank_roster.register_training_rank(
-            run_id="run-1", rank=0, world_size=2,
-            node_id="node-0", exporter_address="http://node-0:9090",
-            pid=100,
-        )
-        harness.controller.rank_roster.register_training_rank(
-            run_id="run-1", rank=1, world_size=2,
-            node_id="node-0", exporter_address="http://node-0:9091",
-        )
-
-        result = harness.controller._rank_roster.get_rank_pids_for_node("node-0")
-        assert result == {0: 100}
-
 
 class TestLogStep:
     @pytest.mark.anyio
