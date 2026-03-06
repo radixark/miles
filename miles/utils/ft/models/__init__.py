@@ -7,7 +7,7 @@ from miles.utils.ft.models.fault import (
     TriggerType,
     unique_node_ids,
 )
-from miles.utils.ft.models.metrics import CollectorOutput, MetricSample
+from miles.utils.ft.models.metrics import CollectorOutput, CounterSample, GaugeSample, MetricSample
 from miles.utils.ft.models.recovery import (
     RECOVERY_PHASE_TO_INT,
     ControllerMode,
@@ -22,9 +22,11 @@ __all__ = [
     "CollectorOutput",
     "ControllerMode",
     "ControllerStatus",
+    "CounterSample",
     "Decision",
     "DiagnosticResult",
     "FtBaseModel",
+    "GaugeSample",
     "MetricSample",
     "NodeFault",
     "RECOVERY_PHASE_TO_INT",
