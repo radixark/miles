@@ -7,6 +7,7 @@ from collections.abc import Iterator
 
 from miles.utils.ft.controller.actions import (
     PlatformDeps,
+    handle_enter_recovery,
     handle_mark_bad_and_restart,
     handle_notify_human,
 )
@@ -224,12 +225,17 @@ class FtController:
 
     async def _tick_inner(self, job_status: JobStatus) -> None:
         if self._recovery_manager.in_progress:
-            new_bad_nodes = self._collect_critical_bad_nodes(job_status)
-            if new_bad_nodes:
-                self._recovery_manager.add_bad_nodes(new_bad_nodes)
-            await self._recovery_manager.step()
-            return
+            await self._tick_mode_recovery(job_status)
+        else:
+            await self._tick_mode_monitoring(job_status)
 
+    async def _tick_mode_recovery(self, job_status: JobStatus) -> None:
+        new_bad_nodes = self._collect_critical_bad_nodes(job_status)
+        if new_bad_nodes:
+            self._recovery_manager.add_bad_nodes(new_bad_nodes)
+        await self._recovery_manager.step()
+
+    async def _tick_mode_monitoring(self, job_status: JobStatus) -> None:
         if not self._should_run_detectors():
             return
 
@@ -328,18 +334,11 @@ class FtController:
             await handle_mark_bad_and_restart(decision=decision, deps=self._platform_deps)
 
         elif decision.action == ActionType.ENTER_RECOVERY:
-            started = await self._recovery_manager.start(
-                decision=decision, deps=self._platform_deps,
+            await handle_enter_recovery(
+                decision=decision,
+                deps=self._platform_deps,
+                recovery_manager=self._recovery_manager,
             )
-            if not started:
-                await handle_notify_human(
-                    decision=Decision(
-                        action=ActionType.NOTIFY_HUMAN,
-                        reason=f"Recovery cooldown: {decision.trigger.value} triggered too many times",
-                        trigger=decision.trigger,
-                    ),
-                    notifier=self._platform_deps.notifier,
-                )
 
         elif decision.action == ActionType.NOTIFY_HUMAN:
             await handle_notify_human(
