@@ -61,7 +61,7 @@ class TestControllerPrometheusMode:
 
     @pytest.mark.asyncio
     async def test_no_scrape_target_manager_in_prometheus_mode(self) -> None:
-        """In prometheus mode, register_rank should not fail even without scrape_target_manager."""
+        """In prometheus mode, register_training_rank should not fail even without scrape_target_manager."""
         _, exporter = make_test_exporter()
         prom_client = PrometheusClient(url="http://fake:9090")
 
@@ -73,7 +73,7 @@ class TestControllerPrometheusMode:
             controller_exporter=exporter,
         )
 
-        controller.rank_registry.register_rank(
+        controller.rank_registry.register_training_rank(
             run_id="run-1", rank=0, world_size=2,
             node_id="node-0", exporter_address="http://node-0:9090",
         )
@@ -93,7 +93,7 @@ class TestControllerPrometheusMode:
             controller_exporter=exporter,
         )
 
-        controller.rank_registry.register_rank(
+        controller.rank_registry.register_training_rank(
             run_id="run-1", rank=0, world_size=1,
             node_id="node-0", exporter_address="http://node-0:9090",
         )

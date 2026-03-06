@@ -15,7 +15,7 @@ class _FtControllerActorCls:
     can find it via ``ray.get_actor(ft_controller_actor_name(ft_id))``.
     FtController remains a plain Python class for testability.
 
-    Agent-facing methods (register_rank, log_step, register_agent) route
+    Agent-facing methods (register_training_rank, log_step, register_node_agent) route
     directly to the RankRegistry exposed by FtController.
     """
 
@@ -44,7 +44,7 @@ class _FtControllerActorCls:
             metrics=metrics,
         )
 
-    async def register_rank(
+    async def register_training_rank(
         self,
         run_id: str,
         rank: int,
@@ -53,7 +53,7 @@ class _FtControllerActorCls:
         exporter_address: str,
         pid: int | None = None,
     ) -> None:
-        self._ctrl.rank_registry.register_rank(
+        self._ctrl.rank_registry.register_training_rank(
             run_id=run_id,
             rank=rank,
             world_size=world_size,
@@ -62,8 +62,8 @@ class _FtControllerActorCls:
             pid=pid,
         )
 
-    def register_agent(self, node_id: str, agent: object) -> None:
-        self._ctrl.rank_registry.register_agent(node_id=node_id, agent=agent)
+    def register_node_agent(self, node_id: str, agent: object) -> None:
+        self._ctrl.rank_registry.register_node_agent(node_id=node_id, agent=agent)
 
     def get_status(self) -> object:
         return self._ctrl.get_status()

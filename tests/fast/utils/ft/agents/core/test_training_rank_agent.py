@@ -187,7 +187,7 @@ def _registered_agent(
     ), patch("ray.get", mock_ray_get):
         agent = FtTrainingRankAgent(**defaults)
         try:
-            call_kwargs = mock_controller.register_rank.remote.call_args[1]
+            call_kwargs = mock_controller.register_training_rank.remote.call_args[1]
             yield agent, call_kwargs
         finally:
             agent.shutdown()
@@ -195,17 +195,17 @@ def _registered_agent(
 
 class TestFtTrainingRankAgentRegisterRank:
     @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
-    def test_register_rank_calls_controller(
+    def test_register_training_rank_calls_controller(
         self, mock_get_handle: MagicMock
     ) -> None:
         with _registered_agent(mock_get_handle) as (agent, call_kwargs):
-            mock_get_handle.return_value.register_rank.remote.assert_called_once()
+            mock_get_handle.return_value.register_training_rank.remote.assert_called_once()
             assert call_kwargs["run_id"] == "test-run-1"
             assert call_kwargs["rank"] == 0
             assert call_kwargs["world_size"] == 4
 
     @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
-    def test_register_rank_retries_on_failure(
+    def test_register_training_rank_retries_on_failure(
         self, mock_get_handle: MagicMock
     ) -> None:
         mock_controller = MagicMock()
@@ -228,12 +228,12 @@ class TestFtTrainingRankAgentRegisterRank:
             agent = FtTrainingRankAgent(rank=0, world_size=4)
             try:
                 assert call_count == 3
-                assert mock_controller.register_rank.remote.call_count == 3
+                assert mock_controller.register_training_rank.remote.call_count == 3
             finally:
                 agent.shutdown()
 
     @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
-    def test_register_rank_all_attempts_fail_no_exception(
+    def test_register_training_rank_all_attempts_fail_no_exception(
         self, mock_get_handle: MagicMock
     ) -> None:
         mock_controller = MagicMock()
@@ -246,11 +246,11 @@ class TestFtTrainingRankAgentRegisterRank:
         ), patch("time.sleep"):
             agent = FtTrainingRankAgent(rank=2, world_size=4)
             try:
-                assert mock_controller.register_rank.remote.call_count == 3
+                assert mock_controller.register_training_rank.remote.call_count == 3
             finally:
                 agent.shutdown()
 
-    def test_register_rank_skipped_without_run_id(self) -> None:
+    def test_register_training_rank_skipped_without_run_id(self) -> None:
         agent = FtTrainingRankAgent(rank=0, world_size=4)
         try:
             assert agent._run_id == ""
@@ -258,7 +258,7 @@ class TestFtTrainingRankAgentRegisterRank:
             agent.shutdown()
 
     @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
-    def test_register_rank_skipped_when_controller_unavailable(
+    def test_register_training_rank_skipped_when_controller_unavailable(
         self, mock_get_handle: MagicMock
     ) -> None:
         mock_get_handle.return_value = None
@@ -271,7 +271,7 @@ class TestFtTrainingRankAgentRegisterRank:
                 agent.shutdown()
 
     @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
-    def test_register_rank_asserts_node_id_and_exporter_address(
+    def test_register_training_rank_asserts_node_id_and_exporter_address(
         self, mock_get_handle: MagicMock
     ) -> None:
         with _registered_agent(mock_get_handle) as (agent, call_kwargs):
@@ -279,7 +279,7 @@ class TestFtTrainingRankAgentRegisterRank:
             assert call_kwargs["exporter_address"] == agent.get_exporter_address()
 
     @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
-    def test_register_rank_includes_pid(
+    def test_register_training_rank_includes_pid(
         self, mock_get_handle: MagicMock
     ) -> None:
         import os as _os

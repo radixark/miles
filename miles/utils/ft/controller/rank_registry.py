@@ -30,11 +30,11 @@ class RankRegistry:
     def mini_wandb(self) -> MiniWandb:
         return self._mini_wandb
 
-    def register_agent(self, node_id: str, agent: NodeAgentProtocol) -> None:
+    def register_node_agent(self, node_id: str, agent: NodeAgentProtocol) -> None:
         self.agents[node_id] = agent
         logger.info("agent_registered node_id=%s", node_id)
 
-    def register_rank(
+    def register_training_rank(
         self,
         run_id: str,
         rank: int,

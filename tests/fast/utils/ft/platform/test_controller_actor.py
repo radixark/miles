@@ -142,10 +142,10 @@ class TestFtControllerActorProxy:
         return actor, harness
 
     @pytest.mark.anyio
-    async def test_register_rank_updates_placement(self) -> None:
+    async def test_register_training_rank_updates_placement(self) -> None:
         actor, harness = self._make_actor_with_harness()
 
-        await actor.register_rank(
+        await actor.register_training_rank(
             run_id="test-run", rank=0, world_size=2,
             node_id="node-0", exporter_address="http://node-0:9100",
         )
@@ -156,7 +156,7 @@ class TestFtControllerActorProxy:
     async def test_log_step_writes_to_mini_wandb(self) -> None:
         actor, harness = self._make_actor_with_harness()
 
-        await actor.register_rank(
+        await actor.register_training_rank(
             run_id="test-run", rank=0, world_size=1,
             node_id="node-0", exporter_address="http://node-0:9100",
         )

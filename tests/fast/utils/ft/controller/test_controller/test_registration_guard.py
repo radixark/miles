@@ -39,7 +39,7 @@ class TestRegistrationGuardNoRanks:
             detectors=[detector],
             registration_grace_ticks=0,
         )
-        harness.controller._rank_registry.register_rank(
+        harness.controller._rank_registry.register_training_rank(
             run_id="run-1", rank=0, world_size=1,
             node_id="node-0", exporter_address="http://node-0:9100",
         )
@@ -61,7 +61,7 @@ class TestRegistrationGraceTicks:
             detectors=[detector],
             registration_grace_ticks=3,
         )
-        harness.controller._rank_registry.register_rank(
+        harness.controller._rank_registry.register_training_rank(
             run_id="run-1", rank=0, world_size=1,
             node_id="node-0", exporter_address="http://node-0:9100",
         )
@@ -82,7 +82,7 @@ class TestRegistrationGraceTicks:
             detectors=[detector],
             registration_grace_ticks=2,
         )
-        harness.controller._rank_registry.register_rank(
+        harness.controller._rank_registry.register_training_rank(
             run_id="run-1", rank=0, world_size=1,
             node_id="node-0", exporter_address="http://node-0:9100",
         )

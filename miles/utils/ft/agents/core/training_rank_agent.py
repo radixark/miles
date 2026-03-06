@@ -57,7 +57,7 @@ class FtTrainingRankAgent(ControllerHandleMixin):
         self._iteration_child.set(0)
         self._phase_child.set(mn.PHASE_TO_NUMERIC["idle"])
 
-        self._register_rank()
+        self._register_training_rank()
 
     # ------------------------------------------------------------------
     # Factory
@@ -127,7 +127,7 @@ class FtTrainingRankAgent(ControllerHandleMixin):
     _REGISTER_MAX_ATTEMPTS = 3
     _REGISTER_RETRY_DELAY = 2.0
 
-    def _register_rank(self) -> None:
+    def _register_training_rank(self) -> None:
         if not self._run_id:
             logger.info("No MILES_FT_TRAINING_RUN_ID set, skipping rank registration")
             return
@@ -141,7 +141,7 @@ class FtTrainingRankAgent(ControllerHandleMixin):
 
         def _do_register() -> None:
             ray.get(
-                controller.register_rank.remote(
+                controller.register_training_rank.remote(
                     run_id=self._run_id,
                     rank=self._rank,
                     world_size=self._world_size,
@@ -154,7 +154,7 @@ class FtTrainingRankAgent(ControllerHandleMixin):
 
         result = retry_sync(
             func=_do_register,
-            description=f"register_rank({self._rank})",
+            description=f"register_training_rank({self._rank})",
             max_retries=self._REGISTER_MAX_ATTEMPTS,
             backoff_base=self._REGISTER_RETRY_DELAY,
             max_backoff=self._REGISTER_RETRY_DELAY,

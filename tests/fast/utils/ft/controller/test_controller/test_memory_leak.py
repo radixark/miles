@@ -28,7 +28,7 @@ def _register_n_nodes(
 ) -> None:
     world_size = len(node_ids)
     for rank, node_id in enumerate(node_ids):
-        rank_registry.register_rank(
+        rank_registry.register_training_rank(
             run_id=run_id,
             rank=rank,
             world_size=world_size,

@@ -50,7 +50,7 @@ def _make_diagnostic_test_env(
         diagnostic_scheduler=scheduler,
     )
     for node_id, agent in agents.items():
-        harness.rank_registry.register_agent(node_id, agent)
+        harness.rank_registry.register_node_agent(node_id, agent)
     _enter_recovery_and_skip_to_diagnosing(harness, scheduler)
     orch = harness.controller.recovery_manager.orchestrator
     assert orch is not None

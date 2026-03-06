@@ -25,7 +25,7 @@ class TestStepToLogStepFlow:
         harness = make_test_controller()
         run_id = "integ-megatron-1"
 
-        harness.rank_registry.register_rank(
+        harness.rank_registry.register_training_rank(
             run_id=run_id, rank=0, world_size=4,
             node_id="node-0", exporter_address="http://localhost:9999",
         )
@@ -41,15 +41,15 @@ class TestStepToLogStepFlow:
 
 class TestRegisterRankPlacement:
     @pytest.mark.anyio
-    async def test_register_rank_records_placement(self) -> None:
+    async def test_register_training_rank_records_placement(self) -> None:
         harness = make_test_controller()
         run_id = "integ-megatron-2"
 
-        harness.rank_registry.register_rank(
+        harness.rank_registry.register_training_rank(
             run_id=run_id, rank=0, world_size=4,
             node_id="node-0", exporter_address="http://node-0:9090",
         )
-        harness.rank_registry.register_rank(
+        harness.rank_registry.register_training_rank(
             run_id=run_id, rank=1, world_size=4,
             node_id="node-1", exporter_address="http://node-1:9090",
         )
@@ -59,14 +59,14 @@ class TestRegisterRankPlacement:
 
 class TestScrapeTargetRegistration:
     @pytest.mark.anyio
-    async def test_register_rank_adds_scrape_target(self) -> None:
+    async def test_register_training_rank_adds_scrape_target(self) -> None:
         harness = make_test_controller()
         agent = _make_agent(rank=0, world_size=4)
         try:
             run_id = "integ-megatron-3"
             exporter_address = agent.get_exporter_address()
 
-            harness.rank_registry.register_rank(
+            harness.rank_registry.register_training_rank(
                 run_id=run_id, rank=0, world_size=4,
                 node_id="node-0", exporter_address=exporter_address,
             )
@@ -85,7 +85,7 @@ class TestHeartbeatScrape:
             run_id = "integ-megatron-4"
             exporter_address = agent.get_exporter_address()
 
-            harness.rank_registry.register_rank(
+            harness.rank_registry.register_training_rank(
                 run_id=run_id, rank=0, world_size=4,
                 node_id="node-0", exporter_address=exporter_address,
             )
@@ -110,7 +110,7 @@ class TestRunIdClear:
         run_id_1 = "integ-megatron-run-1"
         run_id_2 = "integ-megatron-run-2"
 
-        harness.rank_registry.register_rank(
+        harness.rank_registry.register_training_rank(
             run_id=run_id_1, rank=0, world_size=2,
             node_id="node-0", exporter_address="http://localhost:9999",
         )
@@ -120,7 +120,7 @@ class TestRunIdClear:
         )
         assert harness.mini_wandb.latest(metric_name="loss") == 2.0
 
-        harness.rank_registry.register_rank(
+        harness.rank_registry.register_training_rank(
             run_id=run_id_2, rank=0, world_size=2,
             node_id="node-0", exporter_address="http://localhost:9999",
         )
