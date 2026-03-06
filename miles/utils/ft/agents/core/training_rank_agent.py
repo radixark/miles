@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class FtTrainingRankAgent(ControllerHandleMixin):
-    """Embedded fault-tolerance agent for Megatron training processes.
+    """Embedded fault-tolerance agent for each training rank.
 
     Each rank creates one instance. Exposes heartbeat gauges (iteration, phase)
     via a Prometheus HTTP exporter for the FtController to scrape.
