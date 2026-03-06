@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 import ray
 
 from miles.utils.ft.models import ControllerMode, RecoveryPhase
@@ -18,12 +17,6 @@ from tests.e2e.ft.conftest import (
     wait_for_training_pid,
     wait_for_training_stable,
 )
-
-pytestmark = [
-    pytest.mark.e2e,
-    pytest.mark.timeout(600),
-]
-
 
 async def test_repeated_crash_enters_diagnosing(
     ft_controller_handle: ray.actor.ActorHandle,

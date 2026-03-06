@@ -22,16 +22,12 @@ from tests.e2e.ft.conftest import (
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [
-    pytest.mark.e2e,
-    pytest.mark.timeout(900),
-]
-
 _HANG_TIMEOUT_MINUTES = 10
 _DETECTION_BUFFER_SECONDS = 60
 _MAX_DETECTION_SECONDS = _HANG_TIMEOUT_MINUTES * 60 + _DETECTION_BUFFER_SECONDS
 
 
+@pytest.mark.timeout(900)
 async def test_hang_detection_and_recovery(
     ft_controller_handle: ray.actor.ActorHandle,
     fault_injector: FaultInjectorFactory,

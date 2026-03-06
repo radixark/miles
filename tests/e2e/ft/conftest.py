@@ -28,6 +28,11 @@ from miles.utils.ft.protocols.platform import ft_controller_actor_name
 
 logger = logging.getLogger(__name__)
 
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.timeout(600),
+]
+
 _EXPECTED_CLUSTER_NODES = 3
 _ACTOR_POLL_INTERVAL: float = 5.0
 

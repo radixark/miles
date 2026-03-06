@@ -5,17 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import pytest
 import ray
 from miles.utils.ft.models import ControllerMode
 from tests.e2e.ft.conftest import get_iteration_count, get_status
 
 logger = logging.getLogger(__name__)
-
-pytestmark = [
-    pytest.mark.e2e,
-    pytest.mark.timeout(600),
-]
 
 # 50 iterations provides ~95% confidence to detect a per-iteration false-positive
 # rate >= 6%, but cannot reliably detect rates around 1%.  Increase to ~300 for

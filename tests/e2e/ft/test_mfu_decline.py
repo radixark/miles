@@ -34,15 +34,11 @@ from tests.e2e.ft.conftest import (
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [
-    pytest.mark.e2e,
-    pytest.mark.timeout(900),
-]
-
 _DETECTION_TIMEOUT = 600.0
 _POLL_INTERVAL = 10.0
 
 
+@pytest.mark.timeout(900)
 async def test_mfu_decline_detection(
     ft_controller_handle: ray.actor.ActorHandle,
     fault_injector: FaultInjectorFactory,
