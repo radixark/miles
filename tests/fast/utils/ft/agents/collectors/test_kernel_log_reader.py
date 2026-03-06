@@ -128,3 +128,45 @@ class TestDmesgSubprocessReader:
     def test_close_is_noop(self) -> None:
         reader = DmesgSubprocessReader()
         reader.close()
+
+
+class TestKmsgFileReaderRealFile:
+    """Test KmsgFileReader with real file I/O, no mocking of os.read."""
+
+    def test_seeks_past_existing_content(self, tmp_path: Path) -> None:
+        kmsg_file = tmp_path / "kmsg"
+        kmsg_file.write_text("old line 1\nold line 2\n")
+
+        reader = KmsgFileReader(kmsg_path=kmsg_file)
+        lines = reader.read_new_lines()
+        assert lines == []
+        reader.close()
+
+    def test_reads_appended_content(self, tmp_path: Path) -> None:
+        kmsg_file = tmp_path / "kmsg"
+        kmsg_file.write_text("")
+
+        reader = KmsgFileReader(kmsg_path=kmsg_file)
+
+        with open(kmsg_file, "a") as f:
+            f.write("new line 1\nnew line 2\n")
+
+        lines = reader.read_new_lines()
+        assert lines == ["new line 1", "new line 2"]
+        reader.close()
+
+    def test_multiple_appends_read_incrementally(self, tmp_path: Path) -> None:
+        kmsg_file = tmp_path / "kmsg"
+        kmsg_file.write_text("")
+
+        reader = KmsgFileReader(kmsg_path=kmsg_file)
+
+        with open(kmsg_file, "a") as f:
+            f.write("batch 1\n")
+        assert reader.read_new_lines() == ["batch 1"]
+
+        with open(kmsg_file, "a") as f:
+            f.write("batch 2\nbatch 3\n")
+        assert reader.read_new_lines() == ["batch 2", "batch 3"]
+
+        reader.close()
