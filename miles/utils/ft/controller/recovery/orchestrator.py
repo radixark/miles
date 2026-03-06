@@ -147,7 +147,8 @@ class RecoveryOrchestrator:
             RecoveryPhase.MONITORING: lambda: step_monitoring(ctx, self._training_job, self._mini_wandb),
             RecoveryPhase.DIAGNOSING: lambda: step_diagnosing(ctx, self._diagnostic_orchestrator, rank_pids_provider=self._rank_pids_provider),
             RecoveryPhase.EVICT_AND_RESTART: lambda: step_evict_and_restart(
-                ctx, self._node_manager, self._training_job, self._mini_wandb, on_new_run=self._on_new_run,
+                ctx, self._node_manager, self._training_job, self._mini_wandb,
+                notifier=self._notifier, on_new_run=self._on_new_run,
             ),
             RecoveryPhase.NOTIFY: lambda: step_notify(ctx, self._notifier),
         }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 from collections.abc import Callable
@@ -8,8 +7,7 @@ from datetime import datetime, timezone
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.helpers import (
-    get_already_bad_nodes,
-    retry_mark_node_bad,
+    evict_and_notify,
     safe_notify,
     stop_and_submit,
 )
@@ -139,37 +137,24 @@ async def step_evict_and_restart(
     node_manager: NodeManagerProtocol,
     training_job: TrainingJobProtocol,
     mini_wandb: MiniWandb,
+    notifier: NotificationProtocol | None = None,
     on_new_run: Callable[[str], None] | None = None,
 ) -> RecoveryPhase:
     if not ctx.bad_node_ids:
         logger.warning("evict_and_restart called with empty bad_node_ids — skipping to NOTIFY")
         return RecoveryPhase.NOTIFY
 
-    already_bad = await get_already_bad_nodes(node_manager)
-    nodes_to_mark = [nid for nid in ctx.bad_node_ids if nid not in already_bad]
-    if len(nodes_to_mark) < len(ctx.bad_node_ids):
-        logger.info(
-            "evict_skipped_already_bad skipped=%s",
-            sorted(set(ctx.bad_node_ids) - set(nodes_to_mark)),
-        )
-
-    results = await asyncio.gather(*(
-        retry_mark_node_bad(
-            node_manager, node_id=node_id, reason=f"recovery eviction: {ctx.trigger}",
-        )
-        for node_id in nodes_to_mark
-    ))
-    if not all(r.ok for r in results):
-        return RecoveryPhase.NOTIFY
-
-    success = await stop_and_submit(
-        training_job, excluded_node_ids=ctx.bad_node_ids, on_new_run=on_new_run,
+    success = await evict_and_notify(
+        node_manager=node_manager,
+        training_job=training_job,
+        bad_node_ids=ctx.bad_node_ids,
+        reason=f"recovery eviction: {ctx.trigger}",
+        notifier=notifier,
+        excluded_node_ids=ctx.bad_node_ids,
+        on_new_run=on_new_run,
+        fail_fast=True,
     )
-    if not success:
-        return RecoveryPhase.NOTIFY
-
-    logger.info("evict_and_restart_done bad_nodes=%s trigger=%s", ctx.bad_node_ids, ctx.trigger)
-    return RecoveryPhase.DONE
+    return RecoveryPhase.DONE if success else RecoveryPhase.NOTIFY
 
 
 # -------------------------------------------------------------------
