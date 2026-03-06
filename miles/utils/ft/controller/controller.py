@@ -46,7 +46,7 @@ class FtController:
         rank_registry: RankRegistry,
         mini_wandb: MiniWandb,
         scrape_target_manager: ScrapeTargetManagerProtocol | None,
-        node_agents: dict[str, NodeAgentProtocol],
+        agents: dict[str, NodeAgentProtocol],
         metric_store: MetricStoreProtocol,
         detectors: list[BaseFaultDetector],
         tick_interval: float,
@@ -58,7 +58,7 @@ class FtController:
         self._rank_registry = rank_registry
         self._mini_wandb = mini_wandb
         self._scrape_target_manager = scrape_target_manager
-        self._node_agents = node_agents
+        self._agents = agents
         self._detectors = detectors
         self._tick_interval = tick_interval
         self._controller_exporter = controller_exporter
@@ -85,13 +85,13 @@ class FtController:
         recovery_cooldown: RecoveryCooldown | None = None,
         registration_grace_ticks: int = 5,
     ) -> FtController:
-        node_agents: dict[str, NodeAgentProtocol] = {}
+        agents: dict[str, NodeAgentProtocol] = {}
         rank_registry = RankRegistry(scrape_target_manager=scrape_target_manager)
 
         resolved_scheduler: DiagnosticSchedulerProtocol = (
             diagnostic_scheduler
             or DiagnosticScheduler(
-                node_agents=node_agents,
+                agents=agents,
                 pipeline=["gpu"],
                 rank_pids_provider=lambda node_id: rank_registry.get_rank_pids_for_node(node_id),
             )
@@ -124,7 +124,7 @@ class FtController:
             rank_registry=rank_registry,
             mini_wandb=mini_wandb,
             scrape_target_manager=scrape_target_manager,
-            node_agents=node_agents,
+            agents=agents,
             metric_store=metric_store,
             detectors=detectors or [],
             tick_interval=tick_interval,
@@ -151,19 +151,15 @@ class FtController:
     def recovery_manager(self) -> RecoveryLifecycleManager:
         return self._recovery_manager
 
-    def register_node_agent(self, node_id: str, agent: NodeAgentProtocol) -> None:
-        self._node_agents[node_id] = agent
-        logger.info("agent_registered node_id=%s", node_id)
-
-    def _activate_run(self, run_id: str) -> None:
-        """Create a fresh RankRegistry for the new run and switch MiniWandb."""
-        self._rank_registry.cleanup()
-        self._rank_registry = RankRegistry(
-            run_id=run_id,
-            scrape_target_manager=self._scrape_target_manager,
-        )
-        self._mini_wandb.set_active_run_id(run_id)
-        logger.info("run_activated run_id=%s", run_id)
+    def register_node_agent(
+        self, node_id: str, agent: NodeAgentProtocol, exporter_address: str = "",
+    ) -> None:
+        self._agents[node_id] = agent
+        if exporter_address and self._scrape_target_manager is not None:
+            self._scrape_target_manager.add_scrape_target(
+                target_id=node_id, address=exporter_address,
+            )
+        logger.info("agent_registered node_id=%s exporter=%s", node_id, exporter_address)
 
     async def submit_initial_training(self) -> str:
         run_id = await self._training_job.submit_training()
@@ -203,6 +199,16 @@ class FtController:
             bad_nodes_confirmed=snap.bad_nodes_confirmed,
             latest_iteration=latest_iteration,
         )
+
+    def _activate_run(self, run_id: str) -> None:
+        """Create a fresh RankRegistry for the new run and switch MiniWandb."""
+        self._rank_registry.cleanup()
+        self._rank_registry = RankRegistry(
+            run_id=run_id,
+            scrape_target_manager=self._scrape_target_manager,
+        )
+        self._mini_wandb.set_active_run_id(run_id)
+        logger.info("run_activated run_id=%s", run_id)
 
     # ------------------------------------------------------------------
     # Tick loop
@@ -320,7 +326,7 @@ class FtController:
         if decision.action == ActionType.NONE:
             return
 
-        trigger_str = decision.trigger.value
+        trigger_str = decision.trigger.value if decision.trigger else "unknown"
         logger.info(
             "decision_event decision_action=%s trigger=%s bad_node_ids=%s run_id=%s tick=%d",
             decision.action.value, trigger_str, decision.bad_node_ids,
@@ -377,7 +383,7 @@ class FtController:
     # Service lifecycle
     # ------------------------------------------------------------------
 
-    async def _stop_services(self, scrape_task: asyncio.Task[None]) -> None:
+    async def _stop_services(self, scrape_task: asyncio.Task[None] | None) -> None:
         await stop_metric_store_task(self._metric_store, scrape_task)
         if self._controller_exporter is not None:
             self._controller_exporter.stop()
