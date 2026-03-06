@@ -3,9 +3,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.protocols.agents import DiagnosticProtocol
 
 
-class BaseDiagnostic(ABC):
+class BaseDiagnostic(DiagnosticProtocol, ABC):
     """Base class for all on-demand diagnostics.
 
     Subclasses implement run() to execute a diagnostic on a single node.
