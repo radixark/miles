@@ -235,7 +235,7 @@ class FtController:
             return
 
         ctx = self._build_detector_context(job_status)
-        decision = self._evaluate_detectors(ctx)
+        decision = self._run_detectors(ctx)
 
         logger.info(
             "loop_tick tick=%d active_run_id=%s decision_action=%s decision_reason=%s",
@@ -271,8 +271,8 @@ class FtController:
             job_status=job_status,
         )
 
-    def _evaluate_detectors(self, ctx: DetectorContext) -> Decision:
-        for decision in self._safe_evaluate_detectors(ctx):
+    def _run_detectors(self, ctx: DetectorContext) -> Decision:
+        for decision in self._run_detectors_raw(ctx):
             if decision.action != ActionType.NONE:
                 return decision
 
@@ -286,11 +286,11 @@ class FtController:
         """
         ctx = self._build_detector_context(job_status)
 
-        for decision in self._safe_evaluate_detectors(ctx, critical_only=True):
+        for decision in self._run_detectors_raw(ctx, critical_only=True):
             if decision.action == ActionType.MARK_BAD_AND_RESTART and decision.bad_node_ids:
                 self._recovery_manager.add_bad_nodes(decision.bad_node_ids)
 
-    def _safe_evaluate_detectors(
+    def _run_detectors_raw(
         self,
         ctx: DetectorContext,
         *,

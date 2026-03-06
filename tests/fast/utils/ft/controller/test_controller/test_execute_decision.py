@@ -32,7 +32,7 @@ class TestTickEmptyDetectorChain:
         harness = make_test_controller()
         await harness.controller._tick()
         ctx = make_detector_context(metric_store=harness.metric_store, mini_wandb=harness.mini_wandb)
-        decision = harness.controller._evaluate_detectors(ctx)
+        decision = harness.controller._run_detectors(ctx)
         assert decision.action == ActionType.NONE
 
 
@@ -45,7 +45,7 @@ class TestDetectorChain:
         )
 
         ctx = make_detector_context(metric_store=harness.metric_store, mini_wandb=harness.mini_wandb)
-        decision = harness.controller._evaluate_detectors(ctx)
+        decision = harness.controller._run_detectors(ctx)
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert none_detector.call_count == 1
         assert bad_detector.call_count == 1
@@ -58,7 +58,7 @@ class TestDetectorChain:
         )
 
         ctx = make_detector_context(metric_store=harness.metric_store, mini_wandb=harness.mini_wandb)
-        decision = harness.controller._evaluate_detectors(ctx)
+        decision = harness.controller._run_detectors(ctx)
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert bad_detector.call_count == 1
         assert trailing_detector.call_count == 0
@@ -71,7 +71,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[crashing, good])
 
         ctx = make_detector_context(metric_store=harness.metric_store, mini_wandb=harness.mini_wandb)
-        decision = harness.controller._evaluate_detectors(ctx)
+        decision = harness.controller._run_detectors(ctx)
 
         assert crashing.call_count == 1
         assert good.call_count == 1
@@ -83,7 +83,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[d1, d2])
 
         ctx = make_detector_context(metric_store=harness.metric_store, mini_wandb=harness.mini_wandb)
-        decision = harness.controller._evaluate_detectors(ctx)
+        decision = harness.controller._run_detectors(ctx)
 
         assert d1.call_count == 1
         assert d2.call_count == 1
