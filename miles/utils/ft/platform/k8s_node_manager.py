@@ -26,15 +26,6 @@ LABEL_KEY = _BASE_LABEL_KEY
 REASON_LABEL_KEY = _BASE_REASON_LABEL_KEY
 
 
-def _build_label_keys(label_prefix: str) -> tuple[str, str]:
-    if label_prefix:
-        return (
-            f"{_LABEL_DOMAIN}/{label_prefix}-{_BASE_DISABLED}",
-            f"{_LABEL_DOMAIN}/{label_prefix}-{_BASE_REASON}",
-        )
-    return _BASE_LABEL_KEY, _BASE_REASON_LABEL_KEY
-
-
 class K8sNodeManager:
     """Manage bad-node labels on Kubernetes nodes via the K8s API.
 
@@ -51,21 +42,6 @@ class K8sNodeManager:
         self._api_client: ApiClient | None = api_client
         self._core_v1: CoreV1Api | None = None
         self._label_key, self._reason_label_key = _build_label_keys(label_prefix)
-
-    async def _ensure_client(self) -> CoreV1Api:
-        if self._core_v1 is not None:
-            return self._core_v1
-
-        if self._api_client is None:
-            try:
-                k8s_config.load_incluster_config()
-            except k8s_config.ConfigException:
-                await k8s_config.load_kube_config()
-
-            self._api_client = ApiClient()
-
-        self._core_v1 = CoreV1Api(self._api_client)
-        return self._core_v1
 
     async def mark_node_bad(self, node_id: str, reason: str) -> None:
         elapsed = await self._patch_node_labels(
@@ -86,24 +62,6 @@ class K8sNodeManager:
             "unmark_node_bad node_id=%s elapsed_seconds=%.3f",
             node_id, elapsed,
         )
-
-    async def _patch_node_labels(
-        self,
-        node_id: str,
-        labels: dict[str, str | None],
-    ) -> float:
-        core_v1 = await self._ensure_client()
-        body = {"metadata": {"labels": labels}}
-
-        start = time.monotonic()
-        await retry_async_or_raise(
-            lambda: core_v1.patch_node(name=node_id, body=body),
-            description=f"patch_node({node_id})",
-            max_retries=_K8S_API_MAX_RETRIES,
-            per_call_timeout=_K8S_API_TIMEOUT_SECONDS,
-            backoff_base=_K8S_API_BACKOFF_BASE,
-        )
-        return time.monotonic() - start
 
     async def aclose(self) -> None:
         if self._api_client is not None:
@@ -130,3 +88,45 @@ class K8sNodeManager:
             len(names), elapsed,
         )
         return names
+
+    async def _ensure_client(self) -> CoreV1Api:
+        if self._core_v1 is not None:
+            return self._core_v1
+
+        if self._api_client is None:
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                await k8s_config.load_kube_config()
+
+            self._api_client = ApiClient()
+
+        self._core_v1 = CoreV1Api(self._api_client)
+        return self._core_v1
+
+    async def _patch_node_labels(
+        self,
+        node_id: str,
+        labels: dict[str, str | None],
+    ) -> float:
+        core_v1 = await self._ensure_client()
+        body = {"metadata": {"labels": labels}}
+
+        start = time.monotonic()
+        await retry_async_or_raise(
+            lambda: core_v1.patch_node(name=node_id, body=body),
+            description=f"patch_node({node_id})",
+            max_retries=_K8S_API_MAX_RETRIES,
+            per_call_timeout=_K8S_API_TIMEOUT_SECONDS,
+            backoff_base=_K8S_API_BACKOFF_BASE,
+        )
+        return time.monotonic() - start
+
+
+def _build_label_keys(label_prefix: str) -> tuple[str, str]:
+    if label_prefix:
+        return (
+            f"{_LABEL_DOMAIN}/{label_prefix}-{_BASE_DISABLED}",
+            f"{_LABEL_DOMAIN}/{label_prefix}-{_BASE_REASON}",
+        )
+    return _BASE_LABEL_KEY, _BASE_REASON_LABEL_KEY

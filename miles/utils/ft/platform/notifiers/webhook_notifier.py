@@ -22,10 +22,6 @@ class WebhookNotifier(abc.ABC):
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    @abc.abstractmethod
-    def _build_payload(self, title: str, content: str, severity: str) -> dict[str, Any]:
-        ...
-
     async def send(self, title: str, content: str, severity: str) -> None:
         logger.info(f"webhook send: {title=} {content=} {severity=}")
         payload = self._build_payload(title=title, content=content, severity=severity)
@@ -40,3 +36,7 @@ class WebhookNotifier(abc.ABC):
             max_retries=_MAX_RETRIES,
             backoff_base=_INITIAL_BACKOFF_SECONDS,
         )
+
+    @abc.abstractmethod
+    def _build_payload(self, title: str, content: str, severity: str) -> dict[str, Any]:
+        ...

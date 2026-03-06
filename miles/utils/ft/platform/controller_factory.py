@@ -46,122 +46,6 @@ class FtControllerConfig(FtBaseModel):
     tick_interval: float = 30.0
 
 
-def _build_platform_components(
-    platform: str,
-    ray_address: str,
-    entrypoint: str,
-    runtime_env: dict[str, Any] | None = None,
-    ft_id: str = "",
-    k8s_label_prefix: str = "",
-) -> tuple[StubNodeManager | K8sNodeManager, StubTrainingJob | RayTrainingJob]:
-    if platform == "stub":
-        return StubNodeManager(), StubTrainingJob()
-
-    if platform == "k8s-ray":
-        from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
-        from miles.utils.ft.platform.ray_training_job import RayTrainingJob
-        from ray.job_submission import JobSubmissionClient
-
-        node_manager = K8sNodeManager(label_prefix=k8s_label_prefix)
-        training_job = RayTrainingJob(
-            client=JobSubmissionClient(address=ray_address),
-            entrypoint=entrypoint,
-            runtime_env=runtime_env,
-            ft_id=ft_id,
-            k8s_label_prefix=k8s_label_prefix,
-        )
-        return node_manager, training_job
-
-    raise ValueError(f"Unknown platform: {platform}")
-
-
-_NOTIFIER_PLATFORM_CLASSES: dict[str, str] = {
-    "lark": "LarkWebhookNotifier",
-    "slack": "SlackWebhookNotifier",
-    "discord": "DiscordWebhookNotifier",
-}
-
-
-def _resolve_notify_config() -> tuple[str, str]:
-    """Return (platform, webhook_url) from environment variables.
-
-    Priority: MILES_FT_NOTIFY_PLATFORM + MILES_FT_NOTIFY_WEBHOOK_URL.
-    Fallback: MILES_FT_LARK_WEBHOOK_URL implies platform=lark.
-    """
-    webhook_url = (os.environ.get("MILES_FT_NOTIFY_WEBHOOK_URL") or "").strip()
-    notify_platform = (os.environ.get("MILES_FT_NOTIFY_PLATFORM") or "").strip().lower()
-
-    if webhook_url and notify_platform:
-        return notify_platform, webhook_url
-
-    if webhook_url and not notify_platform:
-        return "lark", webhook_url
-
-    legacy_url = (os.environ.get("MILES_FT_LARK_WEBHOOK_URL") or "").strip()
-    if legacy_url:
-        return "lark", legacy_url
-
-    return notify_platform or "lark", ""
-
-
-def _get_notifier_class(notify_platform: str) -> type[WebhookNotifier]:
-    from miles.utils.ft.platform.notifiers import (
-        DiscordWebhookNotifier,
-        LarkWebhookNotifier,
-        SlackWebhookNotifier,
-    )
-
-    registry: dict[str, type[WebhookNotifier]] = {
-        "lark": LarkWebhookNotifier,
-        "slack": SlackWebhookNotifier,
-        "discord": DiscordWebhookNotifier,
-    }
-    cls = registry.get(notify_platform)
-    if cls is None:
-        raise ValueError(
-            f"Unknown notify platform: {notify_platform!r}. "
-            f"Supported: {sorted(registry)}"
-        )
-    return cls
-
-
-def _build_notifier(platform: str) -> WebhookNotifier | StubNotifier | None:
-    notify_platform, webhook_url = _resolve_notify_config()
-    if webhook_url:
-        cls = _get_notifier_class(notify_platform)
-        return cls(webhook_url=webhook_url)
-
-    if platform == "stub":
-        return StubNotifier()
-
-    logger.warning(
-        "No notifier configured for platform=%s "
-        "(MILES_FT_NOTIFY_WEBHOOK_URL / MILES_FT_LARK_WEBHOOK_URL not set). "
-        "Recovery alerts will not be delivered.",
-        platform,
-    )
-    return None
-
-
-def _build_metric_store(
-    config: FtControllerConfig,
-    controller_exporter: ControllerExporter,
-) -> tuple[MiniPrometheus | PrometheusClient, MiniPrometheus | None]:
-    """Return (metric_store, scrape_target_manager) based on config backend."""
-    if config.metric_store_backend == "mini":
-        mini_prom = MiniPrometheus(config=MiniPrometheusConfig())
-        mini_prom.add_scrape_target(
-            target_id="controller",
-            address=controller_exporter.address,
-        )
-        return mini_prom, mini_prom
-
-    if config.metric_store_backend == "prometheus":
-        return PrometheusClient(url=config.prometheus_url), None
-
-    raise ValueError(f"Unknown metric-store-backend: {config.metric_store_backend}")
-
-
 _NOTIFIER_SENTINEL: object = object()
 
 
@@ -248,3 +132,119 @@ def build_ft_controller(
         controller_exporter=controller_exporter,
         diagnostic_scheduler=diagnostic_scheduler_override,
     )
+
+
+def _build_platform_components(
+    platform: str,
+    ray_address: str,
+    entrypoint: str,
+    runtime_env: dict[str, Any] | None = None,
+    ft_id: str = "",
+    k8s_label_prefix: str = "",
+) -> tuple[StubNodeManager | K8sNodeManager, StubTrainingJob | RayTrainingJob]:
+    if platform == "stub":
+        return StubNodeManager(), StubTrainingJob()
+
+    if platform == "k8s-ray":
+        from miles.utils.ft.platform.k8s_node_manager import K8sNodeManager
+        from miles.utils.ft.platform.ray_training_job import RayTrainingJob
+        from ray.job_submission import JobSubmissionClient
+
+        node_manager = K8sNodeManager(label_prefix=k8s_label_prefix)
+        training_job = RayTrainingJob(
+            client=JobSubmissionClient(address=ray_address),
+            entrypoint=entrypoint,
+            runtime_env=runtime_env,
+            ft_id=ft_id,
+            k8s_label_prefix=k8s_label_prefix,
+        )
+        return node_manager, training_job
+
+    raise ValueError(f"Unknown platform: {platform}")
+
+
+_NOTIFIER_PLATFORM_CLASSES: dict[str, str] = {
+    "lark": "LarkWebhookNotifier",
+    "slack": "SlackWebhookNotifier",
+    "discord": "DiscordWebhookNotifier",
+}
+
+
+def _build_notifier(platform: str) -> WebhookNotifier | StubNotifier | None:
+    notify_platform, webhook_url = _resolve_notify_config()
+    if webhook_url:
+        cls = _get_notifier_class(notify_platform)
+        return cls(webhook_url=webhook_url)
+
+    if platform == "stub":
+        return StubNotifier()
+
+    logger.warning(
+        "No notifier configured for platform=%s "
+        "(MILES_FT_NOTIFY_WEBHOOK_URL / MILES_FT_LARK_WEBHOOK_URL not set). "
+        "Recovery alerts will not be delivered.",
+        platform,
+    )
+    return None
+
+
+def _resolve_notify_config() -> tuple[str, str]:
+    """Return (platform, webhook_url) from environment variables.
+
+    Priority: MILES_FT_NOTIFY_PLATFORM + MILES_FT_NOTIFY_WEBHOOK_URL.
+    Fallback: MILES_FT_LARK_WEBHOOK_URL implies platform=lark.
+    """
+    webhook_url = (os.environ.get("MILES_FT_NOTIFY_WEBHOOK_URL") or "").strip()
+    notify_platform = (os.environ.get("MILES_FT_NOTIFY_PLATFORM") or "").strip().lower()
+
+    if webhook_url and notify_platform:
+        return notify_platform, webhook_url
+
+    if webhook_url and not notify_platform:
+        return "lark", webhook_url
+
+    legacy_url = (os.environ.get("MILES_FT_LARK_WEBHOOK_URL") or "").strip()
+    if legacy_url:
+        return "lark", legacy_url
+
+    return notify_platform or "lark", ""
+
+
+def _get_notifier_class(notify_platform: str) -> type[WebhookNotifier]:
+    from miles.utils.ft.platform.notifiers import (
+        DiscordWebhookNotifier,
+        LarkWebhookNotifier,
+        SlackWebhookNotifier,
+    )
+
+    registry: dict[str, type[WebhookNotifier]] = {
+        "lark": LarkWebhookNotifier,
+        "slack": SlackWebhookNotifier,
+        "discord": DiscordWebhookNotifier,
+    }
+    cls = registry.get(notify_platform)
+    if cls is None:
+        raise ValueError(
+            f"Unknown notify platform: {notify_platform!r}. "
+            f"Supported: {sorted(registry)}"
+        )
+    return cls
+
+
+def _build_metric_store(
+    config: FtControllerConfig,
+    controller_exporter: ControllerExporter,
+) -> tuple[MiniPrometheus | PrometheusClient, MiniPrometheus | None]:
+    """Return (metric_store, scrape_target_manager) based on config backend."""
+    if config.metric_store_backend == "mini":
+        mini_prom = MiniPrometheus(config=MiniPrometheusConfig())
+        mini_prom.add_scrape_target(
+            target_id="controller",
+            address=controller_exporter.address,
+        )
+        return mini_prom, mini_prom
+
+    if config.metric_store_backend == "prometheus":
+        return PrometheusClient(url=config.prometheus_url), None
+
+    raise ValueError(f"Unknown metric-store-backend: {config.metric_store_backend}")
