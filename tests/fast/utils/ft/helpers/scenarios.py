@@ -86,6 +86,36 @@ async def wait_for_mode_transition(
     raise TimeoutError(f"Mode transition to {target_mode} did not complete within {timeout}s")
 
 
+async def wait_for_recovery_phase(
+    handle: ray.actor.ActorHandle,
+    phase: RecoveryPhase,
+    timeout: float = 120.0,
+    poll_interval: float = 0.5,
+) -> ControllerStatus:
+    """Poll until recovery_phase matches the target phase."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = get_status(handle)
+        if status.recovery_phase == phase:
+            return status
+        await _async_sleep(poll_interval)
+    raise TimeoutError(f"Recovery phase did not reach {phase} within {timeout}s")
+
+
+async def wait_for_recovery_complete(
+    handle: ray.actor.ActorHandle,
+    timeout: float = 120.0,
+    poll_interval: float = 0.5,
+) -> ControllerStatus:
+    """Poll until mode returns to MONITORING (recovery finished)."""
+    return await wait_for_mode(
+        handle=handle,
+        target_mode=ControllerMode.MONITORING,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
+
+
 def assert_phase_path_contains(
     status: ControllerStatus,
     required: list[RecoveryPhase],
@@ -112,6 +142,8 @@ async def scenario_transient_crash(
     stable_iterations: int = 3,
     stable_timeout: float = 60.0,
     recovery_timeout: float = 120.0,
+    post_recovery_iterations: int = 0,
+    post_recovery_timeout: float = 60.0,
 ) -> ControllerStatus:
     """Single crash → auto-recovery → training resumes.
 
@@ -138,34 +170,120 @@ async def scenario_transient_crash(
     assert status.mode == ControllerMode.MONITORING
     assert status.bad_nodes == []
 
-    return status
+    if post_recovery_iterations > 0:
+        await wait_for_training_stable(
+            handle=handle,
+            n_iterations=post_recovery_iterations,
+            timeout=post_recovery_timeout,
+        )
+
+    final = get_status(handle)
+    assert_phase_path_contains(final, [
+        RecoveryPhase.CHECK_ALERTS,
+        RecoveryPhase.REATTEMPTING,
+        RecoveryPhase.MONITORING,
+        RecoveryPhase.DONE,
+    ])
+
+    return final
 
 
 async def scenario_no_false_positive(
     handle: ray.actor.ActorHandle,
     *,
-    observation_ticks: int = 30,
-    poll_interval: float = 0.2,
+    observation_iterations: int | None = None,
+    observation_ticks: int | None = None,
+    timeout: float = 60.0,
+    poll_interval: float = 0.5,
 ) -> ControllerStatus:
-    """Let the controller run for N ticks with no injected faults.
+    """Let the controller run with no injected faults.
 
     Verify it stays in MONITORING mode and never enters recovery.
+    Exactly one of observation_iterations (E2E) or observation_ticks (local_ray)
+    must be provided.
     """
-    initial = get_status(handle)
-    target_ticks = initial.tick_count + observation_ticks
+    assert (observation_iterations is None) != (observation_ticks is None), (
+        "Exactly one of observation_iterations or observation_ticks must be provided"
+    )
 
-    deadline = time.monotonic() + observation_ticks * poll_interval * 3
+    initial = get_status(handle)
+
+    if observation_iterations is not None:
+        baseline = initial.latest_iteration or 0
+
+        def _reached(s: ControllerStatus) -> bool:
+            return (s.latest_iteration or 0) - baseline >= observation_iterations
+    else:
+        assert observation_ticks is not None
+        target_ticks = initial.tick_count + observation_ticks
+
+        def _reached(s: ControllerStatus) -> bool:
+            return s.tick_count >= target_ticks
+
+    deadline = time.monotonic() + timeout
 
     while time.monotonic() < deadline:
         status = get_status(handle)
         assert status.mode == ControllerMode.MONITORING, (
             f"Unexpected mode transition to {status.mode} at tick {status.tick_count}"
         )
-        if status.tick_count >= target_ticks:
+        if _reached(status):
             return status
         await _async_sleep(poll_interval)
 
-    raise TimeoutError(f"Controller did not reach {target_ticks} ticks")
+    raise TimeoutError(
+        f"Controller did not reach observation target within {timeout}s"
+    )
+
+
+async def scenario_repeated_crash(
+    handle: ray.actor.ActorHandle,
+    injector: FaultInjectionProtocol,
+    *,
+    stable_iterations: int = 3,
+    stable_timeout: float = 60.0,
+    recovery_timeout: float = 120.0,
+) -> ControllerStatus:
+    """Two consecutive crashes → escalation to DIAGNOSING → recovery.
+
+    Returns the final ControllerStatus after the second recovery completes.
+    """
+    if stable_iterations > 0:
+        await wait_for_training_stable(
+            handle=handle,
+            n_iterations=stable_iterations,
+            timeout=stable_timeout,
+        )
+
+    # First crash → recovery → back to MONITORING
+    await injector.crash_training()
+    await wait_for_mode_transition(
+        handle=handle,
+        target_mode=ControllerMode.MONITORING,
+        timeout=recovery_timeout,
+    )
+
+    # Second crash → should escalate to DIAGNOSING
+    await injector.crash_training()
+    await wait_for_recovery_phase(
+        handle=handle,
+        phase=RecoveryPhase.DIAGNOSING,
+        timeout=recovery_timeout,
+    )
+
+    # Wait for full recovery
+    final = await wait_for_recovery_complete(
+        handle=handle,
+        timeout=recovery_timeout,
+    )
+    assert final.mode == ControllerMode.MONITORING
+    assert_phase_path_contains(final, [
+        RecoveryPhase.DIAGNOSING,
+        RecoveryPhase.NOTIFY,
+        RecoveryPhase.DONE,
+    ])
+
+    return final
 
 
 async def scenario_hang_detection(
