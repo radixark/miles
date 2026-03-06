@@ -8,6 +8,7 @@ from miles.utils.ft.agents.collectors.disk import DiskCollector
 from miles.utils.ft.agents.collectors.gpu import GpuCollector
 from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
 from miles.utils.ft.agents.collectors.network import NetworkCollector
+from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.core.node_agent import FtNodeAgent
 from miles.utils.ft.agents.utils.controller_handle import get_controller_handle
 from miles.utils.ft.controller.diagnostics.gpu_diagnostic import GpuDiagnostic
@@ -18,6 +19,7 @@ from miles.utils.ft.controller.diagnostics.nccl.intra_machine import (
     IntraMachineCommDiagnostic,
 )
 from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.protocols.agents import DiagnosticProtocol
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)
@@ -55,15 +57,19 @@ class _FtNodeAgentActorCls:
         ft_id: str = "",
         num_gpus: int = 8,
         collect_interval_seconds: float = 10.0,
+        collectors_override: list[BaseCollector] | None = None,
+        diagnostics_override: list[DiagnosticProtocol] | None = None,
     ) -> None:
         self._node_id = node_id or socket.gethostname()
         self._ft_id = ft_id
 
+        collectors = collectors_override if collectors_override is not None else _build_default_collectors()
+        diagnostics = diagnostics_override if diagnostics_override is not None else _build_default_diagnostics(num_gpus=num_gpus)
         self._agent = FtNodeAgent(
             node_id=self._node_id,
-            collectors=_build_default_collectors(),
+            collectors=collectors,
             collect_interval_seconds=collect_interval_seconds,
-            diagnostics=_build_default_diagnostics(num_gpus=num_gpus),
+            diagnostics=diagnostics,
         )
 
     async def start(self) -> None:
