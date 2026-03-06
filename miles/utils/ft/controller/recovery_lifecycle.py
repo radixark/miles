@@ -16,10 +16,6 @@ logger = logging.getLogger(__name__)
 class RecoveryLifecycleManager:
     """Owns the full recovery lifecycle: cooldown gating, orchestrator creation,
     stepping, completion detection, and cleanup.
-
-    Replaces the scattered recovery state that was previously spread across
-    FtController (_recovery_orchestrator, _recovery_start_time,
-    _diagnosing_nodes, _last_phase_history, cooldown fields).
     """
 
     def __init__(
