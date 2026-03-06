@@ -33,12 +33,20 @@ class InterMachineCommDiagnostic(BaseDiagnostic):
         self._nccl_test_binary = nccl_test_binary
 
     async def run(
-        self, node_id: str, timeout_seconds: int = 180,
+        self,
+        node_id: str,
+        timeout_seconds: int = 180,
+        *,
+        master_addr: str | None = None,
+        master_port: int | None = None,
     ) -> DiagnosticResult:
+        addr = master_addr if master_addr is not None else self._master_addr
+        port = master_port if master_port is not None else self._master_port
+
         env = {**os.environ}
-        if self._master_addr:
-            env["MASTER_ADDR"] = self._master_addr
-        env["MASTER_PORT"] = str(self._master_port)
+        if addr:
+            env["MASTER_ADDR"] = addr
+        env["MASTER_PORT"] = str(port)
 
         return await run_nccl_test(
             cmd=build_nccl_test_cmd(binary=self._nccl_test_binary, num_gpus=self._num_gpus),

@@ -27,7 +27,7 @@ from miles.utils.ft.controller.diagnostics.nccl.orchestrator import (
 from miles.utils.ft.controller.diagnostics.nccl.intra_machine import (
     IntraMachineCommDiagnostic,
 )
-from miles.utils.ft.models._diagnostics import DiagnosticResult
+from miles.utils.ft.models.diagnostics import DiagnosticResult
 from tests.e2e.ft.conftest import gpu_nodes
 
 logger = logging.getLogger(__name__)
