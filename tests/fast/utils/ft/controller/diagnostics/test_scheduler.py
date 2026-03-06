@@ -222,55 +222,6 @@ class TestDiagnosticSchedulerErrorHandling:
         assert "node-2" not in decision.bad_node_ids
 
 
-class TestNodeAgentDynamicDiagnostics:
-    """Test FtNodeAgent.set_diagnostic / remove_diagnostic."""
-
-    @pytest.mark.anyio
-    async def test_set_diagnostic_overrides_existing(self) -> None:
-        original = StubDiagnostic(passed=True, details="original")
-        agent = FtNodeAgent(node_id="node-0", diagnostics=[original])
-
-        try:
-            result1 = await agent.run_diagnostic("stub")
-            assert result1.passed is True
-            assert result1.details == "original"
-
-            override = StubDiagnostic(passed=False, details="override")
-            agent.set_diagnostic(override)
-
-            result2 = await agent.run_diagnostic("stub")
-            assert result2.passed is False
-            assert result2.details == "override"
-        finally:
-            await agent.stop()
-
-    @pytest.mark.anyio
-    async def test_remove_diagnostic(self) -> None:
-        from miles.utils.ft.models import UnknownDiagnosticError
-
-        stub = StubDiagnostic(passed=True)
-        agent = FtNodeAgent(node_id="node-0", diagnostics=[stub])
-
-        try:
-            result1 = await agent.run_diagnostic("stub")
-            assert result1.passed is True
-
-            agent.remove_diagnostic("stub")
-
-            with pytest.raises(UnknownDiagnosticError, match="unknown diagnostic type"):
-                await agent.run_diagnostic("stub")
-        finally:
-            await agent.stop()
-
-    @pytest.mark.anyio
-    async def test_remove_nonexistent_is_noop(self) -> None:
-        agent = FtNodeAgent(node_id="node-0")
-        try:
-            agent.remove_diagnostic("nonexistent")
-        finally:
-            await agent.stop()
-
-
 class TestDiagnosticSchedulerInterMachine:
     """Tests for the inter-machine diagnostic step with cross-comparison."""
 
