@@ -1,28 +1,12 @@
 from __future__ import annotations
 
-from prometheus_client import CollectorRegistry
-
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.models import MetricSample
+from tests.fast.utils.ft.helpers.metric_injectors import get_sample_value as _scrape_value
 
 
 def _make_exporter() -> PrometheusExporter:
     return PrometheusExporter()
-
-
-def _scrape_value(
-    registry: CollectorRegistry,
-    metric_name: str,
-    labels: dict[str, str] | None = None,
-) -> float | None:
-    for family in registry.collect():
-        for sample in family.samples:
-            if sample.name != metric_name:
-                continue
-            if labels is not None and dict(sample.labels) != labels:
-                continue
-            return sample.value
-    return None
 
 
 class TestUpdateGauge:
