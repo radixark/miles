@@ -4,8 +4,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from miles.utils.ft.protocols.platform import JobStatus, NotificationProtocol, TrainingJobProtocol
-from miles.utils.ft.utils.retry import retry_async
+from miles.utils.ft.protocols.platform import JobStatus, NodeManagerProtocol, NotificationProtocol, TrainingJobProtocol
+from miles.utils.ft.utils.retry import RetryResult, retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,25 @@ async def stop_and_submit(
         on_new_run(result.value)
 
     return result.ok
+
+
+async def get_already_bad_nodes(node_manager: NodeManagerProtocol) -> set[str]:
+    try:
+        return set(await node_manager.get_bad_nodes())
+    except Exception:
+        logger.warning("get_bad_nodes_failed, proceeding without filter", exc_info=True)
+        return set()
+
+
+async def retry_mark_node_bad(
+    node_manager: NodeManagerProtocol,
+    node_id: str,
+    reason: str,
+) -> RetryResult[None]:
+    return await retry_async(
+        lambda: node_manager.mark_node_bad(node_id, reason=reason),
+        description=f"mark_node_bad({node_id})",
+    )
 
 
 async def safe_notify(

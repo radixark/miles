@@ -8,16 +8,17 @@ from datetime import datetime, timezone
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_orchestrator.helpers import (
+    get_already_bad_nodes,
+    retry_mark_node_bad,
     safe_notify,
     stop_and_submit,
 )
-from miles.utils.ft.utils.retry import RetryResult, retry_async
 from miles.utils.ft.controller.recovery_orchestrator.alert_checker import AlertChecker
 from miles.utils.ft.controller.recovery_orchestrator.context import (
     PENDING_TIMEOUT_SECONDS,
     RecoveryContext,
 )
-from miles.utils.ft.models.fault import ActionType, TriggerType
+from miles.utils.ft.models.fault import ActionType
 from miles.utils.ft.models.recovery import RecoveryPhase
 from miles.utils.ft.protocols.platform import (
     DiagnosticSchedulerProtocol,
@@ -142,7 +143,7 @@ async def step_evict_and_restart(
         logger.warning("evict_and_restart called with empty bad_node_ids — skipping to NOTIFY")
         return RecoveryPhase.NOTIFY
 
-    already_bad = await _get_already_bad_nodes(node_manager)
+    already_bad = await get_already_bad_nodes(node_manager)
     nodes_to_mark = [nid for nid in ctx.bad_node_ids if nid not in already_bad]
     if len(nodes_to_mark) < len(ctx.bad_node_ids):
         logger.info(
@@ -151,7 +152,9 @@ async def step_evict_and_restart(
         )
 
     results = await asyncio.gather(*(
-        _evict_node(node_manager, node_id=node_id, trigger=ctx.trigger)
+        retry_mark_node_bad(
+            node_manager, node_id=node_id, reason=f"recovery eviction: {ctx.trigger}",
+        )
         for node_id in nodes_to_mark
     ))
     if not all(r.ok for r in results):
@@ -252,24 +255,3 @@ def _iteration_progress(ctx: RecoveryContext, mini_wandb: MiniWandb) -> int:
         )
         return 0
     return raw
-
-
-async def _get_already_bad_nodes(node_manager: NodeManagerProtocol) -> set[str]:
-    try:
-        return set(await node_manager.get_bad_nodes())
-    except Exception:
-        logger.warning("get_bad_nodes_failed, proceeding without filter", exc_info=True)
-        return set()
-
-
-async def _evict_node(
-    node_manager: NodeManagerProtocol,
-    node_id: str,
-    trigger: TriggerType,
-) -> RetryResult[None]:
-    return await retry_async(
-        lambda: node_manager.mark_node_bad(
-            node_id, reason=f"recovery eviction: {trigger}",
-        ),
-        description=f"mark_node_bad({node_id})",
-    )

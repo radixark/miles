@@ -7,10 +7,11 @@ from dataclasses import dataclass, field
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_orchestrator.helpers import (
+    get_already_bad_nodes,
+    retry_mark_node_bad,
     safe_notify,
     stop_and_submit,
 )
-from miles.utils.ft.utils.retry import retry_async
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
 from miles.utils.ft.models.fault import Decision
 from miles.utils.ft.protocols.metrics import MetricQueryProtocol
@@ -47,7 +48,7 @@ async def handle_mark_bad_and_restart(
         decision.bad_node_ids, decision.reason,
     )
 
-    already_bad = await _get_already_bad_nodes(deps.node_manager)
+    already_bad = await get_already_bad_nodes(deps.node_manager)
     nodes_to_mark = [nid for nid in decision.bad_node_ids if nid not in already_bad]
     if len(nodes_to_mark) < len(decision.bad_node_ids):
         logger.info(
@@ -57,11 +58,8 @@ async def handle_mark_bad_and_restart(
 
     failed_nodes: list[str] = []
     for node_id in nodes_to_mark:
-        result = await retry_async(
-            lambda nid=node_id: deps.node_manager.mark_node_bad(
-                nid, reason=decision.reason,
-            ),
-            description=f"mark_node_bad({node_id})",
+        result = await retry_mark_node_bad(
+            deps.node_manager, node_id=node_id, reason=decision.reason,
         )
         if not result.ok:
             failed_nodes.append(node_id)
@@ -101,14 +99,6 @@ async def handle_enter_recovery(
         controller_exporter=deps.controller_exporter,
         on_new_run=deps.on_new_run,
     )
-
-
-async def _get_already_bad_nodes(node_manager: NodeManagerProtocol) -> set[str]:
-    try:
-        return set(await node_manager.get_bad_nodes())
-    except Exception:
-        logger.warning("get_bad_nodes_failed, proceeding without filter", exc_info=True)
-        return set()
 
 
 async def handle_notify_human(
