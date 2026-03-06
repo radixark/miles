@@ -12,7 +12,7 @@ from miles.utils.ft.controller.recovery_orchestrator.helpers import (
 )
 from miles.utils.ft.retry import retry_async
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
-from miles.utils.ft.models._fault import Decision
+from miles.utils.ft.models.fault import Decision
 from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.protocols.platform import (
     DiagnosticSchedulerProtocol,

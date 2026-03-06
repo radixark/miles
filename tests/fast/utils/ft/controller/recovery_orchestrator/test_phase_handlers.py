@@ -20,8 +20,8 @@ from miles.utils.ft.controller.recovery_orchestrator.phase_handlers import (
     step_notify,
     step_reattempting,
 )
-from miles.utils.ft.models._fault import ActionType, Decision, TriggerType
-from miles.utils.ft.models._recovery import RecoveryPhase
+from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
+from miles.utils.ft.models.recovery import RecoveryPhase
 from miles.utils.ft.protocols.platform import JobStatus
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticScheduler,

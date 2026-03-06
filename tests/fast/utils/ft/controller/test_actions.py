@@ -11,7 +11,7 @@ from miles.utils.ft.controller.actions import (
 )
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.models import ActionType, Decision
-from miles.utils.ft.models._fault import TriggerType
+from miles.utils.ft.models.fault import TriggerType
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticScheduler,
     FakeNodeManager,
