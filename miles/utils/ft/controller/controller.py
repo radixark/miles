@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterator
 
 from miles.utils.ft.controller.actions import (
     PlatformDeps,
@@ -279,16 +280,7 @@ class FtController:
         )
 
     def _evaluate_detectors(self, ctx: DetectorContext) -> Decision:
-        for detector in self._detectors:
-            try:
-                decision = detector.evaluate(ctx)
-            except Exception:
-                logger.error(
-                    "detector_evaluate_failed detector=%s",
-                    type(detector).__name__,
-                    exc_info=True,
-                )
-                continue
+        for decision in self._safe_evaluate_detectors(ctx):
             if decision.action != ActionType.NONE:
                 return decision
 
@@ -302,21 +294,27 @@ class FtController:
         """
         ctx = self._build_detector_context(job_status)
 
+        for decision in self._safe_evaluate_detectors(ctx, critical_only=True):
+            if decision.action == ActionType.MARK_BAD_AND_RESTART and decision.bad_node_ids:
+                self._recovery_manager.add_bad_nodes(decision.bad_node_ids)
+
+    def _safe_evaluate_detectors(
+        self,
+        ctx: DetectorContext,
+        *,
+        critical_only: bool = False,
+    ) -> Iterator[Decision]:
         for detector in self._detectors:
-            if not detector.is_critical:
+            if critical_only and not detector.is_critical:
                 continue
             try:
-                decision = detector.evaluate(ctx)
+                yield detector.evaluate(ctx)
             except Exception:
                 logger.error(
-                    "critical_detector_failed detector=%s",
+                    "detector_evaluate_failed detector=%s",
                     type(detector).__name__,
                     exc_info=True,
                 )
-                continue
-
-            if decision.action == ActionType.MARK_BAD_AND_RESTART and decision.bad_node_ids:
-                self._recovery_manager.add_bad_nodes(decision.bad_node_ids)
 
     # ------------------------------------------------------------------
     # Decision execution
