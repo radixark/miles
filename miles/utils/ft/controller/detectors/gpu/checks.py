@@ -6,13 +6,14 @@ import logging
 
 import polars as pl
 
+from miles.utils.ft.controller.detectors.gpu.xid_catalog.info import NON_AUTO_RECOVERABLE_XIDS
 from miles.utils.ft.models.fault import NodeFault
 from miles.utils.ft.models.metric_names import GPU_AVAILABLE, XID_CODE_RECENT
 from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 
 logger = logging.getLogger(__name__)
 
-CRITICAL_XID_CODES: frozenset[int] = frozenset({48, 62, 64, 79})
+CRITICAL_XID_CODES: frozenset[int] = NON_AUTO_RECOVERABLE_XIDS
 
 
 def check_gpu_faults(
