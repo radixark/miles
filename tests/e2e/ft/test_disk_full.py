@@ -1,4 +1,4 @@
-"""E2E Scenario 5: Disk full → hardware detection → eviction.
+"""E2E: Disk full → hardware detection → eviction.
 
 Validates the highest-confidence hardware detection path (~32.5% per ByteRobust):
   1. Fill disk on target node (write large file)

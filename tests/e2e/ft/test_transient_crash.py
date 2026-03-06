@@ -1,4 +1,4 @@
-"""E2E Scenario 1: Transient crash — single kill → auto-recovery.
+"""E2E: Transient crash — single kill → auto-recovery.
 
 The most common recovery path (~22.7% of failures per ByteRobust):
   1. Kill one training process

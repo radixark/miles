@@ -1,4 +1,4 @@
-"""E2E Scenario 4: MFU decline detection via GPU stress.
+"""E2E: MFU decline detection via GPU stress.
 
 Validates MfuDeclineDetector when GPU compute is contended:
   1. Wait for baseline MFU to stabilize

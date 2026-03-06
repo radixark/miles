@@ -1,4 +1,4 @@
-"""E2E Scenario 2: Repeated crash → reattempt fails → DIAGNOSING.
+"""E2E: Repeated crash → reattempt fails → DIAGNOSING.
 
 Validates the escalation path:
   1. Kill training process (first time)

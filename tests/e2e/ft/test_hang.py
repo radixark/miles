@@ -1,4 +1,4 @@
-"""E2E Scenario 3: Training hang via SIGSTOP → detection → recovery.
+"""E2E: Training hang via SIGSTOP → detection → recovery.
 
 Validates hang detection when iteration stops progressing:
   1. Send SIGSTOP to freeze a training process
