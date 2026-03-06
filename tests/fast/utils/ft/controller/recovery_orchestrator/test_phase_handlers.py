@@ -440,7 +440,7 @@ class TestStepNotify:
         assert len(notifier.calls) == 1
         title, content, _ = notifier.calls[0]
         assert title == "Recovery Alert"
-        assert "DIAGNOSING" in content
+        assert "diagnosing" in content
 
     @pytest.mark.anyio
     async def test_none_notifier_does_not_crash(self) -> None:
