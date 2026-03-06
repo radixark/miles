@@ -1,6 +1,7 @@
 """Local Ray: E2E-like shared scenarios — transient crash, no false positive."""
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Generator
 from typing import Any
@@ -53,10 +54,9 @@ def simulated_env(
     )
 
     controller.submit_and_run.remote()
-    time.sleep(0.5)
 
-    status = ray.get(controller.get_status.remote(), timeout=5)
-    run_id = status.active_run_id or ""
+    from tests.fast.utils.ft.integration.local_ray.conftest import poll_for_run_id
+    run_id = poll_for_run_id(controller)
 
     ray.get(controller.register_training_rank.remote(
         run_id=run_id, rank=0, world_size=1,
@@ -118,3 +118,40 @@ class TestNoFalsePositive:
 
         assert status.mode == ControllerMode.MONITORING
         assert status.recovery_in_progress is False
+
+
+class TestRepeatedCrash:
+    async def test_two_crashes_both_trigger_recovery(
+        self,
+        simulated_env: tuple[ray.actor.ActorHandle, ray.actor.ActorHandle, LocalRayFaultInjector],
+    ) -> None:
+        controller, state_actor, injector = simulated_env
+
+        await injector.crash_training()
+
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            s = get_status(controller)
+            if s.mode == ControllerMode.RECOVERY:
+                break
+            await asyncio.sleep(0.2)
+
+        deadline2 = time.monotonic() + 30.0
+        while time.monotonic() < deadline2:
+            s = get_status(controller)
+            if s.mode == ControllerMode.MONITORING and s.tick_count > 5:
+                break
+            await asyncio.sleep(0.3)
+
+        await injector.crash_training()
+
+        deadline3 = time.monotonic() + 15.0
+        entered_recovery_again = False
+        while time.monotonic() < deadline3:
+            s = get_status(controller)
+            if s.mode == ControllerMode.RECOVERY:
+                entered_recovery_again = True
+                break
+            await asyncio.sleep(0.2)
+
+        assert entered_recovery_again, "Second crash did not trigger recovery"

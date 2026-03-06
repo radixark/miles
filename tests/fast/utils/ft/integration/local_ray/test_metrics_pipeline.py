@@ -10,7 +10,15 @@ from prometheus_client import CollectorRegistry, Gauge
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 
-from tests.fast.utils.ft.integration.local_ray.conftest import get_status
+from miles.utils.ft.controller.detectors.nan_loss import NanLossDetector
+from miles.utils.ft.models import ControllerMode
+from miles.utils.ft.platform.controller_actor import FtControllerActor
+from miles.utils.ft.platform.controller_factory import FtControllerConfig
+from miles.utils.ft.platform.stubs import StubTrainingJob
+from miles.utils.ft.protocols.platform import ft_controller_actor_name
+
+from tests.fast.utils.ft.helpers.controller_fakes import FakeNodeManager
+from tests.fast.utils.ft.integration.local_ray.conftest import get_status, poll_for_run_id
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -115,3 +123,52 @@ class TestRankExporterRegisteredAsScrapeTarget:
             time.sleep(0.3)
         finally:
             exporter.shutdown()
+
+
+class TestNanLossTriggersRecovery:
+    """NaN loss sent via log_step → NanLossDetector → ENTER_RECOVERY (M4)."""
+
+    def test_nan_loss_triggers_recovery_via_detector(
+        self, local_ray: None,
+    ) -> None:
+        name = ft_controller_actor_name("nan-det")
+        handle = FtControllerActor.options(name=name).remote(
+            config=FtControllerConfig(platform="stub", tick_interval=0.05, ft_id="nan-det"),
+            node_manager_override=FakeNodeManager(),
+            training_job_override=StubTrainingJob(),
+            notifier_override=None,
+            detectors_override=[NanLossDetector()],
+        )
+
+        try:
+            handle.submit_and_run.remote()
+            run_id = poll_for_run_id(handle)
+
+            ray.get(handle.register_training_rank.remote(
+                run_id=run_id, rank=0, world_size=1,
+                node_id="nan-node", exporter_address="http://nan-node:9090",
+            ), timeout=5)
+
+            ray.get(handle.log_step.remote(
+                run_id=run_id, step=1, metrics={"loss": float("nan")},
+            ), timeout=5)
+
+            deadline = time.monotonic() + 15.0
+            entered_recovery = False
+            while time.monotonic() < deadline:
+                s = get_status(handle)
+                if s.mode == ControllerMode.RECOVERY:
+                    entered_recovery = True
+                    break
+                time.sleep(0.2)
+
+            assert entered_recovery, "NanLossDetector did not trigger recovery"
+        finally:
+            try:
+                ray.get(handle.shutdown.remote(), timeout=5)
+            except Exception:
+                pass
+            try:
+                ray.kill(ray.get_actor(name), no_restart=True)
+            except ValueError:
+                pass
