@@ -116,17 +116,9 @@ class DiagnosticScheduler(DiagnosticSchedulerProtocol):
             if not remaining_agents:
                 break
 
-            if diagnostic_type == InterMachineCommDiagnostic.diagnostic_type:
-                bad_node_ids = await self._inter_machine.run(
-                    node_ids=list(remaining_agents.keys()),
-                    timeout_seconds=self._default_timeout_seconds,
-                )
-            else:
-                bad_node_ids, remaining_agents = await self._run_step(
-                    diagnostic_type=diagnostic_type,
-                    agents=remaining_agents,
-                    timeout_seconds=self._default_timeout_seconds,
-                )
+            bad_node_ids, remaining_agents = await self._run_pipeline_step(
+                diagnostic_type, remaining_agents,
+            )
 
             if bad_node_ids:
                 logger.info(
@@ -143,6 +135,28 @@ class DiagnosticScheduler(DiagnosticSchedulerProtocol):
         return Decision(
             action=ActionType.NOTIFY_HUMAN,
             reason="all diagnostics passed — no bad nodes found",
+        )
+
+    # ------------------------------------------------------------------
+    # Single pipeline step dispatch
+    # ------------------------------------------------------------------
+
+    async def _run_pipeline_step(
+        self,
+        diagnostic_type: str,
+        remaining_agents: dict[str, NodeAgentProtocol],
+    ) -> tuple[list[str], dict[str, NodeAgentProtocol]]:
+        if diagnostic_type == InterMachineCommDiagnostic.diagnostic_type:
+            bad_node_ids = await self._inter_machine.run(
+                node_ids=list(remaining_agents.keys()),
+                timeout_seconds=self._default_timeout_seconds,
+            )
+            return bad_node_ids, remaining_agents
+
+        return await self._run_step(
+            diagnostic_type=diagnostic_type,
+            agents=remaining_agents,
+            timeout_seconds=self._default_timeout_seconds,
         )
 
     # ------------------------------------------------------------------
