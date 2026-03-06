@@ -23,7 +23,7 @@ class ControllerExporter:
     """Exposes Controller operational metrics via a dedicated Prometheus HTTP endpoint.
 
     Uses an isolated CollectorRegistry to avoid polluting the global REGISTRY
-    shared by NodeAgent / MegatronAgent exporters.
+    shared by NodeAgent / FtTrainingRankAgent exporters.
     """
 
     def __init__(

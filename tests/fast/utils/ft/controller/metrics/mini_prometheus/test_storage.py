@@ -350,7 +350,7 @@ class TestMiniPrometheusIngestSamples:
         assert df["node_id"][0] == "node-42"
 
     def test_ingest_preserves_existing_node_id(self) -> None:
-        """When a metric already carries a node_id label (e.g. from MegatronAgent),
+        """When a metric already carries a node_id label (e.g. from FtTrainingRankAgent),
         ingest_samples must NOT overwrite it with the scrape target_id."""
         store = MiniPrometheus()
         store.ingest_samples(

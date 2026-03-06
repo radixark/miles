@@ -1,6 +1,6 @@
-"""Unit tests for FtMegatronAgent.
+"""Unit tests for FtTrainingRankAgent.
 
-FtMegatronAgent is responsible only for heartbeat gauges (iteration + phase)
+FtTrainingRankAgent is responsible only for heartbeat gauges (iteration + phase)
 exposed via a Prometheus HTTP exporter, and rank registration with FtController.
 Training metrics are forwarded separately by FtTrackingAgent via tracking_utils.
 """
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from miles.utils.ft.agents.core.megatron_agent import FtMegatronAgent
+from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 
 
 def _parse_gauge(text: str, metric_name: str, labels: dict[str, str]) -> float:
@@ -31,16 +31,16 @@ def _parse_gauge(text: str, metric_name: str, labels: dict[str, str]) -> float:
 
 
 @pytest.fixture()
-def agent() -> Iterator[FtMegatronAgent]:
-    agent = FtMegatronAgent(rank=0, world_size=4)
+def agent() -> Iterator[FtTrainingRankAgent]:
+    agent = FtTrainingRankAgent(rank=0, world_size=4)
     yield agent
     agent.shutdown()
 
 
-class TestFtMegatronAgentExporter:
+class TestFtTrainingRankAgentExporter:
     @pytest.mark.anyio
     async def test_exporter_returns_prometheus_format(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         address = agent.get_exporter_address()
         async with httpx.AsyncClient() as client:
@@ -51,7 +51,7 @@ class TestFtMegatronAgentExporter:
 
     @pytest.mark.anyio
     async def test_exporter_address_has_port(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         address = agent.get_exporter_address()
         assert address.startswith("http://localhost:")
@@ -60,7 +60,7 @@ class TestFtMegatronAgentExporter:
 
     @pytest.mark.anyio
     async def test_initial_gauge_values(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         address = agent.get_exporter_address()
         async with httpx.AsyncClient() as client:
@@ -72,10 +72,10 @@ class TestFtMegatronAgentExporter:
         assert 'rank="0"' in text
 
 
-class TestFtMegatronAgentStep:
+class TestFtTrainingRankAgentStep:
     @pytest.mark.anyio
     async def test_step_updates_iteration_gauge(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         agent.step(iteration=42)
 
@@ -88,14 +88,14 @@ class TestFtMegatronAgentStep:
         assert "42.0" in text
 
     def test_step_does_not_interact_with_controller(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         agent._controller_handle = MagicMock()
         agent.step(iteration=10)
         agent._controller_handle.log_step.remote.assert_not_called()
 
     def test_step_warns_on_non_increasing_iteration(
-        self, agent: FtMegatronAgent, caplog: pytest.LogCaptureFixture
+        self, agent: FtTrainingRankAgent, caplog: pytest.LogCaptureFixture
     ) -> None:
         agent.step(iteration=5)
         agent.step(iteration=5)
@@ -103,7 +103,7 @@ class TestFtMegatronAgentStep:
         assert agent._last_iteration == 5
 
     def test_step_warns_on_decreasing_iteration(
-        self, agent: FtMegatronAgent, caplog: pytest.LogCaptureFixture
+        self, agent: FtTrainingRankAgent, caplog: pytest.LogCaptureFixture
     ) -> None:
         agent.step(iteration=5)
         agent.step(iteration=3)
@@ -112,7 +112,7 @@ class TestFtMegatronAgentStep:
 
     @pytest.mark.anyio
     async def test_step_iteration_monotonic_across_phases(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         """Simulate a full rollout cycle with split set_phase/step API."""
         address = agent.get_exporter_address()
@@ -140,10 +140,10 @@ class TestFtMegatronAgentStep:
         assert phase == 0.0
 
 
-class TestFtMegatronAgentSetPhase:
+class TestFtTrainingRankAgentSetPhase:
     @pytest.mark.anyio
     async def test_set_phase_updates_phase_gauge(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         agent.set_phase("checkpoint_saving")
 
@@ -157,7 +157,7 @@ class TestFtMegatronAgentSetPhase:
 
     @pytest.mark.anyio
     async def test_set_phase_idle_preserves_iteration(
-        self, agent: FtMegatronAgent
+        self, agent: FtTrainingRankAgent
     ) -> None:
         agent.step(iteration=10)
         agent.set_phase("idle")
@@ -176,7 +176,7 @@ class TestFtMegatronAgentSetPhase:
 @contextmanager
 def _registered_agent(
     mock_get_handle: MagicMock, **agent_kwargs: Any
-) -> Iterator[tuple[FtMegatronAgent, dict[str, Any]]]:
+) -> Iterator[tuple[FtTrainingRankAgent, dict[str, Any]]]:
     mock_controller = MagicMock()
     mock_ray_get = MagicMock()
     mock_get_handle.return_value = mock_controller
@@ -185,7 +185,7 @@ def _registered_agent(
     with patch.dict(
         "os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}
     ), patch("ray.get", mock_ray_get):
-        agent = FtMegatronAgent(**defaults)
+        agent = FtTrainingRankAgent(**defaults)
         try:
             call_kwargs = mock_controller.register_rank.remote.call_args[1]
             yield agent, call_kwargs
@@ -193,8 +193,8 @@ def _registered_agent(
             agent.shutdown()
 
 
-class TestFtMegatronAgentRegisterRank:
-    @patch("miles.utils.ft.agents.core.megatron_agent.FtMegatronAgent._get_controller_handle")
+class TestFtTrainingRankAgentRegisterRank:
+    @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
     def test_register_rank_calls_controller(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -204,7 +204,7 @@ class TestFtMegatronAgentRegisterRank:
             assert call_kwargs["rank"] == 0
             assert call_kwargs["world_size"] == 4
 
-    @patch("miles.utils.ft.agents.core.megatron_agent.FtMegatronAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
     def test_register_rank_retries_on_failure(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -225,14 +225,14 @@ class TestFtMegatronAgentRegisterRank:
         ), patch("ray.get", side_effect=ray_get_side_effect), patch(
             "time.sleep"
         ):
-            agent = FtMegatronAgent(rank=0, world_size=4)
+            agent = FtTrainingRankAgent(rank=0, world_size=4)
             try:
                 assert call_count == 3
                 assert mock_controller.register_rank.remote.call_count == 3
             finally:
                 agent.shutdown()
 
-    @patch("miles.utils.ft.agents.core.megatron_agent.FtMegatronAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
     def test_register_rank_all_attempts_fail_no_exception(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -244,33 +244,33 @@ class TestFtMegatronAgentRegisterRank:
         ), patch(
             "ray.get", side_effect=RuntimeError("always fails")
         ), patch("time.sleep"):
-            agent = FtMegatronAgent(rank=2, world_size=4)
+            agent = FtTrainingRankAgent(rank=2, world_size=4)
             try:
                 assert mock_controller.register_rank.remote.call_count == 3
             finally:
                 agent.shutdown()
 
     def test_register_rank_skipped_without_run_id(self) -> None:
-        agent = FtMegatronAgent(rank=0, world_size=4)
+        agent = FtTrainingRankAgent(rank=0, world_size=4)
         try:
             assert agent._run_id == ""
         finally:
             agent.shutdown()
 
-    @patch("miles.utils.ft.agents.core.megatron_agent.FtMegatronAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
     def test_register_rank_skipped_when_controller_unavailable(
         self, mock_get_handle: MagicMock
     ) -> None:
         mock_get_handle.return_value = None
 
         with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}):
-            agent = FtMegatronAgent(rank=0, world_size=4)
+            agent = FtTrainingRankAgent(rank=0, world_size=4)
             try:
                 assert agent._run_id == "test-run-1"
             finally:
                 agent.shutdown()
 
-    @patch("miles.utils.ft.agents.core.megatron_agent.FtMegatronAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
     def test_register_rank_asserts_node_id_and_exporter_address(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -278,7 +278,7 @@ class TestFtMegatronAgentRegisterRank:
             assert call_kwargs["node_id"] == agent._node_id
             assert call_kwargs["exporter_address"] == agent.get_exporter_address()
 
-    @patch("miles.utils.ft.agents.core.megatron_agent.FtMegatronAgent._get_controller_handle")
+    @patch("miles.utils.ft.agents.core.training_rank_agent.FtTrainingRankAgent._get_controller_handle")
     def test_register_rank_includes_pid(
         self, mock_get_handle: MagicMock
     ) -> None:
@@ -288,29 +288,29 @@ class TestFtMegatronAgentRegisterRank:
             assert call_kwargs["pid"] == _os.getpid()
 
 
-class TestFtMegatronAgentFaultTolerance:
+class TestFtTrainingRankAgentFaultTolerance:
     def test_maybe_create_returns_agent_when_enabled(self) -> None:
-        agent = FtMegatronAgent.maybe_create(rank=0, world_size=4, enabled=True)
+        agent = FtTrainingRankAgent.maybe_create(rank=0, world_size=4, enabled=True)
         try:
             assert agent is not None
-            assert isinstance(agent, FtMegatronAgent)
+            assert isinstance(agent, FtTrainingRankAgent)
         finally:
             if agent is not None:
                 agent.shutdown()
 
     def test_maybe_create_returns_none_when_disabled(self) -> None:
-        agent = FtMegatronAgent.maybe_create(rank=0, world_size=4, enabled=False)
+        agent = FtTrainingRankAgent.maybe_create(rank=0, world_size=4, enabled=False)
         assert agent is None
 
     def test_maybe_create_returns_none_on_init_error(self) -> None:
         with patch.object(
-            FtMegatronAgent, "__init__", side_effect=RuntimeError("init failed")
+            FtTrainingRankAgent, "__init__", side_effect=RuntimeError("init failed")
         ):
-            agent = FtMegatronAgent.maybe_create(rank=0, world_size=4)
+            agent = FtTrainingRankAgent.maybe_create(rank=0, world_size=4)
             assert agent is None
 
     def test_maybe_create_without_run_id_still_creates(self) -> None:
-        agent = FtMegatronAgent.maybe_create(rank=0, world_size=4)
+        agent = FtTrainingRankAgent.maybe_create(rank=0, world_size=4)
         try:
             assert agent is not None
             assert agent._run_id == ""
@@ -319,7 +319,7 @@ class TestFtMegatronAgentFaultTolerance:
                 agent.shutdown()
 
     def test_step_exception_does_not_propagate(self) -> None:
-        agent = FtMegatronAgent(rank=0, world_size=4)
+        agent = FtTrainingRankAgent(rank=0, world_size=4)
         try:
             with patch.object(
                 agent, "_iteration_child", **{"set.side_effect": RuntimeError("boom")}

@@ -22,7 +22,7 @@ XID_CODE_RECENT = "miles_ft_xid_code_recent"
 XID_COUNT_TOTAL = "miles_ft_xid_count_total"
 KERNEL_EVENT_COUNT = "miles_ft_kernel_event_count"
 
-# Training heartbeat (MegatronAgent)
+# Training heartbeat (FtTrainingRankAgent)
 TRAINING_ITERATION = "miles_ft_training_iteration"
 TRAINING_PHASE = "miles_ft_training_phase"
 
@@ -31,7 +31,7 @@ TRAINING_JOB_STATUS = "miles_ft_training_job_status"
 TRAINING_LOSS_LATEST = "miles_ft_training_loss_latest"
 TRAINING_MFU_LATEST = "miles_ft_training_mfu_latest"
 
-# Training phase numeric encoding (shared between MegatronAgent and detectors)
+# Training phase numeric encoding (shared between FtTrainingRankAgent and detectors)
 PHASE_IDLE: float = 0.0
 PHASE_TRAINING: float = 1.0
 PHASE_CHECKPOINT_SAVING: float = 2.0

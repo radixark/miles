@@ -17,7 +17,7 @@ class PrometheusExporter:
     """Manages a Prometheus CollectorRegistry with an HTTP server for metric exposition.
 
     Used by both FtNodeAgent (dynamic metrics from collectors) and
-    FtMegatronAgent (pre-defined heartbeat gauges).
+    FtTrainingRankAgent (pre-defined heartbeat gauges).
     """
 
     def __init__(self) -> None:

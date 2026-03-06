@@ -16,7 +16,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
-from miles.utils.ft.agents.core.megatron_agent import FtMegatronAgent
+from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -104,7 +104,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
-        self._ft_agent = FtMegatronAgent.maybe_create(self.args)
+        self._ft_agent = FtTrainingRankAgent.maybe_create(self.args)
 
         if role == "critic":
             if self.args.offload_train:

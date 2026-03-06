@@ -37,7 +37,7 @@ from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
 if TYPE_CHECKING:
-    from miles.utils.ft.agents.core.megatron_agent import FtMegatronAgent
+    from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +501,7 @@ def train(
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
     parallel_state: ParallelState,
-    ft_agent: FtMegatronAgent | None = None,
+    ft_agent: FtTrainingRankAgent | None = None,
 ) -> None:
     """Run training over a rollout consisting of multiple steps.
 
@@ -515,7 +515,7 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
-        ft_agent: Optional FtMegatronAgent for fault tolerance heartbeat.
+        ft_agent: Optional FtTrainingRankAgent for fault tolerance heartbeat.
     """
     args = get_args()
 

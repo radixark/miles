@@ -15,7 +15,7 @@ from miles.utils.ft.retry import retry_sync
 logger = logging.getLogger(__name__)
 
 
-class FtMegatronAgent(ControllerHandleMixin):
+class FtTrainingRankAgent(ControllerHandleMixin):
     """Embedded fault-tolerance agent for Megatron training processes.
 
     Each rank creates one instance. Exposes heartbeat gauges (iteration, phase)
@@ -69,13 +69,13 @@ class FtMegatronAgent(ControllerHandleMixin):
         rank: int,
         world_size: int,
         enabled: bool = True,
-    ) -> FtMegatronAgent | None:
+    ) -> FtTrainingRankAgent | None:
         if not enabled:
             return None
         try:
             return cls(rank=rank, world_size=world_size)
         except Exception:
-            logger.warning("Failed to create FtMegatronAgent", exc_info=True)
+            logger.warning("Failed to create FtTrainingRankAgent", exc_info=True)
             return None
 
     # ------------------------------------------------------------------
@@ -93,7 +93,7 @@ class FtMegatronAgent(ControllerHandleMixin):
             self._phase_child.set(mn.PHASE_TO_NUMERIC[phase])
         except Exception:
             logger.warning(
-                "FtMegatronAgent.set_phase(%r) failed",
+                "FtTrainingRankAgent.set_phase(%r) failed",
                 phase,
                 exc_info=True,
             )
@@ -101,7 +101,7 @@ class FtMegatronAgent(ControllerHandleMixin):
     def step(self, iteration: int) -> None:
         if iteration <= self._last_iteration:
             logger.warning(
-                "FtMegatronAgent.step() non-increasing iteration: got %d, last was %d",
+                "FtTrainingRankAgent.step() non-increasing iteration: got %d, last was %d",
                 iteration,
                 self._last_iteration,
             )
@@ -112,7 +112,7 @@ class FtMegatronAgent(ControllerHandleMixin):
             self._iteration_child.set(self._last_iteration)
         except Exception:
             logger.warning(
-                "FtMegatronAgent.step() failed at iteration=%s",
+                "FtTrainingRankAgent.step() failed at iteration=%s",
                 iteration,
                 exc_info=True,
             )
