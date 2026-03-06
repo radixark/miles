@@ -196,6 +196,25 @@ class TestStopAndSubmit:
         assert result is True
         assert training_job._submitted
 
+    @pytest.mark.anyio
+    async def test_submit_called_exactly_once(self) -> None:
+        """stop_and_submit calls submit_training exactly once (no outer retry)."""
+        training_job = FakeTrainingJob()
+
+        result = await stop_and_submit(training_job)
+
+        assert result is True
+        assert training_job._submit_call_count == 1
+
+    @pytest.mark.anyio
+    async def test_submit_exception_returns_false_without_retry(self) -> None:
+        """When submit_training raises, stop_and_submit returns False without retrying."""
+        training_job = make_failing_training_job(fail_submit=True)
+
+        result = await stop_and_submit(training_job)
+
+        assert result is False
+
 
 class TestSlidingWindowThrottle:
     def test_not_throttled_below_max_count(self) -> None:
