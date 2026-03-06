@@ -686,3 +686,53 @@ class TestNotifyPhaseNoTimeoutLoop:
 
         assert orch.phase == RecoveryPhase.DONE
         assert orch.is_done()
+
+
+class TestUnmarkEvictedNodes:
+    @pytest.mark.anyio
+    async def test_unmark_clears_bad_labels(self) -> None:
+        orch, node_mgr, *_ = _make_orchestrator()
+        await node_mgr.mark_node_bad("node-0", reason="test")
+        await node_mgr.mark_node_bad("node-1", reason="test")
+        orch._context.bad_node_ids = ["node-0", "node-1"]
+
+        await orch.unmark_evicted_nodes()
+
+        assert not node_mgr.is_node_bad("node-0")
+        assert not node_mgr.is_node_bad("node-1")
+
+    @pytest.mark.anyio
+    async def test_unmark_no_bad_nodes_is_noop(self) -> None:
+        orch, node_mgr, *_ = _make_orchestrator()
+        orch._context.bad_node_ids = []
+
+        await orch.unmark_evicted_nodes()
+
+        assert await node_mgr.get_bad_nodes() == []
+
+    @pytest.mark.anyio
+    async def test_unmark_tolerates_failure(self) -> None:
+        """unmark_node_bad failure for one node should not prevent unmarking others."""
+        call_count = 0
+
+        class _PartiallyFailingNodeManager(FakeNodeManager):
+            async def unmark_node_bad(self, node_id: str) -> None:
+                nonlocal call_count
+                call_count += 1
+                if node_id == "node-fail":
+                    raise RuntimeError("K8s API error")
+                await super().unmark_node_bad(node_id)
+
+        node_mgr = _PartiallyFailingNodeManager()
+        await node_mgr.mark_node_bad("node-fail", reason="test")
+        await node_mgr.mark_node_bad("node-ok", reason="test")
+
+        orch, _, *rest = _make_orchestrator()
+        orch._node_manager = node_mgr
+        orch._context.bad_node_ids = ["node-fail", "node-ok"]
+
+        await orch.unmark_evicted_nodes()
+
+        assert call_count == 2
+        assert node_mgr.is_node_bad("node-fail")
+        assert not node_mgr.is_node_bad("node-ok")
