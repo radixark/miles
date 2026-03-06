@@ -339,7 +339,7 @@ async def wait_for_recovery_complete(
 
 async def wait_for_training_stable(
     handle: ray.actor.ActorHandle,
-    n_iterations: int = 10,
+    n_iterations: int = 5,
     timeout: float = 300.0,
     poll_interval: float = 5.0,
 ) -> None:

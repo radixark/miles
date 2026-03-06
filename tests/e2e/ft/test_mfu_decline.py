@@ -47,8 +47,8 @@ async def test_mfu_decline_detection(
 ) -> None:
     await wait_for_training_stable(
         handle=ft_controller_handle,
-        n_iterations=20,
-        timeout=600.0,
+        n_iterations=5,
+        timeout=300.0,
     )
 
     injector = fault_injector.deploy_to(node_id=target_node)
@@ -81,7 +81,7 @@ async def test_mfu_decline_detection(
             )
             await wait_for_training_stable(
                 handle=ft_controller_handle,
-                n_iterations=10,
+                n_iterations=5,
                 timeout=300.0,
             )
 

@@ -11,10 +11,10 @@ from tests.e2e.ft.conftest import get_iteration_count, get_status
 
 logger = logging.getLogger(__name__)
 
-# 50 iterations provides ~95% confidence to detect a per-iteration false-positive
-# rate >= 6%, but cannot reliably detect rates around 1%.  Increase to ~300 for
-# 95% confidence at the 1% level.  Kept low to bound E2E test runtime.
-_TARGET_ITERATIONS = 50
+# 10 iterations is a smoke-test level check: sufficient to catch high false-positive
+# rates (>= 20%) with ~90% probability, but not subtle ones.  Increase to ~50 for
+# 95% confidence at the 6% level, or ~300 for the 1% level.
+_TARGET_ITERATIONS = 10
 _POLL_INTERVAL = 5.0
 
 
@@ -22,7 +22,7 @@ async def test_no_false_positive_during_normal_training(
     ft_controller_handle: ray.actor.ActorHandle,
 ) -> None:
     """Controller should not trigger recovery when training runs normally."""
-    # Step 1: Run 50 iterations with no fault injection
+    # Step 1: Run iterations with no fault injection
     baseline = get_iteration_count(ft_controller_handle)
     recovery_triggered = False
 

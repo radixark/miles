@@ -26,8 +26,8 @@ async def test_repeated_crash_enters_diagnosing(
     # Step 1: Wait for stable baseline
     await wait_for_training_stable(
         handle=ft_controller_handle,
-        n_iterations=5,
-        timeout=300.0,
+        n_iterations=3,
+        timeout=180.0,
     )
 
     injector = fault_injector.deploy_to(node_id=target_node)

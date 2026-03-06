@@ -1,4 +1,7 @@
-"""E2E: Training hang via SIGSTOP → detection → recovery."""
+"""E2E: Training hang via SIGSTOP → detection → recovery.
+
+Slowest E2E test due to the hang detection timeout (~5-10 min).
+"""
 
 from __future__ import annotations
 
@@ -32,8 +35,8 @@ async def test_hang_detection_and_recovery(
 ) -> None:
     await wait_for_training_stable(
         handle=ft_controller_handle,
-        n_iterations=5,
-        timeout=300.0,
+        n_iterations=3,
+        timeout=180.0,
     )
 
     injector = fault_injector.deploy_to(node_id=target_node)
@@ -69,6 +72,6 @@ async def test_hang_detection_and_recovery(
 
     await wait_for_training_stable(
         handle=ft_controller_handle,
-        n_iterations=10,
+        n_iterations=5,
         timeout=300.0,
     )

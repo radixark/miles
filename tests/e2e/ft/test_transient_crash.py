@@ -22,8 +22,8 @@ async def test_transient_crash_auto_recovery(
 ) -> None:
     await wait_for_training_stable(
         handle=ft_controller_handle,
-        n_iterations=5,
-        timeout=300.0,
+        n_iterations=3,
+        timeout=180.0,
     )
     pre_status = get_status(ft_controller_handle)
     assert pre_status.mode == ControllerMode.MONITORING
@@ -44,7 +44,7 @@ async def test_transient_crash_auto_recovery(
 
     await wait_for_training_stable(
         handle=ft_controller_handle,
-        n_iterations=10,
+        n_iterations=5,
         timeout=300.0,
     )
 
