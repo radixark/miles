@@ -78,6 +78,11 @@ class RecoveryOrchestrator:
     def is_done(self) -> bool:
         return self._context.phase == RecoveryPhase.DONE
 
+    def force_notify(self, reason: str) -> None:
+        """Force-transition to NOTIFY phase, e.g. after an unrecoverable step error."""
+        logger.warning("recovery_force_notify reason=%s phase=%s", reason, self._context.phase.value)
+        self._transition(RecoveryPhase.NOTIFY)
+
     def add_bad_nodes(self, node_ids: list[str]) -> None:
         """Merge newly-discovered bad nodes into the eviction list.
 

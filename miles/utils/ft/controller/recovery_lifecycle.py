@@ -116,8 +116,12 @@ class RecoveryLifecycleManager:
         if self._orchestrator is None:
             return
 
-        await self._orchestrator.step()
-        self._diagnosing_nodes = set(self._orchestrator.bad_node_ids)
+        try:
+            await self._orchestrator.step()
+            self._diagnosing_nodes = set(self._orchestrator.bad_node_ids)
+        except Exception:
+            logger.error("recovery_step_failed, forcing NOTIFY", exc_info=True)
+            self._orchestrator.force_notify("recovery step exception")
 
         if self._orchestrator.is_done():
             self._complete_recovery()
