@@ -17,8 +17,8 @@ from miles.utils.ft.controller.recovery_orchestrator.phase_handlers import (
     step_notify,
     step_reattempting,
 )
-from miles.utils.ft.models.fault import TriggerType
-from miles.utils.ft.models.recovery import RecoveryPhase
+from miles.utils.ft.models._fault import TriggerType
+from miles.utils.ft.models._recovery import RecoveryPhase
 from miles.utils.ft.protocols.platform import (
     DiagnosticSchedulerProtocol,
     NodeManagerProtocol,
@@ -40,6 +40,7 @@ class RecoveryOrchestrator:
         notifier: NotificationProtocol | None,
         diagnostic_scheduler: DiagnosticSchedulerProtocol,
         controller_exporter: ControllerExporter | None = None,
+        on_new_run: Callable[[str], None] | None = None,
         global_timeout_seconds: int = 1800,
         monitoring_success_iterations: int = 10,
         monitoring_timeout_seconds: int = 600,
@@ -50,6 +51,7 @@ class RecoveryOrchestrator:
         self._notifier = notifier
         self._diagnostic_scheduler = diagnostic_scheduler
         self._controller_exporter = controller_exporter
+        self._on_new_run = on_new_run
         self._alert_checker = AlertChecker(metric_store=metric_store)
 
         self._context = RecoveryContext(
@@ -123,11 +125,11 @@ class RecoveryOrchestrator:
         ctx = self._context
         handlers: dict[RecoveryPhase, Callable[[], Awaitable[RecoveryPhase | None]]] = {
             RecoveryPhase.CHECK_ALERTS: lambda: step_check_alerts(ctx, self._alert_checker),
-            RecoveryPhase.REATTEMPTING: lambda: step_reattempting(ctx, self._training_job, self._mini_wandb),
+            RecoveryPhase.REATTEMPTING: lambda: step_reattempting(ctx, self._training_job, self._mini_wandb, on_new_run=self._on_new_run),
             RecoveryPhase.MONITORING: lambda: step_monitoring(ctx, self._training_job, self._mini_wandb),
             RecoveryPhase.DIAGNOSING: lambda: step_diagnosing(ctx, self._diagnostic_scheduler),
             RecoveryPhase.EVICT_AND_RESTART: lambda: step_evict_and_restart(
-                ctx, self._node_manager, self._training_job, self._mini_wandb,
+                ctx, self._node_manager, self._training_job, self._mini_wandb, on_new_run=self._on_new_run,
             ),
             RecoveryPhase.NOTIFY: lambda: step_notify(ctx, self._notifier),
         }

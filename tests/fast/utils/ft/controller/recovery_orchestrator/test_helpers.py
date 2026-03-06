@@ -1,12 +1,11 @@
-"""Tests for recovery_orchestrator/helpers.py (retry_async, stop_clear_submit)."""
+"""Tests for recovery_orchestrator/helpers.py (retry_async, stop_and_submit)."""
 from __future__ import annotations
 
 import asyncio
 
 import pytest
 
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery_orchestrator.helpers import stop_clear_submit
+from miles.utils.ft.controller.recovery_orchestrator.helpers import stop_and_submit
 from miles.utils.ft.retry import RetryResult, retry_async
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import FakeTrainingJob, make_failing_training_job
@@ -105,19 +104,16 @@ class TestRetryAsyncEdgePaths:
         assert sleep_durations[-1] == 30.0
 
 
-class TestStopClearSubmit:
+class TestStopAndSubmit:
     @pytest.mark.anyio
     async def test_happy_path_returns_true(self) -> None:
         training_job = FakeTrainingJob()
-        mini_wandb = MiniWandb()
-        mini_wandb.log_step(run_id="r", step=1, metrics={"loss": 1.0})
 
-        result = await stop_clear_submit(training_job, mini_wandb)
+        result = await stop_and_submit(training_job)
 
         assert result is True
         assert training_job._stopped
         assert training_job._submitted
-        assert mini_wandb.latest(metric_name="loss") is None
 
     @pytest.mark.anyio
     async def test_stop_failure_but_job_stopped_still_submits(self) -> None:
@@ -125,7 +121,7 @@ class TestStopClearSubmit:
             fail_stop=True, status_sequence=[JobStatus.STOPPED],
         )
 
-        result = await stop_clear_submit(training_job, MiniWandb())
+        result = await stop_and_submit(training_job)
 
         assert result is True
         assert training_job._submitted
@@ -136,7 +132,7 @@ class TestStopClearSubmit:
             fail_stop=True, status_sequence=[JobStatus.RUNNING],
         )
 
-        result = await stop_clear_submit(training_job, MiniWandb())
+        result = await stop_and_submit(training_job)
 
         assert result is False
         assert not training_job._submitted
@@ -144,9 +140,8 @@ class TestStopClearSubmit:
     @pytest.mark.anyio
     async def test_submit_failure_returns_false(self) -> None:
         training_job = make_failing_training_job(fail_submit=True)
-        mini_wandb = MiniWandb()
 
-        result = await stop_clear_submit(training_job, mini_wandb)
+        result = await stop_and_submit(training_job)
 
         assert result is False
         assert training_job._stopped
@@ -154,36 +149,38 @@ class TestStopClearSubmit:
     @pytest.mark.anyio
     async def test_excluded_node_ids_passed_to_submit(self) -> None:
         training_job = FakeTrainingJob()
-        mini_wandb = MiniWandb()
 
-        result = await stop_clear_submit(
-            training_job, mini_wandb, excluded_node_ids=["node-x", "node-y"],
+        result = await stop_and_submit(
+            training_job, excluded_node_ids=["node-x", "node-y"],
         )
 
         assert result is True
         assert training_job._last_excluded_node_ids == ["node-x", "node-y"]
 
     @pytest.mark.anyio
-    async def test_clear_happens_after_successful_submit(self) -> None:
+    async def test_on_new_run_called_after_successful_submit(self) -> None:
         training_job = FakeTrainingJob()
-        mini_wandb = MiniWandb()
-        mini_wandb.log_step(run_id="r", step=1, metrics={"loss": 2.0})
+        calls: list[str] = []
 
-        result = await stop_clear_submit(training_job, mini_wandb)
+        result = await stop_and_submit(
+            training_job, on_new_run=lambda run_id: calls.append(run_id),
+        )
 
         assert result is True
-        assert mini_wandb.latest(metric_name="loss") is None
+        assert len(calls) == 1
+        assert calls[0].startswith("fake-")
 
     @pytest.mark.anyio
-    async def test_clear_not_called_on_submit_failure(self) -> None:
+    async def test_on_new_run_not_called_on_submit_failure(self) -> None:
         training_job = make_failing_training_job(fail_submit=True)
-        mini_wandb = MiniWandb()
-        mini_wandb.log_step(run_id="r", step=1, metrics={"loss": 3.0})
+        calls: list[str] = []
 
-        result = await stop_clear_submit(training_job, mini_wandb)
+        result = await stop_and_submit(
+            training_job, on_new_run=lambda run_id: calls.append(run_id),
+        )
 
         assert result is False
-        assert mini_wandb.latest(metric_name="loss") == 3.0
+        assert len(calls) == 0
 
     @pytest.mark.anyio
     async def test_stop_failure_job_failed_still_submits(self) -> None:
@@ -191,7 +188,7 @@ class TestStopClearSubmit:
             fail_stop=True, status_sequence=[JobStatus.FAILED],
         )
 
-        result = await stop_clear_submit(training_job, MiniWandb())
+        result = await stop_and_submit(training_job)
 
         assert result is True
         assert training_job._submitted

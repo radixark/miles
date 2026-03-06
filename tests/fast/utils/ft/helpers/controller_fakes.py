@@ -10,7 +10,6 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.rank_registry import RankRegistry
 from miles.utils.ft.controller.recovery_cooldown import RecoveryCooldown
 from miles.utils.ft.models import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import (
@@ -168,7 +167,6 @@ class ControllerTestHarness(NamedTuple):
     mini_wandb: MiniWandb
     controller_exporter: ControllerExporter
     notifier: FakeNotifier | None
-    rank_registry: RankRegistry
 
 
 def make_test_controller(
@@ -198,10 +196,6 @@ def make_test_controller(
     training_job = FakeTrainingJob(status_sequence=status_sequence)
     metric_store = MiniPrometheus(config=MiniPrometheusConfig())
     mini_wandb = MiniWandb()
-    rank_registry = RankRegistry(
-        mini_wandb=mini_wandb,
-        scrape_target_manager=metric_store,
-    )
 
     if controller_exporter is None:
         controller_exporter = ControllerExporter(registry=CollectorRegistry())
@@ -215,7 +209,8 @@ def make_test_controller(
         node_manager=node_manager,
         training_job=training_job,
         metric_store=metric_store,
-        rank_registry=rank_registry,
+        mini_wandb=mini_wandb,
+        scrape_target_manager=metric_store,
         notifier=real_notifier,
         detectors=detectors,
         tick_interval=tick_interval,
@@ -226,7 +221,8 @@ def make_test_controller(
     )
 
     if register_dummy_rank:
-        rank_registry.rank_placement[0] = "node-0"
+        controller._activate_run("dummy-run")
+        controller.rank_registry.rank_placement[0] = "node-0"
 
     return ControllerTestHarness(
         controller=controller,
@@ -236,7 +232,6 @@ def make_test_controller(
         mini_wandb=mini_wandb,
         controller_exporter=controller_exporter,
         notifier=real_notifier,
-        rank_registry=rank_registry,
     )
 
 

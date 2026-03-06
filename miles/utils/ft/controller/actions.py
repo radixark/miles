@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_orchestrator.helpers import (
     safe_notify,
-    stop_clear_submit,
+    stop_and_submit,
 )
 from miles.utils.ft.retry import retry_async
 from miles.utils.ft.controller.recovery_orchestrator import RecoveryOrchestrator
@@ -34,6 +35,7 @@ class PlatformDeps:
     notifier: NotificationProtocol | None
     diagnostic_scheduler: DiagnosticSchedulerProtocol
     controller_exporter: ControllerExporter | None
+    on_new_run: Callable[[str], None] | None = field(default=None)
 
 
 async def handle_mark_bad_and_restart(
@@ -62,9 +64,9 @@ async def handle_mark_bad_and_restart(
             deps.notifier, title="Mark-Bad Failure", content=msg,
         )
 
-    restart_ok = await stop_clear_submit(deps.training_job, deps.mini_wandb)
+    restart_ok = await stop_and_submit(deps.training_job, on_new_run=deps.on_new_run)
     if not restart_ok:
-        msg = "stop_clear_submit failed after mark_bad_and_restart"
+        msg = "stop_and_submit failed after mark_bad_and_restart"
         logger.error(msg)
         await safe_notify(
             deps.notifier, title="Restart Failure", content=msg,
@@ -88,6 +90,7 @@ async def handle_enter_recovery(
         notifier=deps.notifier,
         diagnostic_scheduler=deps.diagnostic_scheduler,
         controller_exporter=deps.controller_exporter,
+        on_new_run=deps.on_new_run,
     )
 
 

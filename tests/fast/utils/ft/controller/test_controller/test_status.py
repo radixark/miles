@@ -10,7 +10,6 @@ from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
 from miles.utils.ft.controller.metrics import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.rank_registry import RankRegistry
 from miles.utils.ft.models import ControllerMode, RecoveryPhase
 from miles.utils.ft.platform.protocols import JobStatus
 from tests.fast.utils.ft.conftest import (
@@ -182,8 +181,8 @@ class TestAgentManagement:
         agent = object()
         harness.controller.register_node_agent("node-0", agent)
 
-        assert "node-0" in harness.controller.rank_registry.agents
-        assert harness.controller.rank_registry.agents["node-0"] is agent
+        assert "node-0" in harness.controller._agents
+        assert harness.controller._agents["node-0"] is agent
 
     def test_register_overwrites_existing(self) -> None:
         harness = make_test_controller()
@@ -192,25 +191,21 @@ class TestAgentManagement:
         harness.controller.register_node_agent("node-0", agent1)
         harness.controller.register_node_agent("node-0", agent2)
 
-        assert harness.controller.rank_registry.agents["node-0"] is agent2
+        assert harness.controller._agents["node-0"] is agent2
 
 
 class TestDefaultDiagnosticSchedulerWiring:
     def test_default_scheduler_has_rank_pids_provider(self) -> None:
-        rank_registry = RankRegistry(
-            mini_wandb=MiniWandb(),
-        )
         controller = FtController.create(
             node_manager=FakeNodeManager(),
             training_job=FakeTrainingJob(),
             metric_store=make_fake_metric_store(),
-            rank_registry=rank_registry,
+            mini_wandb=MiniWandb(),
         )
 
         scheduler = controller._platform_deps.diagnostic_scheduler
         assert isinstance(scheduler, DiagnosticScheduler)
-        assert scheduler._rank_pids_provider.__func__ is RankRegistry.get_rank_pids_for_node
-        assert scheduler._rank_pids_provider.__self__ is rank_registry
+        assert callable(scheduler._rank_pids_provider)
 
 
 class TestDefaultDiagnosticPipeline:

@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.protocols.platform import JobStatus, NotificationProtocol, TrainingJobProtocol
 from miles.utils.ft.retry import retry_async
 
 logger = logging.getLogger(__name__)
 
 
-async def stop_clear_submit(
+async def stop_and_submit(
     training_job: TrainingJobProtocol,
-    mini_wandb: MiniWandb,
     excluded_node_ids: list[str] | None = None,
+    on_new_run: Callable[[str], None] | None = None,
 ) -> bool:
-    """Stop training, clear metrics, submit new job. Returns True on success."""
+    """Stop training, submit new job, notify caller of new run_id. Returns True on success."""
     stop_result = await retry_async(
         training_job.stop_training,
         description="stop_training",
@@ -40,8 +40,8 @@ async def stop_clear_submit(
         lambda: training_job.submit_training(excluded_node_ids=excluded_node_ids),
         description="submit_training",
     )
-    if result.ok:
-        mini_wandb.clear()
+    if result.ok and result.value is not None and on_new_run is not None:
+        on_new_run(result.value)
 
     return result.ok
 

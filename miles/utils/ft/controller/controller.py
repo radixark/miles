@@ -13,15 +13,17 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.diagnostics.scheduler import DiagnosticScheduler
 from miles.utils.ft.controller.metrics import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_registry import RankRegistry
 from miles.utils.ft.controller.recovery_cooldown import RecoveryCooldown
 from miles.utils.ft.controller.recovery_lifecycle import RecoveryLifecycleManager
-from miles.utils.ft.models.fault import ActionType, Decision
-from miles.utils.ft.models.recovery import (
+from miles.utils.ft.models._fault import ActionType, Decision
+from miles.utils.ft.models._recovery import (
     ControllerMode,
     ControllerStatus,
 )
-from miles.utils.ft.protocols.metrics import MetricStoreProtocol
+from miles.utils.ft.protocols.agents import NodeAgentProtocol
+from miles.utils.ft.protocols.metrics import MetricStoreProtocol, ScrapeTargetManagerProtocol
 from miles.utils.ft.protocols.platform import (
     DiagnosticSchedulerProtocol,
     JobStatus,
@@ -42,6 +44,9 @@ class FtController:
         platform_deps: PlatformDeps,
         recovery_manager: RecoveryLifecycleManager,
         rank_registry: RankRegistry,
+        mini_wandb: MiniWandb,
+        scrape_target_manager: ScrapeTargetManagerProtocol | None,
+        agents: dict[str, NodeAgentProtocol],
         metric_store: MetricStoreProtocol,
         detectors: list[BaseFaultDetector],
         tick_interval: float,
@@ -51,7 +56,9 @@ class FtController:
         self._training_job = platform_deps.training_job
         self._metric_store = metric_store
         self._rank_registry = rank_registry
-        self._mini_wandb = rank_registry.mini_wandb
+        self._mini_wandb = mini_wandb
+        self._scrape_target_manager = scrape_target_manager
+        self._agents = agents
         self._detectors = detectors
         self._tick_interval = tick_interval
         self._controller_exporter = controller_exporter
@@ -68,7 +75,8 @@ class FtController:
         node_manager: NodeManagerProtocol,
         training_job: TrainingJobProtocol,
         metric_store: MetricStoreProtocol,
-        rank_registry: RankRegistry,
+        mini_wandb: MiniWandb,
+        scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
         notifier: NotificationProtocol | None = None,
         detectors: list[BaseFaultDetector] | None = None,
         tick_interval: float = 30.0,
@@ -77,12 +85,15 @@ class FtController:
         recovery_cooldown: RecoveryCooldown | None = None,
         registration_grace_ticks: int = 5,
     ) -> FtController:
+        agents: dict[str, NodeAgentProtocol] = {}
+        rank_registry = RankRegistry(scrape_target_manager=scrape_target_manager)
+
         resolved_scheduler: DiagnosticSchedulerProtocol = (
             diagnostic_scheduler
             or DiagnosticScheduler(
-                agents=rank_registry.agents,
+                agents=agents,
                 pipeline=["gpu"],
-                rank_pids_provider=rank_registry.get_rank_pids_for_node,
+                rank_pids_provider=lambda node_id: rank_registry.get_rank_pids_for_node(node_id),
             )
         )
 
@@ -90,10 +101,11 @@ class FtController:
             node_manager=node_manager,
             training_job=training_job,
             metric_store=metric_store,
-            mini_wandb=rank_registry.mini_wandb,
+            mini_wandb=mini_wandb,
             notifier=notifier,
             diagnostic_scheduler=resolved_scheduler,
             controller_exporter=controller_exporter,
+            on_new_run=None,
         )
 
         duration_cb = (
@@ -106,16 +118,22 @@ class FtController:
             on_recovery_duration=duration_cb,
         )
 
-        return cls(
+        instance = cls(
             platform_deps=platform_deps,
             recovery_manager=recovery_manager,
             rank_registry=rank_registry,
+            mini_wandb=mini_wandb,
+            scrape_target_manager=scrape_target_manager,
+            agents=agents,
             metric_store=metric_store,
             detectors=detectors or [],
             tick_interval=tick_interval,
             controller_exporter=controller_exporter,
             registration_grace_ticks=registration_grace_ticks,
         )
+
+        platform_deps.on_new_run = instance._activate_run
+        return instance
 
     # ------------------------------------------------------------------
     # Public API
@@ -126,11 +144,31 @@ class FtController:
         return self._rank_registry
 
     @property
+    def mini_wandb(self) -> MiniWandb:
+        return self._mini_wandb
+
+    @property
     def recovery_manager(self) -> RecoveryLifecycleManager:
         return self._recovery_manager
 
+    def register_node_agent(self, node_id: str, agent: NodeAgentProtocol) -> None:
+        self._agents[node_id] = agent
+        logger.info("agent_registered node_id=%s", node_id)
+
+    def _activate_run(self, run_id: str) -> None:
+        """Create a fresh RankRegistry for the new run and switch MiniWandb."""
+        self._rank_registry.cleanup()
+        self._rank_registry = RankRegistry(
+            run_id=run_id,
+            scrape_target_manager=self._scrape_target_manager,
+        )
+        self._mini_wandb.set_active_run_id(run_id)
+        logger.info("run_activated run_id=%s", run_id)
+
     async def submit_initial_training(self) -> str:
-        return await self._training_job.submit_training()
+        run_id = await self._training_job.submit_training()
+        self._activate_run(run_id)
+        return run_id
 
     async def run(self) -> None:
         logger.info("controller_start tick_interval=%s", self._tick_interval)
@@ -159,7 +197,7 @@ class FtController:
             recovery_phase=snap.phase,
             phase_history=snap.phase_history,
             tick_count=self._tick_count,
-            active_run_id=self._rank_registry.active_run_id,
+            active_run_id=self._rank_registry.run_id,
             bad_nodes=snap.diagnosing_nodes,
             recovery_in_progress=snap.in_progress,
             bad_nodes_confirmed=snap.bad_nodes_confirmed,
@@ -202,7 +240,7 @@ class FtController:
 
         logger.info(
             "loop_tick tick=%d active_run_id=%s decision_action=%s decision_reason=%s",
-            self._tick_count, self._rank_registry.active_run_id,
+            self._tick_count, self._rank_registry.run_id,
             decision.action.value, decision.reason,
         )
 
@@ -286,7 +324,7 @@ class FtController:
         logger.info(
             "decision_event decision_action=%s trigger=%s bad_node_ids=%s run_id=%s tick=%d",
             decision.action.value, trigger_str, decision.bad_node_ids,
-            self._rank_registry.active_run_id, self._tick_count,
+            self._rank_registry.run_id, self._tick_count,
         )
         if self._controller_exporter is not None:
             self._controller_exporter.record_decision(

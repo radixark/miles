@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery_orchestrator.helpers import (
     safe_notify,
-    stop_clear_submit,
+    stop_and_submit,
 )
 from miles.utils.ft.retry import RetryResult, retry_async
 from miles.utils.ft.controller.recovery_orchestrator.alert_checker import AlertChecker
@@ -60,9 +61,10 @@ async def step_reattempting(
     ctx: RecoveryContext,
     training_job: TrainingJobProtocol,
     mini_wandb: MiniWandb,
+    on_new_run: Callable[[str], None] | None = None,
 ) -> RecoveryPhase | None:
     if not ctx.reattempt_submitted:
-        return await _reattempt_submit(ctx, training_job, mini_wandb)
+        return await _reattempt_submit(ctx, training_job, mini_wandb, on_new_run=on_new_run)
     return await _reattempt_poll(ctx, training_job, mini_wandb)
 
 
@@ -70,8 +72,9 @@ async def _reattempt_submit(
     ctx: RecoveryContext,
     training_job: TrainingJobProtocol,
     mini_wandb: MiniWandb,
+    on_new_run: Callable[[str], None] | None = None,
 ) -> RecoveryPhase | None:
-    success = await stop_clear_submit(training_job, mini_wandb)
+    success = await stop_and_submit(training_job, on_new_run=on_new_run)
     if not success:
         return RecoveryPhase.NOTIFY
 
@@ -206,6 +209,7 @@ async def step_evict_and_restart(
     node_manager: NodeManagerProtocol,
     training_job: TrainingJobProtocol,
     mini_wandb: MiniWandb,
+    on_new_run: Callable[[str], None] | None = None,
 ) -> RecoveryPhase:
     if not ctx.bad_node_ids:
         logger.warning("evict_and_restart called with empty bad_node_ids — skipping to NOTIFY")
@@ -218,8 +222,8 @@ async def step_evict_and_restart(
     if not all(r.ok for r in results):
         return RecoveryPhase.NOTIFY
 
-    success = await stop_clear_submit(
-        training_job, mini_wandb, excluded_node_ids=ctx.bad_node_ids,
+    success = await stop_and_submit(
+        training_job, excluded_node_ids=ctx.bad_node_ids, on_new_run=on_new_run,
     )
     if not success:
         return RecoveryPhase.NOTIFY

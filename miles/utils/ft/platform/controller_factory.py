@@ -13,8 +13,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.store import PrometheusClient
-from miles.utils.ft.controller.rank_registry import RankRegistry
-from miles.utils.ft.models.base import FtBaseModel
+from miles.utils.ft.models._base import FtBaseModel
 from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
 
 if TYPE_CHECKING:
@@ -190,10 +189,6 @@ def build_ft_controller(
     metric_store, scrape_target_manager = _build_metric_store(config, controller_exporter)
 
     mini_wandb = MiniWandb()
-    rank_registry = RankRegistry(
-        mini_wandb=mini_wandb,
-        scrape_target_manager=scrape_target_manager,
-    )
 
     notifier = _build_notifier(platform=config.platform)
     detectors = build_detector_chain()
@@ -211,7 +206,8 @@ def build_ft_controller(
         node_manager=node_manager,
         training_job=training_job,
         metric_store=metric_store,
-        rank_registry=rank_registry,
+        mini_wandb=mini_wandb,
+        scrape_target_manager=scrape_target_manager,
         notifier=notifier,
         detectors=detectors,
         tick_interval=config.tick_interval,

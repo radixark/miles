@@ -11,7 +11,7 @@ from miles.utils.ft.controller.actions import (
 )
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.models import ActionType, Decision
-from miles.utils.ft.models.fault import TriggerType
+from miles.utils.ft.models._fault import TriggerType
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticScheduler,
     FakeNodeManager,
@@ -159,7 +159,7 @@ class TestMarkBadPartialFailure:
 
 
 class TestRestartFailure:
-    """stop_clear_submit fails after mark_bad succeeds."""
+    """stop_and_submit fails after mark_bad succeeds."""
 
     @pytest.mark.anyio
     async def test_restart_failure_notifies(self) -> None:

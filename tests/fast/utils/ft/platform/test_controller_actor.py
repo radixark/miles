@@ -64,7 +64,7 @@ class TestBuildFtController:
             metric_store_backend="mini",
             start_exporter=False,
         )
-        assert ctrl._rank_registry._scrape_target_manager is not None
+        assert ctrl._scrape_target_manager is not None
 
     def test_prometheus_backend_no_scrape_target_manager(self) -> None:
         ctrl = build_ft_controller(
@@ -72,7 +72,7 @@ class TestBuildFtController:
             metric_store_backend="prometheus",
             start_exporter=False,
         )
-        assert ctrl._rank_registry._scrape_target_manager is None
+        assert ctrl._scrape_target_manager is None
 
     def test_detector_chain_types_match(self) -> None:
         ctrl = build_ft_controller(platform="stub", start_exporter=False)
@@ -144,6 +144,7 @@ class TestFtControllerActorProxy:
     @pytest.mark.anyio
     async def test_register_training_rank_updates_placement(self) -> None:
         actor, harness = self._make_actor_with_harness()
+        harness.controller._activate_run("test-run")
 
         await actor.register_training_rank(
             run_id="test-run", rank=0, world_size=2,
@@ -155,6 +156,7 @@ class TestFtControllerActorProxy:
     @pytest.mark.anyio
     async def test_log_step_writes_to_mini_wandb(self) -> None:
         actor, harness = self._make_actor_with_harness()
+        harness.controller._activate_run("test-run")
 
         await actor.register_training_rank(
             run_id="test-run", rank=0, world_size=1,
