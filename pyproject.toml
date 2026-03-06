@@ -68,4 +68,5 @@ markers = [
     "skipduringci: marks tests that are skipped ci as they are addressed by Jenkins jobs but should be run to test user setups",
     "pleasefixme: marks tests that are broken and need fixing",
     "e2e: end-to-end FT tests requiring a live Ray cluster with >= 4 GPU nodes",
+    "local_ray: integration tests using a local single-node Ray cluster",
 ]
