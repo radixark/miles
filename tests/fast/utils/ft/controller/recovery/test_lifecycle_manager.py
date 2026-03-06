@@ -167,37 +167,3 @@ class TestRecoveryLifecycleManagerAddBadNodes:
         manager.add_bad_nodes(["node-1"])
 
 
-class TestRecoveryLifecycleUnmarkOnCompletion:
-    @pytest.mark.anyio
-    async def test_step_calls_unmark_when_done_with_bad_nodes(self) -> None:
-        manager = _make_manager()
-        fake_orch = _make_fake_orchestrator(is_done=True)
-        fake_orch.bad_node_ids = ["node-0", "node-1"]
-        fake_orch.unmark_evicted_nodes = AsyncMock()
-        fake_orch.phase_history = [RecoveryPhase.CHECK_ALERTS, RecoveryPhase.DONE]
-        manager._orchestrator = fake_orch
-        manager._start_time = 100.0
-
-        with patch("miles.utils.ft.controller.recovery_lifecycle.time") as mock_time:
-            mock_time.monotonic.return_value = 110.0
-            await manager.step()
-
-        fake_orch.unmark_evicted_nodes.assert_awaited_once()
-        assert not manager.in_progress
-
-    @pytest.mark.anyio
-    async def test_step_skips_unmark_when_done_without_bad_nodes(self) -> None:
-        manager = _make_manager()
-        fake_orch = _make_fake_orchestrator(is_done=True)
-        fake_orch.bad_node_ids = []
-        fake_orch.unmark_evicted_nodes = AsyncMock()
-        fake_orch.phase_history = [RecoveryPhase.CHECK_ALERTS, RecoveryPhase.DONE]
-        manager._orchestrator = fake_orch
-        manager._start_time = 100.0
-
-        with patch("miles.utils.ft.controller.recovery_lifecycle.time") as mock_time:
-            mock_time.monotonic.return_value = 110.0
-            await manager.step()
-
-        fake_orch.unmark_evicted_nodes.assert_not_awaited()
-        assert not manager.in_progress

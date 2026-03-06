@@ -469,6 +469,42 @@ class TestCheckAlertsNicDown:
         assert orch.phase == RecoveryPhase.REATTEMPTING
 
 
+class TestCheckAlertsEphemeral:
+    def test_ephemeral_only_nic_flapping_goes_to_reattempting(self) -> None:
+        """NIC flapping without hardware faults should go to REATTEMPTING, not EVICT."""
+        orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
+        # Inject 2 NIC-down samples for same device → triggers check_nic_down_in_window (threshold=2)
+        # but keep majority of NICs up → does NOT trigger _check_majority_nic_down
+        inject_nic_down(metric_store, node_id="node-0", device="ib0")
+        inject_nic_down(metric_store, node_id="node-0", device="ib0")
+        inject_nic_up(metric_store, node_id="node-0", device="ib1")
+        inject_nic_up(metric_store, node_id="node-0", device="ib2")
+        inject_nic_up(metric_store, node_id="node-0", device="ib3")
+
+        asyncio.run(orch.step())
+
+        assert orch.phase == RecoveryPhase.REATTEMPTING
+        assert orch.bad_node_ids == []
+
+    def test_hardware_plus_ephemeral_goes_to_evict_with_all_nodes(self) -> None:
+        """Hardware fault + NIC flapping should evict all affected nodes."""
+        orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
+        # node-1: GPU fault (non-ephemeral)
+        inject_gpu_unavailable(metric_store, node_id="node-1")
+        # node-0: NIC flapping only (ephemeral)
+        inject_nic_down(metric_store, node_id="node-0", device="ib0")
+        inject_nic_down(metric_store, node_id="node-0", device="ib0")
+        inject_nic_up(metric_store, node_id="node-0", device="ib1")
+        inject_nic_up(metric_store, node_id="node-0", device="ib2")
+        inject_nic_up(metric_store, node_id="node-0", device="ib3")
+
+        asyncio.run(orch.step())
+
+        assert orch.phase == RecoveryPhase.EVICT_AND_RESTART
+        assert "node-0" in orch.bad_node_ids
+        assert "node-1" in orch.bad_node_ids
+
+
 class TestCheckAlertsXidCodes:
     def test_zero_non_auto_recoverable_counter_ignored(self) -> None:
         """A zero non-auto-recoverable counter does not trigger eviction."""
@@ -687,51 +723,3 @@ class TestNotifyPhaseNoTimeoutLoop:
         assert orch.is_done()
 
 
-class TestUnmarkEvictedNodes:
-    @pytest.mark.anyio
-    async def test_unmark_clears_bad_labels(self) -> None:
-        orch, node_mgr, *_ = _make_orchestrator()
-        await node_mgr.mark_node_bad("node-0", reason="test")
-        await node_mgr.mark_node_bad("node-1", reason="test")
-        orch._context.bad_node_ids = ["node-0", "node-1"]
-
-        await orch.unmark_evicted_nodes()
-
-        assert not node_mgr.is_node_bad("node-0")
-        assert not node_mgr.is_node_bad("node-1")
-
-    @pytest.mark.anyio
-    async def test_unmark_no_bad_nodes_is_noop(self) -> None:
-        orch, node_mgr, *_ = _make_orchestrator()
-        orch._context.bad_node_ids = []
-
-        await orch.unmark_evicted_nodes()
-
-        assert await node_mgr.get_bad_nodes() == []
-
-    @pytest.mark.anyio
-    async def test_unmark_tolerates_failure(self) -> None:
-        """unmark_node_bad failure for one node should not prevent unmarking others."""
-        call_count = 0
-
-        class _PartiallyFailingNodeManager(FakeNodeManager):
-            async def unmark_node_bad(self, node_id: str) -> None:
-                nonlocal call_count
-                call_count += 1
-                if node_id == "node-fail":
-                    raise RuntimeError("K8s API error")
-                await super().unmark_node_bad(node_id)
-
-        node_mgr = _PartiallyFailingNodeManager()
-        await node_mgr.mark_node_bad("node-fail", reason="test")
-        await node_mgr.mark_node_bad("node-ok", reason="test")
-
-        orch, _, *rest = _make_orchestrator()
-        orch._node_manager = node_mgr
-        orch._context.bad_node_ids = ["node-fail", "node-ok"]
-
-        await orch.unmark_evicted_nodes()
-
-        assert call_count == 2
-        assert node_mgr.is_node_bad("node-fail")
-        assert not node_mgr.is_node_bad("node-ok")

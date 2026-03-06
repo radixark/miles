@@ -2,13 +2,30 @@
 
 import pytest
 
+from datetime import timedelta
+
 from miles.utils.ft.controller.detectors.hardware_checks import (
     _check_disk_fault,
     _check_majority_nic_down,
+    check_nic_down_in_window,
 )
 from miles.utils.ft.models.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
 from miles.utils.ft.models.metrics import GaugeSample
-from tests.fast.utils.ft.conftest import make_fake_metric_store
+from tests.fast.utils.ft.conftest import inject_nic_down, inject_nic_up, make_fake_metric_store
+
+
+class TestCheckNicDownInWindow:
+    def test_returns_ephemeral_faults(self) -> None:
+        """NodeFault from check_nic_down_in_window must have ephemeral=True."""
+        store = make_fake_metric_store()
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=2)
+
+        assert len(faults) == 1
+        assert faults[0].node_id == "node-0"
+        assert faults[0].ephemeral is True
 
 
 class TestCheckMajorityNicDown:
