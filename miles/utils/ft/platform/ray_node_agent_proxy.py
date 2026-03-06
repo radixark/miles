@@ -4,11 +4,12 @@ import logging
 from typing import Any
 
 from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.protocols.agents import NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
 
 
-class RayNodeAgentProxy:
+class RayNodeAgentProxy(NodeAgentProtocol):
     """Adapts a Ray actor handle to NodeAgentProtocol.
 
     DiagnosticScheduler calls ``agent.run_diagnostic(...)`` as a normal
