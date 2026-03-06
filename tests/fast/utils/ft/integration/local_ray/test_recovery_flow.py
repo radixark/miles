@@ -19,7 +19,7 @@ from miles.utils.ft.platform.controller_actor import FtControllerActor
 from miles.utils.ft.platform.controller_factory import FtControllerConfig
 from miles.utils.ft.protocols.platform import ft_controller_actor_name
 
-from tests.fast.utils.ft.integration.local_ray.conftest import get_status
+from tests.fast.utils.ft.integration.local_ray.conftest import get_status, poll_for_run_id
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -88,10 +88,10 @@ class TestRecoveryTriggeredByDetector:
         )
 
         handle.submit_and_run.remote()
-        time.sleep(0.3)
+        run_id = poll_for_run_id(handle)
 
         ray.get(handle.register_training_rank.remote(
-            run_id=get_status(handle).active_run_id or "",
+            run_id=run_id,
             rank=0,
             world_size=1,
             node_id="n0",
@@ -121,9 +121,8 @@ class TestRecoveryPhaseHistoryRecorded:
         )
 
         handle.submit_and_run.remote()
-        time.sleep(0.3)
+        run_id = poll_for_run_id(handle)
 
-        run_id = get_status(handle).active_run_id or ""
         ray.get(handle.register_training_rank.remote(
             run_id=run_id, rank=0, world_size=1,
             node_id="n0", exporter_address="http://n0:9090",
@@ -156,9 +155,8 @@ class TestStatusDuringRecovery:
         )
 
         handle.submit_and_run.remote()
-        time.sleep(0.3)
+        run_id = poll_for_run_id(handle)
 
-        run_id = get_status(handle).active_run_id or ""
         ray.get(handle.register_training_rank.remote(
             run_id=run_id, rank=0, world_size=1,
             node_id="n0", exporter_address="http://n0:9090",
@@ -172,3 +170,39 @@ class TestStatusDuringRecovery:
 
         status = get_status(handle)
         assert isinstance(status.recovery_phase, RecoveryPhase)
+
+
+class TestControllerKilledDuringRecovery:
+    """Kill controller while recovery is in progress → restarts with fresh state (R3)."""
+
+    def test_kill_during_recovery_resets_to_monitoring(
+        self,
+        make_controller_actor: Callable[..., ray.actor.ActorHandle],
+    ) -> None:
+        handle = make_controller_actor(
+            detectors_override=[_AlwaysCrashDetector()],
+        )
+
+        handle.submit_and_run.remote()
+        run_id = poll_for_run_id(handle)
+
+        ray.get(handle.register_training_rank.remote(
+            run_id=run_id, rank=0, world_size=1,
+            node_id="n0", exporter_address="http://n0:9090",
+        ), timeout=5)
+
+        def _in_recovery() -> bool:
+            s = get_status(handle)
+            return s.mode == ControllerMode.RECOVERY
+
+        _poll_until(_in_recovery, timeout=15)
+
+        ray.kill(handle, no_restart=False)
+        time.sleep(2.0)
+
+        name = ft_controller_actor_name("")
+        restarted = ray.get_actor(name)
+        status = ray.get(restarted.get_status.remote(), timeout=5)
+        assert status.mode == ControllerMode.MONITORING
+        assert status.recovery_in_progress is False
+        assert status.tick_count == 0

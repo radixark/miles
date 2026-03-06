@@ -94,3 +94,16 @@ class TestExceptionSerialization:
 
         status = ray.get(handle.get_status.remote(), timeout=5)
         assert isinstance(status.mode, ControllerMode)
+
+
+class TestLargeDictSerialization:
+    def test_thousand_metric_keys_serialize_successfully(
+        self,
+        running_controller: tuple[ray.actor.ActorHandle, str],
+    ) -> None:
+        handle, run_id = running_controller
+
+        large_metrics = {f"metric_{i}": float(i) for i in range(1000)}
+        ray.get(handle.log_step.remote(
+            run_id=run_id, step=1, metrics=large_metrics,
+        ), timeout=10)

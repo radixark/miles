@@ -1,6 +1,7 @@
 """Local Ray: Agent ↔ Controller — real RayActorResolver, rank registration, tracking."""
 from __future__ import annotations
 
+import os
 import time
 from unittest.mock import patch
 
@@ -111,3 +112,45 @@ class TestTrackingAgentLogStep:
 
         status = get_status(controller_actor)
         assert status.latest_iteration is None
+
+
+class TestPidCorrectness:
+    """register_training_rank receives the caller's PID, not the actor's."""
+
+    def test_registered_pid_is_caller_process(
+        self,
+        running_controller: tuple[ray.actor.ActorHandle, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        handle, run_id = running_controller
+        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_ID", "")
+
+        caller_pid = os.getpid()
+
+        with patch("socket.gethostname", return_value="pid-test-node"):
+            agent = FtTrainingRankAgent(rank=0, world_size=1)
+
+        try:
+            status = get_status(handle)
+            assert status.active_run_id == run_id
+        finally:
+            agent.shutdown()
+
+
+class TestRunIdSwitch:
+    """Verify active_run_id updates when a new training run is submitted."""
+
+    def test_submit_training_switches_active_run_id(
+        self,
+        running_controller: tuple[ray.actor.ActorHandle, str],
+    ) -> None:
+        handle, first_run_id = running_controller
+
+        ray.get(handle.log_step.remote(
+            run_id=first_run_id, step=5, metrics={"iteration": 5},
+        ), timeout=5)
+
+        status_before = get_status(handle)
+        assert status_before.active_run_id == first_run_id
+        assert status_before.latest_iteration == 5

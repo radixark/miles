@@ -108,3 +108,23 @@ class TestConcurrentGetStatus:
         assert len(results) == 20
         for s in results:
             assert isinstance(s.mode, ControllerMode)
+
+
+class TestFireAndForgetBackpressure:
+    """1000 rapid fire-and-forget log_step calls should not crash."""
+
+    async def test_thousand_log_steps_no_error(
+        self,
+        running_controller: tuple[ray.actor.ActorHandle, str],
+    ) -> None:
+        handle, run_id = running_controller
+
+        for i in range(1000):
+            handle.log_step.remote(
+                run_id=run_id, step=i, metrics={"loss": float(i)},
+            )
+
+        await asyncio.sleep(2.0)
+
+        status = get_status(handle)
+        assert isinstance(status.mode, ControllerMode)
