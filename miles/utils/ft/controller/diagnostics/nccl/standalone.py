@@ -5,7 +5,9 @@ internally, so callers only need a live Ray cluster with GPU nodes.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import ray
@@ -21,12 +23,36 @@ logger = logging.getLogger(__name__)
 _MIN_INTER_MACHINE_NODES = 2
 
 
-def _discover_gpu_nodes() -> list[dict[str, Any]]:
-    return [
+# ---------------------------------------------------------------------------
+# Node discovery
+# ---------------------------------------------------------------------------
+
+def _discover_gpu_nodes(
+    node_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    nodes = [
         n for n in ray.nodes()
         if n.get("Alive") and n.get("Resources", {}).get("GPU", 0) > 0
     ]
 
+    if node_ids is not None:
+        allowed = set(node_ids)
+        nodes = [n for n in nodes if n["NodeID"] in allowed]
+
+    return nodes
+
+
+def _build_node_addresses(nodes: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        node["NodeID"]: addr
+        for node in nodes
+        if (addr := node.get("NodeManagerAddress", ""))
+    }
+
+
+# ---------------------------------------------------------------------------
+# Agent lifecycle
+# ---------------------------------------------------------------------------
 
 @ray.remote(num_gpus=0)
 class _StandaloneDiagnosticAgent:
@@ -65,6 +91,7 @@ def _deploy_agents(
     nodes: list[dict[str, Any]],
 ) -> dict[str, ray.actor.ActorHandle]:
     agents: dict[str, ray.actor.ActorHandle] = {}
+
     for node in nodes:
         node_id = node["NodeID"]
         num_gpus = int(node["Resources"]["GPU"])
@@ -74,22 +101,29 @@ def _deploy_agents(
             ),
         ).remote(node_id=node_id, num_gpus=num_gpus)
         agents[node_id] = actor
+
     return agents
-
-
-def _build_node_addresses(nodes: list[dict[str, Any]]) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for node in nodes:
-        addr = node.get("NodeManagerAddress", "")
-        if addr:
-            mapping[node["NodeID"]] = addr
-    return mapping
 
 
 def _kill_agents(agents: dict[str, ray.actor.ActorHandle]) -> None:
     for actor in agents.values():
         ray.kill(actor)
 
+
+@contextlib.asynccontextmanager
+async def _managed_agents(
+    nodes: list[dict[str, Any]],
+) -> AsyncIterator[dict[str, ray.actor.ActorHandle]]:
+    agents = _deploy_agents(nodes)
+    try:
+        yield agents
+    finally:
+        _kill_agents(agents)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 async def run_intra_machine_diagnostics(
     node_ids: list[str] | None = None,
@@ -99,13 +133,9 @@ async def run_intra_machine_diagnostics(
 
     Returns one DiagnosticResult per node.
     """
-    nodes = _discover_gpu_nodes()
-    if node_ids is not None:
-        allowed = set(node_ids)
-        nodes = [n for n in nodes if n["NodeID"] in allowed]
+    nodes = _discover_gpu_nodes(node_ids=node_ids)
 
-    agents = _deploy_agents(nodes)
-    try:
+    async with _managed_agents(nodes) as agents:
         futures = {
             nid: agent.run_diagnostic.remote(
                 diagnostic_type="intra_machine",
@@ -122,9 +152,8 @@ async def run_intra_machine_diagnostics(
                 node_id, result.passed, result.details,
             )
             results.append(result)
+
         return results
-    finally:
-        _kill_agents(agents)
 
 
 async def run_inter_machine_diagnostics(
@@ -135,10 +164,7 @@ async def run_inter_machine_diagnostics(
 
     Returns list of bad node IDs (empty if all healthy).
     """
-    nodes = _discover_gpu_nodes()
-    if node_ids is not None:
-        allowed = set(node_ids)
-        nodes = [n for n in nodes if n["NodeID"] in allowed]
+    nodes = _discover_gpu_nodes(node_ids=node_ids)
 
     if len(nodes) < _MIN_INTER_MACHINE_NODES:
         logger.info(
@@ -147,16 +173,14 @@ async def run_inter_machine_diagnostics(
         )
         return []
 
-    agents = _deploy_agents(nodes)
-    try:
+    async with _managed_agents(nodes) as agents:
         node_addresses = _build_node_addresses(nodes)
         orchestrator = InterMachineOrchestrator(
             agents=agents,
             node_addresses=node_addresses,
         )
+
         return await orchestrator.run(
             node_ids=sorted(agents.keys()),
             timeout_seconds=timeout_seconds,
         )
-    finally:
-        _kill_agents(agents)
