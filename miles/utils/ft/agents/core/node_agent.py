@@ -7,12 +7,12 @@ from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.utils.metric_collection_loop import MetricCollectionLoop
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.models.diagnostics import DiagnosticResult, UnknownDiagnosticError
-from miles.utils.ft.protocols.agents import DiagnosticProtocol
+from miles.utils.ft.protocols.agents import DiagnosticProtocol, NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
 
 
-class FtNodeAgent:
+class FtNodeAgent(NodeAgentProtocol):
     def __init__(
         self,
         node_id: str,
