@@ -147,6 +147,11 @@ class TestNoMatch:
             "meta-llama/Llama-3.1-8B",
             "deepseek-ai/DeepSeek-V3",
             "/home/user/models/llama-3-70b",
+            # Qwen3-Coder-Next (no prefix invariant issue, no fix needed)
+            "Qwen/Qwen3-Coder-Next",
+            "Qwen/Qwen3-Coder-Next-FP8",
+            "Qwen/Qwen3-Coder-Next-Base",
+            "/data/models/Qwen3-Coder-Next",
             # Edge cases that look similar but shouldn't match
             "Qwen/Qwen3-Next-80B-A3B-Instruct",
             "some-org/not-qwen3-at-all-4B",
