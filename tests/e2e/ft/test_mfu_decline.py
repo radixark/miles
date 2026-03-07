@@ -1,12 +1,12 @@
 """E2E: MFU decline detection via GPU stress.
 
-MfuDeclineDetector returns MARK_BAD_AND_RESTART (when high GPU temperature
+MfuDeclineDetector returns ENTER_RECOVERY (when high GPU temperature
 correlates with MFU drop) or NOTIFY_HUMAN (when the decline persists without
 identifiable cause).  Neither action enters ControllerMode.RECOVERY — that
 only happens via ENTER_RECOVERY (TrainingCrashDetector / HangDetector).
 
 Possible outcomes under GPU stress:
-  A) MARK_BAD_AND_RESTART — target node evicted, training restarts.
+  A) ENTER_RECOVERY — target node evicted, training restarts.
   B) NOTIFY_HUMAN — notification sent, no eviction, training continues.
      Also covers the case where decline is below detection threshold or
      decline_timeout_minutes (30 min) hasn't elapsed within the test window.
@@ -75,7 +75,7 @@ async def test_mfu_decline_detection(
 
         if evicted:
             logger.info(
-                "mfu_decline_path=MARK_BAD_AND_RESTART node=%s "
+                "mfu_decline_path=ENTER_RECOVERY node=%s "
                 "(temperature correlated eviction)",
                 target_node,
             )

@@ -42,8 +42,7 @@ class TestHardwareAlert:
             ),
         ])
 
-        # Step 2: ENTER_RECOVERY evicts directly without entering recovery
-        # mode (no RecoveryOrchestrator, no phase_history). Poll until
+        # Step 2: ENTER_RECOVERY triggers recovery state machine. Poll until
         # active_run_id changes, indicating eviction and restart happened.
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
