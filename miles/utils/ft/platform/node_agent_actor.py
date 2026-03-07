@@ -1,46 +1,21 @@
 from __future__ import annotations
 
 import logging
-import socket
+
 import ray
 
-from miles.utils.ft.agents.collectors.disk import DiskCollector
-from miles.utils.ft.agents.collectors.gpu import GpuCollector
-from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
-from miles.utils.ft.agents.collectors.network import NetworkCollector
 from miles.utils.ft.agents.collectors.base import BaseCollector
-from miles.utils.ft.agents.core.node_agent import FtNodeAgent
+from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.platform.node_agent_factory import build_node_agent
+from miles.utils.ft.protocols.agents import DiagnosticProtocol
 from miles.utils.ft.protocols.platform import ft_controller_actor_name
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade
-from miles.utils.ft.agents.diagnostics.gpu_diagnostic import GpuDiagnostic
-from miles.utils.ft.agents.diagnostics.nccl.inter_machine import (
-    InterMachineCommDiagnostic,
-)
-from miles.utils.ft.agents.diagnostics.nccl.intra_machine import (
-    IntraMachineCommDiagnostic,
-)
-from miles.utils.ft.models.diagnostics import DiagnosticResult
-from miles.utils.ft.protocols.agents import DiagnosticProtocol
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)
 
 _REGISTER_MAX_ATTEMPTS = 3
 _REGISTER_RETRY_DELAY = 2.0
-
-
-def _build_default_collectors() -> list[GpuCollector | KmsgCollector | NetworkCollector | DiskCollector]:
-    return [GpuCollector(), KmsgCollector(), NetworkCollector(), DiskCollector()]
-
-
-def _build_default_diagnostics(
-    num_gpus: int,
-) -> list[GpuDiagnostic | IntraMachineCommDiagnostic | InterMachineCommDiagnostic]:
-    return [
-        GpuDiagnostic(),
-        IntraMachineCommDiagnostic(num_gpus=num_gpus),
-        InterMachineCommDiagnostic(num_gpus=num_gpus),
-    ]
 
 
 class _FtNodeAgentActorCls:
@@ -61,16 +36,13 @@ class _FtNodeAgentActorCls:
         collectors_override: list[BaseCollector] | None = None,
         diagnostics_override: list[DiagnosticProtocol] | None = None,
     ) -> None:
-        self._node_id = node_id or socket.gethostname()
         self._ft_id = ft_id
-
-        collectors = collectors_override if collectors_override is not None else _build_default_collectors()
-        diagnostics = diagnostics_override if diagnostics_override is not None else _build_default_diagnostics(num_gpus=num_gpus)
-        self._agent = FtNodeAgent(
-            node_id=self._node_id,
-            collectors=collectors,
+        self._agent = build_node_agent(
+            node_id=node_id,
+            num_gpus=num_gpus,
             collect_interval_seconds=collect_interval_seconds,
-            diagnostics=diagnostics,
+            collectors_override=collectors_override,
+            diagnostics_override=diagnostics_override,
         )
 
     async def start(self) -> None:
@@ -100,12 +72,13 @@ class _FtNodeAgentActorCls:
         controller = ray.get_actor(ft_controller_actor_name(self._ft_id))
 
         self_handle = ray.get_runtime_context().current_actor
+        node_id = self._agent._node_id
         exporter_address = self._agent.get_exporter_address()
 
         def _do_register() -> None:
             ray.get(
                 controller.register_node_agent.remote(
-                    node_id=self._node_id,
+                    node_id=node_id,
                     agent=self_handle,
                     exporter_address=exporter_address,
                 ),
@@ -114,7 +87,7 @@ class _FtNodeAgentActorCls:
 
         result = retry_sync(
             func=_do_register,
-            description=f"register_node_agent({self._node_id})",
+            description=f"register_node_agent({node_id})",
             max_retries=_REGISTER_MAX_ATTEMPTS,
             backoff_base=_REGISTER_RETRY_DELAY,
             max_backoff=_REGISTER_RETRY_DELAY,
@@ -122,7 +95,7 @@ class _FtNodeAgentActorCls:
         if result.ok:
             logger.info(
                 "Node agent registered node_id=%s exporter=%s",
-                self._node_id, exporter_address,
+                node_id, exporter_address,
             )
 
 FtNodeAgentActor = ray.remote(
