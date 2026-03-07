@@ -418,6 +418,40 @@ class TestBadNodeCountSafeguard:
         assert "likely false positive" in notifier.calls[0][1]
 
     @pytest.mark.asyncio
+    async def test_already_known_bad_nodes_do_not_restart_recovery(self) -> None:
+        """Critical detector re-reports nodes already being handled -> no recovery restart."""
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, RecoveryDone, StopTimeDiagnostics
+        from miles.utils.ft.controller.recovery.restart_stepper import Evicting
+
+        recovery_stepper = AsyncMock(return_value=None)
+
+        critical_detector = CriticalFixedDecisionDetector(Decision(
+            action=ActionType.ENTER_RECOVERY,
+            bad_node_ids=["node-old"],
+            reason="already known fault",
+            trigger=TriggerType.HARDWARE,
+        ))
+
+        stepper = _make_main_stepper(
+            detectors=[critical_detector],
+            recovery_stepper=recovery_stepper,
+            max_simultaneous_bad_nodes=3,
+        )
+
+        state = Recovering(
+            recovery=EvictingAndRestarting(
+                restart=Evicting(bad_node_ids=["node-old"]),
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
+            ),
+            trigger=TriggerType.CRASH,
+            recovery_start_time=datetime.now(timezone.utc),
+        )
+        result = await stepper(state, _tick_ctx())
+        assert result is None
+        recovery_stepper.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_below_threshold_continues_recovery(self) -> None:
         """One new bad node during recovery (with 2 existing) -> normal merge, continues."""
         from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, RecoveryDone, StopTimeDiagnostics

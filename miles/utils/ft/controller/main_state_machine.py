@@ -146,8 +146,10 @@ class MainStepper(StateMachineStepper[MainState, TickContext]):
             )
             return DetectingAnomaly()
 
-        if new_bad_nodes:
-            all_bad = list(set(get_known_bad_nodes(state.recovery)) | set(new_bad_nodes))
+        known_bad = set(get_known_bad_nodes(state.recovery))
+        truly_new = new_bad_nodes - known_bad
+        if truly_new:
+            all_bad = sorted(known_bad | new_bad_nodes)
             now = datetime.now(timezone.utc)
             return Recovering(
                 recovery=RealtimeChecks(pre_identified_bad_nodes=all_bad),
