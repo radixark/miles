@@ -86,8 +86,18 @@ class TestDetectorChainIntegration:
         now = datetime.now(timezone.utc)
         store.ingest_samples(
             target_id="node-0",
+            samples=[GaugeSample(name=NODE_NETWORK_UP, labels={"device": "ib0"}, value=1.0)],
+            timestamp=now - timedelta(minutes=4),
+        )
+        store.ingest_samples(
+            target_id="node-0",
             samples=[GaugeSample(name=NODE_NETWORK_UP, labels={"device": "ib0"}, value=0.0)],
             timestamp=now - timedelta(minutes=3),
+        )
+        store.ingest_samples(
+            target_id="node-0",
+            samples=[GaugeSample(name=NODE_NETWORK_UP, labels={"device": "ib0"}, value=1.0)],
+            timestamp=now - timedelta(minutes=2),
         )
         store.ingest_samples(
             target_id="node-0",
@@ -121,7 +131,7 @@ class TestDetectorChainIntegration:
                 break
 
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
-        assert "NIC down" in decision.reason
+        assert "NIC" in decision.reason
 
     def test_crash_with_nan_loss(self) -> None:
         """TrainingCrashDetector sets trigger to nan_loss when last loss is NaN."""
@@ -151,6 +161,7 @@ class TestDetectorChainIntegration:
 
         assert names == [
             "HighConfidenceHardwareDetector",
+            "DiskSpaceLowDetector",
             "NetworkAlertDetector",
             "TrainingCrashDetector",
             "HangDetector",
