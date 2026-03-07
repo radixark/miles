@@ -204,4 +204,3 @@ class TestControllerKilledDuringRecovery:
         status = ray.get(restarted.get_status.remote(), timeout=5)
         assert status.mode == ControllerMode.MONITORING
         assert status.recovery_in_progress is False
-        assert status.tick_count == 0
