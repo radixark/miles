@@ -16,6 +16,8 @@ The directory layout also tightly follows the architecture.
 
 ## Tests
 
+TODO: this will be outdated, to be updated
+
 - `tests/fast/utils/ft/`
   - Others: Unit tests
   - `integration/in_process`: In-process integration tests
