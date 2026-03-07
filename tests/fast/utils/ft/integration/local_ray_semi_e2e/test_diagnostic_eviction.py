@@ -252,3 +252,47 @@ class TestEvictionEscalation:
         status = get_status(env.controller)
         assert status.phase_history is not None
         assert_phase_path_contains(status, ["NotifyHumans"])
+
+
+class TestAllDiagnosticsPass:
+    async def test_all_diagnostics_pass_escalates_to_notify_humans(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """All nodes pass diagnostics (no root cause found) → NotifyHumans."""
+        env = make_e2e_env(
+            ft_id="e2eadp",
+            nodes=[
+                NodeSpec(node_id="e2eadp-node-0", num_ranks=1, diagnostic_pass=True),
+                NodeSpec(node_id="e2eadp-node-1", num_ranks=1, diagnostic_pass=True),
+            ],
+            detectors=[TrainingCrashDetector()],
+            step_interval=_SLOW_STEP,
+            use_notifier=True,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=1, timeout=30.0)
+
+        # Step 1: crash → wait for MonitoringProgress
+        await env.injector.crash_training()
+        await wait_for_recovery_phase(
+            env.controller, phase="MonitoringProgress", timeout=30.0,
+        )
+
+        # Step 2: crash during MonitoringProgress → StopTimeDiagnostics
+        await env.injector.crash_training()
+
+        # Step 3: all diagnostics pass → NotifyHumans
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if status.phase_history and "NotifyHumans" in status.phase_history:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError("All-pass diagnostics did not escalate to NotifyHumans within 60s")
+
+        assert_phase_path_contains(status, ["StopTimeDiagnostics", "NotifyHumans"])
+
+        # Step 4: notifier should have received a notification
+        calls = env.get_notifier_calls()
+        assert len(calls) > 0, "Notifier should have received notification for all-pass diagnostics"

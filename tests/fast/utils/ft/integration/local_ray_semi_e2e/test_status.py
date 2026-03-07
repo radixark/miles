@@ -8,17 +8,24 @@ from typing import Any
 
 import ray
 
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
+from miles.utils.ft.models.metric_names import GPU_AVAILABLE
+from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.models.recovery import ControllerMode
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     E2EEnv,
     NodeSpec,
+    _FAST_SCRAPE,
     _FastHangDetector,
 )
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     get_status,
     scenario_no_false_positive,
+    wait_for_mode,
     wait_for_mode_transition,
+    wait_for_recovery_complete,
     wait_for_training_stable,
 )
 
@@ -202,3 +209,89 @@ class TestRecoveryPhaseMonotonicity:
 
         assert saw_recovery, "Never observed RECOVERY mode"
         assert saw_monitoring_after_recovery, "Never returned to MONITORING after recovery"
+
+
+class TestBadNodesDuringEviction:
+    async def test_status_reports_bad_nodes_during_eviction(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """During eviction, status.bad_nodes includes the faulted node; cleared after recovery."""
+        env = make_e2e_env(
+            ft_id="e2ebn",
+            nodes=[
+                NodeSpec(node_id="e2ebn-node-0", use_remote_collector=True),
+                NodeSpec(node_id="e2ebn-node-1", use_remote_collector=True),
+            ],
+            detectors=build_detector_chain(),
+            scrape_interval_seconds=_FAST_SCRAPE,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: inject GPU fault on node-0
+        env.set_collector_metrics("e2ebn-node-0", [
+            GaugeSample(
+                name=GPU_AVAILABLE,
+                labels={"node_id": "e2ebn-node-0", "gpu": "0"},
+                value=0.0,
+            ),
+        ])
+
+        # Step 2: poll status during recovery for bad_nodes
+        saw_bad_nodes = False
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if status.bad_nodes and "e2ebn-node-0" in status.bad_nodes:
+                saw_bad_nodes = True
+            if status.mode == ControllerMode.MONITORING and not status.recovery_in_progress:
+                if saw_bad_nodes:
+                    break
+            await asyncio.sleep(0.3)
+
+        assert saw_bad_nodes, "Never observed bad_nodes containing faulted node during recovery"
+
+        # Step 3: after recovery, bad_nodes should be empty
+        final = get_status(env.controller)
+        assert final.bad_nodes == [] or "e2ebn-node-0" not in final.bad_nodes
+
+
+class TestStaleCombined:
+    async def test_stale_register_and_stale_log_step_together_are_ignored(
+        self, e2e_env: E2EEnv,
+    ) -> None:
+        """Concurrent stale register_training_rank + stale log_step do not pollute new run."""
+        env = e2e_env
+        old_run_id = get_status(env.controller).active_run_id
+
+        # Step 1: crash → recovery → new run
+        await env.injector.crash_training()
+        status = await wait_for_mode_transition(
+            env.controller,
+            target_mode=ControllerMode.MONITORING,
+            timeout=60.0,
+        )
+        new_run_id = status.active_run_id
+        assert new_run_id != old_run_id
+
+        # Step 2: send stale register + stale log_step with old run_id
+        ray.get(env.controller.register_training_rank.remote(
+            run_id=old_run_id,
+            rank=99,
+            world_size=100,
+            node_id="stale-node",
+            exporter_address="http://stale:9090",
+            pid=99999,
+        ), timeout=5)
+        ray.get(env.controller.log_step.remote(
+            run_id=old_run_id,
+            step=999999,
+            metrics={"iteration": 999999.0},
+        ), timeout=5)
+
+        # Step 3: verify new run is not polluted
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+        final = get_status(env.controller)
+        assert final.active_run_id == new_run_id
+        assert final.latest_iteration is not None
+        assert final.latest_iteration < 999999
