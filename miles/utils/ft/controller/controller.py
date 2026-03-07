@@ -23,7 +23,6 @@ from miles.utils.ft.controller.recovery.alert_checker import AlertChecker
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import (
     BAD_NODES_CONFIRMED_TYPES,
-    DirectlyRestarting,
     EvictingAndRestarting,
     RECOVERY_STATE_TO_INT,
     RecoveryStepper,
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 def _recovery_phase_name(recovery: RecoveryState) -> str:
-    if isinstance(recovery, (EvictingAndRestarting, DirectlyRestarting)):
+    if isinstance(recovery, EvictingAndRestarting):
         return type(recovery.restart).__name__
     return type(recovery).__name__
 

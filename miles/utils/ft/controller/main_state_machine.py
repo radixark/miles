@@ -12,7 +12,6 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import (
     EvictingAndRestarting,
-    DirectlyRestarting,
     NotifyHumans,
     RealtimeChecks,
     RecoveryContext,
@@ -241,7 +240,7 @@ class MainStepper(StateMachineStepper[MainState, TickContext]):
 
 
 def get_known_bad_nodes(recovery_state: RecoveryState) -> list[str]:
-    if isinstance(recovery_state, (EvictingAndRestarting, DirectlyRestarting)):
+    if isinstance(recovery_state, EvictingAndRestarting):
         return recovery_state.restart.bad_node_ids
     if isinstance(recovery_state, RealtimeChecks):
         return recovery_state.pre_identified_bad_nodes
