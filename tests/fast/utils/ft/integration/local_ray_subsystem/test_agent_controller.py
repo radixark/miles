@@ -17,7 +17,7 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.recovery import ControllerMode
 
-from tests.fast.utils.ft.integration.local_ray.conftest import get_status, poll_for_run_id
+from tests.fast.utils.ft.integration.conftest import get_status, poll_for_run_id
 
 pytestmark = [
     pytest.mark.local_ray,

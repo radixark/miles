@@ -13,7 +13,7 @@ from miles.utils.ft.models.recovery import ControllerMode
 from miles.utils.ft.platform.controller_actor import FtControllerActor
 from miles.utils.ft.platform.controller_factory import FtControllerConfig
 from miles.utils.ft.protocols.platform import ft_controller_actor_name
-from tests.fast.utils.ft.integration.local_ray.conftest import get_status
+from tests.fast.utils.ft.integration.conftest import get_status
 
 pytestmark = [
     pytest.mark.local_ray,
