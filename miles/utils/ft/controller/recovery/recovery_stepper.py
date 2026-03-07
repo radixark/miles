@@ -43,11 +43,8 @@ class RealtimeChecks(RecoveryState):
 
 class EvictingAndRestarting(RecoveryState):
     restart: RestartState
-    is_final_attempt: bool = False
-
-
-class DirectlyRestarting(RecoveryState):
-    restart: RestartState
+    succeed_next_state: RecoveryState
+    failed_next_state: RecoveryState
 
 
 class StopTimeDiagnostics(RecoveryState):
@@ -80,7 +77,6 @@ class RecoveryContext:
 RECOVERY_STATE_TO_INT: dict[type[RecoveryState], int] = {
     RealtimeChecks: 1,
     EvictingAndRestarting: 2,
-    DirectlyRestarting: 3,
     StopTimeDiagnostics: 4,
     NotifyHumans: 5,
     RecoveryDone: 6,
@@ -122,7 +118,6 @@ class RecoveryStepper(StateMachineStepper[RecoveryState, RecoveryContext]):
         return {
             RealtimeChecks: self._handle_realtime_checks,
             EvictingAndRestarting: self._handle_evicting_and_restarting,
-            DirectlyRestarting: self._handle_directly_restarting,
             StopTimeDiagnostics: self._handle_stop_time_diagnostics,
             NotifyHumans: self._handle_notify_humans,
         }
@@ -139,13 +134,18 @@ class RecoveryStepper(StateMachineStepper[RecoveryState, RecoveryContext]):
         if state.pre_identified_bad_nodes:
             return EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=state.pre_identified_bad_nodes),
-                is_final_attempt=False,
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
             )
 
         node_faults = self._alert_checker.check_alerts()
         if not node_faults:
             logger.info("check_alerts_clean trigger=%s", context.trigger)
-            return DirectlyRestarting(restart=StoppingAndRestarting(bad_node_ids=[]))
+            return EvictingAndRestarting(
+                restart=StoppingAndRestarting(bad_node_ids=[]),
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
+            )
 
         non_ephemeral = [f for f in node_faults if not f.ephemeral]
         if non_ephemeral:
@@ -153,11 +153,16 @@ class RecoveryStepper(StateMachineStepper[RecoveryState, RecoveryContext]):
             logger.info("check_alerts_found bad_nodes=%s", bad_ids)
             return EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=bad_ids),
-                is_final_attempt=False,
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
             )
 
         logger.info("check_alerts_ephemeral_only trigger=%s", context.trigger)
-        return DirectlyRestarting(restart=StoppingAndRestarting(bad_node_ids=[]))
+        return EvictingAndRestarting(
+            restart=StoppingAndRestarting(bad_node_ids=[]),
+            succeed_next_state=RecoveryDone(),
+            failed_next_state=StopTimeDiagnostics(),
+        )
 
     async def _handle_evicting_and_restarting(
         self, state: EvictingAndRestarting, _context: RecoveryContext,
@@ -166,26 +171,14 @@ class RecoveryStepper(StateMachineStepper[RecoveryState, RecoveryContext]):
         if new_restart is None:
             return None
         if isinstance(new_restart, RestartDone):
-            return RecoveryDone()
+            return state.succeed_next_state
         if isinstance(new_restart, RestartFailed):
-            if not state.is_final_attempt:
-                return StopTimeDiagnostics()
-            return NotifyHumans(state_before="EvictingAndRestarting")
+            return state.failed_next_state
         return EvictingAndRestarting(
-            restart=new_restart, is_final_attempt=state.is_final_attempt,
+            restart=new_restart,
+            succeed_next_state=state.succeed_next_state,
+            failed_next_state=state.failed_next_state,
         )
-
-    async def _handle_directly_restarting(
-        self, state: DirectlyRestarting, _context: RecoveryContext,
-    ) -> RecoveryState | None:
-        new_restart = await self._restart_stepper(state.restart, None)
-        if new_restart is None:
-            return None
-        if isinstance(new_restart, RestartDone):
-            return RecoveryDone()
-        if isinstance(new_restart, RestartFailed):
-            return StopTimeDiagnostics()
-        return DirectlyRestarting(restart=new_restart)
 
     async def _handle_stop_time_diagnostics(
         self, state: StopTimeDiagnostics, context: RecoveryContext,
@@ -199,7 +192,8 @@ class RecoveryStepper(StateMachineStepper[RecoveryState, RecoveryContext]):
             logger.info("diagnosing_found_bad_nodes bad_nodes=%s", result.bad_node_ids)
             return EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=result.bad_node_ids),
-                is_final_attempt=True,
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=NotifyHumans(state_before="EvictingAndRestarting"),
             )
 
         logger.info("diagnosing_all_passed trigger=%s", context.trigger)
