@@ -1,4 +1,4 @@
-"""Tests for MainStepper and MainState classes."""
+"""Tests for main state machine handler classes."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -8,10 +8,10 @@ import pytest
 
 from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.main_state_machine import (
+    MAIN_HANDLER_MAP,
     DetectingAnomaly,
-    MainStepper,
+    MainContext,
     Recovering,
-    TickContext,
 )
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
@@ -19,10 +19,8 @@ from miles.utils.ft.controller.recovery.recovery_stepper import (
     NotifyHumans,
     RealtimeChecks,
     RecoveryDone,
-    RecoveryStepper,
 )
-from miles.utils.ft.controller.recovery.restart_stepper import RestartStepper
-from miles.utils.ft.utils.state_machine import StateMachine
+from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import JobStatus
 
@@ -30,9 +28,7 @@ from tests.fast.utils.ft.helpers.controller_fakes import (
     AlwaysEnterRecoveryDetector,
     AlwaysNoneDetector,
     CriticalFixedDecisionDetector,
-    FakeNodeManager,
     FakeNotifier,
-    FakeTrainingJob,
     FixedDecisionDetector,
 )
 
@@ -42,19 +38,8 @@ from tests.fast.utils.ft.helpers.controller_fakes import (
 # ---------------------------------------------------------------------------
 
 
-def _make_platform_deps(*, notifier: FakeNotifier | None = None):
-    from miles.utils.ft.controller.actions import PlatformDeps
-    from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus, MiniPrometheusConfig
-
-    return PlatformDeps(
-        node_manager=FakeNodeManager(),
-        training_job=FakeTrainingJob(),
-        metric_store=MiniPrometheus(config=MiniPrometheusConfig()),
-        mini_wandb=MiniWandb(),
-        notifier=notifier,
-        diagnostic_orchestrator=AsyncMock(),
-        controller_exporter=None,
-    )
+def _make_stepper() -> StateMachineStepper:
+    return StateMachineStepper(handler_map=MAIN_HANDLER_MAP)
 
 
 def _make_detector_context() -> DetectorContext:
@@ -68,55 +53,35 @@ def _make_detector_context() -> DetectorContext:
     )
 
 
-def _tick_ctx(
+def _dummy_recovery_context_factory(trigger, recovery_start_time):
+    """Dummy factory that returns a minimal object — only used when recovery_stepper is a mock."""
+    return None
+
+
+def _make_main_context(
     *,
     should_run_detectors: bool = True,
     detector_context: DetectorContext | None = None,
-) -> TickContext:
-    return TickContext(
+    detectors: list | None = None,
+    cooldown: SlidingWindowThrottle | None = None,
+    recovery_stepper: object | None = None,
+    recovery_context_factory: object | None = None,
+    on_recovery_duration: object | None = None,
+    notifier: FakeNotifier | None = None,
+    max_simultaneous_bad_nodes: int = 3,
+) -> MainContext:
+    return MainContext(
         job_status=JobStatus.RUNNING,
         tick_count=1,
         should_run_detectors=should_run_detectors,
         detector_context=detector_context if detector_context is not None else (
             _make_detector_context() if should_run_detectors else None
         ),
-    )
-
-
-def _make_main_stepper(
-    *,
-    detectors=None,
-    cooldown: SlidingWindowThrottle | None = None,
-    recovery_stepper: RecoveryStepper | AsyncMock | None = None,
-    on_recovery_duration=None,
-    notifier: FakeNotifier | None = None,
-    max_simultaneous_bad_nodes: int = 3,
-) -> MainStepper:
-    from miles.utils.ft.controller.recovery.alert_checker import AlertChecker
-    from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus, MiniPrometheusConfig
-
-    if recovery_stepper is None:
-        restart_stepper = RestartStepper(
-            node_manager=FakeNodeManager(),
-            training_job=FakeTrainingJob(),
-            mini_wandb=MiniWandb(),
-            notifier=None,
-            on_new_run=None,
-            monitoring_success_iterations=10,
-            monitoring_timeout_seconds=600,
-        )
-        recovery_stepper = RecoveryStepper(
-            alert_checker=AlertChecker(metric_store=MiniPrometheus(config=MiniPrometheusConfig())),
-            diagnostic_orchestrator=AsyncMock(),
-            restart_stepper=restart_stepper,
-            notifier=None,
-        )
-
-    return MainStepper(
-        platform_deps=_make_platform_deps(notifier=notifier),
-        recovery_stepper=recovery_stepper,
+        notifier=notifier,
         detectors=detectors or [],
         cooldown=cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3),
+        recovery_stepper=recovery_stepper or AsyncMock(return_value=None),
+        recovery_context_factory=recovery_context_factory or _dummy_recovery_context_factory,
         on_recovery_duration=on_recovery_duration,
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
     )
@@ -130,20 +95,26 @@ def _make_main_stepper(
 class TestDetectingAnomaly:
     @pytest.mark.asyncio
     async def test_no_detectors_returns_none(self) -> None:
-        stepper = _make_main_stepper()
-        result = await stepper(DetectingAnomaly(), _tick_ctx())
+        stepper = _make_stepper()
+        result = await stepper(DetectingAnomaly(), _make_main_context())
         assert result is None
 
     @pytest.mark.asyncio
     async def test_none_decision_returns_none(self) -> None:
-        stepper = _make_main_stepper(detectors=[AlwaysNoneDetector()])
-        result = await stepper(DetectingAnomaly(), _tick_ctx())
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(detectors=[AlwaysNoneDetector()]),
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_enter_recovery_transitions_to_recovering(self) -> None:
-        stepper = _make_main_stepper(detectors=[AlwaysEnterRecoveryDetector()])
-        result = await stepper(DetectingAnomaly(), _tick_ctx())
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(detectors=[AlwaysEnterRecoveryDetector()]),
+        )
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, RealtimeChecks)
         assert result.trigger == TriggerType.CRASH.value
@@ -156,8 +127,11 @@ class TestDetectingAnomaly:
             reason="test notify",
             trigger=TriggerType.MISC,
         ))
-        stepper = _make_main_stepper(detectors=[detector], notifier=notifier)
-        result = await stepper(DetectingAnomaly(), _tick_ctx())
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(detectors=[detector], notifier=notifier),
+        )
         assert result is None
         assert len(notifier.calls) == 1
 
@@ -167,21 +141,27 @@ class TestDetectingAnomaly:
         cooldown = SlidingWindowThrottle(window_minutes=30.0, max_count=1)
         cooldown.record(TriggerType.CRASH)
 
-        stepper = _make_main_stepper(
-            detectors=[AlwaysEnterRecoveryDetector()],
-            cooldown=cooldown,
-            notifier=notifier,
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(
+                detectors=[AlwaysEnterRecoveryDetector()],
+                cooldown=cooldown,
+                notifier=notifier,
+            ),
         )
-        result = await stepper(DetectingAnomaly(), _tick_ctx())
         assert result is None
         assert len(notifier.calls) == 1
 
     @pytest.mark.asyncio
     async def test_skip_detectors_returns_none(self) -> None:
-        stepper = _make_main_stepper(detectors=[AlwaysEnterRecoveryDetector()])
+        stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _tick_ctx(should_run_detectors=False),
+            _make_main_context(
+                detectors=[AlwaysEnterRecoveryDetector()],
+                should_run_detectors=False,
+            ),
         )
         assert result is None
 
@@ -194,15 +174,19 @@ class TestDetectingAnomaly:
 class TestRecovering:
     @pytest.mark.asyncio
     async def test_recovery_done_returns_detecting_anomaly(self) -> None:
-        recovery_stepper = AsyncMock(return_value=RecoveryDone())
-        stepper = _make_main_stepper(recovery_stepper=recovery_stepper)
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=RealtimeChecks(),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx(should_run_detectors=False))
+        result = await stepper(
+            state,
+            _make_main_context(
+                recovery_stepper=AsyncMock(return_value=RecoveryDone()),
+                should_run_detectors=False,
+            ),
+        )
         assert isinstance(result, DetectingAnomaly)
 
     @pytest.mark.asyncio
@@ -215,42 +199,54 @@ class TestRecovering:
             succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
-        recovery_stepper = AsyncMock(return_value=new_recovery)
-        stepper = _make_main_stepper(recovery_stepper=recovery_stepper)
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=RealtimeChecks(),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx(should_run_detectors=False))
+        result = await stepper(
+            state,
+            _make_main_context(
+                recovery_stepper=AsyncMock(return_value=new_recovery),
+                should_run_detectors=False,
+            ),
+        )
         assert isinstance(result, Recovering)
         assert result.recovery is new_recovery
 
     @pytest.mark.asyncio
     async def test_recovery_none_returns_none(self) -> None:
-        recovery_stepper = AsyncMock(return_value=None)
-        stepper = _make_main_stepper(recovery_stepper=recovery_stepper)
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=RealtimeChecks(),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx(should_run_detectors=False))
+        result = await stepper(
+            state,
+            _make_main_context(
+                recovery_stepper=AsyncMock(return_value=None),
+                should_run_detectors=False,
+            ),
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_recovery_exception_forces_notify(self) -> None:
-        recovery_stepper = AsyncMock(side_effect=RuntimeError("boom"))
-        stepper = _make_main_stepper(recovery_stepper=recovery_stepper)
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=RealtimeChecks(),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx(should_run_detectors=False))
+        result = await stepper(
+            state,
+            _make_main_context(
+                recovery_stepper=AsyncMock(side_effect=RuntimeError("boom")),
+                should_run_detectors=False,
+            ),
+        )
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, NotifyHumans)
 
@@ -260,8 +256,11 @@ class TestRecovering:
         recovery_stepper = AsyncMock(
             side_effect=[RuntimeError("boom"), RecoveryDone()],
         )
-        stepper = _make_main_stepper(recovery_stepper=recovery_stepper)
-        ctx = _tick_ctx(should_run_detectors=False)
+        stepper = _make_stepper()
+        ctx = _make_main_context(
+            recovery_stepper=recovery_stepper,
+            should_run_detectors=False,
+        )
 
         state = Recovering(
             recovery=RealtimeChecks(),
@@ -281,18 +280,21 @@ class TestRecovering:
     @pytest.mark.asyncio
     async def test_duration_callback_on_recovery_done(self) -> None:
         durations: list[float] = []
-        recovery_stepper = AsyncMock(return_value=RecoveryDone())
-        stepper = _make_main_stepper(
-            recovery_stepper=recovery_stepper,
-            on_recovery_duration=durations.append,
-        )
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=RealtimeChecks(),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        await stepper(state, _tick_ctx(should_run_detectors=False))
+        result = await stepper(
+            state,
+            _make_main_context(
+                recovery_stepper=AsyncMock(return_value=RecoveryDone()),
+                on_recovery_duration=durations.append,
+                should_run_detectors=False,
+            ),
+        )
+        assert isinstance(result, DetectingAnomaly)
         assert len(durations) == 1
         assert durations[0] >= 0
 
@@ -302,8 +304,6 @@ class TestRecovering:
         from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, RecoveryDone, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
-        recovery_stepper = AsyncMock(return_value=None)
-
         critical_detector = CriticalFixedDecisionDetector(Decision(
             action=ActionType.ENTER_RECOVERY,
             bad_node_ids=["node-new"],
@@ -311,11 +311,7 @@ class TestRecovering:
             trigger=TriggerType.HARDWARE,
         ))
 
-        stepper = _make_main_stepper(
-            detectors=[critical_detector],
-            recovery_stepper=recovery_stepper,
-        )
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
@@ -325,7 +321,13 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx())
+        result = await stepper(
+            state,
+            _make_main_context(
+                detectors=[critical_detector],
+                recovery_stepper=AsyncMock(return_value=None),
+            ),
+        )
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, RealtimeChecks)
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-old", "node-new"}
@@ -352,12 +354,15 @@ class TestBadNodeCountSafeguard:
             reason="three nodes bad",
             trigger=TriggerType.HARDWARE,
         ))
-        stepper = _make_main_stepper(
-            detectors=[detector],
-            notifier=notifier,
-            max_simultaneous_bad_nodes=3,
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(
+                detectors=[detector],
+                notifier=notifier,
+                max_simultaneous_bad_nodes=3,
+            ),
         )
-        result = await stepper(DetectingAnomaly(), _tick_ctx())
         assert result is None
         assert len(notifier.calls) == 1
         assert "likely false positive" in notifier.calls[0][1]
@@ -371,11 +376,14 @@ class TestBadNodeCountSafeguard:
             reason="two nodes bad",
             trigger=TriggerType.HARDWARE,
         ))
-        stepper = _make_main_stepper(
-            detectors=[detector],
-            max_simultaneous_bad_nodes=3,
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(
+                detectors=[detector],
+                max_simultaneous_bad_nodes=3,
+            ),
         )
-        result = await stepper(DetectingAnomaly(), _tick_ctx())
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, RealtimeChecks)
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-1", "node-2"}
@@ -387,7 +395,6 @@ class TestBadNodeCountSafeguard:
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         notifier = FakeNotifier()
-        recovery_stepper = AsyncMock(return_value=None)
 
         critical_detector = CriticalFixedDecisionDetector(Decision(
             action=ActionType.ENTER_RECOVERY,
@@ -396,13 +403,7 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.HARDWARE,
         ))
 
-        stepper = _make_main_stepper(
-            detectors=[critical_detector],
-            recovery_stepper=recovery_stepper,
-            notifier=notifier,
-            max_simultaneous_bad_nodes=3,
-        )
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
@@ -412,7 +413,15 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx())
+        result = await stepper(
+            state,
+            _make_main_context(
+                detectors=[critical_detector],
+                recovery_stepper=AsyncMock(return_value=None),
+                notifier=notifier,
+                max_simultaneous_bad_nodes=3,
+            ),
+        )
         assert isinstance(result, DetectingAnomaly)
         assert len(notifier.calls) == 1
         assert "likely false positive" in notifier.calls[0][1]
@@ -432,12 +441,7 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.HARDWARE,
         ))
 
-        stepper = _make_main_stepper(
-            detectors=[critical_detector],
-            recovery_stepper=recovery_stepper,
-            max_simultaneous_bad_nodes=3,
-        )
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
@@ -447,7 +451,14 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx())
+        result = await stepper(
+            state,
+            _make_main_context(
+                detectors=[critical_detector],
+                recovery_stepper=recovery_stepper,
+                max_simultaneous_bad_nodes=3,
+            ),
+        )
         assert result is None
         recovery_stepper.assert_awaited_once()
 
@@ -466,12 +477,7 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.HARDWARE,
         ))
 
-        stepper = _make_main_stepper(
-            detectors=[critical_detector],
-            recovery_stepper=recovery_stepper,
-            max_simultaneous_bad_nodes=3,
-        )
-
+        stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old-1", "node-old-2"]),
@@ -481,7 +487,14 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper(state, _tick_ctx())
+        result = await stepper(
+            state,
+            _make_main_context(
+                detectors=[critical_detector],
+                recovery_stepper=recovery_stepper,
+                max_simultaneous_bad_nodes=3,
+            ),
+        )
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, RealtimeChecks)
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-old-1", "node-old-2", "node-new"}
@@ -496,14 +509,13 @@ class TestStateMachineIntegration:
     @pytest.mark.asyncio
     async def test_full_detecting_to_recovering_to_detecting(self) -> None:
         """DetectingAnomaly -> Recovering -> RecoveryDone -> DetectingAnomaly in one step()."""
-        recovery_stepper = AsyncMock(return_value=RecoveryDone())
-
-        stepper = _make_main_stepper(
+        stepper = _make_stepper()
+        ctx = _make_main_context(
             detectors=[AlwaysEnterRecoveryDetector()],
-            recovery_stepper=recovery_stepper,
+            recovery_stepper=AsyncMock(return_value=RecoveryDone()),
         )
         machine = StateMachine(initial_state=DetectingAnomaly(), stepper=stepper)
 
-        await machine.step(_tick_ctx())
+        await machine.step(ctx)
         assert isinstance(machine.state, DetectingAnomaly)
         assert len(machine.state_history) >= 2

@@ -81,7 +81,7 @@ class TestRestartStepperException:
     async def test_restart_stepper_exception_forces_notify_humans(
         self, make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
-        """Exception inside recovery stepper → MainStepper catches → NotifyHumans."""
+        """Exception inside recovery stepper → RecoveringHandler catches → NotifyHumans."""
         env = make_e2e_env(
             ft_id="e2erse",
             nodes=[NodeSpec(node_id="e2erse-node-0")],
