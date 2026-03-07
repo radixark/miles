@@ -82,7 +82,8 @@ class MainStepper(StateMachineStepper[MainState, TickContext]):
         self._cooldown = cooldown
         self._on_recovery_duration = on_recovery_duration
         self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
-        super().__init__()
+        self._handlers = self._build_handlers()
+        self._pre_dispatch = None
 
     def _build_handlers(self) -> dict[type, Callable[[MainState, TickContext], Awaitable[MainState | None]]]:
         return {

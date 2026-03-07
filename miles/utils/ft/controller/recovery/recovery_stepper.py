@@ -128,7 +128,8 @@ class RecoveryStepper(StateMachineStepper[RecoveryState, RecoveryContext]):
         self._notifier = notifier
         self._timeout_seconds = timeout_seconds
         self._rank_pids_provider = rank_pids_provider
-        super().__init__()
+        self._handlers = self._build_handlers()
+        self._pre_dispatch = None
 
     def set_rank_pids_provider(self, provider: Callable[[str], dict[int, int]]) -> None:
         self._rank_pids_provider = provider
