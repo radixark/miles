@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.recovery.alert_checker import AlertChecker
 from miles.utils.ft.controller.recovery.helpers import safe_notify
@@ -37,7 +37,7 @@ class RecoveryState(FtBaseModel):
 
 
 class RealtimeChecks(RecoveryState):
-    pre_identified_bad_nodes: list[str] = []
+    pre_identified_bad_nodes: list[str] = Field(default_factory=list)
 
 
 class EvictingAndRestarting(RecoveryState):
@@ -160,33 +160,45 @@ class RecoveryStepper(StateMachineStepper[RecoveryState]):
         logger.info("check_alerts_ephemeral_only trigger=%s", self._call_trigger)
         return DirectlyRestarting(restart=StoppingAndRestarting(bad_node_ids=[]))
 
-    async def _handle_evicting_and_restarting(
-        self, state: EvictingAndRestarting,
+    async def _delegate_restart(
+        self,
+        restart: RestartState,
+        *,
+        on_failed: RecoveryState,
+        wrap_in_progress: Callable[[RestartState], RecoveryState],
     ) -> RecoveryState | None:
-        new_restart = await self._restart_stepper(state.restart)
+        new_restart = await self._restart_stepper(restart)
         if new_restart is None:
             return None
         if isinstance(new_restart, RestartDone):
             return RecoveryDone()
         if isinstance(new_restart, RestartFailed):
-            if not state.is_final_attempt:
-                return StopTimeDiagnostics()
-            return NotifyHumans(state_before="EvictingAndRestarting")
-        return EvictingAndRestarting(
-            restart=new_restart, is_final_attempt=state.is_final_attempt,
+            return on_failed
+        return wrap_in_progress(new_restart)
+
+    async def _handle_evicting_and_restarting(
+        self, state: EvictingAndRestarting,
+    ) -> RecoveryState | None:
+        on_failed = (
+            StopTimeDiagnostics() if not state.is_final_attempt
+            else NotifyHumans(state_before="EvictingAndRestarting")
+        )
+        return await self._delegate_restart(
+            state.restart,
+            on_failed=on_failed,
+            wrap_in_progress=lambda r: EvictingAndRestarting(
+                restart=r, is_final_attempt=state.is_final_attempt,
+            ),
         )
 
     async def _handle_directly_restarting(
         self, state: DirectlyRestarting,
     ) -> RecoveryState | None:
-        new_restart = await self._restart_stepper(state.restart)
-        if new_restart is None:
-            return None
-        if isinstance(new_restart, RestartDone):
-            return RecoveryDone()
-        if isinstance(new_restart, RestartFailed):
-            return StopTimeDiagnostics()
-        return DirectlyRestarting(restart=new_restart)
+        return await self._delegate_restart(
+            state.restart,
+            on_failed=StopTimeDiagnostics(),
+            wrap_in_progress=lambda r: DirectlyRestarting(restart=r),
+        )
 
     async def _handle_stop_time_diagnostics(
         self, state: StopTimeDiagnostics,

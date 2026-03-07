@@ -5,7 +5,7 @@ import math
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.helpers import (
@@ -36,7 +36,7 @@ _PENDING_TIMEOUT_SECONDS: int = 300
 
 class RestartState(FtBaseModel):
     model_config = ConfigDict(frozen=True)
-    bad_node_ids: list[str] = []
+    bad_node_ids: list[str] = Field(default_factory=list)
 
 
 class Evicting(RestartState):
@@ -154,7 +154,7 @@ class RestartStepper(StateMachineStepper[RestartState]):
             )
 
         if status == JobStatus.FAILED:
-            logger.warning("restart_job_immediately_failed")
+            logger.warning("restart_job_immediately_failed bad_node_ids=%s", state.bad_node_ids)
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         if state.submit_time is not None:
@@ -171,7 +171,7 @@ class RestartStepper(StateMachineStepper[RestartState]):
         status = await self._training_job.get_training_status()
 
         if status == JobStatus.FAILED:
-            logger.warning("monitoring_training_failed")
+            logger.warning("monitoring_training_failed bad_node_ids=%s", state.bad_node_ids)
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         progress = self._iteration_progress(state)

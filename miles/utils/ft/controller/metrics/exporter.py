@@ -5,7 +5,7 @@ from http.server import HTTPServer
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, start_http_server
 
-import miles.utils.ft.models.metric_names as mn
+import miles.utils.ft.models.metric_names as metric_names
 from miles.utils.ft.models.recovery import ControllerMode
 from miles.utils.ft.protocols.platform import JobStatus
 
@@ -36,54 +36,54 @@ class ControllerExporter:
         self._httpd: HTTPServer | None = None
 
         self._mode = Gauge(
-            mn.CONTROLLER_MODE,
+            metric_names.CONTROLLER_MODE,
             "Controller mode (0=monitoring, 1=recovery)",
             registry=self._registry,
         )
         self._tick_count = Counter(
-            mn.CONTROLLER_TICK_COUNT,
+            metric_names.CONTROLLER_TICK_COUNT,
             "Cumulative tick count",
             registry=self._registry,
         )
         self._recovery_phase = Gauge(
-            mn.CONTROLLER_RECOVERY_PHASE,
+            metric_names.CONTROLLER_RECOVERY_PHASE,
             "Recovery phase encoding (0=none, 1=check_alerts, 2=reattempting, ...)",
             registry=self._registry,
         )
 
         self._training_job_status = Gauge(
-            mn.TRAINING_JOB_STATUS,
+            metric_names.TRAINING_JOB_STATUS,
             "Training job status (-1=FAILED, 0=STOPPED, 1=RUNNING, 2=PENDING)",
             registry=self._registry,
         )
         self._training_loss_latest = Gauge(
-            mn.TRAINING_LOSS_LATEST,
+            metric_names.TRAINING_LOSS_LATEST,
             "Latest training loss from rank 0",
             registry=self._registry,
         )
         self._training_mfu_latest = Gauge(
-            mn.TRAINING_MFU_LATEST,
+            metric_names.TRAINING_MFU_LATEST,
             "Latest training MFU from rank 0",
             registry=self._registry,
         )
         self._tick_duration_seconds = Histogram(
-            mn.CONTROLLER_TICK_DURATION_SECONDS,
+            metric_names.CONTROLLER_TICK_DURATION_SECONDS,
             "Wall-clock duration of each controller tick",
             registry=self._registry,
         )
         self._decision_total = Counter(
-            mn.CONTROLLER_DECISION_TOTAL,
+            metric_names.CONTROLLER_DECISION_TOTAL,
             "Total non-NONE decisions by action and trigger",
             labelnames=["action", "trigger"],
             registry=self._registry,
         )
         self._recovery_duration_seconds = Histogram(
-            mn.CONTROLLER_RECOVERY_DURATION_SECONDS,
+            metric_names.CONTROLLER_RECOVERY_DURATION_SECONDS,
             "Duration of complete recovery cycles",
             registry=self._registry,
         )
         self._last_tick_timestamp = Gauge(
-            mn.CONTROLLER_LAST_TICK_TIMESTAMP,
+            metric_names.CONTROLLER_LAST_TICK_TIMESTAMP,
             "Wall-clock epoch timestamp of last completed tick",
             registry=self._registry,
         )
@@ -155,6 +155,9 @@ class ControllerExporter:
 
 
 class NullControllerExporter(ControllerExporter):
+    # Intentionally skips super().__init__() to avoid creating Prometheus metrics.
+    # All public methods are overridden as no-ops. If ControllerExporter gains new
+    # methods, they must be overridden here as well.
     """No-op exporter that silently discards all metrics.
 
     Used when no Prometheus endpoint is configured, eliminating

@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import logging
 from abc import abstractmethod
 from collections import deque
-from typing import Awaitable, Callable, Generic, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel
 
@@ -13,14 +16,14 @@ StateT = TypeVar("StateT", bound=BaseModel)
 class StateMachineStepper(Generic[StateT]):
     """Pure-function state machine stepper: dispatch type(state) -> handler.
 
-    Design contract — MUST be stateless:
-    - A stepper holds only immutable dependencies (protocol refs, config constants)
-      and a handler registry. It must NEVER store mutable / evolving state.
+    Design contract:
+    - A stepper holds immutable dependencies (protocol refs, config constants)
+      and a handler registry. It must NOT accumulate evolving state across calls.
     - All evolving data lives in the State objects passed to __call__.
-    - If a handler needs per-session info (e.g. recovery_start_time), read it from
-      the state parameter, not from self.
-    - If a handler needs a child stepper, construct it on the fly from state + deps;
-      do NOT cache it on self.
+    - Per-call context slots (e.g. _tick_context, _call_trigger) that are
+      overwritten before every invocation are permitted — they act as method
+      parameters rather than long-lived state. Their values must not carry
+      meaning from one call to the next.
 
     Subclasses implement _build_handlers() -> {type: async handler}.
     Terminal state = type(state) not in registry -> __call__ returns None.
