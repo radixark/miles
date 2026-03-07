@@ -493,8 +493,8 @@ class TestCheckAlertsEphemeral:
         assert orch.phase == RecoveryPhase.REATTEMPTING
         assert orch.bad_node_ids == []
 
-    def test_hardware_plus_ephemeral_goes_to_evict_with_all_nodes(self) -> None:
-        """Hardware fault + NIC flapping should evict all affected nodes."""
+    def test_hardware_plus_ephemeral_only_evicts_non_ephemeral_node(self) -> None:
+        """Hardware fault + NIC flapping should only evict the non-ephemeral node."""
         orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
         # node-1: GPU fault (non-ephemeral)
         inject_gpu_unavailable(metric_store, node_id="node-1")
@@ -511,8 +511,8 @@ class TestCheckAlertsEphemeral:
 
         assert RecoveryPhase.EVICT_AND_RESTART in orch.phase_history
         assert orch.is_done()
-        assert "node-0" in orch.bad_node_ids
         assert "node-1" in orch.bad_node_ids
+        assert "node-0" not in orch.bad_node_ids
 
 
 class TestCheckAlertsXidCodes:

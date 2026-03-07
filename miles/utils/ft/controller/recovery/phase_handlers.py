@@ -49,9 +49,8 @@ async def step_check_alerts(
     ephemeral_only = [f for f in node_faults if f.ephemeral]
 
     if non_ephemeral:
-        all_faults = non_ephemeral + ephemeral_only
-        ctx.bad_node_ids = sorted(unique_node_ids(all_faults))
-        reasons = [f.reason for f in all_faults]
+        ctx.bad_node_ids = sorted(unique_node_ids(non_ephemeral))
+        reasons = [f.reason for f in non_ephemeral]
         logger.info("check_alerts_found bad_nodes=%s reasons=%s", ctx.bad_node_ids, reasons)
         return RecoveryPhase.EVICT_AND_RESTART
 

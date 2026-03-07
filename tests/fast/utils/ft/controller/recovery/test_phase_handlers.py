@@ -75,6 +75,63 @@ class TestStepCheckAlerts:
         assert ctx.bad_node_ids == ["node-A"]
 
     @pytest.mark.anyio
+    async def test_ephemeral_only_transitions_to_reattempting(self) -> None:
+        """Only ephemeral faults → REATTEMPTING, bad_node_ids stays empty."""
+        ctx = _make_ctx()
+        checker = _FakeAlertChecker(faults=[
+            NodeFault(node_id="node-A", reason="nic flapping", ephemeral=True),
+        ])
+
+        result = await step_check_alerts(ctx, checker)
+
+        assert result == RecoveryPhase.REATTEMPTING
+        assert ctx.bad_node_ids == []
+
+    @pytest.mark.anyio
+    async def test_mixed_faults_only_evicts_non_ephemeral_nodes(self) -> None:
+        """node-A non-ephemeral + node-B ephemeral → only node-A evicted."""
+        ctx = _make_ctx()
+        checker = _FakeAlertChecker(faults=[
+            NodeFault(node_id="node-A", reason="gpu lost"),
+            NodeFault(node_id="node-B", reason="nic flapping", ephemeral=True),
+        ])
+
+        result = await step_check_alerts(ctx, checker)
+
+        assert result == RecoveryPhase.EVICT_AND_RESTART
+        assert ctx.bad_node_ids == ["node-A"]
+
+    @pytest.mark.anyio
+    async def test_same_node_non_ephemeral_and_ephemeral_evicts_node(self) -> None:
+        """Same node has both non-ephemeral and ephemeral faults → node is evicted."""
+        ctx = _make_ctx()
+        checker = _FakeAlertChecker(faults=[
+            NodeFault(node_id="node-A", reason="gpu lost"),
+            NodeFault(node_id="node-A", reason="nic flapping", ephemeral=True),
+        ])
+
+        result = await step_check_alerts(ctx, checker)
+
+        assert result == RecoveryPhase.EVICT_AND_RESTART
+        assert ctx.bad_node_ids == ["node-A"]
+
+    @pytest.mark.anyio
+    async def test_multiple_non_ephemeral_ignores_ephemeral(self) -> None:
+        """Multiple non-ephemeral + multiple ephemeral → only non-ephemeral nodes evicted."""
+        ctx = _make_ctx()
+        checker = _FakeAlertChecker(faults=[
+            NodeFault(node_id="node-A", reason="gpu lost"),
+            NodeFault(node_id="node-B", reason="xid error"),
+            NodeFault(node_id="node-C", reason="nic flapping", ephemeral=True),
+            NodeFault(node_id="node-D", reason="nic flapping", ephemeral=True),
+        ])
+
+        result = await step_check_alerts(ctx, checker)
+
+        assert result == RecoveryPhase.EVICT_AND_RESTART
+        assert ctx.bad_node_ids == ["node-A", "node-B"]
+
+    @pytest.mark.anyio
     async def test_no_alerts_transitions_to_reattempting(self) -> None:
         ctx = _make_ctx()
         checker = _FakeAlertChecker(faults=[])
