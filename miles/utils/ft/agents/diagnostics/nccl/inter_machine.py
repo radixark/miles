@@ -7,6 +7,8 @@ from miles.utils.ft.agents.diagnostics.nccl.utils import build_nccl_test_cmd, ru
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.platform.node_agent_factory import DEFAULT_NUM_GPUS
 
+DEFAULT_NCCL_MASTER_PORT: int = 29500
+
 
 class InterMachineCommDiagnostic(BaseDiagnostic):
     """Two-node inter-machine communication diagnostic.
@@ -24,7 +26,7 @@ class InterMachineCommDiagnostic(BaseDiagnostic):
         expected_bandwidth_gbps: float = 40.0,
         num_gpus: int = DEFAULT_NUM_GPUS,
         master_addr: str = "",
-        master_port: int = 29500,
+        master_port: int = DEFAULT_NCCL_MASTER_PORT,
         nccl_test_binary: str = "all_gather_perf",
     ) -> None:
         self._expected_bandwidth_gbps = expected_bandwidth_gbps

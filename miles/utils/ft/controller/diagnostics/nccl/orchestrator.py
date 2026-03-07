@@ -10,12 +10,11 @@ import asyncio
 import logging
 from typing import NamedTuple
 
+from miles.utils.ft.agents.diagnostics.nccl.inter_machine import DEFAULT_NCCL_MASTER_PORT
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.protocols.agents import NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
-
-_BASE_PORT = 29500
 _RPC_TIMEOUT_BUFFER_SECONDS = 30
 
 
@@ -30,7 +29,7 @@ class InterMachineOrchestrator:
         self,
         node_agents: dict[str, NodeAgentProtocol],
         node_addresses: dict[str, str] | None = None,
-        base_port: int = _BASE_PORT,
+        base_port: int = DEFAULT_NCCL_MASTER_PORT,
     ) -> None:
         self._node_agents = node_agents
         self._node_addresses = node_addresses
