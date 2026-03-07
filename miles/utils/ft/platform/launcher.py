@@ -72,8 +72,8 @@ def main(
         int, typer.Option(help="Network detector: alert count threshold")
     ] = _DEFAULT_NETWORK.alert_threshold,
     mfu_baseline: Annotated[
-        float, typer.Option(help="MFU detector: explicit MFU baseline (0 = auto-detect)")
-    ] = _DEFAULT_MFU.mfu_baseline,
+        float, typer.Option(help="MFU detector: explicit MFU baseline (0 = auto-detect from history)")
+    ] = 0.0,
     mfu_threshold_ratio: Annotated[
         float, typer.Option(help="MFU detector: decline threshold as ratio of baseline")
     ] = _DEFAULT_MFU.mfu_threshold_ratio,
@@ -118,7 +118,7 @@ def main(
             alert_threshold=network_alert_threshold,
         ),
         mfu=MfuDeclineDetectorConfig(
-            mfu_baseline=mfu_baseline,
+            mfu_baseline=mfu_baseline if mfu_baseline > 0 else None,
             mfu_threshold_ratio=mfu_threshold_ratio,
             consecutive_steps=mfu_consecutive_steps,
             temperature_delta_threshold=mfu_temperature_delta_threshold,

@@ -1,12 +1,13 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from pydantic import ConfigDict, field_validator
+import polars as pl
+from pydantic import ConfigDict, Field
 
-from miles.utils.ft.models.metric_names import DCGM_FI_DEV_GPU_TEMP
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
+from miles.utils.ft.models.metric_names import DCGM_FI_DEV_GPU_TEMP
 from miles.utils.ft.protocols.metrics import MetricQueryProtocol, TrainingMetricStoreProtocol
 
 logger = logging.getLogger(__name__)
@@ -15,78 +16,41 @@ logger = logging.getLogger(__name__)
 class MfuDeclineDetectorConfig(FtBaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    mfu_baseline: float = 0.0
-    mfu_threshold_ratio: float = 0.8
-    consecutive_steps: int = 10
-    temperature_delta_threshold: float = 20.0
-    decline_timeout_minutes: float = 30.0
-    baseline_steps: int = 50
-    mfu_absolute_minimum: float = 0.0
-
-    @field_validator("mfu_threshold_ratio")
-    @classmethod
-    def _ratio_in_range(cls, value: float) -> float:
-        if value <= 0 or value > 1:
-            raise ValueError("mfu_threshold_ratio must be in (0, 1]")
-        return value
-
-    @field_validator("consecutive_steps", "baseline_steps")
-    @classmethod
-    def _must_be_at_least_one(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("must be >= 1")
-        return value
-
-    @field_validator("temperature_delta_threshold", "decline_timeout_minutes")
-    @classmethod
-    def _must_be_positive(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("must be > 0")
-        return value
-
-    @field_validator("mfu_absolute_minimum")
-    @classmethod
-    def _must_be_non_negative(cls, value: float) -> float:
-        if value < 0:
-            raise ValueError("mfu_absolute_minimum must be >= 0")
-        return value
+    mfu_baseline: float | None = None
+    mfu_threshold_ratio: float = Field(default=0.8, gt=0, le=1)
+    consecutive_steps: int = Field(default=10, ge=1)
+    temperature_delta_threshold: float = Field(default=20.0, gt=0)
+    decline_timeout_minutes: float = Field(default=30.0, gt=0)
+    baseline_steps: int = Field(default=50, ge=1)
+    mfu_absolute_minimum: float = Field(default=0.0, ge=0)
 
 
 class MfuDeclineDetector(BaseFaultDetector):
     def __init__(self, config: MfuDeclineDetectorConfig | None = None) -> None:
         self._config = config or MfuDeclineDetectorConfig()
 
-        self._mfu_baseline = self._config.mfu_baseline
-        self._mfu_threshold_ratio = self._config.mfu_threshold_ratio
-        self._consecutive_steps = self._config.consecutive_steps
-        self._temperature_delta_threshold = self._config.temperature_delta_threshold
-        self._decline_timeout_minutes = self._config.decline_timeout_minutes
-        self._baseline_steps = self._config.baseline_steps
-        self._mfu_absolute_minimum = self._config.mfu_absolute_minimum
-
-        self._baseline_locked: bool = False
-        self._locked_baseline: float | None = None
-
     def evaluate(self, ctx: DetectorContext) -> Decision:
-        recent_mfu = ctx.mini_wandb.query_last_n_steps("mfu", last_n=self._consecutive_steps)
-        if len(recent_mfu) < self._consecutive_steps:
+        cfg = self._config
+
+        recent_mfu = ctx.mini_wandb.query_last_n_steps("mfu", last_n=cfg.consecutive_steps)
+        if len(recent_mfu) < cfg.consecutive_steps:
             return Decision.no_fault(reason="insufficient MFU data")
 
         mfu_values = [value for _, value in recent_mfu]
         avg_mfu = sum(mfu_values) / len(mfu_values)
 
-        if self._mfu_absolute_minimum > 0 and avg_mfu < self._mfu_absolute_minimum:
+        if cfg.mfu_absolute_minimum > 0 and avg_mfu < cfg.mfu_absolute_minimum:
             return Decision(
                 action=ActionType.NOTIFY_HUMAN,
-                reason=f"MFU {avg_mfu:.4f} below absolute minimum {self._mfu_absolute_minimum:.4f}",
+                reason=f"MFU {avg_mfu:.4f} below absolute minimum {cfg.mfu_absolute_minimum:.4f}",
                 trigger=TriggerType.MISC,
             )
 
-        baseline = self._get_baseline(ctx.mini_wandb)
+        baseline = self._compute_baseline(ctx.mini_wandb)
         if baseline <= 0:
             return Decision.no_fault(reason="no valid MFU baseline")
 
-        threshold = baseline * self._mfu_threshold_ratio
+        threshold = baseline * cfg.mfu_threshold_ratio
         mfu_stats = f"{avg_mfu:.4f} < {threshold:.4f}"
 
         if avg_mfu >= threshold:
@@ -102,8 +66,7 @@ class MfuDeclineDetector(BaseFaultDetector):
             )
 
         elapsed_minutes = self._compute_decline_duration_minutes(ctx, threshold)
-
-        if elapsed_minutes >= self._decline_timeout_minutes:
+        if elapsed_minutes >= cfg.decline_timeout_minutes:
             return Decision(
                 action=ActionType.NOTIFY_HUMAN,
                 reason=f"MFU decline ({mfu_stats}) persisted for {elapsed_minutes:.1f}min without identifiable cause",
@@ -114,6 +77,20 @@ class MfuDeclineDetector(BaseFaultDetector):
             reason=f"MFU declining ({mfu_stats}), monitoring ({elapsed_minutes:.1f}min)",
         )
 
+    def _compute_baseline(self, mini_wandb: TrainingMetricStoreProtocol) -> float:
+        cfg = self._config
+        if cfg.mfu_baseline is not None:
+            return cfg.mfu_baseline
+
+        total_needed = cfg.baseline_steps + cfg.consecutive_steps
+        all_data = mini_wandb.query_last_n_steps("mfu", last_n=total_needed)
+
+        baseline_data = all_data[:-cfg.consecutive_steps] if len(all_data) > cfg.consecutive_steps else []
+        if not baseline_data:
+            return 0.0
+
+        return sum(v for _, v in baseline_data) / len(baseline_data)
+
     def _compute_decline_duration_minutes(
         self, ctx: DetectorContext, threshold: float,
     ) -> float:
@@ -122,10 +99,8 @@ class MfuDeclineDetector(BaseFaultDetector):
         Queries a window wider than the timeout so the "last healthy" reading
         is visible even when the decline started exactly at the timeout boundary.
         """
-        lookup_window = timedelta(minutes=self._decline_timeout_minutes * 2)
-        timed_mfu = ctx.mini_wandb.query_time_window(
-            "mfu", window=lookup_window,
-        )
+        lookup_window = timedelta(minutes=self._config.decline_timeout_minutes * 2)
+        timed_mfu = ctx.mini_wandb.query_time_window("mfu", window=lookup_window)
         if not timed_mfu:
             return 0.0
 
@@ -136,32 +111,8 @@ class MfuDeclineDetector(BaseFaultDetector):
             if value >= threshold:
                 last_healthy_time = ts
 
-        if last_healthy_time is not None:
-            return (now - last_healthy_time).total_seconds() / 60
-
-        return (now - timed_mfu[0].timestamp).total_seconds() / 60
-
-    def _get_baseline(self, mini_wandb: TrainingMetricStoreProtocol) -> float:
-        if self._mfu_baseline > 0:
-            return self._mfu_baseline
-
-        if self._baseline_locked and self._locked_baseline is not None:
-            return self._locked_baseline
-
-        total_needed = self._baseline_steps + self._consecutive_steps
-        all_data = mini_wandb.query_last_n_steps("mfu", last_n=total_needed)
-
-        baseline_data = all_data[:-self._consecutive_steps] if len(all_data) > self._consecutive_steps else []
-        if not baseline_data:
-            return 0.0
-
-        baseline = sum(v for _, v in baseline_data) / len(baseline_data)
-
-        self._locked_baseline = baseline
-        self._baseline_locked = True
-        logger.info("MFU baseline locked at %.4f from %d steps", baseline, len(baseline_data))
-
-        return baseline
+        decline_start = last_healthy_time if last_healthy_time is not None else timed_mfu[0].timestamp
+        return (now - decline_start).total_seconds() / 60
 
     def _find_high_temperature_node(
         self,
@@ -176,25 +127,17 @@ class MfuDeclineDetector(BaseFaultDetector):
             return None
 
         node_ids = set(rank_placement.values())
-
-        node_temps: dict[str, list[float]] = {}
-        for row in df.iter_rows(named=True):
-            node_id = row["node_id"]
-            if node_id in node_ids:
-                node_temps.setdefault(node_id, []).append(row["value"])
-
-        if not node_temps:
+        df = df.filter(pl.col("node_id").is_in(node_ids))
+        if df.is_empty():
             return None
 
-        node_avg_temps: dict[str, float] = {
-            node_id: sum(temps) / len(temps)
-            for node_id, temps in node_temps.items()
-        }
+        node_avgs = df.group_by("node_id").agg(pl.col("value").mean().alias("avg_temp"))
+        overall_avg = node_avgs["avg_temp"].mean()
 
-        overall_avg = sum(node_avg_temps.values()) / len(node_avg_temps)
+        outliers = node_avgs.filter(
+            pl.col("avg_temp") > overall_avg + self._config.temperature_delta_threshold,
+        )
+        if outliers.is_empty():
+            return None
 
-        for node_id, avg_temp in node_avg_temps.items():
-            if avg_temp > overall_avg + self._temperature_delta_threshold:
-                return node_id
-
-        return None
+        return outliers["node_id"][0]

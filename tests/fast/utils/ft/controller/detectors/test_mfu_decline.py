@@ -167,7 +167,7 @@ class TestMfuDeclineDetector:
         store = make_fake_metric_store()
 
         detector = MfuDeclineDetector(config=MfuDeclineDetectorConfig(
-            mfu_baseline=0.0,
+            mfu_baseline=None,
             mfu_threshold_ratio=0.8,
             consecutive_steps=10,
         ))
@@ -207,54 +207,6 @@ class TestMfuDeclineDetector:
 
         assert decision.action == ActionType.NONE
         assert "monitoring" in decision.reason
-
-
-class TestMfuDeclineBaselineLocking:
-    def test_baseline_locked_after_first_computation(self) -> None:
-        wandb = _make_wandb_with_mfu([0.5] * 50 + [0.45] * 10)
-        detector = MfuDeclineDetector(config=MfuDeclineDetectorConfig(
-            mfu_baseline=0.0,
-            mfu_threshold_ratio=0.8,
-            consecutive_steps=10,
-        ))
-
-        detector.evaluate(make_detector_context(mini_wandb=wandb))
-
-        assert detector._locked_baseline is not None
-        assert abs(detector._locked_baseline - 0.5) < 1e-6
-
-    def test_slow_drift_does_not_move_baseline(self) -> None:
-        """Without locking, a drifted baseline of 0.35 would yield threshold 0.28
-        and let avg_mfu=0.30 pass. Locking keeps the original baseline=0.5,
-        threshold=0.40, so the decline is detected."""
-        wandb_healthy = _make_wandb_with_mfu([0.5] * 50 + [0.45] * 10)
-        detector = MfuDeclineDetector(config=MfuDeclineDetectorConfig(
-            mfu_baseline=0.0,
-            mfu_threshold_ratio=0.8,
-            consecutive_steps=10,
-        ))
-
-        detector.evaluate(make_detector_context(mini_wandb=wandb_healthy))
-        original_baseline = detector._locked_baseline
-
-        wandb_drifted = _make_wandb_with_mfu([0.35] * 50 + [0.30] * 10)
-        decision = detector.evaluate(make_detector_context(mini_wandb=wandb_drifted))
-
-        assert detector._locked_baseline == original_baseline
-        assert decision.action == ActionType.NONE
-        assert "monitoring" in decision.reason
-
-    def test_explicit_baseline_bypasses_locking(self) -> None:
-        """When mfu_baseline is explicitly set, locking state is never touched."""
-        detector = MfuDeclineDetector(config=MfuDeclineDetectorConfig(
-            mfu_baseline=0.5,
-            consecutive_steps=10,
-        ))
-
-        wandb = _make_wandb_with_mfu([0.45] * 10)
-        detector.evaluate(make_detector_context(mini_wandb=wandb))
-
-        assert detector._locked_baseline is None
 
 
 class TestMfuAbsoluteMinimum:
@@ -300,10 +252,10 @@ class TestMfuDeclineDetectorValidation:
         (dict(mfu_threshold_ratio=0.0), "mfu_threshold_ratio"),
         (dict(mfu_threshold_ratio=-0.5), "mfu_threshold_ratio"),
         (dict(mfu_threshold_ratio=1.5), "mfu_threshold_ratio"),
-        (dict(consecutive_steps=0), "must be >= 1"),
-        (dict(decline_timeout_minutes=0.0), "must be > 0"),
-        (dict(baseline_steps=0), "must be >= 1"),
-        (dict(temperature_delta_threshold=0.0), "must be > 0"),
+        (dict(consecutive_steps=0), "consecutive_steps"),
+        (dict(decline_timeout_minutes=0.0), "decline_timeout_minutes"),
+        (dict(baseline_steps=0), "baseline_steps"),
+        (dict(temperature_delta_threshold=0.0), "temperature_delta_threshold"),
         (dict(mfu_absolute_minimum=-0.1), "mfu_absolute_minimum"),
     ])
     def test_invalid_parameter_rejected(self, kwargs: dict, match: str) -> None:

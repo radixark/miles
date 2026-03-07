@@ -193,7 +193,7 @@ class TestBuildDetectorChainConfig:
             mfu=MfuDeclineDetectorConfig(mfu_threshold_ratio=0.5),
         ))
         mfu = next(d for d in chain if isinstance(d, MfuDeclineDetector))
-        assert mfu._mfu_threshold_ratio == 0.5
+        assert mfu._config.mfu_threshold_ratio == 0.5
 
     def test_network_alert_window_minutes(self) -> None:
         chain = build_detector_chain(config=DetectorChainConfig(
