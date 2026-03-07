@@ -60,6 +60,12 @@ def main(
     runtime_env_json: Annotated[
         str, typer.Option(help="Runtime env JSON for the training Ray job")
     ] = "{}",
+    notify_webhook_url: Annotated[
+        str, typer.Option(help="Webhook URL for notifications (empty = no webhook notifications)")
+    ] = "",
+    notify_platform: Annotated[
+        str, typer.Option(help="Notification platform: 'lark', 'slack', or 'discord'")
+    ] = "",
     detector_config_json: Annotated[
         str, typer.Option(help="Detector config JSON string or @filepath (default: all detectors with defaults)")
     ] = "",
@@ -96,6 +102,8 @@ def main(
         prometheus_url=prometheus_url,
         controller_exporter_port=controller_exporter_port,
         tick_interval=tick_interval,
+        notify_webhook_url=notify_webhook_url,
+        notify_platform=notify_platform,
         detector_config=detector_config,
     )
 

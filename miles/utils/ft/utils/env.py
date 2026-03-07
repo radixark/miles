@@ -22,19 +22,3 @@ def get_training_run_id() -> str:
 def get_exception_inject_path() -> Path | None:
     raw = os.environ.get("MILES_FT_EXCEPTION_INJECT_PATH", "")
     return Path(raw) if raw else None
-
-
-def get_notify_webhook_url() -> str:
-    return (os.environ.get("MILES_FT_NOTIFY_WEBHOOK_URL") or "").strip()
-
-
-def get_notify_platform() -> str:
-    return (os.environ.get("MILES_FT_NOTIFY_PLATFORM") or "").strip().lower()
-
-
-def get_lark_webhook_url() -> str:
-    return (os.environ.get("MILES_FT_LARK_WEBHOOK_URL") or "").strip()
-
-
-def get_k8s_label_prefix() -> str:
-    return os.environ.get("MILES_FT_K8S_LABEL_PREFIX", "")

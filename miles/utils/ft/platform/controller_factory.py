@@ -105,7 +105,11 @@ def build_ft_controller(
     if notifier_override is not _NOTIFIER_SENTINEL:
         notifier: NotificationProtocol | None = notifier_override  # type: ignore[assignment]
     else:
-        notifier = build_notifier(platform=config.platform)
+        notifier = build_notifier(
+            platform=config.platform,
+            notify_webhook_url=config.notify_webhook_url,
+            notify_platform=config.notify_platform,
+        )
 
     detectors = (
         detectors_override

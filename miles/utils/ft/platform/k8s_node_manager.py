@@ -7,7 +7,6 @@ from kubernetes_asyncio import config as k8s_config
 from kubernetes_asyncio.client import ApiClient, CoreV1Api
 
 from miles.utils.ft.protocols.platform import NodeManagerProtocol
-from miles.utils.ft.utils.env import get_k8s_label_prefix
 from miles.utils.ft.utils.retry import retry_async_or_raise
 
 logger = logging.getLogger(__name__)
@@ -36,10 +35,8 @@ class K8sNodeManager(NodeManagerProtocol):
     def __init__(
         self,
         api_client: ApiClient | None = None,
-        label_prefix: str | None = None,
+        label_prefix: str = "",
     ) -> None:
-        if label_prefix is None:
-            label_prefix = get_k8s_label_prefix()
         self._api_client: ApiClient | None = api_client
         self._core_v1: CoreV1Api | None = None
         self._label_key, self._reason_label_key = _build_label_keys(label_prefix)
