@@ -158,6 +158,47 @@ class TestRealtimeChecks:
         assert isinstance(result, EvictingAndRestarting)
         assert result.restart.bad_node_ids == ["node-X"]
 
+    @pytest.mark.asyncio
+    async def test_multiple_bad_nodes_all_evicted(self) -> None:
+        """Multiple non-ephemeral faults → all bad nodes included in Evicting."""
+        faults = [
+            NodeFault(node_id="node-A", reason="gpu error", ephemeral=False),
+            NodeFault(node_id="node-B", reason="network error", ephemeral=False),
+            NodeFault(node_id="node-C", reason="cpu error", ephemeral=False),
+        ]
+        stepper = _make_recovery_stepper(alert_checker=FakeAlertChecker(faults=faults))
+        result = await _step(stepper, RealtimeChecks())
+
+        assert isinstance(result, EvictingAndRestarting)
+        assert result.restart.bad_node_ids == ["node-A", "node-B", "node-C"]
+
+    @pytest.mark.asyncio
+    async def test_ephemeral_faults_skip_eviction(self) -> None:
+        """Only ephemeral faults → DirectlyRestarting with StoppingAndRestarting (no Evicting)."""
+        faults = [
+            NodeFault(node_id="node-A", reason="temp glitch", ephemeral=True),
+            NodeFault(node_id="node-B", reason="transient", ephemeral=True),
+        ]
+        stepper = _make_recovery_stepper(alert_checker=FakeAlertChecker(faults=faults))
+        result = await _step(stepper, RealtimeChecks())
+
+        assert isinstance(result, DirectlyRestarting)
+        assert isinstance(result.restart, StoppingAndRestarting)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_bad_nodes_deduplicated(self) -> None:
+        """Duplicate node IDs across faults are deduplicated via unique_node_ids."""
+        faults = [
+            NodeFault(node_id="node-A", reason="err1", ephemeral=False),
+            NodeFault(node_id="node-A", reason="err2", ephemeral=False),
+            NodeFault(node_id="node-B", reason="err3", ephemeral=False),
+        ]
+        stepper = _make_recovery_stepper(alert_checker=FakeAlertChecker(faults=faults))
+        result = await _step(stepper, RealtimeChecks())
+
+        assert isinstance(result, EvictingAndRestarting)
+        assert result.restart.bad_node_ids == ["node-A", "node-B"]
+
 
 # ---------------------------------------------------------------------------
 # EvictingAndRestarting

@@ -97,6 +97,21 @@ class TestEvicting:
         assert len(notifier.calls) == 1
         assert "Evicted" in notifier.calls[0][1]
 
+    @pytest.mark.asyncio
+    async def test_all_already_bad_still_submits(self) -> None:
+        """All nodes already marked bad → still transitions to StoppingAndRestarting."""
+        node_manager = FakeNodeManager()
+        await node_manager.mark_node_bad("node-A", reason="prior")
+        await node_manager.mark_node_bad("node-B", reason="prior")
+        training_job = FakeTrainingJob()
+        stepper = _make_stepper(node_manager=node_manager, training_job=training_job)
+
+        state = Evicting(bad_node_ids=["node-A", "node-B"])
+        result = await stepper(state)
+
+        assert isinstance(result, StoppingAndRestarting)
+        assert result.bad_node_ids == ["node-A", "node-B"]
+
 
 # ---------------------------------------------------------------------------
 # StoppingAndRestarting
@@ -279,6 +294,25 @@ class TestMonitoringProgress:
         )
         result = await stepper(state)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_monitoring_timeout_transitions_to_failed(self) -> None:
+        """Partial progress but timeout expired → RestartFailed."""
+        training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
+        mini_wandb = MiniWandb()
+        mini_wandb.set_active_run_id("r")
+        mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 5})
+        stepper = _make_stepper(
+            training_job=training_job,
+            mini_wandb=mini_wandb,
+            monitoring_success_iterations=100,
+            monitoring_timeout_seconds=60,
+        )
+
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        state = MonitoringProgress(start_time=old_time, base_iteration=0)
+        result = await stepper(state)
+        assert isinstance(result, RestartFailed)
 
     @pytest.mark.parametrize(
         "metric_value,expected_progress",
