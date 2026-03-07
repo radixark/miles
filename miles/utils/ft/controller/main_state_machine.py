@@ -15,10 +15,12 @@ from miles.utils.ft.controller.recovery.recovery_stepper import (
     DirectlyRestarting,
     NotifyHumans,
     RealtimeChecks,
+    RecoveryContext,
     RecoveryDone,
     RecoveryStepper,
     RecoveryState,
 )
+from miles.utils.ft.controller.recovery.restart_stepper import RestartStepper
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
@@ -47,12 +49,12 @@ class Recovering(MainState):
 
 
 # ---------------------------------------------------------------------------
-# Per-tick context (set by FtController before each step)
+# Per-tick context (passed to step() by FtController each tick)
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class _TickContext:
+class TickContext:
     job_status: JobStatus
     tick_count: int
     should_run_detectors: bool
@@ -64,7 +66,7 @@ class _TickContext:
 # ---------------------------------------------------------------------------
 
 
-class MainStepper(StateMachineStepper[MainState]):
+class MainStepper(StateMachineStepper[MainState, TickContext]):
     def __init__(
         self,
         *,
@@ -81,26 +83,9 @@ class MainStepper(StateMachineStepper[MainState]):
         self._cooldown = cooldown
         self._on_recovery_duration = on_recovery_duration
         self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
-
-        self._tick_context: _TickContext | None = None
         super().__init__()
 
-    def set_tick_context(
-        self,
-        *,
-        job_status: JobStatus,
-        tick_count: int,
-        should_run_detectors: bool,
-        detector_context: DetectorContext | None,
-    ) -> None:
-        self._tick_context = _TickContext(
-            job_status=job_status,
-            tick_count=tick_count,
-            should_run_detectors=should_run_detectors,
-            detector_context=detector_context,
-        )
-
-    def _build_handlers(self) -> dict[type, Callable[[MainState], Awaitable[MainState | None]]]:
+    def _build_handlers(self) -> dict[type, Callable[[MainState, TickContext], Awaitable[MainState | None]]]:
         return {
             DetectingAnomaly: self._handle_detecting_anomaly,
             Recovering: self._handle_recovering,
@@ -108,12 +93,11 @@ class MainStepper(StateMachineStepper[MainState]):
 
     # -- DetectingAnomaly -------------------------------------------------
 
-    async def _handle_detecting_anomaly(self, state: DetectingAnomaly) -> MainState | None:
-        ctx = self._tick_context
-        if ctx is None or not ctx.should_run_detectors or ctx.detector_context is None:
+    async def _handle_detecting_anomaly(self, state: DetectingAnomaly, context: TickContext) -> MainState | None:
+        if not context.should_run_detectors or context.detector_context is None:
             return None
 
-        decision = self._run_detectors(ctx.detector_context)
+        decision = self._run_detectors(context.detector_context)
         if decision.action == ActionType.NONE:
             return None
 
@@ -164,44 +148,42 @@ class MainStepper(StateMachineStepper[MainState]):
 
     # -- Recovering -------------------------------------------------------
 
-    async def _handle_recovering(self, state: Recovering) -> MainState | None:
-        ctx = self._tick_context
-        if ctx is not None:
-            new_bad_nodes = self._collect_critical_bad_nodes(ctx)
-            if len(new_bad_nodes) >= self._max_simultaneous_bad_nodes:
-                logger.warning(
-                    "too_many_dynamic_bad_nodes count=%d threshold=%d, likely false positive",
-                    len(new_bad_nodes),
-                    self._max_simultaneous_bad_nodes,
-                )
-                await handle_notify_human(
-                    decision=Decision(
-                        action=ActionType.NOTIFY_HUMAN,
-                        reason=(
-                            f"Critical detectors reported {len(new_bad_nodes)} new bad nodes "
-                            f"during recovery (>= {self._max_simultaneous_bad_nodes}), likely false positive"
-                        ),
-                        trigger=state.trigger,
+    async def _handle_recovering(self, state: Recovering, context: TickContext) -> MainState | None:
+        new_bad_nodes = self._collect_critical_bad_nodes(context)
+        if len(new_bad_nodes) >= self._max_simultaneous_bad_nodes:
+            logger.warning(
+                "too_many_dynamic_bad_nodes count=%d threshold=%d, likely false positive",
+                len(new_bad_nodes),
+                self._max_simultaneous_bad_nodes,
+            )
+            await handle_notify_human(
+                decision=Decision(
+                    action=ActionType.NOTIFY_HUMAN,
+                    reason=(
+                        f"Critical detectors reported {len(new_bad_nodes)} new bad nodes "
+                        f"during recovery (>= {self._max_simultaneous_bad_nodes}), likely false positive"
                     ),
-                    notifier=self._platform_deps.notifier,
-                )
-                return DetectingAnomaly()
-
-            if new_bad_nodes:
-                all_bad = list(set(get_known_bad_nodes(state.recovery)) | set(new_bad_nodes))
-                now = datetime.now(timezone.utc)
-                return Recovering(
-                    recovery=RealtimeChecks(pre_identified_bad_nodes=all_bad),
                     trigger=state.trigger,
-                    recovery_start_time=now,
-                )
+                ),
+                notifier=self._platform_deps.notifier,
+            )
+            return DetectingAnomaly()
+
+        if new_bad_nodes:
+            all_bad = list(set(get_known_bad_nodes(state.recovery)) | set(new_bad_nodes))
+            now = datetime.now(timezone.utc)
+            return Recovering(
+                recovery=RealtimeChecks(pre_identified_bad_nodes=all_bad),
+                trigger=state.trigger,
+                recovery_start_time=now,
+            )
 
         try:
-            new_recovery = await self._recovery_stepper.step_with_context(
-                state.recovery,
+            recovery_ctx = RecoveryContext(
                 trigger=state.trigger,
                 recovery_start_time=state.recovery_start_time,
             )
+            new_recovery = await self._recovery_stepper(state.recovery, recovery_ctx)
         except Exception:
             logger.error("Recovery stepper raised exception", exc_info=True)
             new_recovery = NotifyHumans(state_before=type(state.recovery).__name__)
@@ -230,7 +212,7 @@ class MainStepper(StateMachineStepper[MainState]):
                 return decision
         return Decision.no_fault(reason="all detectors passed")
 
-    def _collect_critical_bad_nodes(self, ctx: _TickContext) -> set[str]:
+    def _collect_critical_bad_nodes(self, ctx: TickContext) -> set[str]:
         if ctx.detector_context is None:
             return set()
         bad_nodes: set[str] = set()

@@ -13,6 +13,7 @@ from miles.utils.ft.controller.recovery.recovery_stepper import (
     EvictingAndRestarting,
     NotifyHumans,
     RealtimeChecks,
+    RecoveryContext,
     RecoveryDone,
     RecoveryStepper,
     StopTimeDiagnostics,
@@ -107,6 +108,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _ctx(
+    *,
+    trigger: TriggerType = TriggerType.CRASH,
+    recovery_start_time: datetime | None = None,
+) -> RecoveryContext:
+    return RecoveryContext(
+        trigger=trigger,
+        recovery_start_time=recovery_start_time or _now(),
+    )
+
+
 async def _step(
     stepper: RecoveryStepper,
     state,
@@ -114,10 +126,9 @@ async def _step(
     trigger: TriggerType = TriggerType.CRASH,
     recovery_start_time: datetime | None = None,
 ):
-    return await stepper.step_with_context(
+    return await stepper(
         state,
-        trigger=trigger,
-        recovery_start_time=recovery_start_time or _now(),
+        _ctx(trigger=trigger, recovery_start_time=recovery_start_time),
     )
 
 
@@ -160,7 +171,7 @@ class TestRealtimeChecks:
 
     @pytest.mark.asyncio
     async def test_multiple_bad_nodes_all_evicted(self) -> None:
-        """Multiple non-ephemeral faults → all bad nodes included in Evicting."""
+        """Multiple non-ephemeral faults -> all bad nodes included in Evicting."""
         faults = [
             NodeFault(node_id="node-A", reason="gpu error", ephemeral=False),
             NodeFault(node_id="node-B", reason="network error", ephemeral=False),
@@ -174,7 +185,7 @@ class TestRealtimeChecks:
 
     @pytest.mark.asyncio
     async def test_ephemeral_faults_skip_eviction(self) -> None:
-        """Only ephemeral faults → DirectlyRestarting with StoppingAndRestarting (no Evicting)."""
+        """Only ephemeral faults -> DirectlyRestarting with StoppingAndRestarting (no Evicting)."""
         faults = [
             NodeFault(node_id="node-A", reason="temp glitch", ephemeral=True),
             NodeFault(node_id="node-B", reason="transient", ephemeral=True),
@@ -346,10 +357,9 @@ class TestGlobalTimeout:
     async def test_timeout_forces_notify_humans(self) -> None:
         stepper = _make_recovery_stepper(timeout_seconds=60)
         old_time = _now() - timedelta(seconds=120)
-        result = await stepper.step_with_context(
+        result = await stepper(
             RealtimeChecks(),
-            trigger=TriggerType.HANG,
-            recovery_start_time=old_time,
+            _ctx(trigger=TriggerType.HANG, recovery_start_time=old_time),
         )
         assert isinstance(result, NotifyHumans)
 
@@ -358,10 +368,9 @@ class TestGlobalTimeout:
         stepper = _make_recovery_stepper(timeout_seconds=60)
         old_time = _now() - timedelta(seconds=120)
         state = NotifyHumans(state_before="Test")
-        result = await stepper.step_with_context(
+        result = await stepper(
             state,
-            trigger=TriggerType.HANG,
-            recovery_start_time=old_time,
+            _ctx(trigger=TriggerType.HANG, recovery_start_time=old_time),
         )
         assert isinstance(result, RecoveryDone)
 
@@ -369,10 +378,9 @@ class TestGlobalTimeout:
     async def test_timeout_does_not_affect_done_state(self) -> None:
         stepper = _make_recovery_stepper(timeout_seconds=60)
         old_time = _now() - timedelta(seconds=120)
-        result = await stepper.step_with_context(
+        result = await stepper(
             RecoveryDone(),
-            trigger=TriggerType.HANG,
-            recovery_start_time=old_time,
+            _ctx(trigger=TriggerType.HANG, recovery_start_time=old_time),
         )
         assert result is None
 
@@ -421,8 +429,8 @@ class TestFullRecoveryFlow:
 
     @pytest.mark.anyio
     async def test_fault_evict_restart_full_flow(self) -> None:
-        """RealtimeChecks(pre_identified_bad_nodes) → EvictingAndRestarting →
-        (evict, stop, restart, monitor) → RestartDone → RecoveryDone."""
+        """RealtimeChecks(pre_identified_bad_nodes) -> EvictingAndRestarting ->
+        (evict, stop, restart, monitor) -> RestartDone -> RecoveryDone."""
         training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -436,14 +444,14 @@ class TestFullRecoveryFlow:
         )
         stepper = _make_recovery_stepper(restart_stepper=restart_stepper)
 
-        # Step 1: RealtimeChecks with pre-identified bad nodes → EvictingAndRestarting
+        # Step 1: RealtimeChecks with pre-identified bad nodes -> EvictingAndRestarting
         state = await _step(stepper, RealtimeChecks(pre_identified_bad_nodes=["node-X"]))
         assert isinstance(state, EvictingAndRestarting)
         assert isinstance(state.restart, Evicting)
         assert state.restart.bad_node_ids == ["node-X"]
         assert state.is_final_attempt is False
 
-        # Step 2: Evicting → mark node bad → StoppingAndRestarting
+        # Step 2: Evicting -> mark node bad -> StoppingAndRestarting
         state = await _step(stepper, state)
         assert isinstance(state, EvictingAndRestarting)
         assert isinstance(state.restart, StoppingAndRestarting)
@@ -455,7 +463,7 @@ class TestFullRecoveryFlow:
         assert isinstance(state.restart, StoppingAndRestarting)
         assert state.restart.submitted
 
-        # Step 4: poll → RUNNING → MonitoringProgress
+        # Step 4: poll -> RUNNING -> MonitoringProgress
         state = await _step(stepper, state)
         assert isinstance(state, EvictingAndRestarting)
         assert isinstance(state.restart, MonitoringProgress)
@@ -467,8 +475,8 @@ class TestFullRecoveryFlow:
 
     @pytest.mark.anyio
     async def test_direct_restart_fail_escalation_full_flow(self) -> None:
-        """DirectlyRestarting fail → StopTimeDiagnostics → diagnostics find bad nodes →
-        EvictingAndRestarting (final attempt) → RestartDone → RecoveryDone."""
+        """DirectlyRestarting fail -> StopTimeDiagnostics -> diagnostics find bad nodes ->
+        EvictingAndRestarting (final attempt) -> RestartDone -> RecoveryDone."""
         training_job = FakeTrainingJob(status_sequence=[JobStatus.FAILED])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -488,7 +496,7 @@ class TestFullRecoveryFlow:
             diagnostic_orchestrator=diag,
         )
 
-        # Step 1: RealtimeChecks (no faults) → DirectlyRestarting
+        # Step 1: RealtimeChecks (no faults) -> DirectlyRestarting
         state = await _step(stepper, RealtimeChecks())
         assert isinstance(state, DirectlyRestarting)
 
@@ -498,11 +506,11 @@ class TestFullRecoveryFlow:
         assert isinstance(state.restart, StoppingAndRestarting)
         assert state.restart.submitted
 
-        # Step 3: poll → FAILED → RestartFailed → StopTimeDiagnostics
+        # Step 3: poll -> FAILED -> RestartFailed -> StopTimeDiagnostics
         state = await _step(stepper, state)
         assert isinstance(state, StopTimeDiagnostics)
 
-        # Step 4: diagnostics find bad nodes → EvictingAndRestarting (final attempt)
+        # Step 4: diagnostics find bad nodes -> EvictingAndRestarting (final attempt)
         state = await _step(stepper, state)
         assert isinstance(state, EvictingAndRestarting)
         assert state.is_final_attempt is True
@@ -512,7 +520,7 @@ class TestFullRecoveryFlow:
         # Switch training job to succeed for the eviction restart path
         training_job._status_sequence = [JobStatus.RUNNING]
 
-        # Step 5: Evicting → mark node bad → StoppingAndRestarting
+        # Step 5: Evicting -> mark node bad -> StoppingAndRestarting
         state = await _step(stepper, state)
         assert isinstance(state, EvictingAndRestarting)
         assert isinstance(state.restart, StoppingAndRestarting)
@@ -524,7 +532,7 @@ class TestFullRecoveryFlow:
         assert isinstance(state.restart, StoppingAndRestarting)
         assert state.restart.submitted
 
-        # Step 7: poll → RUNNING → MonitoringProgress
+        # Step 7: poll -> RUNNING -> MonitoringProgress
         state = await _step(stepper, state)
         assert isinstance(state, EvictingAndRestarting)
         assert isinstance(state.restart, MonitoringProgress)

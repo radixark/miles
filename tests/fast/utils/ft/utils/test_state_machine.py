@@ -33,7 +33,7 @@ class TerminalState(DummyState):
 # -- Dummy stepper --------------------------------------------------------------
 
 
-class DummyStepper(StateMachineStepper[DummyState]):
+class DummyStepper(StateMachineStepper[DummyState, None]):
     def _build_handlers(self) -> dict:
         return {
             StateA: self._handle_a,
@@ -41,15 +41,15 @@ class DummyStepper(StateMachineStepper[DummyState]):
             StateC: self._handle_c,
         }
 
-    async def _handle_a(self, state: StateA) -> DummyState:
+    async def _handle_a(self, state: StateA, _context: None) -> DummyState:
         return StateB(value=1)
 
-    async def _handle_b(self, state: StateB) -> DummyState | None:
+    async def _handle_b(self, state: StateB, _context: None) -> DummyState | None:
         if state.value >= 3:
             return TerminalState()
         return StateB(value=state.value + 1)
 
-    async def _handle_c(self, state: StateC) -> DummyState | None:
+    async def _handle_c(self, state: StateC, _context: None) -> DummyState | None:
         return None
 
 
@@ -60,26 +60,26 @@ class TestStateMachineStepper:
     @pytest.mark.asyncio
     async def test_dispatch_to_correct_handler(self) -> None:
         stepper = DummyStepper()
-        result = await stepper(StateA())
+        result = await stepper(StateA(), None)
         assert isinstance(result, StateB)
         assert result.value == 1
 
     @pytest.mark.asyncio
     async def test_terminal_state_returns_none(self) -> None:
         stepper = DummyStepper()
-        result = await stepper(TerminalState())
+        result = await stepper(TerminalState(), None)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_handler_returning_none(self) -> None:
         stepper = DummyStepper()
-        result = await stepper(StateC())
+        result = await stepper(StateC(), None)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_same_type_transition(self) -> None:
         stepper = DummyStepper()
-        result = await stepper(StateB(value=1))
+        result = await stepper(StateB(value=1), None)
         assert isinstance(result, StateB)
         assert result.value == 2
 
@@ -87,7 +87,7 @@ class TestStateMachineStepper:
     async def test_transition_logging(self, caplog: pytest.LogCaptureFixture) -> None:
         stepper = DummyStepper()
         with caplog.at_level("INFO"):
-            await stepper(StateA())
+            await stepper(StateA(), None)
         assert "DummyStepper StateA -> StateB" in caplog.text
 
 
@@ -99,7 +99,7 @@ class TestStateMachine:
     async def test_step_runs_until_none(self) -> None:
         """StateA -> StateB(1) -> StateB(2) -> StateB(3) -> TerminalState -> (stepper returns None)."""
         machine = StateMachine(initial_state=StateA(), stepper=DummyStepper())
-        await machine.step()
+        await machine.step(None)
 
         assert isinstance(machine.state, TerminalState)
         assert len(machine.state_history) == 4
@@ -107,21 +107,21 @@ class TestStateMachine:
     @pytest.mark.asyncio
     async def test_step_no_transition(self) -> None:
         machine = StateMachine(initial_state=StateC(), stepper=DummyStepper())
-        await machine.step()
+        await machine.step(None)
         assert isinstance(machine.state, StateC)
         assert len(machine.state_history) == 0
 
     @pytest.mark.asyncio
     async def test_step_already_terminal(self) -> None:
         machine = StateMachine(initial_state=TerminalState(), stepper=DummyStepper())
-        await machine.step()
+        await machine.step(None)
         assert isinstance(machine.state, TerminalState)
         assert len(machine.state_history) == 0
 
     @pytest.mark.asyncio
     async def test_state_history_records_all_transitions(self) -> None:
         machine = StateMachine(initial_state=StateA(), stepper=DummyStepper())
-        await machine.step()
+        await machine.step(None)
 
         types = [type(s).__name__ for s in machine.state_history]
         assert types == ["StateB", "StateB", "StateB", "TerminalState"]

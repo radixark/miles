@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime, timezone
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.helpers import (
@@ -36,7 +36,7 @@ _PENDING_TIMEOUT_SECONDS: int = 300
 
 class RestartState(FtBaseModel):
     model_config = ConfigDict(frozen=True)
-    bad_node_ids: list[str] = Field(default_factory=list)
+    bad_node_ids: list[str] = []
 
 
 class Evicting(RestartState):
@@ -66,7 +66,7 @@ class RestartFailed(RestartState):
 # ---------------------------------------------------------------------------
 
 
-class RestartStepper(StateMachineStepper[RestartState]):
+class RestartStepper(StateMachineStepper[RestartState, None]):
     def __init__(
         self,
         *,
@@ -90,14 +90,14 @@ class RestartStepper(StateMachineStepper[RestartState]):
     def set_on_new_run(self, callback: Callable[[str], None]) -> None:
         self._on_new_run = callback
 
-    def _build_handlers(self) -> dict[type, Callable[[RestartState], Awaitable[RestartState | None]]]:
+    def _build_handlers(self) -> dict:
         return {
             Evicting: self._handle_evicting,
             StoppingAndRestarting: self._handle_stopping_and_restarting,
             MonitoringProgress: self._handle_monitoring_progress,
         }
 
-    async def _handle_evicting(self, state: Evicting) -> RestartState:
+    async def _handle_evicting(self, state: Evicting, _context: None) -> RestartState:
         already_bad = await get_already_bad_nodes(self._node_manager)
         nodes_to_mark = [n for n in state.bad_node_ids if n not in already_bad]
 
@@ -117,7 +117,7 @@ class RestartStepper(StateMachineStepper[RestartState]):
         return StoppingAndRestarting(bad_node_ids=state.bad_node_ids)
 
     async def _handle_stopping_and_restarting(
-        self, state: StoppingAndRestarting,
+        self, state: StoppingAndRestarting, _context: None,
     ) -> RestartState | None:
         if not state.submitted:
             return await self._submit(state)
@@ -154,7 +154,7 @@ class RestartStepper(StateMachineStepper[RestartState]):
             )
 
         if status == JobStatus.FAILED:
-            logger.warning("restart_job_immediately_failed bad_node_ids=%s", state.bad_node_ids)
+            logger.warning("restart_job_immediately_failed")
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         if state.submit_time is not None:
@@ -166,12 +166,12 @@ class RestartStepper(StateMachineStepper[RestartState]):
         return None
 
     async def _handle_monitoring_progress(
-        self, state: MonitoringProgress,
+        self, state: MonitoringProgress, _context: None,
     ) -> RestartState | None:
         status = await self._training_job.get_training_status()
 
         if status == JobStatus.FAILED:
-            logger.warning("monitoring_training_failed bad_node_ids=%s", state.bad_node_ids)
+            logger.warning("monitoring_training_failed")
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         progress = self._iteration_progress(state)
