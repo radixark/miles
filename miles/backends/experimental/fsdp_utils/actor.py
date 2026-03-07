@@ -100,11 +100,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         init_context = self._get_init_weight_context_manager()
 
-        with init_context():
-            model = self.get_model_cls().from_pretrained(
-                self.args.hf_checkpoint,
-                trust_remote_code=True,
-                attn_implementation=self.args.attn_implementation,
+        model, n = self._build_model_with_attn_bridge(self.args.hf_checkpoint, init_context)
+        if n > 0:
+            logger.info(
+                f"FSDPTrainRayActor applied triton attention patch to {n} layer(s)"
             )
 
         model.train()
@@ -195,6 +194,29 @@ class FSDPTrainRayActor(TrainRayActor):
             from .models.qwen3_moe_hf import apply_fsdp_moe_patch
 
             apply_fsdp_moe_patch()
+
+    def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
+        """Build HF model and optionally apply Triton attention bridge patch."""
+        use_triton_bridge = getattr(self.args, "attn_implementation", None) == "triton"
+        self._use_triton_bridge = use_triton_bridge
+        effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
+
+        with init_context():
+            model = self.get_model_cls().from_pretrained(
+                checkpoint_path,
+                trust_remote_code=True,
+                attn_implementation=effective_attn,
+            )
+
+        patched_layers = 0
+        if use_triton_bridge:
+            from .sglang_attn_bridge.hf_sglang_triton_patch import (
+                apply_sglang_triton_attention_patch,
+            )
+
+            patched_layers = apply_sglang_triton_attention_patch(model)
+
+        return model, patched_layers
 
     def _get_init_weight_context_manager(self):
         """Get context manager for model initialization.
@@ -418,6 +440,14 @@ class FSDPTrainRayActor(TrainRayActor):
             compute_total_fwd_flops=None,
         )
 
+    def _set_attn_implementation(self, model, impl: str):
+        """Switch HF attention implementation on a model.
+
+        HF reads config._attn_implementation on every forward call, so
+        toggling this field is sufficient to switch between backends.
+        """
+        model.config._attn_implementation = impl
+
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         data_iterator = data_iterator[0]
@@ -436,6 +466,12 @@ class FSDPTrainRayActor(TrainRayActor):
         compute_advantages_and_returns(self.args, rollout_data)
 
         log_rollout_data(rollout_id, self.args, rollout_data)
+
+        # Stage 2: training step needs full gradient flow including through
+        # attention.  Switch to eager attention so that q/k/v projections
+        # receive proper gradients via PyTorch autograd.
+        if self._use_triton_bridge:
+            self._set_attn_implementation(self.model, "eager")
 
         with timer("actor_train"):
             data_iterator.reset()
@@ -507,6 +543,10 @@ class FSDPTrainRayActor(TrainRayActor):
                     role="actor",
                     extra_metrics=extra_metrics,
                 )
+
+        # Restore triton attention for the next rollout's log prob computation.
+        if self._use_triton_bridge:
+            self._set_attn_implementation(self.model, "triton")
 
         self.prof.step(rollout_id=rollout_id)
 
@@ -602,11 +642,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
             init_context = self._get_init_weight_context_manager()
 
-            with init_context():
-                ref_model = self.get_model_cls().from_pretrained(
-                    ref_load_path,
-                    trust_remote_code=True,
-                    attn_implementation=self.args.attn_implementation,
+            ref_model, ref_patch_n = self._build_model_with_attn_bridge(ref_load_path, init_context)
+            if ref_patch_n > 0:
+                logger.info(
+                    f"[Rank {dist.get_rank()}] Applied triton attention patch to ref model ({ref_patch_n} layer(s))"
                 )
 
             full_state = ref_model.state_dict()
