@@ -65,8 +65,8 @@ class FtTrainingRankAgent:
     ) -> None:
         self._metric_exporter.set_phase(phase)
 
-    def step(self, iteration: int) -> None:
-        self._metric_exporter.step(iteration)
+    def step(self) -> None:
+        self._metric_exporter.step()
 
     def shutdown(self) -> None:
         self._metric_exporter.shutdown()

@@ -25,6 +25,7 @@ KERNEL_EVENT_COUNT = "miles_ft_kernel_event_count"
 
 # Training heartbeat (FtTrainingRankAgent)
 TRAINING_ITERATION = "miles_ft_training_iteration"
+AGENT_HEARTBEAT = "miles_ft_agent_heartbeat"
 TRAINING_PHASE = "miles_ft_training_phase"
 
 # Controller synthetic

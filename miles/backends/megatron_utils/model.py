@@ -636,7 +636,7 @@ def train(
         accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
 
         if ft_agent is not None:
-            ft_agent.step(iteration=accumulated_step_id)
+            ft_agent.step()
 
         # per train step log.
         if (

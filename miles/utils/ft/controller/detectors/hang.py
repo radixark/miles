@@ -3,8 +3,8 @@ from datetime import timedelta
 from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.models.metric_names import (
+    AGENT_HEARTBEAT,
     PHASE_CHECKPOINT_SAVING,
-    TRAINING_ITERATION,
     TRAINING_PHASE,
 )
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
@@ -43,19 +43,19 @@ class HangDetector(BaseFaultDetector):
             else self._config.training_timeout_minutes
         )
 
-        iteration_changes = self._get_iteration_changes(ctx.metric_store, window_minutes=timeout_minutes)
-        if iteration_changes is None:
-            return Decision.no_fault(reason="no iteration data available")
+        heartbeat_changes = self._get_heartbeat_changes(ctx.metric_store, window_minutes=timeout_minutes)
+        if heartbeat_changes is None:
+            return Decision.no_fault(reason="no heartbeat data available")
 
-        if iteration_changes == 0:
+        if heartbeat_changes == 0:
             phase_info = "checkpoint_saving" if is_checkpoint_saving else "training"
             return Decision(
                 action=ActionType.ENTER_RECOVERY,
-                reason=f"iteration stalled for {timeout_minutes}min during {phase_info}",
+                reason=f"heartbeat stalled for {timeout_minutes}min during {phase_info}",
                 trigger=TriggerType.HANG,
             )
 
-        return Decision.no_fault(reason="iteration progressing normally")
+        return Decision.no_fault(reason="heartbeat progressing normally")
 
     def _is_checkpoint_saving(self, metric_store: MetricQueryProtocol) -> bool:
         df = metric_store.query_latest(TRAINING_PHASE, label_filters={"rank": "0"})
@@ -68,11 +68,11 @@ class HangDetector(BaseFaultDetector):
 
         return False
 
-    def _get_iteration_changes(
+    def _get_heartbeat_changes(
         self, metric_store: MetricQueryProtocol, window_minutes: int,
     ) -> float | None:
         df = metric_store.changes(
-            TRAINING_ITERATION,
+            AGENT_HEARTBEAT,
             window=timedelta(minutes=window_minutes),
             label_filters={"rank": "0"},
         )

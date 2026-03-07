@@ -10,13 +10,13 @@ from tests.fast.utils.ft.helpers import (
 
 from miles.utils.ft.controller.detectors.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus
-from miles.utils.ft.models.metric_names import TRAINING_ITERATION, TRAINING_PHASE
+from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT, TRAINING_PHASE
 from miles.utils.ft.models.fault import ActionType
 from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.protocols.platform import JobStatus
 
 
-def _inject_iteration(
+def _inject_heartbeat(
     store: MiniPrometheus,
     value: float,
     timestamp: datetime | None = None,
@@ -24,7 +24,7 @@ def _inject_iteration(
 ) -> None:
     store.ingest_samples(
         target_id=f"rank-{rank}",
-        samples=[GaugeSample(name=TRAINING_ITERATION, labels={"rank": rank}, value=value)],
+        samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": rank}, value=value)],
         timestamp=timestamp,
     )
 
@@ -44,8 +44,8 @@ class TestHangDetector:
     def test_iteration_progressing(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        _inject_iteration(store, value=110.0, timestamp=now - timedelta(minutes=1))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        _inject_heartbeat(store, value=110.0, timestamp=now - timedelta(minutes=1))
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
             metric_store=store,
@@ -61,8 +61,8 @@ class TestHangDetector:
     def test_iteration_stalled(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
             metric_store=store,
@@ -82,8 +82,8 @@ class TestHangDetector:
         store = make_fake_metric_store()
         _inject_phase(store, phase=2.0)
         now = datetime.now(timezone.utc)
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
         detector = HangDetector(config=HangDetectorConfig(
             training_timeout_minutes=10,
             checkpoint_saving_timeout_minutes=30,
@@ -106,8 +106,8 @@ class TestHangDetector:
         store = make_fake_metric_store()
         _inject_phase(store, phase=2.0)
         now = datetime.now(timezone.utc)
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=20))
-        _inject_iteration(store, value=101.0, timestamp=now - timedelta(minutes=15))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=20))
+        _inject_heartbeat(store, value=101.0, timestamp=now - timedelta(minutes=15))
         detector = HangDetector(config=HangDetectorConfig(
             training_timeout_minutes=10,
             checkpoint_saving_timeout_minutes=30,
@@ -128,8 +128,8 @@ class TestHangDetector:
         store = make_fake_metric_store()
         _inject_phase(store, phase=2.0)
         now = datetime.now(timezone.utc)
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=25))
-        _inject_iteration(store, value=100.0, timestamp=now - timedelta(minutes=10))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=25))
+        _inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=10))
         detector = HangDetector(config=HangDetectorConfig(
             training_timeout_minutes=10,
             checkpoint_saving_timeout_minutes=30,

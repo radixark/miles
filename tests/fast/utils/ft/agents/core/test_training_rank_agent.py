@@ -164,7 +164,7 @@ class TestFtTrainingRankAgentFaultTolerance:
     def test_step_delegates_to_metric_exporter(self) -> None:
         agent = FtTrainingRankAgent(rank=0, world_size=4)
         try:
-            agent.step(iteration=1)
-            assert agent._metric_exporter._last_iteration == 1
+            agent.step()
+            assert agent._metric_exporter._heartbeat_counter == 1
         finally:
             agent.shutdown()

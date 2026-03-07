@@ -14,7 +14,7 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
 from miles.utils.ft.models.recovery import ControllerMode
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
-from miles.utils.ft.models.metric_names import TRAINING_ITERATION
+from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.platform.controller_actor import FtControllerActor
 from miles.utils.ft.platform.controller_factory import FtControllerConfig
 from miles.utils.ft.protocols.platform import JobStatus, ft_controller_actor_name
@@ -96,7 +96,7 @@ class _FastHangDetector(BaseFaultDetector):
             return Decision(action=ActionType.NONE, reason="not running")
 
         df = ctx.metric_store.changes(
-            TRAINING_ITERATION,
+            AGENT_HEARTBEAT,
             window=self._timeout,
             label_filters={"rank": "0"},
         )
@@ -121,7 +121,7 @@ def hang_simulated_env(
 
     exporter = PrometheusExporter()
     iteration_gauge = Gauge(
-        TRAINING_ITERATION,
+        AGENT_HEARTBEAT,
         "iteration gauge for hang test",
         labelnames=["rank", "node_id"],
         registry=exporter.registry,

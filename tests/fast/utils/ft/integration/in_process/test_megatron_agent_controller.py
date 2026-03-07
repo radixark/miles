@@ -101,14 +101,14 @@ class TestHeartbeatScrape:
             )
 
             agent.set_phase("training")
-            agent.step(iteration=42)
+            agent.step()
 
             await harness.metric_store.scrape_once()
 
-            result = harness.metric_store.query_latest("miles_ft_training_iteration")
+            result = harness.metric_store.query_latest("miles_ft_agent_heartbeat")
             assert len(result) > 0
             row = result.row(0, named=True)
-            assert row["value"] == 42.0
+            assert row["value"] >= 1.0
         finally:
             agent.shutdown()
 
@@ -146,7 +146,7 @@ class TestControllerUnreachable:
     def test_step_without_controller_does_not_raise(self) -> None:
         agent = _make_agent(rank=0, world_size=4)
         try:
-            agent.step(iteration=10)
+            agent.step()
         finally:
             agent.shutdown()
 
@@ -157,7 +157,7 @@ class TestPhaseSwitch:
         agent = _make_agent(rank=0, world_size=4)
         try:
             agent.set_phase("training")
-            agent.step(iteration=1)
+            agent.step()
             address = agent.get_exporter_address()
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
@@ -169,7 +169,7 @@ class TestPhaseSwitch:
             assert "2.0" in response.text
 
             agent.set_phase("training")
-            agent.step(iteration=2)
+            agent.step()
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
             text = response.text

@@ -1,7 +1,7 @@
 """Unit tests for TrainingRankMetricExporter.
 
 TrainingRankMetricExporter owns the Prometheus exporter and metric gauges
-(iteration + phase). These tests verify gauge creation, updates, and the
+(heartbeat + phase). These tests verify gauge creation, updates, and the
 HTTP exposition endpoint.
 """
 
@@ -64,69 +64,58 @@ class TestTrainingRankMetricExporterExporter:
             response = await client.get(f"{address}/metrics")
 
         text = response.text
-        assert "miles_ft_training_iteration" in text
+        assert "miles_ft_agent_heartbeat" in text
         assert "miles_ft_training_phase" in text
         assert 'rank="0"' in text
 
 
 class TestTrainingRankMetricExporterStep:
     @pytest.mark.anyio
-    async def test_step_updates_iteration_gauge(
+    async def test_step_increments_heartbeat(
         self, metric_exporter: TrainingRankMetricExporter
     ) -> None:
-        metric_exporter.step(iteration=42)
+        metric_exporter.step()
+        metric_exporter.step()
+        metric_exporter.step()
 
         address = metric_exporter.get_exporter_address()
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{address}/metrics")
 
-        text = response.text
-        assert "miles_ft_training_iteration" in text
-        assert "42.0" in text
-
-    def test_step_warns_on_non_increasing_iteration(
-        self, metric_exporter: TrainingRankMetricExporter, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        metric_exporter.step(iteration=5)
-        metric_exporter.step(iteration=5)
-        assert "non-increasing iteration" in caplog.text
-        assert metric_exporter._last_iteration == 5
-
-    def test_step_warns_on_decreasing_iteration(
-        self, metric_exporter: TrainingRankMetricExporter, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        metric_exporter.step(iteration=5)
-        metric_exporter.step(iteration=3)
-        assert "non-increasing iteration" in caplog.text
-        assert metric_exporter._last_iteration == 5
+        labels = {"rank": "0"}
+        heartbeat = _parse_gauge(response.text, "miles_ft_agent_heartbeat", labels)
+        assert heartbeat == 3.0
 
     @pytest.mark.anyio
-    async def test_step_iteration_monotonic_across_phases(
+    async def test_step_heartbeat_monotonic_across_phases(
         self, metric_exporter: TrainingRankMetricExporter
     ) -> None:
         """Simulate a full rollout cycle with split set_phase/step API."""
         address = metric_exporter.get_exporter_address()
         labels = {"rank": "0"}
 
+        # set_phase bumps heartbeat too
         metric_exporter.set_phase("training")
-        for step_id in range(4):
-            metric_exporter.step(iteration=step_id)
+        for _ in range(4):
+            metric_exporter.step()
 
         metric_exporter.set_phase("idle")
         metric_exporter.set_phase("checkpoint_saving")
         metric_exporter.set_phase("idle")
 
         metric_exporter.set_phase("training")
-        for step_id in range(4, 8):
-            metric_exporter.step(iteration=step_id)
+        for _ in range(4):
+            metric_exporter.step()
 
         metric_exporter.set_phase("idle")
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{address}/metrics")
-        iteration = _parse_gauge(resp.text, "miles_ft_training_iteration", labels)
+
+        # 6 set_phase calls + 8 step calls = 14 heartbeat bumps
+        heartbeat = _parse_gauge(resp.text, "miles_ft_agent_heartbeat", labels)
+        assert heartbeat == 14.0
         phase = _parse_gauge(resp.text, "miles_ft_training_phase", labels)
-        assert iteration == 7.0
         assert phase == 0.0
 
     def test_step_exception_does_not_propagate(
@@ -135,9 +124,9 @@ class TestTrainingRankMetricExporterStep:
         from unittest.mock import patch
 
         with patch.object(
-            metric_exporter, "_iteration_child", **{"set.side_effect": RuntimeError("boom")}
+            metric_exporter, "_heartbeat_child", **{"set.side_effect": RuntimeError("boom")}
         ):
-            metric_exporter.step(iteration=1)
+            metric_exporter.step()
 
 
 class TestTrainingRankMetricExporterSetPhase:
@@ -156,10 +145,10 @@ class TestTrainingRankMetricExporterSetPhase:
         assert phase == 2.0
 
     @pytest.mark.anyio
-    async def test_set_phase_idle_preserves_iteration(
+    async def test_set_phase_also_bumps_heartbeat(
         self, metric_exporter: TrainingRankMetricExporter
     ) -> None:
-        metric_exporter.step(iteration=10)
+        metric_exporter.set_phase("training")
         metric_exporter.set_phase("idle")
 
         address = metric_exporter.get_exporter_address()
@@ -167,7 +156,7 @@ class TestTrainingRankMetricExporterSetPhase:
             response = await client.get(f"{address}/metrics")
 
         labels = {"rank": "0"}
-        iteration = _parse_gauge(response.text, "miles_ft_training_iteration", labels)
+        heartbeat = _parse_gauge(response.text, "miles_ft_agent_heartbeat", labels)
+        assert heartbeat == 2.0
         phase = _parse_gauge(response.text, "miles_ft_training_phase", labels)
-        assert iteration == 10.0
         assert phase == 0.0

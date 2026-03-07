@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class TrainingRankMetricExporter:
     """Prometheus metric exporter for a single training rank.
 
-    Exposes iteration and phase gauges via an HTTP exporter that the
+    Exposes heartbeat and phase gauges via an HTTP exporter that the
     FtController can scrape.  This class owns the PrometheusExporter
     lifecycle and is agnostic to controller communication.
     """
@@ -28,9 +28,9 @@ class TrainingRankMetricExporter:
             "node_id": node_id,
         }
 
-        iteration_gauge = Gauge(
-            mn.TRAINING_ITERATION,
-            "Current training iteration",
+        heartbeat_gauge = Gauge(
+            mn.AGENT_HEARTBEAT,
+            "Agent heartbeat counter (monotonically increasing)",
             labelnames=["rank", "node_id"],
             registry=self._exporter.registry,
         )
@@ -41,11 +41,11 @@ class TrainingRankMetricExporter:
             registry=self._exporter.registry,
         )
 
-        self._iteration_child = iteration_gauge.labels(**labels)
+        self._heartbeat_child = heartbeat_gauge.labels(**labels)
         self._phase_child = phase_gauge.labels(**labels)
-        self._last_iteration: int = -1
+        self._heartbeat_counter: int = 0
 
-        self._iteration_child.set(0)
+        self._heartbeat_child.set(0)
         self._phase_child.set(mn.PHASE_TO_NUMERIC["idle"])
 
     # ------------------------------------------------------------------
@@ -61,19 +61,19 @@ class TrainingRankMetricExporter:
         phase: Literal["idle", "training", "checkpoint_saving"],
     ) -> None:
         self._phase_child.set(mn.PHASE_TO_NUMERIC[phase])
+        self._bump_heartbeat()
 
     @graceful_degrade()
-    def step(self, iteration: int) -> None:
-        if iteration <= self._last_iteration:
-            logger.warning(
-                "TrainingRankMetricExporter.step() non-increasing iteration: got %d, last was %d",
-                iteration,
-                self._last_iteration,
-            )
-            return
-
-        self._last_iteration = iteration
-        self._iteration_child.set(self._last_iteration)
+    def step(self) -> None:
+        self._bump_heartbeat()
 
     def shutdown(self) -> None:
         self._exporter.shutdown()
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _bump_heartbeat(self) -> None:
+        self._heartbeat_counter += 1
+        self._heartbeat_child.set(self._heartbeat_counter)

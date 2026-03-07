@@ -15,7 +15,7 @@ from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
-from miles.utils.ft.models.metric_names import TRAINING_ITERATION
+from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.platform.controller_actor import FtControllerActor
 from miles.utils.ft.platform.controller_factory import FtControllerConfig
@@ -155,7 +155,7 @@ class _FastHangDetector(BaseFaultDetector):
             return Decision(action=ActionType.NONE, reason="not running")
 
         df = ctx.metric_store.changes(
-            TRAINING_ITERATION,
+            AGENT_HEARTBEAT,
             window=self._timeout,
             label_filters={"rank": "0"},
         )

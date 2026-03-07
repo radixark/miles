@@ -17,7 +17,7 @@ from miles.utils.ft.controller.detectors.chain import DetectorChainConfig, build
 from miles.utils.ft.controller.detectors.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.detectors.network import NetworkAlertDetector, NetworkAlertDetectorConfig
-from miles.utils.ft.models.metric_names import NODE_NETWORK_UP, TRAINING_ITERATION
+from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT, NODE_NETWORK_UP
 from miles.utils.ft.models.fault import ActionType
 from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.protocols.platform import JobStatus
@@ -34,12 +34,12 @@ class TestDetectorChainIntegration:
         now = datetime.now(timezone.utc)
         store.ingest_samples(
             target_id="rank-0",
-            samples=[GaugeSample(name=TRAINING_ITERATION, labels={"rank": "0"}, value=100.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=100.0)],
             timestamp=now - timedelta(minutes=5),
         )
         store.ingest_samples(
             target_id="rank-0",
-            samples=[GaugeSample(name=TRAINING_ITERATION, labels={"rank": "0"}, value=110.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=110.0)],
             timestamp=now - timedelta(minutes=1),
         )
 
@@ -97,12 +97,12 @@ class TestDetectorChainIntegration:
 
         store.ingest_samples(
             target_id="rank-0",
-            samples=[GaugeSample(name=TRAINING_ITERATION, labels={"rank": "0"}, value=100.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=100.0)],
             timestamp=now - timedelta(minutes=5),
         )
         store.ingest_samples(
             target_id="rank-0",
-            samples=[GaugeSample(name=TRAINING_ITERATION, labels={"rank": "0"}, value=100.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=100.0)],
             timestamp=now - timedelta(minutes=1),
         )
 

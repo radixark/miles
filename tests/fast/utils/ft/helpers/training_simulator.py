@@ -207,7 +207,7 @@ class TrainingWorkerActor:
                     self._create_agent(run_id)
 
                 self._iteration += 1
-                self._agent.step(self._iteration)
+                self._agent.step()
 
                 if self._controller_handle is not None:
                     try:
