@@ -1,4 +1,4 @@
-"""Semi-E2E: network faults — ephemeral NIC down, sustained NIC down."""
+"""Semi-E2E: network faults — ephemeral NIC down, sustained NIC down, majority NIC down."""
 from __future__ import annotations
 
 import asyncio
@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from datetime import timedelta
 
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.network import NetworkAlertDetector, NetworkAlertDetectorConfig
 from miles.utils.ft.models.metric_names import NODE_NETWORK_UP
 from miles.utils.ft.models.metrics import GaugeSample
@@ -20,6 +21,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     assert_phase_path_contains,
     get_status,
     scenario_no_false_positive,
+    wait_for_mode,
     wait_for_recovery_complete,
     wait_for_training_stable,
 )
@@ -263,3 +265,43 @@ class TestEphemeralNicNoEviction:
             assert "Evicting" not in final.phase_history, (
                 f"Ephemeral NIC should not evict, but got: {final.phase_history}"
             )
+
+
+class TestMajorityNicDown:
+    async def test_majority_nic_down_triggers_non_ephemeral_eviction(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """Majority NICs down (snapshot) → _check_majority_nic_down → non-ephemeral → Evicting."""
+        env = make_e2e_env(
+            ft_id="e2emaj",
+            nodes=[NodeSpec(node_id="e2emaj-node-0", use_remote_collector=True)],
+            detectors=build_detector_chain(),
+            scrape_interval_seconds=_FAST_SCRAPE,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+        old_run_id = get_status(env.controller).active_run_id
+
+        # Step 1: inject 3 NICs — 2 down, 1 up (majority down)
+        env.set_collector_metrics("e2emaj-node-0", [
+            GaugeSample(
+                name=NODE_NETWORK_UP,
+                labels={"node_id": "e2emaj-node-0", "device": "eth0"},
+                value=0.0,
+            ),
+            GaugeSample(
+                name=NODE_NETWORK_UP,
+                labels={"node_id": "e2emaj-node-0", "device": "eth1"},
+                value=0.0,
+            ),
+            GaugeSample(
+                name=NODE_NETWORK_UP,
+                labels={"node_id": "e2emaj-node-0", "device": "eth2"},
+                value=1.0,
+            ),
+        ])
+
+        # Step 2: wait for recovery to complete (eviction expected)
+        final = await wait_for_recovery_complete(env.controller, timeout=90.0)
+        assert final.mode == ControllerMode.MONITORING
+        assert_phase_path_contains(final, ["Evicting"])

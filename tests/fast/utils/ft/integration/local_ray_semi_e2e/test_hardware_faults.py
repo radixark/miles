@@ -1,4 +1,4 @@
-"""Semi-E2E: hardware faults — GPU lost, NaN loss, fault during recovery, dynamic bad nodes."""
+"""Semi-E2E: hardware faults — GPU lost, NaN loss, XID, disk space, MFU, fault during recovery."""
 from __future__ import annotations
 
 import asyncio
@@ -6,8 +6,9 @@ import time
 from collections.abc import Callable
 
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
-from miles.utils.ft.models.metric_names import GPU_AVAILABLE
+from miles.utils.ft.models.metric_names import GPU_AVAILABLE, NODE_FILESYSTEM_AVAIL_BYTES, XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
 from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.models.recovery import ControllerMode
 
@@ -278,3 +279,113 @@ class TestNaNRecovery:
 
         # Step 3: training resumes normally (NaN state cleared by submit())
         await wait_for_training_stable(env.controller, n_iterations=5, timeout=30.0)
+
+
+class TestDiskSpaceLow:
+    async def test_disk_space_low_triggers_notify_not_recovery(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """NODE_FILESYSTEM_AVAIL_BYTES < 1GB → DiskSpaceLowDetector → NOTIFY_HUMAN, no recovery."""
+        env = make_e2e_env(
+            ft_id="e2edsk",
+            nodes=[NodeSpec(node_id="e2edsk-node-0", use_remote_collector=True)],
+            detectors=build_detector_chain(),
+            scrape_interval_seconds=_FAST_SCRAPE,
+            use_notifier=True,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: inject low disk space (500 MB < 1 GB threshold)
+        env.set_collector_metrics("e2edsk-node-0", [
+            GaugeSample(
+                name=NODE_FILESYSTEM_AVAIL_BYTES,
+                labels={"node_id": "e2edsk-node-0", "mountpoint": "/data"},
+                value=500_000_000.0,
+            ),
+        ])
+
+        # Step 2: wait for detector cycles, verify no recovery
+        await asyncio.sleep(5.0)
+        status = get_status(env.controller)
+        assert status.mode == ControllerMode.MONITORING, (
+            f"DiskSpaceLow should not trigger recovery, but mode={status.mode}"
+        )
+
+        # Step 3: notifier should have received a disk-related notification
+        calls = env.get_notifier_calls()
+        assert len(calls) > 0, "Notifier should have received disk space notification"
+
+
+class TestXidFault:
+    async def test_xid_non_auto_recoverable_triggers_eviction(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL > 0 → HighConfidenceHardwareDetector → eviction."""
+        env = make_e2e_env(
+            ft_id="e2exid",
+            nodes=[NodeSpec(node_id="e2exid-node-0", use_remote_collector=True)],
+            detectors=build_detector_chain(),
+            scrape_interval_seconds=_FAST_SCRAPE,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+        old_run_id = get_status(env.controller).active_run_id
+
+        # Step 1: inject non-auto-recoverable XID event
+        env.set_collector_metrics("e2exid-node-0", [
+            GaugeSample(
+                name=XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
+                labels={"node_id": "e2exid-node-0"},
+                value=1.0,
+            ),
+        ])
+
+        # Step 2: wait for eviction + recovery (run_id changes)
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if status.active_run_id != old_run_id:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError("XID fault did not trigger eviction within 60s")
+
+        assert status.mode == ControllerMode.MONITORING
+
+
+class TestMfuAbsoluteMinimum:
+    async def test_mfu_absolute_minimum_breach_notifies_human(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """MFU below absolute minimum → MfuDeclineDetector → NOTIFY_HUMAN, no recovery."""
+        env = make_e2e_env(
+            ft_id="e2emfu",
+            nodes=[NodeSpec(node_id="e2emfu-node-0")],
+            detectors=[
+                TrainingCrashDetector(),
+                MfuDeclineDetector(config=MfuDeclineDetectorConfig(
+                    mfu_absolute_minimum=0.5,
+                    consecutive_steps=2,
+                    baseline_steps=2,
+                )),
+            ],
+            use_notifier=True,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: inject very low MFU
+        await env.injector.inject_custom_metrics({"mfu": 0.01})
+
+        # Step 2: wait for detector to evaluate MFU (needs consecutive_steps=2 readings)
+        await asyncio.sleep(5.0)
+
+        # Step 3: verify no recovery triggered, but notifier received alert
+        status = get_status(env.controller)
+        assert status.mode == ControllerMode.MONITORING, (
+            f"MFU NOTIFY_HUMAN should not trigger recovery, but mode={status.mode}"
+        )
+
+        calls = env.get_notifier_calls()
+        assert len(calls) > 0, "Notifier should have received MFU alert"
