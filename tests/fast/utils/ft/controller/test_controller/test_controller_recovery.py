@@ -36,14 +36,14 @@ class TestDynamicBadNodeInjection:
 
         # Step 1: Enter recovery with initial bad nodes
         await harness.controller._tick()
-        state = harness.controller._machine.state
+        state = harness.controller._state_machine.state
         assert isinstance(state, Recovering)
         assert isinstance(state.recovery, RealtimeChecks)
         assert "node-A" in state.recovery.pre_identified_bad_nodes
 
         # Step 2: Critical detector injects new bad nodes during recovery
         await harness.controller._tick()
-        state = harness.controller._machine.state
+        state = harness.controller._state_machine.state
         assert isinstance(state, Recovering)
         assert isinstance(state.recovery, RealtimeChecks)
         assert set(state.recovery.pre_identified_bad_nodes) >= {"node-A", "node-B"}

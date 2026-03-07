@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 
-from miles.utils.ft.controller.actions import PlatformDeps
+from miles.utils.ft.controller.actions import PlatformDeps, handle_notify_human
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 from miles.utils.ft.controller.main_state_machine import (
@@ -28,7 +28,7 @@ from miles.utils.ft.controller.recovery.recovery_stepper import (
     RecoveryState,
 )
 from miles.utils.ft.controller.recovery.restart_stepper import RestartStepper
-from miles.utils.ft.utils.state_machine import StateMachine
+from miles.utils.ft.controller.state_machine import StateMachine
 from miles.utils.ft.models.recovery import (
     ControllerMode,
     ControllerStatus,
@@ -57,7 +57,7 @@ class FtController:
         self,
         *,
         platform_deps: PlatformDeps,
-        machine: StateMachine[MainState],
+        state_machine: StateMachine[MainState],
         rank_roster: RankRoster,
         mini_wandb: MiniWandb,
         scrape_target_manager: ScrapeTargetManagerProtocol | None,
@@ -79,7 +79,7 @@ class FtController:
         self._controller_exporter = controller_exporter or NullControllerExporter()
         self._registration_grace_ticks = registration_grace_ticks
         self._platform_deps = platform_deps
-        self._machine = machine
+        self._state_machine = state_machine
 
         self._shutting_down: bool = False
         self._tick_count: int = 0
@@ -154,14 +154,14 @@ class FtController:
             max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         )
 
-        machine: StateMachine[MainState] = StateMachine(
+        state_machine: StateMachine[MainState] = StateMachine(
             initial_state=DetectingAnomaly(),
             stepper=main_stepper,
         )
 
         instance = cls(
             platform_deps=platform_deps,
-            machine=machine,
+            state_machine=state_machine,
             rank_roster=rank_roster,
             mini_wandb=mini_wandb,
             scrape_target_manager=scrape_target_manager,
@@ -227,8 +227,8 @@ class FtController:
         self._shutting_down = True
 
     def get_status(self) -> ControllerStatus:
-        state = self._machine.state
-        main_stepper: MainStepper = self._machine.stepper  # type: ignore[assignment]
+        state = self._state_machine.state
+        main_stepper: MainStepper = self._state_machine.stepper  # type: ignore[assignment]
         iteration_val = self._mini_wandb.latest(metric_name="iteration")
         latest_iteration = int(iteration_val) if iteration_val is not None else None
 
@@ -260,7 +260,7 @@ class FtController:
 
     def _build_phase_history(self) -> list[str]:
         phases: list[str] = []
-        for past_state in self._machine.state_history:
+        for past_state in self._state_machine.state_history:
             if isinstance(past_state, Recovering):
                 name = _recovery_phase_name(past_state.recovery)
                 if not phases or phases[-1] != name:
@@ -292,7 +292,7 @@ class FtController:
             should_run = self._should_run_detectors()
             detector_ctx = self._build_detector_context(job_status) if should_run else None
 
-            main_stepper: MainStepper = self._machine.stepper  # type: ignore[assignment]
+            main_stepper: MainStepper = self._state_machine.stepper  # type: ignore[assignment]
             main_stepper.set_tick_context(
                 job_status=job_status,
                 tick_count=self._tick_count,
@@ -300,7 +300,7 @@ class FtController:
                 detector_context=detector_ctx,
             )
 
-            await self._machine.step()
+            await self._state_machine.step()
         except Exception:
             logger.error("tick_failed tick=%d", self._tick_count, exc_info=True)
         finally:
@@ -341,10 +341,10 @@ class FtController:
         if job_status is None:
             return
 
-        is_recovery = isinstance(self._machine.state, Recovering)
+        is_recovery = isinstance(self._state_machine.state, Recovering)
         phase_int = 0
         if is_recovery:
-            state = self._machine.state
+            state = self._state_machine.state
             if isinstance(state, Recovering):
                 phase_int = RECOVERY_STATE_TO_INT.get(type(state.recovery), 0)
 

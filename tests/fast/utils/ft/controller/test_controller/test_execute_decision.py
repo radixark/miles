@@ -22,7 +22,7 @@ async def _raise_runtime_error(*_args: object, **_kwargs: object) -> None:
 
 
 def _get_main_stepper(harness) -> MainStepper:
-    return harness.controller._machine.stepper  # type: ignore[return-value]
+    return harness.controller._state_machine.stepper  # type: ignore[return-value]
 
 
 class TestTickEmptyDetectorChain:
@@ -127,7 +127,7 @@ class TestAllDetectorsCrashSilentPass:
 
         assert not harness.node_manager._bad_nodes
         assert not harness.training_job._stopped
-        assert not isinstance(harness.controller._machine.state, Recovering)
+        assert not isinstance(harness.controller._state_machine.state, Recovering)
 
 
 class TestExecuteDecision:
@@ -141,7 +141,7 @@ class TestExecuteDecision:
         assert not harness.node_manager._bad_nodes
         assert not harness.training_job._stopped
         assert not harness.training_job._submitted
-        assert not isinstance(harness.controller._machine.state, Recovering)
+        assert not isinstance(harness.controller._state_machine.state, Recovering)
 
     @pytest.mark.anyio
     async def test_mark_bad_and_restart_does_not_raise(self) -> None:

@@ -20,11 +20,11 @@ class TestEnterRecovery:
     async def test_creates_recovery_state(self) -> None:
         detector = AlwaysEnterRecoveryDetector()
         harness = make_test_controller(detectors=[detector])
-        assert not isinstance(harness.controller._machine.state, Recovering)
+        assert not isinstance(harness.controller._state_machine.state, Recovering)
 
         await harness.controller._tick()
 
-        assert isinstance(harness.controller._machine.state, Recovering)
+        assert isinstance(harness.controller._state_machine.state, Recovering)
 
     @pytest.mark.anyio
     async def test_recovery_mode_skips_non_critical_detectors(self) -> None:
@@ -49,13 +49,13 @@ class TestEnterRecovery:
         harness = make_test_controller(detectors=[enter_recovery, critical])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._machine.state, Recovering)
+        assert isinstance(harness.controller._state_machine.state, Recovering)
         assert critical.call_count == 0
 
         await harness.controller._tick()
         assert critical.call_count == 1
 
-        state = harness.controller._machine.state
+        state = harness.controller._state_machine.state
         assert isinstance(state, Recovering)
         from miles.utils.ft.controller.recovery.recovery_stepper import RealtimeChecks
         assert isinstance(state.recovery, RealtimeChecks)

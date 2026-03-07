@@ -141,7 +141,7 @@ class TestGetStatus:
 
     def test_bad_nodes_confirmed_when_evicting(self) -> None:
         harness = make_test_controller()
-        harness.controller._machine._state = Recovering(
+        harness.controller._state_machine._state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-0"]),
             ),
@@ -155,7 +155,7 @@ class TestGetStatus:
 
     def test_bad_nodes_confirmed_when_notifying(self) -> None:
         harness = make_test_controller()
-        harness.controller._machine._state = Recovering(
+        harness.controller._state_machine._state = Recovering(
             recovery=NotifyHumans(state_before="Test"),
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
@@ -165,7 +165,7 @@ class TestGetStatus:
 
     def test_bad_nodes_not_confirmed_during_diagnostics(self) -> None:
         harness = make_test_controller()
-        harness.controller._machine._state = Recovering(
+        harness.controller._state_machine._state = Recovering(
             recovery=StopTimeDiagnostics(),
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),

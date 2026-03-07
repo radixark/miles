@@ -61,11 +61,11 @@ class TestCriticalDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, crashing_critical])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._machine.state, Recovering)
+        assert isinstance(harness.controller._state_machine.state, Recovering)
 
         await harness.controller._tick()
         assert crashing_critical.call_count == 1
-        assert isinstance(harness.controller._machine.state, Recovering)
+        assert isinstance(harness.controller._state_machine.state, Recovering)
 
     @pytest.mark.anyio
     async def test_critical_detector_non_mark_bad_action_is_ignored(self) -> None:
@@ -79,7 +79,7 @@ class TestCriticalDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, critical_notify])
 
         await harness.controller._tick()
-        state = harness.controller._machine.state
+        state = harness.controller._state_machine.state
         assert isinstance(state, Recovering)
 
         await harness.controller._tick()
@@ -97,7 +97,7 @@ class TestCriticalDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, critical_empty])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._machine.state, Recovering)
+        assert isinstance(harness.controller._state_machine.state, Recovering)
 
         await harness.controller._tick()
         assert critical_empty.call_count == 1
@@ -120,17 +120,17 @@ class TestRecoveryCompletionMetrics:
         )
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._machine.state, Recovering)
+        assert isinstance(harness.controller._state_machine.state, Recovering)
 
         from datetime import datetime, timezone
-        harness.controller._machine._state = Recovering(
+        harness.controller._state_machine._state = Recovering(
             recovery=RecoveryDone(),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._machine.state, DetectingAnomaly)
+        assert isinstance(harness.controller._state_machine.state, DetectingAnomaly)
 
         value = get_sample_value(
             registry,
