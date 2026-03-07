@@ -104,7 +104,7 @@ def main() -> None:
 def _check_single_gpu(
     gpu_index: int,
     handle: object,
-    model_and_input: tuple[Any, Any],
+    model_and_input: tuple[Any, Any, Any],
 ) -> GpuCheckResult:
     """Run all checks on one GPU and produce a GpuCheckResult."""
     failures: list[str] = []
@@ -172,16 +172,15 @@ def _check_nvml(handle: object) -> _NvmlCheckResult:
     )
 
 
-def _build_deterministic_model_and_input() -> tuple[Any, Any]:
-    """Build a small transformer and fixed input on CPU in float16.
+def _build_deterministic_model_and_input() -> tuple[Any, Any, Any]:
+    """Build a small transformer decoder and fixed input on CPU in float16.
 
-    The model exercises a representative set of GPU operations: matmul
-    (attention projections, FFN), layer normalization (reduction +
-    elementwise), GELU activation, and softmax (in scaled dot-product
-    attention).  This is substantially more thorough than a single matmul
-    and mirrors the paper's "MiniGPT verification suite" approach.
+    Uses a causal (autoregressive) decoder to mirror actual LLM workloads.
+    The model exercises: matmul (attention QKV projections, FFN), causal
+    masked attention (triangular mask + softmax), layer normalization
+    (reduction + elementwise), and GELU activation.
 
-    Returns (model, input_tensor), both on CPU in float16.
+    Returns (model, input_tensor, causal_mask), all on CPU in float16.
     Called once; reused for all GPUs.
     """
     import torch
@@ -189,14 +188,14 @@ def _build_deterministic_model_and_input() -> tuple[Any, Any]:
 
     gen = torch.Generator(device="cpu").manual_seed(_COMPUTE_SEED)
 
-    encoder_layer = nn.TransformerEncoderLayer(
+    decoder_layer = nn.TransformerDecoderLayer(
         d_model=_HIDDEN_DIM,
         nhead=_NUM_HEADS,
         dim_feedforward=_FFN_DIM,
         batch_first=True,
         dropout=0.0,
     )
-    model = nn.TransformerEncoder(encoder_layer, num_layers=_NUM_LAYERS)
+    model = nn.TransformerDecoder(decoder_layer, num_layers=_NUM_LAYERS)
 
     for param in model.parameters():
         param.data = torch.randn(param.shape, generator=gen) * 0.02
@@ -204,11 +203,14 @@ def _build_deterministic_model_and_input() -> tuple[Any, Any]:
     model.half().eval()
 
     x = torch.randn(_BATCH_SIZE, _SEQ_LEN, _HIDDEN_DIM, generator=gen).half()
+    causal_mask = nn.Transformer.generate_square_subsequent_mask(_SEQ_LEN)
 
-    return model, x
+    return model, x, causal_mask
 
 
-def _compute_fingerprint(gpu_index: int, model: Any, x: Any) -> str:
+def _compute_fingerprint(
+    gpu_index: int, model: Any, x: Any, causal_mask: Any,
+) -> str:
     """Run deterministic forward pass on a single GPU and return SHA256 hash.
 
     Uses a deep copy of the model so each GPU gets an independent instance.
@@ -219,14 +221,15 @@ def _compute_fingerprint(gpu_index: int, model: Any, x: Any) -> str:
 
     model_gpu = copy.deepcopy(model).to(device)
     x_gpu = x.to(device)
+    mask_gpu = causal_mask.to(device)
 
     with torch.no_grad():
-        output = model_gpu(x_gpu)
+        output = model_gpu(tgt=x_gpu, memory=x_gpu, tgt_mask=mask_gpu)
 
     output_bytes = output.cpu().contiguous().numpy().tobytes()
     digest = hashlib.sha256(output_bytes).hexdigest()
 
-    del model_gpu, x_gpu, output
+    del model_gpu, x_gpu, mask_gpu, output
     torch.cuda.empty_cache()
 
     return digest
