@@ -12,6 +12,7 @@ from miles.utils.ft.agents.diagnostics.nccl.inter_machine import (
 )
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
+from miles.utils.ft.platform.diagnostic_actor import InProcessDiagnosticAgentFactory
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +172,13 @@ def make_fake_agents(
             node_id=node_id,
         )
     return agents
+
+
+def make_in_process_factory(
+    agents: dict[str, FakeNodeAgent] | dict[str, object],
+) -> InProcessDiagnosticAgentFactory:
+    """Wrap agents dict into an InProcessDiagnosticAgentFactory for tests."""
+    return InProcessDiagnosticAgentFactory(agents=agents)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

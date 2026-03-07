@@ -181,7 +181,10 @@ class TestOrchestratorHangTraceFullChain:
         def pids_provider(node_id: str) -> dict[int, int]:
             return node_pids.get(node_id, {})
 
+        from miles.utils.ft.platform.diagnostic_actor import InProcessDiagnosticAgentFactory
+
         orchestrator = DiagnosticOrchestrator(
+            agent_factory=InProcessDiagnosticAgentFactory(agents={}),
             agents={},
             pipeline=[],
         )

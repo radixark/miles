@@ -362,8 +362,11 @@ class TestStepDiagnosing:
         from tests.fast.utils.ft.conftest import HangingNodeAgent
         from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
+        from miles.utils.ft.platform.diagnostic_actor import InProcessDiagnosticAgentFactory
+
         agents: dict = {"node-0": HangingNodeAgent(node_id="node-0")}
         orchestrator = DiagnosticOrchestrator(
+            agent_factory=InProcessDiagnosticAgentFactory(agents=agents),
             agents=agents,
             pipeline=["gpu"],
             default_timeout_seconds=9999,

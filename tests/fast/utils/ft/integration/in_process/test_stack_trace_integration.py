@@ -13,6 +13,7 @@ from tests.fast.utils.ft.helpers import (
     SAMPLE_PYSPY_OUTPUT_DIFFERENT_STUCK,
     SAMPLE_PYSPY_OUTPUT_STUCK,
     make_fake_agents,
+    make_in_process_factory,
     make_rank_pids_provider,
     make_trace_result,
     mock_stack_trace_diagnostic,
@@ -49,6 +50,7 @@ class TestHangWithStackTraceSuspect:
             ]
         ):
             orchestrator = DiagnosticOrchestrator(
+                agent_factory=make_in_process_factory(agents),
                 agents=agents,
                 pipeline=["gpu"],
             )
@@ -84,6 +86,7 @@ class TestHangWithStackTraceSuspect:
             ]
         ):
             orchestrator = DiagnosticOrchestrator(
+                agent_factory=make_in_process_factory(agents),
                 agents=agents,
                 pipeline=["gpu"],
             )
@@ -114,6 +117,7 @@ class TestCrashSkipsStackTrace:
 
         with patch("miles.utils.ft.controller.diagnostics.stack_trace.StackTraceDiagnostic") as mock_diag_cls:
             orchestrator = DiagnosticOrchestrator(
+                agent_factory=make_in_process_factory(agents),
                 agents=agents,
                 pipeline=["gpu"],
             )
@@ -154,6 +158,7 @@ class TestHangWithCollectionFailure:
             ]
         ):
             orchestrator = DiagnosticOrchestrator(
+                agent_factory=make_in_process_factory(agents),
                 agents=agents,
                 pipeline=["gpu"],
             )

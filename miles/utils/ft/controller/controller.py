@@ -13,6 +13,7 @@ from miles.utils.ft.controller.actions import (
 )
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
+from miles.utils.ft.platform.diagnostic_actor import InProcessDiagnosticAgentFactory
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -93,6 +94,7 @@ class FtController:
         resolved_orchestrator: DiagnosticOrchestratorProtocol = (
             diagnostic_orchestrator
             or DiagnosticOrchestrator(
+                agent_factory=InProcessDiagnosticAgentFactory(agents=agents),
                 agents=agents,
                 pipeline=["gpu"],
             )
