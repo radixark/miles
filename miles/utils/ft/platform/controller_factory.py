@@ -49,6 +49,10 @@ def build_ft_controller(
     diagnostic_orchestrator_override: DiagnosticOrchestratorProtocol | None = None,
     recovery_cooldown_override: SlidingWindowThrottle | None = None,
     registration_grace_ticks_override: int | None = None,
+    max_simultaneous_bad_nodes_override: int | None = None,
+    recovery_timeout_seconds_override: int | None = None,
+    monitoring_timeout_seconds_override: int | None = None,
+    monitoring_success_iterations_override: int | None = None,
     **kwargs: object,
 ) -> FtController:
     """Build an FtController with all dependent components from config parameters.
@@ -131,6 +135,14 @@ def build_ft_controller(
         create_kwargs["recovery_cooldown"] = recovery_cooldown_override
     if registration_grace_ticks_override is not None:
         create_kwargs["registration_grace_ticks"] = registration_grace_ticks_override
+    if max_simultaneous_bad_nodes_override is not None:
+        create_kwargs["max_simultaneous_bad_nodes"] = max_simultaneous_bad_nodes_override
+    if recovery_timeout_seconds_override is not None:
+        create_kwargs["recovery_timeout_seconds"] = recovery_timeout_seconds_override
+    if monitoring_timeout_seconds_override is not None:
+        create_kwargs["monitoring_timeout_seconds"] = monitoring_timeout_seconds_override
+    if monitoring_success_iterations_override is not None:
+        create_kwargs["monitoring_success_iterations"] = monitoring_success_iterations_override
 
     return FtController.create(**create_kwargs)
 

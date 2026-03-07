@@ -188,6 +188,10 @@ def _build_e2e_env(
     registration_grace_ticks: int | None = None,
     notifier_override: Any = None,
     wait_for_iteration: bool = True,
+    max_simultaneous_bad_nodes: int | None = None,
+    recovery_timeout_seconds: int | None = None,
+    monitoring_timeout_seconds: int | None = None,
+    monitoring_success_iterations: int | None = None,
 ) -> E2EEnv:
     if nodes is None:
         nodes = [NodeSpec(node_id=f"{ft_id}-node-0")]
@@ -215,6 +219,14 @@ def _build_e2e_env(
         controller_kwargs["recovery_cooldown_override"] = recovery_cooldown
     if registration_grace_ticks is not None:
         controller_kwargs["registration_grace_ticks_override"] = registration_grace_ticks
+    if max_simultaneous_bad_nodes is not None:
+        controller_kwargs["max_simultaneous_bad_nodes_override"] = max_simultaneous_bad_nodes
+    if recovery_timeout_seconds is not None:
+        controller_kwargs["recovery_timeout_seconds_override"] = recovery_timeout_seconds
+    if monitoring_timeout_seconds is not None:
+        controller_kwargs["monitoring_timeout_seconds_override"] = monitoring_timeout_seconds
+    if monitoring_success_iterations is not None:
+        controller_kwargs["monitoring_success_iterations_override"] = monitoring_success_iterations
 
     controller_name = ft_controller_actor_name(ft_id)
     controller = FtControllerActor.options(name=controller_name).remote(**controller_kwargs)
