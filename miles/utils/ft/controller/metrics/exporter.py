@@ -94,6 +94,7 @@ class ControllerExporter:
 
     def start(self) -> None:
         self._httpd, _thread = start_http_server(port=self._port, registry=self._registry)
+        self._port = self._httpd.server_port
         logger.info("controller_exporter_started port=%d", self._port)
 
     def stop(self) -> None:

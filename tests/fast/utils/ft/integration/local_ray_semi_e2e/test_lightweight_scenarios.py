@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import timedelta
 from typing import Any
 
@@ -14,6 +14,7 @@ from prometheus_client import Gauge
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
 from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT
@@ -22,7 +23,10 @@ from miles.utils.ft.platform.controller_factory import FtControllerConfig
 from miles.utils.ft.protocols.platform import JobStatus, ft_controller_actor_name
 
 from tests.fast.utils.ft.helpers.fault_injection import LocalRayFaultInjector
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import E2EEnv
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
+    E2EEnv,
+    NodeSpec,
+)
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     assert_phase_path_contains,
     get_status,
@@ -205,24 +209,33 @@ class TestNoFalsePositive:
 class TestRepeatedCrash:
     async def test_two_crashes_escalate_to_diagnosing(
         self,
-        e2e_env: E2EEnv,
+        make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
         """Crash → recovery MONITORING → crash again → escalates to DIAGNOSING."""
+        env = make_e2e_env(
+            ft_id="e2erpt",
+            nodes=[NodeSpec(node_id="e2erpt-node-0")],
+            detectors=[TrainingCrashDetector()],
+            recovery_cooldown=SlidingWindowThrottle(window_minutes=1.0, max_count=2),
+        )
+
         # Step 1: crash → recovery enters MONITORING phase
-        await e2e_env.injector.crash_training()
+        await env.injector.crash_training()
         await wait_for_recovery_phase(
-            e2e_env.controller,
+            env.controller,
             phase=RecoveryPhase.MONITORING,
             timeout=60.0,
         )
 
         # Step 2: crash during MONITORING → DIAGNOSING
-        await e2e_env.injector.crash_training()
+        await env.injector.crash_training()
 
-        # Step 3: poll for DIAGNOSING in phase_history during the active recovery
+        # Step 3: poll for DIAGNOSING in phase_history during the active recovery.
+        # recovery_cooldown prevents a second auto-triggered recovery from
+        # overwriting _last_phase_history after DIAGNOSING → DONE completes.
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
-            status = get_status(e2e_env.controller)
+            status = get_status(env.controller)
             if status.phase_history and RecoveryPhase.DIAGNOSING in status.phase_history:
                 break
             await asyncio.sleep(0.5)

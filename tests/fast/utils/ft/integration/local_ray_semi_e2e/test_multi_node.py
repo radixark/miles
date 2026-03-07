@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
 from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
@@ -36,6 +37,7 @@ class TestMultiNode:
             ],
             detectors=[TrainingCrashDetector()],
             step_interval=_SLOW_STEP,
+            recovery_cooldown=SlidingWindowThrottle(window_minutes=1.0, max_count=2),
         )
 
         await wait_for_training_stable(env.controller, n_iterations=1, timeout=30.0)

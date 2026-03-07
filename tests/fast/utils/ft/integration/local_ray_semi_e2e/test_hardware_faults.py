@@ -31,6 +31,8 @@ class TestHardwareAlert:
         """GPU_AVAILABLE=0 → HighConfidenceHardwareDetector → MARK_BAD_AND_RESTART."""
         env = e2e_full_detector_env
 
+        old_run_id = get_status(env.controller).active_run_id
+
         # Step 1: inject GPU unavailable metric
         env.set_collector_metrics("e2efd-node-0", [
             GaugeSample(
@@ -40,23 +42,19 @@ class TestHardwareAlert:
             ),
         ])
 
-        # Step 2: with phase chaining, MARK_BAD_AND_RESTART may complete
-        # recovery in a single tick (CHECK_ALERTS → EVICT_AND_RESTART → DONE),
-        # so RECOVERY mode may be too transient to observe. Poll until
-        # phase_history contains the expected eviction path instead.
+        # Step 2: MARK_BAD_AND_RESTART evicts directly without entering recovery
+        # mode (no RecoveryOrchestrator, no phase_history). Poll until
+        # active_run_id changes, indicating eviction and restart happened.
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and RecoveryPhase.EVICT_AND_RESTART in status.phase_history:
+            if status.active_run_id != old_run_id:
                 break
             await asyncio.sleep(0.5)
         else:
-            raise TimeoutError("Recovery with EVICT_AND_RESTART not observed within 60s")
+            raise TimeoutError("active_run_id did not change within 60s")
 
-        assert_phase_path_contains(status, [
-            RecoveryPhase.EVICT_AND_RESTART,
-            RecoveryPhase.DONE,
-        ])
+        assert status.mode == ControllerMode.MONITORING
 
 
 class TestNanLoss:

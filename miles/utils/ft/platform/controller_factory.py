@@ -106,6 +106,9 @@ def build_ft_controller(
         )
 
     controller_exporter = ControllerExporter(port=config.controller_exporter_port)
+    if start_exporter:
+        controller_exporter.start()
+
     metric_store, scrape_target_manager = _build_metric_store(config, controller_exporter)
 
     mini_wandb = MiniWandb()
@@ -120,9 +123,6 @@ def build_ft_controller(
         if detectors_override is not None
         else build_detector_chain(config=config.detector_config)
     )
-
-    if start_exporter:
-        controller_exporter.start()
 
     logger.info(
         "build_ft_controller ft_id=%s platform=%s backend=%s exporter_port=%d k8s_label_prefix=%s",
