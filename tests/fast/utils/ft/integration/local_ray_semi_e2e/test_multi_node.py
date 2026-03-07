@@ -213,3 +213,27 @@ class TestMultiNodeScale:
 
         # Step 2: verify training resumes (proves all workers re-registered)
         await wait_for_training_stable(env.controller, n_iterations=5, timeout=30.0)
+
+
+class TestGracePeriod:
+    async def test_no_workers_registered_crash_does_not_trigger_recovery(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """Crash before any worker registers → detectors skipped (rank_placement empty)."""
+        env = make_e2e_env(
+            ft_id="e2egp",
+            nodes=[NodeSpec(node_id="e2egp-node-0")],
+            detectors=[TrainingCrashDetector()],
+            wait_for_iteration=False,
+            registration_grace_ticks=0,
+        )
+
+        # Step 1: crash immediately before workers register
+        await env.injector.crash_training()
+        await asyncio.sleep(3.0)
+
+        # Step 2: mode should still be MONITORING (detectors not run)
+        status = get_status(env.controller)
+        assert status.mode == ControllerMode.MONITORING, (
+            f"Expected no recovery with empty rank_placement, but mode={status.mode}"
+        )

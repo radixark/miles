@@ -249,3 +249,32 @@ class TestCrossFaultTypeThrottle:
         assert status.mode == ControllerMode.MONITORING, (
             f"Expected NaN recovery to be throttled, but mode={status.mode}"
         )
+
+
+class TestNaNRecovery:
+    async def test_nan_loss_cleared_after_recovery(
+        self, e2e_full_detector_env: E2EEnv,
+    ) -> None:
+        """NaN triggers recovery, after which training resumes with clean metrics."""
+        env = e2e_full_detector_env
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: inject NaN → recovery
+        await env.injector.inject_nan_loss()
+        await wait_for_mode(
+            env.controller,
+            target_mode=ControllerMode.RECOVERY,
+            timeout=30.0,
+        )
+
+        # Step 2: wait for recovery to complete
+        final = await wait_for_mode_transition(
+            env.controller,
+            target_mode=ControllerMode.MONITORING,
+            timeout=90.0,
+        )
+        assert final.mode == ControllerMode.MONITORING
+
+        # Step 3: training resumes normally (NaN state cleared by submit())
+        await wait_for_training_stable(env.controller, n_iterations=5, timeout=30.0)
