@@ -296,3 +296,49 @@ class TestAllDiagnosticsPass:
         # Step 4: notifier should have received a notification
         calls = env.get_notifier_calls()
         assert len(calls) > 0, "Notifier should have received notification for all-pass diagnostics"
+
+
+class TestNotificationContent:
+    async def test_notify_humans_notification_contains_trigger_and_context(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """NotifyHumans notification includes trigger= and state_before= for operator actionability."""
+        env = make_e2e_env(
+            ft_id="e2enc",
+            nodes=[
+                NodeSpec(node_id="e2enc-node-0", num_ranks=1, diagnostic_pass=True),
+                NodeSpec(node_id="e2enc-node-1", num_ranks=1, diagnostic_pass=True),
+            ],
+            detectors=[TrainingCrashDetector()],
+            step_interval=_SLOW_STEP,
+            use_notifier=True,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=1, timeout=30.0)
+
+        # Step 1: crash → MonitoringProgress → crash → StopTimeDiagnostics → all pass → NotifyHumans
+        await env.injector.crash_training()
+        await wait_for_recovery_phase(
+            env.controller, phase="MonitoringProgress", timeout=30.0,
+        )
+        await env.injector.crash_training()
+
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if status.phase_history and "NotifyHumans" in status.phase_history:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError("NotifyHumans not reached within 60s")
+
+        # Step 2: verify notification content includes trigger and state_before
+        calls = env.get_notifier_calls()
+        assert len(calls) > 0, "Notifier should have received calls"
+
+        recovery_alerts = [(t, c, s) for t, c, s in calls if t == "Recovery Alert"]
+        assert len(recovery_alerts) > 0, "Expected at least one 'Recovery Alert' notification"
+
+        _, content, _ = recovery_alerts[0]
+        assert "trigger=" in content, f"Notification missing trigger=: {content}"
+        assert "state_before=" in content, f"Notification missing state_before=: {content}"

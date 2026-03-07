@@ -492,3 +492,53 @@ class TestMaxBadNodesOneBoundary:
         assert status.mode == ControllerMode.MONITORING, (
             f"max_simultaneous_bad_nodes=1 should block recovery, but mode={status.mode}"
         )
+
+
+class TestFaultClearedNoRetrigger:
+    async def test_hardware_fault_cleared_after_eviction_no_retriggering(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """GPU fault → eviction → clear fault metric → no re-trigger (no infinite loop)."""
+        env = make_e2e_env(
+            ft_id="e2efcl",
+            nodes=[NodeSpec(node_id="e2efcl-node-0", use_remote_collector=True)],
+            detectors=build_detector_chain(),
+            scrape_interval_seconds=_FAST_SCRAPE,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: inject GPU fault → triggers eviction
+        env.set_collector_metrics("e2efcl-node-0", [
+            GaugeSample(
+                name=GPU_AVAILABLE,
+                labels={"node_id": "e2efcl-node-0", "gpu": "0"},
+                value=0.0,
+            ),
+        ])
+
+        await wait_for_mode(
+            env.controller,
+            target_mode=ControllerMode.RECOVERY,
+            timeout=30.0,
+        )
+
+        # Step 2: clear fault metric (simulating node replacement)
+        env.set_collector_metrics("e2efcl-node-0", [
+            GaugeSample(
+                name=GPU_AVAILABLE,
+                labels={"node_id": "e2efcl-node-0", "gpu": "0"},
+                value=1.0,
+            ),
+        ])
+
+        # Step 3: recovery completes
+        final = await wait_for_recovery_complete(env.controller, timeout=90.0)
+        assert final.mode == ControllerMode.MONITORING
+
+        # Step 4: verify no new recovery triggered after several ticks
+        await asyncio.sleep(5.0)
+        status = get_status(env.controller)
+        assert status.mode == ControllerMode.MONITORING, (
+            f"Cleared fault should not re-trigger recovery, but mode={status.mode}"
+        )

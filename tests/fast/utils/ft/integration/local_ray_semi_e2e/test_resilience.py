@@ -114,6 +114,51 @@ class TestRestartStepperException:
         assert_phase_path_contains(status, ["NotifyHumans"])
 
 
+class _CrashingNotifier:
+    """Notifier whose send() always raises. Serializable via cloudpickle."""
+
+    async def send(self, title: str, content: str, severity: str) -> None:
+        raise RuntimeError("notifier crash for testing")
+
+    async def aclose(self) -> None:
+        pass
+
+
+class TestNotifierResilience:
+    async def test_notifier_send_exception_does_not_break_recovery(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """Notifier raises on send() → safe_notify catches → recovery completes."""
+        from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
+
+        env = make_e2e_env(
+            ft_id="e2enr",
+            nodes=[NodeSpec(node_id="e2enr-node-0")],
+            detectors=[TrainingCrashDetector()],
+            recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=2),
+            notifier_override=_CrashingNotifier(),
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: first crash → recovery (notifier not called on normal recovery)
+        await env.injector.crash_training()
+        await wait_for_mode_transition(
+            env.controller,
+            target_mode=ControllerMode.MONITORING,
+            timeout=60.0,
+        )
+
+        # Step 2: second crash → throttled → notifier.send() called → raises → controller survives
+        await wait_for_training_stable(env.controller, n_iterations=2, timeout=30.0)
+        await env.injector.crash_training()
+        await asyncio.sleep(5.0)
+
+        # Step 3: controller is still alive and functional
+        status = get_status(env.controller)
+        assert status.mode == ControllerMode.MONITORING
+
+
 class TestDetectorResilience:
     async def test_detector_exception_does_not_crash_controller(
         self, make_e2e_env: Callable[..., E2EEnv],
