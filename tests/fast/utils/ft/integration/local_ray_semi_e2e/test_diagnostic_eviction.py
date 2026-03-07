@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
-from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     E2EEnv,
@@ -45,7 +45,7 @@ class TestDiagnosticEviction:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase=RecoveryPhase.MONITORING,
+            phase="MonitoringProgress",
             timeout=30.0,
         )
 
@@ -55,9 +55,9 @@ class TestDiagnosticEviction:
 
         assert final.mode == ControllerMode.MONITORING
         assert_phase_path_contains(final, [
-            RecoveryPhase.DIAGNOSING,
-            RecoveryPhase.EVICT_AND_RESTART,
-            RecoveryPhase.DONE,
+            "StopTimeDiagnostics",
+            "Evicting",
+            "RecoveryDone",
         ])
 
 
@@ -83,15 +83,15 @@ class TestEvictionExcludedNodes:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase=RecoveryPhase.MONITORING,
+            phase="MonitoringProgress",
             timeout=30.0,
         )
 
         # Step 2: crash during MONITORING → DIAGNOSING (fast) → recovery completes
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=90.0)
-        assert_phase_path_contains(final, [RecoveryPhase.DIAGNOSING])
-        assert_phase_path_contains(final, [RecoveryPhase.EVICT_AND_RESTART])
+        assert_phase_path_contains(final, ["StopTimeDiagnostics"])
+        assert_phase_path_contains(final, ["Evicting"])
 
 
 class TestPartialDiagnostic:
@@ -122,7 +122,7 @@ class TestPartialDiagnostic:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase=RecoveryPhase.MONITORING,
+            phase="MonitoringProgress",
             timeout=30.0,
         )
 
@@ -130,8 +130,8 @@ class TestPartialDiagnostic:
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=90.0)
         assert final.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(final, [RecoveryPhase.DIAGNOSING])
-        assert_phase_path_contains(final, [RecoveryPhase.EVICT_AND_RESTART])
+        assert_phase_path_contains(final, ["StopTimeDiagnostics"])
+        assert_phase_path_contains(final, ["Evicting"])
 
 
 class TestAllNodesEvicted:
@@ -155,7 +155,7 @@ class TestAllNodesEvicted:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase=RecoveryPhase.MONITORING,
+            phase="MonitoringProgress",
             timeout=30.0,
         )
 
@@ -163,7 +163,7 @@ class TestAllNodesEvicted:
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=90.0)
         assert_phase_path_contains(final, [
-            RecoveryPhase.DIAGNOSING,
-            RecoveryPhase.EVICT_AND_RESTART,
-            RecoveryPhase.DONE,
+            "StopTimeDiagnostics",
+            "Evicting",
+            "RecoveryDone",
         ])

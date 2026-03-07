@@ -8,7 +8,7 @@ import pytest
 
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
-from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     E2EEnv,
