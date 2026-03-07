@@ -1,36 +1,38 @@
+diff --git a/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py b/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py
+index 6e7ea07e7..73b512f51 100644
+--- a/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py
++++ b/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py
+@@ -64,6 +64,7 @@ class CustomAllreduce:
+         group: ProcessGroup,
+         device: Union[int, str, torch.device],
+         max_size=_MAX_CAR_SIZE,
++        enable_register_for_capturing: bool = True,
+     ) -> None:
+         """
+         Args:
+@@ -410,6 +411,8 @@ class CustomAllreduce:
+         if self._IS_CAPTURING:
+             if torch.cuda.is_current_stream_capturing():
+                 if _is_hip:
++                    if self.tms_cudagraph:
++                        return self.all_reduce_unreg(input)
+                     return self.all_reduce_reg(input)
+                 else:
+                     return self.all_reduce(input, registered=not self.tms_cudagraph)
 diff --git a/python/sglang/srt/distributed/parallel_state.py b/python/sglang/srt/distributed/parallel_state.py
-index 8e3429dec..494a754b3 100644
+index c3ca1e4f3..2bb763b6a 100644
 --- a/python/sglang/srt/distributed/parallel_state.py
 +++ b/python/sglang/srt/distributed/parallel_state.py
-@@ -1849,7 +1849,10 @@ def get_tensor_model_parallel_world_size():
- 
- def get_tensor_model_parallel_rank():
-     """Return my rank for the tensor model parallel group."""
--    return get_tp_group().rank_in_group
-+    try:
-+        return get_tp_group().rank_in_group
-+    except Exception:
-+        return 0
- 
- 
- def get_pipeline_model_parallel_world_size():
-diff --git a/python/sglang/srt/models/qwen3_next.py b/python/sglang/srt/models/qwen3_next.py
-index b38a83d57..a492e3ef8 100644
---- a/python/sglang/srt/models/qwen3_next.py
-+++ b/python/sglang/srt/models/qwen3_next.py
-@@ -45,13 +45,14 @@ from sglang.srt.utils import (
-     LazyValue,
-     add_prefix,
-     is_cuda,
-+    is_cuda_alike,
-     is_npu,
-     make_layers,
-     set_weight_attrs,
- )
- 
- logger = logging.getLogger(__name__)
--_is_cuda = is_cuda()
-+_is_cuda = is_cuda_alike()
- _is_npu = is_npu()
- 
- 
+@@ -351,10 +351,12 @@ class GroupCoordinator:
+         if use_custom_allreduce and self.world_size > 1:
+             # Initialize a custom fast all-reduce implementation.
+             try:
++                tms_cudagraph = envs.SGLANG_MEMORY_SAVER_CUDA_GRAPH.get()
+                 CAClass = dispatch_custom_allreduce()
+                 self.ca_comm = CAClass(
+                     group=self.cpu_group,
+                     device=self.device,
++                    enable_register_for_capturing=not tms_cudagraph,
+                 )
+             except Exception as e:
+                 logger.warning(

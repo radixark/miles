@@ -64,6 +64,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             remove_sample=_merge_equal_value("remove_sample"),
             status=b.status,
             metadata=_merge_equal_value("metadata"),
+            generate_function_path=_merge_equal_value("generate_function_path"),
             train_metadata=_merge_equal_value("train_metadata"),
             non_generation_time=_merge_equal_value("non_generation_time"),
             spec_info=_merge_spec_info(a.spec_info, b.spec_info),

@@ -13,6 +13,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.async_utils import run
@@ -38,7 +39,9 @@ class GenerateState(metaclass=SingletonMeta):
     def __init__(self, args: Namespace) -> None:
         # persistent state for the generation process
         self.args = args
-        self.tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
         self.semaphore = asyncio.Semaphore(
@@ -136,6 +139,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "return_logprob": True,
     }
 
+    if is_lora_enabled(args):
+        payload["lora_path"] = LORA_ADAPTER_NAME
+
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
 
@@ -214,8 +220,11 @@ async def generate_and_rm(
             return sample
 
         with state.dp_rank_context() as _:
-            if args.custom_generate_function_path is not None:
-                custom_generate_func = load_function(args.custom_generate_function_path)
+            # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
+            custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
+
+            if custom_func_path is not None:
+                custom_generate_func = load_function(custom_func_path)
                 # if signature has evaluation, pass evaluation
                 if "evaluation" in inspect.signature(custom_generate_func).parameters:
                     sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
@@ -366,7 +375,7 @@ async def generate_rollout_async(
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
-                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
                 )
                 do_print = False
 
@@ -387,7 +396,7 @@ async def generate_rollout_async(
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
-        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
     )
 
     # there are still some unfinished requests, abort them
@@ -443,9 +452,11 @@ async def eval_rollout_single_dataset(
 
     global EVAL_PROMPT_DATASET
 
-    cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template)
+    cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template, args.chat_template_path)
     if cache_key not in EVAL_PROMPT_DATASET:
-        tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        tokenizer = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
         processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
         EVAL_PROMPT_DATASET[cache_key] = Dataset(
             path=dataset_cfg.path,
@@ -484,6 +495,7 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
+            sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
             sampling_params = base_sampling_params
             if getattr(args, "sglang_enable_deterministic_inference", False):
                 sampling_params = base_sampling_params.copy()

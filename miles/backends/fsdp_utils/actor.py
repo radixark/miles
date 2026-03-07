@@ -84,7 +84,9 @@ class FSDPTrainRayActor(TrainRayActor):
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
                 self.hf_config = AutoConfig.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
-                self.tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
+                self.tokenizer = load_tokenizer(
+                    self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+                )
                 # Vision models have `vision_config` in the config
                 if hasattr(self.hf_config, "vision_config"):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)

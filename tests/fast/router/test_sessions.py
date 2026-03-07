@@ -12,27 +12,11 @@ from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessR
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
-class DummyTokenizer:
-    """Minimal tokenizer stub for testing NaiveTrajectoryManager."""
-
-    def apply_chat_template(
-        self,
-        messages,
-        tokenize: bool = True,
-        add_special_tokens: bool = False,
-        add_generation_prompt: bool = True,
-    ):
-        """Return deterministic token ids based on message count."""
-        base = len(messages) or 1
-        return [base, base + 1, base + 2]
-
-
 @pytest.fixture
 def naive_manager():
     """Create a NaiveTrajectoryManager with a dummy tokenizer."""
     args = SimpleNamespace()
-    tokenizer = DummyTokenizer()
-    return NaiveTrajectoryManager(args, tokenizer)
+    return NaiveTrajectoryManager(args, tokenizer=None)
 
 
 class TestNaiveTrajectoryManager:
@@ -50,19 +34,6 @@ class TestNaiveTrajectoryManager:
     def test_get_session_records_by_id_not_found(self, naive_manager: NaiveTrajectoryManager):
         records = naive_manager.get_session_records_by_id("nonexistent")
         assert records is None
-
-    def test_calc_prompt_tokens_for_existing_session(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
-        messages = [{"role": "user", "content": "hello"}]
-
-        token_ids = naive_manager.calc_prompt_tokens(session_id, messages)
-
-        assert token_ids == [1, 2, 3]
-
-    def test_calc_prompt_tokens_for_missing_session(self, naive_manager: NaiveTrajectoryManager):
-        messages = [{"role": "user", "content": "hello"}]
-        token_ids = naive_manager.calc_prompt_tokens("missing", messages)
-        assert token_ids is None
 
     def test_delete_session_by_id(self, naive_manager: NaiveTrajectoryManager):
         session_id = naive_manager.create_session()
@@ -126,7 +97,6 @@ def router_env():
                 miles_router_middleware_paths=[],
                 rollout_health_check_interval=60,
                 miles_router_health_check_failure_threshold=3,
-                miles_router_enable_token_input_for_chat_completions=False,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
                 trajectory_manager="naive_trajectory",
             )

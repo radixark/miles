@@ -16,6 +16,15 @@ parser = ArgumentParser()
 parser.add_argument("--async-save", action="store_true", help="Whether to test async save/load.")
 
 
+def _get_latest_checkpointed_iteration() -> int:
+    latest_path = f"/root/models/{MODEL_NAME}_miles/latest_checkpointed_iteration.txt"
+    with open(latest_path, encoding="utf-8") as f:
+        latest_text = f.read().strip()
+    if not latest_text.isdigit():
+        raise ValueError(f"Invalid latest checkpoint value: {latest_text}")
+    return int(latest_text)
+
+
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
@@ -28,7 +37,7 @@ def prepare():
     )
 
 
-def execute(mode: str = ""):
+def execute(mode: str = "", ckpt_step: int | None = None):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     if mode == "save":
         ckpt_args += f"--save /root/models/{MODEL_NAME}_miles "
@@ -37,9 +46,10 @@ def execute(mode: str = ""):
         ckpt_args += f"--save /root/models/{MODEL_NAME}_miles "
         ckpt_args += "--save-interval 2 "
         ckpt_args += "--async-save "
+        ckpt_args += "--use-persistent-ckpt-worker "
     elif mode == "load":
         ckpt_args += f"--load /root/models/{MODEL_NAME}_miles "
-        ckpt_args += "--ckpt-step 1 "
+        ckpt_args += f"--ckpt-step {ckpt_step} "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -93,6 +103,10 @@ def execute(mode: str = ""):
     sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.8 --sglang-cuda-graph-bs 1 2 4 8 16 "
 
     ci_args = "--ci-test "
+    if mode in {"save", "async_save"}:
+        ci_args += "--ci-save-model-hash "
+    if mode == "load":
+        ci_args += "--ci-check-model-hash "
 
     misc_args = (
         # default dropout in megatron is 0.1
@@ -135,4 +149,5 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute("save" if not args.async_save else "async_save")
-    execute("load")
+    latest_step = _get_latest_checkpointed_iteration()
+    execute("load", ckpt_step=latest_step)
