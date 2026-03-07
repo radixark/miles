@@ -117,7 +117,7 @@ def _check_majority_nic_down(metric_store: MetricQueryProtocol) -> list[NodeFaul
         NodeFault(
             node_id=row["node_id"],
             reason=f"majority NIC down on {row['node_id']} ({row['down_count']}/{row['total_count']})",
-            ephemeral=True,
+            ephemeral=False,
         )
         for row in stats.iter_rows(named=True)
     ]
