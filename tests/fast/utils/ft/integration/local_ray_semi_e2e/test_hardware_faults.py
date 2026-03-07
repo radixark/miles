@@ -8,7 +8,7 @@ from collections.abc import Callable
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.models.metric_names import GPU_AVAILABLE
 from miles.utils.ft.models.metrics import GaugeSample
-from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     E2EEnv,
@@ -113,4 +113,4 @@ class TestFaultDuringRecovery:
 
         # Step 3: wait for recovery to complete with eviction
         final = await wait_for_recovery_complete(env.controller, timeout=90.0)
-        assert_phase_path_contains(final, [RecoveryPhase.EVICT_AND_RESTART])
+        assert_phase_path_contains(final, ["Evicting"])

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ray
 
-from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus
 
 from tests.fast.utils.ft.helpers.fault_injection import FaultInjectionProtocol
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
@@ -57,10 +57,10 @@ async def scenario_transient_crash(
 
     final = get_status(handle)
     assert_phase_path_contains(final, [
-        RecoveryPhase.CHECK_ALERTS,
-        RecoveryPhase.REATTEMPTING,
-        RecoveryPhase.MONITORING,
-        RecoveryPhase.DONE,
+        "RealtimeChecks",
+        "StoppingAndRestarting",
+        "MonitoringProgress",
+        "RecoveryDone",
     ])
 
     return final

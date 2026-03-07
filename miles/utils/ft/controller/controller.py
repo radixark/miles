@@ -21,8 +21,11 @@ from miles.utils.ft.controller.recovery.alert_checker import AlertChecker
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import (
     BAD_NODES_CONFIRMED_TYPES,
+    DirectlyRestarting,
+    EvictingAndRestarting,
     RECOVERY_STATE_TO_INT,
     RecoveryStepper,
+    RecoveryState,
 )
 from miles.utils.ft.controller.recovery.restart_stepper import RestartStepper
 from miles.utils.ft.controller.state_machine import StateMachine
@@ -41,6 +44,12 @@ from miles.utils.ft.protocols.platform import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _recovery_phase_name(recovery: RecoveryState) -> str:
+    if isinstance(recovery, (EvictingAndRestarting, DirectlyRestarting)):
+        return type(recovery.restart).__name__
+    return type(recovery).__name__
 
 
 class FtController:
@@ -223,10 +232,12 @@ class FtController:
         iteration_val = self._mini_wandb.latest(metric_name="iteration")
         latest_iteration = int(iteration_val) if iteration_val is not None else None
 
+        phase_history = self._build_phase_history()
+
         if isinstance(state, Recovering):
             recovery = state.recovery
             mode = ControllerMode.RECOVERY
-            recovery_phase_str = type(recovery).__name__
+            recovery_phase_str = _recovery_phase_name(recovery)
             bad_nodes = sorted(main_stepper._get_known_bad_nodes(recovery))
             bad_nodes_confirmed = type(recovery) in BAD_NODES_CONFIRMED_TYPES
         else:
@@ -238,7 +249,7 @@ class FtController:
         return ControllerStatus(
             mode=mode,
             recovery_phase=recovery_phase_str,
-            phase_history=None,
+            phase_history=phase_history if phase_history else None,
             tick_count=self._tick_count,
             active_run_id=self._rank_roster.run_id,
             bad_nodes=bad_nodes,
@@ -246,6 +257,15 @@ class FtController:
             bad_nodes_confirmed=bad_nodes_confirmed,
             latest_iteration=latest_iteration,
         )
+
+    def _build_phase_history(self) -> list[str]:
+        phases: list[str] = []
+        for past_state in self._machine.state_history:
+            if isinstance(past_state, Recovering):
+                name = _recovery_phase_name(past_state.recovery)
+                if not phases or phases[-1] != name:
+                    phases.append(name)
+        return phases
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh RankRoster for the new run and switch MiniWandb."""

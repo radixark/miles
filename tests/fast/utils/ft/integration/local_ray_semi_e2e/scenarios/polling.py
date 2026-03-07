@@ -10,7 +10,7 @@ import time
 
 import ray
 
-from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus
 
 
 def get_status(handle: ray.actor.ActorHandle, timeout: float = 10) -> ControllerStatus:
@@ -83,11 +83,11 @@ async def wait_for_mode_transition(
 
 async def wait_for_recovery_phase(
     handle: ray.actor.ActorHandle,
-    phase: RecoveryPhase,
+    phase: str,
     timeout: float = 120.0,
     poll_interval: float = 0.5,
 ) -> ControllerStatus:
-    """Poll until recovery_phase matches the target phase."""
+    """Poll until recovery_phase matches the target phase (state class name)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = get_status(handle)
@@ -113,7 +113,7 @@ async def wait_for_recovery_complete(
 
 def assert_phase_path_contains(
     status: ControllerStatus,
-    required: list[RecoveryPhase],
+    required: list[str],
 ) -> None:
     """Assert that phase_history contains the required phases as an ordered subsequence."""
     history = status.phase_history
@@ -125,6 +125,6 @@ def assert_phase_path_contains(
             idx += 1
 
     assert idx == len(required), (
-        f"Expected phase path to contain {[p.value for p in required]} in order, "
-        f"but got history {[p.value for p in history]}"
+        f"Expected phase path to contain {required} in order, "
+        f"but got history {history}"
     )

@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
-from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     E2EEnv,
@@ -54,11 +54,11 @@ class TestMonitoringTimeout:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase=RecoveryPhase.MONITORING,
+            phase="MonitoringProgress",
             timeout=30.0,
         )
 
         # Step 2: crash during MONITORING → DIAGNOSING (fast) → recovery completes
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=60.0)
-        assert_phase_path_contains(final, [RecoveryPhase.DIAGNOSING])
+        assert_phase_path_contains(final, ["StopTimeDiagnostics"])

@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
-from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     E2EEnv,
@@ -49,7 +49,7 @@ class TestMultiNode:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase=RecoveryPhase.MONITORING,
+            phase="MonitoringProgress",
             timeout=30.0,
         )
 
@@ -63,13 +63,13 @@ class TestMultiNode:
         deadline = time.monotonic() + 90.0
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and RecoveryPhase.DIAGNOSING in status.phase_history:
+            if status.phase_history and "StopTimeDiagnostics" in status.phase_history:
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError("DIAGNOSING not observed in phase_history within 90s")
 
-        assert_phase_path_contains(status, [RecoveryPhase.DIAGNOSING])
+        assert_phase_path_contains(status, ["StopTimeDiagnostics"])
 
 
 class TestConcurrentRegistration:

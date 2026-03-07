@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ray
 
-from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus
 
 from tests.fast.utils.ft.helpers.fault_injection import FaultInjectionProtocol
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
@@ -45,7 +45,7 @@ async def scenario_repeated_crash(
     await injector.crash_training()
     await wait_for_recovery_phase(
         handle=handle,
-        phase=RecoveryPhase.DIAGNOSING,
+        phase="StopTimeDiagnostics",
         timeout=recovery_timeout,
     )
 
@@ -56,9 +56,9 @@ async def scenario_repeated_crash(
     )
     assert final.mode == ControllerMode.MONITORING
     assert_phase_path_contains(final, [
-        RecoveryPhase.DIAGNOSING,
-        RecoveryPhase.NOTIFY,
-        RecoveryPhase.DONE,
+        "StopTimeDiagnostics",
+        "NotifyHumans",
+        "RecoveryDone",
     ])
 
     return final

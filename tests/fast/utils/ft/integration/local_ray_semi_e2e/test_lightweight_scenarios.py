@@ -15,7 +15,7 @@ from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
-from miles.utils.ft.models.recovery import ControllerMode, RecoveryPhase
+from miles.utils.ft.models.recovery import ControllerMode
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.platform.controller_actor import FtControllerActor
@@ -223,7 +223,7 @@ class TestRepeatedCrash:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase=RecoveryPhase.MONITORING,
+            phase="MonitoringProgress",
             timeout=60.0,
         )
 
@@ -236,13 +236,13 @@ class TestRepeatedCrash:
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and RecoveryPhase.DIAGNOSING in status.phase_history:
+            if status.phase_history and "StopTimeDiagnostics" in status.phase_history:
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError("DIAGNOSING not observed in phase_history within 60s")
 
-        assert_phase_path_contains(status, [RecoveryPhase.DIAGNOSING])
+        assert_phase_path_contains(status, ["StopTimeDiagnostics"])
 
 
 class TestHangDetection:
