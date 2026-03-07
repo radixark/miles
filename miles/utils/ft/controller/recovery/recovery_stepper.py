@@ -188,25 +188,15 @@ class RecoveryStepper(StateMachineStepper[RecoveryState]):
     async def _handle_stop_time_diagnostics(
         self, state: StopTimeDiagnostics,
     ) -> RecoveryState:
-        from miles.utils.ft.models.diagnostic import DiagnosticPipelineResult
-
         result = await self._diagnostic_orchestrator.run_diagnostic_pipeline(
             trigger_reason=self._call_trigger,
             rank_pids_provider=self._rank_pids_provider,
         )
 
-        if isinstance(result, DiagnosticPipelineResult):
-            pipeline_result = result
-        else:
-            pipeline_result = DiagnosticPipelineResult(
-                bad_node_ids=list(result.bad_node_ids) if hasattr(result, 'bad_node_ids') else [],
-                reason=result.reason if hasattr(result, 'reason') else "",
-            )
-
-        if pipeline_result.bad_node_ids:
-            logger.info("diagnosing_found_bad_nodes bad_nodes=%s", pipeline_result.bad_node_ids)
+        if result.bad_node_ids:
+            logger.info("diagnosing_found_bad_nodes bad_nodes=%s", result.bad_node_ids)
             return EvictingAndRestarting(
-                restart=Evicting(bad_node_ids=pipeline_result.bad_node_ids),
+                restart=Evicting(bad_node_ids=result.bad_node_ids),
                 is_final_attempt=True,
             )
 

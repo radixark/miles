@@ -5,7 +5,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from miles.utils.ft.models.fault import Decision, TriggerType
+    from miles.utils.ft.models.diagnostic import DiagnosticPipelineResult
+    from miles.utils.ft.models.fault import TriggerType
 
 
 class JobStatus(str, Enum):
@@ -49,7 +50,7 @@ class DiagnosticOrchestratorProtocol(Protocol):
         trigger_reason: TriggerType,
         suspect_node_ids: list[str] | None = None,
         rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
-    ) -> Decision: ...
+    ) -> DiagnosticPipelineResult: ...
 
 
 @runtime_checkable

@@ -14,8 +14,9 @@ from miles.utils.ft.controller.diagnostics.nccl.orchestrator import (
 from miles.utils.ft.controller.diagnostics.stack_trace import (
     collect_stack_trace_suspects,
 )
+from miles.utils.ft.models.diagnostic import DiagnosticPipelineResult
 from miles.utils.ft.models.diagnostics import DiagnosticResult, UnknownDiagnosticError
-from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
+from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.protocols.agents import NodeAgentProtocol
 from miles.utils.ft.protocols.platform import DiagnosticOrchestratorProtocol
 
@@ -55,7 +56,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         trigger_reason: TriggerType,
         suspect_node_ids: list[str] | None = None,
         rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
-    ) -> Decision:
+    ) -> DiagnosticPipelineResult:
         logger.info(
             "diagnostic_pipeline_start trigger=%s suspect_nodes=%s pipeline=%s",
             trigger_reason, suspect_node_ids, self._pipeline,
@@ -75,10 +76,9 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                 "diagnostic_pipeline_timeout timeout=%d trigger=%s",
                 self._pipeline_timeout_seconds, trigger_reason,
             )
-            return Decision(
-                action=ActionType.NOTIFY_HUMAN,
+            return DiagnosticPipelineResult(
+                bad_node_ids=[],
                 reason=f"diagnostic pipeline timed out after {self._pipeline_timeout_seconds}s",
-                trigger=trigger_reason,
             )
 
     async def _run_diagnostic_pipeline_inner(
@@ -86,7 +86,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         trigger_reason: TriggerType,
         suspect_node_ids: list[str] | None = None,
         rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
-    ) -> Decision:
+    ) -> DiagnosticPipelineResult:
         if trigger_reason == TriggerType.HANG and rank_pids_provider is not None:
             suspect_from_trace = await collect_stack_trace_suspects(
                 agents=self._agents,
@@ -101,10 +101,9 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
 
         if not self._pipeline:
             logger.info("diagnostic_pipeline_empty — no diagnostics configured")
-            return Decision(
-                action=ActionType.NOTIFY_HUMAN,
+            return DiagnosticPipelineResult(
+                bad_node_ids=[],
                 reason="no diagnostics configured (empty pipeline)",
-                trigger=trigger_reason,
             )
 
         if suspect_node_ids is not None:
@@ -129,18 +128,15 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                     "diagnostic_step_found_bad step=%s bad_nodes=%s",
                     diagnostic_type, bad_node_ids,
                 )
-                return Decision(
-                    action=ActionType.MARK_BAD_AND_RESTART,
+                return DiagnosticPipelineResult(
                     bad_node_ids=sorted(bad_node_ids),
                     reason=f"diagnostic '{diagnostic_type}' failed on nodes: {bad_node_ids}",
-                    trigger=trigger_reason,
                 )
 
         logger.info("diagnostic_pipeline_all_passed trigger=%s", trigger_reason)
-        return Decision(
-            action=ActionType.NOTIFY_HUMAN,
+        return DiagnosticPipelineResult(
+            bad_node_ids=[],
             reason="all diagnostics passed — no bad nodes found",
-            trigger=trigger_reason,
         )
 
     # ------------------------------------------------------------------
