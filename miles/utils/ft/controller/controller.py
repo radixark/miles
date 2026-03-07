@@ -341,12 +341,11 @@ class FtController:
         if job_status is None:
             return
 
-        is_recovery = isinstance(self._state_machine.state, Recovering)
+        state = self._state_machine.state
+        is_recovery = isinstance(state, Recovering)
         phase_int = 0
         if is_recovery:
-            state = self._state_machine.state
-            if isinstance(state, Recovering):
-                phase_int = RECOVERY_STATE_TO_INT.get(type(state.recovery), 0)
+            phase_int = RECOVERY_STATE_TO_INT.get(type(state.recovery), 0)
 
         self._controller_exporter.update_from_state(
             job_status=job_status,
