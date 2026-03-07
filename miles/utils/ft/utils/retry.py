@@ -22,7 +22,7 @@ class RetryResult(Generic[_T]):
 
     ok: bool
     value: _T | None = None
-    error: str | None = None
+    exception: Exception | None = None
 
 
 async def retry_async(
@@ -37,7 +37,7 @@ async def retry_async(
     """Retry an async callable up to *max_retries* times with exponential backoff.
 
     Returns a :class:`RetryResult` with ``ok=True`` and the return value on
-    success, or ``ok=False`` with an error description if all attempts fail.
+    success, or ``ok=False`` with the exception if all attempts fail.
 
     Backoff formula: ``min(backoff_base * 2**attempt, max_backoff)``.
 
@@ -45,7 +45,7 @@ async def retry_async(
     ``asyncio.wait_for`` to prevent a single hung invocation from blocking
     the entire retry loop.
     """
-    last_error: str = ""
+    last_exc: Exception | None = None
 
     for attempt in range(max_retries):
         try:
@@ -56,7 +56,7 @@ async def retry_async(
                 value = await coro
             return RetryResult(ok=True, value=value)
         except Exception as exc:
-            last_error = str(exc)
+            last_exc = exc
             logger.warning(
                 "retry_failed description=%s attempt=%d/%d",
                 description, attempt + 1, max_retries,
@@ -67,7 +67,7 @@ async def retry_async(
                 await sleep_fn(delay)
 
     logger.error("retry_exhausted description=%s", description)
-    return RetryResult(ok=False, error=f"exhausted {max_retries} retries: {last_error}")
+    return RetryResult(ok=False, exception=last_exc)
 
 
 async def retry_async_or_raise(
@@ -80,30 +80,20 @@ async def retry_async_or_raise(
 ) -> _T:
     """Like :func:`retry_async` but raises the last exception on exhaustion.
 
-    Suitable for callers that need the original exception rather than a
-    :class:`RetryResult` (e.g. replacing inline retry loops that ``raise``).
+    Thin wrapper around :func:`retry_async` for callers that need the
+    original exception rather than a :class:`RetryResult`.
     """
-    last_exc: Exception | None = None
-
-    for attempt in range(max_retries):
-        try:
-            coro = func()
-            if per_call_timeout is not None:
-                return await asyncio.wait_for(coro, timeout=per_call_timeout)
-            return await coro
-        except Exception as exc:
-            last_exc = exc
-            logger.warning(
-                "retry_failed description=%s attempt=%d/%d",
-                description, attempt + 1, max_retries,
-                exc_info=True,
-            )
-            if attempt < max_retries - 1:
-                delay = min(backoff_base * (2 ** attempt), max_backoff)
-                await asyncio.sleep(delay)
-
-    logger.error("retry_exhausted description=%s", description)
-    raise last_exc  # type: ignore[misc]
+    result = await retry_async(
+        func=func,
+        description=description,
+        max_retries=max_retries,
+        per_call_timeout=per_call_timeout,
+        backoff_base=backoff_base,
+        max_backoff=max_backoff,
+    )
+    if result.ok:
+        return result.value  # type: ignore[return-value]
+    raise result.exception  # type: ignore[misc]
 
 
 def retry_sync(
@@ -118,14 +108,14 @@ def retry_sync(
     Backoff formula: ``min(backoff_base * 2**attempt, max_backoff)``.
     For fixed delay set ``backoff_base == max_backoff``.
     """
-    last_error: str = ""
+    last_exc: Exception | None = None
 
     for attempt in range(max_retries):
         try:
             value = func()
             return RetryResult(ok=True, value=value)
         except Exception as exc:
-            last_error = str(exc)
+            last_exc = exc
             logger.warning(
                 "retry_failed description=%s attempt=%d/%d",
                 description, attempt + 1, max_retries,
@@ -136,4 +126,4 @@ def retry_sync(
                 time.sleep(delay)
 
     logger.error("retry_exhausted description=%s", description)
-    return RetryResult(ok=False, error=f"exhausted {max_retries} retries: {last_error}")
+    return RetryResult(ok=False, exception=last_exc)

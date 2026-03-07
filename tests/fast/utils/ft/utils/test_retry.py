@@ -59,8 +59,8 @@ class TestRetrySyncFailure:
             )
 
         assert result.ok is False
-        assert result.error is not None
-        assert "permanent" in result.error
+        assert result.exception is not None
+        assert "permanent" in str(result.exception)
 
     def test_returns_none_value_on_failure(self) -> None:
         with patch(_SLEEP_PATCH):
@@ -86,7 +86,7 @@ class TestRetrySyncFailure:
         assert result.ok is False
         assert sleep_calls == []
 
-    def test_error_message_includes_last_exception(self) -> None:
+    def test_exception_is_from_last_attempt(self) -> None:
         call_count = 0
 
         def varying() -> str:
@@ -100,7 +100,7 @@ class TestRetrySyncFailure:
             result = retry_sync(func=varying, description="varying", max_retries=2)
 
         assert result.ok is False
-        assert "second" in (result.error or "")
+        assert "second" in str(result.exception)
 
 
 class TestRetrySyncBackoff:
@@ -191,7 +191,7 @@ class TestRetryAsyncPerCallTimeout:
             func=hang, description="hung", max_retries=1, per_call_timeout=0.01,
         )
         assert result.ok is False
-        assert result.error is not None
+        assert result.exception is not None
 
     @pytest.mark.anyio
     async def test_per_call_timeout_retries_after_timeout(self) -> None:
