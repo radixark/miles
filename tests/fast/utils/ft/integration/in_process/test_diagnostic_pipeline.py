@@ -1,48 +1,29 @@
 """Integration tests: Controller → Recovery → DiagnosticOrchestrator → NodeAgent.
 
-Tests the full diagnostic pipeline through the Controller's recovery flow.
-Note: CHECK_ALERTS phase is bypassed (set directly to DIAGNOSING) due to
-pre-existing instant_query gap in MiniPrometheus.
+Tests the full diagnostic pipeline through the Controller's recovery flow
+by injecting StopTimeDiagnostics state directly into the state machine.
 """
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 import pytest
 
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.recovery.orchestrator import RecoveryOrchestrator
-from miles.utils.ft.models.recovery import RecoveryPhase
+from miles.utils.ft.controller.main_state_machine import Recovering
+from miles.utils.ft.controller.recovery.recovery_stepper import StopTimeDiagnostics
 from miles.utils.ft.protocols.platform import JobStatus
 from tests.fast.utils.ft.conftest import (
     ControllerTestHarness,
-    advance_until_recovery_complete,
     make_fake_agents,
     make_test_controller,
 )
 
 
-def _enter_recovery_and_skip_to_diagnosing(
-    harness: ControllerTestHarness,
-    orchestrator: DiagnosticOrchestrator,
-) -> None:
-    """Helper: create a RecoveryOrchestrator already in DIAGNOSING phase."""
-    orch = RecoveryOrchestrator(
-        trigger="crash",
-        node_manager=harness.node_manager,
-        training_job=harness.training_job,
-        metric_store=harness.metric_store,
-        mini_wandb=harness.mini_wandb,
-        notifier=harness.notifier,
-        diagnostic_orchestrator=orchestrator,
-        controller_exporter=harness.controller_exporter,
-    )
-    orch._context.phase = RecoveryPhase.DIAGNOSING
-    harness.controller._recovery_manager._orchestrator = orch
-
-
 def _make_diagnostic_test_env(
     node_results: dict[str, dict[str, bool]],
     pipeline: list[str],
-) -> tuple[ControllerTestHarness, RecoveryOrchestrator]:
+) -> ControllerTestHarness:
     agents = make_fake_agents(node_results)
     orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=pipeline)
     harness = make_test_controller(
@@ -51,53 +32,47 @@ def _make_diagnostic_test_env(
     )
     for node_id, agent in agents.items():
         harness.controller.register_node_agent(node_id, agent)
-    _enter_recovery_and_skip_to_diagnosing(harness, orchestrator)
-    orch = harness.controller._recovery_manager._orchestrator
-    assert orch is not None
-    return harness, orch
+
+    harness.controller._machine._state = Recovering(
+        recovery=StopTimeDiagnostics(),
+        trigger="crash",
+        recovery_start_time=datetime.now(timezone.utc),
+    )
+    return harness
 
 
 class TestDiagnosticPipelineWithBadNode:
-    """Diagnostics find bad node → EVICT_AND_RESTART."""
+    """Diagnostics find bad node → EvictingAndRestarting."""
 
     @pytest.mark.anyio
     async def test_diagnose_evict_bad_node(self) -> None:
-        harness, orch = _make_diagnostic_test_env(
+        harness = _make_diagnostic_test_env(
             node_results={"node-0": {"gpu": True}, "node-1": {"gpu": False}},
             pipeline=["gpu"],
         )
-        assert orch.phase == RecoveryPhase.DIAGNOSING
 
-        # DIAGNOSING → should find node-1 bad → EVICT_AND_RESTART
+        # StopTimeDiagnostics → find node-1 bad → EvictingAndRestarting → evict
         await harness.controller._tick()
-        assert orch.phase in (
-            RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
-        )
-
-        # Advance to completion
-        await advance_until_recovery_complete(harness)
 
         assert harness.node_manager.was_ever_marked_bad("node-1")
         assert not harness.node_manager.was_ever_marked_bad("node-0")
+        assert isinstance(harness.controller._machine.state, Recovering)
 
 
 class TestDiagnosticPipelineAllPass:
-    """All diagnostics pass → NOTIFY_HUMAN."""
+    """All diagnostics pass → NotifyHumans → RecoveryDone."""
 
     @pytest.mark.anyio
     async def test_all_pass_leads_to_notify(self) -> None:
-        harness, orch = _make_diagnostic_test_env(
+        harness = _make_diagnostic_test_env(
             node_results={"node-0": {"gpu": True}, "node-1": {"gpu": True}},
             pipeline=["gpu"],
         )
 
-        # DIAGNOSING → NOTIFY → DONE chains in a single step()
+        # StopTimeDiagnostics → all pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
-        assert RecoveryPhase.NOTIFY in orch.phase_history
-        assert orch.is_done()
 
-        await advance_until_recovery_complete(harness)
-
+        assert not isinstance(harness.controller._machine.state, Recovering)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")
@@ -105,20 +80,21 @@ class TestDiagnosticPipelineAllPass:
 
 
 class TestDiagnosticPipelineEmptyPipeline:
-    """Empty pipeline (no diagnostics) → NOTIFY (backward compat with stub)."""
+    """Empty pipeline (no diagnostics) → NotifyHumans."""
 
     @pytest.mark.anyio
     async def test_empty_pipeline_notifies(self) -> None:
-        harness, orch = _make_diagnostic_test_env(
+        harness = _make_diagnostic_test_env(
             node_results={},
             pipeline=[],
         )
-        assert orch.phase == RecoveryPhase.DIAGNOSING
 
-        # Empty pipeline → NOTIFY → DONE chains in a single step()
+        # Empty pipeline → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
-        assert RecoveryPhase.NOTIFY in orch.phase_history
-        assert orch.is_done()
+
+        assert not isinstance(harness.controller._machine.state, Recovering)
+        assert harness.notifier is not None
+        assert len(harness.notifier.calls) >= 1
 
 
 class TestDiagnosticPipelineInterMachine:
@@ -126,7 +102,7 @@ class TestDiagnosticPipelineInterMachine:
 
     @pytest.mark.anyio
     async def test_inter_machine_catches_bad_node(self) -> None:
-        harness, orch = _make_diagnostic_test_env(
+        harness = _make_diagnostic_test_env(
             node_results={
                 "node-0": {"gpu": True, "intra_machine": True, "inter_machine": True},
                 "node-1": {"gpu": True, "intra_machine": True, "inter_machine": False},
@@ -137,19 +113,13 @@ class TestDiagnosticPipelineInterMachine:
 
         await harness.controller._tick()
 
-        assert orch.phase in (
-            RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
-        )
-
-        await advance_until_recovery_complete(harness)
-
         assert harness.node_manager.was_ever_marked_bad("node-1")
         assert not harness.node_manager.was_ever_marked_bad("node-0")
         assert not harness.node_manager.was_ever_marked_bad("node-2")
 
     @pytest.mark.anyio
     async def test_full_pipeline_all_pass(self) -> None:
-        harness, orch = _make_diagnostic_test_env(
+        harness = _make_diagnostic_test_env(
             node_results={
                 "node-0": {"gpu": True, "intra_machine": True, "inter_machine": True},
                 "node-1": {"gpu": True, "intra_machine": True, "inter_machine": True},
@@ -158,13 +128,10 @@ class TestDiagnosticPipelineInterMachine:
             pipeline=["gpu", "intra_machine", "inter_machine"],
         )
 
-        # DIAGNOSING → NOTIFY → DONE chains in a single step()
+        # All pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
-        assert RecoveryPhase.NOTIFY in orch.phase_history
-        assert orch.is_done()
 
-        await advance_until_recovery_complete(harness)
-
+        assert not isinstance(harness.controller._machine.state, Recovering)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")
@@ -177,7 +144,7 @@ class TestDiagnosticPipelineMultiStep:
 
     @pytest.mark.anyio
     async def test_multi_step_second_step_catches(self) -> None:
-        harness, orch = _make_diagnostic_test_env(
+        harness = _make_diagnostic_test_env(
             node_results={
                 "node-0": {"gpu": True, "intra": True},
                 "node-1": {"gpu": True, "intra": False},
@@ -185,13 +152,8 @@ class TestDiagnosticPipelineMultiStep:
             pipeline=["gpu", "intra"],
         )
 
-        # DIAGNOSING → gpu passes, intra fails node-1 → EVICT_AND_RESTART
+        # gpu passes all, intra fails node-1 → EvictingAndRestarting → evict
         await harness.controller._tick()
-        assert orch.phase in (
-            RecoveryPhase.EVICT_AND_RESTART, RecoveryPhase.DONE,
-        )
-
-        await advance_until_recovery_complete(harness)
 
         assert harness.node_manager.was_ever_marked_bad("node-1")
         assert not harness.node_manager.was_ever_marked_bad("node-0")
