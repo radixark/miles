@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 
-from miles.utils.ft.controller.actions import PlatformDeps, handle_notify_human
-from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.controller.actions import PlatformDeps
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 from miles.utils.ft.controller.main_state_machine import (
+    MAIN_HANDLER_MAP,
     DetectingAnomaly,
-    MainStepper,
+    MainContext,
     MainState,
     Recovering,
-    TickContext,
     get_known_bad_nodes,
 )
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
@@ -26,14 +28,17 @@ from miles.utils.ft.controller.recovery.recovery_stepper import (
     NotifyHumans,
     RECOVERY_HANDLER_MAP,
     RECOVERY_STATE_TO_INT,
+    RecoveryContext,
     RecoveryDone,
     RecoveryState,
     recovery_timeout_check,
 )
 from miles.utils.ft.controller.recovery.restart_stepper import (
     RESTART_HANDLER_MAP,
+    RestartContext,
 )
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
+from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.models.recovery import (
     ControllerMode,
     ControllerStatus,
@@ -62,7 +67,7 @@ class FtController:
         self,
         *,
         platform_deps: PlatformDeps,
-        state_machine: StateMachine[MainState, TickContext],
+        state_machine: StateMachine[MainState, MainContext],
         rank_roster: RankRoster,
         mini_wandb: MiniWandb,
         scrape_target_manager: ScrapeTargetManagerProtocol | None,
@@ -70,6 +75,17 @@ class FtController:
         metric_store: MetricStoreProtocol,
         detectors: list[BaseFaultDetector],
         tick_interval: float,
+        # deps for MainContext building
+        notifier: NotificationProtocol | None,
+        cooldown: SlidingWindowThrottle,
+        recovery_stepper: StateMachineStepper,
+        on_recovery_duration: Callable[[float], None] | None,
+        max_simultaneous_bad_nodes: int,
+        # deps for RecoveryContext building
+        alert_checker: AlertChecker,
+        diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
+        restart_stepper: StateMachineStepper,
+        recovery_timeout_seconds: int,
         controller_exporter: ControllerExporter | None = None,
         registration_grace_ticks: int = 5,
     ) -> None:
@@ -85,6 +101,18 @@ class FtController:
         self._registration_grace_ticks = registration_grace_ticks
         self._platform_deps = platform_deps
         self._state_machine = state_machine
+
+        self._notifier = notifier
+        self._cooldown = cooldown
+        self._recovery_stepper = recovery_stepper
+        self._on_recovery_duration = on_recovery_duration
+        self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
+        self._alert_checker = alert_checker
+        self._diagnostic_orchestrator = diagnostic_orchestrator
+        self._restart_stepper = restart_stepper
+        self._recovery_timeout_seconds = recovery_timeout_seconds
+
+        self._restart_context: RestartContext | None = None
 
         self._shutting_down: bool = False
         self._tick_count: int = 0
@@ -134,28 +162,16 @@ class FtController:
         resolved_exporter = controller_exporter or NullControllerExporter()
         duration_cb = resolved_exporter.observe_recovery_duration
         cooldown = recovery_cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3)
+        alert_checker = AlertChecker(metric_store=metric_store)
 
         restart_stepper = StateMachineStepper(handler_map=RESTART_HANDLER_MAP)
         recovery_stepper = StateMachineStepper(
             handler_map=RECOVERY_HANDLER_MAP,
             pre_dispatch=recovery_timeout_check,
         )
+        main_stepper = StateMachineStepper(handler_map=MAIN_HANDLER_MAP)
 
-        main_stepper = MainStepper(
-            platform_deps=platform_deps,
-            recovery_stepper=recovery_stepper,
-            restart_stepper=restart_stepper,
-            alert_checker=AlertChecker(metric_store=metric_store),
-            recovery_timeout_seconds=recovery_timeout_seconds,
-            monitoring_success_iterations=monitoring_success_iterations,
-            monitoring_timeout_seconds=monitoring_timeout_seconds,
-            detectors=detectors or [],
-            cooldown=cooldown,
-            on_recovery_duration=duration_cb,
-            max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
-        )
-
-        state_machine: StateMachine[MainState, TickContext] = StateMachine(
+        state_machine: StateMachine[MainState, MainContext] = StateMachine(
             initial_state=DetectingAnomaly(),
             stepper=main_stepper,
         )
@@ -170,14 +186,73 @@ class FtController:
             metric_store=metric_store,
             detectors=detectors or [],
             tick_interval=tick_interval,
+            notifier=notifier,
+            cooldown=cooldown,
+            recovery_stepper=recovery_stepper,
+            on_recovery_duration=duration_cb,
+            max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
+            alert_checker=alert_checker,
+            diagnostic_orchestrator=resolved_orchestrator,
+            restart_stepper=restart_stepper,
+            recovery_timeout_seconds=recovery_timeout_seconds,
             controller_exporter=controller_exporter,
             registration_grace_ticks=registration_grace_ticks,
+        )
+
+        instance._restart_context = RestartContext(
+            node_manager=node_manager,
+            training_job=training_job,
+            mini_wandb=mini_wandb,
+            notifier=notifier,
+            on_new_run=instance._activate_run,
+            monitoring_success_iterations=monitoring_success_iterations,
+            monitoring_timeout_seconds=monitoring_timeout_seconds,
         )
 
         platform_deps.on_new_run = instance._activate_run
         platform_deps.rank_pids_provider = lambda node_id: instance._rank_roster.get_rank_pids_for_node(node_id)
 
         return instance
+
+    # ------------------------------------------------------------------
+    # Context factories
+    # ------------------------------------------------------------------
+
+    def _build_recovery_context(
+        self, trigger: TriggerType, recovery_start_time: datetime,
+    ) -> RecoveryContext:
+        return RecoveryContext(
+            trigger=trigger,
+            recovery_start_time=recovery_start_time,
+            alert_checker=self._alert_checker,
+            diagnostic_orchestrator=self._diagnostic_orchestrator,
+            restart_stepper=self._restart_stepper,
+            restart_context=self._restart_context,
+            notifier=self._notifier,
+            timeout_seconds=self._recovery_timeout_seconds,
+            rank_pids_provider=lambda node_id: self._rank_roster.get_rank_pids_for_node(node_id),
+        )
+
+    def _build_main_context(
+        self,
+        *,
+        job_status: JobStatus,
+        should_run_detectors: bool,
+        detector_context: DetectorContext | None,
+    ) -> MainContext:
+        return MainContext(
+            job_status=job_status,
+            tick_count=self._tick_count,
+            should_run_detectors=should_run_detectors,
+            detector_context=detector_context,
+            notifier=self._notifier,
+            detectors=self._detectors,
+            cooldown=self._cooldown,
+            recovery_stepper=self._recovery_stepper,
+            recovery_context_factory=self._build_recovery_context,
+            on_recovery_duration=self._on_recovery_duration,
+            max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -287,14 +362,13 @@ class FtController:
             should_run = self._should_run_detectors()
             detector_ctx = self._build_detector_context(job_status) if should_run else None
 
-            tick_context = TickContext(
+            main_context = self._build_main_context(
                 job_status=job_status,
-                tick_count=self._tick_count,
                 should_run_detectors=should_run,
                 detector_context=detector_ctx,
             )
 
-            await self._state_machine.step(tick_context)
+            await self._state_machine.step(main_context)
         except Exception:
             logger.error("tick_failed tick=%d", self._tick_count, exc_info=True)
         finally:
@@ -315,8 +389,7 @@ class FtController:
 
         return True
 
-    def _build_detector_context(self, job_status: JobStatus):
-        from miles.utils.ft.controller.detectors.base import DetectorContext
+    def _build_detector_context(self, job_status: JobStatus) -> DetectorContext:
         return DetectorContext(
             metric_store=self._metric_store,
             mini_wandb=self._mini_wandb,
