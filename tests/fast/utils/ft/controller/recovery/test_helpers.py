@@ -1,4 +1,4 @@
-"""Tests for recovery_orchestrator/helpers.py (retry_async, stop_and_submit, SlidingWindowThrottle, evict_and_notify)."""
+"""Tests for recovery_orchestrator/helpers.py (retry_async, stop_and_submit, SlidingWindowThrottle)."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle, evict_and_notify, stop_and_submit
+from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle, stop_and_submit
 from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.utils.retry import RetryResult, retry_async
 from miles.utils.ft.protocols.platform import JobStatus
@@ -260,112 +260,3 @@ class TestSlidingWindowThrottle:
     def test_empty_history_not_throttled(self) -> None:
         throttle = SlidingWindowThrottle(window_minutes=30.0, max_count=1)
         assert not throttle.is_throttled(TriggerType.CRASH)
-
-
-class TestEvictAndNotify:
-    @pytest.mark.anyio
-    async def test_success_sends_warning_notification(self) -> None:
-        node_manager = FakeNodeManager()
-        training_job = FakeTrainingJob()
-        notifier = FakeNotifier()
-
-        result = await evict_and_notify(
-            node_manager=node_manager,
-            training_job=training_job,
-            bad_node_ids=["node-0"],
-            reason="test eviction",
-            notifier=notifier,
-        )
-
-        assert result is True
-        assert node_manager.is_node_bad("node-0")
-        assert len(notifier.calls) == 1
-        title, content, severity = notifier.calls[0]
-        assert title == "Node Eviction Succeeded"
-        assert severity == "warning"
-        assert "node-0" in content
-
-    @pytest.mark.anyio
-    async def test_fail_fast_returns_false_on_mark_failure(self) -> None:
-        node_manager = make_failing_node_manager()
-        training_job = FakeTrainingJob()
-        notifier = FakeNotifier()
-
-        result = await evict_and_notify(
-            node_manager=node_manager,
-            training_job=training_job,
-            bad_node_ids=["node-0"],
-            reason="test eviction",
-            notifier=notifier,
-            fail_fast=True,
-        )
-
-        assert result is False
-        assert not training_job._submitted
-        assert len(notifier.calls) == 0
-
-    @pytest.mark.anyio
-    async def test_no_fail_fast_continues_on_mark_failure(self) -> None:
-        """With fail_fast=False, partial mark failures still proceed to restart."""
-        node_manager = FakeNodeManager()
-        training_job = FakeTrainingJob()
-        notifier = FakeNotifier()
-
-        async def fail_for_bad(node_id: str, reason: str = "") -> None:
-            if node_id == "node-bad":
-                raise RuntimeError("K8s API unreachable")
-            node_manager._bad_nodes.add(node_id)
-
-        node_manager.mark_node_bad = fail_for_bad  # type: ignore[assignment]
-
-        result = await evict_and_notify(
-            node_manager=node_manager,
-            training_job=training_job,
-            bad_node_ids=["node-ok", "node-bad"],
-            reason="test eviction",
-            notifier=notifier,
-            fail_fast=False,
-        )
-
-        assert result is True
-        assert training_job._submitted
-        assert len(notifier.calls) == 1
-        assert notifier.calls[0][0] == "Node Eviction Succeeded"
-
-    @pytest.mark.anyio
-    async def test_restart_failure_returns_false_no_success_notification(self) -> None:
-        node_manager = FakeNodeManager()
-        training_job = make_failing_training_job(fail_submit=True)
-        notifier = FakeNotifier()
-
-        result = await evict_and_notify(
-            node_manager=node_manager,
-            training_job=training_job,
-            bad_node_ids=["node-0"],
-            reason="test eviction",
-            notifier=notifier,
-        )
-
-        assert result is False
-        assert node_manager.is_node_bad("node-0")
-        assert len(notifier.calls) == 0
-
-    @pytest.mark.anyio
-    async def test_skips_already_bad_nodes(self) -> None:
-        node_manager = FakeNodeManager()
-        await node_manager.mark_node_bad("node-a", reason="previous")
-        training_job = FakeTrainingJob()
-        notifier = FakeNotifier()
-
-        result = await evict_and_notify(
-            node_manager=node_manager,
-            training_job=training_job,
-            bad_node_ids=["node-a", "node-b"],
-            reason="test eviction",
-            notifier=notifier,
-        )
-
-        assert result is True
-        assert node_manager.is_node_bad("node-a")
-        assert node_manager.is_node_bad("node-b")
-        assert len(notifier.calls) == 1

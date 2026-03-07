@@ -1,7 +1,6 @@
 """Shared recovery primitives used by FtController and recovery steppers."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -77,64 +76,6 @@ async def safe_notify(
     if notifier is None:
         return
     await notifier.send(title=title, content=content, severity=severity)
-
-
-async def evict_and_notify(
-    node_manager: NodeManagerProtocol,
-    training_job: TrainingJobProtocol,
-    bad_node_ids: list[str],
-    reason: str,
-    notifier: NotificationProtocol | None = None,
-    excluded_node_ids: list[str] | None = None,
-    on_new_run: Callable[[str], None] | None = None,
-    fail_fast: bool = True,
-) -> bool:
-    """Mark nodes bad, restart training, and send a success notification.
-
-    Returns True when the full eviction + restart sequence succeeds.
-
-    When ``fail_fast=True`` (default), marks nodes in parallel and returns
-    False immediately if any mark fails.  When ``fail_fast=False``, marks
-    nodes sequentially and continues even if some fail.
-    """
-    already_bad = await get_already_bad_nodes(node_manager)
-    nodes_to_mark = [nid for nid in bad_node_ids if nid not in already_bad]
-    if len(nodes_to_mark) < len(bad_node_ids):
-        logger.info(
-            "evict_skipped_already_bad skipped=%s",
-            sorted(set(bad_node_ids) - set(nodes_to_mark)),
-        )
-
-    if fail_fast:
-        results = await asyncio.gather(*(
-            retry_mark_node_bad(node_manager, node_id=nid, reason=reason)
-            for nid in nodes_to_mark
-        ))
-        if not all(r.ok for r in results):
-            return False
-    else:
-        failed_nodes: list[str] = []
-        for nid in nodes_to_mark:
-            result = await retry_mark_node_bad(node_manager, node_id=nid, reason=reason)
-            if not result.ok:
-                failed_nodes.append(nid)
-        if failed_nodes:
-            logger.error("mark_bad_partial_failure nodes=%s", failed_nodes)
-
-    success = await stop_and_submit(
-        training_job, excluded_node_ids=excluded_node_ids, on_new_run=on_new_run,
-    )
-    if not success:
-        return False
-
-    if bad_node_ids:
-        await safe_notify(
-            notifier,
-            title="Node Eviction Succeeded",
-            content=f"Evicted nodes {bad_node_ids} reason={reason}",
-            severity="warning",
-        )
-    return True
 
 
 class SlidingWindowThrottle:
