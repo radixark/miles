@@ -5,44 +5,44 @@ import pytest
 import requests
 
 from miles.router.router import MilesRouter
-from miles.router.session.naive_trajectory import NaiveTrajectoryManager
 from miles.router.session.session_types import SessionRecord
+from miles.router.session.single_user_turn_trajectory import SingleUserTurnTrajectoryManager
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
 @pytest.fixture
-def naive_manager():
-    """Create a NaiveTrajectoryManager with a dummy tokenizer."""
+def single_user_turn_manager():
+    """Create a SingleUserTurnTrajectoryManager with a dummy tokenizer."""
     args = SimpleNamespace()
-    return NaiveTrajectoryManager(args, tokenizer=None)
+    return SingleUserTurnTrajectoryManager(args, tokenizer=None)
 
 
-class TestNaiveTrajectoryManager:
-    def test_create_session(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
+class TestSingleUserTurnTrajectoryManager:
+    def test_create_session(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        session_id = single_user_turn_manager.create_session()
         assert session_id is not None
         assert len(session_id) == 32
-        assert session_id in naive_manager.sessions
+        assert session_id in single_user_turn_manager.sessions
 
-    def test_get_session_records_by_id(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
-        records = naive_manager.get_session_records_by_id(session_id)
+    def test_get_session_records_by_id(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        session_id = single_user_turn_manager.create_session()
+        records = single_user_turn_manager.get_session_records_by_id(session_id)
         assert records == []
 
-    def test_get_session_records_by_id_not_found(self, naive_manager: NaiveTrajectoryManager):
-        records = naive_manager.get_session_records_by_id("nonexistent")
+    def test_get_session_records_by_id_not_found(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        records = single_user_turn_manager.get_session_records_by_id("nonexistent")
         assert records is None
 
-    def test_delete_session_by_id(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
-        assert naive_manager.delete_session_by_id(session_id) is True
-        assert session_id not in naive_manager.sessions
-        assert naive_manager.delete_session_by_id(session_id) is None
+    def test_delete_session_by_id(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        session_id = single_user_turn_manager.create_session()
+        assert single_user_turn_manager.delete_session_by_id(session_id) is True
+        assert session_id not in single_user_turn_manager.sessions
+        assert single_user_turn_manager.delete_session_by_id(session_id) is None
 
-    def test_append_session_record(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
+    def test_append_session_record(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        session_id = single_user_turn_manager.create_session()
         record = SessionRecord(
             timestamp=0.0,
             method="POST",
@@ -52,15 +52,15 @@ class TestNaiveTrajectoryManager:
             response={"choices": []},
         )
 
-        appended = naive_manager.append_session_record(session_id, record)
+        appended = single_user_turn_manager.append_session_record(session_id, record)
 
         assert appended is True
-        records = naive_manager.get_session_records_by_id(session_id)
+        records = single_user_turn_manager.get_session_records_by_id(session_id)
         assert records is not None
         assert len(records) == 1
         assert records[0].path == record.path
 
-    def test_append_session_record_missing_session(self, naive_manager: NaiveTrajectoryManager):
+    def test_append_session_record_missing_session(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
         record = SessionRecord(
             timestamp=0.0,
             method="POST",
@@ -69,8 +69,161 @@ class TestNaiveTrajectoryManager:
             request={},
             response={},
         )
-        appended = naive_manager.append_session_record("missing", record)
+        appended = single_user_turn_manager.append_session_record("missing", record)
         assert appended is None
+
+
+# ---------------------------------------------------------------------------
+# Messages / token helpers for multi-turn pretokenized tests
+# ---------------------------------------------------------------------------
+
+SYS_MSG = {"role": "system", "content": "You are a helpful assistant."}
+USER_MSG = {"role": "user", "content": "What's the weather in Beijing?"}
+ASSISTANT_MSG_1 = {
+    "role": "assistant",
+    "content": None,
+    "tool_calls": [
+        {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city": "Beijing"}'}}
+    ],
+}
+TOOL_MSG_1 = {"role": "tool", "content": '{"temperature": 25}', "tool_call_id": "call_1"}
+ASSISTANT_MSG_2 = {
+    "role": "assistant",
+    "content": "It's 25°C in Beijing. Let me also check Shanghai.",
+    "tool_calls": [
+        {"id": "call_2", "type": "function", "function": {"name": "get_weather", "arguments": '{"city": "Shanghai"}'}}
+    ],
+}
+TOOL_MSG_2 = {"role": "tool", "content": '{"temperature": 30}', "tool_call_id": "call_2"}
+ASSISTANT_MSG_FINAL = {"role": "assistant", "content": "Beijing is 25°C and Shanghai is 30°C."}
+
+
+class TestPretokenizedMultiTurn:
+    """Test try_prepare_pretokenized and update_pretokenized_state across turns."""
+
+    def test_first_turn_returns_none(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        """First turn has no prior token_ids, so try_prepare returns None."""
+        sid = single_user_turn_manager.create_session()
+        messages = [SYS_MSG, USER_MSG]
+        result = single_user_turn_manager.try_prepare_pretokenized(sid, messages)
+        assert result is None
+
+    def test_two_turn_trajectory(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        """Full 2-turn: user → assistant(tool_call) → tool → final answer."""
+        sid = single_user_turn_manager.create_session()
+
+        # --- Turn 1: [sys, user] → assistant with tool_call ---
+        turn1_messages = [SYS_MSG, USER_MSG]
+        assert single_user_turn_manager.try_prepare_pretokenized(sid, turn1_messages) is None
+
+        turn1_prompt_ids = [1, 2, 3, 4, 5]
+        turn1_completion_ids = [10, 11, 12]
+        single_user_turn_manager.update_pretokenized_state(
+            sid, turn1_messages, ASSISTANT_MSG_1, turn1_prompt_ids, turn1_completion_ids
+        )
+
+        # Verify internal state
+        session = single_user_turn_manager.sessions[sid]
+        assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1]
+        assert session.token_ids == [1, 2, 3, 4, 5, 10, 11, 12]
+
+        # --- Turn 2: [sys, user, assistant, tool] → final answer ---
+        turn2_messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = single_user_turn_manager.try_prepare_pretokenized(sid, turn2_messages)
+        assert result is not None
+        assert result["pretokenized_token_ids"] == [1, 2, 3, 4, 5, 10, 11, 12]
+        assert result["pretokenized_num_message"] == 3  # [sys, user, assistant]
+
+        turn2_prompt_ids = [1, 2, 3, 4, 5, 10, 11, 12, 20, 21]
+        turn2_completion_ids = [30, 31, 32]
+        single_user_turn_manager.update_pretokenized_state(
+            sid, turn2_messages, ASSISTANT_MSG_FINAL, turn2_prompt_ids, turn2_completion_ids
+        )
+
+        assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_FINAL]
+        assert session.token_ids == [1, 2, 3, 4, 5, 10, 11, 12, 20, 21, 30, 31, 32]
+
+    def test_three_turn_trajectory(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        """Full 3-turn: user → ass(tool) → tool → ass(tool) → tool → final."""
+        sid = single_user_turn_manager.create_session()
+
+        # Turn 1
+        t1_msgs = [SYS_MSG, USER_MSG]
+        single_user_turn_manager.update_pretokenized_state(sid, t1_msgs, ASSISTANT_MSG_1, [1, 2, 3], [10, 11])
+
+        # Turn 2
+        t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = single_user_turn_manager.try_prepare_pretokenized(sid, t2_msgs)
+        assert result == {"pretokenized_token_ids": [1, 2, 3, 10, 11], "pretokenized_num_message": 3}
+
+        single_user_turn_manager.update_pretokenized_state(
+            sid, t2_msgs, ASSISTANT_MSG_2, [1, 2, 3, 10, 11, 20, 21], [30, 31]
+        )
+
+        # Turn 3
+        t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, TOOL_MSG_2]
+        result = single_user_turn_manager.try_prepare_pretokenized(sid, t3_msgs)
+        assert result == {
+            "pretokenized_token_ids": [1, 2, 3, 10, 11, 20, 21, 30, 31],
+            "pretokenized_num_message": 5,  # [sys, user, ass1, tool1, ass2]
+        }
+
+        single_user_turn_manager.update_pretokenized_state(
+            sid, t3_msgs, ASSISTANT_MSG_FINAL, [1, 2, 3, 10, 11, 20, 21, 30, 31, 40], [50, 51]
+        )
+
+        session = single_user_turn_manager.sessions[sid]
+        assert len(session.messages) == 7  # sys, user, ass1, tool1, ass2, tool2, final
+        assert session.token_ids == [1, 2, 3, 10, 11, 20, 21, 30, 31, 40, 50, 51]
+
+    def test_prefix_mismatch_raises(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        """update_pretokenized_state asserts stored token_ids is prefix of new."""
+        sid = single_user_turn_manager.create_session()
+        single_user_turn_manager.update_pretokenized_state(
+            sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11]
+        )
+
+        with pytest.raises(AssertionError, match="pretokenized prefix mismatch"):
+            single_user_turn_manager.update_pretokenized_state(
+                sid,
+                [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1],
+                ASSISTANT_MSG_FINAL,
+                [9, 9, 9, 20, 21],  # does NOT start with [1,2,3,10,11]
+                [30],
+            )
+
+    def test_not_append_only_raises(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        """try_prepare raises when new messages modify stored prefix."""
+        sid = single_user_turn_manager.create_session()
+        single_user_turn_manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10])
+
+        # Append an assistant message instead of tool — violates append-only
+        bad_messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, {"role": "assistant", "content": "oops"}]
+        with pytest.raises(ValueError, match="not append-only"):
+            single_user_turn_manager.try_prepare_pretokenized(sid, bad_messages)
+
+    def test_multiple_user_messages_raises(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        """try_prepare raises when messages contain multiple user messages."""
+        sid = single_user_turn_manager.create_session()
+        single_user_turn_manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10])
+
+        bad_messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "second"}]
+        with pytest.raises(ValueError, match="invalid message structure"):
+            single_user_turn_manager.try_prepare_pretokenized(sid, bad_messages)
+
+    def test_session_not_found_raises(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        with pytest.raises(ValueError, match="session not found"):
+            single_user_turn_manager.try_prepare_pretokenized("nonexistent", [SYS_MSG, USER_MSG])
+
+    def test_no_system_message(self, single_user_turn_manager: SingleUserTurnTrajectoryManager):
+        """Works without system message (system is optional)."""
+        sid = single_user_turn_manager.create_session()
+        msgs = [USER_MSG]
+        single_user_turn_manager.update_pretokenized_state(sid, msgs, ASSISTANT_MSG_1, [1, 2], [10])
+
+        t2_msgs = [USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = single_user_turn_manager.try_prepare_pretokenized(sid, t2_msgs)
+        assert result == {"pretokenized_token_ids": [1, 2, 10], "pretokenized_num_message": 2}
 
 
 @pytest.fixture(scope="class")
@@ -98,7 +251,7 @@ def router_env():
                 rollout_health_check_interval=60,
                 miles_router_health_check_failure_threshold=3,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
-                trajectory_manager="naive_trajectory",
+                trajectory_manager="single_user_turn_trajectory",
             )
             router = MilesRouter(args)
 
