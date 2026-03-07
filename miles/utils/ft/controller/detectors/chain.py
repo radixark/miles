@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.controller.detectors.disk_space import DiskSpaceLowDetector
 from miles.utils.ft.controller.detectors.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.hardware import HighConfidenceHardwareDetector
 from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
@@ -27,6 +28,7 @@ def build_detector_chain(
     cfg = config or DetectorChainConfig()
     return [
         HighConfidenceHardwareDetector(),
+        DiskSpaceLowDetector(),
         NetworkAlertDetector(config=cfg.network),
         TrainingCrashDetector(),
         HangDetector(config=cfg.hang),

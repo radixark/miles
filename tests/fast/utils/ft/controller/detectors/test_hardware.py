@@ -2,7 +2,6 @@ import pytest
 
 from tests.fast.utils.ft.helpers import (
     inject_critical_xid,
-    inject_disk_fault,
     inject_gpu_unavailable,
     inject_healthy_node,
     inject_nic_down,
@@ -47,26 +46,6 @@ class TestHighConfidenceHardwareDetector:
         assert decision.action == ActionType.MARK_BAD_AND_RESTART
         assert "node-0" in decision.bad_node_ids
         assert "non-auto-recoverable XID" in decision.reason
-
-    def test_disk_space_low(self) -> None:
-        store = make_fake_metric_store()
-        inject_disk_fault(store, node_id="node-0", available_bytes=500e6)  # 500MB < 1GB
-        detector = HighConfidenceHardwareDetector()
-
-        decision = detector.evaluate(make_detector_context(metric_store=store))
-
-        assert decision.action == ActionType.MARK_BAD_AND_RESTART
-        assert "node-0" in decision.bad_node_ids
-        assert "disk space low" in decision.reason
-
-    def test_disk_space_above_threshold(self) -> None:
-        store = make_fake_metric_store()
-        inject_disk_fault(store, node_id="node-0", available_bytes=2e9)  # 2GB > 1GB
-        detector = HighConfidenceHardwareDetector()
-
-        decision = detector.evaluate(make_detector_context(metric_store=store))
-
-        assert decision.action == ActionType.NONE
 
     def test_majority_nic_down(self) -> None:
         store = make_fake_metric_store()

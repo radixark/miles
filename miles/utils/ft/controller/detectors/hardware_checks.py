@@ -24,11 +24,9 @@ DISK_AVAILABLE_THRESHOLD_BYTES: float = 1e9  # 1 GB
 
 def check_all_hardware_faults(
     metric_store: MetricQueryProtocol,
-    disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:
     return [
         *check_gpu_faults(metric_store),
-        *_check_disk_fault(metric_store, disk_available_threshold_bytes=disk_available_threshold_bytes),
         *_check_majority_nic_down(metric_store),
     ]
 

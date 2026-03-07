@@ -23,7 +23,6 @@ from tests.fast.utils.ft.conftest import (
     failing_submit_training,
     get_sample_value,
     inject_critical_xid,
-    inject_disk_fault,
     inject_gpu_unavailable,
     inject_nic_down,
     inject_nic_up,
@@ -439,14 +438,6 @@ class TestNotify:
 # -------------------------------------------------------------------
 # Exporter integration
 # -------------------------------------------------------------------
-
-
-class TestCheckAlertsDiskFault:
-    def test_disk_fault_transitions_to_evict(self) -> None:
-        orch, _, _, _, _, metric_store, _ = _make_orchestrator_with_store()
-        inject_disk_fault(metric_store, node_id="node-0", available_bytes=0.0)
-        asyncio.run(orch.step())
-        assert orch.phase == RecoveryPhase.EVICT_AND_RESTART
 
 
 class TestCheckAlertsNicDown:

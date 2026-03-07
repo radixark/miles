@@ -7,11 +7,12 @@ from datetime import timedelta
 from miles.utils.ft.controller.detectors.hardware_checks import (
     _check_disk_fault,
     _check_majority_nic_down,
+    check_all_hardware_faults,
     check_nic_down_in_window,
 )
 from miles.utils.ft.models.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
 from miles.utils.ft.models.metrics import GaugeSample
-from tests.fast.utils.ft.conftest import inject_nic_down, inject_nic_up, make_fake_metric_store
+from tests.fast.utils.ft.conftest import inject_disk_fault, inject_nic_down, inject_nic_up, make_fake_metric_store
 
 
 class TestCheckNicDownInWindow:
@@ -129,3 +130,14 @@ class TestCheckDiskFault:
 
         result = _check_disk_fault(store, disk_available_threshold_bytes=1e9)
         assert result == []
+
+
+class TestCheckAllHardwareFaultsExcludesDisk:
+    def test_disk_fault_not_included_in_check_all(self) -> None:
+        """check_all_hardware_faults no longer reports disk faults."""
+        store = make_fake_metric_store()
+        inject_disk_fault(store, node_id="node-0", available_bytes=0.0)
+
+        faults = check_all_hardware_faults(metric_store=store)
+
+        assert all("disk" not in f.reason for f in faults)
