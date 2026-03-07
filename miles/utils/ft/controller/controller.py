@@ -167,7 +167,10 @@ class FtController:
         platform_deps.on_new_run = instance._activate_run
         platform_deps.rank_pids_provider = lambda node_id: instance._rank_roster.get_rank_pids_for_node(node_id)
 
-        restart_stepper._on_new_run = instance._activate_run
+        restart_stepper.set_on_new_run(instance._activate_run)
+        recovery_stepper.set_rank_pids_provider(
+            lambda node_id: instance._rank_roster.get_rank_pids_for_node(node_id),
+        )
 
         return instance
 

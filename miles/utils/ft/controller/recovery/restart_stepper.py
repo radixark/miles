@@ -87,6 +87,9 @@ class RestartStepper(StateMachineStepper[RestartState]):
         self._monitoring_timeout_seconds = monitoring_timeout_seconds
         super().__init__()
 
+    def set_on_new_run(self, callback: Callable[[str], None]) -> None:
+        self._on_new_run = callback
+
     def _build_handlers(self) -> dict:
         return {
             Evicting: self._handle_evicting,

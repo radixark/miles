@@ -106,6 +106,9 @@ class RecoveryStepper(StateMachineStepper[RecoveryState]):
         self._call_recovery_start_time: datetime = datetime.now(timezone.utc)
         super().__init__()
 
+    def set_rank_pids_provider(self, provider: Callable[[str], dict[int, int]]) -> None:
+        self._rank_pids_provider = provider
+
     def _build_handlers(self) -> dict:
         return {
             RealtimeChecks: self._handle_realtime_checks,
