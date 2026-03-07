@@ -1,3 +1,9 @@
+"""Composition root for the FtController and its platform dependencies.
+
+Assembles the controller with all concrete implementations (K8sNodeManager,
+RayTrainingJob, notifiers, metric stores, detectors). Analogous to
+node_agent_factory.py for the node agent side.
+"""
 from __future__ import annotations
 
 import logging
