@@ -24,6 +24,7 @@ class FaultInjectorActor:
     def __init__(self) -> None:
         self._stress_pids: list[int] = []
         self._filled_paths: list[str] = []
+        self._exception_flag_paths: list[str] = []
 
     def find_training_processes(self) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
@@ -113,6 +114,18 @@ class FaultInjectorActor:
             result.stderr[:500] if result.stderr else "",
         )
 
+    def write_exception_flag(self, path: str) -> None:
+        logger.info("write_exception_flag path=%s", path)
+        Path(path).touch()
+        if path not in self._exception_flag_paths:
+            self._exception_flag_paths.append(path)
+
+    def remove_exception_flag(self, path: str) -> None:
+        logger.info("remove_exception_flag path=%s", path)
+        _remove_if_exists(path)
+        if path in self._exception_flag_paths:
+            self._exception_flag_paths.remove(path)
+
     def cleanup_disk(self, path: str) -> None:
         logger.info("cleanup_disk path=%s", path)
         _remove_if_exists(path)
@@ -120,7 +133,10 @@ class FaultInjectorActor:
             self._filled_paths.remove(path)
 
     def cleanup_all(self) -> None:
-        logger.info("cleanup_all stress_pids=%s filled_paths=%s", self._stress_pids, self._filled_paths)
+        logger.info(
+            "cleanup_all stress_pids=%s filled_paths=%s exception_flag_paths=%s",
+            self._stress_pids, self._filled_paths, self._exception_flag_paths,
+        )
         for pid in list(self._stress_pids):
             _kill_if_exists(pid)
         self._stress_pids.clear()
@@ -128,6 +144,10 @@ class FaultInjectorActor:
         for path in list(self._filled_paths):
             _remove_if_exists(path)
         self._filled_paths.clear()
+
+        for path in list(self._exception_flag_paths):
+            _remove_if_exists(path)
+        self._exception_flag_paths.clear()
 
 
 def deploy_fault_injector(
