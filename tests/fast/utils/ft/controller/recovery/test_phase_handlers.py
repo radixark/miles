@@ -21,7 +21,7 @@ from miles.utils.ft.controller.recovery.phase_handlers import (
     step_notify,
     step_reattempting,
 )
-from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
+from miles.utils.ft.models.fault import ActionType, Decision, NodeFault, TriggerType
 from miles.utils.ft.models.recovery import RecoveryPhase
 from miles.utils.ft.protocols.platform import JobStatus
 from tests.fast.utils.ft.conftest import (
@@ -54,19 +54,20 @@ def _make_ctx(**overrides: object) -> RecoveryContext:
 
 
 class _FakeAlertChecker:
-    def __init__(self, bad_node_ids: list[str], reasons: list[str]) -> None:
-        self._bad_node_ids = bad_node_ids
-        self._reasons = reasons
+    def __init__(self, faults: list[NodeFault] | None = None) -> None:
+        self._faults = faults or []
 
-    def check_alerts(self) -> tuple[list[str], list[str]]:
-        return self._bad_node_ids, self._reasons
+    def check_alerts(self) -> list[NodeFault]:
+        return self._faults
 
 
 class TestStepCheckAlerts:
     @pytest.mark.anyio
     async def test_bad_nodes_found_transitions_to_evict(self) -> None:
         ctx = _make_ctx()
-        checker = _FakeAlertChecker(bad_node_ids=["node-A"], reasons=["gpu lost"])
+        checker = _FakeAlertChecker(faults=[
+            NodeFault(node_id="node-A", reason="gpu lost"),
+        ])
 
         result = await step_check_alerts(ctx, checker)
 
@@ -76,7 +77,7 @@ class TestStepCheckAlerts:
     @pytest.mark.anyio
     async def test_no_alerts_transitions_to_reattempting(self) -> None:
         ctx = _make_ctx()
-        checker = _FakeAlertChecker(bad_node_ids=[], reasons=[])
+        checker = _FakeAlertChecker(faults=[])
 
         result = await step_check_alerts(ctx, checker)
 
