@@ -18,78 +18,62 @@ from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 
 @contextmanager
 def _registered_agent(
-    mock_get_handle: MagicMock, **agent_kwargs: Any
-) -> Iterator[tuple[FtTrainingRankAgent, dict[str, Any]]]:
-    mock_controller = MagicMock()
-    mock_ray_get = MagicMock()
-    mock_get_handle.return_value = mock_controller
-    defaults: dict[str, Any] = {"rank": 0, "world_size": 4}
+    **agent_kwargs: Any,
+) -> Iterator[tuple[FtTrainingRankAgent, MagicMock]]:
+    mock_client = MagicMock()
+    defaults: dict[str, Any] = {"rank": 0, "world_size": 4, "controller_client": mock_client}
     defaults.update(agent_kwargs)
     with patch.dict(
         "os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}
-    ), patch("ray.get", mock_ray_get):
+    ):
         agent = FtTrainingRankAgent(**defaults)
         try:
-            call_kwargs = mock_controller.register_training_rank.remote.call_args[1]
-            yield agent, call_kwargs
+            yield agent, mock_client
         finally:
             agent.shutdown()
 
 
 class TestFtTrainingRankAgentRegisterRank:
-    @patch("miles.utils.ft.agents.core.training_rank_agent.get_controller_handle")
-    def test_register_training_rank_calls_controller(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        with _registered_agent(mock_get_handle) as (agent, call_kwargs):
-            mock_get_handle.return_value.register_training_rank.remote.assert_called_once()
+    def test_register_training_rank_calls_controller(self) -> None:
+        with _registered_agent() as (agent, mock_client):
+            mock_client.register_training_rank.assert_called_once()
+            call_kwargs = mock_client.register_training_rank.call_args[1]
             assert call_kwargs["run_id"] == "test-run-1"
             assert call_kwargs["rank"] == 0
             assert call_kwargs["world_size"] == 4
 
-    @patch("miles.utils.ft.agents.core.training_rank_agent.get_controller_handle")
-    def test_register_training_rank_retries_on_failure(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_controller = MagicMock()
-        mock_get_handle.return_value = mock_controller
-
+    def test_register_training_rank_retries_on_failure(self) -> None:
+        mock_client = MagicMock()
         call_count = 0
 
-        def ray_get_side_effect(*args: Any, **kwargs: Any) -> None:
+        def register_side_effect(**kwargs: Any) -> None:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
                 raise RuntimeError("simulated failure")
-            return None
+
+        mock_client.register_training_rank.side_effect = register_side_effect
 
         with patch.dict(
             "os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}
-        ), patch("ray.get", side_effect=ray_get_side_effect), patch(
-            "time.sleep"
-        ):
-            agent = FtTrainingRankAgent(rank=0, world_size=4)
+        ), patch("time.sleep"):
+            agent = FtTrainingRankAgent(rank=0, world_size=4, controller_client=mock_client)
             try:
                 assert call_count == 3
-                assert mock_controller.register_training_rank.remote.call_count == 3
+                assert mock_client.register_training_rank.call_count == 3
             finally:
                 agent.shutdown()
 
-    @patch("miles.utils.ft.agents.core.training_rank_agent.get_controller_handle")
-    def test_register_training_rank_all_attempts_fail_no_exception(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_controller = MagicMock()
-        mock_get_handle.return_value = mock_controller
+    def test_register_training_rank_all_attempts_fail_no_exception(self) -> None:
+        mock_client = MagicMock()
+        mock_client.register_training_rank.side_effect = RuntimeError("always fails")
 
         with patch.dict(
             "os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}
-        ), patch(
-            "ray.get", side_effect=RuntimeError("always fails")
         ), patch("time.sleep"):
-            agent = FtTrainingRankAgent(rank=2, world_size=4)
+            agent = FtTrainingRankAgent(rank=2, world_size=4, controller_client=mock_client)
             try:
-                assert mock_controller.register_training_rank.remote.call_count == 3
+                assert mock_client.register_training_rank.call_count == 3
             finally:
                 agent.shutdown()
 
@@ -100,12 +84,7 @@ class TestFtTrainingRankAgentRegisterRank:
         finally:
             agent.shutdown()
 
-    @patch("miles.utils.ft.agents.core.training_rank_agent.get_controller_handle")
-    def test_register_training_rank_skipped_when_controller_unavailable(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_get_handle.return_value = None
-
+    def test_register_training_rank_skipped_when_no_client(self) -> None:
         with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}):
             agent = FtTrainingRankAgent(rank=0, world_size=4)
             try:
@@ -113,21 +92,17 @@ class TestFtTrainingRankAgentRegisterRank:
             finally:
                 agent.shutdown()
 
-    @patch("miles.utils.ft.agents.core.training_rank_agent.get_controller_handle")
-    def test_register_training_rank_asserts_node_id_and_exporter_address(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        with _registered_agent(mock_get_handle) as (agent, call_kwargs):
+    def test_register_training_rank_asserts_node_id_and_exporter_address(self) -> None:
+        with _registered_agent() as (agent, mock_client):
+            call_kwargs = mock_client.register_training_rank.call_args[1]
             assert call_kwargs["node_id"] == agent._node_id
             assert call_kwargs["exporter_address"] == agent.get_exporter_address()
 
-    @patch("miles.utils.ft.agents.core.training_rank_agent.get_controller_handle")
-    def test_register_training_rank_includes_pid(
-        self, mock_get_handle: MagicMock
-    ) -> None:
+    def test_register_training_rank_includes_pid(self) -> None:
         import os as _os
 
-        with _registered_agent(mock_get_handle) as (agent, call_kwargs):
+        with _registered_agent() as (agent, mock_client):
+            call_kwargs = mock_client.register_training_rank.call_args[1]
             assert call_kwargs["pid"] == _os.getpid()
 
 

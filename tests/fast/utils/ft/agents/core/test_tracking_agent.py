@@ -8,42 +8,32 @@ from miles.utils.ft.agents.core.tracking_agent import FtTrackingAgent
 
 
 class TestFtTrackingAgentLog:
-    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
-    def test_log_pushes_metrics_to_controller(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_controller = MagicMock()
-        mock_get_handle.return_value = mock_controller
-
-        agent = FtTrackingAgent(run_id="test-run-1")
+    def test_log_pushes_metrics_to_controller(self) -> None:
+        mock_client = MagicMock()
+        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
         agent.log(metrics={"loss": 2.5, "grad_norm": 1.1}, step=10)
 
-        mock_controller.log_step.remote.assert_called_once_with(
+        mock_client.log_step.assert_called_once_with(
             run_id="test-run-1",
             step=10,
             metrics={"loss": 2.5, "grad_norm": 1.1},
         )
 
-    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
-    def test_log_multiple_calls_accumulate(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_controller = MagicMock()
-        mock_get_handle.return_value = mock_controller
-
-        agent = FtTrackingAgent(run_id="test-run-1")
+    def test_log_multiple_calls_accumulate(self) -> None:
+        mock_client = MagicMock()
+        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
         agent.log(metrics={"loss": 2.5}, step=1)
         agent.log(metrics={"loss": 1.8}, step=2)
 
-        assert mock_controller.log_step.remote.call_count == 2
+        assert mock_client.log_step.call_count == 2
 
     def test_log_without_run_id_is_noop(self) -> None:
-        agent = FtTrackingAgent(run_id="")
-        agent._controller_handle = MagicMock()
+        mock_client = MagicMock()
+        agent = FtTrackingAgent(run_id="", controller_client=mock_client)
 
         agent.log(metrics={"loss": 2.5}, step=10)
 
-        agent._controller_handle.log_step.remote.assert_not_called()
+        mock_client.log_step.assert_not_called()
 
     def test_log_reads_run_id_from_env(self) -> None:
         with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "env-run-1"}):
@@ -55,39 +45,26 @@ class TestFtTrackingAgentLog:
             agent = FtTrackingAgent(run_id="explicit-run")
             assert agent._run_id == "explicit-run"
 
-    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
-    def test_log_exception_does_not_propagate(
-        self, mock_get_handle: MagicMock
-    ) -> None:
-        mock_controller = MagicMock()
-        mock_controller.log_step.remote.side_effect = RuntimeError("boom")
-        mock_get_handle.return_value = mock_controller
+    def test_log_exception_does_not_propagate(self) -> None:
+        mock_client = MagicMock()
+        mock_client.log_step.side_effect = RuntimeError("boom")
 
-        agent = FtTrackingAgent(run_id="test-run-1")
+        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
         agent.log(metrics={"loss": 2.5}, step=10)
 
-    def test_log_controller_unreachable_is_noop(self) -> None:
-        with patch(
-            "miles.utils.ft.agents.core.tracking_agent.get_controller_handle",
-            return_value=None,
-        ):
-            agent = FtTrackingAgent(run_id="test-run-1")
-            agent.log(metrics={"loss": 2.5}, step=10)
+    def test_log_without_client_is_noop(self) -> None:
+        agent = FtTrackingAgent(run_id="test-run-1")
+        agent.log(metrics={"loss": 2.5}, step=10)
 
 
 class TestTrackingUtilsIntegration:
     """Test FtTrackingAgent integration with tracking_utils.log()."""
 
-    @patch("miles.utils.ft.agents.core.tracking_agent.get_controller_handle")
-    def test_tracking_utils_log_forwards_to_ft_agent(
-        self, mock_get_handle: MagicMock
-    ) -> None:
+    def test_tracking_utils_log_forwards_to_ft_agent(self) -> None:
         from miles.utils import tracking_utils
 
-        mock_controller = MagicMock()
-        mock_get_handle.return_value = mock_controller
-
-        agent = FtTrackingAgent(run_id="test-run-1")
+        mock_client = MagicMock()
+        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
         tracking_utils.set_ft_tracking_agent(agent)
         try:
             args = MagicMock()
@@ -100,7 +77,7 @@ class TestTrackingUtilsIntegration:
                 step_key="train/step",
             )
 
-            mock_controller.log_step.remote.assert_called_once_with(
+            mock_client.log_step.assert_called_once_with(
                 run_id="test-run-1",
                 step=42,
                 metrics={"train/loss": 2.5, "train/grad_norm": 1.1},
