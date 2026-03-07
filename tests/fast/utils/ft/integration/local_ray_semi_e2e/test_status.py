@@ -1,4 +1,4 @@
-"""Semi-E2E: status — consistency, run_id switch, metric scrape pipeline."""
+"""Semi-E2E: status — consistency, run_id switch, metric scrape, no false positive."""
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +10,7 @@ from miles.utils.ft.models.recovery import ControllerMode
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import E2EEnv
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     get_status,
+    scenario_no_false_positive,
     wait_for_mode_transition,
     wait_for_training_stable,
 )
@@ -86,3 +87,19 @@ class TestMetricScrapeE2E:
         status = get_status(env.controller)
         assert status.latest_iteration is not None
         assert status.latest_iteration >= 5
+
+
+class TestNoFalsePositive:
+    async def test_healthy_training_stays_in_monitoring(
+        self,
+        e2e_env: E2EEnv,
+    ) -> None:
+        """Healthy training with real workers never triggers spurious recovery."""
+        status = await scenario_no_false_positive(
+            handle=e2e_env.controller,
+            observation_iterations=10,
+            poll_interval=0.2,
+        )
+
+        assert status.mode == ControllerMode.MONITORING
+        assert status.recovery_in_progress is False

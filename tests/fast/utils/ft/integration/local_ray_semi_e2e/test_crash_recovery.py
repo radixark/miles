@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 
 import pytest
@@ -16,10 +17,12 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     _SLOW_STEP,
 )
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
+    assert_phase_path_contains,
     get_status,
     scenario_transient_crash,
     wait_for_mode,
     wait_for_mode_transition,
+    wait_for_recovery_phase,
     wait_for_training_stable,
 )
 
@@ -135,6 +138,43 @@ class TestExceptionInRecovery:
             timeout=60.0,
         )
         assert final.mode == ControllerMode.MONITORING
+
+
+class TestRepeatedCrash:
+    async def test_two_crashes_escalate_to_diagnosing(
+        self,
+        make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """Crash → recovery MONITORING → crash again → escalates to DIAGNOSING."""
+        env = make_e2e_env(
+            ft_id="e2erpt",
+            nodes=[NodeSpec(node_id="e2erpt-node-0")],
+            detectors=[TrainingCrashDetector()],
+            recovery_cooldown=SlidingWindowThrottle(window_minutes=1.0, max_count=2),
+        )
+
+        # Step 1: crash → recovery enters MONITORING phase
+        await env.injector.crash_training()
+        await wait_for_recovery_phase(
+            env.controller,
+            phase="MonitoringProgress",
+            timeout=60.0,
+        )
+
+        # Step 2: crash during MONITORING → DIAGNOSING
+        await env.injector.crash_training()
+
+        # Step 3: poll for DIAGNOSING in phase_history during the active recovery.
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if status.phase_history and "StopTimeDiagnostics" in status.phase_history:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError("DIAGNOSING not observed in phase_history within 60s")
+
+        assert_phase_path_contains(status, ["StopTimeDiagnostics"])
 
 
 class TestConcurrentFaults:
