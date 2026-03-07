@@ -1,4 +1,4 @@
-"""Unit tests for gpu_check_script — pynvml + matmul checks."""
+"""Unit tests for gpu_check_script — pynvml + compute fingerprint checks."""
 
 from __future__ import annotations
 
@@ -14,29 +14,42 @@ from tests.fast.utils.ft.helpers import make_mock_pynvml
 
 from miles.utils.ft.agents.diagnostics.gpu_check_script import GpuCheckResult, _check_nvml, _check_single_gpu, main
 
-_MOCK_MATMUL_REF = (None, None, None)
+_MOCK_MODEL_AND_INPUT = (None, None, None)
+_MOCK_HASH = "abc123"
 _GPU_SCRIPT = "miles.utils.ft.agents.diagnostics.gpu_check_script"
 
 
 @contextmanager
-def _pynvml_and_matmul(
+def _pynvml_and_compute(
     mock_pynvml: MagicMock,
     *,
-    matmul_pass: bool = True,
+    compute_hash: str = _MOCK_HASH,
+    compute_error: Exception | None = None,
 ) -> Generator[None, None, None]:
+    side_effect = compute_error if compute_error else None
+    return_value = compute_hash if not compute_error else ""
     with (
         patch.dict("sys.modules", {"pynvml": mock_pynvml}),
-        patch(f"{_GPU_SCRIPT}._check_matmul", return_value=matmul_pass),
+        patch(
+            f"{_GPU_SCRIPT}._compute_fingerprint",
+            side_effect=side_effect,
+            return_value=return_value,
+        ),
     ):
         yield
 
 
-def _run_main(mock_pynvml: MagicMock, *, matmul_pass: bool = True) -> list[dict[str, Any]]:
+def _run_main(
+    mock_pynvml: MagicMock,
+    *,
+    compute_hash: str = _MOCK_HASH,
+    compute_error: Exception | None = None,
+) -> list[dict[str, Any]]:
     stdout_capture = StringIO()
 
     with (
-        _pynvml_and_matmul(mock_pynvml, matmul_pass=matmul_pass),
-        patch(f"{_GPU_SCRIPT}._generate_matmul_reference", return_value=_MOCK_MATMUL_REF),
+        _pynvml_and_compute(mock_pynvml, compute_hash=compute_hash, compute_error=compute_error),
+        patch(f"{_GPU_SCRIPT}._build_deterministic_model_and_input", return_value=_MOCK_MODEL_AND_INPUT),
         patch("sys.stdout", stdout_capture),
     ):
         main()
@@ -111,81 +124,82 @@ class TestCheckNvml:
 class TestCheckSingleGpu:
     def test_all_pass(self) -> None:
         mock_pynvml = make_mock_pynvml(device_count=1)
-        with _pynvml_and_matmul(mock_pynvml):
+        with _pynvml_and_compute(mock_pynvml):
             result = _check_single_gpu(
                 gpu_index=0,
                 handle="handle-0",
-                matmul_ref=_MOCK_MATMUL_REF,
+                model_and_input=_MOCK_MODEL_AND_INPUT,
             )
 
-        assert result.passed is True
-        assert result.matmul_passed is True
+        assert result.nvml_passed is True
+        assert result.compute_hash == _MOCK_HASH
+        assert result.compute_error == ""
         assert result.details == "all checks passed"
 
     def test_ecc_failure(self) -> None:
         mock_pynvml = make_mock_pynvml(ecc_uncorrectable=3)
-        with _pynvml_and_matmul(mock_pynvml):
+        with _pynvml_and_compute(mock_pynvml):
             result = _check_single_gpu(
                 gpu_index=0,
                 handle="handle-0",
-                matmul_ref=_MOCK_MATMUL_REF,
+                model_and_input=_MOCK_MODEL_AND_INPUT,
             )
 
-        assert result.passed is False
+        assert result.nvml_passed is False
         assert "ECC" in result.details
 
-    def test_matmul_mismatch(self) -> None:
+    def test_compute_fingerprint_error(self) -> None:
         mock_pynvml = make_mock_pynvml(device_count=1)
-        with _pynvml_and_matmul(mock_pynvml, matmul_pass=False):
+        with _pynvml_and_compute(mock_pynvml, compute_error=RuntimeError("cuda error")):
             result = _check_single_gpu(
                 gpu_index=0,
                 handle="handle-0",
-                matmul_ref=_MOCK_MATMUL_REF,
+                model_and_input=_MOCK_MODEL_AND_INPUT,
             )
 
-        assert result.passed is False
-        assert result.matmul_passed is False
-        assert "matmul" in result.details
+        assert result.nvml_passed is True
+        assert result.compute_error != ""
+        assert "compute fingerprint failed" in result.details
 
     def test_multiple_failures(self) -> None:
         mock_pynvml = make_mock_pynvml(
             ecc_uncorrectable=1,
             remap_info=(0, 0, 0, 1),
         )
-        with _pynvml_and_matmul(mock_pynvml, matmul_pass=False):
+        with _pynvml_and_compute(mock_pynvml, compute_error=RuntimeError("bad gpu")):
             result = _check_single_gpu(
                 gpu_index=0,
                 handle="handle-0",
-                matmul_ref=_MOCK_MATMUL_REF,
+                model_and_input=_MOCK_MODEL_AND_INPUT,
             )
 
-        assert result.passed is False
+        assert result.nvml_passed is False
         assert "ECC" in result.details
         assert "row remap" in result.details
-        assert "matmul" in result.details
+        assert "compute fingerprint failed" in result.details
 
     def test_retired_pages_failure(self) -> None:
         mock_pynvml = make_mock_pynvml(retired_pages=["p1"])
-        with _pynvml_and_matmul(mock_pynvml):
+        with _pynvml_and_compute(mock_pynvml):
             result = _check_single_gpu(
                 gpu_index=0,
                 handle="handle-0",
-                matmul_ref=_MOCK_MATMUL_REF,
+                model_and_input=_MOCK_MODEL_AND_INPUT,
             )
 
-        assert result.passed is False
+        assert result.nvml_passed is False
         assert "retired" in result.details
 
     def test_power_state_abnormal_failure(self) -> None:
         mock_pynvml = make_mock_pynvml(power_state=8)
-        with _pynvml_and_matmul(mock_pynvml):
+        with _pynvml_and_compute(mock_pynvml):
             result = _check_single_gpu(
                 gpu_index=0,
                 handle="handle-0",
-                matmul_ref=_MOCK_MATMUL_REF,
+                model_and_input=_MOCK_MODEL_AND_INPUT,
             )
 
-        assert result.passed is False
+        assert result.nvml_passed is False
         assert "power state" in result.details
 
 
@@ -200,15 +214,15 @@ class TestMain:
 
         assert len(output) == 2
         assert output[0]["gpu_index"] == 0
-        assert output[0]["passed"] is True
+        assert output[0]["nvml_passed"] is True
         assert output[1]["gpu_index"] == 1
-        assert output[1]["passed"] is True
+        assert output[1]["nvml_passed"] is True
 
     def test_main_mixed_results(self) -> None:
         output = _run_main(make_mock_pynvml(device_count=2, ecc_uncorrectable=5))
 
         assert len(output) == 2
-        assert output[0]["passed"] is False
+        assert output[0]["nvml_passed"] is False
         assert output[0]["ecc_errors_uncorrectable"] == 5
 
     def test_main_per_gpu_exception_produces_failed_result(self) -> None:
@@ -221,9 +235,8 @@ class TestMain:
         output = _run_main(mock_pynvml)
 
         assert len(output) == 2
-        assert output[0]["passed"] is False
         assert "GPU 0 error" in output[0]["details"]
-        assert output[1]["passed"] is True
+        assert output[1]["nvml_passed"] is True
         mock_pynvml.nvmlShutdown.assert_called_once()
 
     def test_main_nvml_shutdown_always_called(self) -> None:
@@ -232,7 +245,7 @@ class TestMain:
 
         with (
             patch.dict("sys.modules", {"pynvml": mock_pynvml}),
-            patch(f"{_GPU_SCRIPT}._generate_matmul_reference", return_value=_MOCK_MATMUL_REF),
+            patch(f"{_GPU_SCRIPT}._build_deterministic_model_and_input", return_value=_MOCK_MODEL_AND_INPUT),
             patch("sys.stdout", stdout_capture),
         ):
             main()
@@ -251,17 +264,18 @@ class TestGpuCheckResult:
     def test_serialization(self) -> None:
         result = GpuCheckResult(
             gpu_index=0,
-            passed=True,
+            nvml_passed=True,
             ecc_errors_uncorrectable=0,
             retired_pages_count=0,
             power_state_abnormal=False,
             row_remap_failure=False,
-            matmul_passed=True,
+            compute_hash="abc123",
+            compute_error="",
             details="all checks passed",
         )
         d = asdict(result)
         assert d["gpu_index"] == 0
-        assert d["passed"] is True
+        assert d["nvml_passed"] is True
 
         json_str = json.dumps(d)
         restored = json.loads(json_str)
