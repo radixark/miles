@@ -128,7 +128,7 @@ class TestGetStatus:
 
     @pytest.mark.asyncio
     async def test_bad_nodes_confirmed_false_in_early_phases(self) -> None:
-        """During RealtimeChecks / DirectlyRestarting / StopTimeDiagnostics, bad_nodes_confirmed is False."""
+        """During RealtimeChecks / StopTimeDiagnostics, bad_nodes_confirmed is False."""
         detector = AlwaysEnterRecoveryDetector(reason="test")
         harness = make_test_controller(detectors=[detector])
 
@@ -144,6 +144,8 @@ class TestGetStatus:
         harness.controller._state_machine._state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-0"]),
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
             ),
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
