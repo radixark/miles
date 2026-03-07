@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from miles.utils.ft.controller.diagnostics.nccl.inter_machine import (
+from miles.utils.ft.agents.diagnostics.nccl.inter_machine import (
     InterMachineCommDiagnostic,
 )
 from miles.utils.ft.controller.diagnostics.nccl.orchestrator import (

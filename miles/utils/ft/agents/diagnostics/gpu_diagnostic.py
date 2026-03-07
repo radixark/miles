@@ -10,7 +10,7 @@ import json
 import logging
 import sys
 
-from miles.utils.ft.controller.diagnostics.base import BaseDiagnostic
+from miles.utils.ft.agents.diagnostics.base import BaseDiagnostic
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.utils.subprocess import run_subprocess_with_timeout
 
@@ -52,7 +52,7 @@ class GpuDiagnostic(BaseDiagnostic):
     ) -> tuple[bytes, bytes, int] | DiagnosticResult:
         cmd = [
             sys.executable, "-m",
-            "miles.utils.ft.controller.diagnostics.gpu_check_script",
+            "miles.utils.ft.agents.diagnostics.gpu_check_script",
         ]
         try:
             return await run_subprocess_with_timeout(

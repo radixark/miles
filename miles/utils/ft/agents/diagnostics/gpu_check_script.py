@@ -5,7 +5,7 @@ visible GPUs, then prints a JSON array of per-GPU results to stdout.
 
 Usage::
 
-    python -m miles.utils.ft.controller.diagnostics.gpu_check_script
+    python -m miles.utils.ft.agents.diagnostics.gpu_check_script
 
 The caller (GpuDiagnostic) launches this via asyncio.create_subprocess_exec
 so that pynvml init/shutdown and torch computation happen in an isolated

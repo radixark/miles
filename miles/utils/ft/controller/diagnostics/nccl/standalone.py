@@ -13,8 +13,8 @@ from typing import Any
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from miles.utils.ft.controller.diagnostics.nccl.inter_machine import InterMachineCommDiagnostic
-from miles.utils.ft.controller.diagnostics.nccl.intra_machine import IntraMachineCommDiagnostic
+from miles.utils.ft.agents.diagnostics.nccl.inter_machine import InterMachineCommDiagnostic
+from miles.utils.ft.agents.diagnostics.nccl.intra_machine import IntraMachineCommDiagnostic
 from miles.utils.ft.controller.diagnostics.nccl.orchestrator import InterMachineOrchestrator
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 

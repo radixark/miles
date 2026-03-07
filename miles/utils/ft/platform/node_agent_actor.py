@@ -11,11 +11,11 @@ from miles.utils.ft.agents.collectors.network import NetworkCollector
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.core.node_agent import FtNodeAgent
 from miles.utils.ft.agents.utils.controller_handle import get_controller_handle
-from miles.utils.ft.controller.diagnostics.gpu_diagnostic import GpuDiagnostic
-from miles.utils.ft.controller.diagnostics.nccl.inter_machine import (
+from miles.utils.ft.agents.diagnostics.gpu_diagnostic import GpuDiagnostic
+from miles.utils.ft.agents.diagnostics.nccl.inter_machine import (
     InterMachineCommDiagnostic,
 )
-from miles.utils.ft.controller.diagnostics.nccl.intra_machine import (
+from miles.utils.ft.agents.diagnostics.nccl.intra_machine import (
     IntraMachineCommDiagnostic,
 )
 from miles.utils.ft.models.diagnostics import DiagnosticResult
