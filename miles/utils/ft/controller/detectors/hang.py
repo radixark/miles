@@ -5,6 +5,7 @@ from pydantic import ConfigDict, field_validator
 from miles.utils.ft.models.metric_names import (
     AGENT_HEARTBEAT,
     PHASE_CHECKPOINT_SAVING,
+    PHASE_TRAINING,
     TRAINING_PHASE,
 )
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
@@ -28,6 +29,17 @@ class HangDetectorConfig(FtBaseModel):
         return value
 
 
+_PHASE_TIMEOUT_ATTR: dict[float, str] = {
+    PHASE_CHECKPOINT_SAVING: "checkpoint_saving_timeout_minutes",
+    PHASE_TRAINING: "training_timeout_minutes",
+}
+
+_PHASE_LABEL: dict[float, str] = {
+    PHASE_CHECKPOINT_SAVING: "checkpoint_saving",
+    PHASE_TRAINING: "training",
+}
+
+
 class HangDetector(BaseFaultDetector):
     def __init__(self, config: HangDetectorConfig | None = None) -> None:
         self._config = config or HangDetectorConfig()
@@ -36,37 +48,30 @@ class HangDetector(BaseFaultDetector):
         if ctx.job_status != JobStatus.RUNNING:
             return Decision.no_fault(reason="job not running, skipping hang check")
 
-        is_checkpoint_saving = self._is_checkpoint_saving(ctx.metric_store)
-        timeout_minutes = (
-            self._config.checkpoint_saving_timeout_minutes
-            if is_checkpoint_saving
-            else self._config.training_timeout_minutes
-        )
+        phase = self._get_current_phase(ctx.metric_store)
+        timeout_attr = _PHASE_TIMEOUT_ATTR.get(phase, "training_timeout_minutes")
+        timeout_minutes: int = getattr(self._config, timeout_attr)
 
         heartbeat_changes = self._get_heartbeat_changes(ctx.metric_store, window_minutes=timeout_minutes)
         if heartbeat_changes is None:
             return Decision.no_fault(reason="no heartbeat data available")
 
         if heartbeat_changes == 0:
-            phase_info = "checkpoint_saving" if is_checkpoint_saving else "training"
+            phase_label = _PHASE_LABEL.get(phase, "training")
             return Decision(
                 action=ActionType.ENTER_RECOVERY,
-                reason=f"heartbeat stalled for {timeout_minutes}min during {phase_info}",
+                reason=f"heartbeat stalled for {timeout_minutes}min during {phase_label}",
                 trigger=TriggerType.HANG,
             )
 
         return Decision.no_fault(reason="heartbeat progressing normally")
 
-    def _is_checkpoint_saving(self, metric_store: MetricQueryProtocol) -> bool:
+    def _get_current_phase(self, metric_store: MetricQueryProtocol) -> float:
         df = metric_store.query_latest(TRAINING_PHASE, label_filters={"rank": "0"})
         if df is None or df.is_empty():
-            return False
+            return PHASE_TRAINING
 
-        for row in df.iter_rows(named=True):
-            if row["value"] == PHASE_CHECKPOINT_SAVING:
-                return True
-
-        return False
+        return df.row(0, named=True)["value"]
 
     def _get_heartbeat_changes(
         self, metric_store: MetricQueryProtocol, window_minutes: int,
