@@ -9,7 +9,7 @@ from uuid import uuid4
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.controller import FtController
-from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.detectors.chain import DetectorChainConfig, build_detector_chain
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus, MiniPrometheusConfig
@@ -47,6 +47,7 @@ class FtControllerConfig(FtBaseModel):
     controller_exporter_port: int = 0
     tick_interval: float = 30.0
     scrape_interval_seconds: float = 10.0
+    detector_config: DetectorChainConfig = Field(default_factory=DetectorChainConfig)
 
 
 _NOTIFIER_SENTINEL: object = object()
@@ -114,7 +115,11 @@ def build_ft_controller(
     else:
         notifier = _build_notifier(platform=config.platform)
 
-    detectors = detectors_override if detectors_override is not None else build_detector_chain()
+    detectors = (
+        detectors_override
+        if detectors_override is not None
+        else build_detector_chain(config=config.detector_config)
+    )
 
     if start_exporter:
         controller_exporter.start()
