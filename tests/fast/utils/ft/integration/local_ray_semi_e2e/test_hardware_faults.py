@@ -1,4 +1,4 @@
-"""Semi-E2E: hardware faults — GPU lost, NaN loss, fault during recovery."""
+"""Semi-E2E: hardware faults — GPU lost, NaN loss, fault during recovery, dynamic bad nodes."""
 from __future__ import annotations
 
 import asyncio
@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
 from miles.utils.ft.models.metric_names import GPU_AVAILABLE
 from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.models.recovery import ControllerMode
@@ -19,6 +20,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     assert_phase_path_contains,
     get_status,
     wait_for_mode,
+    wait_for_mode_transition,
     wait_for_recovery_complete,
     wait_for_training_stable,
 )
@@ -114,3 +116,54 @@ class TestFaultDuringRecovery:
         # Step 3: wait for recovery to complete with eviction
         final = await wait_for_recovery_complete(env.controller, timeout=90.0)
         assert_phase_path_contains(final, ["Evicting"])
+
+
+class TestDynamicBadNodes:
+    async def test_too_many_dynamic_bad_nodes_during_recovery_aborts(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """During recovery, if critical detectors find >= max_simultaneous_bad_nodes, recovery aborts."""
+        env = make_e2e_env(
+            ft_id="e2edbn",
+            nodes=[
+                NodeSpec(node_id=f"e2edbn-node-{i}", use_remote_collector=True)
+                for i in range(4)
+            ],
+            detectors=build_detector_chain(),
+            scrape_interval_seconds=_FAST_SCRAPE,
+            max_simultaneous_bad_nodes=3,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: crash to enter recovery
+        await env.injector.crash_training()
+        await wait_for_mode(
+            env.controller,
+            target_mode=ControllerMode.RECOVERY,
+            timeout=30.0,
+        )
+
+        # Step 2: during recovery, inject GPU_AVAILABLE=0 on 3 nodes
+        for i in range(3):
+            node_id = f"e2edbn-node-{i}"
+            env.set_collector_metrics(node_id, [
+                GaugeSample(
+                    name=GPU_AVAILABLE,
+                    labels={"node_id": node_id, "gpu": "0"},
+                    value=0.0,
+                ),
+            ])
+
+        # Step 3: recovery should abort, returning to MONITORING
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if status.mode == ControllerMode.MONITORING and not status.recovery_in_progress:
+                return
+            await asyncio.sleep(0.5)
+
+        status = get_status(env.controller)
+        assert status.mode == ControllerMode.MONITORING, (
+            f"Recovery did not abort: mode={status.mode}, phase={status.recovery_phase}"
+        )

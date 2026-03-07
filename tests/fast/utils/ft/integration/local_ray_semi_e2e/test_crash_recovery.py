@@ -442,3 +442,45 @@ class TestNotification:
         # Step 3: verify notifier received calls
         calls = env.get_notifier_calls()
         assert len(calls) > 0, "Notifier should have received at least one call"
+
+
+class TestFalsePositiveGuard:
+    async def test_too_many_bad_nodes_treated_as_false_positive(
+        self, make_e2e_env: Callable[..., E2EEnv],
+    ) -> None:
+        """When >= max_simultaneous_bad_nodes report faults, no recovery is triggered."""
+        from miles.utils.ft.controller.detectors.chain import build_detector_chain
+        from miles.utils.ft.models.metric_names import GPU_AVAILABLE
+        from miles.utils.ft.models.metrics import GaugeSample
+
+        env = make_e2e_env(
+            ft_id="e2efpg",
+            nodes=[
+                NodeSpec(node_id=f"e2efpg-node-{i}", use_remote_collector=True)
+                for i in range(4)
+            ],
+            detectors=build_detector_chain(),
+            scrape_interval_seconds=0.5,
+            max_simultaneous_bad_nodes=3,
+            use_notifier=True,
+        )
+
+        await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+
+        # Step 1: inject GPU_AVAILABLE=0 on 3 nodes simultaneously
+        for i in range(3):
+            node_id = f"e2efpg-node-{i}"
+            env.set_collector_metrics(node_id, [
+                GaugeSample(
+                    name=GPU_AVAILABLE,
+                    labels={"node_id": node_id, "gpu": "0"},
+                    value=0.0,
+                ),
+            ])
+
+        # Step 2: wait for scrape cycles, then verify no recovery
+        await asyncio.sleep(5.0)
+        status = get_status(env.controller)
+        assert status.mode == ControllerMode.MONITORING, (
+            f"Expected false positive guard, but mode={status.mode}"
+        )
