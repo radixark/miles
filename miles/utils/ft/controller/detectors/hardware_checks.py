@@ -57,28 +57,46 @@ def check_nic_down_in_window(
     window: timedelta,
     threshold: int,
 ) -> list[NodeFault]:
-    """Count NIC-down samples per node over *window*; fault nodes at or above *threshold*."""
+    """Count NIC up→down transitions per node over *window*; fault nodes at or above *threshold*.
+
+    Counts state transitions (up→down), not raw down-sample counts.
+    This decouples the threshold from the scrape interval.
+    """
     df = metric_store.query_range(NODE_NETWORK_UP, window=window)
     if df is None or df.is_empty():
         return []
 
-    down_samples = df.filter(pl.col("value") == 0.0)
-    if down_samples.is_empty():
+    # Sort chronologically so shift(1) gives the temporally previous sample
+    df = df.sort("timestamp")
+
+    # Detect up→down transitions per (node_id, device).
+    # A transition = previous sample was up (>0) and current sample is down (==0).
+    # This counts flap events, NOT the number of samples where value==0.
+    transitions = (
+        df.with_columns(
+            prev_value=pl.col("value").shift(1).over("node_id", "device")
+        )
+        .filter(
+            (pl.col("prev_value") > 0) & (pl.col("value") == 0.0)
+        )
+    )
+
+    if transitions.is_empty():
         return []
 
-    node_down_counts: dict[str, int] = {}
-    for row in down_samples.iter_rows(named=True):
-        node_id = row["node_id"]
-        node_down_counts[node_id] = node_down_counts.get(node_id, 0) + 1
+    node_counts = (
+        transitions.group_by("node_id")
+        .agg(count=pl.len())
+    )
 
     return [
         NodeFault(
-            node_id=node_id,
-            reason=f"NIC down {count} times on {node_id} in {window}",
+            node_id=row["node_id"],
+            reason=f"NIC went down {row['count']} time(s) on {row['node_id']} in {window}",
             ephemeral=True,
         )
-        for node_id, count in sorted(node_down_counts.items())
-        if count >= threshold
+        for row in node_counts.iter_rows(named=True)
+        if row["count"] >= threshold
     ]
 
 
