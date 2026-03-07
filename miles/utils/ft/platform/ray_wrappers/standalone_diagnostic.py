@@ -19,6 +19,7 @@ from miles.utils.ft.agents.diagnostics.runner import DiagnosticRunner
 from miles.utils.ft.controller.diagnostics.nccl.orchestrator import InterMachineOrchestrator
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.platform.ray_wrappers.node_discovery import build_node_address_map, get_alive_gpu_nodes
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ _MIN_INTER_MACHINE_NODES = 2
 
 async def run_intra_machine_diagnostics(
     node_ids: list[str] | None = None,
-    timeout_seconds: int = 120,
+    timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
 ) -> list[DiagnosticResult]:
     """Run intra-machine NCCL all_reduce_perf on all (or specified) GPU nodes.
 
@@ -110,7 +111,7 @@ class _StandaloneDiagnosticAgent:
     async def run_diagnostic(
         self,
         diagnostic_type: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
         return await self._runner.run_diagnostic(

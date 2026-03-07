@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from miles.utils.ft.models.diagnostics import DiagnosticResult
-from miles.utils.ft.protocols.agents import NodeAgentProtocol
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class RayNodeAgentProxy(NodeAgentProtocol):
     async def run_diagnostic(
         self,
         diagnostic_type: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
         return await self._handle.run_diagnostic.remote(

@@ -4,12 +4,12 @@ import asyncio
 import logging
 
 from miles.utils.ft.models.diagnostics import DiagnosticResult, UnknownDiagnosticError
-from miles.utils.ft.protocols.agents import DiagnosticProtocol, NodeAgentProtocol
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, DiagnosticProtocol, NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
 
 
-class DiagnosticRunner:
+class DiagnosticRunner(NodeAgentProtocol):
     """Registry-based diagnostic dispatcher with timeout protection.
 
     Holds a set of DiagnosticProtocol implementations keyed by
@@ -31,7 +31,7 @@ class DiagnosticRunner:
     async def run_diagnostic(
         self,
         diagnostic_type: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
         diagnostic = self._diagnostics.get(diagnostic_type)

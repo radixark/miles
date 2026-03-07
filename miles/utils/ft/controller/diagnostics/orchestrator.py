@@ -17,7 +17,7 @@ from miles.utils.ft.controller.diagnostics.stack_trace import (
 from miles.utils.ft.models.diagnostic import DiagnosticPipelineResult
 from miles.utils.ft.models.diagnostics import DiagnosticResult, UnknownDiagnosticError
 from miles.utils.ft.models.fault import TriggerType
-from miles.utils.ft.protocols.agents import NodeAgentProtocol
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, NodeAgentProtocol
 from miles.utils.ft.protocols.platform import DiagnosticOrchestratorProtocol
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         self,
         agents: dict[str, NodeAgentProtocol],
         pipeline: list[str] | None = None,
-        default_timeout_seconds: int = 120,
+        default_timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         pipeline_timeout_seconds: int = 900,
         node_addresses: dict[str, str] | None = None,
     ) -> None:

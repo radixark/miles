@@ -18,6 +18,7 @@ import sys
 from miles.utils.ft.agents.diagnostics.base import BaseDiagnostic
 from miles.utils.ft.agents.diagnostics.gpu_check_script import GpuCheckResult
 from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS
 from miles.utils.ft.utils.subprocess import run_subprocess_with_timeout
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ class GpuDiagnostic(BaseDiagnostic):
     diagnostic_type = "gpu"
 
     async def run(
-        self, node_id: str, timeout_seconds: int = 120,
+        self, node_id: str, timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
     ) -> DiagnosticResult:
         proc_result = await self._run_check_subprocess(
             node_id=node_id, timeout_seconds=timeout_seconds,

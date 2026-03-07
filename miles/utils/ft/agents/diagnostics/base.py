@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from miles.utils.ft.models.diagnostics import DiagnosticResult
-from miles.utils.ft.protocols.agents import DiagnosticProtocol
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, DiagnosticProtocol
 
 
 class BaseDiagnostic(DiagnosticProtocol, ABC):
@@ -45,5 +45,5 @@ class BaseDiagnostic(DiagnosticProtocol, ABC):
 
     @abstractmethod
     async def run(
-        self, node_id: str, timeout_seconds: int = 120,
+        self, node_id: str, timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
     ) -> DiagnosticResult: ...

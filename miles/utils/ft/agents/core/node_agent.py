@@ -7,7 +7,7 @@ from miles.utils.ft.agents.diagnostics.runner import DiagnosticRunner
 from miles.utils.ft.agents.utils.metric_collection_loop import MetricCollectionLoop
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.models.diagnostics import DiagnosticResult
-from miles.utils.ft.protocols.agents import DiagnosticProtocol, NodeAgentProtocol
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, DiagnosticProtocol, NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class FtNodeAgent(NodeAgentProtocol):
     async def run_diagnostic(
         self,
         diagnostic_type: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
         return await self._runner.run_diagnostic(

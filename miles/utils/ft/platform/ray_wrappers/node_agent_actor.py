@@ -7,7 +7,7 @@ import ray
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.platform.node_agent_factory import build_node_agent
-from miles.utils.ft.protocols.agents import DiagnosticProtocol
+from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, DiagnosticProtocol
 from miles.utils.ft.protocols.platform import ft_controller_actor_name
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 from miles.utils.ft.utils.retry import retry_sync
@@ -55,7 +55,7 @@ class _FtNodeAgentActorCls:
     async def run_diagnostic(
         self,
         diagnostic_type: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
         return await self._agent.run_diagnostic(
