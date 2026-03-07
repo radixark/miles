@@ -42,7 +42,7 @@ class StateMachineStepper(Generic[StateT, ContextT]):
         if handler is None:
             return None
         result = await handler(state, context)
-        if result is not None and type(result) is not type(state):
+        if result is not None and result != state:
             logger.info(
                 "%s %s -> %s",
                 type(self).__name__,

@@ -90,6 +90,22 @@ class TestStateMachineStepper:
             await stepper(StateA(), None)
         assert "DummyStepper StateA -> StateB" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_same_type_transition_logs_when_data_changes(self, caplog: pytest.LogCaptureFixture) -> None:
+        """StateB(value=1) -> StateB(value=2) should still be logged."""
+        stepper = DummyStepper()
+        with caplog.at_level("INFO"):
+            await stepper(StateB(value=1), None)
+        assert "DummyStepper StateB -> StateB" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_same_state_no_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Handler returning None (no transition) should not log."""
+        stepper = DummyStepper()
+        with caplog.at_level("INFO"):
+            await stepper(StateC(), None)
+        assert caplog.text == ""
+
 
 # -- Tests: StateMachine -------------------------------------------------------
 
