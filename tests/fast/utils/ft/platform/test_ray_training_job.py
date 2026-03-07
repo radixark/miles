@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from miles.utils.ft.protocols.platform import JobStatus
-from miles.utils.ft.platform.ray_training_job import (
+from miles.utils.ft.platform.ray_wrappers.node_discovery import resolve_to_ray_node_ids
+from miles.utils.ft.platform.ray_wrappers.training_job import (
     RayTrainingJob,
     _parse_ray_status,
     _stop_job,
-    _resolve_to_ray_node_ids,
     stop_all_active_jobs,
 )
 
@@ -76,7 +76,7 @@ class TestSubmitTraining:
             {"Alive": True, "NodeID": "aaa111", "NodeName": "gpu-worker-01", "NodeManagerAddress": "10.0.0.1"},
             {"Alive": True, "NodeID": "bbb222", "NodeName": "gpu-worker-02", "NodeManagerAddress": "10.0.0.2"},
         ]
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = fake_nodes
             await job.submit_training(excluded_node_ids=["gpu-worker-01", "gpu-worker-02"])
 
@@ -163,7 +163,7 @@ class TestStopTraining:
 
         mock_client.get_job_status.return_value = "RUNNING"
 
-        with patch("miles.utils.ft.platform.ray_training_job.time") as mock_time, \
+        with patch("miles.utils.ft.platform.ray_wrappers.training_job.time") as mock_time, \
              patch("miles.utils.ft.utils.polling.time") as mock_poll_time:
             call_count = 0
 
@@ -288,39 +288,39 @@ class TestResolveToRayNodeIds:
     ]
 
     def test_resolves_k8s_node_names(self) -> None:
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = self._FAKE_NODES
-            result = _resolve_to_ray_node_ids(["gpu-worker-01", "gpu-worker-02"])
+            result = resolve_to_ray_node_ids(["gpu-worker-01", "gpu-worker-02"])
         assert result == ["aaa111", "bbb222"]
 
     def test_resolves_ip_addresses(self) -> None:
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = self._FAKE_NODES
-            result = _resolve_to_ray_node_ids(["10.0.0.1"])
+            result = resolve_to_ray_node_ids(["10.0.0.1"])
         assert result == ["aaa111"]
 
     def test_passes_through_ray_node_ids(self) -> None:
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = self._FAKE_NODES
-            result = _resolve_to_ray_node_ids(["bbb222"])
+            result = resolve_to_ray_node_ids(["bbb222"])
         assert result == ["bbb222"]
 
     def test_skips_dead_nodes(self) -> None:
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = self._FAKE_NODES
-            result = _resolve_to_ray_node_ids(["dead-node"])
+            result = resolve_to_ray_node_ids(["dead-node"])
         assert result == []
 
     def test_skips_unknown_identifiers(self) -> None:
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = self._FAKE_NODES
-            result = _resolve_to_ray_node_ids(["nonexistent"])
+            result = resolve_to_ray_node_ids(["nonexistent"])
         assert result == []
 
     def test_empty_input(self) -> None:
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = self._FAKE_NODES
-            result = _resolve_to_ray_node_ids([])
+            result = resolve_to_ray_node_ids([])
         assert result == []
 
     def test_ignores_nodes_with_missing_node_name_or_address(self) -> None:
@@ -329,15 +329,15 @@ class TestResolveToRayNodeIds:
             {"Alive": True, "NodeID": "aaa111"},
             {"Alive": True, "NodeID": "bbb222", "NodeName": "", "NodeManagerAddress": ""},
         ]
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = nodes
-            result = _resolve_to_ray_node_ids([""])
+            result = resolve_to_ray_node_ids([""])
         assert result == []
 
     def test_deduplicates_same_node_resolved_via_different_identifiers(self) -> None:
-        with patch("miles.utils.ft.platform.ray_training_job.ray") as mock_ray:
+        with patch("miles.utils.ft.platform.ray_wrappers.node_discovery.ray") as mock_ray:
             mock_ray.nodes.return_value = self._FAKE_NODES
-            result = _resolve_to_ray_node_ids(["gpu-worker-01", "10.0.0.1", "aaa111"])
+            result = resolve_to_ray_node_ids(["gpu-worker-01", "10.0.0.1", "aaa111"])
         assert result == ["aaa111"]
 
 
@@ -374,7 +374,7 @@ class TestStopJob:
         mock_client = MagicMock()
         mock_client.get_job_status.return_value = "RUNNING"
 
-        with patch("miles.utils.ft.platform.ray_training_job.time") as mock_time, \
+        with patch("miles.utils.ft.platform.ray_wrappers.training_job.time") as mock_time, \
              patch("miles.utils.ft.utils.polling.time") as mock_poll_time:
             call_count = 0
 
@@ -394,7 +394,7 @@ class TestStopJob:
         """When stop_job RPC takes longer than the overall timeout, raise immediately with a clear message."""
         mock_client = MagicMock()
 
-        with patch("miles.utils.ft.platform.ray_training_job.time") as mock_time:
+        with patch("miles.utils.ft.platform.ray_wrappers.training_job.time") as mock_time:
             timestamps = iter([0.0, 15.0])
             mock_time.monotonic = lambda: next(timestamps)
 

@@ -6,7 +6,7 @@ import pytest
 
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus
-from miles.utils.ft.platform.controller_actor import _FtControllerActorCls
+from miles.utils.ft.platform.ray_wrappers.controller_actor import _FtControllerActorCls
 from miles.utils.ft.platform.controller_factory import build_ft_controller
 from miles.utils.ft.platform.stubs import StubNodeManager, StubNotifier, StubTrainingJob
 from tests.fast.utils.ft.conftest import make_test_controller
@@ -110,7 +110,7 @@ class TestBuildPlatformComponentsK8sRay:
 
     def test_k8s_ray_passes_ft_id_and_label_prefix(self) -> None:
         from miles.utils.ft.platform.controller_factory import _build_platform_components
-        from miles.utils.ft.platform.ray_training_job import RayTrainingJob
+        from miles.utils.ft.platform.ray_wrappers.training_job import RayTrainingJob
 
         with (
             patch("miles.utils.ft.platform.k8s_node_manager.K8sNodeManager") as mock_k8s,

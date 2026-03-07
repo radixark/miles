@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from miles.utils.ft.models.diagnostics import DiagnosticResult
-from miles.utils.ft.platform.ray_node_agent_proxy import RayNodeAgentProxy
+from miles.utils.ft.platform.ray_wrappers.node_agent_proxy import RayNodeAgentProxy
 from miles.utils.ft.protocols.agents import NodeAgentProtocol
 
 

@@ -5,10 +5,8 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.ft.platform.controller_factory import (
-    FtControllerConfig,
-    build_ft_controller,
-)
+from miles.utils.ft.platform.config import FtControllerConfig
+from miles.utils.ft.platform.controller_factory import build_ft_controller
 
 
 class TestFtControllerConfig:
