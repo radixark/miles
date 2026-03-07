@@ -207,10 +207,14 @@ class TestRecovering:
 
     @pytest.mark.asyncio
     async def test_recovery_in_progress_stays_recovering(self) -> None:
-        from miles.utils.ft.controller.recovery.recovery_stepper import DirectlyRestarting
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, RecoveryDone, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import StoppingAndRestarting
 
-        new_recovery = DirectlyRestarting(restart=StoppingAndRestarting())
+        new_recovery = EvictingAndRestarting(
+            restart=StoppingAndRestarting(),
+            succeed_next_state=RecoveryDone(),
+            failed_next_state=StopTimeDiagnostics(),
+        )
         recovery_stepper = AsyncMock(return_value=new_recovery)
         stepper = _make_main_stepper(recovery_stepper=recovery_stepper)
 
@@ -295,7 +299,7 @@ class TestRecovering:
     @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_resets_recovery(self) -> None:
         """Critical detector finds new bad nodes -> restart recovery with merged bad_node_ids."""
-        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, RecoveryDone, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         recovery_stepper = AsyncMock(return_value=None)
@@ -315,6 +319,8 @@ class TestRecovering:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
@@ -377,7 +383,7 @@ class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_too_many_dynamic_bad_nodes_aborts_recovery(self) -> None:
         """Critical detectors report >= threshold new bad nodes during recovery -> NOTIFY_HUMAN."""
-        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, RecoveryDone, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         notifier = FakeNotifier()
@@ -400,6 +406,8 @@ class TestBadNodeCountSafeguard:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
@@ -412,7 +420,7 @@ class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_below_threshold_continues_recovery(self) -> None:
         """One new bad node during recovery (with 2 existing) -> normal merge, continues."""
-        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, RecoveryDone, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         recovery_stepper = AsyncMock(return_value=None)
@@ -433,6 +441,8 @@ class TestBadNodeCountSafeguard:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old-1", "node-old-2"]),
+                succeed_next_state=RecoveryDone(),
+                failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
