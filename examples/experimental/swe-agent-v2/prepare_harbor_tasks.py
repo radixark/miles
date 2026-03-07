@@ -1,26 +1,34 @@
 """
-Convert SWE-bench training data to Harbor task directories.
+Convert training data to Harbor task directories (generic fallback).
 
-Reads the training JSONL (same format used by Miles run.sh) and creates
-one Harbor task directory per instance. These directories are consumed by
-server.py via Harbor's Trial API.
+Reads a Miles JSONL (produced by ``download_and_process_data.py``) and
+creates one Harbor task directory per instance.  Each task directory is
+self-contained — Harbor treats all tasks identically regardless of
+their origin (SWE-bench, Terminal-Bench, custom, etc.).
+
+For standard benchmarks, prefer using Harbor's official adapters or
+``harbor run -d <dataset>`` to generate task directories — they
+produce the exact grading harness used upstream.  This script is a
+generic fallback for custom datasets.
 
 Usage:
-    python prepare_harbor_tasks.py \
-        --input /root/swe_train.jsonl \
-        --output /root/harbor_tasks/swebench/
 
-Each instance produces:
-    {output}/{instance_id}/
-    ├── instruction.md        # problem_statement
-    ├── task.toml             # timeout, difficulty metadata
-    ├── environment/
-    │   └── Dockerfile        # FROM swebench Docker image
-    ├── tests/
-    │   ├── test.sh           # pytest + swebench grading harness
-    │   └── config.json       # test_patch, test_cmd, FAIL_TO_PASS, etc.
-    └── solution/
-        └── solve.sh          # oracle patch (optional)
+    python prepare_harbor_tasks.py \\
+        --input /root/custom_train.jsonl \\
+        --output /root/harbor_tasks/ \\
+        --docker-network swe-net
+
+Required metadata fields per record:
+    - instance_id:  unique task identifier (becomes directory name)
+
+Optional metadata fields (read if present):
+    - problem_statement / instruction / prompt:  task text -> instruction.md
+    - docker_image:   base Docker image (default: ubuntu:24.04)
+    - setup_commands: extra Dockerfile RUN commands (str or list)
+    - test_script:    content of tests/test.sh
+    - timeout:        verifier timeout in seconds (default: 1800)
+    - repo, version:  included in task.toml if present
+    - patch:          oracle solution -> solution/solve.sh
 """
 
 import argparse
@@ -33,37 +41,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _try_harbor_adapter(input_path: str, output_dir: str) -> bool:
-    """Try to use Harbor's official SWEBenchToHarbor adapter.
-
-    Returns True if successful, False if Harbor adapter is not available.
-    """
-    try:
-        from harbor.benchmarks.swebench.adapter import SWEBenchToHarbor
-
-        adapter = SWEBenchToHarbor(
-            input_path=input_path,
-            output_dir=output_dir,
-        )
-        adapter.convert()
-        return True
-    except ImportError:
-        logger.info("Harbor SWEBenchToHarbor adapter not available, using manual conversion")
-        return False
-    except Exception as e:
-        logger.warning(f"Harbor adapter failed ({e}), falling back to manual conversion")
-        return False
-
-
-def _get_docker_image(instance_id: str, metadata: dict) -> str:
-    """Get the SWE-bench Docker image name for an instance.
-
-    SWE-bench eval images follow the convention:
-        swebench/sweb.eval.x86_64.{instance_id}:latest
-    """
-    # SWE-bench image naming: replace special chars for Docker tag compatibility
-    sanitized = instance_id.replace("/", "__")
-    return f"swebench/sweb.eval.x86_64.{sanitized}:latest"
+def _get_instruction(metadata: dict) -> str:
+    for key in ("problem_statement", "instruction", "prompt"):
+        val = metadata.get(key, "")
+        if val:
+            return val
+    return ""
 
 
 def _create_task_dir(
@@ -72,51 +55,46 @@ def _create_task_dir(
     output_dir: Path,
     docker_network: str | None = None,
 ) -> Path:
-    """Create a Harbor task directory for a single SWE-bench instance."""
+    """Create a Harbor task directory from metadata."""
     task_dir = output_dir / instance_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    # instruction.md — problem statement
-    problem_statement = metadata.get("problem_statement", "")
-    (task_dir / "instruction.md").write_text(problem_statement)
+    (task_dir / "instruction.md").write_text(_get_instruction(metadata))
 
-    # task.toml — metadata
     repo = metadata.get("repo", "")
     version = metadata.get("version", "")
-    task_toml = textwrap.dedent(
-        f"""\
-        [task]
-        name = "{instance_id}"
-        repo = "{repo}"
-        version = "{version}"
+    timeout = metadata.get("timeout", 1800)
 
-        [limits]
-        timeout = 1800
-        step_limit = 250
-        cost_limit = 3
-    """
-    )
-    (task_dir / "task.toml").write_text(task_toml)
+    toml_lines = [
+        "[task]",
+        f'name = "{instance_id}"',
+    ]
+    if repo:
+        toml_lines.append(f'repo = "{repo}"')
+    if version:
+        toml_lines.append(f'version = "{version}"')
+    toml_lines += [
+        "",
+        "[limits]",
+        f"timeout = {timeout}",
+    ]
+    (task_dir / "task.toml").write_text("\n".join(toml_lines) + "\n")
 
-    # environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir(exist_ok=True)
-    docker_image = _get_docker_image(instance_id, metadata)
-    dockerfile = textwrap.dedent(
-        f"""\
-        FROM {docker_image}
-        # SWE-bench evaluation environment for {instance_id}
-        # Base image contains the repo at the correct commit with conda env set up.
-    """
-    )
-    (env_dir / "Dockerfile").write_text(dockerfile)
 
-    # environment/docker-compose.yaml — network override so the container
-    # can reach Miles Router.  Harbor's DockerEnvironment merges this file
-    # with its base compose files automatically.
+    docker_image = metadata.get("docker_image", "ubuntu:24.04")
+    setup_cmds = metadata.get("setup_commands", "")
+    if isinstance(setup_cmds, list):
+        setup_cmds = " && ".join(setup_cmds)
+    setup_block = f"RUN {setup_cmds}\n" if setup_cmds else ""
+
+    (env_dir / "Dockerfile").write_text(
+        f"FROM {docker_image}\n{setup_block}"
+    )
+
     if docker_network:
-        compose_yaml = textwrap.dedent(
-            f"""\
+        compose_yaml = textwrap.dedent(f"""\
             services:
               main:
                 networks:
@@ -124,104 +102,53 @@ def _create_task_dir(
             networks:
               {docker_network}:
                 external: true
-        """
-        )
+        """)
         (env_dir / "docker-compose.yaml").write_text(compose_yaml)
 
-    # tests/
     tests_dir = task_dir / "tests"
     tests_dir.mkdir(exist_ok=True)
 
-    # tests/config.json — test configuration
-    test_config = {
-        "instance_id": instance_id,
-        "repo": repo,
-        "version": version,
-        "base_commit": metadata.get("base_commit", ""),
-        "test_patch": metadata.get("test_patch", ""),
-        "test_cmd": metadata.get("test_cmd", ""),
-        "FAIL_TO_PASS": metadata.get("FAIL_TO_PASS", []),
-        "PASS_TO_PASS": metadata.get("PASS_TO_PASS", []),
-    }
-    (tests_dir / "config.json").write_text(json.dumps(test_config, indent=2))
+    test_script = metadata.get("test_script", "")
+    if test_script:
+        test_sh = f"#!/bin/bash\n{test_script}\n"
+    else:
+        test_sh = textwrap.dedent("""\
+            #!/bin/bash
+            echo 0 > /logs/verifier/reward.txt
+        """)
 
-    # tests/test.sh — grading script using swebench harness
-    test_sh = textwrap.dedent(
-        f"""\
-        #!/bin/bash
-        # Run tests and grade using swebench harness
-        set -e
-
-        INSTANCE_ID="{instance_id}"
-        CONFIG_DIR="$(dirname "$0")"
-
-        # Apply test patch if present
-        if [ -f "$CONFIG_DIR/config.json" ]; then
-            TEST_PATCH=$(python3 -c "import json; print(json.load(open('$CONFIG_DIR/config.json')).get('test_patch', ''))")
-            if [ -n "$TEST_PATCH" ]; then
-                echo "$TEST_PATCH" | git apply --allow-empty
-            fi
-        fi
-
-        # Run the test command
-        TEST_CMD=$(python3 -c "import json; print(json.load(open('$CONFIG_DIR/config.json')).get('test_cmd', 'pytest'))")
-        eval "$TEST_CMD" || true
-
-        # Grade using swebench harness
-        python3 -c "
-        from swebench.harness.grading import grade_instance
-        import json
-
-        config = json.load(open('$CONFIG_DIR/config.json'))
-        result = grade_instance(config)
-        print(json.dumps(result))
-        "
-    """
-    )
     (tests_dir / "test.sh").write_text(test_sh)
     os.chmod(tests_dir / "test.sh", 0o755)
 
-    # solution/ (optional — oracle patch)
     patch = metadata.get("patch", "")
     if patch:
         sol_dir = task_dir / "solution"
         sol_dir.mkdir(exist_ok=True)
-        solve_sh = textwrap.dedent(
-            f"""\
+        (sol_dir / "fix.patch").write_text(patch)
+        solve_sh = textwrap.dedent("""\
             #!/bin/bash
-            # Oracle solution — apply gold patch
-            cat << 'PATCH_EOF' | git apply
-            {patch}
-            PATCH_EOF
-        """
-        )
+            git apply "$(dirname "$0")/fix.patch"
+        """)
         (sol_dir / "solve.sh").write_text(solve_sh)
         os.chmod(sol_dir / "solve.sh", 0o755)
 
     return task_dir
 
 
-def convert(input_path: str, output_dir: str, docker_network: str | None = None) -> int:
+def convert(
+    input_path: str,
+    output_dir: str,
+    docker_network: str | None = None,
+) -> int:
     """Convert all instances from JSONL to Harbor task directories.
-
-    Args:
-        docker_network: If set, each task's ``environment/docker-compose.yaml``
-            will join the container to this external Docker network so it can
-            reach Miles Router.
 
     Returns the number of tasks created.
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Try Harbor's official adapter first
-    if _try_harbor_adapter(input_path, output_dir):
-        count = sum(1 for d in output_path.iterdir() if d.is_dir())
-        logger.info(f"Harbor adapter created {count} task directories")
-        return count
+    records: list[dict] = []
 
-    # Manual conversion fallback
-    count = 0
     with open(input_path) as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
@@ -230,41 +157,57 @@ def convert(input_path: str, output_dir: str, docker_network: str | None = None)
             try:
                 data = json.loads(line)
             except json.JSONDecodeError as e:
-                logger.warning(f"Skipping line {line_num}: invalid JSON ({e})")
+                logger.warning(f"Skipping line {line_num}: {e}")
                 continue
 
             metadata = data.get("metadata", data)
             instance_id = metadata.get("instance_id", "")
             if not instance_id:
-                logger.warning(f"Skipping line {line_num}: no instance_id")
+                logger.warning(
+                    f"Skipping line {line_num}: no instance_id"
+                )
                 continue
 
-            _create_task_dir(instance_id, metadata, output_path, docker_network=docker_network)
-            count += 1
-            if count % 100 == 0:
-                logger.info(f"Created {count} task directories...")
+            records.append(metadata)
+
+    if not records:
+        logger.warning("No valid records found")
+        return 0
+
+    count = 0
+    for metadata in records:
+        instance_id = metadata["instance_id"]
+        _create_task_dir(
+            instance_id, metadata, output_path,
+            docker_network=docker_network,
+        )
+        count += 1
+        if count % 100 == 0:
+            logger.info(f"Created {count} task directories...")
 
     logger.info(f"Created {count} task directories in {output_dir}")
     return count
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert SWE-bench JSONL to Harbor task directories")
+    parser = argparse.ArgumentParser(
+        description="Convert training JSONL to Harbor task directories",
+    )
     parser.add_argument(
         "--input",
         required=True,
-        help="Path to SWE-bench training JSONL (e.g. /root/swe_train.jsonl)",
+        help="Path to training JSONL",
     )
     parser.add_argument(
         "--output",
         required=True,
-        help="Output directory for Harbor tasks (e.g. /root/harbor_tasks/swebench/)",
+        help="Output directory for Harbor tasks",
     )
     parser.add_argument(
         "--docker-network",
         default=None,
-        help="External Docker network for containers to join (e.g. swe-net). "
-        "Generates a docker-compose.yaml override in each task's environment/ dir.",
+        help="External Docker network for containers to join "
+        "(e.g. swe-net)",
     )
     args = parser.parse_args()
 

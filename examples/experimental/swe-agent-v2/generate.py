@@ -1,12 +1,14 @@
 """
-SWE-Agent V2: reward, filter, metrics, and rollout class.
+Agent V2: reward, filter, metrics, and rollout class.
 
 The generate function is provided by:
     miles.rollout.generate_hub.agentic_tool_call.generate
 with --custom-agent-function-path pointing to swe_agent_function.run
 
-This file only contains SWE-Agent-specific components that sit outside
-the generic agentic generate loop:
+Task-type agnostic — reward is pre-computed by the Harbor environment
+and stored in sample.metadata["reward"] regardless of task type.
+
+Components:
   - reward_func: reads pre-computed reward from sample metadata
   - dynamic_filter: rejects groups with any aborted sample
   - aggregate_agent_metrics: aggregates agent timing/count metrics
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float | list[float]:
-    """Reward is pre-computed by the SWE-Agent environment during generate().
+    """Reward is pre-computed by the agent environment during generate().
 
     Handles both single-sample calls (from ``async_rm``) and batched calls
     (from ``batched_async_rm`` when ``--custom-rm-path`` is set).
@@ -42,6 +44,8 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
 
 def dynamic_filter(args, samples: list[Sample] | list[list[Sample]], **kwargs) -> DynamicFilterOutput:
     """Reject entire group if any sample is aborted."""
+    if not samples:
+        return DynamicFilterOutput(keep=False, reason="empty_group")
     flat = samples if not isinstance(samples[0], list) else [s for group in samples for s in group]
     if any(s.status == Sample.Status.ABORTED for s in flat):
         return DynamicFilterOutput(keep=False, reason="group_has_aborted")
@@ -49,6 +53,17 @@ def dynamic_filter(args, samples: list[Sample] | list[list[Sample]], **kwargs) -
 
 
 # -- Agent Metrics Aggregation --
+
+
+def _collect_values(all_metrics: list[dict], key: str) -> list[float]:
+    return [m.get(key, 0) for m in all_metrics]
+
+
+def _agg_mean(metrics: dict, all_metrics: list[dict], keys: list[str], prefix: str = "agent/", suffix: str = "_mean"):
+    for key in keys:
+        values = _collect_values(all_metrics, key)
+        if values:
+            metrics[f"{prefix}{key}{suffix}"] = sum(values) / len(values)
 
 
 def aggregate_agent_metrics(samples: list[Sample]) -> dict:
@@ -64,27 +79,16 @@ def aggregate_agent_metrics(samples: list[Sample]) -> dict:
     metrics = {}
 
     for key in ["turns", "tool_calls"]:
-        values = [m.get(key, 0) for m in all_metrics]
+        values = _collect_values(all_metrics, key)
         if values:
             metrics[f"agent/{key}_mean"] = sum(values) / len(values)
             metrics[f"agent/{key}_sum"] = sum(values)
 
-    for key in ["model_query_time_sum", "env_execution_time_sum", "eval_time", "agent_run_time"]:
-        values = [m.get(key, 0) for m in all_metrics]
-        if values:
-            metrics[f"agent/{key}_mean"] = sum(values) / len(values)
+    _agg_mean(metrics, all_metrics, ["model_query_time_sum", "env_execution_time_sum", "eval_time", "agent_run_time"])
+    _agg_mean(metrics, all_metrics, ["time_per_turn", "model_query_time_avg", "env_execution_time_avg"], suffix="")
+    _agg_mean(metrics, all_metrics, ["model_time_ratio", "env_time_ratio", "eval_time_ratio"], suffix="")
 
-    for key in ["time_per_turn", "model_query_time_avg", "env_execution_time_avg"]:
-        values = [m.get(key, 0) for m in all_metrics]
-        if values:
-            metrics[f"agent/{key}"] = sum(values) / len(values)
-
-    for key in ["model_time_ratio", "env_time_ratio", "eval_time_ratio"]:
-        values = [m.get(key, 0) for m in all_metrics]
-        if values:
-            metrics[f"agent/{key}"] = sum(values) / len(values)
-
-    values = [m.get("total_time", 0) for m in all_metrics]
+    values = _collect_values(all_metrics, "total_time")
     if values:
         metrics["agent/total_time_mean"] = sum(values) / len(values)
         metrics["agent/total_time_max"] = max(values)

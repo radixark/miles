@@ -1,22 +1,22 @@
-# SWE-Agent V2: Direct Miles <-> mini-swe-agent with TITO
+# Agent V2: Generalized Agent-Environment RL Training with Harbor
 
-Replaces the v1 nemo-gym middle layer with direct communication between Miles and mini-swe-agent, using **TITO (Token In Token Out)** through SGLang's `/v1/chat/completions` endpoint for exact token-level training signals.
+A unified pipeline for training agents on **mixed datasets** — SWE-bench, Terminal-Bench, custom tasks, etc. — through a single endpoint. Uses **TITO (Token In Token Out)** through SGLang's `/v1/chat/completions` for exact token-level training signals.
 
-**Agent orchestration and grading** are handled by [Harbor](https://github.com/harbor-framework/harbor), the official Terminal-Bench 2.0 harness that also supports SWE-bench. Harbor provides unified rollout + grading in a single `Trial.run()` call, replacing the previous `swegym_runner` dependency.
+**Agent orchestration and grading** are handled by [Harbor](https://github.com/harbor-framework/harbor). Harbor provides unified rollout + grading in a single `Trial.run()` call. The server is **task-type agnostic** — all differentiation (environment, grading harness) is encoded in each task's 4 files (instruction.md, Dockerfile, test.sh, task.toml).
 
 ## Architecture
 
 ```
 Docker Network (swe-net)
 ┌───────────────────────────────────┐       ┌───────────────────────────────────┐
-│ Miles container (GPU)              │       │ Harbor container (swe-env)         │
+│ Miles container (GPU)              │       │ Harbor container (agent-env)       │
 │                                    │       │                                    │
 │  agentic_tool_call.generate        │       │  server.py (port 11000)            │
 │  (miles/rollout/generate_hub/)     │       │    Wraps Harbor Trial API          │
-│    1. Create session on Router     │       │                                    │
-│    2. Call swe_agent_function.run ─────────►│  3. Harbor Trial.run():            │
-│    5. Collect records              │       │     a. Start Docker (SWE image)   │
-│    6. Build training samples       │       │     b. Install mini-swe-agent     │
+│    1. Create session on Router     │       │    Task-type agnostic              │
+│    2. Call agent_function.run ─────────────►│  3. Harbor Trial.run():            │
+│    5. Collect records              │       │     a. Start Docker (task image)   │
+│    6. Build training samples       │       │     b. Install agent               │
 │    7. Merge agent metadata          │       │     c. Run agent loop ────────┐   │
 │    8. merge_samples() multi-turn   │       │                               │   │
 │                                    │       │                               │   │
@@ -24,7 +24,7 @@ Docker Network (swe-net)
 │    /sessions/{id}/v1/chat/         │       │                               │   │
 │      completions                   │       │                               │   │
 │    - Proxies to SGLang             │◄──────────── LLM via OPENAI_API_BASE │   │
-│    - Records request + response    │       │     d. Run verifier (pytest)      │
+│    - Records request + response    │       │     d. Run verifier (test.sh)     │
 │      with TITO data                │       │     e. Return TrialResult         │
 │                                    │       │                                    │
 │  SGLang (port 10090, GPU)          │       │  4. Returns:                       │
@@ -32,12 +32,10 @@ Docker Network (swe-net)
 │    - Applies chat template         │       │     agent_metrics, eval_report     │
 │    - Returns input_token_ids       │       │                                    │
 │    - Returns token_id per logprob  │       │  Harbor spawns Docker containers   │
-│                                    │       │  from SWE-bench images (on swe-net)│
+│                                    │       │  from task images (on swe-net)     │
 │  Megatron (training)               │       │                                    │
 └───────────────────────────────────┘       └───────────────────────────────────┘
 ```
-
-### Key: Harbor handles agent orchestration + grading. Miles Router sessions handle TITO training data.
 
 ### Layering
 
@@ -48,103 +46,91 @@ Docker Network (swe-net)
 │      building, metadata merge, multi-turn merge          │
 │    Agent fn returns dict|None — merged into metadata     │
 ├─────────────────────────────────────────────────────────┤
-│  Agent function (examples/.../swe_agent_function.py)     │
-│    Encapsulates all SWE-Agent / Harbor specifics:        │
-│    POST to Harbor server, return env info as dict         │
+│  Agent function (examples/.../swe_agent_function.py)      │
+│    Task-type agnostic: POST to Harbor server,            │
+│    return env info as dict                               │
 ├─────────────────────────────────────────────────────────┤
 │  Env-specific components (examples/.../generate.py)      │
 │    reward_func, dynamic_filter, RolloutFn, metrics       │
+│    (reads metadata — works for any task type)            │
 └─────────────────────────────────────────────────────────┘
 ```
 
-## How Harbor Works
+## How It Works
 
-1. **Agent execution**: Harbor starts a Docker container from the SWE-bench image, installs mini-swe-agent, runs it with `OPENAI_API_BASE` pointing to the Miles Router session endpoint
-2. **Grading**: After the agent finishes, Harbor runs `test.sh` in the same container using `swebench.harness.grading` to check FAIL_TO_PASS / PASS_TO_PASS tests
-3. **Result**: `TrialResult` contains both agent trajectory and verifier reward — one call, no separate eval step
+1. **Session creation**: `agentic_tool_call.generate` creates an `OpenAIEndpointTracer` session on Miles Router
+2. **Dispatch to agent**: calls `swe_agent_function.run(base_url, prompt, request_kwargs, metadata)` which POSTs to `server.py`
+3. **Harbor Trial**: `server.py` creates a `TrialConfig` from the task directory and runs `Trial.run()`:
+   - Starts a Docker container from the task's Dockerfile
+   - Installs and runs the agent (determined by `agent_name` in metadata)
+   - Runs the verifier (task's `test.sh`)
+   - Returns `TrialResult` with reward and metrics
+4. **TITO recording**: The agent calls `{base_url}/v1/chat/completions`. Miles Router proxies to SGLang and records each request/response with exact token IDs and logprobs
+5. **Sample building**: Records are converted to training `Sample`s with token IDs, logprobs, loss masks
+6. **Multi-turn merge**: `merge_samples()` concatenates turns; observation tokens get `loss_mask=0`
 
-## Train/Eval Alignment
+## Task-Type Agnosticism
 
-Using Harbor with default mini-swe-agent v2 ensures perfect alignment:
+Harbor treats all tasks identically — it reads the 4 files from each task directory:
 
+| File | Purpose | SWE-Bench | Terminal-Bench | Custom |
+|------|---------|-----------|----------------|--------|
+| `instruction.md` | Agent prompt | Bug description | Terminal task | Anything |
+| `task.toml` | Config (timeout, resources) | 3000s timeout | Per-task | Per-task |
+| `environment/Dockerfile` | Container image | SWE-bench image | Ubuntu + tools | Custom |
+| `tests/test.sh` | Grading logic | swebench.harness.grading | Exit code check | pytest / LLM judge / custom |
 
-| Aspect         | Training (Harbor + Miles)               | Eval (official SWE-bench) |
-| -------------- | --------------------------------------- | ------------------------- |
-| Agent          | mini-swe-agent v2                       | mini-swe-agent v2         |
-| Format         | Tool-calling (BASH_TOOL)                | Tool-calling (BASH_TOOL)  |
-| Config         | Default `swebench.yaml`                 | Default `swebench.yaml`   |
-| Docker images  | Official SWE-bench images               | Same                      |
-| Submit keyword | `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` | Same                      |
-| Grading        | `swebench.harness.grading`              | Same                      |
-
-
-## Prerequisites
-
-### 1. Miles SGLang patch (TITO)
-
-The Miles Docker image must include the SGLang TITO patch (`docker/patch/v0.5.7/sglang.patch`), which adds:
-
-- `token_id: int` to `ChatCompletionTokenLogprob` (output token IDs)
-- `input_token_ids: List[int]` to `ChatCompletionResponseChoice` (input token IDs)
-- `logprob_start_len: Optional[int]` to `ChatCompletionRequest` (controls logprob range)
-- `input_ids` support in `ChatCompletionRequest` (direct token input)
-
-### 2. PR #656 (Miles-side TITO support)
-
-[PR #656](https://github.com/radixark/miles/pull/656) simplifies `sessions.py` to work with TITO. This PR must be merged before running V2.
-
-### 3. Harbor
-
-Install in the swe-env container:
-
-```bash
-pip install harbor-framework
-```
+The server, agent function, and generate layer have **zero task-type-specific logic**. Routing is done by:
+- `instance_id` in metadata → selects the task directory (which contains the right Dockerfile + test.sh)
+- `agent_name` in metadata → selects the Harbor agent (mini-swe-agent, terminus-2, etc.)
 
 ## Files
 
+| File | Description |
+| --- | --- |
+| `swe_agent_function.py` | Custom agent function — dispatches to Harbor server, returns env metadata dict (task-type agnostic) |
+| `generate.py` | Reward function, dynamic filter, agent metrics aggregation, `RolloutFn` |
+| `server.py` | FastAPI server wrapping Harbor Trial API — task-type agnostic (deploy in agent-env container) |
+| `run.sh` | Training launch script (Miles side) |
+| `download_and_process_data.py` | Download from HuggingFace or local JSONL, convert to Miles format |
+| `prepare_harbor_tasks.py` | Convert Miles JSONL to Harbor task directories (generic fallback) |
 
-| File                           | Description                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------ |
-| `swe_agent_function.py`        | Custom agent function — dispatches to Harbor server, returns env metadata dict |
-| `generate.py`                  | Reward function, dynamic filter, agent metrics aggregation, `RolloutFn`        |
-| `server.py`                    | FastAPI server wrapping Harbor Trial API (deploy in swe-env container)         |
-| `run.sh`                       | Training launch script (Miles side)                                            |
-| `download_and_process_data.py` | Download SWE-bench from HuggingFace and convert to Miles JSONL format          |
-| `prepare_harbor_tasks.py`      | Convert Miles JSONL to Harbor task directories (one-time)                      |
+## Environment Variables
 
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AGENT_SERVER_URL` | `http://localhost:11000` | Harbor server URL (falls back to `SWE_AGENT_URL`) |
+| `AGENT_MODEL_NAME` | `model` | Model name for hosted_vllm (falls back to `SWE_AGENT_MODEL_NAME`) |
+| `AGENT_MAX_CONCURRENT` | `8` | Max concurrent trials (falls back to `SWE_AGENT_MAX_CONCURRENT`) |
+| `HARBOR_TASKS_DIR` | `/root/harbor_tasks` | Root directory containing task subdirectories |
+| `MILES_ROUTER_EXTERNAL_HOST` | (none) | Hostname for Docker containers to reach Miles Router |
+| `AGENT_MAX_INPUT_TOKENS` | `32768` | Max input tokens for hosted_vllm model_info (server.py) |
+| `AGENT_MAX_OUTPUT_TOKENS` | `8192` | Max output tokens for hosted_vllm model_info (server.py) |
 
-The generate function itself is `miles.rollout.generate_hub.agentic_tool_call.generate` (framework layer), not in this directory. It is a generic agentic generate that works with any agent/env — the agent function returns a `dict | None` that gets merged into sample metadata for downstream reward models.
+All new env vars fall back to their legacy `SWE_AGENT_*` equivalents for backward compatibility.
 
 ## Data Pipeline
 
 ```
-HuggingFace (SWE-Gym/SWE-Gym)
+download_and_process_data.py --input SWE-Gym/SWE-Gym --output swe.jsonl
+download_and_process_data.py --input /data/tb.jsonl   --output tb.jsonl  --agent-name terminus-2 --prompt-key instruction
+download_and_process_data.py --input /data/my.jsonl   --output my.jsonl  --agent-name my-agent   --prompt-key task_description
         │
-        ▼
-download_and_process_data.py      # Step 1: Download + convert
+        │  Harbor task directories (all go into HARBOR_TASKS_DIR):
         │
-        ▼
-/root/swe_train.jsonl             # Miles JSONL: {"prompt": "...", "metadata": {"instance_id": "...", ...}}
+        ├──► Harbor official adapter for SWE-bench task dirs (grading parity)
+        ├──► harbor run -d terminal-bench@2.0 ... (or Harbor TB adapter)
+        ├──► prepare_harbor_tasks.py --input my.jsonl --output /root/harbor_tasks/
+        │       Generic fallback for custom data (reads docker_image, test_script from metadata)
         │
-        ├──► prepare_harbor_tasks.py  # Step 2: Create Harbor task dirs (one-time, in swe-env)
-        │           │
-        │           ▼
-        │    /root/harbor_tasks/swebench/
-        │    ├── django__django-13741/
-        │    │   ├── instruction.md
-        │    │   ├── task.toml
-        │    │   ├── environment/Dockerfile
-        │    │   ├── tests/test.sh
-        │    │   └── tests/config.json
-        │    └── ...
+        ├──► cat swe.jsonl tb.jsonl my.jsonl > mixed.jsonl
         │
-        └──► run.sh (--prompt-data)   # Step 3: Training uses same JSONL for prompt sampling
+        └──► run.sh --prompt-data mixed.jsonl
+                metadata.agent_name tells server.py which Harbor agent to use per task
+                metadata.instance_id tells server.py which task directory to use
 ```
 
-`download_and_process_data.py` accepts either a HuggingFace dataset path or a local JSONL file. It wraps each instance into Miles format (`{"prompt": ..., "metadata": {...}}`). All original SWE-bench fields (instance_id, repo, problem_statement, test_patch, FAIL_TO_PASS, etc.) are preserved in metadata, which `prepare_harbor_tasks.py` reads to build Harbor task directories.
-
-## How to Run Everything
+## How to Run
 
 ### 1. Create Docker network
 
@@ -173,11 +159,11 @@ docker run -itd \
   /bin/zsh
 ```
 
-**swe-env container** (Harbor server, agent execution, Docker-in-Docker):
+**agent-env container** (Harbor server, agent execution, Docker-in-Docker):
 
 ```bash
 docker run -itd \
-  --name swe_env \
+  --name agent_env \
   --shm-size 16g \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /data:/data \
@@ -190,154 +176,44 @@ docker run -itd \
   /bin/bash
 ```
 
-> `-v /var/run/docker.sock:/var/run/docker.sock` is required — Harbor spawns SWE-bench Docker containers inside this container.
-
-### 3. Install dependencies in swe-env
+### 3. Prepare data and task directories
 
 ```bash
-docker exec -it swe_env /bin/bash
+# Download and convert to Miles format
+python download_and_process_data.py --input SWE-Gym/SWE-Gym --output swe.jsonl
+python download_and_process_data.py --input /data/tb.jsonl   --output tb.jsonl  --agent-name terminus-2 --prompt-key instruction
+python download_and_process_data.py --input /data/my.jsonl   --output my.jsonl  --agent-name my-agent   --prompt-key task_description
 
-# System deps
-apt update && apt install -y curl git python3 python3-pip docker.io
+# Merge into one mixed JSONL
+cat swe.jsonl tb.jsonl my.jsonl > mixed.jsonl
 
-# Harbor
-pip install harbor-framework
-
-# Verify
-python3 -c "from harbor.trial.trial import Trial; print('Harbor OK')"
+# Create Harbor task dirs
+# For SWE-bench: use Harbor's official adapter (grading parity)
+# For Terminal-Bench: harbor run -d terminal-bench@2.0
+# For custom data: use prepare_harbor_tasks.py
+python prepare_harbor_tasks.py --input my.jsonl --output /root/harbor_tasks/ --docker-network swe-net
 ```
 
-### 4. Download and prepare data
-
-**In the Miles container** — download from HuggingFace:
+### 4. Start the Harbor server
 
 ```bash
-docker exec -it miles /bin/zsh
-cd /root/miles/examples/experimental/swe-agent-v2
-
-# Option A: Download from HuggingFace
-python download_and_process_data.py \
-  --input SWE-Gym/SWE-Gym \
-  --output /root/swe_train.jsonl
-
-# Option B: Convert a local JSONL file
-python download_and_process_data.py \
-  --input /data/my_swebench_instances.jsonl \
-  --output /root/swe_train.jsonl
-
-# Option C: Limit to N instances (useful for testing)
-python download_and_process_data.py \
-  --input SWE-Gym/SWE-Gym \
-  --output /root/swe_train.jsonl \
-  --limit 50
+python server.py --port 11000 --max-concurrent 8
 ```
 
-**Copy the JSONL to swe-env** (if not using a shared volume):
+### 5. Launch training
 
 ```bash
-docker cp miles:/root/swe_train.jsonl swe_env:/root/swe_train.jsonl
+export AGENT_SERVER_URL=http://agent_env:11000
+export MILES_ROUTER_EXTERNAL_HOST=miles
+export HARBOR_TASKS_DIR=/root/harbor_tasks
+
+bash run.sh  # uses --prompt-data mixed.jsonl
 ```
-
-### 5. Prepare Harbor task directories (one-time)
-
-**In the swe-env container**:
-
-```bash
-docker exec -it swe_env /bin/bash
-
-# Copy scripts from Miles repo (or mount the repo)
-# If using shared /data volume:
-cp /data/miles/examples/experimental/swe-agent-v2/prepare_harbor_tasks.py /root/
-cp /data/miles/examples/experimental/swe-agent-v2/server.py /root/
-
-# Create Harbor task directories from the Miles JSONL
-python3 /root/prepare_harbor_tasks.py \
-  --input /root/swe_train.jsonl \
-  --output /root/harbor_tasks/swebench/
-
-# Verify
-ls /root/harbor_tasks/swebench/ | head -5
-# Should show instance_id directories like:
-# django__django-13741
-# scikit-learn__scikit-learn-12345
-# ...
-```
-
-This reads the Miles JSONL (produced by `download_and_process_data.py`) and creates one Harbor task directory per instance containing the problem statement, Docker config, test harness, and grading scripts.
-
-### 6. Convert reference model (one-time)
-
-**In the Miles container** — convert HF checkpoint to torch_dist format:
-
-```bash
-python /root/miles/tools/convert_hf_to_torch_dist.py \
-  --model Qwen/Qwen3-4B-Instruct-2507 \
-  --output /root/qwen3-4B-Instruct-2507_torch_dist \
-  --tp 2
-```
-
-### 7. Start the Harbor server
-
-**In the swe-env container**:
-
-```bash
-docker exec -it swe_env /bin/bash
-
-python3 /root/server.py --port 11000 --max-concurrent 8
-```
-
-Keep this running. You should see:
-
-```
-INFO:     Uvicorn running on http://0.0.0.0:11000
-```
-
-### 8. Verify the server (optional)
-
-**From the Miles container**, test that the Harbor server is reachable:
-
-```bash
-# Health check
-curl http://swe_env:11000/health
-# {"status":"ok"}
-```
-
-### 9. Launch training
-
-**In the Miles container**:
-
-```bash
-cd /root/miles
-
-# Required env vars
-export SWE_AGENT_URL=http://swe_env:11000
-export MILES_ROUTER_EXTERNAL_HOST=miles   # so swe-env can reach Miles Router
-
-# Harbor config (defaults are usually fine)
-export HARBOR_TASKS_DIR=/root/harbor_tasks/swebench
-export HARBOR_DOCKER_NETWORK=swe-net
-
-# Optional: WandB logging
-export WANDB_KEY=your_key_here
-
-# Launch!
-bash examples/experimental/swe-agent-v2/run.sh
-```
-
-This will:
-
-1. Start a Ray cluster with 4 GPUs
-2. Launch SGLang inference engines
-3. Start Miles Router on port 30000
-4. Begin GRPO training loop — each rollout sends instances to the Harbor server, which runs mini-swe-agent in Docker containers, grades results, and returns rewards
 
 ### Quick Test (single instance)
 
-Before launching full training, test one instance end-to-end:
-
 ```bash
-# In Miles container, with SGLang + Miles Router already running:
-curl -X POST http://swe_env:11000/run \
+curl -X POST http://agent_env:11000/run \
   -H 'Content-Type: application/json' \
   -d '{
     "base_url": "http://miles:30000/sessions/test-session/v1",
@@ -347,101 +223,43 @@ curl -X POST http://swe_env:11000/run \
   }'
 ```
 
-Expected response:
+## Train/Eval Alignment
 
-```json
-{"reward": 0.0, "exit_status": "Submitted", "agent_metrics": {...}, "eval_report": {...}}
-```
+Using Harbor with the appropriate agent ensures alignment per task type:
 
-## How It Works (Detailed)
-
-1. **Session creation**: `agentic_tool_call.generate` (framework layer) creates an `OpenAIEndpointTracer` session on Miles Router. This gives a `base_url` like `http://miles:30000/sessions/{session_id}`.
-2. **Dispatch to agent**: `agentic_tool_call.generate` calls `swe_agent_function.run(base_url, prompt, request_kwargs, metadata)`. The agent function POSTs to `server.py` with `base_url`, `model`, `sampling_params`, and SWE-Gym instance metadata (from `metadata`).
-3. **Harbor Trial**: `server.py` creates a `TrialConfig` with the Harbor task path, agent config (mini-swe-agent with `OPENAI_API_BASE` pointing to the session URL), and Docker environment config. `Trial.run()` handles everything:
-  - Starts a Docker container from the SWE-bench image
-  - Installs and runs mini-swe-agent
-  - Runs the verifier (pytest + swebench grading)
-  - Returns `TrialResult` with reward and metrics
-4. **TITO recording**: mini-swe-agent calls `{base_url}/v1/chat/completions`. Miles Router proxies to SGLang and records each request/response as a `SessionRecord` with exact token IDs and logprobs.
-5. **Agent metadata**: `swe_agent_function.run` returns a dict with env info (reward, exit_status, eval_report, agent_metrics). The generate layer merges this into every sample's metadata.
-6. **Record collection**: `agentic_tool_call.generate` calls `tracer.collect_records()` to retrieve all session records.
-7. **Sample building**: `compute_samples_from_openai_records()` converts each record into a `Sample` with token IDs, logprobs, loss masks, and status (from inference engine finish_reason).
-8. **Multi-turn merge**: `merge_samples()` concatenates samples. Observation tokens (user messages, tool outputs between turns) get `loss_mask=0` and `logprob=0.0`, so the model is only trained on its own responses.
-9. **Reward**: The outer `generate_and_rm` layer calls `async_rm` / `--custom-rm-path` to compute reward from sample metadata (where the agent left env info).
-
-## Network Setup
-
-- **miles container**: `swe-net` (e.g., 172.18.0.2) — Miles Router on port 30000
-- **swe-env container**: `swe-net` (e.g., 172.18.0.3) — Harbor server on port 11000
-- **Harbor Docker containers**: Must be on `swe-net` to reach Miles Router
-
-Harbor's Docker containers are configured with `--network swe-net` via the `HARBOR_DOCKER_NETWORK` env var / `EnvironmentConfig.docker_network`.
-
-`OPENAI_API_BASE=http://miles:30000/sessions/{id}/v1` is passed from server.py to Harbor's agent config, which forwards it to the Docker container environment.
-
-## Verification
-
-1. **Harbor install**: `python -c "from harbor.trial.trial import Trial"` in swe-env
-2. **Task prep**: `ls /root/harbor_tasks/swebench/ | head` — verify directories exist
-3. **Single trial**: `curl -X POST http://localhost:11000/run -d '{"base_url": "http://miles:30000/sessions/test/v1", "model": "hosted_vllm/model", "instance_id": "django__django-13741"}'`
-4. **Token format**: Verify session records contain TITO fields
-5. **Full training**: Launch run.sh, verify rollouts with non-zero rewards
-6. **Comparison**: Reward distribution should be similar to previous swegym_runner baseline
-
-## Troubleshooting
-
-### SGLang missing TITO fields (`input_token_ids`, `token_id`)
-
-The SGLang TITO patch is in `docker/patch/v0.5.7/sglang.patch`. Manually apply if needed:
-
-```bash
-cd /sgl-workspace/sglang
-git apply /root/miles/docker/patch/v0.5.7/sglang.patch
-```
-
-### Harbor Docker containers can't reach Miles Router
-
-Ensure `HARBOR_DOCKER_NETWORK=swe-net` is set. Harbor containers must join the same Docker network as the Miles container.
-
-### `TaskNotFound` error
-
-Run `prepare_harbor_tasks.py` first to create task directories:
-
-```bash
-python prepare_harbor_tasks.py --input /root/swe_train.jsonl --output /root/harbor_tasks/swebench/
-```
-
-### First run is slow
-
-Each SWE-bench instance uses a Docker image. First pull can be slow; subsequent runs use cached images. mini-swe-agent is installed per container (~30s overhead). This can be eliminated by pre-baking it into custom Docker images.
-
-## Terminal-Bench (Future Phase 2)
-
-Once SWE-bench is working with Harbor:
-
-1. Prepare Terminal-Bench tasks using Harbor adapter
-2. Write a `terminal_bench_function.py` that returns a dict with env info — same contract as `swe_agent_function.py`
-3. Reuse `agentic_tool_call.generate` as-is — just swap `--custom-agent-function-path`
-4. Training data collected via same Miles Router sessions
+| Task Type | Agent | Grading | Docker Images |
+| --- | --- | --- | --- |
+| SWE-Bench | mini-swe-agent v2 | swebench.harness.grading | Official SWE-bench images |
+| Terminal-Bench | terminus-2 | task-specific test.sh | Terminal-Bench images |
+| Custom | configurable | custom test.sh | custom Dockerfile |
 
 ## TITO Details
 
-**TITO** means:
-
-- **Token In**: SGLang applies `apply_chat_template()` itself and tokenizes the messages. The exact `input_token_ids` it used are returned in the response.
-- **Token Out**: Each output logprob item includes `token_id` (the exact token ID), not just the text token. `logprob_start_len=0` makes SGLang compute logprobs from position 0.
+- **Token In**: SGLang applies `apply_chat_template()` and tokenizes. The exact `input_token_ids` are returned in the response.
+- **Token Out**: Each output logprob item includes `token_id` (the exact token ID).
 
 ### Multi-turn merge
 
 ```
-Turn 1: [prompt_tokens] [response_tokens_1]         -> Sample 0, loss_mask = [1]*resp1_len
-Turn 2: [prompt_tokens] [response_tokens_1] [observation_tokens] [response_tokens_2]
-                                                      -> Sample 1, loss_mask = [1]*resp2_len
+Turn 1: [prompt_tokens] [response_tokens_1]         -> Sample 0
+Turn 2: [prompt_tokens] [response_tokens_1] [observation_tokens] [response_tokens_2] -> Sample 1
 
 merge_samples() ->
   tokens:    [prompt] [resp1] [obs] [resp2]
-  loss_mask: -------- [1]*r1  [0]*o [1]*r2     (observation tokens masked out)
+  loss_mask: -------- [1]*r1  [0]*o [1]*r2
   logprobs:  -------- [real]  [0.0] [real]
 ```
 
-Token continuity is guaranteed because each turn's `input_token_ids` extends the previous turn's full token sequence (SGLang re-tokenizes the full message history each turn).
+## Troubleshooting
+
+### Harbor Docker containers can't reach Miles Router
+
+Ensure task directories were created with `--docker-network swe-net` (via `prepare_harbor_tasks.py` or Harbor adapters). This generates a `docker-compose.yaml` override that joins the container to the shared network. Harbor containers must be on the same Docker network as the Miles container.
+
+### `TaskNotFound` error
+
+Ensure the task directory exists under `HARBOR_TASKS_DIR`. Run the appropriate adapter or `prepare_harbor_tasks.py` first.
+
+### First run is slow
+
+Each task uses a Docker image. First pull can be slow; subsequent runs use cached images. Agent installation per container (~30s overhead) can be eliminated by pre-baking into custom images.

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SWE-Agent V2 Debug: Qwen3-4B with Harbor
+# Agent V2 Debug: Qwen3-4B with Harbor
 # Minimal debug run to verify the full training pipeline
 
 pkill -9 sglang
@@ -14,14 +14,13 @@ pkill -9 python
 
 set -ex
 
-export PYTHONBUFFERED=1
+export PYTHONUNBUFFERED=1
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-# Harbor server URL
-export SWE_AGENT_URL="${SWE_AGENT_URL:-http://swe_env:11000}"
-export HARBOR_TASKS_DIR="${HARBOR_TASKS_DIR:-/root/harbor_tasks/swebench}"
-# Docker containers spawned by Harbor need to reach Miles Router via Docker network
+# Agent server URL (Harbor Trial API)
+export AGENT_SERVER_URL="${AGENT_SERVER_URL:-${SWE_AGENT_URL:-http://swe_env:11000}}"
+export HARBOR_TASKS_DIR="${HARBOR_TASKS_DIR:-/root/harbor_tasks}"
 export MILES_ROUTER_EXTERNAL_HOST="${MILES_ROUTER_EXTERNAL_HOST:-miles}"
 
 source /root/miles/scripts/models/qwen3-4B.sh
@@ -98,7 +97,7 @@ MISC_ARGS=(
     --attention-backend flash
 )
 
-# V2: Generic agentic generate + SWE-Agent custom agent function
+# V2: Generic agentic generate + custom agent function
 CUSTOM_ARGS=(
     --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
     --custom-agent-function-path swe_agent_function.run
@@ -116,15 +115,15 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR\": \"1\",
-    \"SWE_AGENT_URL\": \"${SWE_AGENT_URL}\",
-    \"SWE_AGENT_MODEL_NAME\": \"model\",
+    \"AGENT_SERVER_URL\": \"${AGENT_SERVER_URL}\",
+    \"AGENT_MODEL_NAME\": \"model\",
     \"MILES_ROUTER_EXTERNAL_HOST\": \"${MILES_ROUTER_EXTERNAL_HOST:-}\",
     \"HARBOR_TASKS_DIR\": \"${HARBOR_TASKS_DIR}\"
   }
 }"
 
 echo "Launching debug training..."
-echo "  SWE Agent URL: ${SWE_AGENT_URL}"
+echo "  Agent server:  ${AGENT_SERVER_URL}"
 echo "  Harbor tasks:  ${HARBOR_TASKS_DIR}"
 echo "  Model: Qwen3-4B"
 

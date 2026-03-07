@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# SWE-Agent V2: Direct Miles <-> mini-swe-agent with OpenAI chat format
-# Uses Harbor for agent orchestration + grading (replaces swegym_runner)
+# Agent V2: Miles <-> Harbor agent orchestration with OpenAI chat format
+# Supports any task type (SWE-bench, Terminal-Bench, custom) via Harbor
 
 pkill -9 sglang
 sleep 3
@@ -14,7 +14,7 @@ pkill -9 python
 
 set -ex
 
-export PYTHONBUFFERED=1
+export PYTHONUNBUFFERED=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -26,10 +26,10 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-# Harbor server URL (mini-swe-agent server with Harbor Trial API)
-export SWE_AGENT_URL="${SWE_AGENT_URL:-http://swe_env:11000}"
-# Harbor task directories (created by prepare_harbor_tasks.py --docker-network swe-net)
-export HARBOR_TASKS_DIR="${HARBOR_TASKS_DIR:-/root/harbor_tasks/swebench}"
+# Agent server URL (Harbor Trial API)
+export AGENT_SERVER_URL="${AGENT_SERVER_URL:-${SWE_AGENT_URL:-http://swe_env:11000}}"
+# Harbor task directories (created by adapters or prepare_harbor_tasks.py)
+export HARBOR_TASKS_DIR="${HARBOR_TASKS_DIR:-/root/harbor_tasks}"
 
 source "${SCRIPT_DIR}/../../../scripts/models/qwen3-4B-Instruct-2507.sh"
 
@@ -104,10 +104,13 @@ WANDB_ARGS=()
 if [ -n "$WANDB_KEY" ]; then
     WANDB_ARGS=(
         --use-wandb
-        --wandb-project miles-swe-agent-v2
-        --wandb-group swe-agent-v2-qwen3-4b
-        --wandb-key ${WANDB_KEY}
+        --wandb-project "${WANDB_PROJECT:-miles-agent-v2}"
+        --wandb-group "${WANDB_GROUP:-agent-v2-qwen3-4b}"
+        --wandb-key "${WANDB_KEY}"
     )
+    if [ -n "$WANDB_TEAM" ]; then
+        WANDB_ARGS+=(--wandb-team "${WANDB_TEAM}")
+    fi
 fi
 
 SGLANG_ARGS=(
@@ -124,7 +127,7 @@ MISC_ARGS=(
     --attention-backend flash
 )
 
-# V2: Generic agentic generate + SWE-Agent custom agent function
+# V2: Generic agentic generate + custom agent function
 CUSTOM_ARGS=(
     --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
     --custom-agent-function-path swe_agent_function.run
@@ -142,15 +145,15 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR\": \"1\",
-    \"SWE_AGENT_URL\": \"${SWE_AGENT_URL}\",
-    \"SWE_AGENT_MODEL_NAME\": \"model\",
+    \"AGENT_SERVER_URL\": \"${AGENT_SERVER_URL}\",
+    \"AGENT_MODEL_NAME\": \"model\",
     \"MILES_ROUTER_EXTERNAL_HOST\": \"${MILES_ROUTER_EXTERNAL_HOST:-}\",
     \"HARBOR_TASKS_DIR\": \"${HARBOR_TASKS_DIR}\"
   }
 }"
 
 echo "Launching training..."
-echo "  SWE Agent URL: ${SWE_AGENT_URL}"
+echo "  Agent server:  ${AGENT_SERVER_URL}"
 echo "  Harbor tasks:  ${HARBOR_TASKS_DIR}"
 
 ray job submit --address="http://127.0.0.1:8265" \

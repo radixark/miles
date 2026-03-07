@@ -64,7 +64,6 @@ def setup_session_routes(app, router: "MilesRouter"):
         response = json.loads(result["response_body"])
 
         choice = response.get("choices", [{}])[0]
-        # messages = request_body["messages"] + [choice["message"]]
 
         if "logprobs" not in choice or "content" not in choice["logprobs"]:
             raise RuntimeError("logprobs must be in choice")
