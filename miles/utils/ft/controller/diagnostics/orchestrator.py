@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 
+from miles.utils.ft.agents.diagnostics.gpu_diagnostic import GpuDiagnostic
 from miles.utils.ft.agents.diagnostics.nccl.inter_machine import (
     InterMachineCommDiagnostic,
 )
@@ -158,6 +159,9 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             )
             return bad_node_ids, remaining_agents
 
+        if diagnostic_type == GpuDiagnostic.diagnostic_type:
+            return await self._run_gpu_step(remaining_agents)
+
         return await self._run_step(
             diagnostic_type=diagnostic_type,
             agents=remaining_agents,
@@ -168,16 +172,13 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
     # Single-node step (gpu, intra_machine, etc.)
     # ------------------------------------------------------------------
 
-    async def _run_step(
+    async def _gather_diagnostic_results(
         self,
         diagnostic_type: str,
         agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
-    ) -> tuple[list[str], dict[str, NodeAgentProtocol]]:
-        """Run one diagnostic step on all agents.
-
-        Returns (bad_node_ids, remaining_agents_without_bad_nodes).
-        """
+    ) -> dict[str, DiagnosticResult]:
+        """Run one diagnostic on all agents and return the raw results."""
         node_ids = list(agents.keys())
         logger.info(
             "diagnostic_step_start type=%s nodes=%s",
@@ -193,8 +194,14 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             )
             for node_id in node_ids
         ))
-        results = dict(zip(node_ids, raw_results))
+        return dict(zip(node_ids, raw_results))
 
+    @staticmethod
+    def _partition_results(
+        results: dict[str, DiagnosticResult],
+        agents: dict[str, NodeAgentProtocol],
+        diagnostic_type: str,
+    ) -> tuple[list[str], dict[str, NodeAgentProtocol]]:
         bad_node_ids: list[str] = []
         remaining: dict[str, NodeAgentProtocol] = {}
         for node_id, result in results.items():
@@ -206,8 +213,125 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                     "diagnostic_node_failed type=%s node=%s details=%s",
                     diagnostic_type, node_id, result.details,
                 )
+        return bad_node_ids, remaining
+
+    async def _run_step(
+        self,
+        diagnostic_type: str,
+        agents: dict[str, NodeAgentProtocol],
+        timeout_seconds: int,
+    ) -> tuple[list[str], dict[str, NodeAgentProtocol]]:
+        """Run one diagnostic step on all agents.
+
+        Returns (bad_node_ids, remaining_agents_without_bad_nodes).
+        """
+        results = await self._gather_diagnostic_results(
+            diagnostic_type=diagnostic_type,
+            agents=agents,
+            timeout_seconds=timeout_seconds,
+        )
+        return self._partition_results(
+            results=results, agents=agents, diagnostic_type=diagnostic_type,
+        )
+
+    # ------------------------------------------------------------------
+    # GPU step with cross-node hash comparison
+    # ------------------------------------------------------------------
+
+    async def _run_gpu_step(
+        self,
+        remaining_agents: dict[str, NodeAgentProtocol],
+    ) -> tuple[list[str], dict[str, NodeAgentProtocol]]:
+        """Run GPU diagnostic with cross-node compute hash comparison.
+
+        First partitions by local pass/fail (nvml + compute errors).
+        Then compares compute hashes across locally-passed nodes to detect
+        SDC outliers via majority vote (bitwise alignment test).
+        """
+        results = await self._gather_diagnostic_results(
+            diagnostic_type=GpuDiagnostic.diagnostic_type,
+            agents=remaining_agents,
+            timeout_seconds=self._default_timeout_seconds,
+        )
+
+        bad_node_ids, remaining = self._partition_results(
+            results=results, agents=remaining_agents,
+            diagnostic_type=GpuDiagnostic.diagnostic_type,
+        )
+
+        passed_results = {
+            nid: results[nid] for nid in remaining
+        }
+        hash_outliers = self._find_gpu_hash_outlier_nodes(passed_results)
+        if hash_outliers:
+            bad_node_ids.extend(hash_outliers)
+            remaining = {
+                nid: agent for nid, agent in remaining.items()
+                if nid not in set(hash_outliers)
+            }
 
         return bad_node_ids, remaining
+
+    @staticmethod
+    def _find_gpu_hash_outlier_nodes(
+        results: dict[str, DiagnosticResult],
+    ) -> list[str]:
+        """Compare compute hashes across nodes, return nodes with minority hashes.
+
+        For each GPU index, the most common hash is considered correct
+        (majority vote). Nodes whose hash differs are outliers.
+
+        If no clear majority exists (majority_count <= total/2), we assume
+        non-determinism rather than SDC and skip that GPU index.
+        """
+        node_gpu_hashes: dict[str, dict[str, str]] = {}
+        for node_id, result in results.items():
+            if result.metadata and "compute_hashes" in result.metadata:
+                node_gpu_hashes[node_id] = result.metadata["compute_hashes"]
+
+        if len(node_gpu_hashes) < 2:
+            return []
+
+        all_gpu_indices: set[str] = set()
+        for hashes in node_gpu_hashes.values():
+            all_gpu_indices.update(hashes.keys())
+
+        outlier_nodes: set[str] = set()
+
+        for gpu_idx in sorted(all_gpu_indices):
+            hash_to_nodes: dict[str, list[str]] = {}
+            for node_id, hashes in node_gpu_hashes.items():
+                h = hashes.get(gpu_idx, "")
+                if h:
+                    hash_to_nodes.setdefault(h, []).append(node_id)
+
+            if len(hash_to_nodes) <= 1:
+                continue
+
+            total = sum(len(nodes) for nodes in hash_to_nodes.values())
+            majority_hash = max(hash_to_nodes, key=lambda h: len(hash_to_nodes[h]))
+            majority_count = len(hash_to_nodes[majority_hash])
+
+            if majority_count <= total / 2:
+                logger.warning(
+                    "gpu_hash_no_majority gpu_idx=%s hash_distribution=%s — "
+                    "possible non-determinism, skipping this GPU index",
+                    gpu_idx,
+                    {h[:12]: len(n) for h, n in hash_to_nodes.items()},
+                )
+                continue
+
+            for h, nodes in hash_to_nodes.items():
+                if h != majority_hash:
+                    logger.info(
+                        "gpu_hash_outlier gpu_idx=%s nodes=%s "
+                        "outlier_hash=%s majority_hash=%s (%d/%d nodes agree)",
+                        gpu_idx, nodes, h[:12], majority_hash[:12],
+                        majority_count, total,
+                    )
+                    outlier_nodes.update(nodes)
+
+        return sorted(outlier_nodes)
 
     # ------------------------------------------------------------------
     # Helpers

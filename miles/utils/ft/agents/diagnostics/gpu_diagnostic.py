@@ -1,7 +1,12 @@
-"""GpuDiagnostic — pynvml extended checks + GPU matmul correctness verification.
+"""GpuDiagnostic — pynvml extended checks + deterministic compute fingerprinting.
 
 Launches ``gpu_check_script`` as a subprocess so that pynvml init/shutdown
 and torch computation never block the NodeAgent event loop.
+
+Per-GPU results include nvml health status and a SHA256 hash of a
+deterministic computation.  The hashes are forwarded via
+``DiagnosticResult.metadata["compute_hashes"]`` so the orchestrator can
+compare across nodes and identify outliers (bitwise alignment test).
 """
 from __future__ import annotations
 
@@ -45,7 +50,7 @@ class GpuDiagnostic(BaseDiagnostic):
         if isinstance(gpu_results, DiagnosticResult):
             return gpu_results
 
-        return self._collect_failures(gpu_results=gpu_results, node_id=node_id)
+        return self._collect_results(gpu_results=gpu_results, node_id=node_id)
 
     async def _run_check_subprocess(
         self, node_id: str, timeout_seconds: int,
@@ -81,7 +86,7 @@ class GpuDiagnostic(BaseDiagnostic):
             )
             return self._fail(node_id, "invalid output from gpu check")
 
-    def _collect_failures(
+    def _collect_results(
         self, gpu_results: list[dict[str, object]], node_id: str,
     ) -> DiagnosticResult:
         if not gpu_results:
@@ -89,11 +94,24 @@ class GpuDiagnostic(BaseDiagnostic):
             return self._fail(node_id, "gpu check returned no results")
 
         failed_gpus: list[str] = []
+        compute_hashes: dict[str, str] = {}
+
         for gpu_result in gpu_results:
-            if not gpu_result.get("passed", False):
-                gpu_index = gpu_result.get("gpu_index", "?")
+            gpu_index = str(gpu_result.get("gpu_index", "?"))
+
+            if not gpu_result.get("nvml_passed", False):
                 details = gpu_result.get("details", "unknown failure")
                 failed_gpus.append(f"GPU {gpu_index}: {details}")
+
+            compute_error = gpu_result.get("compute_error", "")
+            if compute_error:
+                failed_gpus.append(f"GPU {gpu_index}: compute error: {compute_error}")
+
+            compute_hash = gpu_result.get("compute_hash", "")
+            if compute_hash:
+                compute_hashes[gpu_index] = compute_hash
+
+        metadata = {"compute_hashes": compute_hashes} if compute_hashes else None
 
         if failed_gpus:
             all_details = "; ".join(failed_gpus)
@@ -101,6 +119,6 @@ class GpuDiagnostic(BaseDiagnostic):
                 "gpu_check_failures node_id=%s failures=%s",
                 node_id, all_details,
             )
-            return self._fail(node_id, all_details)
+            return self._fail(node_id, all_details, metadata=metadata)
 
-        return self._pass(node_id, "all GPU checks passed")
+        return self._pass(node_id, "all GPU checks passed", metadata=metadata)

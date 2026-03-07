@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.protocols.agents import DiagnosticProtocol
@@ -24,14 +25,22 @@ class BaseDiagnostic(DiagnosticProtocol, ABC):
                 f"{cls.__name__} must define a 'diagnostic_type' class attribute"
             )
 
-    def _fail(self, node_id: str, details: str) -> DiagnosticResult:
+    def _fail(
+        self, node_id: str, details: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> DiagnosticResult:
         return DiagnosticResult.fail_result(
-            diagnostic_type=self.diagnostic_type, node_id=node_id, details=details,
+            diagnostic_type=self.diagnostic_type, node_id=node_id,
+            details=details, metadata=metadata,
         )
 
-    def _pass(self, node_id: str, details: str) -> DiagnosticResult:
+    def _pass(
+        self, node_id: str, details: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> DiagnosticResult:
         return DiagnosticResult.pass_result(
-            diagnostic_type=self.diagnostic_type, node_id=node_id, details=details,
+            diagnostic_type=self.diagnostic_type, node_id=node_id,
+            details=details, metadata=metadata,
         )
 
     @abstractmethod
