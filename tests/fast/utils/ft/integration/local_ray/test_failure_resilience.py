@@ -152,6 +152,7 @@ class TestApplicationExceptionNotRetried:
                     world_size=1,
                     node_id="",
                     exporter_address="",
+                    pid=1000,
                 ), timeout=5)
             except ray.exceptions.RayTaskError:
                 error_count += 1

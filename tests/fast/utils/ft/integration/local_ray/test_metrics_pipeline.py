@@ -149,6 +149,7 @@ class TestRankExporterRegisteredAsScrapeTarget:
                 world_size=1,
                 node_id="n0",
                 exporter_address=exporter.get_address(),
+                pid=1000,
             ), timeout=5)
 
             time.sleep(0.3)
@@ -178,6 +179,7 @@ class TestNanLossTriggersRecovery:
             ray.get(handle.register_training_rank.remote(
                 run_id=run_id, rank=0, world_size=1,
                 node_id="nan-node", exporter_address="http://nan-node:9090",
+                pid=1000,
             ), timeout=5)
 
             ray.get(handle.log_step.remote(
@@ -237,6 +239,7 @@ class TestHangDetectionFullPath:
                 ray.get(handle.register_training_rank.remote(
                     run_id=run_id, rank=0, world_size=1,
                     node_id="hang-node", exporter_address=exporter.get_address(),
+                    pid=1000,
                 ), timeout=5)
 
                 deadline = time.monotonic() + 20.0

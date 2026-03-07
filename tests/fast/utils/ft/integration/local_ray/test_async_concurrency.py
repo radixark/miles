@@ -37,6 +37,7 @@ class TestRunLoopInterleaving:
         ray.get(handle.register_training_rank.remote(
             run_id=run_id, rank=0, world_size=1,
             node_id="n0", exporter_address="http://n0:9090",
+            pid=1000,
         ), timeout=5)
 
         status = get_status(handle)
@@ -90,6 +91,7 @@ class TestConcurrentRegisterTrainingRank:
                 world_size=8,
                 node_id=f"n-{i}",
                 exporter_address=f"http://n-{i}:9090",
+                pid=1000 + i,
             )
             for i in range(8)
         ]

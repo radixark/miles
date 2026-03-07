@@ -64,6 +64,7 @@ def simulated_env(
     ray.get(controller.register_training_rank.remote(
         run_id=run_id, rank=0, world_size=1,
         node_id="sim-node-0", exporter_address="http://sim-node-0:9090",
+        pid=1000,
     ), timeout=5)
 
     injector = LocalRayFaultInjector(state_actor=state_actor)
@@ -147,6 +148,7 @@ def hang_simulated_env(
     ray.get(controller.register_training_rank.remote(
         run_id=run_id, rank=0, world_size=1,
         node_id="hang-node", exporter_address=exporter.get_address(),
+        pid=1000,
     ), timeout=5)
 
     injector = LocalRayFaultInjector(state_actor=state_actor)

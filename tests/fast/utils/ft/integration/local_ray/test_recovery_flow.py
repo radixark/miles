@@ -91,6 +91,7 @@ class TestRecoveryTriggeredByDetector:
             world_size=1,
             node_id="n0",
             exporter_address="http://n0:9090",
+            pid=1000,
         ), timeout=5)
 
         def _in_recovery() -> bool:
@@ -121,6 +122,7 @@ class TestRecoveryPhaseHistoryRecorded:
         ray.get(handle.register_training_rank.remote(
             run_id=run_id, rank=0, world_size=1,
             node_id="n0", exporter_address="http://n0:9090",
+            pid=1000,
         ), timeout=5)
 
         def _recovery_done_or_monitoring() -> bool:
@@ -155,6 +157,7 @@ class TestStatusDuringRecovery:
         ray.get(handle.register_training_rank.remote(
             run_id=run_id, rank=0, world_size=1,
             node_id="n0", exporter_address="http://n0:9090",
+            pid=1000,
         ), timeout=5)
 
         def _has_recovery_phase() -> bool:
@@ -184,6 +187,7 @@ class TestControllerKilledDuringRecovery:
         ray.get(handle.register_training_rank.remote(
             run_id=run_id, rank=0, world_size=1,
             node_id="n0", exporter_address="http://n0:9090",
+            pid=1000,
         ), timeout=5)
 
         def _in_recovery() -> bool:
