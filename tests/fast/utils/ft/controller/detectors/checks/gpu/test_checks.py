@@ -1,5 +1,5 @@
 """Tests for GPU-specific fault checks (gpu_lost, non-auto-recoverable XID)."""
-from miles.utils.ft.controller.detectors.gpu.checks import (
+from miles.utils.ft.controller.detectors.checks.gpu.checks import (
     _check_non_auto_recoverable_xid,
 )
 from miles.utils.ft.models.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL

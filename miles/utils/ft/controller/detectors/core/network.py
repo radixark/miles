@@ -3,7 +3,7 @@ from datetime import timedelta
 from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.detectors.hardware_checks import check_nic_down_in_window
+from miles.utils.ft.controller.detectors.checks.hardware import check_nic_down_in_window
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import Decision, TriggerType
 

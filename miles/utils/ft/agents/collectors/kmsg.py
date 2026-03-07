@@ -13,7 +13,7 @@ from miles.utils.ft.agents.collectors.kernel_log_reader import (
     KernelLogReader,
     KmsgFileReader,
 )
-from miles.utils.ft.controller.detectors.gpu.xid_catalog.info import NON_AUTO_RECOVERABLE_XIDS
+from miles.utils.ft.controller.detectors.checks.gpu.xid_catalog.info import NON_AUTO_RECOVERABLE_XIDS
 from miles.utils.ft.models.metrics import CounterSample, GaugeSample
 
 logger = logging.getLogger(__name__)

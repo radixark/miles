@@ -18,8 +18,8 @@ import httpx
 import pytest
 
 from miles.utils.ft.controller.detectors.base import DetectorContext
-from miles.utils.ft.controller.detectors.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.controller.detectors.hardware_checks import (
+from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
+from miles.utils.ft.controller.detectors.checks.hardware import (
     _check_disk_fault,
     _check_majority_nic_down,
     check_nic_down_in_window,

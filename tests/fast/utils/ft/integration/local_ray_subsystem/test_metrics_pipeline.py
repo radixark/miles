@@ -10,7 +10,7 @@ from prometheus_client import Gauge
 
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.detectors.nan_loss import NanLossDetector
+from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.models.recovery import ControllerMode
 from miles.utils.ft.models.diagnostics import DiagnosticResult

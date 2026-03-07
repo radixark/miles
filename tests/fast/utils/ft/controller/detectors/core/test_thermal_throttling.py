@@ -7,7 +7,7 @@ from tests.fast.utils.ft.helpers import (
     make_fake_mini_wandb,
 )
 
-from miles.utils.ft.controller.detectors.thermal_throttling import (
+from miles.utils.ft.controller.detectors.core.thermal_throttling import (
     ThermalThrottlingDetector,
     ThermalThrottlingDetectorConfig,
 )

@@ -10,7 +10,7 @@ from tests.fast.utils.ft.helpers import (
     make_fake_metric_store,
 )
 
-from miles.utils.ft.controller.detectors.hardware import HighConfidenceHardwareDetector
+from miles.utils.ft.controller.detectors.core.hardware import HighConfidenceHardwareDetector
 from miles.utils.ft.models.fault import ActionType
 
 

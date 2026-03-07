@@ -7,7 +7,7 @@ from tests.fast.utils.ft.helpers import (
     make_fake_mini_wandb,
 )
 
-from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
+from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.models.fault import ActionType
 

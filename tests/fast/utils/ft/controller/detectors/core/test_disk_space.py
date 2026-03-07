@@ -1,4 +1,4 @@
-from miles.utils.ft.controller.detectors.disk_space import DiskSpaceLowDetector
+from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
 from miles.utils.ft.models.fault import ActionType
 from tests.fast.utils.ft.helpers import (
     inject_disk_fault,

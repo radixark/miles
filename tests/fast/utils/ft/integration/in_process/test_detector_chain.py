@@ -14,9 +14,9 @@ from tests.fast.utils.ft.helpers import (
 )
 
 from miles.utils.ft.controller.detectors.chain import DetectorChainConfig, build_detector_chain
-from miles.utils.ft.controller.detectors.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
-from miles.utils.ft.controller.detectors.network import NetworkAlertDetector, NetworkAlertDetectorConfig
+from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
+from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
+from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
 from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT, NODE_NETWORK_UP
 from miles.utils.ft.models.fault import ActionType
 from miles.utils.ft.models.metrics import GaugeSample

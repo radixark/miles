@@ -2,7 +2,7 @@ import polars as pl
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.detectors.mfu_health import check_mfu_health
+from miles.utils.ft.controller.detectors.checks.mfu_health import check_mfu_health
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.metric_names import DCGM_FI_DEV_GPU_TEMP

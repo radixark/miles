@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from miles.utils.ft.controller.detectors.hardware_checks import (
+from miles.utils.ft.controller.detectors.checks.hardware import (
     check_all_hardware_faults,
     check_nic_down_in_window,
 )

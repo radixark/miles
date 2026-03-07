@@ -3,17 +3,17 @@ from __future__ import annotations
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
-from miles.utils.ft.controller.detectors.disk_space import DiskSpaceLowDetector
-from miles.utils.ft.controller.detectors.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.controller.detectors.hardware import HighConfidenceHardwareDetector
-from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
-from miles.utils.ft.controller.detectors.nan_loss import NanLossDetector
-from miles.utils.ft.controller.detectors.network import NetworkAlertDetector, NetworkAlertDetectorConfig
-from miles.utils.ft.controller.detectors.thermal_throttling import (
+from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
+from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
+from miles.utils.ft.controller.detectors.core.hardware import HighConfidenceHardwareDetector
+from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
+from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
+from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
+from miles.utils.ft.controller.detectors.core.thermal_throttling import (
     ThermalThrottlingDetector,
     ThermalThrottlingDetectorConfig,
 )
-from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.models.base import FtBaseModel
 
 

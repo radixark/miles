@@ -5,7 +5,7 @@ import asyncio
 import time
 from collections.abc import Callable
 
-from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
 from miles.utils.ft.models.recovery import ControllerMode
 

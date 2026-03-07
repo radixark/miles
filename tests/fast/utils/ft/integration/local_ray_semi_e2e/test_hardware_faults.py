@@ -6,8 +6,8 @@ import time
 from collections.abc import Callable
 
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
-from miles.utils.ft.controller.detectors.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
-from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
+from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.models.metric_names import GPU_AVAILABLE, NODE_FILESYSTEM_AVAIL_BYTES, XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
 from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.models.recovery import ControllerMode

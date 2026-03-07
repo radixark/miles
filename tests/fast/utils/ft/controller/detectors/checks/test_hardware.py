@@ -4,7 +4,7 @@ import pytest
 
 from datetime import timedelta
 
-from miles.utils.ft.controller.detectors.hardware_checks import (
+from miles.utils.ft.controller.detectors.checks.hardware import (
     _check_disk_fault,
     _check_majority_nic_down,
     check_all_hardware_faults,

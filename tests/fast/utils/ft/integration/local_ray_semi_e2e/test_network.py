@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
-from miles.utils.ft.controller.detectors.network import NetworkAlertDetector, NetworkAlertDetectorConfig
+from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
 from miles.utils.ft.models.metric_names import NODE_NETWORK_UP
 from miles.utils.ft.models.metrics import GaugeSample
 from miles.utils.ft.models.recovery import ControllerMode

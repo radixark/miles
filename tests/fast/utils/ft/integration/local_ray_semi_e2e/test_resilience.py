@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import ray
 
-from miles.utils.ft.controller.detectors.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.models.recovery import ControllerMode
 from miles.utils.ft.protocols.platform import ft_controller_actor_name
 
