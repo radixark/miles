@@ -91,12 +91,10 @@ class TestDiagnosticPipelineAllPass:
             pipeline=["gpu"],
         )
 
-        # DIAGNOSING: all pass → NOTIFY
+        # DIAGNOSING → NOTIFY → DONE chains in a single step()
         await harness.controller._tick()
-        assert orch.phase == RecoveryPhase.NOTIFY
-
-        # NOTIFY → DONE
-        await harness.controller._tick()
+        assert RecoveryPhase.NOTIFY in orch.phase_history
+        assert orch.is_done()
 
         await advance_until_recovery_complete(harness)
 
@@ -117,9 +115,10 @@ class TestDiagnosticPipelineEmptyPipeline:
         )
         assert orch.phase == RecoveryPhase.DIAGNOSING
 
-        # Empty pipeline → NOTIFY
+        # Empty pipeline → NOTIFY → DONE chains in a single step()
         await harness.controller._tick()
-        assert orch.phase == RecoveryPhase.NOTIFY
+        assert RecoveryPhase.NOTIFY in orch.phase_history
+        assert orch.is_done()
 
 
 class TestDiagnosticPipelineInterMachine:
@@ -159,11 +158,10 @@ class TestDiagnosticPipelineInterMachine:
             pipeline=["gpu", "intra_machine", "inter_machine"],
         )
 
+        # DIAGNOSING → NOTIFY → DONE chains in a single step()
         await harness.controller._tick()
-
-        assert orch.phase == RecoveryPhase.NOTIFY
-
-        await harness.controller._tick()
+        assert RecoveryPhase.NOTIFY in orch.phase_history
+        assert orch.is_done()
 
         await advance_until_recovery_complete(harness)
 

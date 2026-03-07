@@ -103,16 +103,15 @@ class TestCrashReattemptFailDiagnoseNotify:
         orch = harness.controller._recovery_manager._orchestrator
         assert orch is not None
 
+        # step() chains phases: REATTEMPTING → poll FAILED → DIAGNOSING → NOTIFY → DONE
         for _ in range(20):
-            if orch.phase == RecoveryPhase.DIAGNOSING:
+            if orch.is_done():
                 break
             await harness.controller._tick()
-        assert orch.phase == RecoveryPhase.DIAGNOSING
 
-        await harness.controller._tick()
-        assert orch.phase == RecoveryPhase.NOTIFY
-
-        await harness.controller._tick()
+        assert RecoveryPhase.DIAGNOSING in orch.phase_history
+        assert RecoveryPhase.NOTIFY in orch.phase_history
+        assert orch.is_done()
         assert not harness.controller._recovery_manager.in_progress
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
