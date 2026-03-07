@@ -1,4 +1,4 @@
-"""Tests for RestartStepper and RestartState classes."""
+"""Tests for restart stepper handler classes."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -7,14 +7,17 @@ import pytest
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.restart_stepper import (
+    RESTART_HANDLER_MAP,
     Evicting,
     MonitoringProgress,
+    RestartContext,
     RestartDone,
     RestartFailed,
-    RestartStepper,
     StoppingAndRestarting,
+    iteration_progress,
 )
 from miles.utils.ft.protocols.platform import JobStatus
+from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 from tests.fast.utils.ft.helpers.controller_fakes import (
     FakeNodeManager,
@@ -26,7 +29,11 @@ from tests.fast.utils.ft.helpers.controller_fakes import (
 )
 
 
-def _make_stepper(
+def _make_stepper() -> StateMachineStepper:
+    return StateMachineStepper(handler_map=RESTART_HANDLER_MAP)
+
+
+def _make_context(
     *,
     node_manager: FakeNodeManager | None = None,
     training_job: FakeTrainingJob | None = None,
@@ -35,8 +42,8 @@ def _make_stepper(
     on_new_run: object | None = None,
     monitoring_success_iterations: int = 10,
     monitoring_timeout_seconds: int = 600,
-) -> RestartStepper:
-    return RestartStepper(
+) -> RestartContext:
+    return RestartContext(
         node_manager=node_manager or FakeNodeManager(),
         training_job=training_job or FakeTrainingJob(),
         mini_wandb=mini_wandb or MiniWandb(),
@@ -56,10 +63,11 @@ class TestEvicting:
     @pytest.mark.asyncio
     async def test_evicting_marks_bad_and_transitions_to_stopping(self) -> None:
         node_manager = FakeNodeManager()
-        stepper = _make_stepper(node_manager=node_manager)
+        stepper = _make_stepper()
+        ctx = _make_context(node_manager=node_manager)
 
         state = Evicting(bad_node_ids=["node-A"])
-        result = await stepper(state)
+        result = await stepper(state, ctx)
 
         assert isinstance(result, StoppingAndRestarting)
         assert result.bad_node_ids == ["node-A"]
@@ -69,45 +77,49 @@ class TestEvicting:
     async def test_evicting_skips_already_bad_nodes(self) -> None:
         node_manager = FakeNodeManager()
         await node_manager.mark_node_bad("node-A", reason="prior")
-        stepper = _make_stepper(node_manager=node_manager)
+        stepper = _make_stepper()
+        ctx = _make_context(node_manager=node_manager)
 
         state = Evicting(bad_node_ids=["node-A"])
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, StoppingAndRestarting)
 
     @pytest.mark.asyncio
     async def test_evicting_failure_returns_restart_failed(self) -> None:
         node_manager = FakeNodeManager()
         node_manager.mark_node_bad = failing_mark_node_bad  # type: ignore[assignment]
-        stepper = _make_stepper(node_manager=node_manager)
+        stepper = _make_stepper()
+        ctx = _make_context(node_manager=node_manager)
 
         state = Evicting(bad_node_ids=["node-A"])
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
         assert result.bad_node_ids == ["node-A"]
 
     @pytest.mark.asyncio
     async def test_evicting_sends_notification(self) -> None:
         notifier = FakeNotifier()
-        stepper = _make_stepper(notifier=notifier)
+        stepper = _make_stepper()
+        ctx = _make_context(notifier=notifier)
 
         state = Evicting(bad_node_ids=["node-X"])
-        await stepper(state)
+        await stepper(state, ctx)
 
         assert len(notifier.calls) == 1
         assert "Evicted" in notifier.calls[0][1]
 
     @pytest.mark.asyncio
     async def test_all_already_bad_still_submits(self) -> None:
-        """All nodes already marked bad → still transitions to StoppingAndRestarting."""
+        """All nodes already marked bad -> still transitions to StoppingAndRestarting."""
         node_manager = FakeNodeManager()
         await node_manager.mark_node_bad("node-A", reason="prior")
         await node_manager.mark_node_bad("node-B", reason="prior")
         training_job = FakeTrainingJob()
-        stepper = _make_stepper(node_manager=node_manager, training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(node_manager=node_manager, training_job=training_job)
 
         state = Evicting(bad_node_ids=["node-A", "node-B"])
-        result = await stepper(state)
+        result = await stepper(state, ctx)
 
         assert isinstance(result, StoppingAndRestarting)
         assert result.bad_node_ids == ["node-A", "node-B"]
@@ -122,10 +134,11 @@ class TestStoppingAndRestarting:
     @pytest.mark.asyncio
     async def test_submit_phase_calls_stop_and_submit(self) -> None:
         training_job = FakeTrainingJob()
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         state = StoppingAndRestarting(bad_node_ids=["node-A"])
-        result = await stepper(state)
+        result = await stepper(state, ctx)
 
         assert isinstance(result, StoppingAndRestarting)
         assert result.submitted is True
@@ -137,10 +150,11 @@ class TestStoppingAndRestarting:
     async def test_submit_failure_returns_restart_failed(self) -> None:
         training_job = FakeTrainingJob()
         training_job.submit_training = failing_submit_training  # type: ignore[assignment]
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         state = StoppingAndRestarting()
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
 
     @pytest.mark.asyncio
@@ -149,10 +163,11 @@ class TestStoppingAndRestarting:
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=100, metrics={"iteration": 50})
-        stepper = _make_stepper(training_job=training_job, mini_wandb=mini_wandb)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job, mini_wandb=mini_wandb)
 
         state = StoppingAndRestarting(submitted=True, submit_time=datetime.now(timezone.utc))
-        result = await stepper(state)
+        result = await stepper(state, ctx)
 
         assert isinstance(result, MonitoringProgress)
         assert result.base_iteration == 50
@@ -160,51 +175,53 @@ class TestStoppingAndRestarting:
     @pytest.mark.asyncio
     async def test_poll_failed_returns_restart_failed(self) -> None:
         training_job = FakeTrainingJob(status_sequence=[JobStatus.FAILED])
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         state = StoppingAndRestarting(submitted=True, submit_time=datetime.now(timezone.utc))
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
 
     @pytest.mark.asyncio
     async def test_poll_pending_timeout_returns_restart_failed(self) -> None:
         training_job = FakeTrainingJob(status_sequence=[JobStatus.PENDING])
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=400)
         state = StoppingAndRestarting(submitted=True, submit_time=old_time)
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
 
     @pytest.mark.asyncio
     async def test_poll_pending_within_timeout_returns_none(self) -> None:
         training_job = FakeTrainingJob(status_sequence=[JobStatus.PENDING])
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         state = StoppingAndRestarting(submitted=True, submit_time=datetime.now(timezone.utc))
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_on_new_run_callback_called(self) -> None:
         captured_run_ids: list[str] = []
         training_job = FakeTrainingJob()
-        stepper = _make_stepper(
-            training_job=training_job,
-            on_new_run=captured_run_ids.append,
-        )
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job, on_new_run=captured_run_ids.append)
 
         state = StoppingAndRestarting(bad_node_ids=[])
-        await stepper(state)
+        await stepper(state, ctx)
         assert len(captured_run_ids) == 1
 
     @pytest.mark.asyncio
     async def test_submit_excludes_bad_nodes(self) -> None:
         training_job = FakeTrainingJob()
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         state = StoppingAndRestarting(bad_node_ids=["node-B"])
-        await stepper(state)
+        await stepper(state, ctx)
         assert training_job._last_excluded_node_ids == ["node-B"]
 
     @pytest.mark.asyncio
@@ -212,10 +229,11 @@ class TestStoppingAndRestarting:
         """After stop_training fails but job is already stopped, submit_training proceeds."""
         training_job = FakeTrainingJob(status_sequence=[JobStatus.STOPPED])
         training_job.stop_training = failing_stop_training  # type: ignore[assignment]
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         state = StoppingAndRestarting(bad_node_ids=["node-A"])
-        result = await stepper(state)
+        result = await stepper(state, ctx)
 
         assert isinstance(result, StoppingAndRestarting)
         assert result.submitted is True
@@ -234,7 +252,8 @@ class TestMonitoringProgress:
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=200, metrics={"iteration": 110})
-        stepper = _make_stepper(
+        stepper = _make_stepper()
+        ctx = _make_context(
             training_job=training_job,
             mini_wandb=mini_wandb,
             monitoring_success_iterations=10,
@@ -245,27 +264,29 @@ class TestMonitoringProgress:
             start_time=datetime.now(timezone.utc),
             base_iteration=100,
         )
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartDone)
         assert result.bad_node_ids == ["node-A"]
 
     @pytest.mark.asyncio
     async def test_monitoring_job_failed(self) -> None:
         training_job = FakeTrainingJob(status_sequence=[JobStatus.FAILED])
-        stepper = _make_stepper(training_job=training_job)
+        stepper = _make_stepper()
+        ctx = _make_context(training_job=training_job)
 
         state = MonitoringProgress(
             start_time=datetime.now(timezone.utc),
             base_iteration=0,
         )
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
 
     @pytest.mark.asyncio
     async def test_monitoring_timeout(self) -> None:
         training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
-        stepper = _make_stepper(
+        stepper = _make_stepper()
+        ctx = _make_context(
             training_job=training_job,
             mini_wandb=mini_wandb,
             monitoring_timeout_seconds=60,
@@ -273,7 +294,7 @@ class TestMonitoringProgress:
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
         state = MonitoringProgress(start_time=old_time, base_iteration=0)
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
 
     @pytest.mark.asyncio
@@ -282,7 +303,8 @@ class TestMonitoringProgress:
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 3})
-        stepper = _make_stepper(
+        stepper = _make_stepper()
+        ctx = _make_context(
             training_job=training_job,
             mini_wandb=mini_wandb,
             monitoring_success_iterations=10,
@@ -292,17 +314,18 @@ class TestMonitoringProgress:
             start_time=datetime.now(timezone.utc),
             base_iteration=0,
         )
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_monitoring_timeout_transitions_to_failed(self) -> None:
-        """Partial progress but timeout expired → RestartFailed."""
+        """Partial progress but timeout expired -> RestartFailed."""
         training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 5})
-        stepper = _make_stepper(
+        stepper = _make_stepper()
+        ctx = _make_context(
             training_job=training_job,
             mini_wandb=mini_wandb,
             monitoring_success_iterations=100,
@@ -311,7 +334,7 @@ class TestMonitoringProgress:
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
         state = MonitoringProgress(start_time=old_time, base_iteration=0)
-        result = await stepper(state)
+        result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
 
     @pytest.mark.parametrize(
@@ -327,20 +350,19 @@ class TestMonitoringProgress:
         ],
         ids=["nan", "inf", "neg_inf", "none", "negative_raw", "zero_raw", "normal"],
     )
-    def test_iteration_progress_nan_inf_none_boundary_values(
+    def test_iteration_progress_boundary_values(
         self, metric_value: float | None, expected_progress: int,
     ) -> None:
         mini_wandb = MiniWandb()
         if metric_value is not None:
             mini_wandb.set_active_run_id("r")
             mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": metric_value})
-        stepper = _make_stepper(mini_wandb=mini_wandb)
 
         state = MonitoringProgress(
             start_time=datetime.now(timezone.utc),
             base_iteration=100,
         )
-        assert stepper._iteration_progress(state) == expected_progress
+        assert iteration_progress(state=state, mini_wandb=mini_wandb) == expected_progress
 
 
 # ---------------------------------------------------------------------------
@@ -352,13 +374,15 @@ class TestTerminalStates:
     @pytest.mark.asyncio
     async def test_restart_done_is_terminal(self) -> None:
         stepper = _make_stepper()
-        result = await stepper(RestartDone())
+        ctx = _make_context()
+        result = await stepper(RestartDone(), ctx)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_restart_failed_is_terminal(self) -> None:
         stepper = _make_stepper()
-        result = await stepper(RestartFailed())
+        ctx = _make_context()
+        result = await stepper(RestartFailed(), ctx)
         assert result is None
 
 
@@ -375,7 +399,8 @@ class TestFullRestartFlow:
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
-        stepper = _make_stepper(
+        stepper = _make_stepper()
+        ctx = _make_context(
             training_job=training_job,
             mini_wandb=mini_wandb,
             monitoring_success_iterations=5,
@@ -383,22 +408,22 @@ class TestFullRestartFlow:
 
         # Step 1: Evicting -> StoppingAndRestarting
         state = Evicting(bad_node_ids=["node-A"])
-        state = await stepper(state)
+        state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
 
         # Step 2: Submit
-        state = await stepper(state)
+        state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
         assert state.submitted
 
         # Step 3: Poll -> MonitoringProgress
-        state = await stepper(state)
+        state = await stepper(state, ctx)
         assert isinstance(state, MonitoringProgress)
         assert state.base_iteration == 100
 
         # Step 4: progress achieved
         mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 110})
-        state = await stepper(state)
+        state = await stepper(state, ctx)
         assert isinstance(state, RestartDone)
 
     @pytest.mark.asyncio
@@ -408,20 +433,21 @@ class TestFullRestartFlow:
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 0})
-        stepper = _make_stepper(
+        stepper = _make_stepper()
+        ctx = _make_context(
             training_job=training_job,
             mini_wandb=mini_wandb,
             monitoring_success_iterations=5,
         )
 
         state = StoppingAndRestarting(bad_node_ids=[])
-        state = await stepper(state)
+        state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
         assert state.submitted
 
-        state = await stepper(state)
+        state = await stepper(state, ctx)
         assert isinstance(state, MonitoringProgress)
 
         mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 10})
-        state = await stepper(state)
+        state = await stepper(state, ctx)
         assert isinstance(state, RestartDone)
