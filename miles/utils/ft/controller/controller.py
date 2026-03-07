@@ -12,6 +12,7 @@ from miles.utils.ft.controller.main_state_machine import (
     MainStepper,
     MainState,
     Recovering,
+    get_known_bad_nodes,
 )
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
@@ -146,11 +147,9 @@ class FtController:
 
         main_stepper = MainStepper(
             platform_deps=platform_deps,
-            restart_stepper=restart_stepper,
             recovery_stepper=recovery_stepper,
             detectors=detectors or [],
             cooldown=cooldown,
-            controller_exporter=controller_exporter,
             on_recovery_duration=duration_cb,
         )
 
@@ -238,7 +237,7 @@ class FtController:
             recovery = state.recovery
             mode = ControllerMode.RECOVERY
             recovery_phase_str = _recovery_phase_name(recovery)
-            bad_nodes = sorted(main_stepper._get_known_bad_nodes(recovery))
+            bad_nodes = sorted(get_known_bad_nodes(recovery))
             bad_nodes_confirmed = type(recovery) in BAD_NODES_CONFIRMED_TYPES
         else:
             mode = ControllerMode.MONITORING

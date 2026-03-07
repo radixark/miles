@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -22,7 +22,7 @@ from miles.utils.ft.controller.recovery.recovery_stepper import (
 from miles.utils.ft.controller.recovery.restart_stepper import RestartStepper
 from miles.utils.ft.controller.state_machine import StateMachineStepper
 from miles.utils.ft.models.base import FtBaseModel
-from miles.utils.ft.models.fault import ActionType, Decision
+from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import JobStatus
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class DetectingAnomaly(MainState):
 
 class Recovering(MainState):
     recovery: RecoveryState
-    trigger: str
+    trigger: TriggerType
     recovery_start_time: datetime
 
 
@@ -70,19 +70,15 @@ class MainStepper(StateMachineStepper[MainState]):
         self,
         *,
         platform_deps: PlatformDeps,
-        restart_stepper: RestartStepper,
         recovery_stepper: RecoveryStepper,
         detectors: list[BaseFaultDetector],
         cooldown: SlidingWindowThrottle,
-        controller_exporter: object | None = None,
         on_recovery_duration: Callable[[float], None] | None = None,
     ) -> None:
         self._platform_deps = platform_deps
-        self._restart_stepper = restart_stepper
         self._recovery_stepper = recovery_stepper
         self._detectors = detectors
         self._cooldown = cooldown
-        self._controller_exporter = controller_exporter
         self._on_recovery_duration = on_recovery_duration
 
         self._tick_context: _TickContext | None = None
@@ -103,7 +99,7 @@ class MainStepper(StateMachineStepper[MainState]):
             detector_context=detector_context,
         )
 
-    def _build_handlers(self) -> dict:
+    def _build_handlers(self) -> dict[type, Callable[[MainState], Awaitable[MainState | None]]]:
         return {
             DetectingAnomaly: self._handle_detecting_anomaly,
             Recovering: self._handle_recovering,
@@ -124,7 +120,8 @@ class MainStepper(StateMachineStepper[MainState]):
             await handle_notify_human(decision=decision, notifier=self._platform_deps.notifier)
             return None
 
-        assert decision.trigger is not None
+        if decision.trigger is None:
+            raise ValueError(f"Decision with action={decision.action} has no trigger")
         self._cooldown.record(decision.trigger)
         if self._cooldown.is_throttled(decision.trigger):
             await handle_notify_human(
@@ -141,7 +138,7 @@ class MainStepper(StateMachineStepper[MainState]):
         initial_recovery = RealtimeChecks(pre_identified_bad_nodes=decision.bad_node_ids)
         return Recovering(
             recovery=initial_recovery,
-            trigger=decision.trigger.value,
+            trigger=decision.trigger,
             recovery_start_time=now,
         )
 
@@ -152,7 +149,7 @@ class MainStepper(StateMachineStepper[MainState]):
         if ctx is not None:
             new_bad_nodes = self._collect_critical_bad_nodes(ctx)
             if new_bad_nodes:
-                all_bad = list(set(self._get_known_bad_nodes(state.recovery)) | set(new_bad_nodes))
+                all_bad = list(set(get_known_bad_nodes(state.recovery)) | set(new_bad_nodes))
                 now = datetime.now(timezone.utc)
                 return Recovering(
                     recovery=RealtimeChecks(pre_identified_bad_nodes=all_bad),
@@ -160,13 +157,10 @@ class MainStepper(StateMachineStepper[MainState]):
                     recovery_start_time=now,
                 )
 
-        from miles.utils.ft.models.fault import TriggerType
-        trigger = TriggerType(state.trigger)
-
         try:
             new_recovery = await self._recovery_stepper.step_with_context(
                 state.recovery,
-                trigger=trigger,
+                trigger=state.trigger,
                 recovery_start_time=state.recovery_start_time,
             )
         except Exception:
@@ -224,10 +218,10 @@ class MainStepper(StateMachineStepper[MainState]):
                     exc_info=True,
                 )
 
-    @staticmethod
-    def _get_known_bad_nodes(recovery_state: RecoveryState) -> list[str]:
-        if isinstance(recovery_state, (EvictingAndRestarting, DirectlyRestarting)):
-            return recovery_state.restart.bad_node_ids
-        if isinstance(recovery_state, RealtimeChecks):
-            return recovery_state.pre_identified_bad_nodes
-        return []
+
+def get_known_bad_nodes(recovery_state: RecoveryState) -> list[str]:
+    if isinstance(recovery_state, (EvictingAndRestarting, DirectlyRestarting)):
+        return recovery_state.restart.bad_node_ids
+    if isinstance(recovery_state, RealtimeChecks):
+        return recovery_state.pre_identified_bad_nodes
+    return []

@@ -98,7 +98,6 @@ def _make_main_stepper(
 
     return MainStepper(
         platform_deps=_make_platform_deps(notifier=notifier),
-        restart_stepper=restart_stepper,
         recovery_stepper=recovery_stepper,
         detectors=detectors or [],
         cooldown=cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3),
