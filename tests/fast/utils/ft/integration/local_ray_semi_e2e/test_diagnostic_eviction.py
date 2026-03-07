@@ -211,7 +211,7 @@ class TestEvictionEscalation:
     async def test_eviction_final_attempt_restart_fails_notifies_humans(
         self, make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
-        """Diagnostic eviction with is_final_attempt=True + restart fails → NotifyHumans."""
+        """Diagnostic eviction with notify-on-fail + restart fails → NotifyHumans."""
         env = make_e2e_env(
             ft_id="e2eesc",
             nodes=[
@@ -231,7 +231,7 @@ class TestEvictionEscalation:
             env.controller, phase="MonitoringProgress", timeout=30.0,
         )
 
-        # Step 2: crash during MONITORING → DIAGNOSING → eviction (is_final_attempt=True)
+        # Step 2: crash during MONITORING → DIAGNOSING → eviction (notify on fail)
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller, phase="MonitoringProgress", timeout=90.0,

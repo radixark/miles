@@ -217,7 +217,7 @@ class TestEphemeralNicNoEviction:
     async def test_ephemeral_nic_recovery_does_not_evict_nodes(
         self, make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
-        """Ephemeral NIC fault → recovery via DirectlyRestarting, no Evicting phase."""
+        """Ephemeral NIC fault → recovery via EvictingAndRestarting (no Evicting phase)."""
         env = make_e2e_env(
             ft_id="e2enne",
             nodes=[NodeSpec(

@@ -119,7 +119,7 @@ class TestCrashReattemptFailDiagnoseNotify:
             status_sequence=[JobStatus.FAILED],
         )
 
-        # Single tick chains: ENTER_RECOVERY → DirectlyRestarting → FAILED
+        # Single tick chains: ENTER_RECOVERY → EvictingAndRestarting → FAILED
         # → StopTimeDiagnostics → all-pass → NotifyHumans → RecoveryDone
         # → detector fires again (cooldown eventually throttles)
         await harness.controller._tick()
