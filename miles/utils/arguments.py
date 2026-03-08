@@ -541,6 +541,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--apply-chat-template", action="store_true", default=False)
             # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
             parser.add_argument("--apply-chat-template-kwargs", type=json.loads, default="{}")
+            parser.add_argument(
+                "--chat-template-path",
+                type=str,
+                default=None,
+                help="Path to a custom Jinja chat template file (.jinja), or 'autofix'. "
+                "Sets tokenizer.chat_template when loading via load_tokenizer, "
+                "and also sets --sglang-chat-template so the sglang server uses the same template. "
+                "If set to 'autofix', Miles will automatically select a fixed chat template "
+                "maintained internally that resolves train-inference token mismatch issues "
+                "in agentic workflows (e.g. tool-call trajectories). "
+                "The path must be accessible on all Ray worker nodes "
+                "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
+            )
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--label-key", type=str, default=None, help="JSON dataset key")
             parser.add_argument(
@@ -1630,6 +1643,21 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if args.chat_template_path == "autofix":
+        from miles.utils.chat_template_utils import try_get_fixed_chat_template
+
+        resolved = try_get_fixed_chat_template(args.hf_checkpoint)
+        if resolved is None:
+            logger.warning(
+                "--chat-template-path=autofix but no fix rule found for %s, using HF default", args.hf_checkpoint
+            )
+        args.chat_template_path = resolved
+
+    if args.chat_template_path is not None:
+        if not os.path.isfile(args.chat_template_path):
+            raise FileNotFoundError(f"--chat-template-path file not found: {args.chat_template_path}")
+        args.sglang_chat_template = args.chat_template_path
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
