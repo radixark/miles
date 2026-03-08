@@ -78,11 +78,8 @@ class EvictingHandler:
         try:
             already_bad = await get_already_bad_nodes(ctx.node_manager)
         except Exception:
-            logger.error(
-                "get_already_bad_nodes_failed, aborting eviction to avoid re-including bad nodes",
-                exc_info=True,
-            )
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            logger.warning("get_already_bad_nodes_failed, proceeding with empty set", exc_info=True)
+            already_bad = set()
 
         nodes_to_mark = [n for n in state.bad_node_ids if n not in already_bad]
 
