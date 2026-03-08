@@ -16,7 +16,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
-from miles.utils.ft.platform.embedded_agents import build_training_rank_agent, ensure_node_agent
+from miles.utils.ft.factories.embedded_agent import build_training_rank_agent, ensure_node_agent
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups

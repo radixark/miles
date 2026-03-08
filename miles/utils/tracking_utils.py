@@ -3,7 +3,7 @@ from __future__ import annotations
 import wandb
 
 from miles.utils.ft.agents.core.tracking_agent import FtTrackingAgent
-from miles.utils.ft.platform.embedded_agents import build_tracking_agent
+from miles.utils.ft.factories.embedded_agent import build_tracking_agent
 from miles.utils.tensorboard_utils import _TensorboardAdapter
 
 from . import wandb_utils
