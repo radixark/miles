@@ -17,7 +17,7 @@ from miles.utils.ft.controller.detectors.checks.hardware import (
     check_all_hardware_faults,
     check_nic_down_in_window,
 )
-from miles.utils.ft.controller.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
+from miles.utils.ft.controller.metric_names import NODE_NETWORK_UP
 
 
 class TestCheckNicDownInWindow:
@@ -272,12 +272,7 @@ class TestCheckMajorityNicDown:
 class TestCheckDiskFault:
     def test_below_threshold_returns_fault(self) -> None:
         store = make_fake_metric_store()
-        store.ingest_samples(
-            target_id="node-0",
-            samples=[
-                GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=500e6),
-            ],
-        )
+        inject_disk_fault(store, node_id="node-0", mountpoint="/", available_bytes=500e6)
 
         result = _check_disk_fault(store)
 
@@ -287,12 +282,7 @@ class TestCheckDiskFault:
 
     def test_above_threshold_returns_empty(self) -> None:
         store = make_fake_metric_store()
-        store.ingest_samples(
-            target_id="node-0",
-            samples=[
-                GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=100e9),
-            ],
-        )
+        inject_disk_fault(store, node_id="node-0", mountpoint="/", available_bytes=100e9)
 
         assert _check_disk_fault(store) == []
 
@@ -303,18 +293,8 @@ class TestCheckDiskFault:
 
     def test_multiple_nodes_only_low_ones_flagged(self) -> None:
         store = make_fake_metric_store()
-        store.ingest_samples(
-            target_id="node-0",
-            samples=[
-                GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=200e6),
-            ],
-        )
-        store.ingest_samples(
-            target_id="node-1",
-            samples=[
-                GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=50e9),
-            ],
-        )
+        inject_disk_fault(store, node_id="node-0", mountpoint="/", available_bytes=200e6)
+        inject_disk_fault(store, node_id="node-1", mountpoint="/", available_bytes=50e9)
 
         result = _check_disk_fault(store)
 
@@ -323,12 +303,7 @@ class TestCheckDiskFault:
 
     def test_custom_threshold(self) -> None:
         store = make_fake_metric_store()
-        store.ingest_samples(
-            target_id="node-0",
-            samples=[
-                GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=5e9),
-            ],
-        )
+        inject_disk_fault(store, node_id="node-0", mountpoint="/", available_bytes=5e9)
 
         result_default = _check_disk_fault(store)
         assert result_default == []
@@ -339,12 +314,7 @@ class TestCheckDiskFault:
 
     def test_exactly_at_threshold_does_not_trigger(self) -> None:
         store = make_fake_metric_store()
-        store.ingest_samples(
-            target_id="node-0",
-            samples=[
-                GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={"mountpoint": "/"}, value=1e9),
-            ],
-        )
+        inject_disk_fault(store, node_id="node-0", mountpoint="/", available_bytes=1e9)
 
         result = _check_disk_fault(store, disk_available_threshold_bytes=1e9)
         assert result == []
