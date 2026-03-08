@@ -87,6 +87,17 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                     reason=str(exc),
                     conclusive=False,
                 )
+            except Exception:
+                logger.error(
+                    "diagnostic_step_failed executor=%s",
+                    type(executor).__name__,
+                    exc_info=True,
+                )
+                return DiagnosticPipelineResult(
+                    bad_node_ids=[],
+                    reason=f"executor {type(executor).__name__} raised unexpected error",
+                    conclusive=False,
+                )
 
             if bad_node_ids:
                 logger.info(

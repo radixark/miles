@@ -97,6 +97,25 @@ class TestEvicting:
         assert result.bad_node_ids == ["node-A"]
 
     @pytest.mark.asyncio
+    async def test_get_bad_nodes_failure_returns_restart_failed(self) -> None:
+        """When K8s API (get_bad_nodes) fails, eviction aborts to prevent re-including bad nodes."""
+        node_manager = FakeNodeManager()
+
+        async def _failing_get_bad_nodes() -> list[str]:
+            raise ConnectionError("k8s API unavailable")
+
+        node_manager.get_bad_nodes = _failing_get_bad_nodes  # type: ignore[assignment]
+        stepper = _make_stepper()
+        ctx = _make_context(node_manager=node_manager)
+
+        state = Evicting(bad_node_ids=["node-A"])
+        result = await stepper(state, ctx)
+
+        assert isinstance(result, RestartFailed)
+        assert result.bad_node_ids == ["node-A"]
+        assert not node_manager.is_node_bad("node-A")
+
+    @pytest.mark.asyncio
     async def test_evicting_sends_notification(self) -> None:
         notifier = FakeNotifier()
         stepper = _make_stepper()

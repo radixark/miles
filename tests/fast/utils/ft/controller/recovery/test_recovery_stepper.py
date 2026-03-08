@@ -260,6 +260,18 @@ class TestStopTimeDiagnostics:
         assert isinstance(result, NotifyHumans)
         assert result.state_before == "StopTimeDiagnostics"
 
+    @pytest.mark.asyncio
+    async def test_inconclusive_result_goes_to_notify_without_eviction(self) -> None:
+        diag = FakeDiagOrchestrator(
+            result=DiagnosticPipelineResult(
+                bad_node_ids=[], reason="pipeline timed out", conclusive=False,
+            ),
+        )
+        stepper = _make_stepper()
+        result = await _step(stepper, StopTimeDiagnostics(), diagnostic_orchestrator=diag)
+        assert isinstance(result, NotifyHumans)
+        assert "inconclusive" in result.state_before
+
 
 # ---------------------------------------------------------------------------
 # NotifyHumans

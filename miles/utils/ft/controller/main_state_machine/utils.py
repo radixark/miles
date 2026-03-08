@@ -103,6 +103,8 @@ def collect_evictable_bad_nodes(
     for decision in _run_detectors_raw(detectors=detectors, ctx=tick_detector_context):
         if decision.action == ActionType.ENTER_RECOVERY and decision.bad_node_ids:
             bad_nodes.update(decision.bad_node_ids)
+        elif decision.action == ActionType.NOTIFY_HUMAN:
+            logger.warning("detector_crash_during_recovery reason=%s", decision.reason)
     return bad_nodes
 
 

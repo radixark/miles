@@ -28,6 +28,7 @@ class MetricCollectionLoop:
         self._exporter = exporter
         self._tasks: list[asyncio.Task[None]] = []
         self._stopped = False
+        self._last_success_timestamps: dict[str, float] = {}
 
     @property
     def tasks(self) -> list[asyncio.Task[None]]:
@@ -72,11 +73,7 @@ class MetricCollectionLoop:
                 result = await collector.collect()
                 self._exporter.update_metrics(result.metrics)
                 consecutive_failures = 0
-                self._emit_staleness_metrics(
-                    collector_name=collector_name,
-                    last_success_timestamp=time.time(),
-                    consecutive_failures=0,
-                )
+                self._last_success_timestamps[collector_name] = time.time()
             except Exception:
                 consecutive_failures += 1
                 logger.warning(
@@ -86,11 +83,11 @@ class MetricCollectionLoop:
                     consecutive_failures,
                     exc_info=True,
                 )
-                self._emit_staleness_metrics(
-                    collector_name=collector_name,
-                    last_success_timestamp=0.0,
-                    consecutive_failures=consecutive_failures,
-                )
+
+            self._emit_staleness_metrics(
+                collector_name=collector_name,
+                consecutive_failures=consecutive_failures,
+            )
 
             await asyncio.sleep(collector.collect_interval)
 
@@ -98,22 +95,15 @@ class MetricCollectionLoop:
         self,
         *,
         collector_name: str,
-        last_success_timestamp: float,
         consecutive_failures: int,
     ) -> None:
         labels = {"collector": collector_name, "node_id": self._node_id}
-        staleness_metrics: list[GaugeSample] = []
-
-        if last_success_timestamp > 0:
-            staleness_metrics.append(
-                GaugeSample(name=_STALENESS_METRIC, labels=labels, value=last_success_timestamp)
-            )
-
-        staleness_metrics.append(
+        last_success = self._last_success_timestamps.get(collector_name, 0.0)
+        self._exporter.update_metrics([
+            GaugeSample(name=_STALENESS_METRIC, labels=labels, value=last_success),
             GaugeSample(
                 name=_CONSECUTIVE_FAILURES_METRIC,
                 labels=labels,
                 value=float(consecutive_failures),
-            )
-        )
-        self._exporter.update_metrics(staleness_metrics)
+            ),
+        ])
