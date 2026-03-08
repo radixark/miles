@@ -232,7 +232,7 @@ class TestDiagnosticOrchestratorInterMachine:
         assert "node-0" in decision.bad_node_ids
 
     @pytest.mark.anyio
-    async def test_inter_machine_cannot_localize_all_fail(self) -> None:
+    async def test_inter_machine_cannot_localize_all_fail_is_inconclusive(self) -> None:
         agents = make_fake_agents(
             {
                 "node-0": {"inter_machine": False},
@@ -246,9 +246,10 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
+        assert decision.conclusive is False
 
     @pytest.mark.anyio
-    async def test_inter_machine_two_nodes_pair_fails(self) -> None:
+    async def test_inter_machine_two_nodes_pair_fails_is_inconclusive(self) -> None:
         agents = make_fake_agents(
             {
                 "node-0": {"inter_machine": False},
@@ -261,6 +262,7 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
+        assert decision.conclusive is False
 
     @pytest.mark.anyio
     async def test_inter_machine_single_node_skipped(self) -> None:
@@ -480,8 +482,8 @@ class TestAgentRpcHang:
 
 class TestPipelineTimeout:
     @pytest.mark.anyio
-    async def test_pipeline_timeout_returns_notify_human(self) -> None:
-        """When the entire pipeline exceeds pipeline_timeout_seconds, return NOTIFY_HUMAN."""
+    async def test_pipeline_timeout_returns_inconclusive(self) -> None:
+        """When the entire pipeline exceeds pipeline_timeout_seconds, return inconclusive."""
         agents: dict = {
             "node-0": HangingNodeAgent(node_id="node-0"),
         }
@@ -496,6 +498,7 @@ class TestPipelineTimeout:
 
         assert decision.bad_node_ids == []
         assert "timed out" in decision.reason
+        assert decision.conclusive is False
 
     @pytest.mark.anyio
     async def test_pipeline_timeout_fires_before_per_call_timeout(self) -> None:
@@ -515,3 +518,4 @@ class TestPipelineTimeout:
 
         assert decision.bad_node_ids == []
         assert "timed out" in decision.reason
+        assert decision.conclusive is False

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from miles.utils.ft.controller.diagnostics.errors import DiagnosticInconclusiveError
 from miles.utils.ft.models.diagnostic import DiagnosticPipelineResult
 from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, ClusterExecutorProtocol, NodeAgentProtocol
 from miles.utils.ft.protocols.platform import DiagnosticOrchestratorProtocol
@@ -53,6 +54,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             return DiagnosticPipelineResult(
                 bad_node_ids=[],
                 reason=f"diagnostic pipeline timed out after {self._pipeline_timeout_seconds}s",
+                conclusive=False,
             )
 
     async def _run_diagnostic_pipeline_inner(
@@ -69,10 +71,22 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             )
 
         for executor in all_executors:
-            bad_node_ids = await executor.execute(
-                agents=dict(self._agents),
-                timeout_seconds=self._default_timeout_seconds,
-            )
+            try:
+                bad_node_ids = await executor.execute(
+                    agents=dict(self._agents),
+                    timeout_seconds=self._default_timeout_seconds,
+                )
+            except DiagnosticInconclusiveError as exc:
+                logger.warning(
+                    "diagnostic_step_inconclusive executor=%s reason=%s",
+                    type(executor).__name__,
+                    exc,
+                )
+                return DiagnosticPipelineResult(
+                    bad_node_ids=[],
+                    reason=str(exc),
+                    conclusive=False,
+                )
 
             if bad_node_ids:
                 logger.info(

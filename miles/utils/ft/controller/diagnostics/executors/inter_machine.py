@@ -12,6 +12,7 @@ import logging
 from typing import NamedTuple
 
 from miles.utils.ft.agents.diagnostics.executors.inter_machine import DEFAULT_NCCL_MASTER_PORT
+from miles.utils.ft.controller.diagnostics.errors import DiagnosticInconclusiveError
 from miles.utils.ft.protocols.agents import NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
@@ -172,7 +173,8 @@ def _cross_compare(
         return []
 
     if min(counts) == max_count:
-        logger.warning("inter_machine_all_failed — cannot localize bad node")
-        return []
+        raise DiagnosticInconclusiveError(
+            "all inter-machine pairs failed with equal failure count, cannot localize bad node"
+        )
 
     return sorted(nid for nid, count in failure_count.items() if count == max_count)
