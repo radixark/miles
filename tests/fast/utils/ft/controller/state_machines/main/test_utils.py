@@ -5,7 +5,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.main_stepper.utils import run_detectors
+import pytest
+
+from miles.utils.ft.controller.state_machines.main.utils import handle_notify_human, run_detectors
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import JobStatus
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
@@ -116,3 +118,33 @@ class TestRunDetectorsCrashHandling:
             ctx=ctx,
         )
         assert decision.action == ActionType.NONE
+
+
+class TestHandleNotifyHuman:
+    @pytest.mark.anyio
+    async def test_sends_notification(self) -> None:
+        from tests.fast.utils.ft.conftest import FakeNotifier
+
+        notifier = FakeNotifier()
+        decision = Decision(
+            action=ActionType.NOTIFY_HUMAN,
+            reason="something bad happened",
+            trigger=TriggerType.MISC,
+        )
+
+        await handle_notify_human(decision=decision, notifier=notifier)
+
+        assert len(notifier.calls) == 1
+        title, content, _ = notifier.calls[0]
+        assert title == "Fault Alert"
+        assert "something bad happened" in content
+
+    @pytest.mark.anyio
+    async def test_none_notifier_does_not_crash(self) -> None:
+        decision = Decision(
+            action=ActionType.NOTIFY_HUMAN,
+            reason="should not crash",
+            trigger=TriggerType.MISC,
+        )
+
+        await handle_notify_human(decision=decision, notifier=None)

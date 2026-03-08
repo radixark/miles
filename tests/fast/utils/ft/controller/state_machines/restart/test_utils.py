@@ -1,14 +1,13 @@
-"""Tests for recovery/utils.py (retry_async, stop_and_submit, safe_notify)."""
+"""Tests for state_machines/restart/utils.py (stop_and_submit) and utils/retry.py."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import pytest
 from tests.fast.utils.ft.conftest import FakeTrainingJob, make_failing_training_job
 
-from miles.utils.ft.controller.state_machines.restart.utils import safe_notify, stop_and_submit
+from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
 from miles.utils.ft.protocols.platform import JobStatus
 from miles.utils.ft.utils.retry import RetryResult, retry_async
 
@@ -229,38 +228,3 @@ class TestStopAndSubmit:
         result = await stop_and_submit(training_job)
 
         assert result is False
-
-
-class _FakeNotifier:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.calls: list[str] = []
-        self._fail = fail
-
-    async def send(self, *, title: str, content: str, severity: str = "critical") -> None:
-        self.calls.append(title)
-        if self._fail:
-            raise ConnectionError("notifier unavailable")
-
-
-class TestSafeNotify:
-    @pytest.mark.anyio
-    async def test_success(self) -> None:
-        notifier = _FakeNotifier()
-        await safe_notify(notifier, title="Alert", content="body")
-        assert notifier.calls == ["Alert"]
-
-    @pytest.mark.anyio
-    async def test_none_notifier_is_noop(self) -> None:
-        await safe_notify(None, title="Alert", content="body")
-
-    @pytest.mark.anyio
-    async def test_does_not_propagate_exception(self) -> None:
-        notifier = _FakeNotifier(fail=True)
-        await safe_notify(notifier, title="Alert", content="body")
-
-    @pytest.mark.anyio
-    async def test_logs_error_on_exception(self, caplog: pytest.LogCaptureFixture) -> None:
-        notifier = _FakeNotifier(fail=True)
-        with caplog.at_level(logging.ERROR, logger="miles.utils.ft.controller.state_machines.restart.utils"):
-            await safe_notify(notifier, title="Alert", content="body")
-        assert any("safe_notify_failed" in msg for msg in caplog.messages)

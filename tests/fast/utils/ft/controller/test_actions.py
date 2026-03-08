@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator, FakeNodeManager, FakeNotifier, FakeTrainingJob
 
-from miles.utils.ft.controller.actions import PlatformDeps, handle_notify_human
+from miles.utils.ft.controller.state_machines.main.utils import PlatformDeps, handle_notify_human
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 

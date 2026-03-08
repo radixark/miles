@@ -13,8 +13,8 @@ from tests.fast.utils.ft.conftest import ControllerTestHarness, make_fake_agents
 
 from miles.utils.ft.controller.diagnostics.executors import GpuClusterExecutor, PairwiseClusterExecutor, PerNodeClusterExecutor
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.main_stepper import Recovering
-from miles.utils.ft.controller.recovery.recovery_stepper import StopTimeDiagnostics
+from miles.utils.ft.controller.state_machines.main import Recovering
+from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnostics
 from miles.utils.ft.protocols.agents import ClusterExecutorProtocol
 from miles.utils.ft.protocols.platform import JobStatus
 

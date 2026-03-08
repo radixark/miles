@@ -9,7 +9,7 @@ from tests.fast.utils.ft.conftest import (
     make_test_controller,
 )
 
-from miles.utils.ft.controller.main_stepper import Recovering
+from miles.utils.ft.controller.state_machines.main import Recovering
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 
 

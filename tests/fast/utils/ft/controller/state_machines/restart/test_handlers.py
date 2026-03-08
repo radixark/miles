@@ -15,7 +15,7 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 )
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery.restart_stepper import (
+from miles.utils.ft.controller.state_machines.restart import (
     Evicting,
     MonitoringProgress,
     RestartContext,

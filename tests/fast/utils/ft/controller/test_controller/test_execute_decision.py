@@ -13,8 +13,8 @@ from tests.fast.utils.ft.conftest import (
     make_test_controller,
 )
 
-from miles.utils.ft.controller.main_stepper import Recovering
-from miles.utils.ft.controller.main_stepper.utils import run_detectors
+from miles.utils.ft.controller.state_machines.main import Recovering
+from miles.utils.ft.controller.state_machines.main.utils import run_detectors
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 
 _TEST_RANK_PLACEMENT: dict[int, str] = {0: "node-0", 1: "node-1"}
