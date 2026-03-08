@@ -43,8 +43,11 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
         self,
         node_id: str,
         timeout_seconds: int = 30,
+        *,
+        pids: list[int] | None = None,
     ) -> DiagnosticResult:
-        if not self._pids:
+        effective_pids = pids if pids is not None else self._pids
+        if not effective_pids:
             return self._fail(node_id, "no PIDs provided")
 
         async def _collect_one(pid: int) -> tuple[list[PySpyThread], bool]:
@@ -60,7 +63,7 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
                 )
                 return [], False
 
-        results = await asyncio.gather(*(_collect_one(pid) for pid in self._pids))
+        results = await asyncio.gather(*(_collect_one(pid) for pid in effective_pids))
 
         all_threads: list[PySpyThread] = []
         failures: int = 0
@@ -69,7 +72,7 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
             if not success:
                 failures += 1
 
-        all_failed = failures == len(self._pids)
+        all_failed = failures == len(effective_pids)
         return DiagnosticResult(
             diagnostic_type=self.diagnostic_type,
             node_id=node_id,
