@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
+from miles.utils.ft.agents.collectors.disk import DiskCollector
+from miles.utils.ft.agents.collectors.gpu import GpuCollector
+from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
+from miles.utils.ft.agents.collectors.network import NetworkCollector
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.nccl import NcclNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import StackTraceNodeExecutor
-from miles.utils.ft.factories.node_agent import build_all_diagnostics
+from miles.utils.ft.factories.node_agent import build_all_diagnostics, build_default_collectors, build_node_agent
 
 
 class TestBuildAllDiagnostics:
@@ -48,3 +53,38 @@ class TestBuildAllDiagnostics:
         for d in diagnostics:
             assert hasattr(d, "diagnostic_type")
             assert hasattr(d, "run")
+
+
+class TestBuildDefaultCollectors:
+    def test_returns_four_collectors(self) -> None:
+        collectors = build_default_collectors()
+        assert len(collectors) == 4
+
+    def test_returns_expected_collector_types(self) -> None:
+        collectors = build_default_collectors()
+        assert isinstance(collectors[0], GpuCollector)
+        assert isinstance(collectors[1], KmsgCollector)
+        assert isinstance(collectors[2], NetworkCollector)
+        assert isinstance(collectors[3], DiskCollector)
+
+
+class TestBuildNodeAgent:
+    def test_uses_explicit_node_id(self) -> None:
+        agent = build_node_agent(node_id="my-node")
+        assert agent._node_id == "my-node"
+
+    def test_uses_hostname_when_node_id_empty(self) -> None:
+        with patch("miles.utils.ft.factories.node_agent.socket.gethostname", return_value="host-42"):
+            agent = build_node_agent(node_id="")
+        assert agent._node_id == "host-42"
+
+    def test_collectors_override_replaces_defaults(self) -> None:
+        custom = [GpuCollector()]
+        agent = build_node_agent(node_id="n1", collectors_override=custom)
+        assert len(agent._collection_loop._collectors) == 1
+        assert isinstance(agent._collection_loop._collectors[0], GpuCollector)
+
+    def test_diagnostics_override_replaces_defaults(self) -> None:
+        custom = [GpuNodeExecutor()]
+        agent = build_node_agent(node_id="n1", diagnostics_override=custom)
+        assert list(agent._dispatcher._diagnostics.keys()) == ["gpu"]
