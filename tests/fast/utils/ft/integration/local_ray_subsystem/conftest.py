@@ -8,9 +8,9 @@ import ray
 from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for_run_id
 
 from miles.utils.ft.factories.controller import build_ft_controller
-from miles.utils.ft.platform.config import FtControllerConfig
-from miles.utils.ft.platform.ray_wrappers.controller_actor import FtControllerActor
-from miles.utils.ft.protocols.controller import ft_controller_actor_name
+from miles.utils.ft.adapters.config import FtControllerConfig
+from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
+from miles.utils.ft.adapters.types import ft_controller_actor_name
 
 pytestmark = [
     pytest.mark.local_ray,
