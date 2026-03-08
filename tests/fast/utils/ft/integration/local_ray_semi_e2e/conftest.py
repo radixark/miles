@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 import ray
-from tests.fast.utils.ft.helpers.controller_fakes import FakeNodeManager
-from tests.fast.utils.ft.helpers.diagnostic_fakes import StubDiagnostic
-from tests.fast.utils.ft.helpers.fault_injection import LocalRayFaultInjector
-from tests.fast.utils.ft.helpers.training_simulator import (
+from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager
+from tests.fast.utils.ft.utils.diagnostic_fakes import StubDiagnostic
+from tests.fast.utils.ft.utils.fault_injection import LocalRayFaultInjector
+from tests.fast.utils.ft.utils.training_simulator import (
     CollectorStateActor,
     NotifierStateActor,
     RemoteControlledCollector,
@@ -26,7 +26,7 @@ from miles.utils.ft.agents.collectors.stub import StubCollector
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
-from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
+from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.models.metrics import GaugeSample

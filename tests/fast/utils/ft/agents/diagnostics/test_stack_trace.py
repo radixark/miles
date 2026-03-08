@@ -6,7 +6,7 @@ import asyncio
 import json
 from unittest.mock import patch
 
-from tests.fast.utils.ft.helpers import make_mock_subprocess
+from tests.fast.utils.ft.utils import make_mock_subprocess
 
 from miles.utils.ft.agents.diagnostics.stack_trace import StackTraceDiagnostic
 

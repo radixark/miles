@@ -9,7 +9,7 @@ from collections.abc import Callable
 from unittest.mock import patch
 
 import ray
-from tests.fast.utils.ft.helpers.controller_fakes import CrashingDetector
+from tests.fast.utils.ft.utils.controller_fakes import CrashingDetector
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     assert_phase_path_contains,
@@ -134,7 +134,7 @@ class TestNotifierResilience:
         make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
         """Notifier raises on send() → safe_notify catches → recovery completes."""
-        from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
+        from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 
         env = make_e2e_env(
             ft_id="e2enr",

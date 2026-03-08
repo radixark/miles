@@ -1,4 +1,4 @@
-from tests.fast.utils.ft.helpers import (
+from tests.fast.utils.ft.utils import (
     inject_critical_xid,
     inject_gpu_unavailable,
     inject_healthy_node,

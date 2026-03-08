@@ -6,7 +6,7 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
-from tests.fast.utils.ft.helpers import FailingCloseCollector, FailingCollector
+from tests.fast.utils.ft.utils import FailingCloseCollector, FailingCollector
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.utils.metric_collection_loop import MetricCollectionLoop

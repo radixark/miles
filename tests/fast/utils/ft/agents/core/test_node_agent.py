@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 import pytest
 from tests.fast.utils.ft.conftest import SlowDiagnostic, StubDiagnostic, TestCollector
-from tests.fast.utils.ft.helpers import FailingCloseCollector, FailingCollector
+from tests.fast.utils.ft.utils import FailingCloseCollector, FailingCollector
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.collectors.stub import StubCollector

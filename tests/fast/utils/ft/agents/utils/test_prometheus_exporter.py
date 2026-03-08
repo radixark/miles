@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from tests.fast.utils.ft.helpers.metric_injectors import get_sample_value as _scrape_value
+from tests.fast.utils.ft.utils.metric_injectors import get_sample_value as _scrape_value
 
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.models.metrics import CounterSample, GaugeSample

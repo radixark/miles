@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from tests.fast.utils.ft.helpers import make_mock_subprocess
+from tests.fast.utils.ft.utils import make_mock_subprocess
 
 from miles.utils.ft.agents.diagnostics.nccl.inter_machine import InterMachineCommDiagnostic
 

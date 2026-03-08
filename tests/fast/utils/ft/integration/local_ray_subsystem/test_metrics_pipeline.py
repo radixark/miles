@@ -8,7 +8,7 @@ from datetime import timedelta
 import pytest
 import ray
 from prometheus_client import Gauge
-from tests.fast.utils.ft.helpers.controller_fakes import FakeNodeManager
+from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager
 from tests.fast.utils.ft.integration.conftest import get_status, poll_for_run_id
 
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter

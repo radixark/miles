@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 import ray
-from tests.fast.utils.ft.helpers.fault_injection import FaultInjectionProtocol
+from tests.fast.utils.ft.utils.fault_injection import FaultInjectionProtocol
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
     assert_phase_path_contains,
     get_status,

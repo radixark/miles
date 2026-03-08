@@ -1,4 +1,4 @@
-from tests.fast.utils.ft.helpers import make_fake_mini_wandb
+from tests.fast.utils.ft.utils import make_fake_mini_wandb
 
 from miles.utils.ft.controller.detectors.checks.mfu_health import check_mfu_health
 

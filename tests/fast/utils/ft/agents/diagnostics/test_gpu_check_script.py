@@ -10,7 +10,7 @@ from io import StringIO
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from tests.fast.utils.ft.helpers import make_mock_pynvml
+from tests.fast.utils.ft.utils import make_mock_pynvml
 
 from miles.utils.ft.agents.diagnostics.gpu_check_script import GpuCheckResult, _check_nvml, _check_single_gpu, main
 

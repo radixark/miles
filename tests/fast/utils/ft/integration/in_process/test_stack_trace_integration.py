@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from tests.fast.utils.ft.helpers import (
+from tests.fast.utils.ft.utils import (
     SAMPLE_PYSPY_JSON_DIFFERENT_STUCK,
     SAMPLE_PYSPY_JSON_STUCK,
     make_fake_agents,

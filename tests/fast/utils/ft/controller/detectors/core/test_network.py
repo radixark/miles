@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from tests.fast.utils.ft.helpers import make_detector_context, make_fake_metric_store
+from tests.fast.utils.ft.utils import make_detector_context, make_fake_metric_store
 
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
 from miles.utils.ft.controller.metrics.mini_prometheus.storage import MiniPrometheus

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.ft.helpers.controller_fakes import (
+from tests.fast.utils.ft.utils.controller_fakes import (
     AlwaysEnterRecoveryDetector,
     AlwaysNoneDetector,
     CriticalFixedDecisionDetector,
@@ -17,7 +17,7 @@ from tests.fast.utils.ft.helpers.controller_fakes import (
 from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.main_state_machine import DetectingAnomaly, MainContext, Recovering, create_main_stepper
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery.helpers import SlidingWindowThrottle
+from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import NotifyHumans, RealtimeChecks, RecoveryDone
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import JobStatus

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.fast.utils.ft.helpers import (
+from tests.fast.utils.ft.utils import (
     SAMPLE_PYSPY_THREADS_DIFFERENT_STUCK,
     SAMPLE_PYSPY_THREADS_NORMAL,
     SAMPLE_PYSPY_THREADS_STUCK,

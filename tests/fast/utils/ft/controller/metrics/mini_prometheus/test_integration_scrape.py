@@ -8,7 +8,7 @@ from threading import Thread
 
 import pytest
 
-from tests.fast.utils.ft.helpers.metric_injectors import make_fake_metric_store
+from tests.fast.utils.ft.utils.metric_injectors import make_fake_metric_store
 
 
 def _find_free_port() -> int:

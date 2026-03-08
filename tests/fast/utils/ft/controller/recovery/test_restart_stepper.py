@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from tests.fast.utils.ft.helpers.controller_fakes import (
+from tests.fast.utils.ft.utils.controller_fakes import (
     FakeNodeManager,
     FakeNotifier,
     FakeTrainingJob,

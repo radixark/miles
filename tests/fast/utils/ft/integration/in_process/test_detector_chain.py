@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
-from tests.fast.utils.ft.helpers import (
+from tests.fast.utils.ft.utils import (
     inject_gpu_unavailable,
     inject_healthy_node,
     make_detector_context,

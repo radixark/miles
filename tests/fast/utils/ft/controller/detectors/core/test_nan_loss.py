@@ -1,6 +1,6 @@
 import pytest
 
-from tests.fast.utils.ft.helpers import make_detector_context, make_fake_mini_wandb
+from tests.fast.utils.ft.utils import make_detector_context, make_fake_mini_wandb
 
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.models.fault import ActionType

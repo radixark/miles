@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from tests.fast.utils.ft.helpers import (
+from tests.fast.utils.ft.utils import (
     EMPTY_RANK_PLACEMENT,
     make_detector_context,
     make_fake_metric_store,

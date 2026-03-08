@@ -1,6 +1,6 @@
 import pytest
 
-from tests.fast.utils.ft.helpers import (
+from tests.fast.utils.ft.utils import (
     inject_gpu_temperature,
     make_detector_context,
     make_fake_metric_store,

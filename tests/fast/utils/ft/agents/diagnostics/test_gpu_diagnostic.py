@@ -8,7 +8,7 @@ from dataclasses import asdict
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from tests.fast.utils.ft.helpers import make_mock_subprocess
+from tests.fast.utils.ft.utils import make_mock_subprocess
 
 from miles.utils.ft.agents.diagnostics.gpu_check_script import GpuCheckResult
 from miles.utils.ft.agents.diagnostics.gpu_diagnostic import GpuDiagnostic

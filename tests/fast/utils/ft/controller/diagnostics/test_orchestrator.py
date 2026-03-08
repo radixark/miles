@@ -1,5 +1,3 @@
-"""Tests for DiagnosticOrchestrator and BaseDiagnostic."""
-
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +5,7 @@ import logging
 from unittest.mock import patch
 
 import pytest
-from tests.fast.utils.ft.helpers import (
+from tests.fast.utils.ft.utils import (
     SAMPLE_PYSPY_JSON_DIFFERENT_STUCK,
     SAMPLE_PYSPY_JSON_STUCK,
     FakeNodeAgent,

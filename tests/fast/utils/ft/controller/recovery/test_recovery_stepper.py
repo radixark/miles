@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.ft.helpers.controller_fakes import FakeNodeManager, FakeNotifier, FakeTrainingJob
+from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FakeNotifier, FakeTrainingJob
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.recovery_stepper import (
