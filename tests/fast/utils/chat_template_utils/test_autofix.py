@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from miles.utils.chat_template_utils import TEMPLATE_DIR, try_get_fixed_chat_template
+from miles.utils.chat_template_utils.autofix import TEMPLATE_DIR, try_get_fixed_chat_template
 
 _QWEN3_FIXED = str(TEMPLATE_DIR / "qwen3_fixed.jinja")
 _THINKING_FIXED = str(TEMPLATE_DIR / "qwen3_thinking_2507_and_next_fixed.jinja")
@@ -147,6 +147,11 @@ class TestNoMatch:
             "meta-llama/Llama-3.1-8B",
             "deepseek-ai/DeepSeek-V3",
             "/home/user/models/llama-3-70b",
+            # Qwen3-Coder-Next (no prefix invariant issue, no fix needed)
+            "Qwen/Qwen3-Coder-Next",
+            "Qwen/Qwen3-Coder-Next-FP8",
+            "Qwen/Qwen3-Coder-Next-Base",
+            "/data/models/Qwen3-Coder-Next",
             # Edge cases that look similar but shouldn't match
             "Qwen/Qwen3-Next-80B-A3B-Instruct",
             "some-org/not-qwen3-at-all-4B",

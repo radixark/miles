@@ -19,6 +19,7 @@ miles is the RL-framework behind GLM-4.7, GLM-4.6 and GLM-4.5. Apart from models
    get_started/quick_start.md
    get_started/usage.md
    get_started/customization.md
+   get_started/chat_template_verification.md
    get_started/qa.md
 
 .. toctree::
