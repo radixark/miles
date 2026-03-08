@@ -123,8 +123,8 @@ class TestThermalThrottlingDetector:
 
         assert decision.action == ActionType.NONE
 
-    def test_picks_hottest_node_when_multiple_outliers(self) -> None:
-        """When multiple nodes exceed the delta threshold, the hottest is reported."""
+    def test_all_outlier_nodes_returned_when_multiple_exceed_threshold(self) -> None:
+        """All nodes exceeding the delta threshold are reported, not just the hottest."""
         store = make_fake_metric_store()
         rank_placement = {0: "node-0", 1: "node-1", 2: "node-2"}
         for i in range(8):
@@ -150,7 +150,39 @@ class TestThermalThrottlingDetector:
         )
 
         assert decision.action == ActionType.ENTER_RECOVERY
-        assert decision.bad_node_ids == ["node-2"]
+        assert set(decision.bad_node_ids) == {"node-1", "node-2"}
+        assert decision.bad_node_ids[0] == "node-2", "hottest node should be listed first"
+
+    def test_single_gpu_overheat_detected(self) -> None:
+        """A single GPU overheating on a node is detected even when the other
+        GPUs on that node are at normal temperature (regression test for
+        node-level mean masking individual GPU outliers)."""
+        store = make_fake_metric_store()
+        for i in range(8):
+            inject_gpu_temperature(store, node_id="node-0", gpu=str(i), celsius=65.0)
+            temp = 100.0 if i == 0 else 65.0
+            inject_gpu_temperature(store, node_id="node-1", gpu=str(i), celsius=temp)
+
+        wandb = make_fake_mini_wandb(steps={i: {"mfu": 0.3} for i in range(1, 61)})
+        detector = ThermalThrottlingDetector(
+            config=ThermalThrottlingDetectorConfig(
+                temperature_delta_threshold=20.0,
+                mfu_decline_threshold_ratio=0.9,
+                mfu_baseline=0.5,
+                mfu_consecutive_steps=10,
+            )
+        )
+
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                mini_wandb=wandb,
+                rank_placement=_RANK_PLACEMENT,
+            )
+        )
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert "node-1" in decision.bad_node_ids
 
 
 class TestThermalThrottlingDetectorValidation:

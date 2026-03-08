@@ -28,12 +28,12 @@ class ThermalThrottlingDetector(BaseFaultDetector):
         self._config = config or ThermalThrottlingDetectorConfig()
 
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
-        hot_node_id = _find_temperature_outlier(
+        hot_node_ids = _find_temperature_outlier_nodes(
             metric_store=ctx.metric_store,
             rank_placement=ctx.rank_placement,
             delta_threshold=self._config.temperature_delta_threshold,
         )
-        if hot_node_id is None:
+        if not hot_node_ids:
             return Decision.no_fault(reason="no temperature outlier")
 
         cfg = self._config
@@ -46,41 +46,50 @@ class ThermalThrottlingDetector(BaseFaultDetector):
         )
         if mfu is None or not mfu.is_declining:
             return Decision.no_fault(
-                reason=f"temperature outlier on {hot_node_id} but MFU is healthy",
+                reason=f"temperature outlier on {hot_node_ids} but MFU is healthy",
             )
 
         return Decision(
             action=ActionType.ENTER_RECOVERY,
-            bad_node_ids=[hot_node_id],
-            reason=(f"thermal throttling on {hot_node_id}: " f"MFU decline ({mfu.avg_mfu:.4f} < {mfu.threshold:.4f})"),
+            bad_node_ids=hot_node_ids,
+            reason=(
+                f"thermal throttling on {hot_node_ids}: "
+                f"MFU decline ({mfu.avg_mfu:.4f} < {mfu.threshold:.4f})"
+            ),
             trigger=TriggerType.HARDWARE,
         )
 
 
-def _find_temperature_outlier(
+def _find_temperature_outlier_nodes(
     metric_store: MetricQueryProtocol,
     rank_placement: dict[int, str],
     delta_threshold: float,
-) -> str | None:
-    """Return the node whose average GPU temperature exceeds the cluster
-    average by more than *delta_threshold*, or None."""
+) -> list[str]:
+    """Return all nodes whose hottest GPU exceeds the cluster-wide average
+    by more than *delta_threshold*.
+
+    Uses per-node **max** GPU temperature (not mean) so that a single
+    overheating GPU is never masked by cooler siblings on the same node.
+    The cluster baseline is the mean of all individual GPU samples to
+    avoid being skewed by outlier nodes.
+    """
     if not rank_placement:
-        return None
+        return []
 
     df = metric_store.query_latest(DCGM_FI_DEV_GPU_TEMP)
     if df is None or df.is_empty():
-        return None
+        return []
 
     node_ids = set(rank_placement.values())
     df = df.filter(pl.col("node_id").is_in(node_ids))
     if df.is_empty():
-        return None
+        return []
 
-    node_avgs = df.group_by("node_id").agg(pl.col("value").mean().alias("avg_temp"))
-    overall_avg = node_avgs["avg_temp"].mean()
+    overall_avg = df["value"].mean()
 
-    outliers = node_avgs.filter(pl.col("avg_temp") > overall_avg + delta_threshold)
+    node_max = df.group_by("node_id").agg(pl.col("value").max().alias("max_temp"))
+    outliers = node_max.filter(pl.col("max_temp") > overall_avg + delta_threshold)
     if outliers.is_empty():
-        return None
+        return []
 
-    return outliers.sort("avg_temp", descending=True)["node_id"][0]
+    return outliers.sort("max_temp", descending=True)["node_id"].to_list()
