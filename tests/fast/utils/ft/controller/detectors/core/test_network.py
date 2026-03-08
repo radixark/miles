@@ -55,7 +55,9 @@ class TestNetworkAlertDetector:
         _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=1))
 
         detector = NetworkAlertDetector()
-        decision = detector.evaluate(make_detector_context(metric_store=store))
+        decision = detector.evaluate(make_detector_context(
+            metric_store=store, rank_placement={0: "node-0"},
+        ))
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert "node-0" in decision.bad_node_ids
