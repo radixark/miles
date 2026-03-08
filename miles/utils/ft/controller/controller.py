@@ -209,15 +209,9 @@ class FtController:
         recovery_start_time: datetime,
     ) -> RecoveryContext:
         def _check_evictable_faults() -> set[str]:
-            detector_ctx = DetectorContext(
-                metric_store=self._metric_store,
-                mini_wandb=self._mini_wandb,
-                rank_placement=dict(self._rank_roster.rank_placement),
-                job_status=JobStatus.RUNNING,
-            )
             return collect_evictable_bad_nodes(
                 detectors=self._detectors,
-                tick_detector_context=detector_ctx,
+                tick_detector_context=self._build_detector_context(JobStatus.RUNNING),
             )
 
         return RecoveryContext(
