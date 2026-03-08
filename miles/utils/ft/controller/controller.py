@@ -266,6 +266,14 @@ class FtController:
             max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
         )
 
+    def _build_detector_context(self, job_status: JobStatus) -> DetectorContext:
+        return DetectorContext(
+            metric_store=self._metric_store,
+            mini_wandb=self._mini_wandb,
+            rank_placement=dict(self._rank_roster.rank_placement),
+            job_status=job_status,
+        )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -417,14 +425,6 @@ class FtController:
             return False
 
         return True
-
-    def _build_detector_context(self, job_status: JobStatus) -> DetectorContext:
-        return DetectorContext(
-            metric_store=self._metric_store,
-            mini_wandb=self._mini_wandb,
-            rank_placement=dict(self._rank_roster.rank_placement),
-            job_status=job_status,
-        )
 
     # ------------------------------------------------------------------
     # Exporter metrics
