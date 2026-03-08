@@ -232,7 +232,7 @@ class TestDiagnosticOrchestratorInterMachine:
         assert "node-0" in decision.bad_node_ids
 
     @pytest.mark.anyio
-    async def test_inter_machine_cannot_localize_all_fail_is_inconclusive(self) -> None:
+    async def test_inter_machine_cannot_localize_all_fail_returns_empty(self) -> None:
         agents = make_fake_agents(
             {
                 "node-0": {"inter_machine": False},
@@ -246,10 +246,9 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
-        assert decision.conclusive is False
 
     @pytest.mark.anyio
-    async def test_inter_machine_two_nodes_pair_fails_is_inconclusive(self) -> None:
+    async def test_inter_machine_two_nodes_pair_fails_returns_empty(self) -> None:
         agents = make_fake_agents(
             {
                 "node-0": {"inter_machine": False},
@@ -262,11 +261,10 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
-        assert decision.conclusive is False
 
     @pytest.mark.anyio
-    async def test_inter_machine_inconclusive_continues_to_next_executor(self) -> None:
-        """When inter-machine all-fail, pipeline continues to next executor (gpu)."""
+    async def test_inter_machine_all_fail_continues_to_next_executor(self) -> None:
+        """When inter-machine all-fail (empty result), pipeline continues to next executor (gpu)."""
         agents = make_fake_agents(
             {
                 "node-0": {"inter_machine": False, "gpu": False},
@@ -279,7 +277,6 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert "node-0" in decision.bad_node_ids
-        assert decision.conclusive is True
 
     @pytest.mark.anyio
     async def test_inter_machine_single_node_skipped(self) -> None:
@@ -499,8 +496,8 @@ class TestAgentRpcHang:
 
 class TestPipelineTimeout:
     @pytest.mark.anyio
-    async def test_pipeline_timeout_returns_inconclusive(self) -> None:
-        """When the entire pipeline exceeds pipeline_timeout_seconds, return inconclusive."""
+    async def test_pipeline_timeout_returns_empty(self) -> None:
+        """When the entire pipeline exceeds pipeline_timeout_seconds, return empty result."""
         agents: dict = {
             "node-0": HangingNodeAgent(node_id="node-0"),
         }
@@ -515,7 +512,6 @@ class TestPipelineTimeout:
 
         assert decision.bad_node_ids == []
         assert "timed out" in decision.reason
-        assert decision.conclusive is False
 
     @pytest.mark.anyio
     async def test_pipeline_timeout_fires_before_per_call_timeout(self) -> None:
@@ -535,4 +531,3 @@ class TestPipelineTimeout:
 
         assert decision.bad_node_ids == []
         assert "timed out" in decision.reason
-        assert decision.conclusive is False

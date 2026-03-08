@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from tests.fast.utils.ft.conftest import FakeNodeAgent, HangingNodeAgent
 
-from miles.utils.ft.controller.diagnostics.errors import DiagnosticInconclusiveError
 from miles.utils.ft.controller.diagnostics.executors.inter_machine import (
     InterMachineClusterExecutor,
     _cross_compare,
@@ -54,15 +53,14 @@ class TestCrossCompare:
 
         assert bad == ["B"]
 
-    def test_all_fail_raises_inconclusive(self) -> None:
-        """All nodes fail equally — cannot localize, raises DiagnosticInconclusiveError."""
+    def test_all_fail_returns_empty(self) -> None:
+        """All nodes fail equally — cannot localize, returns empty."""
         results = [
             _PairResult(master_id="A", worker_id="B", passed=False),
             _PairResult(master_id="B", worker_id="A", passed=False),
         ]
 
-        with pytest.raises(DiagnosticInconclusiveError):
-            _cross_compare(node_ids=["A", "B"], pair_results=results)
+        assert _cross_compare(node_ids=["A", "B"], pair_results=results) == []
 
     def test_single_node_no_pairs(self) -> None:
         """Single node with no pair results."""

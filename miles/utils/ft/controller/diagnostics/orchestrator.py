@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.ft.controller.diagnostics.errors import DiagnosticInconclusiveError
 from miles.utils.ft.models.diagnostic import DiagnosticPipelineResult
 from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, ClusterExecutorProtocol, NodeAgentProtocol
 from miles.utils.ft.protocols.platform import DiagnosticOrchestratorProtocol
@@ -54,7 +53,6 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             return DiagnosticPipelineResult(
                 bad_node_ids=[],
                 reason=f"diagnostic pipeline timed out after {self._pipeline_timeout_seconds}s",
-                conclusive=False,
             )
 
     async def _run_diagnostic_pipeline_inner(
@@ -70,32 +68,18 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                 reason="no diagnostics configured (empty pipeline)",
             )
 
-        any_inconclusive = False
-        inconclusive_reasons: list[str] = []
-
         for executor in all_executors:
             try:
                 bad_node_ids = await executor.execute(
                     agents=dict(self._agents),
                     timeout_seconds=self._default_timeout_seconds,
                 )
-            except DiagnosticInconclusiveError as exc:
-                logger.warning(
-                    "diagnostic_step_inconclusive executor=%s reason=%s",
-                    type(executor).__name__,
-                    exc,
-                )
-                any_inconclusive = True
-                inconclusive_reasons.append(f"{type(executor).__name__}: {exc}")
-                continue
             except Exception:
                 logger.error(
                     "diagnostic_step_failed executor=%s",
                     type(executor).__name__,
                     exc_info=True,
                 )
-                any_inconclusive = True
-                inconclusive_reasons.append(f"{type(executor).__name__}: unexpected error")
                 continue
 
             if bad_node_ids:
@@ -107,17 +91,6 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                     bad_node_ids=sorted(bad_node_ids),
                     reason=f"diagnostic failed on nodes: {bad_node_ids}",
                 )
-
-        if any_inconclusive:
-            logger.warning(
-                "diagnostic_pipeline_inconclusive reasons=%s",
-                inconclusive_reasons,
-            )
-            return DiagnosticPipelineResult(
-                bad_node_ids=[],
-                reason=f"some steps inconclusive: {'; '.join(inconclusive_reasons)}",
-                conclusive=False,
-            )
 
         logger.info("diagnostic_pipeline_all_passed")
         return DiagnosticPipelineResult(

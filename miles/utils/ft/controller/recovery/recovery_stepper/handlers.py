@@ -111,10 +111,6 @@ class StopTimeDiagnosticsHandler:
             pre_executors=pre_executors or None,
         )
 
-        if not result.conclusive:
-            logger.warning("diagnostic_inconclusive reason=%s", result.reason)
-            return NotifyHumans(state_before="StopTimeDiagnostics (inconclusive)")
-
         if result.bad_node_ids:
             logger.info("diagnosing_found_bad_nodes bad_nodes=%s", result.bad_node_ids)
             return EvictingAndRestarting.evict_and_restart_final(
