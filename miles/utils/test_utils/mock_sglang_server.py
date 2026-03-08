@@ -145,7 +145,26 @@ class MockSGLangServer:
         prompt_str = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, tools=tools
         )
-        prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
+
+        pretokenized_ids = payload.get("pretokenized_token_ids")
+        pretokenized_num = payload.get("pretokenized_num_message")
+        if pretokenized_ids is not None and pretokenized_num is not None:
+            # Simulate sglang's _apply_pretokenized_template: trust the
+            # pretokenized prefix and only tokenize the remaining messages.
+            prefix_str = self.tokenizer.apply_chat_template(
+                messages[:pretokenized_num], tokenize=False, add_generation_prompt=False, tools=tools
+            )
+            assert prompt_str.startswith(prefix_str), (
+                f"Chat template prefix invariant violated: rendering {pretokenized_num} messages "
+                f"without generation prompt is not a prefix of rendering all {len(messages)} messages "
+                f"with generation prompt. This usually means the chat template uses loop.last or "
+                f"similar context-dependent logic that breaks the append-only property."
+            )
+            remaining_str = prompt_str[len(prefix_str) :]
+            remaining_ids = self.tokenizer.encode(remaining_str, add_special_tokens=False)
+            prompt_ids = list(pretokenized_ids) + remaining_ids
+        else:
+            prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
 
         process_result = self.process_fn(prompt_str)
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
