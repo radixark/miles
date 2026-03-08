@@ -4,7 +4,7 @@ import os
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-0.6B")
-assert MODEL_NAME in {"Qwen3-0.6B", "Qwen3-4B"}
+assert MODEL_NAME in {"Qwen3-0.6B"}
 
 MODE = os.environ.get("MILES_SCRIPT_MODE", "normal")
 assert MODE in {"normal", "debug_minimal", "debug_one_sample"}
@@ -73,7 +73,7 @@ def execute():
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-decode-log-interval 1000 "
         "--sglang-enable-metrics "
-        f"--sglang-mem-fraction-static {0.2 if MODEL_NAME == 'Qwen3-4B' else 0.4} "
+        "--sglang-mem-fraction-static 0.4 "
         f"{'--sglang-disable-cuda-graph ' if MODE == 'debug_one_sample' else ''}"
     )
 
@@ -93,13 +93,6 @@ def execute():
     ci_args = ""
 
     misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " "--colocate " "--train-backend fsdp "
-
-    if MODEL_NAME == "Qwen3-4B":
-        misc_args += (
-            "--use-dynamic-batch-size "
-            # TODO pick a good value
-            "--max-tokens-per-gpu 2048 "
-        )
 
     # NOTE: --attn-implementation triton activates the SGLang Triton attention bridge
     # (apply_sglang_triton_attention_patch), which uses extend_attention_fwd_unified --
