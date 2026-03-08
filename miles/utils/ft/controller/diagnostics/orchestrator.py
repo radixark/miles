@@ -13,8 +13,9 @@ logger = logging.getLogger(__name__)
 class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
     """Layered progressive diagnostic pipeline.
 
-    Runs registered diagnostic executors in order on all agents (nodes)
-    in parallel. Failed nodes are excluded from subsequent steps.
+    Runs registered diagnostic executors in order. Each executor receives
+    the full agent set independently. The pipeline stops on the first
+    executor that returns non-empty bad_node_ids.
     """
 
     def __init__(
@@ -67,14 +68,9 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                 reason="no diagnostics configured (empty pipeline)",
             )
 
-        remaining_agents: dict[str, NodeAgentProtocol] = dict(self._agents)
-
         for executor in all_executors:
-            if not remaining_agents:
-                break
-
-            bad_node_ids, remaining_agents = await executor.execute(
-                agents=remaining_agents,
+            bad_node_ids, _ = await executor.execute(
+                agents=dict(self._agents),
                 timeout_seconds=self._default_timeout_seconds,
             )
 
