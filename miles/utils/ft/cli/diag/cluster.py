@@ -1,76 +1,65 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Annotated
+from collections.abc import AsyncIterator
+from typing import Annotated, Any
 
 import typer
 
 from miles.utils.ft.cli.diag.output import exit_with_results, print_results
 from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.protocols.agents import ClusterExecutorProtocol
 
 logger = logging.getLogger(__name__)
 
-ClusterCheckFn = Callable[[int], Awaitable[list[DiagnosticResult]]]
 
-
-def _build_cluster_registry() -> dict[str, ClusterCheckFn]:
-    from miles.utils.ft.platform.ray_wrappers.standalone_diagnostic import (
-        run_gpu_diagnostics,
-        run_inter_machine_diagnostics,
-        run_intra_machine_diagnostics,
+def _build_cluster_registry(
+    node_addresses: dict[str, str],
+) -> dict[str, ClusterExecutorProtocol]:
+    from miles.utils.ft.controller.diagnostics.executors import (
+        GpuClusterExecutor,
+        InterMachineClusterExecutor,
+        SingleNodeClusterExecutor,
     )
 
-    async def _gpu_check(timeout: int) -> list[DiagnosticResult]:
-        results, outlier_ids = await run_gpu_diagnostics(timeout_seconds=timeout)
-        if outlier_ids:
-            results.append(
-                DiagnosticResult.fail_result(
-                    diagnostic_type="gpu_hash_comparison",
-                    node_id="cluster",
-                    details=f"outlier nodes: {', '.join(outlier_ids)}",
-                )
-            )
-        return results
-
-    async def _intra_machine_check(timeout: int) -> list[DiagnosticResult]:
-        return await run_intra_machine_diagnostics(timeout_seconds=timeout)
-
-    async def _inter_machine_check(timeout: int) -> list[DiagnosticResult]:
-        bad_nodes = await run_inter_machine_diagnostics(timeout_seconds=timeout)
-        if bad_nodes:
-            return [
-                DiagnosticResult.fail_result(
-                    diagnostic_type="inter_machine",
-                    node_id="cluster",
-                    details=f"bad nodes: {', '.join(bad_nodes)}",
-                )
-            ]
-        return [
-            DiagnosticResult.pass_result(
-                diagnostic_type="inter_machine",
-                node_id="cluster",
-                details="all inter-machine NCCL checks passed",
-            )
-        ]
-
     return {
-        "gpu": _gpu_check,
-        "intra_machine": _intra_machine_check,
-        "inter_machine": _inter_machine_check,
+        "gpu": GpuClusterExecutor(),
+        "intra_machine": SingleNodeClusterExecutor(diagnostic_type="intra_machine"),
+        "inter_machine": InterMachineClusterExecutor(node_addresses=node_addresses),
     }
 
 
 async def _run_cluster_checks(
-    registry: dict[str, ClusterCheckFn],
+    registry: dict[str, ClusterExecutorProtocol],
+    agents: dict[str, Any],
     checks: list[str],
     timeout: int,
 ) -> list[DiagnosticResult]:
     all_results: list[DiagnosticResult] = []
     for name in checks:
         try:
-            all_results.extend(await registry[name](timeout))
+            bad_nodes = await registry[name].execute(
+                agents=agents,
+                timeout_seconds=timeout,
+            )
+            if bad_nodes:
+                all_results.append(
+                    DiagnosticResult.fail_result(
+                        diagnostic_type=name,
+                        node_id="cluster",
+                        details=f"bad nodes: {', '.join(bad_nodes)}",
+                    )
+                )
+            else:
+                all_results.append(
+                    DiagnosticResult.pass_result(
+                        diagnostic_type=name,
+                        node_id="cluster",
+                        details="all nodes healthy",
+                    )
+                )
         except Exception:
             logger.error("cluster check %s failed with exception", name, exc_info=True)
             all_results.append(
@@ -83,6 +72,77 @@ async def _run_cluster_checks(
     return all_results
 
 
+# ---------------------------------------------------------------------------
+# Agent lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _deploy_agents(
+    nodes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    import ray
+    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+    from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
+    from miles.utils.ft.agents.diagnostics.executors.inter_machine import InterMachineNodeExecutor
+    from miles.utils.ft.agents.diagnostics.executors.intra_machine import IntraMachineNodeExecutor
+    from miles.utils.ft.agents.diagnostics.runner import NodeExecutorRunner
+    from miles.utils.ft.models.diagnostics import DiagnosticResult
+    from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS
+
+    @ray.remote(num_gpus=0)
+    class _DiagnosticAgent:
+        def __init__(self, node_id: str, num_gpus: int) -> None:
+            self._runner = NodeExecutorRunner(
+                node_id=node_id,
+                diagnostics=[
+                    GpuNodeExecutor(),
+                    IntraMachineNodeExecutor(num_gpus=num_gpus),
+                    InterMachineNodeExecutor(num_gpus=num_gpus),
+                ],
+            )
+
+        async def run_diagnostic(
+            self,
+            diagnostic_type: str,
+            timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
+            **kwargs: object,
+        ) -> DiagnosticResult:
+            return await self._runner.run_diagnostic(
+                diagnostic_type=diagnostic_type,
+                timeout_seconds=timeout_seconds,
+                **kwargs,
+            )
+
+    agents: dict[str, Any] = {}
+    for node in nodes:
+        node_id = node["NodeID"]
+        num_gpus = int(node["Resources"]["GPU"])
+        actor = _DiagnosticAgent.options(
+            scheduling_strategy=NodeAffinitySchedulingStrategy(
+                node_id=node_id,
+                soft=False,
+            ),
+        ).remote(node_id=node_id, num_gpus=num_gpus)
+        agents[node_id] = actor
+
+    return agents
+
+
+@contextlib.asynccontextmanager
+async def _managed_agents(
+    nodes: list[dict[str, Any]],
+) -> AsyncIterator[dict[str, Any]]:
+    import ray
+
+    agents = _deploy_agents(nodes)
+    try:
+        yield agents
+    finally:
+        for actor in agents.values():
+            ray.kill(actor)
+
+
 def cluster(
     checks: Annotated[list[str] | None, typer.Argument(help="Checks to run (default: all)")] = None,
     ray_address: Annotated[str, typer.Option(help="Ray cluster address")] = "auto",
@@ -92,17 +152,29 @@ def cluster(
     """Run diagnostic checks across a Ray cluster."""
     import ray
 
-    registry = _build_cluster_registry()
-    selected = checks or list(registry.keys())
-    unknown = set(selected) - set(registry.keys())
-    if unknown:
-        typer.echo(f"Unknown checks: {', '.join(sorted(unknown))}", err=True)
-        raise typer.Exit(code=1)
+    from miles.utils.ft.platform.ray_wrappers.node_discovery import (
+        build_node_address_map,
+        get_alive_gpu_nodes,
+    )
 
     ray.init(address=ray_address)
 
     try:
-        results = asyncio.run(_run_cluster_checks(registry, selected, timeout))
+        nodes = get_alive_gpu_nodes()
+        node_addresses = build_node_address_map(nodes)
+        registry = _build_cluster_registry(node_addresses=node_addresses)
+
+        selected = checks or list(registry.keys())
+        unknown = set(selected) - set(registry.keys())
+        if unknown:
+            typer.echo(f"Unknown checks: {', '.join(sorted(unknown))}", err=True)
+            raise typer.Exit(code=1)
+
+        async def _run() -> list[DiagnosticResult]:
+            async with _managed_agents(nodes) as agents:
+                return await _run_cluster_checks(registry, agents, selected, timeout)
+
+        results = asyncio.run(_run())
     finally:
         ray.shutdown()
 
