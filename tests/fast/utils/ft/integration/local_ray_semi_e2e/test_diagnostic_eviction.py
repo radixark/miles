@@ -220,7 +220,11 @@ class TestEvictionEscalation:
         self,
         make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
-        """Diagnostic eviction with notify-on-fail + restart fails → NotifyHumans."""
+        """Diagnostic eviction with notify-on-fail + restart fails → NotifyHumans.
+
+        Uses high monitoring_success_iterations so MonitoringProgress stays active
+        long enough for us to inject crashes at the right moment.
+        """
         env = make_e2e_env(
             ft_id="e2eesc",
             nodes=[
@@ -229,12 +233,12 @@ class TestEvictionEscalation:
             ],
             detectors=[TrainingCrashDetector()],
             step_interval=_SLOW_STEP,
-            recovery_cooldown=SlidingWindowThrottle(window_minutes=1.0, max_count=10),
+            monitoring_success_iterations=999,
         )
 
         await wait_for_training_stable(env.controller, n_iterations=1, timeout=30.0)
 
-        # Step 1: crash → wait for MONITORING phase
+        # Step 1: crash → wait for MonitoringProgress (first recovery)
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
@@ -242,15 +246,26 @@ class TestEvictionEscalation:
             timeout=30.0,
         )
 
-        # Step 2: crash during MONITORING → DIAGNOSING → eviction (notify on fail)
+        # Step 2: crash during MonitoringProgress → RestartFailed →
+        # StopTimeDiagnostics → node-0 fails → evict_and_restart_final →
+        # Evicting → StoppingAndRestarting → MonitoringProgress (post-eviction)
         await env.injector.crash_training()
+
+        # Wait for StopTimeDiagnostics first to avoid the race where
+        # recovery_phase is still "MonitoringProgress" from step 1
+        await wait_for_recovery_phase(
+            env.controller,
+            phase="StopTimeDiagnostics",
+            timeout=30.0,
+        )
         await wait_for_recovery_phase(
             env.controller,
             phase="MonitoringProgress",
             timeout=90.0,
         )
 
-        # Step 3: crash during post-eviction MONITORING → should go to NotifyHumans
+        # Step 3: crash during post-eviction MonitoringProgress →
+        # RestartFailed → failed_next_state=NotifyHumans
         await env.injector.crash_training()
 
         deadline = time.monotonic() + 90.0

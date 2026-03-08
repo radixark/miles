@@ -16,6 +16,8 @@ from miles.utils.ft.controller.recovery.restart_stepper.states import (
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
+RestartContext.model_rebuild()
+
 _RESTART_HANDLER_MAP: dict[type, type] = {
     Evicting: EvictingHandler,
     StoppingAndRestarting: StoppingAndRestartingHandler,

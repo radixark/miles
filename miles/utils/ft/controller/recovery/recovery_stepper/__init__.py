@@ -20,6 +20,8 @@ from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 RECOVERY_TIMEOUT_SECONDS: int = 1800
 
+RecoveryContext.model_rebuild()
+
 _RECOVERY_HANDLER_MAP: dict[type, type] = {
     RealtimeChecks: RealtimeChecksHandler,
     EvictingAndRestarting: EvictingAndRestartingHandler,

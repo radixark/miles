@@ -12,7 +12,6 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     get_status,
     scenario_hang_detection,
     scenario_hang_detection_and_recovery,
-    wait_for_mode_transition,
     wait_for_recovery_complete,
     wait_for_recovery_phase,
     wait_for_training_stable,
@@ -129,18 +128,30 @@ class TestMonitoringSuccessIterationsZero:
         )
 
         await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
+        old_run_id = get_status(env.controller).active_run_id
 
-        # Step 1: crash → recovery → MonitoringProgress should resolve immediately
+        # Step 1: crash → recovery completes almost instantly (0 iterations needed)
         await env.injector.crash_training()
-        final = await wait_for_mode_transition(
-            env.controller,
-            target_mode=ControllerMode.MONITORING,
-            timeout=30.0,
-        )
-        assert final.mode == ControllerMode.MONITORING
+
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if (
+                status.active_run_id != old_run_id
+                and status.mode == ControllerMode.MONITORING
+            ):
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError(
+                f"Recovery did not complete within 60s: "
+                f"run_id changed={status.active_run_id != old_run_id}, mode={status.mode}"
+            )
+
+        assert status.mode == ControllerMode.MONITORING
 
         # Step 2: StopTimeDiagnostics should NOT appear (no timeout needed)
-        assert not final.phase_history or "StopTimeDiagnostics" not in final.phase_history
+        assert not status.phase_history or "StopTimeDiagnostics" not in status.phase_history
 
 
 class TestMonitoringTimeoutZero:

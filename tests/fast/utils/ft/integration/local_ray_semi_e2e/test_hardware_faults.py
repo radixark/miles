@@ -501,11 +501,26 @@ class TestRealtimeChecksDiscovery:
 
         # Step 2: crash → TrainingCrashDetector fires with empty bad_node_ids
         # → RealtimeChecks → check_alerts() finds GPU fault → Evicting
+        old_run_id = get_status(env.controller).active_run_id
         await env.injector.crash_training()
 
-        final = await wait_for_recovery_complete(env.controller, timeout=90.0)
-        assert final.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(final, ["Evicting"])
+        deadline = time.monotonic() + 90.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if (
+                status.active_run_id != old_run_id
+                and status.mode == ControllerMode.MONITORING
+            ):
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError(
+                f"Recovery did not complete within 90s: "
+                f"run_id changed={status.active_run_id != old_run_id}, mode={status.mode}"
+            )
+
+        assert status.mode == ControllerMode.MONITORING
+        assert_phase_path_contains(status, ["Evicting"])
 
 
 class TestMaxBadNodesOneBoundary:
