@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.environ.get("SGLANG_E2E_MODEL_PATH", "Qwen/Qwen3-0.6B")
 
+MAX_TOOL_TURNS = 4
+
 TOOLS = [
     {
         "type": "function",
@@ -42,7 +44,12 @@ TOOLS = [
     },
 ]
 
-MOCK_TOOL_RESULT = '{"temperature_celsius": 22, "condition": "sunny", "humidity": 45}'
+MOCK_TOOL_RESULTS = [
+    '{"temperature_celsius": 22, "condition": "sunny", "humidity": 45}',
+    '{"temperature_celsius": 15, "condition": "cloudy", "humidity": 70}',
+    '{"temperature_celsius": 30, "condition": "rainy", "humidity": 90}',
+    '{"temperature_celsius": 8, "condition": "snowy", "humidity": 85}',
+]
 
 
 def _router_url_from_base(base_url: str) -> str:
@@ -54,7 +61,43 @@ def _router_url_from_base(base_url: str) -> str:
     return parts[0]
 
 
-async def _chat(client: httpx.AsyncClient, url: str, messages, rk, label=""):
+def _extract_tool_calls(assistant_msg: dict) -> list[dict] | None:
+    """Return structured tool_calls from the assistant message, or None."""
+    if assistant_msg.get("tool_calls"):
+        return assistant_msg["tool_calls"]
+
+    # Fallback: small models may output tool calls as raw JSON text
+    # while sglang sets finish_reason=tool_calls without parsing them.
+    content = (assistant_msg.get("content") or "").strip()
+    if content.endswith("<|im_end|>"):
+        content = content[: -len("<|im_end|>")].strip()
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, list) and parsed and "name" in parsed[0]:
+            return [
+                {
+                    "id": f"call_{i:05d}",
+                    "type": "function",
+                    "function": {
+                        "name": item["name"],
+                        "arguments": json.dumps(item.get("arguments") or item.get("parameters", {})),
+                    },
+                }
+                for i, item in enumerate(parsed)
+            ]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return None
+
+
+async def _chat(
+    client: httpx.AsyncClient,
+    url: str,
+    messages,
+    rk,
+    label="",
+    tool_choice=None,
+):
     """Send a chat completions request and return (response_json, prompt_token_ids)."""
     payload = {
         "messages": messages,
@@ -62,12 +105,42 @@ async def _chat(client: httpx.AsyncClient, url: str, messages, rk, label=""):
         "chat_template_kwargs": {"enable_thinking": False},
         **rk,
     }
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     resp = await client.post(f"{url}/v1/chat/completions", json=payload)
     assert resp.status_code == 200, f"{label} failed ({resp.status_code}): {resp.text}"
     data = resp.json()
     prompt_ids = data["choices"][0].get("prompt_token_ids")
     assert prompt_ids is not None, f"{label}: prompt_token_ids missing"
     return data, prompt_ids
+
+
+def _verify_turn(
+    turn: int,
+    session_prompt_ids: list[int],
+    direct_prompt_ids: list[int],
+    prev_prompt_ids: list[int] | None,
+):
+    """Assert strict prefix invariant for one turn."""
+    assert session_prompt_ids == direct_prompt_ids, (
+        f"TITO PREFIX INVARIANT VIOLATED on turn {turn}!\n"
+        f"Session route (pretokenized): {len(session_prompt_ids)} tokens\n"
+        f"Direct route (full tokenize): {len(direct_prompt_ids)} tokens\n"
+        f"First diff at index {_first_diff(session_prompt_ids, direct_prompt_ids)}"
+    )
+
+    if prev_prompt_ids is not None:
+        assert len(session_prompt_ids) > len(prev_prompt_ids), (
+            f"Turn {turn} prompt ({len(session_prompt_ids)} tokens) should be "
+            f"strictly longer than previous turn ({len(prev_prompt_ids)} tokens)"
+        )
+        assert session_prompt_ids[: len(prev_prompt_ids)] == prev_prompt_ids, (
+            f"Prefix mismatch on turn {turn}: previous turn's prompt_token_ids "
+            f"({len(prev_prompt_ids)} tokens) is not a prefix of this turn's "
+            f"({len(session_prompt_ids)} tokens). "
+            f"First diff at index "
+            f"{_first_diff(prev_prompt_ids, session_prompt_ids[:len(prev_prompt_ids)])}"
+        )
 
 
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
@@ -77,7 +150,8 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     After multi-turn conversation through the session proxy (which injects
     pretokenized_token_ids on turn 2+), send the same accumulated messages
     via the non-session route (direct to sglang, no pretokenized injection).
-    If the prompt_token_ids match, the template is append-only and TITO works.
+    If the prompt_token_ids match exactly, the template is append-only and
+    TITO is correct.
     """
     router_url = _router_url_from_base(base_url)
     messages = list(prompt)
@@ -86,112 +160,83 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     rk.setdefault("return_prompt_token_ids", True)
     rk.setdefault("logprobs", True)
 
+    turns_completed = 0
+    prev_prompt_ids = None
+
     async with httpx.AsyncClient(timeout=180) as client:
-        # ── Turn 1 (no pretokenized injection expected) ───────────
-        t1_data, t1_prompt_ids = await _chat(client, base_url, messages, rk, label="Session Turn 1")
-        logger.info("Session Turn 1: %d prompt tokens", len(t1_prompt_ids))
-
-        # Append the EXACT assistant message from the response so the session
-        # manager's _is_append_only check passes (it compares dicts by ==).
-        assistant_msg = t1_data["choices"][0]["message"]
-        messages.append(assistant_msg)
-
-        # Extract a tool_call_id - prefer structured tool_calls, fall back to
-        # parsing the raw text content from small models like Qwen3-0.6B.
-        tool_calls = assistant_msg.get("tool_calls")
-        if tool_calls:
-            tool_call_id = tool_calls[0]["id"]
-        else:
-            tool_call_id = _parse_tool_call_id_from_content(assistant_msg)
-
-        if tool_call_id is None:
-            logger.warning(
-                "No tool calls detected in turn 1 (content=%r) – " "skipping multi-turn prefix invariant verification",
-                (assistant_msg.get("content") or "")[:100],
+        for turn in range(1, MAX_TOOL_TURNS + 1):
+            label = f"Session Turn {turn}"
+            resp_data, session_ids = await _chat(
+                client,
+                base_url,
+                messages,
+                rk,
+                label=label,
+                tool_choice="required",
             )
-            return {"turns_completed": 1, "prefix_invariant_verified": False}
+            logger.info("%s: %d prompt tokens", label, len(session_ids))
 
-        messages.append(
-            {
-                "role": "tool",
-                "content": MOCK_TOOL_RESULT,
-                "tool_call_id": tool_call_id,
-            }
-        )
-        logger.info("Appended tool response (tool_call_id=%s)", tool_call_id)
+            if turn >= 2:
+                _, direct_ids = await _chat(
+                    client,
+                    router_url,
+                    messages,
+                    rk,
+                    label=f"Direct Turn {turn}",
+                    tool_choice="required",
+                )
+                logger.info("Direct Turn %d: %d prompt tokens", turn, len(direct_ids))
 
-        # ── Turn 2 (session proxy will inject pretokenized_token_ids) ──
-        t2_data, t2_prompt_ids = await _chat(client, base_url, messages, rk, label="Session Turn 2")
-        logger.info(
-            "Session Turn 2: %d prompt tokens (turn-1 prefix: %d)",
-            len(t2_prompt_ids),
-            len(t1_prompt_ids),
-        )
+                _verify_turn(turn, session_ids, direct_ids, prev_prompt_ids)
+                logger.info(
+                    "Turn %d VERIFIED: session (%d) == direct (%d), " "prefix from turn %d (%d tokens) preserved",
+                    turn,
+                    len(session_ids),
+                    len(direct_ids),
+                    turn - 1,
+                    len(prev_prompt_ids) if prev_prompt_ids else 0,
+                )
 
-        assert len(t2_prompt_ids) > len(t1_prompt_ids), (
-            f"Turn 2 prompt ({len(t2_prompt_ids)} tokens) should be strictly "
-            f"longer than turn 1 ({len(t1_prompt_ids)} tokens)"
-        )
+            prev_prompt_ids = session_ids
+            turns_completed = turn
 
-        # ── Ground-truth check via non-session route ──────────────
-        # Send the SAME accumulated messages directly to sglang (bypassing
-        # session proxy => no pretokenized injection => full tokenization).
-        _, direct_prompt_ids = await _chat(client, router_url, messages, rk, label="Direct (non-session)")
-        logger.info("Direct route: %d prompt tokens", len(direct_prompt_ids))
+            assistant_msg = resp_data["choices"][0]["message"]
+            messages.append(assistant_msg)
 
-        diff_idx = _first_diff(t2_prompt_ids, direct_prompt_ids)
-        if t2_prompt_ids == direct_prompt_ids:
+            tool_calls = _extract_tool_calls(assistant_msg)
+            if not tool_calls:
+                logger.warning(
+                    "Turn %d: no tool calls despite tool_choice=required – " "ending conversation early",
+                    turn,
+                )
+                break
+
+            mock_result = MOCK_TOOL_RESULTS[(turn - 1) % len(MOCK_TOOL_RESULTS)]
+            for tc in tool_calls:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": mock_result,
+                        "tool_call_id": tc["id"],
+                    }
+                )
             logger.info(
-                "Prefix invariant VERIFIED (exact match): session route (%d "
-                "tokens, pretokenized prefix %d) == direct route (%d tokens)",
-                len(t2_prompt_ids),
-                len(t1_prompt_ids),
-                len(direct_prompt_ids),
+                "Turn %d: appended %d tool result(s) with mock data [%d]",
+                turn,
+                len(tool_calls),
+                (turn - 1) % len(MOCK_TOOL_RESULTS),
             )
-        else:
-            # A small difference (1-2 tokens) at the assistant/tool boundary
-            # is a known limitation: sglang's logprobs may not include the
-            # stop token (<|im_end|>), so the stored token_ids are missing it.
-            # Full tokenization includes it as part of the assistant message.
-            token_diff = abs(len(t2_prompt_ids) - len(direct_prompt_ids))
-            logger.warning(
-                "Session vs direct route differ by %d token(s) at index %s "
-                "(session=%d, direct=%d). This may be a stop-token boundary "
-                "issue between assistant completion and tool message.",
-                token_diff,
-                diff_idx,
-                len(t2_prompt_ids),
-                len(direct_prompt_ids),
-            )
-            assert token_diff <= 2, (
-                f"TITO PREFIX INVARIANT VIOLATED!\n"
-                f"Session route (pretokenized): {len(t2_prompt_ids)} tokens\n"
-                f"Direct route (full tokenize): {len(direct_prompt_ids)} tokens\n"
-                f"First diff at index {diff_idx}\n"
-                f"Difference of {token_diff} tokens exceeds tolerance."
-            )
-        return {"turns_completed": 2, "prefix_invariant_verified": True}
 
-
-def _parse_tool_call_id_from_content(assistant_msg: dict) -> str | None:
-    """Try to extract a tool call id from the raw text content.
-
-    When sglang doesn't parse tool calls into structured format but the model
-    produced them as text (finish_reason=tool_calls), we generate an id.
-    """
-    content = assistant_msg.get("content", "")
-    if not content:
-        return None
-    content = content.strip()
-    if content.endswith("<|im_end|>"):
-        content = content[: -len("<|im_end|>")].strip()
-    try:
-        parsed = json.loads(content)
-        if isinstance(parsed, list) and len(parsed) > 0 and "name" in parsed[0]:
-            return "call_00000"
-    except (json.JSONDecodeError, KeyError, TypeError):
-        pass
-    return None
+    verified = turns_completed >= 3
+    if not verified:
+        raise AssertionError(
+            f"Only completed {turns_completed} tool-call turn(s), need >= 3 "
+            f"for meaningful multi-turn prefix invariant verification"
+        )
+    return {
+        "turns_completed": turns_completed,
+        "prefix_invariant_verified": verified,
+    }
 
 
 def _first_diff(a: list, b: list) -> int | str:

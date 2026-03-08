@@ -23,6 +23,16 @@ def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} " f"--local-dir /root/models/{MODEL_NAME}")
 
+    user_content = (
+        "I need the weather for four cities. You MUST call get_weather exactly "
+        "4 times, one city per turn, in this order:\n"
+        "  Turn 1: Beijing\n"
+        "  Turn 2: Shanghai\n"
+        "  Turn 3: Tokyo\n"
+        "  Turn 4: New York\n"
+        "After all 4 tool results come back, summarize everything in one message."
+    )
+
     prompts = [
         {
             "messages": [
@@ -30,11 +40,12 @@ def prepare():
                     "role": "system",
                     "content": (
                         "You are a helpful assistant with access to tools. "
-                        "You MUST call the provided tools to answer the user's "
-                        "question. Do NOT answer directly without using a tool."
+                        "You MUST use the provided tools. Each turn you call "
+                        "exactly one tool. Do NOT answer without using a tool "
+                        "until you have called it 4 times."
                     ),
                 },
-                {"role": "user", "content": "What is the weather in Beijing right now?"},
+                {"role": "user", "content": user_content},
             ],
         },
         {
@@ -43,10 +54,12 @@ def prepare():
                     "role": "system",
                     "content": (
                         "You are a helpful assistant with access to tools. "
-                        "Always use the provided tools to retrieve information."
+                        "Always call the provided tool once per turn. Do NOT "
+                        "give a final answer until you have made all 4 tool "
+                        "calls."
                     ),
                 },
-                {"role": "user", "content": "Tell me the current weather in Shanghai."},
+                {"role": "user", "content": user_content},
             ],
         },
     ]
