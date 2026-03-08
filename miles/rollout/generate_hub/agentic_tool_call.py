@@ -102,6 +102,7 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
     # NOTE: do NOT set logprob_start_len=0, that would destroy SGLang's prefix cache.
     request_kwargs["return_prompt_token_ids"] = True
     request_kwargs["logprobs"] = True
+    request_kwargs["no_stop_trim"] = False
 
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys

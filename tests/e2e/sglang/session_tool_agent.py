@@ -68,10 +68,8 @@ def _extract_tool_calls(assistant_msg: dict) -> list[dict] | None:
     # Fallback: small models may output tool calls as raw JSON text
     # while sglang sets finish_reason=tool_calls without parsing them.
     content = (assistant_msg.get("content") or "").strip()
-    if content.endswith("<|im_end|>"):
-        content = content[: -len("<|im_end|>")].strip()
     try:
-        parsed = json.loads(content)
+        parsed, _ = json.JSONDecoder().raw_decode(content)
         if isinstance(parsed, list) and parsed and "name" in parsed[0]:
             return [
                 {

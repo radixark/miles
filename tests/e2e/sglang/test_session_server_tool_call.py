@@ -91,7 +91,12 @@ def execute():
 
     router_args = "--use-miles-router " "--chat-template-path autofix "
 
-    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-tool-call-parser qwen " "--rm-type random "
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 1 "
+        "--sglang-reasoning-parser qwen3 "
+        "--sglang-tool-call-parser qwen "
+        "--rm-type random "
+    )
 
     infra_args = (
         "--debug-rollout-only "
