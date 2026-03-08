@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from miles.utils.ft.controller.actions import handle_notify_human
-from miles.utils.ft.controller.main_state_machine.states import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.main_state_machine.utils import MainContext, notify_too_many_bad_nodes, run_detectors
+from miles.utils.ft.controller.main_state_machine.states import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.recovery.recovery_stepper.states import RealtimeChecks
-from miles.utils.ft.models.fault import ActionType, Decision
+from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 
 
 class DetectingAnomalyHandler:
@@ -41,7 +41,19 @@ class DetectingAnomalyHandler:
         if not ctx.should_run_detectors or ctx.detector_context is None:
             return None
 
-        decision = run_detectors(detectors=ctx.detectors, ctx=ctx.detector_context)
+        tracker = ctx.detector_crash_tracker
+        decision = run_detectors(detectors=ctx.detectors, ctx=ctx.detector_context, crash_tracker=tracker)
+
+        if tracker.should_notify:
+            await handle_notify_human(
+                decision=Decision(
+                    action=ActionType.NOTIFY_HUMAN,
+                    reason=tracker.summary(),
+                    trigger=TriggerType.MISC,
+                ),
+                notifier=ctx.notifier,
+            )
+
         if decision.action == ActionType.NONE:
             return None
 

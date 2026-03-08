@@ -1,11 +1,11 @@
-"""Tests for main_state_machine/utils.py — specifically _run_detectors_raw behavior on crashes."""
+"""Tests for DetectorCrashTracker and run_detectors crash handling."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.main_state_machine.utils import run_detectors
+from miles.utils.ft.controller.main_state_machine.utils import DetectorCrashTracker, run_detectors
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import JobStatus
 
@@ -39,59 +39,74 @@ class _RecoveryDetector(BaseFaultDetector):
         )
 
 
-class TestRunDetectorsCrashYieldsNotifyHuman:
-    def test_single_crashing_detector_returns_notify_human(self) -> None:
+class TestDetectorCrashTracker:
+    def test_below_threshold_does_not_notify(self) -> None:
+        tracker = DetectorCrashTracker(window_seconds=60, threshold=3)
+        tracker.record("DetA", _now=0.0)
+        tracker.record("DetB", _now=1.0)
+        assert not tracker.should_notify
+
+    def test_reaching_threshold_notifies_once(self) -> None:
+        tracker = DetectorCrashTracker(window_seconds=60, threshold=3)
+        tracker.record("DetA", _now=0.0)
+        tracker.record("DetA", _now=1.0)
+        tracker.record("DetB", _now=2.0)
+        assert tracker.should_notify
+        assert not tracker.should_notify
+
+    def test_window_expiry_resets_notification(self) -> None:
+        tracker = DetectorCrashTracker(window_seconds=10, threshold=2)
+        tracker.record("DetA", _now=0.0)
+        tracker.record("DetA", _now=1.0)
+        assert tracker.should_notify
+
+        tracker.record("DetA", _now=20.0)
+        assert not tracker.should_notify
+
+        tracker.record("DetA", _now=21.0)
+        assert tracker.should_notify
+
+    def test_summary_includes_crash_counts(self) -> None:
+        tracker = DetectorCrashTracker(window_seconds=60, threshold=5)
+        tracker.record("DetA", _now=0.0)
+        tracker.record("DetB", _now=1.0)
+        tracker.record("DetA", _now=2.0)
+        summary = tracker.summary()
+        assert "DetA=2" in summary
+        assert "DetB=1" in summary
+
+
+class TestRunDetectorsCrashHandling:
+    def test_crashing_detector_is_skipped_returns_no_fault(self) -> None:
+        """A single crash is silently skipped — main loop continues."""
         ctx = _make_detector_context()
         decision = run_detectors(detectors=[_CrashingDetector()], ctx=ctx)
+        assert decision.action == ActionType.NONE
 
-        assert decision.action == ActionType.NOTIFY_HUMAN
-        assert "crashed" in decision.reason
-
-    def test_all_detectors_crash_does_not_return_no_fault(self) -> None:
+    def test_crash_records_in_tracker(self) -> None:
         ctx = _make_detector_context()
-        decision = run_detectors(
-            detectors=[_CrashingDetector(), _CrashingDetector()],
-            ctx=ctx,
-        )
+        tracker = DetectorCrashTracker(window_seconds=60, threshold=2)
+        run_detectors(detectors=[_CrashingDetector()], ctx=ctx, crash_tracker=tracker)
+        assert not tracker.should_notify
 
-        assert decision.action != ActionType.NONE
-        assert decision.action == ActionType.NOTIFY_HUMAN
+        run_detectors(detectors=[_CrashingDetector()], ctx=ctx, crash_tracker=tracker)
+        assert tracker.should_notify
 
-    def test_crashing_detector_before_passing_detector(self) -> None:
-        ctx = _make_detector_context()
-        decision = run_detectors(
-            detectors=[_CrashingDetector(), _PassingDetector()],
-            ctx=ctx,
-        )
-
-        assert decision.action == ActionType.NOTIFY_HUMAN
-
-    def test_passing_then_crashing_returns_notify_human(self) -> None:
-        ctx = _make_detector_context()
-        decision = run_detectors(
-            detectors=[_PassingDetector(), _CrashingDetector()],
-            ctx=ctx,
-        )
-
-        assert decision.action == ActionType.NOTIFY_HUMAN
-
-    def test_recovery_detector_before_crash_returns_recovery(self) -> None:
-        ctx = _make_detector_context()
-        decision = run_detectors(
-            detectors=[_RecoveryDetector(), _CrashingDetector()],
-            ctx=ctx,
-        )
-
-        assert decision.action == ActionType.ENTER_RECOVERY
-
-    def test_crash_before_recovery_detector_still_returns_recovery(self) -> None:
+    def test_crash_before_recovery_still_returns_recovery(self) -> None:
         ctx = _make_detector_context()
         decision = run_detectors(
             detectors=[_CrashingDetector(), _RecoveryDetector()],
             ctx=ctx,
         )
-
         assert decision.action == ActionType.ENTER_RECOVERY
+
+    def test_all_crash_returns_no_fault(self) -> None:
+        ctx = _make_detector_context()
+        decision = run_detectors(
+            detectors=[_CrashingDetector(), _CrashingDetector()],
+            ctx=ctx,
+        )
+        assert decision.action == ActionType.NONE
 
     def test_all_passing_returns_no_fault(self) -> None:
         ctx = _make_detector_context()
@@ -99,5 +114,4 @@ class TestRunDetectorsCrashYieldsNotifyHuman:
             detectors=[_PassingDetector(), _PassingDetector()],
             ctx=ctx,
         )
-
         assert decision.action == ActionType.NONE

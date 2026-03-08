@@ -16,6 +16,7 @@ from miles.utils.ft.controller.main_state_machine import (
     create_main_stepper,
     get_known_bad_nodes,
 )
+from miles.utils.ft.controller.main_state_machine.utils import DetectorCrashTracker
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -103,6 +104,7 @@ class FtController:
         self._recovery_timeout_seconds = recovery_timeout_seconds
 
         self._restart_context: RestartContext | None = None
+        self._detector_crash_tracker = DetectorCrashTracker()
 
         self._shutting_down: bool = False
         self._tick_count: int = 0
@@ -234,6 +236,7 @@ class FtController:
             notifier=self._notifier,
             detectors=self._detectors,
             cooldown=self._cooldown,
+            detector_crash_tracker=self._detector_crash_tracker,
             recovery_stepper=self._recovery_stepper,
             recovery_context_factory=self._build_recovery_context,
             on_recovery_duration=self._on_recovery_duration,

@@ -15,6 +15,7 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 
 from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.main_state_machine import DetectingAnomaly, MainContext, Recovering, create_main_stepper
+from miles.utils.ft.controller.main_state_machine.utils import DetectorCrashTracker
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import NotifyHumans, RealtimeChecks, RecoveryDone
@@ -74,6 +75,7 @@ def _make_main_context(
         notifier=notifier,
         detectors=detectors or [],
         cooldown=cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3),
+        detector_crash_tracker=DetectorCrashTracker(),
         recovery_stepper=recovery_stepper or AsyncMock(return_value=None),
         recovery_context_factory=recovery_context_factory or _dummy_recovery_context_factory,
         on_recovery_duration=on_recovery_duration,

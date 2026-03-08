@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from miles.utils.ft.controller.main_state_machine.states import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.main_state_machine.utils import (
     MainContext,
     collect_evictable_bad_nodes,
     get_known_bad_nodes,
     notify_too_many_bad_nodes,
 )
+from miles.utils.ft.controller.main_state_machine.states import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.recovery.recovery_stepper.states import NotifyHumans, RealtimeChecks, RecoveryDone
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ class RecoveringHandler:
         new_bad_nodes = collect_evictable_bad_nodes(
             detectors=ctx.detectors,
             tick_detector_context=ctx.detector_context,
+            crash_tracker=ctx.detector_crash_tracker,
         )
         if len(new_bad_nodes) >= ctx.max_simultaneous_bad_nodes:
             await notify_too_many_bad_nodes(

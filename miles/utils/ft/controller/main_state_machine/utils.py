@@ -23,6 +23,54 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Crash tracker
+# ---------------------------------------------------------------------------
+
+
+class DetectorCrashTracker:
+    """Sliding-window tracker for detector crashes.
+
+    Records crashes and fires a one-shot notification when >=threshold
+    crashes occur within window_seconds.  Resets after the window clears.
+    """
+
+    def __init__(self, *, window_seconds: float = 1800, threshold: int = 5) -> None:
+        self._window_seconds = window_seconds
+        self._threshold = threshold
+        self._crashes: list[tuple[float, str]] = []
+        self._notified = False
+
+    def record(self, detector_name: str, *, _now: float | None = None) -> None:
+        """Record a detector crash."""
+        import time
+
+        now = _now if _now is not None else time.monotonic()
+        self._crashes.append((now, detector_name))
+        self._prune(now)
+
+    @property
+    def should_notify(self) -> bool:
+        """True once when threshold is first reached; resets after window clears."""
+        if len(self._crashes) >= self._threshold and not self._notified:
+            self._notified = True
+            return True
+        return False
+
+    def summary(self) -> str:
+        counts: dict[str, int] = {}
+        for _, name in self._crashes:
+            counts[name] = counts.get(name, 0) + 1
+        parts = [f"{name}={count}" for name, count in sorted(counts.items())]
+        return f"{len(self._crashes)} detector crashes in {self._window_seconds}s window: {', '.join(parts)}"
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._window_seconds
+        self._crashes = [(t, n) for t, n in self._crashes if t >= cutoff]
+        if len(self._crashes) < self._threshold:
+            self._notified = False
+
+
+# ---------------------------------------------------------------------------
 # Fat context
 # ---------------------------------------------------------------------------
 
@@ -40,6 +88,7 @@ class MainContext(FtBaseModel):
     notifier: NotificationProtocol | None
     detectors: list[BaseFaultDetector]
     cooldown: SlidingWindowThrottle
+    detector_crash_tracker: DetectorCrashTracker
     recovery_stepper: Callable[..., Awaitable[RecoveryState | None]]
     recovery_context_factory: Callable[[TriggerType, datetime], RecoveryContext]
     on_recovery_duration: Callable[[float], None] | None
@@ -86,32 +135,28 @@ async def notify_too_many_bad_nodes(
     )
 
 
-def run_detectors(detectors: list[BaseFaultDetector], ctx: DetectorContext) -> Decision:
-    best: Decision | None = None
-
-    for decision in _run_detectors_raw(detectors=detectors, ctx=ctx):
-        if decision.action == ActionType.ENTER_RECOVERY:
+def run_detectors(
+    detectors: list[BaseFaultDetector],
+    ctx: DetectorContext,
+    crash_tracker: DetectorCrashTracker | None = None,
+) -> Decision:
+    for decision in _run_detectors_raw(detectors=detectors, ctx=ctx, crash_tracker=crash_tracker):
+        if decision.action != ActionType.NONE:
             return decision
-        if decision.action == ActionType.NOTIFY_HUMAN and best is None:
-            best = decision
-
-    if best is not None:
-        return best
     return Decision.no_fault(reason="all detectors passed")
 
 
 def collect_evictable_bad_nodes(
     detectors: list[BaseFaultDetector],
     tick_detector_context: DetectorContext | None,
+    crash_tracker: DetectorCrashTracker | None = None,
 ) -> set[str]:
     if tick_detector_context is None:
         return set()
     bad_nodes: set[str] = set()
-    for decision in _run_detectors_raw(detectors=detectors, ctx=tick_detector_context):
+    for decision in _run_detectors_raw(detectors=detectors, ctx=tick_detector_context, crash_tracker=crash_tracker):
         if decision.action == ActionType.ENTER_RECOVERY and decision.bad_node_ids:
             bad_nodes.update(decision.bad_node_ids)
-        elif decision.action == ActionType.NOTIFY_HUMAN:
-            logger.warning("detector_crash_during_recovery reason=%s", decision.reason)
     return bad_nodes
 
 
@@ -119,6 +164,7 @@ def _run_detectors_raw(
     *,
     detectors: list[BaseFaultDetector],
     ctx: DetectorContext,
+    crash_tracker: DetectorCrashTracker | None = None,
 ) -> Iterator[Decision]:
     for detector in detectors:
         try:
@@ -129,8 +175,5 @@ def _run_detectors_raw(
                 type(detector).__name__,
                 exc_info=True,
             )
-            yield Decision(
-                action=ActionType.NOTIFY_HUMAN,
-                reason=f"detector {type(detector).__name__} crashed",
-                trigger=TriggerType.MISC,
-            )
+            if crash_tracker is not None:
+                crash_tracker.record(type(detector).__name__)
