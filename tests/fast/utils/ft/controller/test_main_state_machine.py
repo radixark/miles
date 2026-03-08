@@ -163,6 +163,89 @@ class TestDetectingAnomaly:
 
 
 # ---------------------------------------------------------------------------
+# Template method filtering (BaseFaultDetector.evaluate)
+# ---------------------------------------------------------------------------
+
+
+class TestTemplateMethodFiltering:
+    @pytest.mark.asyncio
+    async def test_bad_node_not_in_rank_placement_skips_recovery(self) -> None:
+        """Detector reports bad node that isn't in rank_placement -> filtered out, no recovery."""
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["node-other"],
+                reason="hw fault on inactive node",
+                trigger=TriggerType.HARDWARE,
+            )
+        )
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(
+                detectors=[detector],
+                rank_placement={0: "node-0"},
+            ),
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_mixed_active_and_inactive_bad_nodes_filters(self) -> None:
+        """Detector reports both active and inactive bad nodes -> only active ones kept."""
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["node-0", "node-inactive"],
+                reason="multi-node fault",
+                trigger=TriggerType.HARDWARE,
+            )
+        )
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(
+                detectors=[detector],
+                rank_placement={0: "node-0"},
+            ),
+        )
+        assert isinstance(result, Recovering)
+        assert isinstance(result.recovery, RealtimeChecks)
+        assert result.recovery.pre_identified_bad_nodes == ["node-0"]
+
+    @pytest.mark.asyncio
+    async def test_detector_without_bad_node_ids_still_triggers_recovery(self) -> None:
+        """Detector returning ENTER_RECOVERY with empty bad_node_ids is not affected by filtering."""
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(detectors=[AlwaysEnterRecoveryDetector()]),
+        )
+        assert isinstance(result, Recovering)
+
+    @pytest.mark.asyncio
+    async def test_inactive_node_does_not_block_subsequent_detectors(self) -> None:
+        """First detector filtered out entirely -> second detector still runs and triggers recovery."""
+        inactive_detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["node-inactive"],
+                reason="inactive fault",
+                trigger=TriggerType.HARDWARE,
+            )
+        )
+        active_detector = AlwaysEnterRecoveryDetector(reason="active fault")
+        stepper = _make_stepper()
+        result = await stepper(
+            DetectingAnomaly(),
+            _make_main_context(
+                detectors=[inactive_detector, active_detector],
+                rank_placement={0: "node-0"},
+            ),
+        )
+        assert isinstance(result, Recovering)
+
+
+# ---------------------------------------------------------------------------
 # Recovering
 # ---------------------------------------------------------------------------
 

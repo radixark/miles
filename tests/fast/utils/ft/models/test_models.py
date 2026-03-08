@@ -200,6 +200,54 @@ class TestDecisionFromNodeFaults:
         assert decision.reason == "reason-a; reason-b; reason-c"
 
 
+class TestDecisionFromNodeFaultsEphemeral:
+    def test_excludes_ephemeral_from_bad_node_ids(self) -> None:
+        """Mixed ephemeral + non-ephemeral: only non-ephemeral in bad_node_ids."""
+        faults = [
+            NodeFault(node_id="node-0", reason="gpu error", ephemeral=False),
+            NodeFault(node_id="node-1", reason="nic flap", ephemeral=True),
+        ]
+        decision = Decision.from_node_faults(
+            faults=faults,
+            fallback_reason="n/a",
+            trigger=TriggerType.HARDWARE,
+        )
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.bad_node_ids == ["node-0"]
+        assert "gpu error" in decision.reason
+        assert "nic flap" in decision.reason
+
+    def test_ephemeral_only_returns_none_action(self) -> None:
+        """All faults ephemeral -> NONE action (completely ignored)."""
+        faults = [
+            NodeFault(node_id="node-0", reason="nic flap 1", ephemeral=True),
+            NodeFault(node_id="node-1", reason="nic flap 2", ephemeral=True),
+        ]
+        decision = Decision.from_node_faults(
+            faults=faults,
+            fallback_reason="NIC alerts below threshold",
+            trigger=TriggerType.NETWORK,
+        )
+        assert decision.action == ActionType.NONE
+        assert "ephemeral only" in decision.reason
+        assert decision.bad_node_ids == []
+
+    def test_mixed_ephemeral_keeps_non_ephemeral(self) -> None:
+        """Two non-ephemeral + one ephemeral -> only non-ephemeral in bad_node_ids."""
+        faults = [
+            NodeFault(node_id="node-A", reason="disk error", ephemeral=False),
+            NodeFault(node_id="node-B", reason="transient glitch", ephemeral=True),
+            NodeFault(node_id="node-C", reason="gpu down", ephemeral=False),
+        ]
+        decision = Decision.from_node_faults(
+            faults=faults,
+            fallback_reason="n/a",
+            trigger=TriggerType.HARDWARE,
+        )
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.bad_node_ids == ["node-A", "node-C"]
+
+
 class TestDiagnosticResult:
     def test_normal_construction(self) -> None:
         result = DiagnosticResult(
