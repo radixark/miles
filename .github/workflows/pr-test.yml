@@ -293,7 +293,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 1, "test_file": "e2e/sglang_patch/test_chat_input_ids_equivalence.py"}]
+        info: [{"num_gpus": 1, "test_file": "e2e/sglang/test_chat_input_ids_equivalence.py"}, {"num_gpus": 1, "test_file": "e2e/sglang/test_session_server_tool_call.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}

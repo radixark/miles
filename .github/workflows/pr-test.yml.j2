@@ -72,7 +72,8 @@
       'label': 'run-ci-sglang',
       'test_executor': 'pytest',
       'tests': [
-        {'test_file': 'e2e/sglang_patch/test_chat_input_ids_equivalence.py', 'num_gpus': 1},
+        {'test_file': 'e2e/sglang/test_chat_input_ids_equivalence.py', 'num_gpus': 1},
+        {'test_file': 'e2e/sglang/test_session_server_tool_call.py', 'num_gpus': 1},
       ],
     },
     'e2e-test-short': {
