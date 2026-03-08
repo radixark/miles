@@ -5,7 +5,7 @@ import os
 import socket
 from typing import TYPE_CHECKING, Literal
 
-from miles.utils.ft.agents.utils.training_rank_exporter import TrainingRankExporter
+from miles.utils.ft.agents.metrics.training_rank_exporter import TrainingRankExporter
 from miles.utils.ft.utils.env import get_training_run_id
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 from miles.utils.ft.utils.retry import retry_sync

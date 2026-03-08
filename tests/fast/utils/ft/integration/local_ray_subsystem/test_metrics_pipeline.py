@@ -10,7 +10,7 @@ from prometheus_client import Gauge
 from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FastHangDetector
 from tests.fast.utils.ft.integration.conftest import get_status, poll_for_run_id
 
-from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
+from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.models.diagnostic import DiagnosticResult

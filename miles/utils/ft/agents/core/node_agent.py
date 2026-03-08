@@ -4,8 +4,8 @@ import logging
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.diagnostics.dispatcher import NodeDiagnosticDispatcher
-from miles.utils.ft.agents.utils.metric_collection_loop import MetricCollectionLoop
-from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
+from miles.utils.ft.agents.metrics.metric_collection_loop import MetricCollectionLoop
+from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.models.diagnostic import DiagnosticResult
 from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS, NodeAgentProtocol, NodeExecutorProtocol
 

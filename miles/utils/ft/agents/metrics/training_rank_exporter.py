@@ -6,7 +6,7 @@ from typing import Literal
 from prometheus_client import Gauge
 
 import miles.utils.ft.models.metric_names as mn
-from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
+from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 
 logger = logging.getLogger(__name__)

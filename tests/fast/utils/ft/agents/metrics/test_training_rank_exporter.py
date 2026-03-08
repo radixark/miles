@@ -10,7 +10,7 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-from miles.utils.ft.agents.utils.training_rank_exporter import TrainingRankExporter
+from miles.utils.ft.agents.metrics.training_rank_exporter import TrainingRankExporter
 
 
 def _parse_gauge(text: str, metric_name: str, labels: dict[str, str]) -> float:
