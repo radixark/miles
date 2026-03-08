@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, patch
 
-from tests.fast.utils.ft.conftest import FakeNodeAgent
+from tests.fast.utils.ft.utils import make_trace_result
+from tests.fast.utils.ft.utils.diagnostic_fakes import FakeNodeAgent
 
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import PySpyThread
-from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.controller.diagnostics.stack_trace.collector import collect_stack_trace_suspects
-
-
-def _make_agent(node_id: str) -> FakeNodeAgent:
-    return FakeNodeAgent(node_id=node_id)
 
 
 def _normal_threads() -> list[dict[str, object]]:
@@ -27,6 +22,13 @@ def _normal_threads() -> list[dict[str, object]]:
             frames=[{"name": "train", "filename": "train.py", "line": 10}],
         ).model_dump()
     ]
+
+
+def _make_agent_with_trace(node_id: str, *, passed: bool = True, details: str = "[]") -> FakeNodeAgent:
+    return FakeNodeAgent(
+        node_id=node_id,
+        diagnostic_results={"stack_trace": make_trace_result(node_id, passed=passed, details=details)},
+    )
 
 
 class TestCollectStackTraceSuspects:
@@ -42,7 +44,7 @@ class TestCollectStackTraceSuspects:
         assert result == []
 
     def test_rank_pids_provider_exception_marks_node_as_suspect(self) -> None:
-        agents = {"node-0": _make_agent("node-0")}
+        agents = {"node-0": _make_agent_with_trace("node-0")}
 
         def _failing_provider(node_id: str) -> dict[int, int]:
             raise RuntimeError("cannot get pids")
@@ -58,60 +60,32 @@ class TestCollectStackTraceSuspects:
         assert "node-0" in result
 
     def test_diagnostic_execution_failure_marks_node_as_suspect(self) -> None:
-        agents = {"node-0": _make_agent("node-0")}
+        agents = {"node-0": _make_agent_with_trace("node-0", passed=False, details="py-spy failed")}
 
-        with patch(
-            "miles.utils.ft.controller.diagnostics.stack_trace.collector.StackTraceNodeExecutor"
-        ) as mock_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(
-                return_value=DiagnosticResult(
-                    diagnostic_type="stack_trace",
-                    node_id="node-0",
-                    passed=False,
-                    details="py-spy failed",
-                )
+        result = asyncio.run(
+            collect_stack_trace_suspects(
+                agents=agents,
+                rank_pids_provider=lambda nid: {0: 1234},
+                default_timeout_seconds=30,
             )
-            mock_cls.return_value = mock_instance
-
-            result = asyncio.run(
-                collect_stack_trace_suspects(
-                    agents=agents,
-                    rank_pids_provider=lambda nid: {0: 1234},
-                    default_timeout_seconds=30,
-                )
-            )
+        )
 
         assert "node-0" in result
 
     def test_successful_collection_returns_aggregation_suspects(self) -> None:
+        threads_json = json.dumps(_normal_threads())
         agents = {
-            "node-0": _make_agent("node-0"),
-            "node-1": _make_agent("node-1"),
-            "node-2": _make_agent("node-2"),
+            "node-0": _make_agent_with_trace("node-0", details=threads_json),
+            "node-1": _make_agent_with_trace("node-1", details=threads_json),
+            "node-2": _make_agent_with_trace("node-2", details=threads_json),
         }
 
-        threads_json = json.dumps(_normal_threads())
-        pass_result = DiagnosticResult(
-            diagnostic_type="stack_trace",
-            node_id="placeholder",
-            passed=True,
-            details=threads_json,
-        )
-
-        with patch(
-            "miles.utils.ft.controller.diagnostics.stack_trace.collector.StackTraceNodeExecutor"
-        ) as mock_cls:
-            mock_instance = AsyncMock()
-            mock_instance.run = AsyncMock(return_value=pass_result)
-            mock_cls.return_value = mock_instance
-
-            result = asyncio.run(
-                collect_stack_trace_suspects(
-                    agents=agents,
-                    rank_pids_provider=lambda nid: {0: 1234},
-                    default_timeout_seconds=30,
-                )
+        result = asyncio.run(
+            collect_stack_trace_suspects(
+                agents=agents,
+                rank_pids_provider=lambda nid: {0: 1234},
+                default_timeout_seconds=30,
             )
+        )
 
         assert isinstance(result, list)
