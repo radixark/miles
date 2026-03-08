@@ -53,7 +53,7 @@ class NodeSpec:
     node_id: str
     num_ranks: int = 1
     diagnostic_pass: bool = True
-    diagnostic_types: list[str] = field(default_factory=lambda: ["gpu"])
+    diagnostic_types: list[str] = field(default_factory=lambda: ["gpu", "nccl_simple", "nccl_pairwise"])
     use_remote_collector: bool = False
 
 

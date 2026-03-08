@@ -89,6 +89,7 @@ class TestRecoveryPhaseHistoryRecorded:
     ) -> None:
         handle = make_controller_actor(
             detectors_override=[OneShotCrashDetector()],
+            monitoring_success_iterations_override=0,
         )
 
         handle.submit_and_run.remote()
@@ -119,7 +120,8 @@ class TestRecoveryPhaseHistoryRecorded:
         status = get_status(handle)
         assert status.phase_history is not None, "phase_history should be populated after recovery"
         assert any(
-            "Recovery" in p or "Done" in p for p in status.phase_history
+            p in {"RealtimeChecks", "StopTimeDiagnostics", "RecoveryDone", "NotifyHumans"}
+            for p in status.phase_history
         ), f"phase_history should contain recovery phases, got: {status.phase_history}"
 
 

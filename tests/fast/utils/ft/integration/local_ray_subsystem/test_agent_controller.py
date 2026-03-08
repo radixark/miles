@@ -196,6 +196,7 @@ class TestInFlightMessagesDuringRunSwitch:
     ) -> None:
         handle = make_controller_actor(
             detectors_override=[OneShotCrashDetector()],
+            monitoring_success_iterations_override=0,
         )
 
         handle.submit_and_run.remote()
