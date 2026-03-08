@@ -1,12 +1,11 @@
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 import requests
 
 from miles.session_server.server import create_session_server_app
 from miles.utils.http_utils import find_available_port
-from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
@@ -17,33 +16,23 @@ def session_server_env():
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
 
-    original_chat_response = MockSGLangServer._compute_chat_completions_response
+    with with_mock_server(process_fn=process_fn) as backend:
+        args = SimpleNamespace(
+            hf_checkpoint="Qwen/Qwen3-0.6B",
+            chat_template_path=None,
+            upstream_url=backend.url,
+        )
+        app = create_session_server_app(args)
 
-    def patched_chat_response(self, payload: dict) -> dict:
-        response = original_chat_response(self, payload)
-        logprobs_content = response["choices"][0]["logprobs"]["content"]
-        for item in logprobs_content:
-            item["token_id"] = self.tokenizer.convert_tokens_to_ids(item["token"])
-        return response
+        port = find_available_port(32000)
+        server = UvicornThreadServer(app, host="127.0.0.1", port=port)
+        server.start()
 
-    with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
-        with with_mock_server(process_fn=process_fn) as backend:
-            args = SimpleNamespace(
-                hf_checkpoint="Qwen/Qwen3-0.6B",
-                chat_template_path=None,
-                upstream_url=backend.url,
-            )
-            app = create_session_server_app(args)
-
-            port = find_available_port(32000)
-            server = UvicornThreadServer(app, host="127.0.0.1", port=port)
-            server.start()
-
-            url = f"http://127.0.0.1:{port}"
-            try:
-                yield SimpleNamespace(url=url, backend=backend)
-            finally:
-                server.stop()
+        url = f"http://127.0.0.1:{port}"
+        try:
+            yield SimpleNamespace(url=url, backend=backend)
+        finally:
+            server.stop()
 
 
 class TestSessionServerCRUD:

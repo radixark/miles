@@ -53,7 +53,7 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
     if "prompt_token_ids" in choice:
         prompt_token_ids = choice["prompt_token_ids"]
 
-    output_token_ids = [item["token_id"] for item in choice["logprobs"]["content"]]
+    output_token_ids = choice["response_token_ids"]
     output_log_probs = [item["logprob"] for item in choice["logprobs"]["content"]]
 
     sample = deepcopy(input_sample)

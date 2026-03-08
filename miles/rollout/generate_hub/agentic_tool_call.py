@@ -98,7 +98,7 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
             request_kwargs.pop(src, None)
 
     # return_prompt_token_ids: get prompt token IDs without computing logprobs (zero cost, cache-safe)
-    # logprobs: get output token IDs + logprobs (via logprobs.content[].token_id)
+    # logprobs: populates response_token_ids + logprobs on each choice
     # NOTE: do NOT set logprob_start_len=0, that would destroy SGLang's prefix cache.
     request_kwargs["return_prompt_token_ids"] = True
     request_kwargs["logprobs"] = True

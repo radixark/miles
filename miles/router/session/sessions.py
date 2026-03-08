@@ -81,16 +81,11 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         choice = response.get("choices", [{}])[0]
 
-        if "logprobs" not in choice or "content" not in choice["logprobs"]:
-            raise RuntimeError("logprobs must be in choice")
-        logprobs_content = choice["logprobs"]["content"]
-        for item in logprobs_content:
-            if "token_id" not in item:
-                raise RuntimeError("token_id must be in choice's logprobs content item")
+        if "response_token_ids" not in choice:
+            raise RuntimeError("response_token_ids must be in choice (requires logprobs=True)")
 
-        # Extract token IDs and update pretokenized state for next turn.
         prompt_token_ids = choice.get("prompt_token_ids", [])
-        completion_token_ids = [item["token_id"] for item in logprobs_content]
+        completion_token_ids = choice["response_token_ids"]
         assistant_message = choice.get("message", {})
 
         manager.update_pretokenized_state(
