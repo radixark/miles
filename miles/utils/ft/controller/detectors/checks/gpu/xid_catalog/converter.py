@@ -53,10 +53,12 @@ AUTO_RECOVERABLE_BUCKETS: frozenset[str | None] = frozenset(
 
 _REQUIRED_COLUMNS: frozenset[str] = frozenset({"code", "mnemonic", "bucket"})
 
+_DEFAULT_OUTPUT_DIR: Path = Path(__file__).resolve().parent
+
 
 def main(
     xlsx_path: Annotated[Path, typer.Argument(help="Path to Xid-Catalog.xlsx")],
-    output_dir: Annotated[Path, typer.Option(help="Output directory for info.py")] = Path(__file__).resolve().parent,
+    output_dir: Annotated[Path, typer.Option(help="Output directory for info.py")] = _DEFAULT_OUTPUT_DIR,
 ) -> None:
     if not xlsx_path.exists():
         raise typer.BadParameter(f"File not found: {xlsx_path}")

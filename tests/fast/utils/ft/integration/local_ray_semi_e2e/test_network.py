@@ -328,7 +328,6 @@ class TestMajorityNicDown:
         )
 
         await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
-        old_run_id = get_status(env.controller).active_run_id
 
         # Step 1: inject 3 NICs — 2 down, 1 up (majority down)
         env.set_collector_metrics(

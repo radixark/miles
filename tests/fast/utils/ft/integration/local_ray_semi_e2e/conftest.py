@@ -240,7 +240,7 @@ def _build_e2e_env(
     controller_name = ft_controller_actor_name(ft_id)
     controller = FtControllerActor.options(name=controller_name).remote(**controller_kwargs)
     controller.submit_and_run.remote()
-    run_id = poll_for_run_id(controller)
+    poll_for_run_id(controller)
 
     env = E2EEnv(
         controller=controller,

@@ -5,8 +5,12 @@ from __future__ import annotations
 import logging
 import socket
 from threading import Thread
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from prometheus_client.registry import CollectorRegistry
 
 from tests.fast.utils.ft.utils.metric_injectors import make_fake_metric_store
 

@@ -293,7 +293,7 @@ class TestFtNodeAgentCollectionLoop:
     async def test_collect_interval_seconds_overrides_all(self, make_node_agent: MakeNodeAgent) -> None:
         fast_collector = _CountingCollector(collect_interval=0.01)
         slow_collector = _CountingCollector(collect_interval=0.01)
-        agent = make_node_agent(
+        make_node_agent(
             node_id="test-node-override",
             collectors=[fast_collector, slow_collector],
             collect_interval_seconds=0.05,

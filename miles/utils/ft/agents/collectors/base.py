@@ -20,5 +20,5 @@ class BaseCollector(ABC):
     @abstractmethod
     def _collect_sync(self) -> list[MetricSample]: ...
 
-    async def close(self) -> None:
+    async def close(self) -> None:  # noqa: B027
         pass

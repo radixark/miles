@@ -191,7 +191,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                 for node_id in node_ids
             )
         )
-        return dict(zip(node_ids, raw_results))
+        return dict(zip(node_ids, raw_results, strict=True))
 
     @staticmethod
     def _partition_results(

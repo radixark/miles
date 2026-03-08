@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
 from typing import Any
@@ -148,8 +147,6 @@ class TestPidCorrectness:
     ) -> None:
         handle, run_id = running_controller
         monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
-
-        caller_pid = os.getpid()
 
         client = RayControllerClient(ft_id="")
         with patch("socket.gethostname", return_value="pid-test-node"):

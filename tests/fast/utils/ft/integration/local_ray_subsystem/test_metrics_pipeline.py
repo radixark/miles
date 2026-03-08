@@ -327,7 +327,7 @@ class TestRegisterNodeAgentSerialization:
 
         try:
             handle.submit_and_run.remote()
-            run_id = poll_for_run_id(handle)
+            poll_for_run_id(handle)
 
             ray.get(
                 handle.register_node_agent.remote(

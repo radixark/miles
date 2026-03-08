@@ -28,7 +28,7 @@ def _kill_actor(name: str) -> None:
 class TestNamedActorCreation:
     def test_create_and_discover_via_get_actor(self, local_ray: None) -> None:
         name = ft_controller_actor_name("")
-        handle = FtControllerActor.options(name=name).remote(
+        FtControllerActor.options(name=name).remote(
             config=FtControllerConfig(platform="stub", tick_interval=1.0),
         )
         try:
@@ -102,7 +102,7 @@ class TestDuplicateActorName:
         controller_actor: ray.actor.ActorHandle,
     ) -> None:
         name = ft_controller_actor_name("")
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             FtControllerActor.options(name=name).remote(
                 config=FtControllerConfig(platform="stub"),
             )

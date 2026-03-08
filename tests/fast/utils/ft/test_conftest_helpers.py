@@ -172,4 +172,4 @@ class TestFakeNodeAgent:
         assert await agent.run_diagnostic("gpu_check") == result
 
     def test_default_construction(self) -> None:
-        agent = FakeNodeAgent()
+        FakeNodeAgent()

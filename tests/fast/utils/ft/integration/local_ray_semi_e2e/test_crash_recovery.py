@@ -337,7 +337,7 @@ class TestSequentialRecovery:
         if initial_status.active_run_id:
             run_ids.append(initial_status.active_run_id)
 
-        for cycle in range(3):
+        for _cycle in range(3):
             await wait_for_training_stable(env.controller, n_iterations=3, timeout=30.0)
             await env.injector.crash_training()
 
