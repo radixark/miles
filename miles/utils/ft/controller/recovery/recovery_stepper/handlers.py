@@ -19,10 +19,7 @@ from miles.utils.ft.controller.recovery.restart_stepper.handlers import RestartC
 from miles.utils.ft.controller.recovery.restart_stepper.states import RestartDone, RestartFailed, RestartState
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import TriggerType
-from miles.utils.ft.protocols.platform import (
-    DiagnosticOrchestratorProtocol,
-    NotificationProtocol,
-)
+from miles.utils.ft.protocols.platform import DiagnosticOrchestratorProtocol, NotificationProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +37,6 @@ class RecoveryContext(FtBaseModel):
     recovery_start_time: datetime
 
     # deps
-    check_evictable_faults: Callable[[], set[str]]
     diagnostic_orchestrator: DiagnosticOrchestratorProtocol
     restart_stepper: Callable[[RestartState, RestartContext], Awaitable[RestartState | None]]
     restart_context: RestartContext
@@ -75,11 +71,6 @@ class RealtimeChecksHandler:
             return EvictingAndRestarting.evict_and_restart(
                 bad_node_ids=state.pre_identified_bad_nodes,
             )
-
-        bad_node_ids = ctx.check_evictable_faults()
-        if bad_node_ids:
-            logger.info("realtime_checks_found bad_nodes=%s", sorted(bad_node_ids))
-            return EvictingAndRestarting.evict_and_restart(bad_node_ids=sorted(bad_node_ids))
 
         logger.info("realtime_checks_clean trigger=%s", ctx.trigger)
         return EvictingAndRestarting.direct_restart()

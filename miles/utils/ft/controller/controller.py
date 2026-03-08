@@ -20,7 +20,6 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_roster import RankRoster
-from miles.utils.ft.controller.main_state_machine.utils import collect_evictable_bad_nodes
 from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import (
     RECOVERY_STATE_TO_INT,
@@ -208,16 +207,9 @@ class FtController:
         trigger: TriggerType,
         recovery_start_time: datetime,
     ) -> RecoveryContext:
-        def _check_evictable_faults() -> set[str]:
-            return collect_evictable_bad_nodes(
-                detectors=self._detectors,
-                tick_detector_context=self._build_detector_context(JobStatus.RUNNING),
-            )
-
         return RecoveryContext(
             trigger=trigger,
             recovery_start_time=recovery_start_time,
-            check_evictable_faults=_check_evictable_faults,
             diagnostic_orchestrator=self._diagnostic_orchestrator,
             restart_stepper=self._restart_stepper,
             restart_context=self._restart_context,

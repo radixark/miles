@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -87,15 +86,10 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _no_evictable_faults() -> set[str]:
-    return set()
-
-
 def _make_ctx(
     *,
     trigger: TriggerType = TriggerType.CRASH,
     recovery_start_time: datetime | None = None,
-    check_evictable_faults: Callable[[], set[str]] | None = None,
     diagnostic_orchestrator: FakeDiagOrchestrator | None = None,
     restart_stepper: object | None = None,
     restart_context: RestartContext | None = None,
@@ -115,7 +109,6 @@ def _make_ctx(
     return RecoveryContext(
         trigger=trigger,
         recovery_start_time=recovery_start_time or _now(),
-        check_evictable_faults=check_evictable_faults or _no_evictable_faults,
         diagnostic_orchestrator=diagnostic_orchestrator or FakeDiagOrchestrator(),
         restart_stepper=restart_stepper,
         restart_context=restart_context,
@@ -150,37 +143,27 @@ async def _step(
 
 class TestRealtimeChecks:
     @pytest.mark.asyncio
-    async def test_no_faults_goes_to_restarting(self) -> None:
+    async def test_no_pre_identified_goes_to_direct_restart(self) -> None:
         stepper = _make_stepper()
-        result = await _step(stepper, RealtimeChecks(), check_evictable_faults=lambda: set())
+        result = await _step(stepper, RealtimeChecks())
         assert isinstance(result, EvictingAndRestarting)
         assert isinstance(result.restart, StoppingAndRestarting)
         assert isinstance(result.failed_next_state, StopTimeDiagnostics)
 
     @pytest.mark.asyncio
-    async def test_evictable_faults_go_to_evicting_and_restarting(self) -> None:
-        stepper = _make_stepper()
-        result = await _step(
-            stepper, RealtimeChecks(), check_evictable_faults=lambda: {"node-A"},
-        )
-        assert isinstance(result, EvictingAndRestarting)
-        assert isinstance(result.restart, Evicting)
-        assert result.restart.bad_node_ids == ["node-A"]
-        assert isinstance(result.failed_next_state, StopTimeDiagnostics)
-
-    @pytest.mark.asyncio
-    async def test_pre_identified_bad_nodes_skip_check(self) -> None:
+    async def test_pre_identified_bad_nodes_go_to_evicting(self) -> None:
         stepper = _make_stepper()
         result = await _step(stepper, RealtimeChecks(pre_identified_bad_nodes=["node-X"]))
         assert isinstance(result, EvictingAndRestarting)
+        assert isinstance(result.restart, Evicting)
         assert result.restart.bad_node_ids == ["node-X"]
 
     @pytest.mark.asyncio
-    async def test_multiple_bad_nodes_all_evicted(self) -> None:
+    async def test_multiple_pre_identified_bad_nodes_all_evicted(self) -> None:
         stepper = _make_stepper()
         result = await _step(
-            stepper, RealtimeChecks(),
-            check_evictable_faults=lambda: {"node-A", "node-B", "node-C"},
+            stepper,
+            RealtimeChecks(pre_identified_bad_nodes=["node-A", "node-B", "node-C"]),
         )
         assert isinstance(result, EvictingAndRestarting)
         assert result.restart.bad_node_ids == ["node-A", "node-B", "node-C"]
@@ -379,12 +362,11 @@ class TestFullRecoveryFlow:
         )
         stepper = _make_stepper()
         ctx = _make_ctx(
-            check_evictable_faults=lambda: set(),
             restart_stepper=restart_stepper,
             restart_context=restart_ctx,
         )
 
-        # Step 1: RealtimeChecks -> EvictingAndRestarting (no eviction, direct restart)
+        # Step 1: RealtimeChecks (no pre-identified) -> EvictingAndRestarting (direct restart)
         state = await stepper(RealtimeChecks(), ctx)
         assert isinstance(state, EvictingAndRestarting)
         assert isinstance(state.restart, StoppingAndRestarting)
@@ -477,13 +459,12 @@ class TestFullRecoveryFlow:
         )
         stepper = _make_stepper()
         ctx = _make_ctx(
-            check_evictable_faults=lambda: set(),
             restart_stepper=restart_stepper,
             restart_context=restart_ctx,
             diagnostic_orchestrator=diag,
         )
 
-        # Step 1: RealtimeChecks (no faults) -> EvictingAndRestarting (direct restart)
+        # Step 1: RealtimeChecks (no pre-identified) -> EvictingAndRestarting (direct restart)
         state = await stepper(RealtimeChecks(), ctx)
         assert isinstance(state, EvictingAndRestarting)
         assert isinstance(state.restart, StoppingAndRestarting)
