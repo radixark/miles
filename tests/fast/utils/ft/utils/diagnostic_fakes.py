@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
 from miles.utils.ft.adapters.types import NodeAgentProtocol
@@ -199,7 +198,7 @@ def mock_nccl_pairwise_run(
 
 
 # ---------------------------------------------------------------------------
-# Stack trace diagnostic mock helper
+# Subprocess mock helper
 # ---------------------------------------------------------------------------
 
 
@@ -217,15 +216,3 @@ def make_mock_subprocess(
     process.kill = AsyncMock()
     process.wait = AsyncMock()
     return process
-
-
-@contextlib.contextmanager
-def mock_stack_trace_diagnostic(
-    side_effects: list[DiagnosticResult | Exception],
-) -> Generator[AsyncMock, None, None]:
-    """Patch StackTraceNodeExecutor and wire an AsyncMock with the given side_effects."""
-    with patch("miles.utils.ft.controller.diagnostics.stack_trace.collector.StackTraceNodeExecutor") as mock_diag_cls:
-        mock_instance = AsyncMock()
-        mock_instance.run = AsyncMock(side_effect=side_effects)
-        mock_diag_cls.return_value = mock_instance
-        yield mock_diag_cls

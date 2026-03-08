@@ -55,7 +55,6 @@ from tests.fast.utils.ft.utils.diagnostic_fakes import (
     make_fake_agents,
     make_mock_subprocess,
     mock_nccl_pairwise_run,
-    mock_stack_trace_diagnostic,
 )
 from tests.fast.utils.ft.utils.metric_injectors import (
     EMPTY_RANK_PLACEMENT,
@@ -138,5 +137,4 @@ __all__ = [
     "run_controller_briefly",
     "make_trace_result",
     "mock_nccl_pairwise_run",
-    "mock_stack_trace_diagnostic",
 ]
