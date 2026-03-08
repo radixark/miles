@@ -5,7 +5,7 @@ from miles.utils.ft.protocols.controller import DiagnosticOrchestratorProtocol
 from miles.utils.ft.protocols.platform import (
     JobStatus,
     NodeManagerProtocol,
-    NotificationProtocol,
+    NotifierProtocol,
     TrainingJobProtocol,
 )
 
@@ -124,7 +124,7 @@ class TestTrainingJobProtocol:
         assert await instance.get_training_status() == JobStatus.STOPPED
 
 
-class TestNotificationProtocol:
+class TestNotifierProtocol:
     def test_conforming_class_passes_isinstance(self) -> None:
         class _Conforming:
             async def send(self, title: str, content: str, severity: str) -> None:
@@ -133,14 +133,14 @@ class TestNotificationProtocol:
             async def aclose(self) -> None:
                 pass
 
-        assert isinstance(_Conforming(), NotificationProtocol)
+        assert isinstance(_Conforming(), NotifierProtocol)
 
     def test_missing_method_fails_isinstance(self) -> None:
         class _MissingSend:
             async def aclose(self) -> None:
                 pass
 
-        assert not isinstance(_MissingSend(), NotificationProtocol)
+        assert not isinstance(_MissingSend(), NotifierProtocol)
 
     @pytest.mark.anyio
     async def test_methods_callable_with_expected_signatures(self) -> None:
@@ -155,7 +155,7 @@ class TestNotificationProtocol:
             async def aclose(self) -> None:
                 self.closed = True
 
-        instance: NotificationProtocol = _Impl()
+        instance: NotifierProtocol = _Impl()
         await instance.send(title="alert", content="gpu down", severity="critical")
         assert instance.sent == [("alert", "gpu down", "critical")]
         await instance.aclose()
@@ -170,7 +170,7 @@ class TestStubProtocolCompliance:
         assert isinstance(StubTrainingJob(), TrainingJobProtocol)
 
     def test_stub_notifier_satisfies_protocol(self) -> None:
-        assert isinstance(StubNotifier(), NotificationProtocol)
+        assert isinstance(StubNotifier(), NotifierProtocol)
 
 
 class TestDiagnosticOrchestratorProtocol:

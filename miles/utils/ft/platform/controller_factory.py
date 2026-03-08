@@ -26,7 +26,7 @@ from miles.utils.ft.platform.stubs import StubNodeManager, StubTrainingJob
 from miles.utils.ft.protocols.controller import DiagnosticOrchestratorProtocol
 from miles.utils.ft.protocols.platform import (
     NodeManagerProtocol,
-    NotificationProtocol,
+    NotifierProtocol,
     TrainingJobProtocol,
 )
 
@@ -45,7 +45,7 @@ def build_ft_controller(
     start_exporter: bool = True,
     node_manager_override: NodeManagerProtocol | None = None,
     training_job_override: TrainingJobProtocol | None = None,
-    notifier_override: NotificationProtocol | None | object = _NOTIFIER_SENTINEL,
+    notifier_override: NotifierProtocol | None | object = _NOTIFIER_SENTINEL,
     detectors_override: list[BaseFaultDetector] | None = None,
     diagnostic_orchestrator_override: DiagnosticOrchestratorProtocol | None = None,
     recovery_cooldown_override: SlidingWindowThrottle | None = None,
@@ -101,7 +101,7 @@ def build_ft_controller(
     mini_wandb = MiniWandb()
 
     if notifier_override is not _NOTIFIER_SENTINEL:
-        notifier: NotificationProtocol | None = notifier_override  # type: ignore[assignment]
+        notifier: NotifierProtocol | None = notifier_override  # type: ignore[assignment]
     else:
         notifier = build_notifier(
             platform=config.platform,

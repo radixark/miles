@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 
-from miles.utils.ft.protocols.platform import NotificationProtocol
+from miles.utils.ft.protocols.platform import NotifierProtocol
 
 logger = logging.getLogger(__name__)
 
 
 async def safe_notify(
-    notifier: NotificationProtocol | None,
+    notifier: NotifierProtocol | None,
     title: str,
     content: str,
     severity: str = "critical",
