@@ -11,7 +11,7 @@ _SLEEP_PATCH = "miles.utils.ft.utils.retry.asyncio.sleep"
 
 
 class TestWebhookNotifierRetry:
-    """Tests for the retry/backoff logic in the WebhookNotifier base class.
+    """Tests for the retry/backoff logic in the BaseWebhookNotifier base class.
 
     Uses LarkWebhookNotifier as the concrete implementation.
     """

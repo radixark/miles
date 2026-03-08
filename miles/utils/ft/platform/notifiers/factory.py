@@ -1,4 +1,4 @@
-"""Notifier factory: builds the appropriate WebhookNotifier subclass
+"""Notifier factory: builds the appropriate BaseBaseWebhookNotifier subclass
 from explicit configuration parameters.
 """
 
@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from miles.utils.ft.platform.stubs import StubNotifier
 
 if TYPE_CHECKING:
-    from miles.utils.ft.platform.notifiers.webhook_notifier import WebhookNotifier
+    from miles.utils.ft.platform.notifiers.webhook_notifier import BaseBaseWebhookNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def build_notifier(
     platform: str,
     notify_webhook_url: str = "",
     notify_platform: str = "",
-) -> WebhookNotifier | StubNotifier | None:
+) -> BaseWebhookNotifier | StubNotifier | None:
     webhook_url = notify_webhook_url.strip()
     notify_platform = notify_platform.strip().lower() or "lark"
 
@@ -39,15 +39,15 @@ def build_notifier(
     return None
 
 
-def _get_notifier_class(notify_platform: str) -> type[WebhookNotifier]:
-    from miles.utils.ft.platform.notifiers.discord_notifier import DiscordWebhookNotifier
-    from miles.utils.ft.platform.notifiers.lark_notifier import LarkWebhookNotifier
-    from miles.utils.ft.platform.notifiers.slack_notifier import SlackWebhookNotifier
+def _get_notifier_class(notify_platform: str) -> type[BaseWebhookNotifier]:
+    from miles.utils.ft.platform.notifiers.discord_notifier import DiscordBaseWebhookNotifier
+    from miles.utils.ft.platform.notifiers.lark_notifier import LarkBaseWebhookNotifier
+    from miles.utils.ft.platform.notifiers.slack_notifier import SlackBaseWebhookNotifier
 
-    registry: dict[str, type[WebhookNotifier]] = {
-        "lark": LarkWebhookNotifier,
-        "slack": SlackWebhookNotifier,
-        "discord": DiscordWebhookNotifier,
+    registry: dict[str, type[BaseWebhookNotifier]] = {
+        "lark": LarkBaseWebhookNotifier,
+        "slack": SlackBaseWebhookNotifier,
+        "discord": DiscordBaseWebhookNotifier,
     }
     cls = registry.get(notify_platform)
     if cls is None:

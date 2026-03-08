@@ -1,6 +1,6 @@
 from typing import Any
 
-from miles.utils.ft.platform.notifiers.webhook_notifier import WebhookNotifier
+from miles.utils.ft.platform.notifiers.webhook_notifier import BaseWebhookNotifier
 
 _SEVERITY_EMOJI = {
     "critical": ":red_circle:",
@@ -9,7 +9,7 @@ _SEVERITY_EMOJI = {
 }
 
 
-class SlackWebhookNotifier(WebhookNotifier):
+class SlackWebhookNotifier(BaseWebhookNotifier):
     """Sends notifications via Slack Incoming Webhook (Block Kit)."""
 
     def _build_payload(self, title: str, content: str, severity: str) -> dict[str, Any]:

@@ -1,9 +1,9 @@
 from typing import Any
 
-from miles.utils.ft.platform.notifiers.webhook_notifier import WebhookNotifier
+from miles.utils.ft.platform.notifiers.webhook_notifier import BaseWebhookNotifier
 
 
-class LarkWebhookNotifier(WebhookNotifier):
+class LarkWebhookNotifier(BaseWebhookNotifier):
     """Sends notifications via Lark custom bot webhook (interactive card)."""
 
     def _build_payload(self, title: str, content: str, severity: str) -> dict[str, Any]:

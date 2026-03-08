@@ -13,7 +13,7 @@ _MAX_RETRIES = 3
 _INITIAL_BACKOFF_SECONDS = 1.0
 
 
-class WebhookNotifier(NotifierProtocol, abc.ABC):
+class BaseWebhookNotifier(NotifierProtocol, abc.ABC):
     """Base class for webhook-based notifiers with retry and exponential backoff."""
 
     def __init__(self, webhook_url: str) -> None:

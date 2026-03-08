@@ -1,6 +1,6 @@
 from typing import Any
 
-from miles.utils.ft.platform.notifiers.webhook_notifier import WebhookNotifier
+from miles.utils.ft.platform.notifiers.webhook_notifier import BaseWebhookNotifier
 
 _SEVERITY_COLOR = {
     "critical": 0xE74C3C,
@@ -9,7 +9,7 @@ _SEVERITY_COLOR = {
 }
 
 
-class DiscordWebhookNotifier(WebhookNotifier):
+class DiscordWebhookNotifier(BaseWebhookNotifier):
     """Sends notifications via Discord webhook (embed)."""
 
     def _build_payload(self, title: str, content: str, severity: str) -> dict[str, Any]:
