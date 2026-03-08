@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from miles.utils.ft.factories.embedded_agent import _ensure_ray_actor_on_node, ensure_node_agent
+from miles.utils.ft.factories.node_agent import build_node_agent
 
 
 class TestEnsureRayActorOnNode:
@@ -28,7 +29,10 @@ class TestEnsureRayActorOnNode:
 
     def test_creates_actor_when_not_exists(self) -> None:
         """Creates and starts the actor when ray.get_actor raises ValueError."""
-        with patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray:
+        with (
+            patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy") as mock_strategy,
+        ):
             mock_ray.get_actor.side_effect = ValueError("not found")
             actor_cls = MagicMock()
             handle = MagicMock()
@@ -48,7 +52,10 @@ class TestEnsureRayActorOnNode:
 
     def test_concurrent_creation_race_logs_info(self, caplog: pytest.LogCaptureFixture) -> None:
         """When another rank creates the actor concurrently, logs info and does not raise."""
-        with patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray:
+        with (
+            patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
+        ):
             mock_ray.get_actor.side_effect = ValueError("not found")
             actor_cls = MagicMock()
             actor_cls.options.return_value.remote.side_effect = ValueError("actor already exists")
@@ -64,7 +71,10 @@ class TestEnsureRayActorOnNode:
 
     def test_unexpected_exception_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """Non-ValueError exceptions are logged as warnings with exc_info."""
-        with patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray:
+        with (
+            patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
+        ):
             mock_ray.get_actor.side_effect = ValueError("not found")
             actor_cls = MagicMock()
             actor_cls.options.return_value.remote.side_effect = RuntimeError("boom")
@@ -81,7 +91,10 @@ class TestEnsureRayActorOnNode:
 
     def test_custom_start_method(self) -> None:
         """Respects a custom start_method parameter."""
-        with patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray:
+        with (
+            patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
+        ):
             mock_ray.get_actor.side_effect = ValueError("not found")
             actor_cls = MagicMock()
             handle = MagicMock()
@@ -117,6 +130,7 @@ class TestEnsureNodeAgent:
         call_kwargs = mock_ensure.call_args
         assert call_kwargs.kwargs["node_id"] == "node-abc"
         assert call_kwargs.kwargs["actor_kwargs"] == {
+            "builder": build_node_agent,
             "node_id": "node-abc",
             "ft_id": "job-42",
         }
