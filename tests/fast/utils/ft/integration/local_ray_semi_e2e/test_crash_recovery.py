@@ -530,7 +530,9 @@ class TestCooldownExpiry:
             timeout=FAST_TIMEOUT,
         )
 
-        # Step 3: sleep past cooldown window, then crash again → recovery succeeds
+        # Step 3: restore training so the detector stops firing during sleep,
+        # then wait for the cooldown window to expire before crashing again.
+        await env.injector.recover_training()
         await asyncio.sleep(window_seconds + 3)
         await env.injector.crash_training()
         final = await wait_for_mode_transition(
