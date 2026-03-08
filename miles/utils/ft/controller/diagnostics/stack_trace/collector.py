@@ -6,8 +6,9 @@ import logging
 from collections.abc import Callable
 
 from miles.utils.ft.adapters.types import NodeAgentProtocol
-from miles.utils.ft.agents.diagnostics.executors.stack_trace import PySpyThread, StackTraceNodeExecutor
+from miles.utils.ft.agents.diagnostics.executors.stack_trace import PySpyThread
 from miles.utils.ft.controller.diagnostics.stack_trace.aggregator import StackTraceAggregator
+from miles.utils.ft.controller.diagnostics.utils import call_agent_diagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -36,29 +37,23 @@ async def collect_stack_trace_suspects(
         if not rank_pids:
             return
 
-        diag = StackTraceNodeExecutor(pids=list(rank_pids.values()))
+        result = await call_agent_diagnostic(
+            agent=agents[node_id],
+            node_id=node_id,
+            diagnostic_type="stack_trace",
+            timeout_seconds=default_timeout_seconds,
+            pids=list(rank_pids.values()),
+        )
 
-        try:
-            result = await diag.run(
-                node_id=node_id,
-                timeout_seconds=default_timeout_seconds,
-            )
-            if result.passed:
-                threads = [PySpyThread.model_validate(t) for t in json.loads(result.details)]
-                traces[node_id] = threads
-            else:
-                suspect_from_failures.append(node_id)
-                logger.info(
-                    "stack_trace_collection_failed node=%s details=%s",
-                    node_id,
-                    result.details,
-                )
-        except Exception:
+        if result.passed:
+            threads = [PySpyThread.model_validate(t) for t in json.loads(result.details)]
+            traces[node_id] = threads
+        else:
             suspect_from_failures.append(node_id)
-            logger.warning(
-                "stack_trace_collect_exception node=%s",
+            logger.info(
+                "stack_trace_collection_failed node=%s details=%s",
                 node_id,
-                exc_info=True,
+                result.details,
             )
 
     await asyncio.gather(*(_collect_node(nid) for nid in agents))
