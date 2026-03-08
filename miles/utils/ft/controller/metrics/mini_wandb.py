@@ -4,8 +4,20 @@ import logging
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
-from miles.utils.ft.controller.types import StepValue, TimedStepValue, TrainingMetricStoreProtocol
+from miles.utils.ft.controller.types import TrainingMetricStoreProtocol
+
+
+class StepValue(NamedTuple):
+    step: int
+    value: float
+
+
+class TimedStepValue(NamedTuple):
+    step: int
+    timestamp: datetime
+    value: float
 
 logger = logging.getLogger(__name__)
 

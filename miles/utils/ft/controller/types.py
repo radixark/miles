@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import polars as pl
 from pydantic import Field, model_validator
@@ -14,6 +14,7 @@ from miles.utils.ft.utils.base_model import FtBaseModel
 
 if TYPE_CHECKING:
     from miles.utils.ft.adapters.types import ClusterExecutorProtocol
+    from miles.utils.ft.controller.metrics.mini_wandb import StepValue, TimedStepValue
 
 
 # ---------------------------------------------------------------------------
@@ -112,22 +113,6 @@ class Decision(FtBaseModel):
                 seen.add(fault.node_id)
                 result.append(fault.node_id)
         return result
-
-
-# ---------------------------------------------------------------------------
-# Training metric types
-# ---------------------------------------------------------------------------
-
-
-class StepValue(NamedTuple):
-    step: int
-    value: float
-
-
-class TimedStepValue(NamedTuple):
-    step: int
-    timestamp: datetime
-    value: float
 
 
 # ---------------------------------------------------------------------------
