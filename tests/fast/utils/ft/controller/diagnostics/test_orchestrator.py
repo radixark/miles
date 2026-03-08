@@ -12,7 +12,7 @@ from tests.fast.utils.ft.utils import (
 
 from miles.utils.ft.agents.core.node_agent import FtNodeAgent
 from miles.utils.ft.agents.diagnostics.base import BaseNodeExecutor
-from miles.utils.ft.controller.diagnostics.executors import GpuClusterExecutor, InterMachineClusterExecutor, SingleNodeClusterExecutor
+from miles.utils.ft.controller.diagnostics.executors import GpuClusterExecutor, PairwiseClusterExecutor, PerNodeClusterExecutor
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 
@@ -127,7 +127,7 @@ class TestDiagnosticOrchestratorMultiStep:
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[GpuClusterExecutor(), SingleNodeClusterExecutor("intra")],
+            pipeline=[GpuClusterExecutor(), PerNodeClusterExecutor("intra")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
 
@@ -143,7 +143,7 @@ class TestDiagnosticOrchestratorMultiStep:
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[GpuClusterExecutor(), SingleNodeClusterExecutor("intra")],
+            pipeline=[GpuClusterExecutor(), PerNodeClusterExecutor("intra")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
 
@@ -159,7 +159,7 @@ class TestDiagnosticOrchestratorMultiStep:
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[GpuClusterExecutor(), SingleNodeClusterExecutor("intra")],
+            pipeline=[GpuClusterExecutor(), PerNodeClusterExecutor("intra")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
 
@@ -202,14 +202,14 @@ class TestDiagnosticOrchestratorInterMachine:
     async def test_inter_machine_all_pass(self) -> None:
         agents = make_fake_agents(
             {
-                "node-0": {"inter_machine": True},
-                "node-1": {"inter_machine": True},
-                "node-2": {"inter_machine": True},
+                "node-0": {"nccl_pairwise": True},
+                "node-1": {"nccl_pairwise": True},
+                "node-2": {"nccl_pairwise": True},
             }
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[InterMachineClusterExecutor()],
+            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
@@ -218,14 +218,14 @@ class TestDiagnosticOrchestratorInterMachine:
     async def test_inter_machine_one_bad_node(self) -> None:
         agents = make_fake_agents(
             {
-                "node-0": {"inter_machine": False},
-                "node-1": {"inter_machine": True},
-                "node-2": {"inter_machine": True},
+                "node-0": {"nccl_pairwise": False},
+                "node-1": {"nccl_pairwise": True},
+                "node-2": {"nccl_pairwise": True},
             }
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[InterMachineClusterExecutor()],
+            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
 
@@ -235,14 +235,14 @@ class TestDiagnosticOrchestratorInterMachine:
     async def test_inter_machine_cannot_localize_all_fail_returns_empty(self) -> None:
         agents = make_fake_agents(
             {
-                "node-0": {"inter_machine": False},
-                "node-1": {"inter_machine": False},
-                "node-2": {"inter_machine": False},
+                "node-0": {"nccl_pairwise": False},
+                "node-1": {"nccl_pairwise": False},
+                "node-2": {"nccl_pairwise": False},
             }
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[InterMachineClusterExecutor()],
+            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
@@ -251,13 +251,13 @@ class TestDiagnosticOrchestratorInterMachine:
     async def test_inter_machine_two_nodes_pair_fails_returns_empty(self) -> None:
         agents = make_fake_agents(
             {
-                "node-0": {"inter_machine": False},
-                "node-1": {"inter_machine": False},
+                "node-0": {"nccl_pairwise": False},
+                "node-1": {"nccl_pairwise": False},
             }
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[InterMachineClusterExecutor()],
+            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
@@ -267,23 +267,23 @@ class TestDiagnosticOrchestratorInterMachine:
         """When inter-machine all-fail (empty result), pipeline continues to next executor (gpu)."""
         agents = make_fake_agents(
             {
-                "node-0": {"inter_machine": False, "gpu": False},
-                "node-1": {"inter_machine": False, "gpu": True},
+                "node-0": {"nccl_pairwise": False, "gpu": False},
+                "node-1": {"nccl_pairwise": False, "gpu": True},
             }
         )
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[InterMachineClusterExecutor(), GpuClusterExecutor()],
+            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise"), GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert "node-0" in decision.bad_node_ids
 
     @pytest.mark.anyio
     async def test_inter_machine_single_node_skipped(self) -> None:
-        agents = make_fake_agents({"node-0": {"inter_machine": True}})
+        agents = make_fake_agents({"node-0": {"nccl_pairwise": True}})
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[InterMachineClusterExecutor()],
+            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
@@ -300,7 +300,7 @@ class TestDiagnosticOrchestratorInterMachine:
         assert pairs == expected_pairs
 
     def test_inter_machine_port_assignment(self) -> None:
-        from miles.utils.ft.agents.diagnostics.executors.inter_machine import DEFAULT_NCCL_MASTER_PORT
+        from miles.utils.ft.agents.diagnostics.executors.nccl_pairwise import DEFAULT_NCCL_MASTER_PORT
 
         assert DEFAULT_NCCL_MASTER_PORT == 29500
 
@@ -313,7 +313,7 @@ class TestDiagnosticOrchestratorInterMachine:
                 timeout_seconds: int = 120,
                 **kwargs: object,
             ) -> DiagnosticResult:
-                if diagnostic_type == "inter_machine":
+                if diagnostic_type == "nccl_pairwise":
                     raise asyncio.TimeoutError("timed out")
                 return DiagnosticResult(
                     diagnostic_type=diagnostic_type,
@@ -324,14 +324,14 @@ class TestDiagnosticOrchestratorInterMachine:
 
         good_agents = make_fake_agents(
             {
-                "node-0": {"inter_machine": True},
-                "node-2": {"inter_machine": True},
+                "node-0": {"nccl_pairwise": True},
+                "node-2": {"nccl_pairwise": True},
             }
         )
         agents = {**good_agents, "node-1": _RaisingInterMachineAgent()}  # type: ignore[dict-item]
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[InterMachineClusterExecutor()],
+            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
 
@@ -348,7 +348,7 @@ class TestDiagnosticOrchestratorLiveAgents:
         agent1 = FtNodeAgent(node_id="node-1", diagnostics=[stub])
 
         agents = {"node-0": agent0, "node-1": agent1}
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[SingleNodeClusterExecutor("stub")])
+        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[PerNodeClusterExecutor("stub")])
 
         try:
             decision = await orchestrator.run_diagnostic_pipeline()
@@ -367,7 +367,7 @@ class TestDiagnosticOrchestratorLiveAgents:
         agents = {"node-0": agent0, "node-1": agent1}
         orchestrator = DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[SingleNodeClusterExecutor("stub")],
+            pipeline=[PerNodeClusterExecutor("stub")],
         )
 
         try:

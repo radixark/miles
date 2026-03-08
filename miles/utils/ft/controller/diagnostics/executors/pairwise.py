@@ -1,6 +1,6 @@
-"""Inter-machine NCCL diagnostic executor.
+"""Pairwise NCCL diagnostic executor.
 
-Pairs nodes in a round-robin ring, runs all_gather_perf on each
+Pairs nodes in a round-robin ring, runs a pairwise diagnostic on each
 pair simultaneously, then cross-compares failure counts to isolate
 the bad node(s).
 """
@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import NamedTuple
 
-from miles.utils.ft.agents.diagnostics.executors.inter_machine import DEFAULT_NCCL_MASTER_PORT
+from miles.utils.ft.agents.diagnostics.executors.nccl_pairwise import DEFAULT_NCCL_MASTER_PORT
 from miles.utils.ft.protocols.agents import NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
@@ -25,18 +25,18 @@ class _PairResult(NamedTuple):
     passed: bool
 
 
-class InterMachineClusterExecutor:
-    """Pair-based inter-machine NCCL diagnostic.
+class PairwiseClusterExecutor:
+    """Pair-based pairwise diagnostic with cross-comparison.
 
     Implements the ClusterExecutorProtocol protocol.
     """
 
     def __init__(
         self,
-        node_addresses: dict[str, str] | None = None,
+        diagnostic_type: str,
         base_port: int = DEFAULT_NCCL_MASTER_PORT,
     ) -> None:
-        self._node_addresses = node_addresses
+        self._diagnostic_type = diagnostic_type
         self._base_port = base_port
 
     async def execute(
@@ -47,25 +47,24 @@ class InterMachineClusterExecutor:
         sorted_ids = sorted(agents.keys())
 
         if len(sorted_ids) < 2:
-            logger.info("inter_machine_skip — fewer than 2 nodes")
+            logger.info("pairwise_skip — fewer than 2 nodes")
             return []
 
         pairs = [
             (sorted_ids[i], sorted_ids[(i + 1) % len(sorted_ids)])
             for i in range(len(sorted_ids))
         ]
-        logger.info("inter_machine_step_start pairs=%s", pairs)
+        logger.info("pairwise_step_start pairs=%s", pairs)
 
         tasks = []
         for pair_index, (master_id, worker_id) in enumerate(pairs):
             port = self._base_port + pair_index
-            master_addr = self._resolve_address(master_id)
             tasks.append(
                 self._run_single_pair(
                     agents=agents,
                     master_id=master_id,
                     worker_id=worker_id,
-                    master_addr=master_addr,
+                    master_addr=master_id,
                     port=port,
                     timeout_seconds=timeout_seconds,
                 )
@@ -88,7 +87,7 @@ class InterMachineClusterExecutor:
 
         if master_agent is None or worker_agent is None:
             logger.warning(
-                "inter_machine_pair_skip_no_agent master=%s(%s) worker=%s(%s)",
+                "pairwise_pair_skip_no_agent master=%s(%s) worker=%s(%s)",
                 master_id,
                 "ok" if master_agent else "missing",
                 worker_id,
@@ -100,13 +99,13 @@ class InterMachineClusterExecutor:
             master_result, worker_result = await asyncio.wait_for(
                 asyncio.gather(
                     master_agent.run_diagnostic(
-                        diagnostic_type="inter_machine",
+                        diagnostic_type=self._diagnostic_type,
                         timeout_seconds=timeout_seconds,
                         master_addr=master_addr,
                         master_port=port,
                     ),
                     worker_agent.run_diagnostic(
-                        diagnostic_type="inter_machine",
+                        diagnostic_type=self._diagnostic_type,
                         timeout_seconds=timeout_seconds,
                         master_addr=master_addr,
                         master_port=port,
@@ -117,7 +116,7 @@ class InterMachineClusterExecutor:
             passed = master_result.passed and worker_result.passed
         except asyncio.TimeoutError:
             logger.warning(
-                "inter_machine_pair_rpc_timeout master=%s worker=%s timeout=%d",
+                "pairwise_pair_rpc_timeout master=%s worker=%s timeout=%d",
                 master_id,
                 worker_id,
                 timeout_seconds,
@@ -125,7 +124,7 @@ class InterMachineClusterExecutor:
             passed = False
         except Exception:
             logger.warning(
-                "inter_machine_pair_failed master=%s worker=%s",
+                "pairwise_pair_failed master=%s worker=%s",
                 master_id,
                 worker_id,
                 exc_info=True,
@@ -133,17 +132,12 @@ class InterMachineClusterExecutor:
             passed = False
 
         logger.info(
-            "inter_machine_pair_result master=%s worker=%s passed=%s",
+            "pairwise_pair_result master=%s worker=%s passed=%s",
             master_id,
             worker_id,
             passed,
         )
         return _PairResult(master_id=master_id, worker_id=worker_id, passed=passed)
-
-    def _resolve_address(self, node_id: str) -> str:
-        if self._node_addresses and node_id in self._node_addresses:
-            return self._node_addresses[node_id]
-        return node_id
 
 
 def _cross_compare(
@@ -172,7 +166,7 @@ def _cross_compare(
         return []
 
     if min(counts) == max_count:
-        logger.warning("inter_machine_all_failed — cannot localize bad node")
+        logger.warning("pairwise_all_failed — cannot localize bad node")
         return []
 
     return sorted(nid for nid, count in failure_count.items() if count == max_count)

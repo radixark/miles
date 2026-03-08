@@ -130,7 +130,7 @@ class FtController:
         monitoring_timeout_seconds: int = 600,
         recovery_timeout_seconds: int = RECOVERY_TIMEOUT_SECONDS,
     ) -> FtController:
-        from miles.utils.ft.controller.diagnostics.executors import GpuClusterExecutor
+        from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
         from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
         agents: dict[str, NodeAgentProtocol] = {}
@@ -138,7 +138,7 @@ class FtController:
 
         resolved_orchestrator: DiagnosticOrchestratorProtocol = diagnostic_orchestrator or DiagnosticOrchestrator(
             agents=agents,
-            pipeline=[GpuClusterExecutor()],
+            pipeline=list(build_all_cluster_executors().values()),
         )
 
         platform_deps = PlatformDeps(

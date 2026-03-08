@@ -3,15 +3,15 @@ from __future__ import annotations
 import os
 
 from miles.utils.ft.agents.diagnostics.base import BaseNodeExecutor
-from miles.utils.ft.agents.diagnostics.executors.nccl_utils import build_nccl_test_cmd, run_nccl_test
+from miles.utils.ft.agents.diagnostics.utils.nccl_utils import build_nccl_test_cmd, run_nccl_test
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 
 DEFAULT_NCCL_MASTER_PORT: int = 29500
 _DEFAULT_NUM_GPUS: int = 8
 
 
-class InterMachineNodeExecutor(BaseNodeExecutor):
-    """Two-node inter-machine communication diagnostic.
+class NcclPairwiseNodeExecutor(BaseNodeExecutor):
+    """Two-node pairwise NCCL diagnostic (all_gather_perf).
 
     Runs ``all_gather_perf`` on one side of a 2-node pair and compares
     the measured bus bandwidth against an expected baseline.  Peer
@@ -19,7 +19,7 @@ class InterMachineNodeExecutor(BaseNodeExecutor):
     variables (NCCL TCPStore rendezvous).
     """
 
-    diagnostic_type = "inter_machine"
+    diagnostic_type = "nccl_pairwise"
 
     def __init__(
         self,

@@ -24,17 +24,14 @@ def cluster(
     """Run diagnostic checks across a Ray cluster."""
     import ray
 
-    from miles.utils.ft.platform.ray_wrappers.node_discovery import (
-        build_node_address_map,
-        get_alive_gpu_nodes,
-    )
+    from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
+    from miles.utils.ft.platform.ray_wrappers.node_discovery import get_alive_gpu_nodes
 
     ray.init(address=ray_address)
 
     try:
         nodes = get_alive_gpu_nodes()
-        node_addresses = build_node_address_map(nodes)
-        registry = _build_cluster_registry(node_addresses=node_addresses)
+        registry = build_all_cluster_executors()
 
         selected = checks or list(registry.keys())
         unknown = set(selected) - set(registry.keys())
@@ -52,22 +49,6 @@ def cluster(
 
     print_results(results, json_output=json_output, node_id="cluster")
     exit_with_results(results)
-
-
-def _build_cluster_registry(
-    node_addresses: dict[str, str],
-) -> dict[str, ClusterExecutorProtocol]:
-    from miles.utils.ft.controller.diagnostics.executors import (
-        GpuClusterExecutor,
-        InterMachineClusterExecutor,
-        SingleNodeClusterExecutor,
-    )
-
-    return {
-        "gpu": GpuClusterExecutor(),
-        "intra_machine": SingleNodeClusterExecutor(diagnostic_type="intra_machine"),
-        "inter_machine": InterMachineClusterExecutor(node_addresses=node_addresses),
-    }
 
 
 async def _run_cluster_checks(

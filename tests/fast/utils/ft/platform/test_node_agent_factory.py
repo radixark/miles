@@ -5,8 +5,8 @@ from pathlib import Path
 
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
-from miles.utils.ft.agents.diagnostics.executors.inter_machine import InterMachineNodeExecutor
-from miles.utils.ft.agents.diagnostics.executors.intra_machine import IntraMachineNodeExecutor
+from miles.utils.ft.agents.diagnostics.executors.nccl_pairwise import NcclPairwiseNodeExecutor
+from miles.utils.ft.agents.diagnostics.executors.nccl_simple import NcclSimpleNodeExecutor
 from miles.utils.ft.platform.node_agent_factory import build_all_diagnostics
 
 
@@ -14,13 +14,13 @@ class TestBuildAllDiagnostics:
     def test_returns_all_executor_types(self) -> None:
         diagnostics = build_all_diagnostics(num_gpus=4)
         types = [d.diagnostic_type for d in diagnostics]
-        assert types == ["gpu", "intra_machine", "inter_machine", "disk", "network", "xid"]
+        assert types == ["gpu", "nccl_simple", "nccl_pairwise", "disk", "network", "xid"]
 
     def test_dedicated_executors(self) -> None:
         diagnostics = build_all_diagnostics(num_gpus=4)
         assert isinstance(diagnostics[0], GpuNodeExecutor)
-        assert isinstance(diagnostics[1], IntraMachineNodeExecutor)
-        assert isinstance(diagnostics[2], InterMachineNodeExecutor)
+        assert isinstance(diagnostics[1], NcclSimpleNodeExecutor)
+        assert isinstance(diagnostics[2], NcclPairwiseNodeExecutor)
 
     def test_collector_based_executors_for_disk_network_xid(self) -> None:
         diagnostics = build_all_diagnostics(num_gpus=4)

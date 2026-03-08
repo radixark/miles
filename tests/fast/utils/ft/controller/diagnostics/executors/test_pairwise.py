@@ -1,23 +1,25 @@
-"""Tests for InterMachineClusterExecutor and _cross_compare."""
+"""Tests for PairwiseClusterExecutor and _cross_compare."""
 
 from __future__ import annotations
 
 import pytest
 from tests.fast.utils.ft.conftest import FakeNodeAgent, HangingNodeAgent
 
-from miles.utils.ft.controller.diagnostics.executors.inter_machine import (
-    InterMachineClusterExecutor,
+from miles.utils.ft.controller.diagnostics.executors.pairwise import (
+    PairwiseClusterExecutor,
     _cross_compare,
     _PairResult,
 )
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 
+_DIAG_TYPE = "nccl_pairwise"
 
-def _make_inter_machine_agent(node_id: str, *, passed: bool = True) -> FakeNodeAgent:
+
+def _make_pairwise_agent(node_id: str, *, passed: bool = True) -> FakeNodeAgent:
     return FakeNodeAgent(
         diagnostic_results={
-            "inter_machine": DiagnosticResult(
-                diagnostic_type="inter_machine",
+            _DIAG_TYPE: DiagnosticResult(
+                diagnostic_type=_DIAG_TYPE,
                 node_id=node_id,
                 passed=passed,
                 details="pass" if passed else "fail",
@@ -88,32 +90,6 @@ class TestCrossCompare:
 
 
 # ===================================================================
-# _resolve_address
-# ===================================================================
-
-
-class TestResolveAddress:
-    def test_with_custom_addresses(self) -> None:
-        executor = InterMachineClusterExecutor(
-            node_addresses={"n1": "10.0.0.1", "n2": "10.0.0.2"},
-        )
-
-        assert executor._resolve_address("n1") == "10.0.0.1"
-
-    def test_fallback_to_node_id(self) -> None:
-        executor = InterMachineClusterExecutor(node_addresses=None)
-
-        assert executor._resolve_address("n1") == "n1"
-
-    def test_missing_node_in_addresses_falls_back(self) -> None:
-        executor = InterMachineClusterExecutor(
-            node_addresses={"n1": "10.0.0.1"},
-        )
-
-        assert executor._resolve_address("n99") == "n99"
-
-
-# ===================================================================
 # _run_single_pair — missing agent
 # ===================================================================
 
@@ -121,8 +97,8 @@ class TestResolveAddress:
 class TestRunSinglePairMissingAgent:
     @pytest.mark.anyio
     async def test_missing_master_agent_returns_failed(self) -> None:
-        agents = {"worker": _make_inter_machine_agent("worker")}
-        executor = InterMachineClusterExecutor()
+        agents = {"worker": _make_pairwise_agent("worker")}
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
             agents=agents,
@@ -138,8 +114,8 @@ class TestRunSinglePairMissingAgent:
 
     @pytest.mark.anyio
     async def test_missing_worker_agent_returns_failed(self) -> None:
-        agents = {"master": _make_inter_machine_agent("master")}
-        executor = InterMachineClusterExecutor()
+        agents = {"master": _make_pairwise_agent("master")}
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
             agents=agents,
@@ -154,7 +130,7 @@ class TestRunSinglePairMissingAgent:
 
     @pytest.mark.anyio
     async def test_both_agents_missing_returns_failed(self) -> None:
-        executor = InterMachineClusterExecutor()
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
             agents={},
@@ -176,8 +152,8 @@ class TestRunSinglePairMissingAgent:
 class TestExecuteEdgeCases:
     @pytest.mark.anyio
     async def test_single_node_returns_empty(self) -> None:
-        agents = {"A": _make_inter_machine_agent("A")}
-        executor = InterMachineClusterExecutor()
+        agents = {"A": _make_pairwise_agent("A")}
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         bad = await executor.execute(agents=agents, timeout_seconds=30)
 
@@ -185,7 +161,7 @@ class TestExecuteEdgeCases:
 
     @pytest.mark.anyio
     async def test_empty_nodes_returns_empty(self) -> None:
-        executor = InterMachineClusterExecutor()
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         bad = await executor.execute(agents={}, timeout_seconds=30)
 
@@ -194,10 +170,10 @@ class TestExecuteEdgeCases:
     @pytest.mark.anyio
     async def test_two_nodes_all_pass(self) -> None:
         agents = {
-            "A": _make_inter_machine_agent("A"),
-            "B": _make_inter_machine_agent("B"),
+            "A": _make_pairwise_agent("A"),
+            "B": _make_pairwise_agent("B"),
         }
-        executor = InterMachineClusterExecutor()
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         bad = await executor.execute(agents=agents, timeout_seconds=30)
 
@@ -215,9 +191,9 @@ class TestRunSinglePairAgentHang:
         """When master agent RPC hangs, the pair should fail after timeout."""
         agents: dict = {
             "master": HangingNodeAgent(node_id="master"),
-            "worker": _make_inter_machine_agent("worker"),
+            "worker": _make_pairwise_agent("worker"),
         }
-        executor = InterMachineClusterExecutor()
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
             agents=agents,
@@ -235,10 +211,10 @@ class TestRunSinglePairAgentHang:
     @pytest.mark.anyio
     async def test_hanging_worker_agent_times_out(self) -> None:
         agents: dict = {
-            "master": _make_inter_machine_agent("master"),
+            "master": _make_pairwise_agent("master"),
             "worker": HangingNodeAgent(node_id="worker"),
         }
-        executor = InterMachineClusterExecutor()
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
             agents=agents,
@@ -257,7 +233,7 @@ class TestRunSinglePairAgentHang:
             "A": HangingNodeAgent(node_id="A"),
             "B": HangingNodeAgent(node_id="B"),
         }
-        executor = InterMachineClusterExecutor()
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
             agents=agents,
@@ -274,11 +250,11 @@ class TestRunSinglePairAgentHang:
     async def test_execute_with_hanging_agent_isolates_bad_node(self) -> None:
         """Full execute() with one hanging node should localize it as the bad node."""
         agents: dict = {
-            "A": _make_inter_machine_agent("A"),
+            "A": _make_pairwise_agent("A"),
             "B": HangingNodeAgent(node_id="B"),
-            "C": _make_inter_machine_agent("C"),
+            "C": _make_pairwise_agent("C"),
         }
-        executor = InterMachineClusterExecutor()
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         bad = await executor.execute(agents=agents, timeout_seconds=0)
 

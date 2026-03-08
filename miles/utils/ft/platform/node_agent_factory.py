@@ -18,8 +18,8 @@ from miles.utils.ft.agents.collectors.network import NetworkCollector
 from miles.utils.ft.agents.core.node_agent import FtNodeAgent
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
-from miles.utils.ft.agents.diagnostics.executors.inter_machine import InterMachineNodeExecutor
-from miles.utils.ft.agents.diagnostics.executors.intra_machine import IntraMachineNodeExecutor
+from miles.utils.ft.agents.diagnostics.executors.nccl_pairwise import NcclPairwiseNodeExecutor
+from miles.utils.ft.agents.diagnostics.executors.nccl_simple import NcclSimpleNodeExecutor
 from miles.utils.ft.controller.detectors.checks.gpu.checks import check_gpu_faults
 from miles.utils.ft.controller.detectors.checks.hardware import _check_disk_fault, _check_majority_nic_down
 from miles.utils.ft.protocols.agents import NodeExecutorProtocol
@@ -40,12 +40,12 @@ def build_all_diagnostics(
     """Build all available node-level diagnostic executors.
 
     Registers every diagnostic type the system supports.  Callers choose
-    which subset to actually run (e.g. local CLI excludes inter_machine).
+    which subset to actually run (e.g. local CLI excludes nccl_pairwise).
     """
     return [
         GpuNodeExecutor(),
-        IntraMachineNodeExecutor(num_gpus=num_gpus),
-        InterMachineNodeExecutor(num_gpus=num_gpus),
+        NcclSimpleNodeExecutor(num_gpus=num_gpus),
+        NcclPairwiseNodeExecutor(num_gpus=num_gpus),
         CollectorBasedNodeExecutor(
             diagnostic_type="disk",
             collector=DiskCollector(disk_mounts=disk_mounts),

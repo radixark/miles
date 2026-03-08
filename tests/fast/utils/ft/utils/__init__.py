@@ -54,7 +54,7 @@ from tests.fast.utils.ft.utils.diagnostic_fakes import (
     StubDiagnostic,
     make_fake_agents,
     make_mock_subprocess,
-    mock_inter_machine_run,
+    mock_nccl_pairwise_run,
     mock_stack_trace_diagnostic,
 )
 from tests.fast.utils.ft.utils.metric_injectors import (
@@ -133,6 +133,6 @@ __all__ = [
     "make_test_exporter",
     "run_controller_briefly",
     "make_trace_result",
-    "mock_inter_machine_run",
+    "mock_nccl_pairwise_run",
     "mock_stack_trace_diagnostic",
 ]

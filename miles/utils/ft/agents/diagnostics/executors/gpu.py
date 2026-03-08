@@ -17,7 +17,7 @@ import logging
 import sys
 
 from miles.utils.ft.agents.diagnostics.base import BaseNodeExecutor
-from miles.utils.ft.agents.diagnostics.gpu_check_script import GpuCheckResult
+from miles.utils.ft.agents.diagnostics.utils.gpu_check_script import GpuCheckResult
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS
 from miles.utils.ft.utils.subprocess import run_subprocess_with_timeout
@@ -69,7 +69,7 @@ class GpuNodeExecutor(BaseNodeExecutor):
         cmd = [
             sys.executable,
             "-m",
-            "miles.utils.ft.agents.diagnostics.gpu_check_script",
+            "miles.utils.ft.agents.diagnostics.utils.gpu_check_script",
         ]
         try:
             return await run_subprocess_with_timeout(

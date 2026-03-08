@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from tests.fast.utils.ft.utils import make_mock_subprocess
 
-from miles.utils.ft.agents.diagnostics.gpu_check_script import GpuCheckResult
+from miles.utils.ft.agents.diagnostics.utils.gpu_check_script import GpuCheckResult
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 
 

@@ -41,7 +41,7 @@ class TestRayNodeAgentProxy:
     @pytest.mark.anyio
     async def test_kwargs_forwarded_to_remote(self) -> None:
         expected = DiagnosticResult(
-            diagnostic_type="inter_machine",
+            diagnostic_type="nccl_pairwise",
             node_id="node-0",
             passed=True,
             details="ok",
@@ -54,14 +54,14 @@ class TestRayNodeAgentProxy:
 
         proxy = RayNodeAgentProxy(handle=handle)
         result = await proxy.run_diagnostic(
-            diagnostic_type="inter_machine",
+            diagnostic_type="nccl_pairwise",
             timeout_seconds=120,
             master_addr="10.0.0.1",
             master_port=29500,
         )
 
         handle.run_diagnostic.remote.assert_called_once_with(
-            diagnostic_type="inter_machine",
+            diagnostic_type="nccl_pairwise",
             timeout_seconds=120,
             master_addr="10.0.0.1",
             master_port=29500,

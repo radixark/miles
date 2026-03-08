@@ -6,7 +6,7 @@ from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
 from miles.utils.ft.agents.diagnostics.base import BaseNodeExecutor
-from miles.utils.ft.agents.diagnostics.executors.inter_machine import InterMachineNodeExecutor
+from miles.utils.ft.agents.diagnostics.executors.nccl_pairwise import NcclPairwiseNodeExecutor
 from miles.utils.ft.models.diagnostic import DiagnosticPipelineResult
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 
@@ -173,28 +173,28 @@ def make_fake_agents(
 # ---------------------------------------------------------------------------
 
 
-def mock_inter_machine_run(
+def mock_nccl_pairwise_run(
     node_pass_map: dict[str, bool],
 ) -> contextlib.AbstractContextManager[None]:
-    """Patch InterMachineNodeExecutor.run to return results per node_id.
+    """Patch NcclPairwiseNodeExecutor.run to return results per node_id.
 
     ``node_pass_map`` maps node_id → True (pass) or False (fail).
     """
 
     async def _fake_run(
-        self: InterMachineNodeExecutor,
+        self: NcclPairwiseNodeExecutor,
         node_id: str,
         timeout_seconds: int = 180,
     ) -> DiagnosticResult:
         passed = node_pass_map.get(node_id, True)
         return DiagnosticResult(
-            diagnostic_type="inter_machine",
+            diagnostic_type="nccl_pairwise",
             node_id=node_id,
             passed=passed,
             details="pass" if passed else "fail",
         )
 
-    return patch.object(InterMachineNodeExecutor, "run", _fake_run)
+    return patch.object(NcclPairwiseNodeExecutor, "run", _fake_run)
 
 
 # ---------------------------------------------------------------------------

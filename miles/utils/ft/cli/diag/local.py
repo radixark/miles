@@ -12,7 +12,7 @@ from miles.utils.ft.agents.diagnostics.runner import NodeExecutorRunner
 from miles.utils.ft.cli.diag.output import exit_with_results, print_results
 from miles.utils.ft.platform.node_agent_factory import build_all_diagnostics
 
-_LOCAL_EXCLUDED = {"inter_machine"}
+_LOCAL_EXCLUDED = {"nccl_pairwise"}
 
 
 def local(

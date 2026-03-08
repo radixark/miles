@@ -1,4 +1,4 @@
-"""Tests for IntraMachineNodeExecutor."""
+"""Tests for NcclSimpleNodeExecutor."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 from tests.fast.utils.ft.utils import make_mock_subprocess
 
-from miles.utils.ft.agents.diagnostics.executors.intra_machine import IntraMachineNodeExecutor
-from miles.utils.ft.agents.diagnostics.executors.nccl_utils import parse_avg_bus_bandwidth
+from miles.utils.ft.agents.diagnostics.executors.nccl_simple import NcclSimpleNodeExecutor
+from miles.utils.ft.agents.diagnostics.utils.nccl_utils import parse_avg_bus_bandwidth
 
 # ---------------------------------------------------------------------------
 # Sample nccl-tests output fixtures
@@ -98,13 +98,13 @@ class TestParseAvgBusBandwidth:
 
 
 # ---------------------------------------------------------------------------
-# IntraMachineNodeExecutor.run() tests
+# NcclSimpleNodeExecutor.run() tests
 # ---------------------------------------------------------------------------
 
 
-class TestIntraMachineNodeExecutor:
+class TestNcclSimpleNodeExecutor:
     async def test_pass_when_bandwidth_above_threshold(self) -> None:
-        diag = IntraMachineNodeExecutor(expected_bandwidth_gbps=350.0)
+        diag = NcclSimpleNodeExecutor(expected_bandwidth_gbps=350.0)
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
@@ -112,12 +112,12 @@ class TestIntraMachineNodeExecutor:
 
         assert result.passed is True
         assert result.node_id == "node-0"
-        assert result.diagnostic_type == "intra_machine"
+        assert result.diagnostic_type == "nccl_simple"
         assert "380.50" in result.details
         assert "350.00" in result.details
 
     async def test_fail_when_bandwidth_below_threshold(self) -> None:
-        diag = IntraMachineNodeExecutor(expected_bandwidth_gbps=350.0)
+        diag = NcclSimpleNodeExecutor(expected_bandwidth_gbps=350.0)
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_LOW_BW)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
@@ -128,7 +128,7 @@ class TestIntraMachineNodeExecutor:
         assert "350.00" in result.details
 
     async def test_fail_when_binary_not_found(self) -> None:
-        diag = IntraMachineNodeExecutor()
+        diag = NcclSimpleNodeExecutor()
 
         with patch(
             "asyncio.create_subprocess_exec",
@@ -140,7 +140,7 @@ class TestIntraMachineNodeExecutor:
         assert "failed to execute" in result.details
 
     async def test_fail_when_subprocess_returns_nonzero(self) -> None:
-        diag = IntraMachineNodeExecutor()
+        diag = NcclSimpleNodeExecutor()
         mock_proc = make_mock_subprocess(
             stdout="",
             stderr="NCCL WARN: some error",
@@ -155,7 +155,7 @@ class TestIntraMachineNodeExecutor:
         assert "exit code 1" in result.details
 
     async def test_fail_when_output_unparseable(self) -> None:
-        diag = IntraMachineNodeExecutor()
+        diag = NcclSimpleNodeExecutor()
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_GARBAGE)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
@@ -165,7 +165,7 @@ class TestIntraMachineNodeExecutor:
         assert "failed to parse bandwidth" in result.details
 
     async def test_fail_on_timeout(self) -> None:
-        diag = IntraMachineNodeExecutor()
+        diag = NcclSimpleNodeExecutor()
         mock_proc = make_mock_subprocess()
         mock_proc.communicate.side_effect = asyncio.TimeoutError()
 
@@ -179,7 +179,7 @@ class TestIntraMachineNodeExecutor:
         mock_proc.wait.assert_called_once()
 
     async def test_custom_num_gpus(self) -> None:
-        diag = IntraMachineNodeExecutor(num_gpus=4)
+        diag = NcclSimpleNodeExecutor(num_gpus=4)
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
@@ -191,17 +191,17 @@ class TestIntraMachineNodeExecutor:
         assert call_args.args[g_index + 1] == "4"
 
     async def test_node_id_in_result(self) -> None:
-        diag = IntraMachineNodeExecutor(expected_bandwidth_gbps=100.0)
+        diag = NcclSimpleNodeExecutor(expected_bandwidth_gbps=100.0)
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await diag.run(node_id="my-special-node")
 
         assert result.node_id == "my-special-node"
-        assert result.diagnostic_type == "intra_machine"
+        assert result.diagnostic_type == "nccl_simple"
 
     async def test_custom_binary_name(self) -> None:
-        diag = IntraMachineNodeExecutor(nccl_test_binary="/opt/nccl/all_reduce_perf")
+        diag = NcclSimpleNodeExecutor(nccl_test_binary="/opt/nccl/all_reduce_perf")
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
@@ -210,7 +210,7 @@ class TestIntraMachineNodeExecutor:
         assert mock_exec.call_args.args[0] == "/opt/nccl/all_reduce_perf"
 
     async def test_bandwidth_exactly_at_threshold_passes(self) -> None:
-        diag = IntraMachineNodeExecutor(expected_bandwidth_gbps=380.50)
+        diag = NcclSimpleNodeExecutor(expected_bandwidth_gbps=380.50)
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
@@ -219,7 +219,7 @@ class TestIntraMachineNodeExecutor:
         assert result.passed is True
 
     async def test_fail_when_permission_denied(self) -> None:
-        diag = IntraMachineNodeExecutor()
+        diag = NcclSimpleNodeExecutor()
 
         with patch(
             "asyncio.create_subprocess_exec",
@@ -231,7 +231,7 @@ class TestIntraMachineNodeExecutor:
         assert "failed to execute" in result.details
 
     async def test_stderr_truncated_at_500_chars(self) -> None:
-        diag = IntraMachineNodeExecutor()
+        diag = NcclSimpleNodeExecutor()
         long_stderr = "E" * 600
         mock_proc = make_mock_subprocess(
             stdout="",

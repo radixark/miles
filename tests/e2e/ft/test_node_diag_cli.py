@@ -23,7 +23,7 @@ def test_local_checks(ray_cluster: None) -> None:
     """All local checks should pass on a healthy GPU node."""
     result = runner.invoke(app, ["diag", "local", "--timeout", "120"])
     assert result.exit_code == 0, f"local checks failed:\n{result.output}"
-    for check_name in ["gpu", "intra_machine", "disk", "network", "xid"]:
+    for check_name in ["gpu", "nccl_simple", "disk", "network", "xid"]:
         assert check_name in result.output
 
 
@@ -31,5 +31,5 @@ def test_cluster_checks(ray_cluster: None) -> None:
     """All cluster checks should pass on a healthy Ray cluster."""
     result = runner.invoke(app, ["diag", "cluster", "--timeout", "180"])
     assert result.exit_code == 0, f"cluster checks failed:\n{result.output}"
-    for check_name in ["gpu", "intra_machine", "inter_machine"]:
+    for check_name in ["gpu", "nccl_simple", "nccl_pairwise"]:
         assert check_name in result.output

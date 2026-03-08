@@ -262,7 +262,7 @@ class TestDiagnosticResult:
 
     def test_failed_diagnostic(self) -> None:
         result = DiagnosticResult(
-            diagnostic_type="intra_machine",
+            diagnostic_type="nccl_simple",
             node_id="node-1",
             passed=False,
             details="GPU 3 bandwidth below threshold: 120 GB/s vs 180 GB/s baseline",

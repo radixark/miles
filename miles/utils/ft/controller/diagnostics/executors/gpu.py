@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from miles.utils.ft.controller.diagnostics.executors.utils import (
+from miles.utils.ft.controller.diagnostics.utils import (
     gather_diagnostic_results,
     partition_results,
 )
