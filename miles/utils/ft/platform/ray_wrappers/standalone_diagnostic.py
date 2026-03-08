@@ -1,4 +1,4 @@
-"""Standalone NCCL diagnostic runners for ad-hoc and test use.
+"""Standalone diagnostic runners for ad-hoc and test use.
 
 Provides high-level async functions that handle Ray actor lifecycle
 internally, so callers only need a live Ray cluster with GPU nodes.
@@ -14,10 +14,12 @@ from typing import Any
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.inter_machine import InterMachineNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.intra_machine import IntraMachineNodeExecutor
 from miles.utils.ft.agents.diagnostics.runner import NodeExecutorRunner
 from miles.utils.ft.controller.diagnostics.executors import InterMachineClusterExecutor
+from miles.utils.ft.controller.diagnostics.executors.gpu import find_gpu_hash_outlier_nodes
 from miles.utils.ft.models.diagnostics import DiagnosticResult
 from miles.utils.ft.platform.ray_wrappers.node_discovery import build_node_address_map, get_alive_gpu_nodes
 from miles.utils.ft.protocols.agents import DIAGNOSTIC_TIMEOUT_SECONDS
@@ -92,6 +94,41 @@ async def run_inter_machine_diagnostics(
         )
 
 
+async def run_gpu_diagnostics(
+    node_ids: list[str] | None = None,
+    timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
+) -> tuple[list[DiagnosticResult], list[str]]:
+    """Run GPU diagnostic on all GPU nodes + cross-node hash comparison.
+
+    Returns (per_node_results, outlier_node_ids).
+    """
+    nodes = get_alive_gpu_nodes(node_ids=node_ids)
+
+    async with _managed_agents(nodes) as agents:
+        futures = {
+            nid: agent.run_diagnostic.remote(
+                diagnostic_type="gpu",
+                timeout_seconds=timeout_seconds,
+            )
+            for nid, agent in agents.items()
+        }
+
+        results: dict[str, DiagnosticResult] = {}
+        for node_id, ref in futures.items():
+            result: DiagnosticResult = ray.get(ref, timeout=timeout_seconds + 60)
+            logger.info(
+                "gpu node=%s passed=%s details=%s",
+                node_id,
+                result.passed,
+                result.details,
+            )
+            results[node_id] = result
+
+        outlier_node_ids = find_gpu_hash_outlier_nodes(results)
+
+        return list(results.values()), outlier_node_ids
+
+
 # ---------------------------------------------------------------------------
 # Agent lifecycle
 # ---------------------------------------------------------------------------
@@ -105,6 +142,7 @@ class _StandaloneDiagnosticAgent:
         self._runner = NodeExecutorRunner(
             node_id=node_id,
             diagnostics=[
+                GpuNodeExecutor(),
                 IntraMachineNodeExecutor(num_gpus=num_gpus),
                 InterMachineNodeExecutor(num_gpus=num_gpus),
             ],
