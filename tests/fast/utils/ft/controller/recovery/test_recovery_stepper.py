@@ -589,6 +589,3 @@ class TestFullRecoveryFlow:
         stepper = _make_stepper()
         result = await _step(stepper, NotifyHumans(state_before="Test"), notifier=notifier)
         assert isinstance(result, RecoveryDone)
-
-
-ce(result, RecoveryDone)
