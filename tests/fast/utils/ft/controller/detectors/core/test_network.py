@@ -1,35 +1,18 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from tests.fast.utils.ft.utils import make_detector_context, make_fake_metric_store
+from tests.fast.utils.ft.utils import inject_nic_down, inject_nic_up, make_detector_context, make_fake_metric_store
 
-from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
-from miles.utils.ft.controller.metric_names import NODE_NETWORK_UP
-from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.types import ActionType
-
-
-def _inject_nic_at_time(
-    store: MiniPrometheus,
-    node_id: str,
-    device: str,
-    value: float,
-    timestamp: datetime,
-) -> None:
-    store.ingest_samples(
-        target_id=node_id,
-        samples=[GaugeSample(name=NODE_NETWORK_UP, labels={"device": device}, value=value)],
-        timestamp=timestamp,
-    )
 
 
 class TestNetworkAlertDetector:
     def test_all_healthy(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        _inject_nic_at_time(store, "node-0", "ib0", 1.0, now - timedelta(minutes=2))
-        _inject_nic_at_time(store, "node-0", "ib0", 1.0, now - timedelta(minutes=1))
+        inject_nic_up(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=2))
+        inject_nic_up(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=1))
 
         detector = NetworkAlertDetector()
         decision = detector.evaluate(make_detector_context(metric_store=store))
@@ -39,7 +22,7 @@ class TestNetworkAlertDetector:
     def test_single_alert_below_threshold(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=2))
+        inject_nic_down(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=2))
 
         detector = NetworkAlertDetector()
         decision = detector.evaluate(make_detector_context(metric_store=store))
@@ -49,10 +32,10 @@ class TestNetworkAlertDetector:
     def test_two_alerts_triggers(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        _inject_nic_at_time(store, "node-0", "ib0", 1.0, now - timedelta(minutes=4))
-        _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=3))
-        _inject_nic_at_time(store, "node-0", "ib0", 1.0, now - timedelta(minutes=2))
-        _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=1))
+        inject_nic_up(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=4))
+        inject_nic_down(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=3))
+        inject_nic_up(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=2))
+        inject_nic_down(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=1))
 
         detector = NetworkAlertDetector()
         decision = detector.evaluate(
@@ -68,8 +51,8 @@ class TestNetworkAlertDetector:
     def test_multi_node_each_one_alert(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=2))
-        _inject_nic_at_time(store, "node-1", "ib0", 0.0, now - timedelta(minutes=2))
+        inject_nic_down(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=2))
+        inject_nic_down(store, node_id="node-1", device="ib0", timestamp=now - timedelta(minutes=2))
 
         detector = NetworkAlertDetector()
         decision = detector.evaluate(make_detector_context(metric_store=store))
@@ -79,8 +62,8 @@ class TestNetworkAlertDetector:
     def test_alerts_outside_window_ignored(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=10))
-        _inject_nic_at_time(store, "node-0", "ib0", 0.0, now - timedelta(minutes=8))
+        inject_nic_down(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=10))
+        inject_nic_down(store, node_id="node-0", device="ib0", timestamp=now - timedelta(minutes=8))
 
         detector = NetworkAlertDetector()
         decision = detector.evaluate(make_detector_context(metric_store=store))
