@@ -8,10 +8,11 @@ import pytest
 import ray
 from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for_run_id
 
-from miles.utils.ft.controller.types import ControllerMode
-from miles.utils.ft.adapters.config import FtControllerConfig
-from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
-from miles.utils.ft.adapters.types import ft_controller_actor_name
+from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.models.recovery import ControllerMode
+from miles.utils.ft.platform.config import FtControllerConfig
+from miles.utils.ft.platform.ray_wrappers.controller_actor import FtControllerActor
+from miles.utils.ft.protocols.controller import ft_controller_actor_name
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -22,6 +23,7 @@ class TestNamedActorCreation:
     def test_create_and_discover_via_get_actor(self, local_ray: None) -> None:
         name = ft_controller_actor_name("")
         _handle = FtControllerActor.options(name=name).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=1.0),
         )
         try:
@@ -41,9 +43,11 @@ class TestFtIdIsolation:
         name_b = ft_controller_actor_name("beta")
 
         handle_a = FtControllerActor.options(name=name_a).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=1.0, ft_id="alpha"),
         )
         handle_b = FtControllerActor.options(name=name_b).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=1.0, ft_id="beta"),
         )
         try:
@@ -97,6 +101,7 @@ class TestDuplicateActorName:
         name = ft_controller_actor_name("")
         with pytest.raises(ValueError):
             FtControllerActor.options(name=name).remote(
+                builder=build_ft_controller,
                 config=FtControllerConfig(platform="stub"),
             )
 
@@ -106,6 +111,7 @@ class TestShutdownReleasesName:
     async def test_name_released_after_shutdown(self, local_ray: None) -> None:
         name = ft_controller_actor_name("")
         handle = FtControllerActor.options(name=name).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.05),
         )
 
@@ -128,6 +134,7 @@ class TestShutdownReleasesName:
         assert released, f"Actor name {name!r} was not released after kill"
 
         handle2 = FtControllerActor.options(name=name).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=1.0),
         )
         try:

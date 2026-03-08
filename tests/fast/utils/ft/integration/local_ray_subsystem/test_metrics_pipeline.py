@@ -10,16 +10,17 @@ from prometheus_client import Gauge
 from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FastHangDetector
 from tests.fast.utils.ft.integration.conftest import get_status, poll_for_run_id
 
-from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
+from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
+from miles.utils.ft.factories.controller import build_ft_controller
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
-from miles.utils.ft.agents.types import DiagnosticResult
-from miles.utils.ft.controller.metric_names import AGENT_HEARTBEAT
-from miles.utils.ft.controller.types import ControllerMode
-from miles.utils.ft.adapters.config import FtControllerConfig
-from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
-from miles.utils.ft.adapters.stubs import StubTrainingJob
-from miles.utils.ft.adapters.types import ft_controller_actor_name
+from miles.utils.ft.models.diagnostic import DiagnosticResult
+from miles.utils.ft.models.metric_names import AGENT_HEARTBEAT
+from miles.utils.ft.models.recovery import ControllerMode
+from miles.utils.ft.platform.config import FtControllerConfig
+from miles.utils.ft.platform.ray_wrappers.controller_actor import FtControllerActor
+from miles.utils.ft.platform.stubs import StubTrainingJob
+from miles.utils.ft.protocols.controller import ft_controller_actor_name
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -150,6 +151,7 @@ class TestNanLossTriggersRecovery:
     ) -> None:
         name = ft_controller_actor_name("nan-det")
         handle = FtControllerActor.options(name=name).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.05, ft_id="nan-det"),
             node_manager_override=FakeNodeManager(),
             training_job_override=StubTrainingJob(),
@@ -212,6 +214,7 @@ class TestHangDetectionFullPath:
     ) -> None:
         name = ft_controller_actor_name("hang-det")
         handle = FtControllerActor.options(name=name).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="hang-det"),
             node_manager_override=FakeNodeManager(),
             training_job_override=StubTrainingJob(),
@@ -292,6 +295,7 @@ class TestRegisterNodeAgentSerialization:
 
         name = ft_controller_actor_name("m5-agent")
         handle = FtControllerActor.options(name=name).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="m5-agent"),
         )
 

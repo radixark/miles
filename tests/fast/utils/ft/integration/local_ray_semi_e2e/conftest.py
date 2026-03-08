@@ -23,16 +23,18 @@ from tests.fast.utils.ft.utils.training_simulator import (
 from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for_run_id
 
 from miles.utils.ft.agents.collectors.stub import StubCollector
+from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.node_agent import build_node_agent
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
-from miles.utils.ft.agents.types import GaugeSample
-from miles.utils.ft.adapters.config import FtControllerConfig
-from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
-from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
-from miles.utils.ft.adapters.types import ft_controller_actor_name, ft_node_agent_actor_name
-from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.models.metrics import GaugeSample
+from miles.utils.ft.platform.config import FtControllerConfig
+from miles.utils.ft.platform.ray_wrappers.controller_actor import FtControllerActor
+from miles.utils.ft.platform.ray_wrappers.node_agent_actor import FtNodeAgentActor
+from miles.utils.ft.protocols.controller import ft_controller_actor_name, ft_node_agent_actor_name
+from miles.utils.ft.protocols.platform import JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +188,7 @@ def _build_e2e_env(
         resolved_notifier = RemoteControlledNotifier(state_actor=notifier_state_actor)
 
     controller_kwargs: dict[str, Any] = dict(
+        builder=build_ft_controller,
         config=FtControllerConfig(
             platform="stub",
             tick_interval=tick_interval,
@@ -255,6 +258,7 @@ def _build_e2e_env(
 
         agent_name = ft_node_agent_actor_name(ft_id, node_spec.node_id)
         node_agent = FtNodeAgentActor.options(name=agent_name).remote(
+            builder=build_node_agent,
             node_id=node_spec.node_id,
             ft_id=ft_id,
             collect_interval_seconds=0.3,

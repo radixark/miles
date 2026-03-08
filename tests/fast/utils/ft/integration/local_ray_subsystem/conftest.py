@@ -7,9 +7,10 @@ import pytest
 import ray
 from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for_run_id
 
-from miles.utils.ft.adapters.config import FtControllerConfig
-from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
-from miles.utils.ft.adapters.types import ft_controller_actor_name
+from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.platform.config import FtControllerConfig
+from miles.utils.ft.platform.ray_wrappers.controller_actor import FtControllerActor
+from miles.utils.ft.protocols.controller import ft_controller_actor_name
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -29,6 +30,7 @@ def controller_actor(
 ) -> Generator[ray.actor.ActorHandle, None, None]:
     actor_name = ft_controller_actor_name("")
     handle = FtControllerActor.options(name=actor_name).remote(
+        builder=build_ft_controller,
         config=FtControllerConfig(platform="stub", tick_interval=0.05),
     )
     yield handle
@@ -53,6 +55,7 @@ def make_controller_actor(
         actor_name = ft_controller_actor_name(ft_id)
         _kill_named_actor(actor_name)
         handle = FtControllerActor.options(name=actor_name).remote(
+            builder=build_ft_controller,
             config=FtControllerConfig(
                 platform="stub",
                 tick_interval=tick_interval,
@@ -83,6 +86,7 @@ def running_controller(
     """
     actor_name = ft_controller_actor_name("")
     handle = FtControllerActor.options(name=actor_name).remote(
+        builder=build_ft_controller,
         config=FtControllerConfig(platform="stub", tick_interval=0.05),
     )
     handle.submit_and_run.remote()
