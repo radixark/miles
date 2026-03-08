@@ -48,7 +48,7 @@ def build_all_diagnostics(
         InterMachineNodeExecutor(num_gpus=num_gpus),
         CollectorBasedNodeExecutor(
             diagnostic_type="disk",
-            collector=DiskCollector(disk_mounts=disk_mounts or [Path("/")]),
+            collector=DiskCollector(disk_mounts=disk_mounts),
             check_fn=_check_disk_fault,
         ),
         CollectorBasedNodeExecutor(

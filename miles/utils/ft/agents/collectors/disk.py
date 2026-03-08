@@ -11,16 +11,43 @@ from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 
 logger = logging.getLogger(__name__)
 
+_VIRTUAL_FS_TYPES = frozenset({
+    "proc", "sysfs", "devtmpfs", "devpts", "tmpfs",
+    "cgroup", "cgroup2", "securityfs", "pstore", "efivarfs",
+    "bpf", "autofs", "mqueue", "hugetlbfs", "debugfs",
+    "tracefs", "fusectl", "configfs", "nsfs", "rpc_pipefs",
+    "overlay", "squashfs", "ramfs", "rootfs",
+})
+
+
+def discover_disk_mounts(proc_mounts: Path = Path("/proc/mounts")) -> list[Path]:
+    """Auto-discover real (non-virtual) mount points from /proc/mounts."""
+    if not proc_mounts.exists():
+        logger.warning("Cannot discover mounts: %s not found", proc_mounts)
+        return []
+
+    mounts: list[Path] = []
+    try:
+        for line in proc_mounts.read_text().splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            _device, mountpoint, fstype = parts[0], parts[1], parts[2]
+            if fstype in _VIRTUAL_FS_TYPES:
+                continue
+            mounts.append(Path(mountpoint))
+    except Exception:
+        logger.warning("Failed to parse %s", proc_mounts, exc_info=True)
+
+    logger.info("Discovered %d real mount points: %s", len(mounts), mounts)
+    return mounts
+
 
 class DiskCollector(BaseCollector):
     collect_interval: float = 60.0
 
     def __init__(self, *, disk_mounts: list[Path] | None = None) -> None:
-        self._disk_mounts = disk_mounts or []
-        if not self._disk_mounts:
-            logger.warning(
-                "DiskCollector initialized with no disk_mounts — " "filesystem metrics will not be collected"
-            )
+        self._disk_mounts = disk_mounts if disk_mounts is not None else discover_disk_mounts()
 
     def _collect_sync(self) -> list[GaugeSample]:
         samples: list[GaugeSample] = []

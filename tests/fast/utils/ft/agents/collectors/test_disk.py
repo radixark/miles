@@ -10,7 +10,60 @@ from unittest.mock import patch
 import pytest
 
 import miles.utils.ft.models.metric_names as mn
-from miles.utils.ft.agents.collectors.disk import DiskCollector
+from miles.utils.ft.agents.collectors.disk import DiskCollector, discover_disk_mounts
+
+
+class TestDiscoverDiskMounts:
+    def test_parses_real_filesystems_and_excludes_virtual(self, tmp_path: Path) -> None:
+        proc_mounts = tmp_path / "mounts"
+        proc_mounts.write_text(
+            "/dev/sda1 / ext4 rw,relatime 0 0\n"
+            "proc /proc proc rw,nosuid 0 0\n"
+            "sysfs /sys sysfs rw 0 0\n"
+            "tmpfs /tmp tmpfs rw 0 0\n"
+            "/dev/nvme0n1p1 /data xfs rw,relatime 0 0\n"
+            "10.0.0.1:/share /nfs nfs4 rw 0 0\n"
+        )
+        mounts = discover_disk_mounts(proc_mounts=proc_mounts)
+        mount_strs = [str(m) for m in mounts]
+        assert "/" in mount_strs
+        assert "/data" in mount_strs
+        assert "/nfs" in mount_strs
+        assert "/proc" not in mount_strs
+        assert "/sys" not in mount_strs
+        assert "/tmp" not in mount_strs
+
+    def test_returns_empty_when_file_missing(self, tmp_path: Path) -> None:
+        mounts = discover_disk_mounts(proc_mounts=tmp_path / "nonexistent")
+        assert mounts == []
+
+    def test_handles_malformed_lines(self, tmp_path: Path) -> None:
+        proc_mounts = tmp_path / "mounts"
+        proc_mounts.write_text(
+            "/dev/sda1 / ext4 rw 0 0\n"
+            "bad_line\n"
+            "\n"
+            "/dev/sdb1 /data xfs rw 0 0\n"
+        )
+        mounts = discover_disk_mounts(proc_mounts=proc_mounts)
+        assert len(mounts) == 2
+
+
+class TestDiskCollectorAutoDiscover:
+    def test_auto_discovers_when_no_mounts_given(self, tmp_path: Path) -> None:
+        proc_mounts = tmp_path / "mounts"
+        proc_mounts.write_text("/dev/sda1 / ext4 rw 0 0\ntmpfs /tmp tmpfs rw 0 0\n")
+        with patch("miles.utils.ft.agents.collectors.disk.discover_disk_mounts", return_value=[Path("/")]):
+            collector = DiskCollector()
+        assert collector._disk_mounts == [Path("/")]
+
+    def test_explicit_mounts_override_discovery(self) -> None:
+        collector = DiskCollector(disk_mounts=[Path("/data")])
+        assert collector._disk_mounts == [Path("/data")]
+
+    def test_explicit_empty_list_means_no_mounts(self) -> None:
+        collector = DiskCollector(disk_mounts=[])
+        assert collector._disk_mounts == []
 
 
 class TestDiskCollector:
