@@ -1,8 +1,8 @@
 """Pairwise NCCL diagnostic executor.
 
-Pairs nodes in a round-robin ring, runs a pairwise diagnostic on each
-pair simultaneously, then cross-compares failure counts to isolate
-the bad node(s).
+Pairs nodes into two sequential rounds of non-overlapping pairs, so
+each node participates in at most one experiment per round.  Cross-
+compares failure counts across both rounds to isolate the bad node(s).
 """
 
 from __future__ import annotations
@@ -22,6 +22,22 @@ class _PairResult(NamedTuple):
     master_id: str
     worker_id: str
     passed: bool
+
+
+def _generate_round_pairs(
+    sorted_ids: list[str],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Generate non-overlapping pairs for two sequential rounds.
+
+    Round 1: (0,1), (2,3), (4,5), ...
+    Round 2: (1,2), (3,4), (5,6), ...
+    For even N, round 2 includes a wrap-around pair (N-1, 0).
+    """
+    round1 = [(sorted_ids[i], sorted_ids[i + 1]) for i in range(0, len(sorted_ids) - 1, 2)]
+    round2 = [(sorted_ids[i], sorted_ids[i + 1]) for i in range(1, len(sorted_ids) - 1, 2)]
+    if len(sorted_ids) % 2 == 0 and len(sorted_ids) >= 2:
+        round2.append((sorted_ids[-1], sorted_ids[0]))
+    return round1, round2
 
 
 class PairwiseClusterExecutor(ClusterExecutorProtocol):
@@ -49,25 +65,32 @@ class PairwiseClusterExecutor(ClusterExecutorProtocol):
             logger.info("pairwise_skip — fewer than 2 nodes")
             return []
 
-        pairs = [(sorted_ids[i], sorted_ids[(i + 1) % len(sorted_ids)]) for i in range(len(sorted_ids))]
-        logger.info("pairwise_step_start pairs=%s", pairs)
+        round1_pairs, round2_pairs = _generate_round_pairs(sorted_ids)
 
-        tasks = []
-        for pair_index, (master_id, worker_id) in enumerate(pairs):
-            port = self._base_port + pair_index
-            tasks.append(
-                self._run_single_pair(
-                    agents=agents,
-                    master_id=master_id,
-                    worker_id=worker_id,
-                    master_addr=master_id,
-                    port=port,
-                    timeout_seconds=timeout_seconds,
+        all_results: list[_PairResult] = []
+        for round_num, pairs in enumerate([round1_pairs, round2_pairs], start=1):
+            if not pairs:
+                continue
+            logger.info("pairwise_round_%d_start pairs=%s", round_num, pairs)
+
+            tasks = []
+            for pair_index, (master_id, worker_id) in enumerate(pairs):
+                port = self._base_port + pair_index
+                tasks.append(
+                    self._run_single_pair(
+                        agents=agents,
+                        master_id=master_id,
+                        worker_id=worker_id,
+                        master_addr=master_id,
+                        port=port,
+                        timeout_seconds=timeout_seconds,
+                    )
                 )
-            )
 
-        results = await asyncio.gather(*tasks)
-        return _cross_compare(node_ids=sorted_ids, pair_results=list(results))
+            results = await asyncio.gather(*tasks)
+            all_results.extend(results)
+
+        return _cross_compare(node_ids=sorted_ids, pair_results=all_results)
 
     async def _run_single_pair(
         self,

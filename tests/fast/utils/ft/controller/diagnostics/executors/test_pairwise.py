@@ -9,6 +9,7 @@ from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.controller.diagnostics.executors.pairwise import (
     PairwiseClusterExecutor,
     _cross_compare,
+    _generate_round_pairs,
     _PairResult,
 )
 
@@ -87,6 +88,62 @@ class TestCrossCompare:
             pair_results=[],
         )
         assert result == []
+
+
+# ===================================================================
+# _generate_round_pairs
+# ===================================================================
+
+
+class TestGenerateRoundPairs:
+    def test_two_nodes(self) -> None:
+        r1, r2 = _generate_round_pairs(["A", "B"])
+        assert r1 == [("A", "B")]
+        assert r2 == [("B", "A")]
+
+    def test_three_nodes_odd(self) -> None:
+        r1, r2 = _generate_round_pairs(["A", "B", "C"])
+        assert r1 == [("A", "B")]
+        assert r2 == [("B", "C")]
+
+    def test_four_nodes_even(self) -> None:
+        r1, r2 = _generate_round_pairs(["A", "B", "C", "D"])
+        assert r1 == [("A", "B"), ("C", "D")]
+        assert r2 == [("B", "C"), ("D", "A")]
+
+    def test_five_nodes_odd(self) -> None:
+        r1, r2 = _generate_round_pairs(["A", "B", "C", "D", "E"])
+        assert r1 == [("A", "B"), ("C", "D")]
+        assert r2 == [("B", "C"), ("D", "E")]
+
+    def test_six_nodes_even(self) -> None:
+        r1, r2 = _generate_round_pairs(["A", "B", "C", "D", "E", "F"])
+        assert r1 == [("A", "B"), ("C", "D"), ("E", "F")]
+        assert r2 == [("B", "C"), ("D", "E"), ("F", "A")]
+
+    @pytest.mark.parametrize("n", range(2, 9))
+    def test_no_node_appears_twice_in_same_round(self, n: int) -> None:
+        ids = [f"node-{i}" for i in range(n)]
+        r1, r2 = _generate_round_pairs(ids)
+        for round_label, pairs in [("round1", r1), ("round2", r2)]:
+            seen: set[str] = set()
+            for a, b in pairs:
+                assert a not in seen, f"{a} appears twice in {round_label}"
+                assert b not in seen, f"{b} appears twice in {round_label}"
+                seen.update([a, b])
+
+    @pytest.mark.parametrize("n", [2, 4, 6, 8])
+    def test_even_nodes_all_appear_twice_total(self, n: int) -> None:
+        ids = [f"node-{i}" for i in range(n)]
+        r1, r2 = _generate_round_pairs(ids)
+        from collections import Counter
+
+        counter: Counter[str] = Counter()
+        for a, b in r1 + r2:
+            counter[a] += 1
+            counter[b] += 1
+        for node_id in ids:
+            assert counter[node_id] == 2, f"{node_id} appears {counter[node_id]} times, expected 2"
 
 
 # ===================================================================
@@ -178,6 +235,92 @@ class TestExecuteEdgeCases:
         bad = await executor.execute(agents=agents, timeout_seconds=30)
 
         assert bad == []
+
+
+# ===================================================================
+# execute — round isolation (bad-node detection with two-round pairing)
+# ===================================================================
+
+
+class TestExecuteRoundIsolation:
+    @pytest.mark.anyio
+    async def test_four_nodes_bad_middle_node_isolated(self) -> None:
+        """N=4, B is bad. Pairs: R1=(A,B),(C,D) R2=(B,C),(D,A). B fails in 2 pairs."""
+        agents: dict = {
+            "A": _make_pairwise_agent("A"),
+            "B": _make_pairwise_agent("B", passed=False),
+            "C": _make_pairwise_agent("C"),
+            "D": _make_pairwise_agent("D"),
+        }
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
+
+        bad = await executor.execute(agents=agents, timeout_seconds=30)
+
+        assert bad == ["B"]
+
+    @pytest.mark.anyio
+    async def test_four_nodes_bad_edge_node_isolated(self) -> None:
+        """N=4, D is bad. Wrap-around pair (D,A) in R2 covers it. D fails in 2 pairs."""
+        agents: dict = {
+            "A": _make_pairwise_agent("A"),
+            "B": _make_pairwise_agent("B"),
+            "C": _make_pairwise_agent("C"),
+            "D": _make_pairwise_agent("D", passed=False),
+        }
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
+
+        bad = await executor.execute(agents=agents, timeout_seconds=30)
+
+        assert bad == ["D"]
+
+    @pytest.mark.anyio
+    async def test_five_nodes_bad_middle_node_isolated(self) -> None:
+        """N=5, C is bad. Pairs: R1=(A,B),(C,D) R2=(B,C),(D,E). C fails in 2 pairs."""
+        agents: dict = {
+            "A": _make_pairwise_agent("A"),
+            "B": _make_pairwise_agent("B"),
+            "C": _make_pairwise_agent("C", passed=False),
+            "D": _make_pairwise_agent("D"),
+            "E": _make_pairwise_agent("E"),
+        }
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
+
+        bad = await executor.execute(agents=agents, timeout_seconds=30)
+
+        assert bad == ["C"]
+
+    @pytest.mark.anyio
+    async def test_five_nodes_bad_edge_node_returns_tied(self) -> None:
+        """N=5, E is bad but only in 1 pair (D,E). D and E are tied at 1 failure each."""
+        agents: dict = {
+            "A": _make_pairwise_agent("A"),
+            "B": _make_pairwise_agent("B"),
+            "C": _make_pairwise_agent("C"),
+            "D": _make_pairwise_agent("D"),
+            "E": _make_pairwise_agent("E", passed=False),
+        }
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
+
+        bad = await executor.execute(agents=agents, timeout_seconds=30)
+
+        assert sorted(bad) == ["D", "E"]
+
+    @pytest.mark.anyio
+    async def test_six_nodes_bad_node_isolated(self) -> None:
+        """N=6, C is bad. R1=(A,B),(C,D),(E,F) R2=(B,C),(D,E),(F,A). C in 2 pairs."""
+        agents: dict = {
+            "A": _make_pairwise_agent("A"),
+            "B": _make_pairwise_agent("B"),
+            "C": _make_pairwise_agent("C", passed=False),
+            "D": _make_pairwise_agent("D"),
+            "E": _make_pairwise_agent("E"),
+            "F": _make_pairwise_agent("F"),
+        }
+        executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
+
+        bad = await executor.execute(agents=agents, timeout_seconds=30)
+
+        assert bad == ["C"]
 
 
 # ===================================================================

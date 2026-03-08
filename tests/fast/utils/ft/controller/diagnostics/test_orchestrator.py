@@ -231,7 +231,9 @@ class TestDiagnosticOrchestratorInterMachine:
         assert "node-0" in decision.bad_node_ids
 
     @pytest.mark.anyio
-    async def test_inter_machine_cannot_localize_all_fail_returns_empty(self) -> None:
+    async def test_inter_machine_cannot_localize_all_fail_odd_nodes(self) -> None:
+        """With 3 nodes all-fail under two-round pairing, node-1 appears in
+        both rounds and accumulates the highest failure count."""
         agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False},
@@ -244,7 +246,7 @@ class TestDiagnosticOrchestratorInterMachine:
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
-        assert decision.bad_node_ids == []
+        assert decision.bad_node_ids == ["node-1"]
 
     @pytest.mark.anyio
     async def test_inter_machine_two_nodes_pair_fails_returns_empty(self) -> None:
@@ -287,16 +289,13 @@ class TestDiagnosticOrchestratorInterMachine:
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
 
-    def test_inter_machine_pairing_is_round_robin(self) -> None:
+    def test_inter_machine_pairing_is_two_round(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+
         node_ids = ["node-0", "node-1", "node-2", "node-3"]
-        expected_pairs = [
-            ("node-0", "node-1"),
-            ("node-1", "node-2"),
-            ("node-2", "node-3"),
-            ("node-3", "node-0"),
-        ]
-        pairs = [(node_ids[i], node_ids[(i + 1) % len(node_ids)]) for i in range(len(node_ids))]
-        assert pairs == expected_pairs
+        r1, r2 = _generate_round_pairs(node_ids)
+        assert r1 == [("node-0", "node-1"), ("node-2", "node-3")]
+        assert r2 == [("node-1", "node-2"), ("node-3", "node-0")]
 
     def test_inter_machine_port_assignment(self) -> None:
         from miles.utils.ft.agents.diagnostics.executors.nccl import DEFAULT_NCCL_MASTER_PORT
