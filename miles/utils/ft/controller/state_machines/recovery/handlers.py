@@ -3,17 +3,17 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from miles.utils.ft.controller.recovery.utils import safe_notify
-from miles.utils.ft.controller.recovery.recovery_stepper.states import (
+from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestarting,
     NotifyHumans,
     RealtimeChecks,
+    RecoveryContext,
     RecoveryDone,
     RecoveryState,
     StopTimeDiagnostics,
 )
-from miles.utils.ft.controller.recovery.restart_stepper.states import RestartDone, RestartFailed
-from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext
+from miles.utils.ft.controller.state_machines.restart.models import RestartDone, RestartFailed
+from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.diagnostics.executors import StackTraceClusterExecutor
 from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.protocols.agents import ClusterExecutorProtocol
@@ -98,5 +98,3 @@ class NotifyHumansHandler:
         logger.warning("recovery_notify reason=%s", message)
         await safe_notify(ctx.notifier, title="Recovery Alert", content=message)
         return RecoveryDone()
-
-

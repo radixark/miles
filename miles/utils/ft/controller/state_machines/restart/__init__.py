@@ -1,13 +1,13 @@
-from miles.utils.ft.controller.recovery.restart_stepper.handlers import (
+from miles.utils.ft.controller.state_machines.restart.handlers import (
     EvictingHandler,
     MonitoringProgressHandler,
-    RestartContext,
     StoppingAndRestartingHandler,
     iteration_progress,
 )
-from miles.utils.ft.controller.recovery.restart_stepper.states import (
+from miles.utils.ft.controller.state_machines.restart.models import (
     Evicting,
     MonitoringProgress,
+    RestartContext,
     RestartDone,
     RestartFailed,
     RestartState,

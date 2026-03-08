@@ -6,7 +6,7 @@ from datetime import datetime
 from pydantic import ConfigDict
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.recovery.recovery_stepper.states import RecoveryState
+from miles.utils.ft.controller.state_machines.recovery.models import RecoveryState
 from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import TriggerType

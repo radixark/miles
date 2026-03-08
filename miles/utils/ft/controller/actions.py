@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery.utils import safe_notify
+from miles.utils.ft.controller.state_machines.restart.utils import safe_notify
 from miles.utils.ft.models.fault import Decision
 from miles.utils.ft.protocols.metrics import MetricQueryProtocol
 from miles.utils.ft.protocols.controller import DiagnosticOrchestratorProtocol
