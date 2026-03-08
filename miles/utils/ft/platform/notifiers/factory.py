@@ -1,4 +1,4 @@
-"""Notifier factory: builds the appropriate BaseBaseWebhookNotifier subclass
+"""Notifier factory: builds the appropriate BaseWebhookNotifier subclass
 from explicit configuration parameters.
 """
 
@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from miles.utils.ft.platform.stubs import StubNotifier
 
 if TYPE_CHECKING:
-    from miles.utils.ft.platform.notifiers.webhook_notifier import BaseBaseWebhookNotifier
+    from miles.utils.ft.platform.notifiers.webhook_notifier import BaseWebhookNotifier
 
 logger = logging.getLogger(__name__)
 
