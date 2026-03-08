@@ -16,8 +16,8 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.main_state_machine import DetectingAnomaly, MainContext, Recovering, create_main_stepper
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import NotifyHumans, RealtimeChecks, RecoveryDone
+from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import JobStatus
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
@@ -270,10 +270,7 @@ class TestRecovering:
 
     @pytest.mark.asyncio
     async def test_recovery_in_progress_stays_recovering(self) -> None:
-        from miles.utils.ft.controller.recovery.recovery_stepper import (
-            EvictingAndRestarting,
-            StopTimeDiagnostics,
-        )
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import StoppingAndRestarting
 
         new_recovery = EvictingAndRestarting(
@@ -382,10 +379,7 @@ class TestRecovering:
     @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_resets_recovery(self) -> None:
         """Detector finds new bad nodes during recovery -> restart recovery with merged bad_node_ids."""
-        from miles.utils.ft.controller.recovery.recovery_stepper import (
-            EvictingAndRestarting,
-            StopTimeDiagnostics,
-        )
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         detector = FixedDecisionDetector(
@@ -483,10 +477,7 @@ class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_too_many_dynamic_bad_nodes_continues_recovery(self) -> None:
         """Detectors report >= threshold new bad nodes during recovery -> NOTIFY_HUMAN but keep recovering."""
-        from miles.utils.ft.controller.recovery.recovery_stepper import (
-            EvictingAndRestarting,
-            StopTimeDiagnostics,
-        )
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         notifier = FakeNotifier()
@@ -526,10 +517,7 @@ class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_already_known_bad_nodes_do_not_restart_recovery(self) -> None:
         """Detector re-reports nodes already being handled -> no recovery restart."""
-        from miles.utils.ft.controller.recovery.recovery_stepper import (
-            EvictingAndRestarting,
-            StopTimeDiagnostics,
-        )
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         recovery_stepper = AsyncMock(return_value=None)
@@ -567,10 +555,7 @@ class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_below_threshold_continues_recovery(self) -> None:
         """One new bad node during recovery (with 2 existing) -> normal merge, continues."""
-        from miles.utils.ft.controller.recovery.recovery_stepper import (
-            EvictingAndRestarting,
-            StopTimeDiagnostics,
-        )
+        from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting, StopTimeDiagnostics
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         recovery_stepper = AsyncMock(return_value=None)

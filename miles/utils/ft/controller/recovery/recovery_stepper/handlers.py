@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 
 from pydantic import ConfigDict
 
-from miles.utils.ft.controller.recovery.utils import safe_notify
 from miles.utils.ft.controller.recovery.recovery_stepper.states import (
     EvictingAndRestarting,
     NotifyHumans,
@@ -17,6 +16,7 @@ from miles.utils.ft.controller.recovery.recovery_stepper.states import (
 )
 from miles.utils.ft.controller.recovery.restart_stepper.handlers import RestartContext
 from miles.utils.ft.controller.recovery.restart_stepper.states import RestartDone, RestartFailed, RestartState
+from miles.utils.ft.controller.recovery.utils import safe_notify
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.protocols.platform import DiagnosticOrchestratorProtocol, NotificationProtocol
@@ -124,5 +124,3 @@ class NotifyHumansHandler:
         logger.warning("recovery_notify reason=%s", message)
         await safe_notify(ctx.notifier, title="Recovery Alert", content=message)
         return RecoveryDone()
-
-

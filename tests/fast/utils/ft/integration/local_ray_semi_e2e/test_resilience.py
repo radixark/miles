@@ -9,7 +9,6 @@ from collections.abc import Callable
 from unittest.mock import patch
 
 import ray
-from tests.fast.utils.ft.utils.controller_fakes import CrashingDetector
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     assert_phase_path_contains,
@@ -18,6 +17,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     wait_for_recovery_phase,
     wait_for_training_stable,
 )
+from tests.fast.utils.ft.utils.controller_fakes import CrashingDetector
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.models.recovery import ControllerMode

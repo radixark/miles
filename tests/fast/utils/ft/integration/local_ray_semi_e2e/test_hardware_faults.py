@@ -507,10 +507,7 @@ class TestRealtimeChecksDiscovery:
         deadline = time.monotonic() + 90.0
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if (
-                status.active_run_id != old_run_id
-                and status.mode == ControllerMode.MONITORING
-            ):
+            if status.active_run_id != old_run_id and status.mode == ControllerMode.MONITORING:
                 break
             await asyncio.sleep(0.5)
         else:

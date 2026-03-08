@@ -49,12 +49,7 @@ class StackTraceAggregator:
             suspects: list[str] = []
         else:
             majority_size = max(len(nodes) for nodes in fp_to_nodes.values())
-            suspects = sorted(
-                nid
-                for nodes in fp_to_nodes.values()
-                if len(nodes) < majority_size
-                for nid in nodes
-            )
+            suspects = sorted(nid for nodes in fp_to_nodes.values() if len(nodes) < majority_size for nid in nodes)
 
         result = AggregationResult(
             suspect_node_ids=suspects,

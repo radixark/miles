@@ -42,7 +42,9 @@ class BaseFaultDetector(ABC):
             if not filtered:
                 logger.info(
                     "detector_bad_nodes_not_active detector=%s bad=%s active=%s",
-                    type(self).__name__, decision.bad_node_ids, sorted(active_node_ids),
+                    type(self).__name__,
+                    decision.bad_node_ids,
+                    sorted(active_node_ids),
                 )
                 return Decision.no_fault(
                     reason=f"all bad nodes not active ({type(self).__name__})",

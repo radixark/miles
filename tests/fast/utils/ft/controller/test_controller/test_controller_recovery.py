@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.utils.ft.conftest import (
-    FixedDecisionDetector,
-    make_test_controller,
-)
+from tests.fast.utils.ft.conftest import FixedDecisionDetector, make_test_controller
 
 from miles.utils.ft.controller.main_state_machine import Recovering
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType

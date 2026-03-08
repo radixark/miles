@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ray
-from tests.fast.utils.ft.utils.fault_injection import FaultInjectionProtocol
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
     assert_phase_path_contains,
     wait_for_mode_transition,
@@ -9,6 +8,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import
     wait_for_recovery_phase,
     wait_for_training_stable,
 )
+from tests.fast.utils.ft.utils.fault_injection import FaultInjectionProtocol
 
 from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus
 

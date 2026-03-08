@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import ray
+from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for_run_id
 from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager
 from tests.fast.utils.ft.utils.diagnostic_fakes import StubDiagnostic
 from tests.fast.utils.ft.utils.fault_injection import LocalRayFaultInjector
@@ -20,7 +21,6 @@ from tests.fast.utils.ft.utils.training_simulator import (
     TrainingStateActor,
     TrainingWorkerActor,
 )
-from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for_run_id
 
 from miles.utils.ft.agents.collectors.stub import StubCollector
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext

@@ -8,8 +8,8 @@ from datetime import timedelta
 import pytest
 import ray
 from prometheus_client import Gauge
-from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager
 from tests.fast.utils.ft.integration.conftest import get_status, poll_for_run_id
+from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager
 
 from miles.utils.ft.agents.utils.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext

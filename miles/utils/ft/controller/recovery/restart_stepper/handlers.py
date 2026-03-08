@@ -8,12 +8,6 @@ from datetime import datetime, timezone
 from pydantic import ConfigDict
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.recovery.utils import (
-    get_already_bad_nodes,
-    retry_mark_node_bad,
-    safe_notify,
-    stop_and_submit,
-)
 from miles.utils.ft.controller.recovery.restart_stepper.states import (
     Evicting,
     MonitoringProgress,
@@ -21,6 +15,12 @@ from miles.utils.ft.controller.recovery.restart_stepper.states import (
     RestartFailed,
     RestartState,
     StoppingAndRestarting,
+)
+from miles.utils.ft.controller.recovery.utils import (
+    get_already_bad_nodes,
+    retry_mark_node_bad,
+    safe_notify,
+    stop_and_submit,
 )
 from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.protocols.platform import JobStatus, NodeManagerProtocol, NotificationProtocol, TrainingJobProtocol

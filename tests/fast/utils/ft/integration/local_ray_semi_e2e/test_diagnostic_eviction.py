@@ -16,7 +16,6 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
 )
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
-from miles.utils.ft.controller.recovery.utils import SlidingWindowThrottle
 from miles.utils.ft.models.recovery import ControllerMode
 
 
@@ -260,9 +259,7 @@ class TestEvictionEscalation:
                 break
             await asyncio.sleep(0.5)
         else:
-            raise TimeoutError(
-                f"Evicting not found in phase_history within 60s: {status.phase_history}"
-            )
+            raise TimeoutError(f"Evicting not found in phase_history within 60s: {status.phase_history}")
         await wait_for_recovery_phase(
             env.controller,
             phase="MonitoringProgress",

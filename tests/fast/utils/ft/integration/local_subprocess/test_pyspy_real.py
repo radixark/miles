@@ -30,7 +30,8 @@ pytestmark = [
     pytest.mark.anyio,
 ]
 
-WORKER_SCRIPT = textwrap.dedent("""\
+WORKER_SCRIPT = textwrap.dedent(
+    """\
     import sys, time, threading
 
     def step_communication():
@@ -43,7 +44,8 @@ WORKER_SCRIPT = textwrap.dedent("""\
 
     mode = sys.argv[1]
     {"sleep": step_communication, "lock": step_lock_wait}[mode]()
-""")
+"""
+)
 
 _SETTLE_SECONDS = 0.5
 
@@ -72,7 +74,8 @@ def blocked_process() -> Callable[[str], int]:
 
 class TestStackTraceDiagnosticReal:
     async def test_single_blocked_process_captures_trace(
-        self, blocked_process: Callable[[str], int],
+        self,
+        blocked_process: Callable[[str], int],
     ) -> None:
         pid = blocked_process("sleep")
 
@@ -85,9 +88,9 @@ class TestStackTraceDiagnosticReal:
         assert any(t.frames for t in threads)
 
         all_frame_names = [f.name for t in threads for f in t.frames]
-        assert any("step_communication" in name for name in all_frame_names), (
-            f"Expected a frame containing 'step_communication', got: {all_frame_names}"
-        )
+        assert any(
+            "step_communication" in name for name in all_frame_names
+        ), f"Expected a frame containing 'step_communication', got: {all_frame_names}"
 
     async def test_nonexistent_pid_fails_gracefully(self) -> None:
         diagnostic = StackTraceDiagnostic(pids=[999999])
@@ -99,7 +102,8 @@ class TestStackTraceDiagnosticReal:
 
 class TestStackTraceAggregatorReal:
     async def test_aggregator_identifies_minority_outlier(
-        self, blocked_process: Callable[[str], int],
+        self,
+        blocked_process: Callable[[str], int],
     ) -> None:
         """2x sleep + 1x lock: the lock process should be flagged as suspect."""
         pid_sleep_0 = blocked_process("sleep")
@@ -132,7 +136,8 @@ class TestStackTraceAggregatorReal:
         )
 
     async def test_aggregator_returns_empty_when_all_same(
-        self, blocked_process: Callable[[str], int],
+        self,
+        blocked_process: Callable[[str], int],
     ) -> None:
         """3x sleep: no suspects."""
         pid_0 = blocked_process("sleep")
