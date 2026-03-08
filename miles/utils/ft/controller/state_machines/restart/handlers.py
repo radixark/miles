@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
 from datetime import datetime, timezone
-
-from pydantic import ConfigDict
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.utils import (
@@ -22,35 +19,13 @@ from miles.utils.ft.controller.recovery.restart_stepper.states import (
     RestartState,
     StoppingAndRestarting,
 )
-from miles.utils.ft.models.base import FtBaseModel
-from miles.utils.ft.protocols.platform import JobStatus, NodeManagerProtocol, NotifierProtocol, TrainingJobProtocol
+from miles.utils.ft.controller.state_machines.restart.models import RestartContext
+from miles.utils.ft.protocols.platform import JobStatus
 
 logger = logging.getLogger(__name__)
 
 _WANDB_ITERATION_METRIC = "iteration"
 _PENDING_TIMEOUT_SECONDS: int = 300
-
-
-# ---------------------------------------------------------------------------
-# Fat context
-# ---------------------------------------------------------------------------
-
-
-class RestartContext(FtBaseModel):
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
-
-    node_manager: NodeManagerProtocol
-    training_job: TrainingJobProtocol
-    mini_wandb: MiniWandb
-    notifier: NotifierProtocol | None
-    on_new_run: Callable[[str], None] | None
-    monitoring_success_iterations: int
-    monitoring_timeout_seconds: int
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
 
 
 def iteration_progress(state: MonitoringProgress, mini_wandb: MiniWandb) -> int:

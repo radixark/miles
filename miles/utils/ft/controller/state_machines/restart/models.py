@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from pydantic import ConfigDict
 
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.models.base import FtBaseModel
+from miles.utils.ft.protocols.platform import NodeManagerProtocol, NotifierProtocol, TrainingJobProtocol
 
 
 class RestartState(FtBaseModel):
@@ -32,3 +35,15 @@ class RestartDone(RestartState):
 
 class RestartFailed(RestartState):
     pass
+
+
+class RestartContext(FtBaseModel):
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    node_manager: NodeManagerProtocol
+    training_job: TrainingJobProtocol
+    mini_wandb: MiniWandb
+    notifier: NotifierProtocol | None
+    on_new_run: Callable[[str], None] | None
+    monitoring_success_iterations: int
+    monitoring_timeout_seconds: int

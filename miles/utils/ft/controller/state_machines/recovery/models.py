@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from datetime import datetime
+
 from pydantic import ConfigDict
 
 from miles.utils.ft.controller.recovery.restart_stepper.states import Evicting, RestartState, StoppingAndRestarting
+from miles.utils.ft.controller.state_machines.restart.models import RestartContext
 from miles.utils.ft.models.base import FtBaseModel
+from miles.utils.ft.models.fault import TriggerType
+from miles.utils.ft.protocols.controller import DiagnosticOrchestratorProtocol
+from miles.utils.ft.protocols.platform import NotificationProtocol
 
 
 class RecoveryState(FtBaseModel):
@@ -59,3 +66,19 @@ RECOVERY_STATE_TO_INT: dict[type[RecoveryState], int] = {
     NotifyHumans: 5,
     RecoveryDone: 6,
 }
+
+
+class RecoveryContext(FtBaseModel):
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    # per-call
+    trigger: TriggerType
+    recovery_start_time: datetime
+
+    # deps
+    diagnostic_orchestrator: DiagnosticOrchestratorProtocol
+    restart_stepper: Callable[[RestartState, RestartContext], Awaitable[RestartState | None]]
+    restart_context: RestartContext
+    notifier: NotificationProtocol | None
+    timeout_seconds: int
+    rank_pids_provider: Callable[[str], dict[int, int]] | None

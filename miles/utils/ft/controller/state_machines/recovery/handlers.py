@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-
-from pydantic import ConfigDict
 
 from miles.utils.ft.controller.recovery.utils import safe_notify
 from miles.utils.ft.controller.recovery.recovery_stepper.states import (
@@ -15,42 +12,13 @@ from miles.utils.ft.controller.recovery.recovery_stepper.states import (
     RecoveryState,
     StopTimeDiagnostics,
 )
-from miles.utils.ft.controller.recovery.restart_stepper.handlers import RestartContext
-from miles.utils.ft.controller.recovery.restart_stepper.states import RestartDone, RestartFailed, RestartState
+from miles.utils.ft.controller.recovery.restart_stepper.states import RestartDone, RestartFailed
+from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext
 from miles.utils.ft.controller.diagnostics.executors import StackTraceClusterExecutor
-from miles.utils.ft.models.base import FtBaseModel
 from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.protocols.agents import ClusterExecutorProtocol
-from miles.utils.ft.protocols.controller import DiagnosticOrchestratorProtocol
-from miles.utils.ft.protocols.platform import NotificationProtocol
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Fat context
-# ---------------------------------------------------------------------------
-
-
-class RecoveryContext(FtBaseModel):
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
-
-    # per-call
-    trigger: TriggerType
-    recovery_start_time: datetime
-
-    # deps
-    diagnostic_orchestrator: DiagnosticOrchestratorProtocol
-    restart_stepper: Callable[[RestartState, RestartContext], Awaitable[RestartState | None]]
-    restart_context: RestartContext
-    notifier: NotificationProtocol | None
-    timeout_seconds: int
-    rank_pids_provider: Callable[[str], dict[int, int]] | None
-
-
-# ---------------------------------------------------------------------------
-# Pre-dispatch: global timeout
-# ---------------------------------------------------------------------------
 
 
 async def recovery_timeout_check(
