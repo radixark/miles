@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 import ray
@@ -72,11 +73,16 @@ class TestSubmitAndRunInterleaving:
         controller_actor: ray.actor.ActorHandle,
     ) -> None:
         controller_actor.submit_and_run.remote()
-        await asyncio.sleep(0.3)
 
-        status = ray.get(controller_actor.get_status.remote(), timeout=5)
-        assert isinstance(status.mode, ControllerMode)
-        assert status.active_run_id is not None
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            status = ray.get(controller_actor.get_status.remote(), timeout=5)
+            assert isinstance(status.mode, ControllerMode)
+            if status.active_run_id is not None:
+                break
+            await asyncio.sleep(0.3)
+        else:
+            raise TimeoutError("active_run_id was not set within 10s after submit_and_run")
 
 
 class TestShutdownInterruptsRun:
