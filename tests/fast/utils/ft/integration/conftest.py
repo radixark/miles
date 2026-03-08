@@ -18,12 +18,34 @@ RECOVERY_TIMEOUT = 60.0 * _TIMEOUT_SCALE
 LONG_RECOVERY_TIMEOUT = 120.0 * _TIMEOUT_SCALE
 
 
-@pytest.fixture(scope="module")
-def local_ray() -> Generator[None, None, None]:
+def _init_local_ray(*, include_dashboard: bool) -> tuple[ray.runtime_env.RuntimeContext, str | None]:
     if ray.is_initialized():
         ray.shutdown()
-    ray.init(address="local", num_cpus=32, num_gpus=0, include_dashboard=False)
+    kwargs: dict[str, object] = dict(
+        address="local",
+        num_cpus=32,
+        num_gpus=0,
+        include_dashboard=include_dashboard,
+    )
+    if include_dashboard:
+        kwargs.update(dashboard_host="127.0.0.1", dashboard_port=0)
+    ctx = ray.init(**kwargs)
+    dashboard_url = f"http://{ctx.dashboard_url}" if include_dashboard and ctx.dashboard_url else None
+    return ctx, dashboard_url
+
+
+@pytest.fixture(scope="module")
+def local_ray() -> Generator[None, None, None]:
+    _init_local_ray(include_dashboard=False)
     yield
+    ray.shutdown()
+
+
+@pytest.fixture(scope="module")
+def local_ray_with_dashboard() -> Generator[str, None, None]:
+    _, url = _init_local_ray(include_dashboard=True)
+    assert url is not None
+    yield url
     ray.shutdown()
 
 

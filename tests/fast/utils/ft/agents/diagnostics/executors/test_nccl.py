@@ -417,3 +417,39 @@ class TestNcclPairwise:
 
         assert captured_env["MASTER_ADDR"] == "10.0.0.1"
         assert captured_env["MASTER_PORT"] == "29500"
+
+
+# ---------------------------------------------------------------------------
+# Real GPU NCCL tests — require GPU + nccl-tests installed
+# ---------------------------------------------------------------------------
+
+
+class TestNcclSimpleRealGpu:
+    """E2E tests that run real all_reduce_perf on a single GPU node."""
+
+    @pytest.mark.requires_gpu
+    async def test_real_all_reduce_passes_on_healthy_node(self) -> None:
+        """Real all_reduce_perf should produce a passing result with reasonable bandwidth."""
+        diag = NcclNodeExecutor(
+            diagnostic_type="nccl_simple",
+            expected_bandwidth_gbps=100.0,
+            num_gpus=8,
+        )
+        result = await diag.run(node_id="test-node", timeout_seconds=300)
+
+        assert result.diagnostic_type == "nccl_simple"
+        assert result.node_id == "test-node"
+        assert result.passed is True
+
+    @pytest.mark.requires_gpu
+    async def test_real_all_reduce_result_contains_bandwidth(self) -> None:
+        """Result details should mention measured bandwidth and threshold."""
+        diag = NcclNodeExecutor(
+            diagnostic_type="nccl_simple",
+            expected_bandwidth_gbps=100.0,
+            num_gpus=8,
+        )
+        result = await diag.run(node_id="test-node", timeout_seconds=300)
+
+        assert "GB/s" in result.details
+        assert "100.00" in result.details

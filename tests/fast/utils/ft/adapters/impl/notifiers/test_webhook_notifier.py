@@ -116,3 +116,118 @@ class TestWebhookNotifierLifecycle:
         notifier = LarkWebhookNotifier(webhook_url="https://example.com/hook/test")
         await notifier.aclose()
         await notifier.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Real HTTP server tests — exercises actual HTTP POST / retry / timeout
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookNotifierRealHttp:
+    """Integration tests using a real local HTTP server (aiohttp.web)."""
+
+    @pytest.mark.anyio
+    async def test_send_posts_to_real_http_server(self) -> None:
+        """A real HTTP POST should arrive at a local server with the expected payload."""
+        import asyncio
+        import json
+
+        from aiohttp import web
+
+        received_payloads: list[dict] = []
+
+        async def handler(request: web.Request) -> web.Response:
+            body = await request.json()
+            received_payloads.append(body)
+            return web.Response(status=200)
+
+        app = web.Application()
+        app.router.add_post("/hook", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+
+        port = site._server.sockets[0].getsockname()[1]
+        url = f"http://127.0.0.1:{port}/hook"
+
+        try:
+            notifier = LarkWebhookNotifier(webhook_url=url)
+            try:
+                await notifier.send(title="Test Alert", content="hello world", severity="warning")
+            finally:
+                await notifier.aclose()
+
+            assert len(received_payloads) == 1
+            payload = received_payloads[0]
+            assert payload["msg_type"] == "interactive"
+            assert "Test Alert" in json.dumps(payload)
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.anyio
+    async def test_retry_on_server_error(self) -> None:
+        """Server returns 500 twice then 200 — notifier should succeed via retry."""
+        from aiohttp import web
+
+        call_count = 0
+
+        async def handler(request: web.Request) -> web.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return web.Response(status=500, text="Internal Server Error")
+            return web.Response(status=200)
+
+        app = web.Application()
+        app.router.add_post("/hook", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+
+        port = site._server.sockets[0].getsockname()[1]
+        url = f"http://127.0.0.1:{port}/hook"
+
+        try:
+            notifier = LarkWebhookNotifier(webhook_url=url)
+            try:
+                await notifier.send(title="Retry Test", content="should retry", severity="critical")
+            finally:
+                await notifier.aclose()
+
+            assert call_count == 3
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.anyio
+    async def test_timeout_on_slow_server(self) -> None:
+        """Server delays response longer than httpx timeout — should raise."""
+        import asyncio
+
+        from aiohttp import web
+
+        async def handler(request: web.Request) -> web.Response:
+            await asyncio.sleep(30)
+            return web.Response(status=200)
+
+        app = web.Application()
+        app.router.add_post("/hook", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+
+        port = site._server.sockets[0].getsockname()[1]
+        url = f"http://127.0.0.1:{port}/hook"
+
+        try:
+            notifier = LarkWebhookNotifier(webhook_url=url)
+            notifier._client.timeout = httpx.Timeout(0.5)
+            try:
+                with pytest.raises((httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException)):
+                    await notifier.send(title="Slow", content="timeout test", severity="warning")
+            finally:
+                await notifier.aclose()
+        finally:
+            await runner.cleanup()

@@ -69,4 +69,5 @@ markers = [
     "pleasefixme: marks tests that are broken and need fixing",
     "e2e: end-to-end FT tests requiring a live Ray cluster with >= 4 GPU nodes",
     "local_ray: integration tests using a local single-node Ray cluster",
+    "requires_gpu: tests that require a real GPU to run",
 ]

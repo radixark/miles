@@ -160,3 +160,46 @@ class TestRunSingleCollector:
             assert all(
                 "consecutive_failures" in s.name for s in samples
             ), f"Only staleness signals expected on failure, got: {samples}"
+
+
+# ===================================================================
+# Real async timing tests
+# ===================================================================
+
+
+class TestRealAsyncTiming:
+    """Tests that exercise MetricCollectionLoop with real asyncio.sleep timing."""
+
+    @pytest.mark.anyio
+    async def test_collector_called_at_expected_interval(self) -> None:
+        """With interval=0.05s and running for ~0.3s, collector should be called ~6 times."""
+        collector = _PassCollector(metrics=[GaugeSample(name="m", labels={}, value=1.0)])
+        collector.collect_interval = 0.05
+        exporter = _make_exporter()
+        loop = MetricCollectionLoop(node_id="n0", collectors=[collector], exporter=exporter)
+
+        await loop.start()
+        await asyncio.sleep(0.35)
+        await loop.stop()
+
+        assert 4 <= collector.collect_count <= 10
+
+    @pytest.mark.anyio
+    async def test_failing_collector_does_not_block_healthy_collector(self) -> None:
+        """One failing collector should not prevent another from collecting."""
+        healthy = _PassCollector(metrics=[GaugeSample(name="h", labels={}, value=1.0)])
+        healthy.collect_interval = 0.05
+        failing = FailingCollector(collect_interval=0.05)
+        exporter = _make_exporter()
+        loop = MetricCollectionLoop(
+            node_id="n0",
+            collectors=[failing, healthy],
+            exporter=exporter,
+        )
+
+        await loop.start()
+        await asyncio.sleep(0.3)
+        await loop.stop()
+
+        assert healthy.collect_count >= 3
+        assert failing.call_count >= 3

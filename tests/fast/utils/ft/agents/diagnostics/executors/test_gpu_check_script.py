@@ -265,6 +265,70 @@ class TestMain:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Real GPU tests — require a GPU to run
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFingerprintRealGpu:
+    """Tests that exercise _compute_fingerprint on a real GPU.
+
+    Validates that the deterministic computation produces consistent,
+    non-empty hashes on actual hardware.
+    """
+
+    @pytest.mark.requires_gpu
+    def test_compute_fingerprint_is_deterministic(self) -> None:
+        """Same GPU should produce identical hash across two runs."""
+        from miles.utils.ft.agents.diagnostics.utils.gpu_check_script import (
+            _build_deterministic_model_and_input,
+            _compute_fingerprint,
+        )
+
+        model, x, mask = _build_deterministic_model_and_input()
+        hash_1 = _compute_fingerprint(0, model, x, mask)
+        hash_2 = _compute_fingerprint(0, model, x, mask)
+
+        assert hash_1 == hash_2
+
+    @pytest.mark.requires_gpu
+    def test_compute_fingerprint_produces_nonempty_hash(self) -> None:
+        from miles.utils.ft.agents.diagnostics.utils.gpu_check_script import (
+            _build_deterministic_model_and_input,
+            _compute_fingerprint,
+        )
+
+        model, x, mask = _build_deterministic_model_and_input()
+        h = _compute_fingerprint(0, model, x, mask)
+
+        assert isinstance(h, str)
+        assert len(h) == 64
+
+    @pytest.mark.requires_gpu
+    def test_main_produces_valid_json_on_real_gpu(self) -> None:
+        """Run main() without mocking — output should be valid JSON with real GPU results."""
+        import io
+        import json as json_mod
+        import sys
+
+        captured = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured
+        try:
+            main()
+        finally:
+            sys.stdout = old_stdout
+
+        output = json_mod.loads(captured.getvalue())
+        assert isinstance(output, list)
+        assert len(output) >= 1
+
+        for item in output:
+            assert "gpu_index" in item
+            assert "nvml_passed" in item
+            assert "compute_hash" in item
+
+
 class TestGpuCheckResult:
     def test_serialization(self) -> None:
         result = GpuCheckResult(

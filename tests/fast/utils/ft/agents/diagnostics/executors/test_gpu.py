@@ -219,3 +219,40 @@ class TestGpuNodeExecutorLaunchFailure:
 
         assert result.passed is False
         assert "failed to launch" in result.details
+
+
+# ---------------------------------------------------------------------------
+# Real GPU E2E tests — launches actual subprocess on a GPU node
+# ---------------------------------------------------------------------------
+
+
+class TestGpuNodeExecutorRealGpu:
+    """E2E tests that run the real gpu_check_script subprocess on a GPU node."""
+
+    @pytest.mark.requires_gpu
+    @pytest.mark.anyio
+    async def test_gpu_diagnostic_passes_on_healthy_gpu(self) -> None:
+        """Real subprocess should produce a passing result on a healthy GPU."""
+        diag = GpuNodeExecutor()
+        result = await diag.run(node_id="test-node", timeout_seconds=120)
+
+        assert result.diagnostic_type == "gpu"
+        assert result.node_id == "test-node"
+        assert result.passed is True
+        assert "all GPU checks passed" in result.details
+
+    @pytest.mark.requires_gpu
+    @pytest.mark.anyio
+    async def test_gpu_diagnostic_returns_compute_hashes(self) -> None:
+        """Real subprocess should populate metadata with compute_hashes."""
+        diag = GpuNodeExecutor()
+        result = await diag.run(node_id="test-node", timeout_seconds=120)
+
+        assert result.metadata is not None
+        assert "compute_hashes" in result.metadata
+        compute_hashes = result.metadata["compute_hashes"]
+        assert isinstance(compute_hashes, dict)
+        assert len(compute_hashes) >= 1
+        for gpu_idx, h in compute_hashes.items():
+            assert isinstance(h, str)
+            assert len(h) == 64
