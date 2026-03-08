@@ -18,7 +18,7 @@ from tests.fast.utils.ft.conftest import (
 
 import miles.utils.ft.models.metric_names as mn
 from miles.utils.ft.controller.controller import FtController
-from miles.utils.ft.controller.main_state_machine import Recovering
+from miles.utils.ft.controller.main_stepper import Recovering
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.recovery_stepper import (

@@ -14,7 +14,7 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 )
 
 from miles.utils.ft.controller.detectors.base import DetectorContext
-from miles.utils.ft.controller.main_state_machine import DetectingAnomaly, MainContext, Recovering, create_main_stepper
+from miles.utils.ft.controller.main_stepper import DetectingAnomaly, MainContext, Recovering, create_main_stepper
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.controller.recovery.recovery_stepper import NotifyHumans, RealtimeChecks, RecoveryDone

@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from miles.utils.ft.controller.actions import handle_notify_human
-from miles.utils.ft.controller.main_state_machine.utils import MainContext, notify_too_many_bad_nodes, run_detectors
-from miles.utils.ft.controller.main_state_machine.states import DetectingAnomaly, MainState, Recovering
+from miles.utils.ft.controller.main_stepper.utils import MainContext, notify_too_many_bad_nodes, run_detectors
+from miles.utils.ft.controller.main_stepper.states import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.recovery.recovery_stepper.states import RealtimeChecks
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 

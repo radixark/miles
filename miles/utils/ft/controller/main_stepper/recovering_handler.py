@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from miles.utils.ft.controller.main_state_machine.utils import (
+from miles.utils.ft.controller.main_stepper.utils import (
     MainContext,
     collect_evictable_bad_nodes,
     get_known_bad_nodes,
     notify_too_many_bad_nodes,
 )
-from miles.utils.ft.controller.main_state_machine.states import DetectingAnomaly, MainState, Recovering
+from miles.utils.ft.controller.main_stepper.states import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.recovery.recovery_stepper.states import NotifyHumans, RealtimeChecks, RecoveryDone
 
 logger = logging.getLogger(__name__)

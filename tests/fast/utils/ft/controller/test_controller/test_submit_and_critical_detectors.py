@@ -13,7 +13,7 @@ from tests.fast.utils.ft.conftest import (
 
 import miles.utils.ft.models.metric_names as mn
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.main_state_machine import DetectingAnomaly, Recovering
+from miles.utils.ft.controller.main_stepper import DetectingAnomaly, Recovering
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 from miles.utils.ft.protocols.platform import JobStatus
 

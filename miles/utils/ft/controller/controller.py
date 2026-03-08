@@ -8,7 +8,7 @@ from datetime import datetime
 
 from miles.utils.ft.controller.actions import PlatformDeps
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.main_state_machine import (
+from miles.utils.ft.controller.main_stepper import (
     DetectingAnomaly,
     MainContext,
     MainState,

@@ -18,7 +18,7 @@ from tests.fast.utils.ft.conftest import (
 )
 
 import miles.utils.ft.models.metric_names as mn
-from miles.utils.ft.controller.main_state_machine import Recovering
+from miles.utils.ft.controller.main_stepper import Recovering
 from miles.utils.ft.controller.recovery.recovery_stepper import EvictingAndRestarting
 from miles.utils.ft.controller.recovery.restart_stepper import MonitoringProgress
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType

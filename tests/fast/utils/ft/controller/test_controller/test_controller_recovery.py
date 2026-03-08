@@ -9,7 +9,7 @@ from tests.fast.utils.ft.conftest import (
     make_test_controller,
 )
 
-from miles.utils.ft.controller.main_state_machine import Recovering
+from miles.utils.ft.controller.main_stepper import Recovering
 from miles.utils.ft.models.fault import ActionType, Decision, TriggerType
 
 
@@ -61,7 +61,6 @@ class TestRunIdUniqueness:
         """After two sequential recoveries, the run_id changes each time and all are distinct."""
         harness = make_test_controller(
             detectors=[AlwaysEnterRecoveryDetector()],
-            monitoring_success_iterations=0,
         )
 
         recorded_run_ids: list[str] = []
