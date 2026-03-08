@@ -251,17 +251,22 @@ class TestEvictionEscalation:
         # Evicting → StoppingAndRestarting → MonitoringProgress (post-eviction)
         await env.injector.crash_training()
 
-        # Wait for StopTimeDiagnostics first to avoid the race where
-        # recovery_phase is still "MonitoringProgress" from step 1
-        await wait_for_recovery_phase(
-            env.controller,
-            phase="StopTimeDiagnostics",
-            timeout=30.0,
-        )
+        # Wait until eviction has happened (visible in phase_history),
+        # then wait for post-eviction MonitoringProgress
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            status = get_status(env.controller)
+            if status.phase_history and "Evicting" in status.phase_history:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError(
+                f"Evicting not found in phase_history within 60s: {status.phase_history}"
+            )
         await wait_for_recovery_phase(
             env.controller,
             phase="MonitoringProgress",
-            timeout=90.0,
+            timeout=60.0,
         )
 
         # Step 3: crash during post-eviction MonitoringProgress →

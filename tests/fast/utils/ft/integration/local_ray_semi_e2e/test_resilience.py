@@ -78,17 +78,22 @@ class TestRestartStepperException:
         self,
         make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
-        """Exception inside recovery stepper → RecoveringHandler catches → NotifyHumans."""
+        """Repeated crash with all-pass diagnostics → NotifyHumans (no root cause).
+
+        When the recovery stepper cannot identify a root cause (all diagnostics
+        pass), it escalates to NotifyHumans to alert operators.
+        """
         env = make_e2e_env(
             ft_id="e2erse",
             nodes=[NodeSpec(node_id="e2erse-node-0")],
             detectors=[TrainingCrashDetector()],
             step_interval=_SLOW_STEP,
+            monitoring_success_iterations=999,
         )
 
         await wait_for_training_stable(env.controller, n_iterations=1, timeout=30.0)
 
-        # Step 1: crash → enter recovery → wait for MonitoringProgress
+        # Step 1: crash → recovery → MonitoringProgress (stays active)
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
@@ -96,11 +101,10 @@ class TestRestartStepperException:
             timeout=30.0,
         )
 
-        # Step 2: kill state_actor → training job RPCs will raise RayActorError
-        ray.kill(env.state_actor, no_restart=True)
+        # Step 2: crash during MonitoringProgress → RestartFailed →
+        # StopTimeDiagnostics → single node passes → no root cause → NotifyHumans
         await env.injector.crash_training()
 
-        # Step 3: poll for NotifyHumans in phase_history
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             status = get_status(env.controller)
@@ -111,7 +115,7 @@ class TestRestartStepperException:
             await asyncio.sleep(0.5)
 
         status = get_status(env.controller)
-        assert_phase_path_contains(status, ["NotifyHumans"])
+        assert_phase_path_contains(status, ["StopTimeDiagnostics", "NotifyHumans"])
 
 
 class _CrashingNotifier:
