@@ -32,6 +32,7 @@ from miles.utils.ft.controller.recovery.recovery_stepper import (
     create_recovery_stepper,
 )
 from miles.utils.ft.controller.recovery.restart_stepper import RestartContext, create_restart_stepper
+from miles.utils.ft.controller.recovery.utils import safe_notify
 from miles.utils.ft.models.fault import TriggerType
 from miles.utils.ft.models.recovery import ControllerMode, ControllerStatus
 from miles.utils.ft.protocols.agents import NodeAgentProtocol
@@ -104,6 +105,7 @@ class FtController:
 
         self._restart_context: RestartContext | None = None
         self._detector_crash_tracker = SlidingWindowCounter(window_seconds=1800, threshold=5)
+        self._tick_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=5)
 
         self._shutting_down: bool = False
         self._tick_count: int = 0
@@ -363,6 +365,14 @@ class FtController:
             await self._state_machine.step(main_context)
         except Exception:
             logger.error("tick_failed tick=%d", self._tick_count, exc_info=True)
+            self._tick_failure_tracker.record()
+            if self._tick_failure_tracker.should_notify:
+                logger.error("tick_persistently_failing: %s", self._tick_failure_tracker.summary())
+                await safe_notify(
+                    self._notifier,
+                    title="Controller tick persistently failing",
+                    content=self._tick_failure_tracker.summary(),
+                )
         finally:
             tick_duration = time.monotonic() - t0
             self._update_exporter_metrics(job_status, tick_duration=tick_duration)

@@ -118,6 +118,33 @@ class TestDetectorExceptionIsolation:
         assert harness.controller._tick_count == 2
 
 
+class TestTickFailureTracker:
+    @pytest.mark.anyio
+    async def test_persistent_failure_triggers_notification(self) -> None:
+        harness = make_test_controller()
+        harness.training_job.get_training_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.controller._tick_failure_tracker._threshold = 3
+
+        for _ in range(3):
+            await harness.controller._tick()
+
+        assert harness.notifier is not None
+        titles = [title for title, _, _ in harness.notifier.calls]
+        assert any("persistently failing" in t for t in titles)
+
+    @pytest.mark.anyio
+    async def test_sporadic_failure_does_not_trigger_notification(self) -> None:
+        harness = make_test_controller()
+        harness.training_job.get_training_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.controller._tick_failure_tracker._threshold = 5
+
+        await harness.controller._tick()
+
+        assert harness.notifier is not None
+        titles = [title for title, _, _ in harness.notifier.calls]
+        assert not any("persistently failing" in t for t in titles)
+
+
 class TestAllDetectorsCrashSilentPass:
     @pytest.mark.anyio
     async def test_tick_with_all_crashing_detectors_logs_errors(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -129,6 +156,7 @@ class TestAllDetectorsCrashSilentPass:
             await harness.controller._tick()
 
         assert d1.call_count == 1
+        assert d2.call_count == 1
         assert harness.controller._tick_count == 1
         error_messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
         assert any("detector_evaluate_failed" in m for m in error_messages)
