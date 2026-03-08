@@ -160,7 +160,6 @@ class TestRealtimeChecks:
         result = await _step(stepper, RealtimeChecks(), alert_checker=FakeAlertChecker(faults=[]))
         assert isinstance(result, EvictingAndRestarting)
         assert isinstance(result.restart, StoppingAndRestarting)
-        assert isinstance(result.succeed_next_state, RecoveryDone)
         assert isinstance(result.failed_next_state, StopTimeDiagnostics)
 
     @pytest.mark.asyncio
@@ -171,7 +170,6 @@ class TestRealtimeChecks:
         assert isinstance(result, EvictingAndRestarting)
         assert isinstance(result.restart, Evicting)
         assert result.restart.bad_node_ids == ["node-A"]
-        assert isinstance(result.succeed_next_state, RecoveryDone)
         assert isinstance(result.failed_next_state, StopTimeDiagnostics)
 
     @pytest.mark.asyncio
@@ -238,12 +236,11 @@ class TestRealtimeChecks:
 
 class TestEvictingAndRestarting:
     @pytest.mark.asyncio
-    async def test_restart_done_returns_succeed_next_state(self) -> None:
+    async def test_restart_done_returns_recovery_done(self) -> None:
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartDone()))
         state = EvictingAndRestarting(
             restart=Evicting(bad_node_ids=["n"]),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
         result = await stepper(state, ctx)
@@ -255,7 +252,6 @@ class TestEvictingAndRestarting:
         ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartFailed()))
         state = EvictingAndRestarting(
             restart=Evicting(),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
         result = await stepper(state, ctx)
@@ -267,7 +263,6 @@ class TestEvictingAndRestarting:
         ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartFailed()))
         state = EvictingAndRestarting(
             restart=Evicting(),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=NotifyHumans(state_before="EvictingAndRestarting"),
         )
         result = await stepper(state, ctx)
@@ -281,13 +276,11 @@ class TestEvictingAndRestarting:
         ctx = _make_ctx(restart_stepper=AsyncMock(return_value=new_restart))
         state = EvictingAndRestarting(
             restart=Evicting(bad_node_ids=["n"]),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
         result = await stepper(state, ctx)
         assert isinstance(result, EvictingAndRestarting)
         assert result.restart == new_restart
-        assert isinstance(result.succeed_next_state, RecoveryDone)
         assert isinstance(result.failed_next_state, StopTimeDiagnostics)
 
     @pytest.mark.asyncio
@@ -296,7 +289,6 @@ class TestEvictingAndRestarting:
         ctx = _make_ctx(restart_stepper=AsyncMock(return_value=None))
         state = EvictingAndRestarting(
             restart=StoppingAndRestarting(submitted=True),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
         result = await stepper(state, ctx)
@@ -318,7 +310,6 @@ class TestStopTimeDiagnostics:
         result = await _step(stepper, StopTimeDiagnostics(), diagnostic_orchestrator=diag)
         assert isinstance(result, EvictingAndRestarting)
         assert result.restart.bad_node_ids == ["node-B"]
-        assert isinstance(result.succeed_next_state, RecoveryDone)
         assert isinstance(result.failed_next_state, NotifyHumans)
 
     @pytest.mark.asyncio

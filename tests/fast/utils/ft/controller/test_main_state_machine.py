@@ -187,14 +187,12 @@ class TestRecovering:
     async def test_recovery_in_progress_stays_recovering(self) -> None:
         from miles.utils.ft.controller.recovery.recovery_stepper import (
             EvictingAndRestarting,
-            RecoveryDone,
             StopTimeDiagnostics,
         )
         from miles.utils.ft.controller.recovery.restart_stepper import StoppingAndRestarting
 
         new_recovery = EvictingAndRestarting(
             restart=StoppingAndRestarting(),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
         stepper = _make_stepper()
@@ -301,7 +299,6 @@ class TestRecovering:
         """Critical detector finds new bad nodes -> restart recovery with merged bad_node_ids."""
         from miles.utils.ft.controller.recovery.recovery_stepper import (
             EvictingAndRestarting,
-            RecoveryDone,
             StopTimeDiagnostics,
         )
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
@@ -319,7 +316,6 @@ class TestRecovering:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
-                succeed_next_state=RecoveryDone(),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH.value,
@@ -401,7 +397,6 @@ class TestBadNodeCountSafeguard:
         """Critical detectors report >= threshold new bad nodes during recovery -> NOTIFY_HUMAN."""
         from miles.utils.ft.controller.recovery.recovery_stepper import (
             EvictingAndRestarting,
-            RecoveryDone,
             StopTimeDiagnostics,
         )
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
@@ -421,7 +416,6 @@ class TestBadNodeCountSafeguard:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
-                succeed_next_state=RecoveryDone(),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,
@@ -445,7 +439,6 @@ class TestBadNodeCountSafeguard:
         """Critical detector re-reports nodes already being handled -> no recovery restart."""
         from miles.utils.ft.controller.recovery.recovery_stepper import (
             EvictingAndRestarting,
-            RecoveryDone,
             StopTimeDiagnostics,
         )
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
@@ -465,7 +458,6 @@ class TestBadNodeCountSafeguard:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old"]),
-                succeed_next_state=RecoveryDone(),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,
@@ -487,13 +479,13 @@ class TestBadNodeCountSafeguard:
         """One new bad node during recovery (with 2 existing) -> normal merge, continues."""
         from miles.utils.ft.controller.recovery.recovery_stepper import (
             EvictingAndRestarting,
-            RecoveryDone,
             StopTimeDiagnostics,
         )
         from miles.utils.ft.controller.recovery.restart_stepper import Evicting
 
         recovery_stepper = AsyncMock(return_value=None)
 
+        # hi
         critical_detector = CriticalFixedDecisionDetector(
             Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -507,7 +499,6 @@ class TestBadNodeCountSafeguard:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-old-1", "node-old-2"]),
-                succeed_next_state=RecoveryDone(),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,

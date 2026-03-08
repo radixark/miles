@@ -16,14 +16,12 @@ class RealtimeChecks(RecoveryState):
 
 class EvictingAndRestarting(RecoveryState):
     restart: RestartState
-    succeed_next_state: RecoveryState
     failed_next_state: RecoveryState
 
     @classmethod
     def direct_restart(cls) -> EvictingAndRestarting:
         return cls(
             restart=StoppingAndRestarting(bad_node_ids=[]),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
 
@@ -31,7 +29,6 @@ class EvictingAndRestarting(RecoveryState):
     def evict_and_restart(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
         return cls(
             restart=Evicting(bad_node_ids=bad_node_ids),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=StopTimeDiagnostics(),
         )
 
@@ -39,7 +36,6 @@ class EvictingAndRestarting(RecoveryState):
     def evict_and_restart_final(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
         return cls(
             restart=Evicting(bad_node_ids=bad_node_ids),
-            succeed_next_state=RecoveryDone(),
             failed_next_state=NotifyHumans(state_before="EvictingAndRestarting"),
         )
 

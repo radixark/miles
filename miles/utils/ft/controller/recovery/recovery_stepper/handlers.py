@@ -102,12 +102,11 @@ class EvictingAndRestartingHandler:
         if new_restart is None:
             return None
         if isinstance(new_restart, RestartDone):
-            return state.succeed_next_state
+            return RecoveryDone()
         if isinstance(new_restart, RestartFailed):
             return state.failed_next_state
         return EvictingAndRestarting(
             restart=new_restart,
-            succeed_next_state=state.succeed_next_state,
             failed_next_state=state.failed_next_state,
         )
 

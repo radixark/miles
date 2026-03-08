@@ -24,7 +24,6 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.recovery.recovery_stepper import (
     EvictingAndRestarting,
     NotifyHumans,
-    RecoveryDone,
     StopTimeDiagnostics,
 )
 from miles.utils.ft.controller.recovery.restart_stepper import Evicting
@@ -150,7 +149,6 @@ class TestGetStatus:
         harness.controller._state_machine._state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-0"]),
-                succeed_next_state=RecoveryDone(),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger="crash",
