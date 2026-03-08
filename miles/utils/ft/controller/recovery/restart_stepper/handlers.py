@@ -185,8 +185,3 @@ class MonitoringProgressHandler:
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         return None
-
-
-class TerminalHandler:
-    async def step(self, state: RestartState, ctx: RestartContext) -> None:
-        return None

@@ -42,14 +42,19 @@ class StateMachineStepper(Generic[StateT, ContextT]):
         self,
         handler_map: dict[type, type],
         *,
+        terminal_states: frozenset[type] = frozenset(),
         pre_dispatch: Callable[[StateT, ContextT], Awaitable[StateT | None]] | None = None,
     ) -> None:
         self._handlers: dict[type, Callable[[StateT, ContextT], Awaitable[StateT | None]]] = {
             state_type: handler_cls().step for state_type, handler_cls in handler_map.items()
         }
+        self._terminal_states = terminal_states
         self._pre_dispatch = pre_dispatch
 
     async def __call__(self, state: StateT, context: ContextT) -> StateT | None:
+        if type(state) in self._terminal_states:
+            return None
+
         if self._pre_dispatch is not None:
             result = await self._pre_dispatch(state, context)
             if result is not None:

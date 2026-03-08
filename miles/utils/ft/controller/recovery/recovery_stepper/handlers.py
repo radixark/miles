@@ -126,6 +126,3 @@ class NotifyHumansHandler:
         return RecoveryDone()
 
 
-class RecoveryDoneHandler:
-    async def step(self, state: RecoveryDone, ctx: RecoveryContext) -> None:
-        return None

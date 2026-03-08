@@ -3,7 +3,6 @@ from miles.utils.ft.controller.recovery.recovery_stepper.handlers import (
     NotifyHumansHandler,
     RealtimeChecksHandler,
     RecoveryContext,
-    RecoveryDoneHandler,
     StopTimeDiagnosticsHandler,
     recovery_timeout_check,
 )
@@ -27,13 +26,13 @@ _RECOVERY_HANDLER_MAP: dict[type, type] = {
     EvictingAndRestarting: EvictingAndRestartingHandler,
     StopTimeDiagnostics: StopTimeDiagnosticsHandler,
     NotifyHumans: NotifyHumansHandler,
-    RecoveryDone: RecoveryDoneHandler,
 }
 
 
 def create_recovery_stepper() -> StateMachineStepper:
     return StateMachineStepper(
         handler_map=_RECOVERY_HANDLER_MAP,
+        terminal_states=frozenset({RecoveryDone}),
         pre_dispatch=recovery_timeout_check,
     )
 
@@ -49,7 +48,6 @@ __all__ = [
     "RealtimeChecksHandler",
     "RecoveryContext",
     "RecoveryDone",
-    "RecoveryDoneHandler",
     "RecoveryState",
     "StopTimeDiagnostics",
     "StopTimeDiagnosticsHandler",
