@@ -8,13 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.generate_utils.openai_endpoint_utils import (
-    compute_samples_from_openai_records,
-)
+from miles.rollout.generate_utils.openai_endpoint_utils import compute_samples_from_openai_records
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.router.session.session_types import SessionRecord
 from miles.utils.types import Sample
-
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -52,8 +49,7 @@ def _make_record(
         output_log_probs = [-0.1 * (i + 1) for i in range(len(output_token_ids))]
 
     logprobs_content = [
-        {"token_id": tid, "logprob": lp, "token": f"t{tid}"}
-        for tid, lp in zip(output_token_ids, output_log_probs)
+        {"token_id": tid, "logprob": lp, "token": f"t{tid}"} for tid, lp in zip(output_token_ids, output_log_probs)
     ]
     return SessionRecord(
         timestamp=0.0,
@@ -244,7 +240,15 @@ class TestThinkingTokenPrefixBreak:
         tok = _mock_tokenizer()
 
         # Turn 1: model generates <think>\nreasoning\n</think>\n then actual response
-        thinking_tokens = [self.THINK_TOKEN, self.NEWLINE_TOKEN, 42, 43, self.NEWLINE_TOKEN, self.END_THINK_TOKEN, self.NEWLINE_TOKEN]
+        thinking_tokens = [
+            self.THINK_TOKEN,
+            self.NEWLINE_TOKEN,
+            42,
+            43,
+            self.NEWLINE_TOKEN,
+            self.END_THINK_TOKEN,
+            self.NEWLINE_TOKEN,
+        ]
         response_tokens = [10, 11]
         all_output = thinking_tokens + response_tokens
 

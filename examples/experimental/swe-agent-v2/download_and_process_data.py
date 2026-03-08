@@ -110,15 +110,13 @@ def main():
         "--agent-name",
         type=str,
         default="mini-swe-agent",
-        help="Harbor agent name injected into metadata "
-        "(default: mini-swe-agent)",
+        help="Harbor agent name injected into metadata " "(default: mini-swe-agent)",
     )
     parser.add_argument(
         "--prompt-key",
         type=str,
         default="problem_statement",
-        help="JSON key to use as prompt text "
-        "(default: problem_statement)",
+        help="JSON key to use as prompt text " "(default: problem_statement)",
     )
     parser.add_argument(
         "--append",
@@ -142,10 +140,7 @@ def main():
         print(f"Processing local file: {args.input}")
         convert_to_miles_format(args.input, args.output, **common_kwargs)
     else:
-        print(
-            f"Loading HuggingFace dataset: "
-            f"{args.input} (split={args.split})"
-        )
+        print(f"Loading HuggingFace dataset: " f"{args.input} (split={args.split})")
         ds = load_dataset(args.input, split=args.split)
 
         if args.limit:
@@ -154,7 +149,9 @@ def main():
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".jsonl", delete=False,
+                mode="w",
+                suffix=".jsonl",
+                delete=False,
             ) as tmp:
                 tmp_path = tmp.name
 

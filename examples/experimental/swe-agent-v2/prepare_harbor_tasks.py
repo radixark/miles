@@ -89,12 +89,11 @@ def _create_task_dir(
         setup_cmds = " && ".join(setup_cmds)
     setup_block = f"RUN {setup_cmds}\n" if setup_cmds else ""
 
-    (env_dir / "Dockerfile").write_text(
-        f"FROM {docker_image}\n{setup_block}"
-    )
+    (env_dir / "Dockerfile").write_text(f"FROM {docker_image}\n{setup_block}")
 
     if docker_network:
-        compose_yaml = textwrap.dedent(f"""\
+        compose_yaml = textwrap.dedent(
+            f"""\
             services:
               main:
                 networks:
@@ -102,7 +101,8 @@ def _create_task_dir(
             networks:
               {docker_network}:
                 external: true
-        """)
+        """
+        )
         (env_dir / "docker-compose.yaml").write_text(compose_yaml)
 
     tests_dir = task_dir / "tests"
@@ -112,10 +112,12 @@ def _create_task_dir(
     if test_script:
         test_sh = f"#!/bin/bash\n{test_script}\n"
     else:
-        test_sh = textwrap.dedent("""\
+        test_sh = textwrap.dedent(
+            """\
             #!/bin/bash
             echo 0 > /logs/verifier/reward.txt
-        """)
+        """
+        )
 
     (tests_dir / "test.sh").write_text(test_sh)
     os.chmod(tests_dir / "test.sh", 0o755)
@@ -125,10 +127,12 @@ def _create_task_dir(
         sol_dir = task_dir / "solution"
         sol_dir.mkdir(exist_ok=True)
         (sol_dir / "fix.patch").write_text(patch)
-        solve_sh = textwrap.dedent("""\
+        solve_sh = textwrap.dedent(
+            """\
             #!/bin/bash
             git apply "$(dirname "$0")/fix.patch"
-        """)
+        """
+        )
         (sol_dir / "solve.sh").write_text(solve_sh)
         os.chmod(sol_dir / "solve.sh", 0o755)
 
@@ -163,9 +167,7 @@ def convert(
             metadata = data.get("metadata", data)
             instance_id = metadata.get("instance_id", "")
             if not instance_id:
-                logger.warning(
-                    f"Skipping line {line_num}: no instance_id"
-                )
+                logger.warning(f"Skipping line {line_num}: no instance_id")
                 continue
 
             records.append(metadata)
@@ -178,7 +180,9 @@ def convert(
     for metadata in records:
         instance_id = metadata["instance_id"]
         _create_task_dir(
-            instance_id, metadata, output_path,
+            instance_id,
+            metadata,
+            output_path,
             docker_network=docker_network,
         )
         count += 1
@@ -206,8 +210,7 @@ def main():
     parser.add_argument(
         "--docker-network",
         default=None,
-        help="External Docker network for containers to join "
-        "(e.g. swe-net)",
+        help="External Docker network for containers to join " "(e.g. swe-net)",
     )
     args = parser.parse_args()
 
