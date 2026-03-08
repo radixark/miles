@@ -7,7 +7,7 @@ from prometheus_client import CollectorRegistry
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.agents.types import CounterSample, GaugeSample
 from miles.utils.ft.controller.detectors.base import DetectorContext
-from miles.utils.ft.controller.metric_names import (
+from miles.utils.ft.controller.metrics.metric_names import (
     AGENT_HEARTBEAT,
     DCGM_FI_DEV_GPU_TEMP,
     GPU_AVAILABLE,

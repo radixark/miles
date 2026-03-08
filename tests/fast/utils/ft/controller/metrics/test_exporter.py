@@ -3,7 +3,7 @@ from __future__ import annotations
 from prometheus_client import CollectorRegistry
 from tests.fast.utils.ft.conftest import get_sample_value, make_test_exporter
 
-import miles.utils.ft.controller.metric_names as mn
+import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 

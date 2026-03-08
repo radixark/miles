@@ -10,7 +10,7 @@ from miles.utils.ft.adapters.types import JobStatus, NodeManagerProtocol, Notifi
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.metric_names import AGENT_HEARTBEAT
+from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb

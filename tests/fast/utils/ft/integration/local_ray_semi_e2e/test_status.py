@@ -20,7 +20,7 @@ from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
-from miles.utils.ft.controller.metric_names import GPU_AVAILABLE
+from miles.utils.ft.controller.metrics.metric_names import GPU_AVAILABLE
 from miles.utils.ft.controller.types import ControllerMode
 
 

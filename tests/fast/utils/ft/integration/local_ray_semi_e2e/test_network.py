@@ -19,7 +19,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
-from miles.utils.ft.controller.metric_names import NODE_NETWORK_UP
+from miles.utils.ft.controller.metrics.metric_names import NODE_NETWORK_UP
 from miles.utils.ft.controller.types import ControllerMode
 
 

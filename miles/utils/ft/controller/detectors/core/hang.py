@@ -4,7 +4,7 @@ from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.metric_names import (
+from miles.utils.ft.controller.metrics.metric_names import (
     AGENT_HEARTBEAT,
     PHASE_CHECKPOINT_SAVING,
     PHASE_TRAINING,

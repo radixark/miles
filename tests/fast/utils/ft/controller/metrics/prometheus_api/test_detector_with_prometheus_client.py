@@ -22,7 +22,7 @@ from miles.utils.ft.controller.detectors.checks.hardware import (
     check_nic_down_in_window,
 )
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.controller.metric_names import (
+from miles.utils.ft.controller.metrics.metric_names import (
     AGENT_HEARTBEAT,
     NODE_FILESYSTEM_AVAIL_BYTES,
     NODE_NETWORK_UP,

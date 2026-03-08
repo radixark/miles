@@ -17,7 +17,7 @@ from miles.utils.ft.controller.detectors.checks.hardware import (
     check_all_hardware_faults,
     check_nic_down_in_window,
 )
-from miles.utils.ft.controller.metric_names import NODE_NETWORK_UP
+from miles.utils.ft.controller.metrics.metric_names import NODE_NETWORK_UP
 
 
 class TestCheckNicDownInWindow:

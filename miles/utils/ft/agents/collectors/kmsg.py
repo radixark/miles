@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import miles.utils.ft.controller.metric_names as mn
+import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.collectors.kernel_log_reader import DmesgSubprocessReader, KernelLogReader, KmsgFileReader
 from miles.utils.ft.agents.types import CounterSample, GaugeSample
