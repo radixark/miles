@@ -6,10 +6,12 @@ import asyncio
 import time
 from collections.abc import Callable
 
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec, _FastHangDetector
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
+from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     assert_phase_path_contains,
     get_status,
+    scenario_no_false_positive,
     scenario_transient_crash,
     wait_for_mode,
     wait_for_mode_transition,
@@ -73,9 +75,9 @@ class TestRecoveryThrottle:
 
         # Step 3: third crash → throttled, no recovery
         await env.injector.crash_training()
-        await asyncio.sleep(5.0)
-        status = get_status(env.controller)
-        assert status.mode == ControllerMode.MONITORING
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
 
 class TestRecoveryReset:
@@ -384,9 +386,9 @@ class TestCooldownBoundary:
         # Step 2: second crash → throttled
         await wait_for_training_stable(env.controller, n_iterations=2, timeout=30.0)
         await env.injector.crash_training()
-        await asyncio.sleep(5.0)
-        status = get_status(env.controller)
-        assert status.mode == ControllerMode.MONITORING, f"Expected throttle, but mode={status.mode}"
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
 
 class TestConcurrentDetectors:
@@ -398,7 +400,7 @@ class TestConcurrentDetectors:
         env = make_e2e_env(
             ft_id="e2ecd",
             nodes=[NodeSpec(node_id="e2ecd-node-0")],
-            detectors=[TrainingCrashDetector(), _FastHangDetector(timeout_seconds=3.0)],
+            detectors=[TrainingCrashDetector(), FastHangDetector(timeout_seconds=3.0)],
         )
 
         # Step 1: inject hang first
@@ -444,7 +446,9 @@ class TestNotification:
         # Step 2: second crash → throttled
         await wait_for_training_stable(env.controller, n_iterations=2, timeout=30.0)
         await env.injector.crash_training()
-        await asyncio.sleep(5.0)
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
         # Step 3: verify notifier received calls
         calls = env.get_notifier_calls()
@@ -513,12 +517,12 @@ class TestCooldownExpiry:
         # Step 2: second crash immediately → throttled
         await wait_for_training_stable(env.controller, n_iterations=2, timeout=30.0)
         await env.injector.crash_training()
-        await asyncio.sleep(3.0)
-        status = get_status(env.controller)
-        assert status.mode == ControllerMode.MONITORING, "Expected throttle"
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
         # Step 3: sleep past cooldown window, then crash again → recovery succeeds
-        await asyncio.sleep(window_seconds + 1)
+        await asyncio.sleep(window_seconds + 3)
         await env.injector.crash_training()
         final = await wait_for_mode_transition(
             env.controller,
@@ -564,6 +568,6 @@ class TestFalsePositiveGuard:
             )
 
         # Step 2: wait for scrape cycles, then verify no recovery
-        await asyncio.sleep(5.0)
-        status = get_status(env.controller)
-        assert status.mode == ControllerMode.MONITORING, f"Expected false positive guard, but mode={status.mode}"
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )

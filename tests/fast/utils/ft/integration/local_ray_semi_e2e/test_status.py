@@ -12,8 +12,8 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import (
     _FAST_SCRAPE,
     E2EEnv,
     NodeSpec,
-    _FastHangDetector,
 )
+from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     get_status,
     scenario_no_false_positive,
@@ -126,7 +126,7 @@ class TestNoFalsePositive:
         env = make_e2e_env(
             ft_id="e2esfj",
             nodes=[NodeSpec(node_id="e2esfj-node-0")],
-            detectors=[_FastHangDetector(timeout_seconds=10.0)],
+            detectors=[FastHangDetector(timeout_seconds=10.0)],
             scrape_interval_seconds=5.0,
             tick_interval=0.1,
         )

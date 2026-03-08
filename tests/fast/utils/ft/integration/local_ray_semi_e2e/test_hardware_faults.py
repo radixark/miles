@@ -10,6 +10,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _FAST_SC
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     assert_phase_path_contains,
     get_status,
+    scenario_no_false_positive,
     wait_for_mode,
     wait_for_mode_transition,
     wait_for_recovery_complete,
@@ -270,11 +271,9 @@ class TestCrossFaultTypeThrottle:
         # Step 2: NaN → should be throttled (shared window, max_count=2)
         await wait_for_training_stable(env.controller, n_iterations=2, timeout=60.0)
         await env.injector.inject_nan_loss()
-        await asyncio.sleep(5.0)
-        status = get_status(env.controller)
-        assert (
-            status.mode == ControllerMode.MONITORING
-        ), f"Expected NaN recovery to be throttled, but mode={status.mode}"
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
 
 class TestNaNRecovery:
@@ -336,11 +335,9 @@ class TestDiskSpaceLow:
         )
 
         # Step 2: wait for detector cycles, verify no recovery
-        await asyncio.sleep(5.0)
-        status = get_status(env.controller)
-        assert (
-            status.mode == ControllerMode.MONITORING
-        ), f"DiskSpaceLow should not trigger recovery, but mode={status.mode}"
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
         # Step 3: notifier should have received a disk-related notification
         calls = env.get_notifier_calls()
@@ -418,15 +415,12 @@ class TestMfuAbsoluteMinimum:
         # Step 1: inject very low MFU
         await env.injector.inject_custom_metrics({"mfu": 0.01})
 
-        # Step 2: wait for detector to evaluate MFU (needs consecutive_steps=2 readings)
-        await asyncio.sleep(5.0)
+        # Step 2: wait for detector cycles, verify no recovery
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
-        # Step 3: verify no recovery triggered, but notifier received alert
-        status = get_status(env.controller)
-        assert (
-            status.mode == ControllerMode.MONITORING
-        ), f"MFU NOTIFY_HUMAN should not trigger recovery, but mode={status.mode}"
-
+        # Step 3: notifier should have received MFU alert
         calls = env.get_notifier_calls()
         assert len(calls) > 0, "Notifier should have received MFU alert"
 
@@ -555,11 +549,9 @@ class TestMaxBadNodesOneBoundary:
         )
 
         # Step 2: wait for detection cycles, verify no recovery
-        await asyncio.sleep(5.0)
-        status = get_status(env.controller)
-        assert (
-            status.mode == ControllerMode.MONITORING
-        ), f"max_simultaneous_bad_nodes=1 should block recovery, but mode={status.mode}"
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
 
 
 class TestFaultClearedNoRetrigger:
@@ -612,8 +604,6 @@ class TestFaultClearedNoRetrigger:
         assert final.mode == ControllerMode.MONITORING
 
         # Step 4: verify no new recovery triggered after several ticks
-        await asyncio.sleep(5.0)
-        status = get_status(env.controller)
-        assert (
-            status.mode == ControllerMode.MONITORING
-        ), f"Cleared fault should not re-trigger recovery, but mode={status.mode}"
+        await scenario_no_false_positive(
+            env.controller, observation_ticks=20, timeout=30.0,
+        )
