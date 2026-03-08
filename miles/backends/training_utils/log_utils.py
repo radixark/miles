@@ -3,6 +3,7 @@ from argparse import Namespace
 from math import isclose
 
 import numpy as np
+import psutil
 import torch
 import torch.distributed as dist
 
@@ -328,6 +329,22 @@ def log_perf_data(rollout_id: int, args: Namespace, parallel_state: ParallelStat
         compute_total_fwd_flops=lambda seq_lens: calculate_fwd_flops(seqlens=seq_lens, args=args)
         / dist.get_world_size()
         / 1e12,
+    )
+
+
+def log_cpu_memory(rollout_id: int, args: Namespace, label: str) -> None:
+    """Log current system CPU memory usage to wandb/tensorboard.
+
+    Caller is responsible for ensuring this runs on a single rank only.
+    """
+
+    cpu_mem_gb = psutil.virtual_memory().used / 1e9
+    step = compute_rollout_step(args, rollout_id)
+    logger.info(f"[CPU memory] {label}: {cpu_mem_gb:.2f} GB (rollout_id={rollout_id}, step={step})")
+    tracking_utils.log(
+        args,
+        {f"perf/cpu_memory_{label}_gb": cpu_mem_gb, "rollout/step": step},
+        step_key="rollout/step",
     )
 
 
