@@ -11,6 +11,39 @@ logger = logging.getLogger(__name__)
 _GPU_DIAGNOSTIC_TYPE = "gpu"
 
 
+class GpuClusterExecutor:
+    """GPU diagnostic with cross-node compute hash comparison.
+
+    First partitions by local pass/fail (nvml + compute errors).
+    Then compares compute hashes across locally-passed nodes to detect
+    SDC outliers via majority vote (bitwise alignment test).
+    """
+
+    async def execute(
+            self,
+            agents: dict[str, NodeAgentProtocol],
+            timeout_seconds: int,
+    ) -> list[str]:
+        results = await gather_diagnostic_results(
+            diagnostic_type=_GPU_DIAGNOSTIC_TYPE,
+            agents=agents,
+            timeout_seconds=timeout_seconds,
+        )
+
+        bad_node_ids = partition_results(
+            results=results,
+            diagnostic_type=_GPU_DIAGNOSTIC_TYPE,
+        )
+
+        bad_set = set(bad_node_ids)
+        passed_results = {nid: r for nid, r in results.items() if nid not in bad_set}
+        hash_outliers = find_gpu_hash_outlier_nodes(passed_results)
+        if hash_outliers:
+            bad_node_ids.extend(hash_outliers)
+
+        return bad_node_ids
+
+
 def find_gpu_hash_outlier_nodes(
     results: dict[str, DiagnosticResult],
 ) -> list[str]:
@@ -73,36 +106,3 @@ def find_gpu_hash_outlier_nodes(
                 outlier_nodes.update(nodes)
 
     return sorted(outlier_nodes)
-
-
-class GpuClusterExecutor:
-    """GPU diagnostic with cross-node compute hash comparison.
-
-    First partitions by local pass/fail (nvml + compute errors).
-    Then compares compute hashes across locally-passed nodes to detect
-    SDC outliers via majority vote (bitwise alignment test).
-    """
-
-    async def execute(
-        self,
-        agents: dict[str, NodeAgentProtocol],
-        timeout_seconds: int,
-    ) -> list[str]:
-        results = await gather_diagnostic_results(
-            diagnostic_type=_GPU_DIAGNOSTIC_TYPE,
-            agents=agents,
-            timeout_seconds=timeout_seconds,
-        )
-
-        bad_node_ids = partition_results(
-            results=results,
-            diagnostic_type=_GPU_DIAGNOSTIC_TYPE,
-        )
-
-        bad_set = set(bad_node_ids)
-        passed_results = {nid: r for nid, r in results.items() if nid not in bad_set}
-        hash_outliers = find_gpu_hash_outlier_nodes(passed_results)
-        if hash_outliers:
-            bad_node_ids.extend(hash_outliers)
-
-        return bad_node_ids
