@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 import typer
 
-from miles.utils.ft.cli.diag.output import exit_with_results, print_results
+from miles.utils.ft.cli.diag.output import exit_with_results, print_results, validate_check_names
 from miles.utils.ft.models.diagnostic import DiagnosticResult
 from miles.utils.ft.protocols.agents import ClusterExecutorProtocol
 
@@ -25,7 +25,7 @@ def cluster(
     import ray
 
     from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
-    from miles.utils.ft.platform.ray.node_discovery import get_alive_gpu_nodes
+    from miles.utils.ft.platform.ray_wrappers.node_discovery import get_alive_gpu_nodes
 
     ray.init(address=ray_address)
 
@@ -34,10 +34,7 @@ def cluster(
         registry = build_all_cluster_executors()
 
         selected = checks or list(registry.keys())
-        unknown = set(selected) - set(registry.keys())
-        if unknown:
-            typer.echo(f"Unknown checks: {', '.join(sorted(unknown))}", err=True)
-            raise typer.Exit(code=1)
+        validate_check_names(selected, available=registry.keys())
 
         async def _run() -> list[DiagnosticResult]:
             async with _managed_agents(nodes) as agents:

@@ -12,11 +12,10 @@ import logging
 from typing import NamedTuple
 
 from miles.utils.ft.agents.diagnostics.executors.nccl_pairwise import DEFAULT_NCCL_MASTER_PORT
+from miles.utils.ft.controller.diagnostics.utils import RPC_TIMEOUT_BUFFER_SECONDS
 from miles.utils.ft.protocols.agents import NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
-
-_RPC_TIMEOUT_BUFFER_SECONDS = 30
 
 
 class _PairResult(NamedTuple):
@@ -111,7 +110,7 @@ class PairwiseClusterExecutor:
                         master_port=port,
                     ),
                 ),
-                timeout=timeout_seconds + _RPC_TIMEOUT_BUFFER_SECONDS,
+                timeout=timeout_seconds + RPC_TIMEOUT_BUFFER_SECONDS,
             )
             passed = master_result.passed and worker_result.passed
         except asyncio.TimeoutError:

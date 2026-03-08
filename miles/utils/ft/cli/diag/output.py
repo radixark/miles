@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterable
+
+import typer
 
 from miles.utils.ft.models.diagnostic import DiagnosticResult
 
@@ -30,3 +33,10 @@ def print_results(
 def exit_with_results(results: list[DiagnosticResult]) -> None:
     if any(not r.passed for r in results):
         raise SystemExit(1)
+
+
+def validate_check_names(selected: list[str], available: Iterable[str]) -> None:
+    unknown = set(selected) - set(available)
+    if unknown:
+        typer.echo(f"Unknown checks: {', '.join(sorted(unknown))}", err=True)
+        raise typer.Exit(code=1)

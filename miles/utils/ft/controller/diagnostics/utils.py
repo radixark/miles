@@ -8,7 +8,7 @@ from miles.utils.ft.protocols.agents import NodeAgentProtocol
 
 logger = logging.getLogger(__name__)
 
-_RPC_TIMEOUT_BUFFER_SECONDS = 30
+RPC_TIMEOUT_BUFFER_SECONDS = 30
 
 
 async def call_agent_diagnostic(
@@ -23,7 +23,7 @@ async def call_agent_diagnostic(
                 diagnostic_type,
                 timeout_seconds=timeout_seconds,
             ),
-            timeout=timeout_seconds + _RPC_TIMEOUT_BUFFER_SECONDS,
+            timeout=timeout_seconds + RPC_TIMEOUT_BUFFER_SECONDS,
         )
 
     except asyncio.TimeoutError:
@@ -36,7 +36,7 @@ async def call_agent_diagnostic(
         return DiagnosticResult.fail_result(
             diagnostic_type=diagnostic_type,
             node_id=node_id,
-            details=f"agent RPC timed out after {timeout_seconds + _RPC_TIMEOUT_BUFFER_SECONDS}s",
+            details=f"agent RPC timed out after {timeout_seconds + RPC_TIMEOUT_BUFFER_SECONDS}s",
         )
 
     except UnknownDiagnosticError:

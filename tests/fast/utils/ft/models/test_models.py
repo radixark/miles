@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.models.diagnostic import DiagnosticResult
 from miles.utils.ft.models.fault import ActionType, Decision, NodeFault, TriggerType
 from miles.utils.ft.models.metrics import CollectorOutput, CounterSample, GaugeSample
 from miles.utils.ft.protocols.controller import ft_controller_actor_name

@@ -9,7 +9,7 @@ from miles.utils.ft.controller.diagnostics.executors.gpu import (
     GpuClusterExecutor,
     find_gpu_hash_outlier_nodes,
 )
-from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.models.diagnostic import DiagnosticResult
 
 
 def _make_result(

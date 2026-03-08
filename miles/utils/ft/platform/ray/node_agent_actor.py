@@ -5,7 +5,7 @@ import logging
 import ray
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
-from miles.utils.ft.models.diagnostics import DiagnosticResult
+from miles.utils.ft.models.diagnostic import DiagnosticResult
 from miles.utils.ft.platform.node_agent_factory import (
     DEFAULT_COLLECT_INTERVAL_SECONDS,
     DEFAULT_NUM_GPUS,
