@@ -37,7 +37,12 @@ async def stop_all_active_jobs(
 ) -> int:
     """Stop all non-terminal Ray jobs. Returns count of jobs stopped."""
     all_jobs = await asyncio.to_thread(client.list_jobs)
-    active = [j for j in all_jobs if _parse_ray_status(j.status) not in _TERMINAL_STATUSES]
+    active = [
+        j
+        for j in all_jobs
+        if _parse_ray_status(j.status) not in _TERMINAL_STATUSES
+        and j.job_id is not None
+    ]
     if not active:
         return 0
 
