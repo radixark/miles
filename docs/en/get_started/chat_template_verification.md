@@ -20,11 +20,21 @@ Example output for a template that **fails**:
 Template source: HuggingFace: Qwen/Qwen3-0.6B
 Thinking cases:  disabled
 
-  [FAIL] single_tool-N3           -- Prefix mismatch!
-  [FAIL] multi_turn-N3            -- Prefix mismatch!
-  [PASS] no_tool-N3
+  [FAIL] single_tool-N3                -- Prefix mismatch!
+  [PASS] single_tool-N3-no_tools
+  [FAIL] multi_turn-N4                 -- Prefix mismatch!
+  [FAIL] multi_tool_single_turn-N3     -- Prefix mismatch!
+  [FAIL] parallel_tools-N3             -- Prefix mismatch!
+  [FAIL] long_chain-N4                 -- Prefix mismatch!
+  [FAIL] long_chain-N6                 -- Prefix mismatch!
+  [FAIL] multi_user_tool_chain-N8      -- Prefix mismatch!
+  [PASS] simple_no_tool-N3-no_tools
+  [FAIL] retry_system-N3               -- Prefix mismatch!
+  [FAIL] retry_system-N5               -- Prefix mismatch!
+  [FAIL] intermediate_system-N5        -- Prefix mismatch!
+  [FAIL] intermediate_system-N8        -- Prefix mismatch!
 
-Results: 1/12 passed, 11 failed
+Results: 2/13 passed, 11 failed
 
 Verdict: FAIL - template is NOT append-only after last user message
 ```
@@ -42,11 +52,12 @@ Template source: fixed template: .../miles/utils/chat_template_utils/templates/q
 Thinking cases:  disabled
 
   [PASS] single_tool-N3
-  [PASS] multi_turn-N3
+  [PASS] single_tool-N3-no_tools
+  [PASS] multi_turn-N4
   ...
-  [PASS] no_tool-N3
+  [PASS] intermediate_system-N8
 
-Results: 12/12 passed, 0 failed
+Results: 13/13 passed, 0 failed
 
 Verdict: PASS - template IS append-only after last user message
 ```
@@ -64,10 +75,10 @@ python scripts/tools/verify_chat_template.py --template path/to/my_template.jinj
 For models that support `enable_thinking` (e.g. Qwen3.5, GLM-5), add `--thinking` to also run thinking-specific test cases:
 
 ```shell
-python scripts/tools/verify_chat_template.py --model Qwen/Qwen3.5-0.8B --thinking
+python scripts/tools/verify_chat_template.py --model Qwen/Qwen3.5-0.8B --autofix --thinking
 ```
 
-This runs 26 cases in total (12 standard + 14 thinking with `enable_thinking=True/False`).
+This runs 29 cases in total (13 standard + 16 thinking with `enable_thinking=True/False`).
 
 ## CLI Reference
 
@@ -89,12 +100,14 @@ The script exits with code **0** if all cases pass, or **1** if any case fails.
 
 The verifier simulates the pretokenized incremental tokenization path at the text level:
 
-1. **Prefix render**: Render the first N messages with `add_generation_prompt=False`
-2. **Full render**: Render all messages with `add_generation_prompt=True`
-3. **Prefix check**: Verify that the full render starts with the prefix render
-4. **Equivalence check**: Verify that `prefix + incremental == full`
+1. **Prefix render**: Render the first N messages with `add_generation_prompt=False` → `prefix_text`
+2. **Full render**: Render all messages with `add_generation_prompt=True` → `full_text`
+3. **Prefix check**: Verify that `full_text` starts with `prefix_text`
+4. **Equivalence check**: Verify that the full render from the pretokenized path equals the standard full render
 
-This is tested across 12 diverse trajectory patterns covering single-turn, multi-turn, parallel tool calls, long chains, and no-tool scenarios.
+This is tested across 13 diverse cases covering 9 trajectory patterns (single-turn, multi-turn, parallel tool calls, long chains, multi-user tool chain, no-tool, retry with intermediate system, and multi-step intermediate system scenarios).
+
+When `--thinking` is enabled, an additional 16 cases are added: 6 thinking-specific trajectory patterns × 2 (`enable_thinking=True/False`) + 2 intermediate system thinking patterns × 2.
 
 ## Autofix: Built-in Template Fixes
 
@@ -102,11 +115,14 @@ miles includes fixed templates for model families known to break the append-only
 
 | Model Pattern | Fixed Template |
 | :--- | :--- |
-| `Qwen3-*` (base, e.g. Qwen3-0.6B, Qwen3-4B) | `qwen3_fixed.jinja` |
-| `Qwen3-*B-Thinking-2507` | `qwen3_thinking_2507_and_next_fixed.jinja` |
+| `Qwen3.5-*` (e.g. Qwen3.5-0.8B, Qwen3.5-32B) | `qwen3.5_fixed.jinja` |
 | `Qwen3-Next-*-Thinking` | `qwen3_thinking_2507_and_next_fixed.jinja` |
+| `Qwen3-*B-Thinking-2507` | `qwen3_thinking_2507_and_next_fixed.jinja` |
+| `Qwen3-*` (base, e.g. Qwen3-0.6B, Qwen3-4B) | `qwen3_fixed.jinja` |
 
-Models that are already append-only (e.g. Qwen3.5, GLM-5, Qwen3-Instruct-2507, Qwen3-Coder-Next) do not need a fix.
+Rules are matched in order (first match wins), so more specific patterns take priority over the general `Qwen3-*` rule.
+
+Models that are already append-only (e.g. GLM-5, GLM-4, GLM-4.7-Flash, Qwen3-Instruct-2507, Qwen3-Next-Instruct, Qwen3-Coder-Next) do not need a fix.
 
 ### Using autofix in training
 
