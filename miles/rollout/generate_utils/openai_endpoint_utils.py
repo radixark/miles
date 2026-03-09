@@ -6,6 +6,7 @@ import logging
 from argparse import Namespace
 from copy import deepcopy
 
+from miles.rollout.generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
 from miles.router.session.sessions import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
@@ -43,18 +44,22 @@ class OpenAIEndpointTracer:
         return records or []
 
 
-def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord], tokenizer) -> list[Sample]:
-    return [_compute_sample_from_openai_record(input_sample, record, tokenizer) for record in records]
+def compute_samples_from_openai_records(
+    args: Namespace, input_sample: Sample, records: list[SessionRecord], tokenizer
+) -> list[Sample]:
+    return [_compute_sample_from_openai_record(args, input_sample, record, tokenizer) for record in records]
 
 
-def _compute_sample_from_openai_record(input_sample: Sample, record: SessionRecord, tokenizer) -> Sample:
+def _compute_sample_from_openai_record(
+    args: Namespace, input_sample: Sample, record: SessionRecord, tokenizer
+) -> Sample:
     choice = record.response["choices"][0]
 
     if "prompt_token_ids" in choice:
         prompt_token_ids = choice["prompt_token_ids"]
 
-    output_token_ids = choice["response_token_ids"]
-    output_log_probs = [item["logprob"] for item in choice["logprobs"]["content"]]
+    output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
+    output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
     sample = deepcopy(input_sample)
     request_input_ids = record.request.get("input_ids")
@@ -67,6 +72,7 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
+    sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice["meta_info"], sample, "routed_experts")
 
     # TODO unify with Sample.update_from_meta_info
     match choice["finish_reason"]:

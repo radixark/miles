@@ -58,9 +58,12 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         # Ensure SGLang returns token IDs and logprobs for TITO, regardless
         # of whether the upstream agent (e.g. mini-swe-agent) requested them.
-        request_body.setdefault("logprobs", True)
-        request_body.setdefault("return_prompt_token_ids", True)
-        request_body.setdefault("no_stop_trim", False)
+        request_body["logprob"] = True
+        request_body["return_prompt_token_ids"] = True
+        request_body["return_meta_info"] = True
+        # Set this value to ensure stop token is not included in text to avoid breaking append-only
+        # This will no changed the output token ids.
+        request_body["no_stop_trim"] = False
 
         # Try to inject pretokenized token IDs for prefix reuse.
         request_messages = request_body.get("messages", [])
@@ -88,11 +91,11 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         choice = response.get("choices", [{}])[0]
 
-        if "response_token_ids" not in choice:
-            raise RuntimeError("response_token_ids must be in choice (requires logprobs=True)")
+        if "meta_info" not in choice or "output_token_logprobs" not in choice["meta_info"]:
+            raise RuntimeError("meta_info and output_token_logprobs must be in choice (requires logprobs=True)")
 
         prompt_token_ids = choice.get("prompt_token_ids", [])
-        completion_token_ids = choice["response_token_ids"]
+        completion_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
         assistant_message = choice.get("message", {})
 
         manager.update_pretokenized_state(
