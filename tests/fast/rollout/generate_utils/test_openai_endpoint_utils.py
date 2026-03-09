@@ -49,7 +49,8 @@ def _make_record(
         output_log_probs = [-0.1 * (i + 1) for i in range(len(output_token_ids))]
 
     logprobs_content = [
-        {"token_id": tid, "logprob": lp, "token": f"t{tid}"} for tid, lp in zip(output_token_ids, output_log_probs)
+        {"token_id": tid, "logprob": lp, "token": f"t{tid}"}
+        for tid, lp in zip(output_token_ids, output_log_probs, strict=True)
     ]
     return SessionRecord(
         timestamp=0.0,

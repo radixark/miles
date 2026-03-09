@@ -22,7 +22,7 @@ import re
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -169,21 +169,25 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
             logger.error("Empty instance_id")
             return _error_response("InvalidInstanceId")
 
-        instance_id = request.instance_id
-        if not _SAFE_INSTANCE_ID.match(instance_id) or ".." in instance_id or PurePosixPath(instance_id).is_absolute():
-            logger.error(f"Invalid instance_id rejected: {instance_id!r}")
+        raw_id = request.instance_id
+        if not _SAFE_INSTANCE_ID.match(raw_id):
+            logger.error(f"Invalid instance_id rejected: {raw_id!r}")
             return _error_response("InvalidInstanceId")
 
-        task_path = (tasks_dir / instance_id).resolve()
-
-        if not task_path.is_relative_to(tasks_dir):
-            logger.error(f"Path traversal blocked: {instance_id!r}")
+        # Normalize and verify the path stays within tasks_dir.
+        # Uses the pattern recommended by CodeQL (py/path-injection):
+        #   normpath(join(base, user_input)) + startswith(base)
+        tasks_dir_str = str(tasks_dir)
+        task_path = os.path.normpath(os.path.join(tasks_dir_str, raw_id))
+        if not task_path.startswith(tasks_dir_str):
+            logger.error(f"Path traversal blocked: {raw_id!r}")
             return _error_response("InvalidInstanceId")
 
-        if not task_path.exists():
+        if not os.path.exists(task_path):
             logger.error(f"Task directory not found: {task_path}")
             return _error_response("TaskNotFound")
 
+        task_path = Path(task_path)
         agent_kwargs: dict[str, Any] = {}
         agent_env: dict[str, str] = {}
 
