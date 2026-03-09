@@ -45,11 +45,7 @@ class PlacementGroupInfo:
         return PlacementGroupSlice(_owner=self, _offset=start, _count=stop - start)
 
     def refresh(self) -> RefreshResult:
-        """Re-probe all bundles and partially re-sort only changed ranks.
-
-        Calls _probe_bundles with a tiny GPU fraction (0.001) so that probing
-        can co-exist with live actors on the same bundles.
-        """
+        """Re-probe all bundles and partially re-sort only changed ranks."""
         new_probes = _probe_bundles(
             self.pg,
             num_bundles=len(self._bundle_location_snapshots),
