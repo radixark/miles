@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import logging
 import socket
+from dataclasses import dataclass, field
 
 import ray
-from ray.util.placement_group import placement_group
+from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from .actor_group import RayTrainGroup
@@ -11,41 +14,78 @@ from .rollout import RolloutManager
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class BundleProbe:
+    bundle_index: int
+    node_ip: str
+    gpu_id: str
+
+
+@dataclass
+class PlacementGroupInfo:
+    pg: PlacementGroup
+    bundles: list[BundleProbe] = field(default_factory=list)
+
+    @property
+    def reordered_bundle_indices(self) -> list[int]:
+        return [b.bundle_index for b in self.bundles]
+
+    @property
+    def reordered_gpu_ids(self) -> list[str]:
+        return [b.gpu_id for b in self.bundles]
+
+    def slice(self, offset: int, count: int) -> PlacementGroupSlice:
+        return PlacementGroupSlice(owner=self, offset=offset, count=count)
+
+
+@dataclass
+class PlacementGroupSlice:
+    owner: PlacementGroupInfo
+    offset: int
+    count: int
+
+    @property
+    def pg(self) -> PlacementGroup:
+        return self.owner.pg
+
+    @property
+    def reordered_bundle_indices(self) -> list[int]:
+        return self.owner.reordered_bundle_indices[self.offset : self.offset + self.count]
+
+    @property
+    def reordered_gpu_ids(self) -> list[str]:
+        return self.owner.reordered_gpu_ids[self.offset : self.offset + self.count]
+
+
 @ray.remote(num_gpus=1)
 class InfoActor:
     def get_ip_and_gpu_id(self):
         return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
 
 
-def sort_key(x):
-    index, node_identifier, gpu_id = x
-    # Sort by node IP number and then by GPU ID
+def _bundle_sort_key(probe: BundleProbe) -> tuple[list[int], str]:
+    node_identifier = probe.node_ip
     try:
-        # try to parse it as an IP address.
-        ip_address = node_identifier
-        node_ip_parts = list(map(int, ip_address.split(".")))
+        node_ip_parts = list(map(int, node_identifier.split(".")))
     except ValueError:
-        # Try to resolve the hostname to an IP address.
         try:
             ip_address = socket.gethostbyname(node_identifier)
             node_ip_parts = list(map(int, ip_address.split(".")))
         except (socket.gaierror, TypeError):
-            # Instead, we convert each character of the original identifier string
-            # to its ASCII value. This provides a stable and consistent numerical
-            # representation that allows for sorting.
+            # Convert each character to its ASCII value for stable sorting
             node_ip_parts = [ord(c) for c in node_identifier]
 
-    return (node_ip_parts, gpu_id)
+    return (node_ip_parts, probe.gpu_id)
 
 
-def _create_placement_group(num_gpus):
+def _create_placement_group(num_gpus: int) -> PlacementGroupInfo:
     """Create a placement group with the specified number of GPUs."""
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 
     ray.get(pg.ready())
-    # use info actor to get the GPU id
+
     info_actors = []
     for i in range(num_bundles):
         info_actors.append(
@@ -60,23 +100,22 @@ def _create_placement_group(num_gpus):
     for actor in info_actors:
         ray.kill(actor)
 
-    bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
-    sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
-    pg_reordered_bundle_indices = [info[0] for info in sorted_bundle_infos]
-    # Map from logical index -> physical GPU ID
-    pg_reordered_gpu_ids = [gpu_ids[info[0]][1] for info in sorted_bundle_infos]
+    probes = [
+        BundleProbe(bundle_index=i, node_ip=gpu_ids[i][0], gpu_id=gpu_ids[i][1])
+        for i in range(num_bundles)
+    ]
+    sorted_probes = sorted(probes, key=_bundle_sort_key)
 
-    for i in range(num_bundles):
-        actual_bundle_index = pg_reordered_bundle_indices[i]
+    for rank, probe in enumerate(sorted_probes):
         logger.info(
-            f"  bundle {i:4}, actual_bundle_index: {actual_bundle_index:4}, "
-            f"node: {gpu_ids[actual_bundle_index][0]}, gpu: {gpu_ids[actual_bundle_index][1]}"
+            f"  bundle {rank:4}, actual_bundle_index: {probe.bundle_index:4}, "
+            f"node: {probe.node_ip}, gpu: {probe.gpu_id}"
         )
 
-    return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
+    return PlacementGroupInfo(pg=pg, bundles=sorted_probes)
 
 
-def create_placement_groups(args):
+def create_placement_groups(args) -> dict[str, PlacementGroupSlice | None]:
     """Create placement groups for actor and rollout engines."""
 
     num_gpus = 0
@@ -104,22 +143,26 @@ def create_placement_groups(args):
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(num_gpus)
+    pg_info = _create_placement_group(num_gpus)
 
-    rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
-    rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]
+    actor_count = args.actor_num_nodes * args.actor_num_gpus_per_node
+    rollout_count = num_gpus - rollout_offset
+
+    critic_slice: PlacementGroupSlice | None = None
     if args.use_critic:
-        critic_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[critic_offset:]
-        critic_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[critic_offset:]
+        critic_slice = pg_info.slice(
+            offset=critic_offset,
+            count=args.critic_num_nodes * args.critic_num_gpus_per_node,
+        )
 
     return {
-        "actor": (pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
-        "critic": (pg, critic_pg_reordered_bundle_indices, critic_pg_reordered_gpu_ids) if args.use_critic else None,
-        "rollout": (pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
+        "actor": pg_info.slice(offset=0, count=actor_count),
+        "critic": critic_slice,
+        "rollout": pg_info.slice(offset=rollout_offset, count=rollout_count),
     }
 
 
-def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
+def allocate_train_group(args, num_nodes: int, num_gpus_per_node: int, pg: PlacementGroupSlice) -> RayTrainGroup:
     return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
