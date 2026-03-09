@@ -21,20 +21,20 @@ class BundleLocationSnapshot:
 @dataclass
 class PlacementGroupInfo:
     pg: PlacementGroup
-    bundles: list[BundleLocationSnapshot] = field(default_factory=list)
+    bundle_location_snapshots: list[BundleLocationSnapshot] = field(default_factory=list)
 
     @property
     def reordered_bundle_indices(self) -> list[int]:
-        return [b.bundle_index for b in self.bundles]
+        return [b.bundle_index for b in self.bundle_location_snapshots]
 
     @property
     def reordered_gpu_ids(self) -> list[str]:
-        return [b.gpu_id for b in self.bundles]
+        return [b.gpu_id for b in self.bundle_location_snapshots]
 
     def __getitem__(self, key: slice) -> PlacementGroupSlice:
         if not isinstance(key, slice):
             raise TypeError(f"PlacementGroupInfo indices must be slices, not {type(key).__name__}")
-        start, stop, step = key.indices(len(self.bundles))
+        start, stop, step = key.indices(len(self.bundle_location_snapshots))
         if step != 1:
             raise ValueError("PlacementGroupInfo does not support step in slicing")
         return PlacementGroupSlice(owner=self, offset=start, count=stop - start)
@@ -131,4 +131,4 @@ def create_placement_group_info(num_gpus: int) -> PlacementGroupInfo:
             f"node: {probe.node_ip}, gpu: {probe.gpu_id}"
         )
 
-    return PlacementGroupInfo(pg=pg, bundles=sorted_probes)
+    return PlacementGroupInfo(pg=pg, bundle_location_snapshots=sorted_probes)
