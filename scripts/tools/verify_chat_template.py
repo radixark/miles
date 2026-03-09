@@ -85,7 +85,7 @@ def main() -> int:
     print()
 
     # ── Run verification ───────────────────────────────────────────────
-    from miles.utils.chat_template_utils.verify import run_all_checks
+    from miles.utils.test_utils.chat_template_verify import run_all_checks
 
     results = run_all_checks(chat_template, include_thinking=args.thinking)
 

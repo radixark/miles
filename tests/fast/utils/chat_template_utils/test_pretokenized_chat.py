@@ -13,7 +13,7 @@ import pytest
 
 from miles.utils.chat_template_utils.autofix import try_get_fixed_chat_template
 from miles.utils.chat_template_utils.loader import load_hf_chat_template
-from miles.utils.chat_template_utils.verify import assert_pretokenized_equals_standard, simulate_pretokenized_path
+from miles.utils.test_utils.chat_template_verify import assert_pretokenized_equals_standard, simulate_pretokenized_path
 from miles.utils.test_utils.mock_trajectories import (
     WEATHER_TOOLS,
     LongChainThinkingTrajectory,
