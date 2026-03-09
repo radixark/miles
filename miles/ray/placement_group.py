@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
-import socket
 
 import ray
 from ray.util.placement_group import placement_group
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.utils.placement_group_utils import BundleProbe, PlacementGroupInfo, PlacementGroupSlice
+from miles.utils.placement_group_utils import (
+    PlacementGroupInfo,
+    PlacementGroupSlice,
+    bundle_sort_key,
+    probe_bundles,
+)
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
@@ -15,54 +18,15 @@ from .rollout import RolloutManager
 logger = logging.getLogger(__name__)
 
 
-@ray.remote(num_gpus=1)
-class InfoActor:
-    def get_ip_and_gpu_id(self):
-        return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
-
-
-def _bundle_sort_key(probe: BundleProbe) -> tuple[list[int], str]:
-    node_identifier = probe.node_ip
-    try:
-        node_ip_parts = list(map(int, node_identifier.split(".")))
-    except ValueError:
-        try:
-            ip_address = socket.gethostbyname(node_identifier)
-            node_ip_parts = list(map(int, ip_address.split(".")))
-        except (socket.gaierror, TypeError):
-            # Convert each character to its ASCII value for stable sorting
-            node_ip_parts = [ord(c) for c in node_identifier]
-
-    return (node_ip_parts, probe.gpu_id)
-
-
 def _create_placement_group(num_gpus: int) -> PlacementGroupInfo:
     """Create a placement group with the specified number of GPUs."""
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
-    num_bundles = len(bundles)
 
     ray.get(pg.ready())
 
-    info_actors = []
-    for i in range(num_bundles):
-        info_actors.append(
-            InfoActor.options(
-                scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg,
-                    placement_group_bundle_index=i,
-                )
-            ).remote()
-        )
-    gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])
-    for actor in info_actors:
-        ray.kill(actor)
-
-    probes = [
-        BundleProbe(bundle_index=i, node_ip=gpu_ids[i][0], gpu_id=gpu_ids[i][1])
-        for i in range(num_bundles)
-    ]
-    sorted_probes = sorted(probes, key=_bundle_sort_key)
+    probes = probe_bundles(pg=pg, num_bundles=num_gpus)
+    sorted_probes = sorted(probes, key=bundle_sort_key)
 
     for rank, probe in enumerate(sorted_probes):
         logger.info(
