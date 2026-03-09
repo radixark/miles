@@ -35,7 +35,7 @@ def _load_fixed(hf_id: str) -> str:
 
 TEMPLATES_WITH_THINKING = {
     "qwen3_fixed": _load_fixed("Qwen/Qwen3-0.6B"),
-    "qwen3.5": load_hf_chat_template("Qwen/Qwen3.5-0.8B"),
+    "qwen3.5_fixed": _load_fixed("Qwen/Qwen3.5-0.8B"),
     "glm5": load_hf_chat_template("zai-org/GLM-5"),
     "glm47_flash": load_hf_chat_template("zai-org/GLM-4.7-Flash"),
     "qwen3_thinking_2507_fixed": _load_fixed("Qwen/Qwen3-4B-Thinking-2507"),
@@ -107,14 +107,6 @@ all_template_values = list(ALL_TEMPLATES.values())
 thinking_template_ids = list(TEMPLATES_WITH_THINKING.keys())
 thinking_template_values = list(TEMPLATES_WITH_THINKING.values())
 
-# Templates excluding qwen3.5 (does not support intermediate system messages)
-_no_qwen35 = {k: v for k, v in ALL_TEMPLATES.items() if k != "qwen3.5"}
-no_qwen35_ids = list(_no_qwen35.keys())
-no_qwen35_values = list(_no_qwen35.values())
-_thinking_no_qwen35 = {k: v for k, v in TEMPLATES_WITH_THINKING.items() if k != "qwen3.5"}
-thinking_no_qwen35_ids = list(_thinking_no_qwen35.keys())
-thinking_no_qwen35_values = list(_thinking_no_qwen35.values())
-
 
 # ===========================================================================
 # Core tests: all templates × all trajectory/position combinations
@@ -157,10 +149,10 @@ def test_pretokenized_thinking(chat_template, trajectory_cls, pretokenize_n, too
 # ===========================================================================
 
 
-@pytest.mark.parametrize("chat_template", no_qwen35_values, ids=no_qwen35_ids)
+@pytest.mark.parametrize("chat_template", all_template_values, ids=all_template_ids)
 @pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_CASES)
 def test_pretokenized_intermediate_system(chat_template, trajectory_cls, pretokenize_n, tools):
-    """Templates (except qwen3.5) support intermediate system messages."""
+    """All templates support intermediate system messages (converted to user role in fixed templates)."""
     assert_pretokenized_equals_standard(
         chat_template=chat_template,
         messages=deepcopy(trajectory_cls.MESSAGES),
@@ -169,13 +161,13 @@ def test_pretokenized_intermediate_system(chat_template, trajectory_cls, pretoke
     )
 
 
-@pytest.mark.parametrize("chat_template", thinking_no_qwen35_values, ids=thinking_no_qwen35_ids)
+@pytest.mark.parametrize("chat_template", thinking_template_values, ids=thinking_template_ids)
 @pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_THINKING_CASES)
 @pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
 def test_pretokenized_intermediate_system_thinking(
     chat_template, trajectory_cls, pretokenize_n, tools, enable_thinking
 ):
-    """Thinking templates (except qwen3.5) support intermediate system messages with thinking."""
+    """Thinking templates support intermediate system messages with thinking."""
     assert_pretokenized_equals_standard(
         chat_template=chat_template,
         messages=deepcopy(trajectory_cls.MESSAGES),
