@@ -248,6 +248,29 @@ class TestPartialResortSnapshots:
             BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.9", gpu_id="1"),
         ]
 
+    def test_two_nodes_changed(self) -> None:
+        """2 of 3 nodes replaced -> 4 changed ranks re-sorted, 2 unchanged."""
+        old = _make_six_bundle_snapshots()
+        # node_2 (10.0.0.2) -> node_4 (10.0.0.4), node_3 (10.0.0.3) -> node_5 (10.0.0.5)
+        new = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.5", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.5", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        assert result == [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.5", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.5", gpu_id="1"),
+        ]
+
     def test_gpu_id_change_without_node_change_not_treated_as_changed(self) -> None:
         """gpu_id change on the same node_ip is NOT a node replacement."""
         old = _make_six_bundle_snapshots()
