@@ -71,7 +71,16 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         s.metadata.update(agent_metadata or {})
 
     if not input.args.generate_multi_samples:
-        samples = merge_samples(samples, input.state.tokenizer)
+        if all(s.status == Sample.Status.COMPLETED for s in samples[:-1]):
+            samples = merge_samples(samples, input.state.tokenizer)
+        else:
+            logger.warning(
+                "Skipping multi-turn merge: %d/%d intermediate samples are not COMPLETED, "
+                "returning last sample only",
+                sum(1 for s in samples[:-1] if s.status != Sample.Status.COMPLETED),
+                len(samples) - 1,
+            )
+            samples = samples[-1]
     return GenerateFnOutput(samples=samples)
 
 

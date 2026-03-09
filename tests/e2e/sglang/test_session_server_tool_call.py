@@ -10,6 +10,7 @@ Requires 1 GPU.
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,8 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-4B"
 PROMPT_DATA_PATH = "/root/datasets/session_tool_call.jsonl"
+TITO_STATS_PATH = Path("/tmp/tito_stats.json")
+TITO_PASS_RATE_THRESHOLD = 0.95
 
 
 def prepare():
@@ -29,21 +32,15 @@ def prepare():
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful assistant with access to tools. "
-                        "You MUST use the provided tools. Each turn you call "
-                        "exactly one tool. Do NOT answer without using a tool "
-                        "until you have called it 4 times. "
-                        "When you have finished all tool calls and are ready to give "
-                        "the final answer, wrap it in <final_answer>...</final_answer> tags."
+                        "You are a helpful assistant with access to weather tools. "
+                        "Use the get_weather tool to look up weather information. "
+                        "When you have gathered all the information, "
+                        "wrap your final summary in <final_answer>...</final_answer> tags."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": (
-                        "I need the weather for four cities. Call get_weather "
-                        "4 times in order: Beijing, Shanghai, Tokyo, New York. "
-                        "Then summarize all results inside <final_answer>...</final_answer> tags."
-                    ),
+                    "content": ("What's the weather like in Beijing, Shanghai, Tokyo, and New York?"),
                 },
             ],
         },
@@ -93,11 +90,27 @@ def execute():
 
     train_args = f"{ckpt_args}" f"{rollout_args}" f"{generate_args}" f"{router_args}" f"{sglang_args}" f"{infra_args}"
 
+    if TITO_STATS_PATH.exists():
+        TITO_STATS_PATH.unlink()
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=1,
         megatron_model_type=None,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+    )
+
+
+def check_tito_pass_rate():
+    assert TITO_STATS_PATH.exists(), f"TITO stats file not found at {TITO_STATS_PATH}"
+    stats = json.loads(TITO_STATS_PATH.read_text())
+    rate = stats["pass_rate"]
+    total = stats["total"]
+    matched = stats["matched"]
+    mismatch = stats["mismatch"]
+    print(f"TITO stats: {matched}/{total} matched, " f"{mismatch} mismatch, pass_rate={rate:.1%}")
+    assert rate >= TITO_PASS_RATE_THRESHOLD, (
+        f"TITO pass rate {rate:.1%} ({matched}/{total}) " f"is below threshold {TITO_PASS_RATE_THRESHOLD:.0%}"
     )
 
 
@@ -107,6 +120,7 @@ def test_session_server_tool_call():
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute()
+    check_tito_pass_rate()
 
 
 if __name__ == "__main__":
@@ -114,3 +128,4 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute()
+    check_tito_pass_rate()

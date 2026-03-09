@@ -40,6 +40,7 @@ from miles.utils.test_utils.mock_sglang_server import MockSGLangServer
 from miles.utils.test_utils.mock_trajectories import (
     LongChainTrajectory,
     MultiTurnTrajectory,
+    RetrySystemTrajectory,
     SequentialProcessFn,
     build_trajectory,
 )
@@ -161,27 +162,26 @@ def _teardown_router_env(env):
 # ---------------------------------------------------------------------------
 
 
-def _get_tool_messages_after_assistant(full_messages: list[dict], assistant_idx: int) -> list[dict]:
-    """Extract consecutive tool messages following an assistant message in the trajectory."""
-    tool_msgs = []
+def _get_followup_messages_after_assistant(full_messages: list[dict], assistant_idx: int) -> list[dict]:
+    """Extract all non-assistant messages following an assistant message until the next assistant."""
+    followup = []
     i = assistant_idx + 1
-    while i < len(full_messages) and full_messages[i]["role"] == "tool":
-        tool_msgs.append(full_messages[i])
+    while i < len(full_messages) and full_messages[i]["role"] != "assistant":
+        followup.append(full_messages[i])
         i += 1
-    return tool_msgs
+    return followup
 
 
-def _remap_tool_messages(tool_msgs: list[dict], response_tool_calls: list[dict]) -> list[dict]:
-    """Remap tool messages to use tool_call_ids from the actual response.
-
-    The trajectory defines tool responses with original tool_call_ids (e.g., "call_1").
-    The mock server generates different IDs (e.g., "call00000"). We remap by position.
-    """
+def _remap_followup_messages(followup_msgs: list[dict], response_tool_calls: list[dict]) -> list[dict]:
+    """Remap tool_call_ids in tool messages from actual response; pass through system messages as-is."""
     remapped = []
-    for i, tool_msg in enumerate(tool_msgs):
-        new_msg = dict(tool_msg)
-        if i < len(response_tool_calls):
-            new_msg["tool_call_id"] = response_tool_calls[i]["id"]
+    tool_idx = 0
+    for msg in followup_msgs:
+        new_msg = dict(msg)
+        if msg["role"] == "tool":
+            if tool_idx < len(response_tool_calls):
+                new_msg["tool_call_id"] = response_tool_calls[tool_idx]["id"]
+            tool_idx += 1
         remapped.append(new_msg)
     return remapped
 
@@ -229,10 +229,10 @@ def _run_trajectory_e2e(env):
         accumulated_messages.append(assistant_msg)
 
         ass_idx = assistant_indices[turn_idx]
-        tool_msgs = _get_tool_messages_after_assistant(trajectory.full_messages, ass_idx)
+        followup_msgs = _get_followup_messages_after_assistant(trajectory.full_messages, ass_idx)
         response_tool_calls = assistant_msg.get("tool_calls") or []
-        remapped_tools = _remap_tool_messages(tool_msgs, response_tool_calls)
-        accumulated_messages.extend(remapped_tools)
+        remapped = _remap_followup_messages(followup_msgs, response_tool_calls)
+        accumulated_messages.extend(remapped)
 
     return session_id, responses
 
@@ -359,6 +359,40 @@ class TestLongChainE2E:
         assert len(records) == 3
 
 
+class TestRetrySystemE2E:
+    """2-turn trajectory with a mid-conversation system retry message.
+
+    Skipped for templates that reject mid-conversation system messages
+    (e.g. Qwen3.5's native template enforces "System message must be at the beginning").
+    """
+
+    @pytest.fixture(autouse=True, scope="class")
+    def setup(self, tokenizer, model_config):
+        try:
+            env = _make_router_env(tokenizer, model_config, RetrySystemTrajectory)
+        except Exception as exc:
+            if "System message" in str(exc):
+                pytest.skip(f"Template does not support mid-conversation system messages: {exc}")
+            raise
+        type(self)._env = env
+        yield
+        _teardown_router_env(env)
+
+    def test_all_turns_succeed(self):
+        session_id, responses = _run_trajectory_e2e(self._env)
+        assert len(responses) == 2
+
+    def test_pretokenized_injection(self):
+        session_id, responses = _run_trajectory_e2e(self._env)
+        _verify_pretokenized_injection(self._env, responses)
+
+    def test_session_records(self):
+        session_id, responses = _run_trajectory_e2e(self._env)
+        get_resp = requests.get(f"{self._env.url}/sessions/{session_id}", timeout=5.0)
+        records = get_resp.json()["records"]
+        assert len(records) == 2
+
+
 # ===========================================================================
 # Negative E2E tests (native templates that break the prefix invariant)
 # ===========================================================================
@@ -399,11 +433,11 @@ class TestNativeTemplatePrefixBreaks:
 
             assistant_msg = resp0.json()["choices"][0]["message"]
             assistant_idx = next(i for i, m in enumerate(trajectory.full_messages) if m["role"] == "assistant")
-            tool_msgs = _get_tool_messages_after_assistant(trajectory.full_messages, assistant_idx)
+            followup_msgs = _get_followup_messages_after_assistant(trajectory.full_messages, assistant_idx)
             response_tool_calls = assistant_msg.get("tool_calls") or []
-            remapped_tools = _remap_tool_messages(tool_msgs, response_tool_calls)
+            remapped = _remap_followup_messages(followup_msgs, response_tool_calls)
 
-            turn1_messages = list(turn0.request_messages) + [assistant_msg] + remapped_tools
+            turn1_messages = list(turn0.request_messages) + [assistant_msg] + remapped
             payload1 = {"messages": turn1_messages}
             if trajectory.tools:
                 payload1["tools"] = trajectory.tools

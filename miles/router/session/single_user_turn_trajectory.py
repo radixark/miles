@@ -104,7 +104,10 @@ class SingleUserTurnTrajectoryManager:
 
             if not self._is_append_only(session.messages, request_messages):
                 # new messages are not append-only, includes new tool messages
-                raise ValueError("new messages are not append-only, should ")
+                raise ValueError(
+                    "new messages are not append-only: only tool and system "
+                    "messages may be appended after the stored prefix"
+                )
 
             return {
                 "pretokenized_token_ids": session.token_ids,
@@ -162,7 +165,7 @@ class SingleUserTurnTrajectoryManager:
         """Check new_messages is append-only vs stored_messages.
 
         The stored prefix must match exactly, and any new messages appended
-        after the stored prefix must all have role 'tool'.
+        after the stored prefix must have role 'tool' or 'system'.
         """
         if not stored_messages:
             return True

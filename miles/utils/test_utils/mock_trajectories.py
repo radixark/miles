@@ -310,6 +310,59 @@ class LongChainTrajectory:
     ]
 
 
+class RetrySystemTrajectory:
+    """sys, user, ass(tool), tool, system_retry, ass(tool), tool — 2 turns with mid-conversation system message.
+
+    Simulates an agent that injects a system-level retry prompt when the model
+    fails to produce a useful tool call on the first attempt.
+    """
+
+    TOOLS = WEATHER_TOOLS
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What's the weather in Beijing and Shanghai?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Beijing"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 25, "condition": "sunny"}',
+            "tool_call_id": "call_1",
+        },
+        {"role": "system", "content": "You still need to check Shanghai. Please call get_weather for Shanghai."},
+        {
+            "role": "assistant",
+            "content": "Let me check Shanghai.",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Shanghai"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 30, "condition": "cloudy"}',
+            "tool_call_id": "call_2",
+        },
+    ]
+
+
 class MultiUserToolChainTrajectory:
     """sys, user1, ass(tool), tool, ass, user2, ass(tool), tool, ass(tool), tool
 

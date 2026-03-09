@@ -95,6 +95,7 @@ ASSISTANT_MSG_2 = {
 }
 TOOL_MSG_2 = {"role": "tool", "content": '{"temperature": 30}', "tool_call_id": "call_2"}
 ASSISTANT_MSG_FINAL = {"role": "assistant", "content": "Beijing is 25°C and Shanghai is 30°C."}
+RETRY_SYS_MSG = {"role": "system", "content": "Please try using the tools to answer."}
 
 
 class TestSingleUserTurnPretokenized:
@@ -215,3 +216,70 @@ class TestSingleUserTurnPretokenized:
         t2_msgs = [USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
         result = manager.try_prepare_pretokenized(sid, t2_msgs)
         assert result == {"pretokenized_token_ids": [1, 2, 10], "pretokenized_num_message": 2}
+
+    def test_append_system_message_allowed(self, manager: SingleUserTurnTrajectoryManager):
+        """Appending a system message after tool messages is allowed (e.g. retry prompt)."""
+        sid = manager.create_session()
+        manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11])
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
+        result = manager.try_prepare_pretokenized(sid, messages)
+        assert result is not None
+        assert result["pretokenized_token_ids"] == [1, 2, 3, 10, 11]
+        assert result["pretokenized_num_message"] == 3
+
+    def test_append_system_then_assistant_trajectory(self, manager: SingleUserTurnTrajectoryManager):
+        """Full trajectory with a retry system message between tool-call turns."""
+        sid = manager.create_session()
+
+        # Turn 1: [sys, user] -> assistant(tool_call)
+        t1_msgs = [SYS_MSG, USER_MSG]
+        manager.update_pretokenized_state(sid, t1_msgs, ASSISTANT_MSG_1, [1, 2, 3], [10, 11])
+
+        # Turn 2: append tool + system_retry -> assistant(tool_call)
+        t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
+        result = manager.try_prepare_pretokenized(sid, t2_msgs)
+        assert result is not None
+
+        manager.update_pretokenized_state(
+            sid,
+            t2_msgs,
+            ASSISTANT_MSG_2,
+            [1, 2, 3, 10, 11, 20, 21, 22],
+            [30, 31],
+        )
+
+        session = manager.sessions[sid]
+        assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2]
+
+        # Turn 3: append tool after the second assistant
+        t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2, TOOL_MSG_2]
+        result = manager.try_prepare_pretokenized(sid, t3_msgs)
+        assert result is not None
+        assert result["pretokenized_num_message"] == 6
+
+    def test_multiple_system_messages_at_start(self, manager: SingleUserTurnTrajectoryManager):
+        """Multiple system messages before the user message are allowed."""
+        sid = manager.create_session()
+        extra_sys = {"role": "system", "content": "Extra instructions."}
+        msgs = [SYS_MSG, extra_sys, USER_MSG]
+        result = manager.try_prepare_pretokenized(sid, msgs)
+        assert result is None  # first turn, no prior tokens
+
+        manager.update_pretokenized_state(sid, msgs, ASSISTANT_MSG_1, [1, 2, 3, 4], [10, 11])
+        session = manager.sessions[sid]
+        assert session.messages == [SYS_MSG, extra_sys, USER_MSG, ASSISTANT_MSG_1]
+
+        t2_msgs = [SYS_MSG, extra_sys, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = manager.try_prepare_pretokenized(sid, t2_msgs)
+        assert result is not None
+        assert result["pretokenized_token_ids"] == [1, 2, 3, 4, 10, 11]
+
+    def test_not_append_only_rejects_user_message(self, manager: SingleUserTurnTrajectoryManager):
+        """Appending a user message (not tool/system) is rejected."""
+        sid = manager.create_session()
+        manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10])
+
+        bad = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
+        with pytest.raises(ValueError, match="invalid message structure"):
+            manager.try_prepare_pretokenized(sid, bad)
