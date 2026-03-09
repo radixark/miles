@@ -37,7 +37,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_parser="qwen",
     ),
     "qwen35": ModelConfig(
-        model_name="Qwen/Qwen3.5-9B",
+        model_name="Qwen/Qwen3.5-4B",
         reasoning_parser="qwen3",
         tool_call_parser="qwen3_coder",
     ),

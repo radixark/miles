@@ -58,7 +58,7 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         # Ensure SGLang returns token IDs and logprobs for TITO, regardless
         # of whether the upstream agent (e.g. mini-swe-agent) requested them.
-        request_body["logprob"] = True
+        request_body["logprobs"] = True
         request_body["return_prompt_token_ids"] = True
         request_body["return_meta_info"] = True
         # Set this value to ensure stop token is not included in text to avoid breaking append-only
@@ -91,7 +91,13 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         choice = response.get("choices", [{}])[0]
 
-        if "meta_info" not in choice or "output_token_logprobs" not in choice["meta_info"]:
+        if "meta_info" not in choice or "output_token_logprobs" not in choice.get("meta_info", {}):
+            logger.error(
+                "Missing meta_info in choice. status_code=%s, response_keys=%s, choices=%s",
+                result.get("status_code"),
+                list(response.keys()),
+                json.dumps(response.get("choices", []), default=str)[:500],
+            )
             raise RuntimeError("meta_info and output_token_logprobs must be in choice (requires logprobs=True)")
 
         prompt_token_ids = choice.get("prompt_token_ids", [])

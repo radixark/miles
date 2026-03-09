@@ -112,6 +112,7 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
     request_kwargs["return_prompt_token_ids"] = True
     request_kwargs["logprobs"] = True
     request_kwargs["no_stop_trim"] = False
+    request_kwargs["return_meta_info"] = True
 
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys

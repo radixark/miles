@@ -72,7 +72,7 @@ def _compute_sample_from_openai_record(
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
-    sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice["meta_info"], sample, "routed_experts")
+    sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice, sample, "routed_experts")
 
     # TODO unify with Sample.update_from_meta_info
     match choice["finish_reason"]:
