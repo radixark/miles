@@ -91,7 +91,7 @@ The server, agent function, and generate layer have **zero task-type-specific lo
 | `swe_agent_function.py` | Custom agent function — dispatches to Harbor server, returns env metadata dict (task-type agnostic) |
 | `generate.py` | Reward function, dynamic filter, agent metrics aggregation, `RolloutFn` |
 | `server.py` | FastAPI server wrapping Harbor Trial API — task-type agnostic (deploy in agent-env container) |
-| `run.sh` | Training launch script (Miles side) |
+| `run.py` | Training launcher (`--mode train` or `--mode debug`) |
 | `download_and_process_data.py` | Download from HuggingFace or local JSONL, convert to Miles format |
 | `prepare_harbor_tasks.py` | Convert Miles JSONL to Harbor task directories (generic fallback) |
 
@@ -203,11 +203,12 @@ python server.py --port 11000 --max-concurrent 8
 ### 5. Launch training
 
 ```bash
-export AGENT_SERVER_URL=http://agent_env:11000
-export MILES_ROUTER_EXTERNAL_HOST=miles
-export HARBOR_TASKS_DIR=/root/harbor_tasks
+python run.py --prompt-data /root/mixed.jsonl \
+  --agent-server-url http://agent_env:11000 \
+  --router-external-host miles
 
-bash run.sh  # uses --prompt-data mixed.jsonl
+# Debug mode (smaller batch/rollout for pipeline verification)
+python run.py --mode debug --prompt-data /root/mixed.jsonl
 ```
 
 ### Quick Test (single instance)

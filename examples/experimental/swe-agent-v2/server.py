@@ -18,8 +18,11 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import traceback
-from pathlib import Path
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import uvicorn
@@ -28,7 +31,20 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Agent Environment Server (Harbor)")
+
+_semaphore: asyncio.Semaphore | None = None
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    global _semaphore
+    max_concurrent = int(os.getenv("AGENT_MAX_CONCURRENT", os.getenv("SWE_AGENT_MAX_CONCURRENT", "8")))
+    _semaphore = asyncio.Semaphore(max_concurrent)
+    logger.info(f"Initialized semaphore with max_concurrent={max_concurrent}")
+    yield
+
+
+app = FastAPI(title="Agent Environment Server (Harbor)", lifespan=_lifespan)
 
 
 class RunRequest(BaseModel):
@@ -40,8 +56,7 @@ class RunRequest(BaseModel):
     instance_id: str = ""
     agent_name: str = "mini-swe-agent"
 
-    class Config:
-        extra = "allow"
+    model_config = {"extra": "allow"}
 
 
 class RunResponse(BaseModel):
@@ -49,16 +64,6 @@ class RunResponse(BaseModel):
     exit_status: str = ""
     agent_metrics: dict[str, Any] = {}
     eval_report: dict[str, Any] = {}
-
-
-_semaphore: asyncio.Semaphore | None = None
-
-
-@app.on_event("startup")
-def _init_semaphore():
-    global _semaphore
-    max_concurrent = int(os.getenv("AGENT_MAX_CONCURRENT", os.getenv("SWE_AGENT_MAX_CONCURRENT", "8")))
-    _semaphore = asyncio.Semaphore(max_concurrent)
 
 
 def get_semaphore() -> asyncio.Semaphore:
@@ -69,6 +74,8 @@ def get_semaphore() -> asyncio.Semaphore:
 _TIMEOUT_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "EnvironmentStartTimeoutError"}
 
 _HOST_PROCESS_AGENTS = {"terminus-2", "terminus-1", "terminus"}
+
+_SAFE_INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _extract_exit_status(result) -> str:
@@ -162,10 +169,15 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
             logger.error("Empty instance_id")
             return _error_response("InvalidInstanceId")
 
-        task_path = (tasks_dir / request.instance_id).resolve()
+        instance_id = request.instance_id
+        if not _SAFE_INSTANCE_ID.match(instance_id) or ".." in instance_id or PurePosixPath(instance_id).is_absolute():
+            logger.error(f"Invalid instance_id rejected: {instance_id!r}")
+            return _error_response("InvalidInstanceId")
+
+        task_path = (tasks_dir / instance_id).resolve()
 
         if not task_path.is_relative_to(tasks_dir):
-            logger.error(f"Path traversal blocked: {request.instance_id!r}")
+            logger.error(f"Path traversal blocked: {instance_id!r}")
             return _error_response("InvalidInstanceId")
 
         if not task_path.exists():

@@ -1,5 +1,5 @@
 """
-Agent V2: reward, filter, metrics, and rollout class.
+Agent V2: reward, metrics, and rollout class.
 
 The generate function is provided by:
     miles.rollout.generate_hub.agentic_tool_call.generate
@@ -8,9 +8,11 @@ with --custom-agent-function-path pointing to swe_agent_function.run
 Task-type agnostic — reward is pre-computed by the Harbor environment
 and stored in sample.metadata["reward"] regardless of task type.
 
+Dynamic filter uses the general-purpose ``check_no_aborted`` from
+``miles.rollout.filter_hub.dynamic_sampling_filters``.
+
 Components:
   - reward_func: reads pre-computed reward from sample metadata
-  - dynamic_filter: rejects groups with any aborted sample
   - aggregate_agent_metrics: aggregates agent timing/count metrics
   - RolloutFn: InferenceRolloutFn subclass that logs agent metrics
 """
@@ -18,7 +20,6 @@ Components:
 import logging
 
 from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
 from miles.utils.types import Sample
 
@@ -37,19 +38,6 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
     if isinstance(samples, list):
         return [s.metadata.get("reward", 0.0) for s in samples]
     return samples.metadata.get("reward", 0.0)
-
-
-# -- Dynamic Filter --
-
-
-def dynamic_filter(args, samples: list[Sample] | list[list[Sample]], **kwargs) -> DynamicFilterOutput:
-    """Reject entire group if any sample is aborted."""
-    if not samples:
-        return DynamicFilterOutput(keep=False, reason="empty_group")
-    flat = samples if not isinstance(samples[0], list) else [s for group in samples for s in group]
-    if any(s.status == Sample.Status.ABORTED for s in flat):
-        return DynamicFilterOutput(keep=False, reason="group_has_aborted")
-    return DynamicFilterOutput(keep=True)
 
 
 # -- Agent Metrics Aggregation --
