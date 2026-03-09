@@ -11,7 +11,7 @@ class _FakePlacementGroup:
 
 
 def _make_pg_info(probes: list[BundleLocationSnapshot]) -> PlacementGroupInfo:
-    return PlacementGroupInfo(pg=_FakePlacementGroup(), bundles=probes)
+    return PlacementGroupInfo(pg=_FakePlacementGroup(), bundle_location_snapshots=probes)
 
 
 class TestBundleLocationSnapshot:
@@ -42,7 +42,7 @@ class TestPlacementGroupInfo:
         assert info.reordered_gpu_ids == ["0", "1", "0"]
 
     def test_empty_bundles(self) -> None:
-        info = PlacementGroupInfo(pg=_FakePlacementGroup(), bundles=[])
+        info = PlacementGroupInfo(pg=_FakePlacementGroup(), bundle_location_snapshots=[])
         assert info.reordered_bundle_indices == []
         assert info.reordered_gpu_ids == []
 
@@ -117,12 +117,12 @@ class TestPlacementGroupSlice:
         assert s.reordered_bundle_indices == [5, 1]
 
         # Simulate refresh: replace bundle at rank 2
-        info.bundles[2] = BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3")
-        info.bundles[3] = BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1")
+        info.bundle_location_snapshots[2] = BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3")
+        info.bundle_location_snapshots[3] = BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1")
 
         assert s.reordered_bundle_indices == [5, 1]
         assert s.reordered_gpu_ids == ["3", "1"]
-        assert s.owner.bundles[2].node_ip == "10.0.0.4"
+        assert s.owner.bundle_location_snapshots[2].node_ip == "10.0.0.4"
 
     def test_multiple_slices_share_owner(self) -> None:
         info = self._make_six_bundle_info()
