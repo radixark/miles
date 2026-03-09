@@ -12,7 +12,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-TEMPLATE_DIR = Path(__file__).parent / "chat_templates"
+TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # (glob pattern, fixed template filename) — checked in order, first match wins.
 # Patterns are matched case-insensitively against the hf_checkpoint string.

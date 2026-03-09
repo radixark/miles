@@ -760,6 +760,12 @@ def compute_metrics_from_samples(args, samples):
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
+
+    tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
+    tito_vals = [v for v in tito_vals if v is not None]
+    if tito_vals:
+        log_dict["tito_session_mismatch_rate"] = np.mean(tito_vals).item()
+
     return log_dict
 
 

@@ -71,7 +71,16 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         s.metadata.update(agent_metadata or {})
 
     if not input.args.generate_multi_samples:
-        samples = merge_samples(samples, input.state.tokenizer)
+        if all(s.status == Sample.Status.COMPLETED for s in samples[:-1]):
+            samples = merge_samples(samples, input.state.tokenizer)
+        else:
+            logger.warning(
+                "Skipping multi-turn merge: %d/%d intermediate samples are not COMPLETED, "
+                "returning last sample only",
+                sum(1 for s in samples[:-1] if s.status != Sample.Status.COMPLETED),
+                len(samples) - 1,
+            )
+            samples = samples[-1]
     return GenerateFnOutput(samples=samples)
 
 
@@ -98,10 +107,11 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
             request_kwargs.pop(src, None)
 
     # return_prompt_token_ids: get prompt token IDs without computing logprobs (zero cost, cache-safe)
-    # logprobs: get output token IDs + logprobs (via logprobs.content[].token_id)
+    # logprobs: populates response_token_ids + logprobs on each choice
     # NOTE: do NOT set logprob_start_len=0, that would destroy SGLang's prefix cache.
     request_kwargs["return_prompt_token_ids"] = True
     request_kwargs["logprobs"] = True
+    request_kwargs["no_stop_trim"] = False
 
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys
