@@ -40,6 +40,26 @@ WEATHER_TOOLS = [
     }
 ]
 
+DATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_date",
+        "description": "Get the current date and time for a timezone",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": "Timezone name (e.g. Asia/Shanghai, UTC)",
+                },
+            },
+            "required": ["timezone"],
+        },
+    },
+}
+
+ALL_TOOLS = WEATHER_TOOLS + [DATE_TOOL]
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -65,6 +85,19 @@ class Trajectory:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def last_user_index(messages: list[dict[str, Any]]) -> int:
+    """Return the index of the last user message in *messages*."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user":
+            return i
+    raise ValueError("No user message found")
+
+
+# ---------------------------------------------------------------------------
 # Trajectory classes (by scenario)
 # ---------------------------------------------------------------------------
 
@@ -73,6 +106,7 @@ class SingleToolTrajectory:
     """sys, user, assistant(tool_call), tool — 1 turn"""
 
     TOOLS = WEATHER_TOOLS
+    PRETOKENIZE_POSITIONS = [3]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing?"},
@@ -102,6 +136,7 @@ class MultiTurnTrajectory:
     """sys, user, ass(tool), tool, ass(tool), tool — 2 turns"""
 
     TOOLS = WEATHER_TOOLS
+    PRETOKENIZE_POSITIONS = [4]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing and Shanghai?"},
@@ -147,12 +182,13 @@ class MultiTurnTrajectory:
 
 
 class MultiToolSingleTurnTrajectory:
-    """sys, user, assistant(2 tool_calls), tool, tool — 1 turn"""
+    """sys, user, assistant(2 tool_calls: weather+date), tool, tool — 1 turn"""
 
-    TOOLS = WEATHER_TOOLS
+    TOOLS = ALL_TOOLS
+    PRETOKENIZE_POSITIONS = [3]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Weather in Beijing and calculate 2+3"},
+        {"role": "user", "content": "What's the weather in Beijing and what date is it?"},
         {
             "role": "assistant",
             "content": None,
@@ -169,8 +205,8 @@ class MultiToolSingleTurnTrajectory:
                     "id": "call_2",
                     "type": "function",
                     "function": {
-                        "name": "get_weather",
-                        "arguments": {"city": "Shanghai"},
+                        "name": "get_date",
+                        "arguments": {"timezone": "Asia/Shanghai"},
                     },
                 },
             ],
@@ -182,7 +218,7 @@ class MultiToolSingleTurnTrajectory:
         },
         {
             "role": "tool",
-            "content": '{"temperature": 30}',
+            "content": '{"date": "2025-03-15", "time": "14:30:00"}',
             "tool_call_id": "call_2",
         },
     ]
@@ -192,6 +228,7 @@ class ParallelToolsTrajectory:
     """sys, user, assistant(3 parallel tool_calls), tool, tool, tool — 1 turn"""
 
     TOOLS = WEATHER_TOOLS
+    PRETOKENIZE_POSITIONS = [3]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Compare weather in Beijing, Shanghai, and Guangzhou"},
@@ -244,9 +281,10 @@ class ParallelToolsTrajectory:
 
 
 class LongChainTrajectory:
-    """sys, user, ass(tool), tool, ass(tool), tool, ass(tool), tool — 3 turns"""
+    """sys, user, ass(tool), tool, ass(tool:date), tool, ass(tool), tool — 3 turns"""
 
-    TOOLS = WEATHER_TOOLS
+    TOOLS = ALL_TOOLS
+    PRETOKENIZE_POSITIONS = [4, 6]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Do a multi-step task"},
@@ -277,15 +315,15 @@ class LongChainTrajectory:
                     "id": "call_2",
                     "type": "function",
                     "function": {
-                        "name": "get_weather",
-                        "arguments": {"city": "Shanghai"},
+                        "name": "get_date",
+                        "arguments": {"timezone": "UTC"},
                     },
                 }
             ],
         },
         {
             "role": "tool",
-            "content": '{"temperature": 30}',
+            "content": '{"date": "2025-03-15", "time": "12:00:00"}',
             "tool_call_id": "call_2",
         },
         {
@@ -310,15 +348,70 @@ class LongChainTrajectory:
     ]
 
 
+class RetrySystemTrajectory:
+    """sys, user, ass(tool), tool, system_retry, ass(tool), tool — 2 turns with mid-conversation system message.
+
+    Simulates an agent that injects a system-level retry prompt when the model
+    fails to produce a useful tool call on the first attempt.
+    """
+
+    TOOLS = WEATHER_TOOLS
+    PRETOKENIZE_POSITIONS = [3, 5]
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What's the weather in Beijing and Shanghai?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Beijing"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 25, "condition": "sunny"}',
+            "tool_call_id": "call_1",
+        },
+        {"role": "system", "content": "You still need to check Shanghai. Please call get_weather for Shanghai."},
+        {
+            "role": "assistant",
+            "content": "Let me check Shanghai.",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Shanghai"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 30, "condition": "cloudy"}',
+            "tool_call_id": "call_2",
+        },
+    ]
+
+
 class MultiUserToolChainTrajectory:
-    """sys, user1, ass(tool), tool, ass, user2, ass(tool), tool, ass(tool), tool
+    """sys, user1, ass(tool), tool, ass, user2, ass(tool), tool, ass(tool:date), tool
 
     NOTE: SingleUserTurnTrajectoryManager does not support multiple user messages.
     E2E tests should verify it raises an exception.
     TODO: support multi-user-turn trajectories in the future.
     """
 
-    TOOLS = WEATHER_TOOLS
+    TOOLS = ALL_TOOLS
+    PRETOKENIZE_POSITIONS = [8]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing?"},
@@ -345,7 +438,7 @@ class MultiUserToolChainTrajectory:
             "role": "assistant",
             "content": "Beijing is 25C and sunny.",
         },
-        {"role": "user", "content": "Now check Shanghai and Guangzhou"},
+        {"role": "user", "content": "Now check Shanghai and what date is it?"},
         {
             "role": "assistant",
             "content": None,
@@ -367,21 +460,21 @@ class MultiUserToolChainTrajectory:
         },
         {
             "role": "assistant",
-            "content": "Shanghai is 30C. Let me check Guangzhou.",
+            "content": "Shanghai is 30C. Let me check the date.",
             "tool_calls": [
                 {
                     "id": "call_3",
                     "type": "function",
                     "function": {
-                        "name": "get_weather",
-                        "arguments": {"city": "Guangzhou"},
+                        "name": "get_date",
+                        "arguments": {"timezone": "Asia/Shanghai"},
                     },
                 }
             ],
         },
         {
             "role": "tool",
-            "content": '{"temperature": 35, "condition": "rainy"}',
+            "content": '{"date": "2025-03-15", "time": "22:30:00"}',
             "tool_call_id": "call_3",
         },
     ]
@@ -391,6 +484,7 @@ class SimpleNoToolTrajectory:
     """sys, user, assistant (no tools) — 1 turn, no tool calls"""
 
     TOOLS = None
+    PRETOKENIZE_POSITIONS = [3]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello!"},
@@ -407,6 +501,7 @@ class SingleToolThinkingTrajectory:
     """sys, user, assistant(reasoning_content + tool_calls), tool — 1 turn"""
 
     TOOLS = WEATHER_TOOLS
+    PRETOKENIZE_POSITIONS = [3]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing?"},
@@ -437,6 +532,7 @@ class MultiTurnThinkingTrajectory:
     """sys, user, ass(thinking+tool), tool, ass(thinking+tool), tool — 2 turns"""
 
     TOOLS = WEATHER_TOOLS
+    PRETOKENIZE_POSITIONS = [4]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather in Beijing and Shanghai?"},
@@ -484,9 +580,10 @@ class MultiTurnThinkingTrajectory:
 
 
 class LongChainThinkingTrajectory:
-    """sys, user, ass(thinking+tool), tool x3 — 3 turns"""
+    """sys, user, ass(thinking+tool), tool, ass(thinking+tool), tool, ass(thinking+tool), tool — 3 turns"""
 
-    TOOLS = WEATHER_TOOLS
+    TOOLS = ALL_TOOLS
+    PRETOKENIZE_POSITIONS = [4, 6]
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Do a multi-step task"},
@@ -512,8 +609,92 @@ class LongChainThinkingTrajectory:
         },
         {
             "role": "assistant",
-            "reasoning_content": "Got Beijing result. Now step 2, checking Shanghai.",
+            "reasoning_content": "Got Beijing result. Now step 2, checking the date.",
             "content": "Step 2",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "get_date",
+                        "arguments": {"timezone": "UTC"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"date": "2025-03-15", "time": "12:00:00"}',
+            "tool_call_id": "call_2",
+        },
+        {
+            "role": "assistant",
+            "reasoning_content": "Got date result. Now step 3, checking Guangzhou.",
+            "content": "Step 3",
+            "tool_calls": [
+                {
+                    "id": "call_3",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Guangzhou"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 35}',
+            "tool_call_id": "call_3",
+        },
+    ]
+
+
+class MultiUserTurnThinkingTrajectory:
+    """sys, user1, ass(thinking+tool), tool, ass(thinking), user2, ass(thinking+tool), tool
+
+    Cross-user-turn with thinking. Tests that thinking content from user turn 1
+    is not compressed/modified when rendering the full conversation including
+    user turn 2.
+    """
+
+    TOOLS = WEATHER_TOOLS
+    PRETOKENIZE_POSITIONS = [7]
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        # --- user turn 1 ---
+        {"role": "user", "content": "What's the weather in Beijing?"},
+        {
+            "role": "assistant",
+            "reasoning_content": "User wants Beijing weather, let me check.",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Beijing"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 25, "condition": "sunny"}',
+            "tool_call_id": "call_1",
+        },
+        {
+            "role": "assistant",
+            "reasoning_content": "Beijing is 25C and sunny. I should tell the user.",
+            "content": "Beijing is 25°C and sunny!",
+        },
+        # --- user turn 2 ---
+        {"role": "user", "content": "Now check Shanghai too."},
+        {
+            "role": "assistant",
+            "reasoning_content": "User wants Shanghai weather now. Let me call the tool.",
+            "content": None,
             "tool_calls": [
                 {
                     "id": "call_2",
@@ -527,12 +708,140 @@ class LongChainThinkingTrajectory:
         },
         {
             "role": "tool",
-            "content": '{"temperature": 30}',
+            "content": '{"temperature": 30, "condition": "cloudy"}',
             "tool_call_id": "call_2",
         },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Intermediate system message variants
+# ---------------------------------------------------------------------------
+
+
+class IntermediateSystemTrajectory:
+    """sys, user, ass(tool), tool, system, ass(tool:date), tool, system, ass(tool), tool — 3 turns with system"""
+
+    TOOLS = ALL_TOOLS
+    PRETOKENIZE_POSITIONS = [5, 8]
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Do a multi-step task"},
         {
             "role": "assistant",
-            "reasoning_content": "Got Shanghai result. Now step 3, checking Guangzhou.",
+            "content": "Step 1",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Beijing"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 25}',
+            "tool_call_id": "call_1",
+        },
+        {"role": "system", "content": "Step 1 complete. Proceed to step 2."},
+        {
+            "role": "assistant",
+            "content": "Step 2",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "get_date",
+                        "arguments": {"timezone": "UTC"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"date": "2025-03-15", "time": "12:00:00"}',
+            "tool_call_id": "call_2",
+        },
+        {"role": "system", "content": "Step 2 complete. Proceed to step 3."},
+        {
+            "role": "assistant",
+            "content": "Step 3",
+            "tool_calls": [
+                {
+                    "id": "call_3",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Guangzhou"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 35}',
+            "tool_call_id": "call_3",
+        },
+    ]
+
+
+class IntermediateSystemThinkingTrajectory:
+    """sys, user, ass(t+tool), tool, system, ass(t+tool:date), tool, system, ass(t+tool), tool — 3 turns with system+thinking"""
+
+    TOOLS = ALL_TOOLS
+    PRETOKENIZE_POSITIONS = [5, 8]
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Do a multi-step task"},
+        {
+            "role": "assistant",
+            "reasoning_content": "Starting step 1, checking Beijing weather.",
+            "content": "Step 1",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Beijing"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 25}',
+            "tool_call_id": "call_1",
+        },
+        {"role": "system", "content": "Step 1 complete. Proceed to step 2."},
+        {
+            "role": "assistant",
+            "reasoning_content": "Got Beijing result. Now step 2, checking the date.",
+            "content": "Step 2",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "get_date",
+                        "arguments": {"timezone": "UTC"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"date": "2025-03-15", "time": "12:00:00"}',
+            "tool_call_id": "call_2",
+        },
+        {"role": "system", "content": "Step 2 complete. Proceed to step 3."},
+        {
+            "role": "assistant",
+            "reasoning_content": "Got date result. Now step 3, checking Guangzhou.",
             "content": "Step 3",
             "tool_calls": [
                 {
@@ -614,7 +923,7 @@ def build_trajectory(
     def _render(msgs: list[dict], add_generation_prompt: bool) -> str:
         if chat_template is not None:
             # Use standalone Jinja rendering (for custom templates)
-            from tests.fast.rollout.generate_hub.test_pretokenized_chat import apply_chat_template_from_str
+            from miles.utils.chat_template_utils.template import apply_chat_template_from_str
 
             return apply_chat_template_from_str(
                 chat_template, msgs, add_generation_prompt=add_generation_prompt, tools=tool_dicts
@@ -662,7 +971,7 @@ def build_process_fn(
 
     def _render(msgs: list[dict]) -> str:
         if chat_template is not None:
-            from tests.fast.rollout.generate_hub.test_pretokenized_chat import apply_chat_template_from_str
+            from miles.utils.chat_template_utils.template import apply_chat_template_from_str
 
             return apply_chat_template_from_str(chat_template, msgs, add_generation_prompt=True, tools=tool_dicts)
         return tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True, tools=tools)

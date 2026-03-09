@@ -15,17 +15,10 @@ from miles.utils.chat_template_utils.autofix import try_get_fixed_chat_template
 from miles.utils.chat_template_utils.template import load_hf_chat_template
 from miles.utils.test_utils.chat_template_verify import assert_pretokenized_equals_standard, simulate_pretokenized_path
 from miles.utils.test_utils.mock_trajectories import (
-    WEATHER_TOOLS,
-    LongChainThinkingTrajectory,
-    LongChainTrajectory,
-    MultiToolSingleTurnTrajectory,
-    MultiTurnThinkingTrajectory,
     MultiTurnTrajectory,
-    MultiUserToolChainTrajectory,
-    ParallelToolsTrajectory,
-    SimpleNoToolTrajectory,
-    SingleToolThinkingTrajectory,
+    MultiUserTurnThinkingTrajectory,
     SingleToolTrajectory,
+    last_user_index,
 )
 
 # ---------------------------------------------------------------------------
@@ -66,35 +59,32 @@ _ORIGINAL_TEMPLATES = {
 
 
 # ===========================================================================
-# Test case definitions
+# Auto-generate test cases from PRETOKENIZE_POSITIONS
 # ===========================================================================
 
-# (trajectory_cls, pretokenize_n, tools) — all valid pretokenize positions per trajectory
-_STANDARD_CASES = [
-    pytest.param(SingleToolTrajectory, 3, WEATHER_TOOLS, id="single_tool-N3"),
-    pytest.param(SingleToolTrajectory, 3, None, id="single_tool-N3-no_tools"),
-    pytest.param(MultiTurnTrajectory, 3, WEATHER_TOOLS, id="multi_turn-N3"),
-    pytest.param(MultiTurnTrajectory, 5, WEATHER_TOOLS, id="multi_turn-N5"),
-    pytest.param(MultiToolSingleTurnTrajectory, 3, WEATHER_TOOLS, id="multi_tool-N3"),
-    pytest.param(ParallelToolsTrajectory, 3, WEATHER_TOOLS, id="parallel-N3"),
-    pytest.param(LongChainTrajectory, 3, WEATHER_TOOLS, id="long_chain-N3"),
-    pytest.param(LongChainTrajectory, 5, WEATHER_TOOLS, id="long_chain-N5"),
-    pytest.param(LongChainTrajectory, 7, WEATHER_TOOLS, id="long_chain-N7"),
-    pytest.param(MultiUserToolChainTrajectory, 7, WEATHER_TOOLS, id="multi_user-N7"),
-    pytest.param(MultiUserToolChainTrajectory, 9, WEATHER_TOOLS, id="multi_user-N9"),
-    pytest.param(SimpleNoToolTrajectory, 3, None, id="no_tool-N3"),
-]
+from miles.utils.test_utils.chat_template_verify import (  # noqa: E402
+    INTERMEDIATE_SYSTEM_CASES,
+    INTERMEDIATE_SYSTEM_THINKING_CASES,
+    STANDARD_CASES,
+    THINKING_CASES,
+)
 
-# (trajectory_cls, pretokenize_n) — both non-thinking and thinking trajectories
-_THINKING_CASES = [
-    pytest.param(SingleToolTrajectory, 3, id="single_tool-N3"),
-    pytest.param(SingleToolThinkingTrajectory, 3, id="thinking_single_tool-N3"),
-    pytest.param(MultiTurnThinkingTrajectory, 3, id="thinking_multi_turn-N3"),
-    pytest.param(MultiTurnThinkingTrajectory, 5, id="thinking_multi_turn-N5"),
-    pytest.param(LongChainThinkingTrajectory, 3, id="thinking_long_chain-N3"),
-    pytest.param(LongChainThinkingTrajectory, 5, id="thinking_long_chain-N5"),
-    pytest.param(LongChainThinkingTrajectory, 7, id="thinking_long_chain-N7"),
-]
+
+def _to_pytest_params(cases, include_tools=True):
+    """Convert (name, cls, n, tools) tuples to pytest.param list."""
+    params = []
+    for name, cls, n, tools in cases:
+        if include_tools:
+            params.append(pytest.param(cls, n, tools, id=name))
+        else:
+            params.append(pytest.param(cls, n, tools, id=name))
+    return params
+
+
+_STANDARD_CASES = _to_pytest_params(STANDARD_CASES)
+_THINKING_CASES = _to_pytest_params(THINKING_CASES)
+_INTERMEDIATE_SYSTEM_CASES = _to_pytest_params(INTERMEDIATE_SYSTEM_CASES)
+_INTERMEDIATE_SYSTEM_THINKING_CASES = _to_pytest_params(INTERMEDIATE_SYSTEM_THINKING_CASES)
 
 # (chat_template, trajectory_cls, pretokenize_n) — original templates that break prefix invariant
 _MISMATCH_CASES = [
@@ -116,6 +106,14 @@ all_template_ids = list(ALL_TEMPLATES.keys())
 all_template_values = list(ALL_TEMPLATES.values())
 thinking_template_ids = list(TEMPLATES_WITH_THINKING.keys())
 thinking_template_values = list(TEMPLATES_WITH_THINKING.values())
+
+# Templates excluding qwen3.5 (does not support intermediate system messages)
+_no_qwen35 = {k: v for k, v in ALL_TEMPLATES.items() if k != "qwen3.5"}
+no_qwen35_ids = list(_no_qwen35.keys())
+no_qwen35_values = list(_no_qwen35.values())
+_thinking_no_qwen35 = {k: v for k, v in TEMPLATES_WITH_THINKING.items() if k != "qwen3.5"}
+thinking_no_qwen35_ids = list(_thinking_no_qwen35.keys())
+thinking_no_qwen35_values = list(_thinking_no_qwen35.values())
 
 
 # ===========================================================================
@@ -141,15 +139,48 @@ def test_pretokenized_equals_standard(chat_template, trajectory_cls, pretokenize
 
 
 @pytest.mark.parametrize("chat_template", thinking_template_values, ids=thinking_template_ids)
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n", _THINKING_CASES)
+@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _THINKING_CASES)
 @pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
-def test_pretokenized_thinking(chat_template, trajectory_cls, pretokenize_n, enable_thinking):
+def test_pretokenized_thinking(chat_template, trajectory_cls, pretokenize_n, tools, enable_thinking):
     """Thinking-capable templates work with pretokenized path and enable_thinking flag."""
     assert_pretokenized_equals_standard(
         chat_template=chat_template,
         messages=deepcopy(trajectory_cls.MESSAGES),
         pretokenized_num_message=pretokenize_n,
-        tools=WEATHER_TOOLS,
+        tools=tools,
+        enable_thinking=enable_thinking,
+    )
+
+
+# ===========================================================================
+# Intermediate system message tests: templates that support them
+# ===========================================================================
+
+
+@pytest.mark.parametrize("chat_template", no_qwen35_values, ids=no_qwen35_ids)
+@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_CASES)
+def test_pretokenized_intermediate_system(chat_template, trajectory_cls, pretokenize_n, tools):
+    """Templates (except qwen3.5) support intermediate system messages."""
+    assert_pretokenized_equals_standard(
+        chat_template=chat_template,
+        messages=deepcopy(trajectory_cls.MESSAGES),
+        pretokenized_num_message=pretokenize_n,
+        tools=tools,
+    )
+
+
+@pytest.mark.parametrize("chat_template", thinking_no_qwen35_values, ids=thinking_no_qwen35_ids)
+@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_THINKING_CASES)
+@pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
+def test_pretokenized_intermediate_system_thinking(
+    chat_template, trajectory_cls, pretokenize_n, tools, enable_thinking
+):
+    """Thinking templates (except qwen3.5) support intermediate system messages with thinking."""
+    assert_pretokenized_equals_standard(
+        chat_template=chat_template,
+        messages=deepcopy(trajectory_cls.MESSAGES),
+        pretokenized_num_message=pretokenize_n,
+        tools=tools,
         enable_thinking=enable_thinking,
     )
 
@@ -167,5 +198,29 @@ def test_original_template_prefix_mismatch(chat_template, trajectory_cls, pretok
             chat_template,
             deepcopy(trajectory_cls.MESSAGES),
             pretokenize_n,
-            tools=WEATHER_TOOLS,
+            tools=trajectory_cls.TOOLS,
+        )
+
+
+# ===========================================================================
+# Negative test: cross-user-turn thinking compression breaks prefix invariant
+# ===========================================================================
+
+# Pretokenizing BEFORE the last user turn in a multi-user-turn thinking
+# trajectory fails because templates compress reasoning_content from earlier
+# turns.  This is a known template limitation, not a bug in the fixed templates.
+_CROSS_USER_THINKING_N = last_user_index(MultiUserTurnThinkingTrajectory.MESSAGES)
+
+
+@pytest.mark.parametrize("chat_template", thinking_template_values, ids=thinking_template_ids)
+@pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
+def test_cross_user_turn_thinking_prefix_mismatch(chat_template, enable_thinking):
+    """Thinking templates compress reasoning_content from earlier user turns, breaking prefix invariant."""
+    with pytest.raises(ValueError, match="Prefix mismatch"):
+        simulate_pretokenized_path(
+            chat_template,
+            deepcopy(MultiUserTurnThinkingTrajectory.MESSAGES),
+            _CROSS_USER_THINKING_N,
+            tools=MultiUserTurnThinkingTrajectory.TOOLS,
+            enable_thinking=enable_thinking,
         )

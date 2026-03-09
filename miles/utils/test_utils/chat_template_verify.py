@@ -133,57 +133,99 @@ def verify_append_only(
 # Built-in test cases (shared between CLI and test suite)
 # ---------------------------------------------------------------------------
 
+import re  # noqa: E402
+
 from miles.utils.test_utils.mock_trajectories import (  # noqa: E402
-    WEATHER_TOOLS,
+    IntermediateSystemThinkingTrajectory,
+    IntermediateSystemTrajectory,
     LongChainThinkingTrajectory,
     LongChainTrajectory,
     MultiToolSingleTurnTrajectory,
     MultiTurnThinkingTrajectory,
     MultiTurnTrajectory,
     MultiUserToolChainTrajectory,
+    MultiUserTurnThinkingTrajectory,
     ParallelToolsTrajectory,
+    RetrySystemTrajectory,
     SimpleNoToolTrajectory,
     SingleToolThinkingTrajectory,
     SingleToolTrajectory,
 )
 
-# (case_name, trajectory_cls, pretokenize_n, tools)
-STANDARD_CASES: list[tuple[str, type, int, list[dict] | None]] = [
-    ("single_tool-N3", SingleToolTrajectory, 3, WEATHER_TOOLS),
-    ("single_tool-N3-no_tools", SingleToolTrajectory, 3, None),
-    ("multi_turn-N3", MultiTurnTrajectory, 3, WEATHER_TOOLS),
-    ("multi_turn-N5", MultiTurnTrajectory, 5, WEATHER_TOOLS),
-    ("multi_tool-N3", MultiToolSingleTurnTrajectory, 3, WEATHER_TOOLS),
-    ("parallel-N3", ParallelToolsTrajectory, 3, WEATHER_TOOLS),
-    ("long_chain-N3", LongChainTrajectory, 3, WEATHER_TOOLS),
-    ("long_chain-N5", LongChainTrajectory, 5, WEATHER_TOOLS),
-    ("long_chain-N7", LongChainTrajectory, 7, WEATHER_TOOLS),
-    ("multi_user-N7", MultiUserToolChainTrajectory, 7, WEATHER_TOOLS),
-    ("multi_user-N9", MultiUserToolChainTrajectory, 9, WEATHER_TOOLS),
-    ("no_tool-N3", SimpleNoToolTrajectory, 3, None),
+
+def _short_name(cls: type) -> str:
+    name = cls.__name__.replace("Trajectory", "")
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def _build_cases(
+    specs: list[tuple[type, list[dict] | None]],
+) -> list[tuple[str, type, int, list[dict] | None]]:
+    """Generate (case_name, traj_cls, N, tools) from trajectory specs.
+
+    Each trajectory class's ``PRETOKENIZE_POSITIONS`` determines the N values.
+    """
+    cases: list[tuple[str, type, int, list[dict] | None]] = []
+    for traj_cls, tools in specs:
+        short = _short_name(traj_cls)
+        tools_label = traj_cls.TOOLS if tools is ... else tools
+        suffix = "-no_tools" if tools is None else ""
+        for n in traj_cls.PRETOKENIZE_POSITIONS:
+            cases.append((f"{short}-N{n}{suffix}", traj_cls, n, tools_label))
+    return cases
+
+
+# (trajectory_cls, tools) — ... means "use traj_cls.TOOLS"
+_STANDARD_SPECS: list[tuple[type, list[dict] | None]] = [
+    (SingleToolTrajectory, ...),
+    (SingleToolTrajectory, None),
+    (MultiTurnTrajectory, ...),
+    (MultiToolSingleTurnTrajectory, ...),
+    (ParallelToolsTrajectory, ...),
+    (LongChainTrajectory, ...),
+    (MultiUserToolChainTrajectory, ...),
+    (SimpleNoToolTrajectory, None),
 ]
 
-# (case_name, trajectory_cls, pretokenize_n) — for templates that support enable_thinking
-THINKING_CASES: list[tuple[str, type, int]] = [
-    ("single_tool-N3", SingleToolTrajectory, 3),
-    ("thinking_single_tool-N3", SingleToolThinkingTrajectory, 3),
-    ("thinking_multi_turn-N3", MultiTurnThinkingTrajectory, 3),
-    ("thinking_multi_turn-N5", MultiTurnThinkingTrajectory, 5),
-    ("thinking_long_chain-N3", LongChainThinkingTrajectory, 3),
-    ("thinking_long_chain-N5", LongChainThinkingTrajectory, 5),
-    ("thinking_long_chain-N7", LongChainThinkingTrajectory, 7),
+_THINKING_SPECS: list[tuple[type, list[dict] | None]] = [
+    (SingleToolTrajectory, ...),
+    (SingleToolThinkingTrajectory, ...),
+    (MultiTurnThinkingTrajectory, ...),
+    (LongChainThinkingTrajectory, ...),
+    (MultiUserTurnThinkingTrajectory, ...),
 ]
+
+_INTERMEDIATE_SYSTEM_SPECS: list[tuple[type, list[dict] | None]] = [
+    (RetrySystemTrajectory, ...),
+    (IntermediateSystemTrajectory, ...),
+]
+
+_INTERMEDIATE_SYSTEM_THINKING_SPECS: list[tuple[type, list[dict] | None]] = [
+    (IntermediateSystemThinkingTrajectory, ...),
+]
+
+STANDARD_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(_STANDARD_SPECS)
+THINKING_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(_THINKING_SPECS)
+INTERMEDIATE_SYSTEM_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(_INTERMEDIATE_SYSTEM_SPECS)
+INTERMEDIATE_SYSTEM_THINKING_CASES: list[tuple[str, type, int, list[dict] | None]] = _build_cases(
+    _INTERMEDIATE_SYSTEM_THINKING_SPECS
+)
 
 
 def run_all_checks(
     chat_template: str,
     *,
     include_thinking: bool = False,
+    include_intermediate_system: bool = True,
 ) -> list[VerifyResult]:
     """Run all built-in verification cases against *chat_template*.
 
     When *include_thinking* is True, also runs thinking-specific cases with
     ``enable_thinking=True`` and ``enable_thinking=False``.
+
+    When *include_intermediate_system* is True (default), also runs cases
+    that contain intermediate system messages.  Set to False for templates
+    that forbid non-initial system messages (e.g. Qwen3.5).
     """
     results: list[VerifyResult] = []
 
@@ -192,20 +234,39 @@ def run_all_checks(
             verify_append_only(chat_template, deepcopy(traj_cls.MESSAGES), n, tools=tools, case_name=case_name)
         )
 
+    if include_intermediate_system:
+        for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_CASES:
+            results.append(
+                verify_append_only(chat_template, deepcopy(traj_cls.MESSAGES), n, tools=tools, case_name=case_name)
+            )
+
     if include_thinking:
         for enable in (True, False):
             suffix = "thinking_on" if enable else "thinking_off"
-            for case_name, traj_cls, n in THINKING_CASES:
+            for case_name, traj_cls, n, tools in THINKING_CASES:
                 full_name = f"{case_name}[{suffix}]"
                 results.append(
                     verify_append_only(
                         chat_template,
                         deepcopy(traj_cls.MESSAGES),
                         n,
-                        tools=WEATHER_TOOLS,
+                        tools=tools,
                         case_name=full_name,
                         enable_thinking=enable,
                     )
                 )
+            if include_intermediate_system:
+                for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_THINKING_CASES:
+                    full_name = f"{case_name}[{suffix}]"
+                    results.append(
+                        verify_append_only(
+                            chat_template,
+                            deepcopy(traj_cls.MESSAGES),
+                            n,
+                            tools=tools,
+                            case_name=full_name,
+                            enable_thinking=enable,
+                        )
+                    )
 
     return results
