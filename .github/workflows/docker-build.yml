@@ -22,7 +22,6 @@ on:
           - cu129-arm64
           - cu13-arm64
           - debug
-          - dev
       dockerfile:
         description: 'Path to dockerfile (e.g. docker/Dockerfile.dev)'
         required: false
@@ -30,9 +29,24 @@ on:
         type: string
 
 jobs:
+  set-build-config:
+    # Runs on schedule and push — sets dev defaults
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      variant: ${{ steps.defaults.outputs.variant }}
+      dockerfile: ${{ steps.defaults.outputs.dockerfile }}
+    steps:
+      - name: Set dev build defaults
+        id: defaults
+        run: |
+          echo "variant=dev" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=docker/Dockerfile.dev" >> "$GITHUB_OUTPUT"
+
   check-upstream:
-    # Only run on schedule — push and workflow_dispatch skip straight to build
+    # Only run on schedule — check if upstream repos have new commits
     if: github.event_name == 'schedule'
+    needs: [set-build-config]
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
@@ -91,10 +105,14 @@ jobs:
           key: upstream-shas-${{ github.run_id }}
 
   build-and-push:
-    needs: [check-upstream]
-    # Run if: not a schedule trigger (push/dispatch always build),
-    # OR schedule detected upstream changes
-    if: always() && (needs.check-upstream.result == 'skipped' || needs.check-upstream.outputs.should_build == 'true')
+    needs: [set-build-config, check-upstream]
+    # push: set-build-config ran, check-upstream skipped → build
+    # schedule: both ran → only build if upstream changed
+    # dispatch: both skipped → build
+    if: |
+      always() &&
+      (needs.check-upstream.result == 'skipped' || needs.check-upstream.outputs.should_build == 'true') &&
+      needs.set-build-config.result != 'failed'
     runs-on: self-hosted
     steps:
       - name: Checkout repository
@@ -116,12 +134,12 @@ jobs:
       - name: Build and push
         run: |
           python docker/build.py \
-            --variant ${{ inputs.variant || 'dev' }} \
-            --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile.dev' }} \
+            --variant ${{ needs.set-build-config.outputs.variant || inputs.variant }} \
+            --dockerfile ${{ needs.set-build-config.outputs.dockerfile || inputs.dockerfile }} \
             --push
 
       - name: Prune old dev tags
-        if: inputs.variant == 'dev' || inputs.variant == ''
+        if: github.event_name == 'schedule' || github.event_name == 'push'
         run: |
           KEEP=20
           IMAGE=radixark/miles
