@@ -186,7 +186,7 @@ class UpdateWeightFromRemote:
         Returns updated bytes on source, None on non-source.
         """
         with timer(f"non_expert_all_tp_gather_source{self._is_source}", log_info=False):
-            param = all_gather_param(name, param)
+            param = all_gather_param(self.args, name, param)
         if not self._is_source:
             return
 
@@ -210,7 +210,7 @@ class UpdateWeightFromRemote:
         Expert: gather TP → rm pad → buffer. EP gather + HF deferred. Threshold × EP size.
         """
         with timer("expert_all_gather_name_param_tp_gather", log_info=False):
-            param = all_gather_param(name, param)
+            param = all_gather_param(self.args, name, param)
 
         param_size = param.numel() * param.element_size()
         if (
