@@ -167,7 +167,6 @@ class MegatronTrainRayActor(TrainRayActor):
     @timer
     def sleep(self) -> None:
         assert self.args.offload_train
-        should_log_cpu_mem = dist.get_rank() == 0
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
@@ -177,7 +176,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         print_memory("after offload model")
 
-        if should_log_cpu_mem and hasattr(self, "_last_rollout_id"):
+        if dist.get_rank() == 0 and hasattr(self, "_last_rollout_id"):
             log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
 
     @timer
