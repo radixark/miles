@@ -8,11 +8,13 @@ Usage:
     python docker/build.py --variant cu129-arm64
     python docker/build.py --variant cu13-arm64
     python docker/build.py --variant debug
+    python docker/build.py --variant dev --push
     python docker/build.py --variant primary --dry-run
 """
 
 import os
 import subprocess
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -52,6 +54,13 @@ VARIANTS = {
         "build_args": {},
         "tag_latest": True,
     },
+    "dev": {
+        "image": "radixark/miles",
+        "build_args": {
+            "MEGATRON_COMMIT": "main",
+        },
+        "tag_latest": False,
+    },
 }
 
 
@@ -67,25 +76,32 @@ def run(cmd: list[str], dry_run: bool) -> None:
     subprocess.run(cmd, check=True)
 
 
-def build_and_push(variant: str, dry_run: bool, dockerfile: str) -> None:
+def build_and_push(variant: str, dry_run: bool, dockerfile: str, push: bool = False) -> None:
     config = VARIANTS[variant]
     repo_root = Path(__file__).resolve().parent.parent
-
-    version = get_version(repo_root)
     image = config["image"]
-    image_tag = f"{version}{config['tag_postfix']}"
-    full_tag = f"{image}:{image_tag}"
 
-    cache_key = f"{CACHE_DIR}/{variant}"
+    # Dev variant uses rolling + timestamped tags instead of version.txt
+    if variant == "dev":
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        tags = [f"{image}:dev", f"{image}:dev-{timestamp}"]
+    else:
+        version = get_version(repo_root)
+        image_tag = f"{version}{config.get('tag_postfix', '')}"
+        tags = [f"{image}:{image_tag}"]
+        if config.get("tag_latest"):
+            tags.append(f"{image}:latest")
 
-    # Build command using buildx with cache and --push
     cmd = [
-        "docker", "buildx", "build",
-        "-f", dockerfile,
-        # "--cache-from", f"type=local,src={cache_key}",
-        # "--cache-to", f"type=local,dest={cache_key},mode=max",
-        # "--push",
+        "docker",
+        "buildx",
+        "build",
+        "-f",
+        dockerfile,
     ]
+
+    if push:
+        cmd += ["--push"]
 
     # Proxy args (pass through if set in environment)
     for env_var, arg_name in [
@@ -99,18 +115,16 @@ def build_and_push(variant: str, dry_run: bool, dockerfile: str) -> None:
     cmd += ["--build-arg", "NO_PROXY=localhost,127.0.0.1"]
 
     # Variant-specific build args
-    for key, value in config["build_args"].items():
+    for key, value in config.get("build_args", {}).items():
         cmd += ["--build-arg", f"{key}={value}"]
 
-    # Tags
-    cmd += ["-t", full_tag]
-    if config["tag_latest"]:
-        cmd += ["-t", f"{image}:latest"]
+    for tag in tags:
+        cmd += ["-t", tag]
 
     # Context is repo root
     cmd += ["."]
 
-    print(f"\n=== Building and pushing {full_tag} ===", flush=True)
+    print(f"\n=== Building {' '.join(tags)} ===", flush=True)
     run(cmd, dry_run)
 
 
@@ -119,14 +133,16 @@ class Variant(str, Enum):
     cu129_arm64 = "cu129-arm64"
     cu13_arm64 = "cu13-arm64"
     debug = "debug"
+    dev = "dev"
 
 
 def main(
-    variant: Variant = typer.Option(..., help="Build variant to use."),
-    dockerfile: str = typer.Option("docker/Dockerfile", help="Path to the Dockerfile."),
-    dry_run: bool = typer.Option(False, help="Print commands without executing them."),
+    variant: Variant = typer.Option(..., help="Build variant to use."),  # noqa: B008
+    dockerfile: str = typer.Option("docker/Dockerfile", help="Path to the Dockerfile."),  # noqa: B008
+    dry_run: bool = typer.Option(False, help="Print commands without executing them."),  # noqa: B008
+    push: bool = typer.Option(False, help="Push images to registry after building."),  # noqa: B008
 ) -> None:
-    build_and_push(variant.value, dry_run, dockerfile)
+    build_and_push(variant.value, dry_run, dockerfile, push=push)
 
 
 if __name__ == "__main__":
