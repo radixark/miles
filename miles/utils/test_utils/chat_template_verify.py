@@ -12,75 +12,10 @@ Core functions are used by both the CLI script
 
 from __future__ import annotations
 
-import json
 from copy import deepcopy
 from dataclasses import dataclass
 
-from jinja2.sandbox import ImmutableSandboxedEnvironment
-
-
-def _tojson(value, ensure_ascii=True, indent=None):
-    return json.dumps(value, ensure_ascii=ensure_ascii, indent=indent)
-
-
-def _normalize_tool_arguments(messages: list[dict]) -> list[dict]:
-    """Parse JSON-string tool_call arguments to dicts.
-
-    Some templates (e.g. Qwen3-Coder-Next) use ``arguments|items`` which
-    requires a mapping.  Others branch on ``arguments is string``.  Normalizing
-    to dicts is safe for both because ``tojson(dict)`` produces the same compact
-    JSON as the original string.
-    """
-    out = []
-    for msg in messages:
-        if not msg.get("tool_calls"):
-            out.append(msg)
-            continue
-        msg = dict(msg)
-        new_calls = []
-        for tc in msg["tool_calls"]:
-            tc = dict(tc)
-            if "function" in tc:
-                fn = dict(tc["function"])
-                if isinstance(fn.get("arguments"), str):
-                    fn["arguments"] = json.loads(fn["arguments"])
-                tc["function"] = fn
-            new_calls.append(tc)
-        msg["tool_calls"] = new_calls
-        out.append(msg)
-    return out
-
-
-def _extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
-    """Extract function definitions from OpenAI tool format for template rendering."""
-    if not tools:
-        return None
-    return [t["function"] for t in tools if "function" in t]
-
-
-def apply_chat_template_from_str(
-    chat_template: str,
-    messages: list[dict],
-    add_generation_prompt: bool = True,
-    tools: list[dict] | None = None,
-    **kwargs,
-) -> str:
-    """Render a Jinja2 chat template string (tokenize=False equivalent)."""
-    messages = _normalize_tool_arguments(messages)
-
-    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
-    env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(ValueError(msg))
-    env.filters["tojson"] = _tojson
-    template = env.from_string(chat_template)
-
-    render_kwargs = {
-        "messages": messages,
-        "add_generation_prompt": add_generation_prompt,
-    }
-    if tools is not None:
-        render_kwargs["tools"] = tools
-    render_kwargs.update(kwargs)
-    return template.render(**render_kwargs)
+from miles.utils.chat_template_utils.template import apply_chat_template_from_str, extract_tool_dicts
 
 
 def simulate_pretokenized_path(
@@ -95,12 +30,10 @@ def simulate_pretokenized_path(
     1. Render first N messages (no generation prompt) -> prefix_text
     2. Render ALL messages (with generation prompt) -> full_text
     3. Verify prefix_text is a prefix of full_text
-    4. incremental_text = full_text[len(prefix_text):]
-    5. Return prefix_text (pretokenized) + incremental_text
 
     Raises ``ValueError`` on prefix mismatch.
     """
-    tool_dicts = _extract_tool_dicts(tools)
+    tool_dicts = extract_tool_dicts(tools)
 
     prefix_text = apply_chat_template_from_str(
         chat_template,
@@ -125,9 +58,6 @@ def simulate_pretokenized_path(
             f"full_text at same position:\n{repr(full_text[:len(prefix_text)][-200:])}"
         )
 
-    incremental_text = full_text[len(prefix_text) :]
-    result = prefix_text + incremental_text
-    assert result == full_text
     return full_text
 
 
@@ -138,7 +68,7 @@ def get_standard_result(
     **template_kwargs,
 ) -> str:
     """Standard path: render all messages with generation prompt."""
-    tool_dicts = _extract_tool_dicts(tools)
+    tool_dicts = extract_tool_dicts(tools)
 
     return apply_chat_template_from_str(
         chat_template,

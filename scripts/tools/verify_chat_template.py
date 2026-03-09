@@ -36,7 +36,7 @@ def _load_template_from_model(model_id: str, *, autofix: bool) -> tuple[str, str
         if fixed_path:
             return _load_template_from_file(fixed_path), f"fixed template: {fixed_path}"
 
-    from miles.utils.chat_template_utils.loader import load_hf_chat_template
+    from miles.utils.chat_template_utils.template import load_hf_chat_template
 
     return load_hf_chat_template(model_id), f"HuggingFace: {model_id}"
 
