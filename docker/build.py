@@ -21,6 +21,7 @@ from pathlib import Path
 import typer
 
 CACHE_DIR = "/tmp/miles-docker-cache"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VARIANTS = {
     "primary": {
@@ -64,8 +65,8 @@ VARIANTS = {
 }
 
 
-def get_version(repo_root: Path) -> str:
-    version_file = repo_root / "docker" / "version.txt"
+def get_version() -> str:
+    version_file = REPO_ROOT / "docker" / "version.txt"
     return version_file.read_text().strip()
 
 
@@ -78,7 +79,6 @@ def run(cmd: list[str], dry_run: bool) -> None:
 
 def build_and_push(variant: str, dry_run: bool, dockerfile: str, push: bool = False) -> None:
     config = VARIANTS[variant]
-    repo_root = Path(__file__).resolve().parent.parent
     image = config["image"]
 
     # Dev variant uses rolling + timestamped tags instead of version.txt
@@ -86,7 +86,7 @@ def build_and_push(variant: str, dry_run: bool, dockerfile: str, push: bool = Fa
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         tags = [f"{image}:dev", f"{image}:dev-{timestamp}"]
     else:
-        version = get_version(repo_root)
+        version = get_version()
         image_tag = f"{version}{config.get('tag_postfix', '')}"
         tags = [f"{image}:{image_tag}"]
         if config.get("tag_latest"):
@@ -103,12 +103,9 @@ def build_and_push(variant: str, dry_run: bool, dockerfile: str, push: bool = Fa
     if push:
         cmd += ["--push"]
 
-    # Proxy args (pass through if set in environment)
-    for env_var, arg_name in [
-        ("http_proxy", "HTTP_PROXY"),
-        ("https_proxy", "HTTPS_PROXY"),
-    ]:
-        value = os.environ.get(env_var, "")
+    # Proxy args (pass through if set in environment, check both cases)
+    for arg_name in ["HTTP_PROXY", "HTTPS_PROXY"]:
+        value = os.environ.get(arg_name.lower()) or os.environ.get(arg_name)
         if value:
             cmd += ["--build-arg", f"{arg_name}={value}"]
 
