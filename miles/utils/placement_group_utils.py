@@ -21,42 +21,42 @@ class BundleLocationSnapshot:
 @dataclass
 class PlacementGroupInfo:
     pg: PlacementGroup
-    bundle_location_snapshots: list[BundleLocationSnapshot] = field(default_factory=list)
+    _bundle_location_snapshots: list[BundleLocationSnapshot] = field(default_factory=list)
 
     @property
     def reordered_bundle_indices(self) -> list[int]:
-        return [b.bundle_index for b in self.bundle_location_snapshots]
+        return [b.bundle_index for b in self._bundle_location_snapshots]
 
     @property
     def reordered_gpu_ids(self) -> list[str]:
-        return [b.gpu_id for b in self.bundle_location_snapshots]
+        return [b.gpu_id for b in self._bundle_location_snapshots]
 
     def __getitem__(self, key: slice) -> PlacementGroupSlice:
         if not isinstance(key, slice):
             raise TypeError(f"PlacementGroupInfo indices must be slices, not {type(key).__name__}")
-        start, stop, step = key.indices(len(self.bundle_location_snapshots))
+        start, stop, step = key.indices(len(self._bundle_location_snapshots))
         if step != 1:
             raise ValueError("PlacementGroupInfo does not support step in slicing")
-        return PlacementGroupSlice(owner=self, offset=start, count=stop - start)
+        return PlacementGroupSlice(_owner=self, _offset=start, _count=stop - start)
 
 
 @dataclass
 class PlacementGroupSlice:
-    owner: PlacementGroupInfo
-    offset: int
-    count: int
+    _owner: PlacementGroupInfo
+    _offset: int
+    _count: int
 
     @property
     def pg(self) -> PlacementGroup:
-        return self.owner.pg
+        return self._owner.pg
 
     @property
     def reordered_bundle_indices(self) -> list[int]:
-        return self.owner.reordered_bundle_indices[self.offset : self.offset + self.count]
+        return self._owner.reordered_bundle_indices[self._offset : self._offset + self._count]
 
     @property
     def reordered_gpu_ids(self) -> list[str]:
-        return self.owner.reordered_gpu_ids[self.offset : self.offset + self.count]
+        return self._owner.reordered_gpu_ids[self._offset : self._offset + self._count]
 
 
 def bundle_sort_key(probe: BundleLocationSnapshot) -> tuple[list[int], str]:
@@ -75,7 +75,7 @@ def bundle_sort_key(probe: BundleLocationSnapshot) -> tuple[list[int], str]:
 
 
 @ray.remote(num_gpus=1)
-class InfoActor:
+class _InfoActor:
     def get_ip_and_gpu_id(self) -> tuple[str, str]:
         return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
 
@@ -86,9 +86,9 @@ def probe_bundles(pg: PlacementGroup, num_bundles: int, num_gpus: float = 1) -> 
     Args:
         pg: The Ray PlacementGroup to probe.
         num_bundles: Number of bundles in the PG.
-        num_gpus: GPU fraction for each InfoActor (1 for initial probe, tiny for live refresh).
+        num_gpus: GPU fraction for each _InfoActor (1 for initial probe, tiny for live refresh).
     """
-    actor_cls = InfoActor if num_gpus == 1 else InfoActor.options(num_gpus=num_gpus)
+    actor_cls = _InfoActor if num_gpus == 1 else _InfoActor.options(num_gpus=num_gpus)
 
     info_actors = []
     for i in range(num_bundles):
@@ -131,4 +131,4 @@ def create_placement_group_info(num_gpus: int) -> PlacementGroupInfo:
             f"node: {probe.node_ip}, gpu: {probe.gpu_id}"
         )
 
-    return PlacementGroupInfo(pg=pg, bundle_location_snapshots=sorted_probes)
+    return PlacementGroupInfo(pg=pg, _bundle_location_snapshots=sorted_probes)
