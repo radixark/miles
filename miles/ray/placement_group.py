@@ -47,15 +47,13 @@ def create_placement_groups(args) -> dict[str, PlacementGroupSlice | None]:
 
     critic_slice: PlacementGroupSlice | None = None
     if args.use_critic:
-        critic_slice = pg_info.slice(
-            offset=critic_offset,
-            count=args.critic_num_nodes * args.critic_num_gpus_per_node,
-        )
+        critic_count = args.critic_num_nodes * args.critic_num_gpus_per_node
+        critic_slice = pg_info[critic_offset : critic_offset + critic_count]
 
     return {
-        "actor": pg_info.slice(offset=0, count=actor_count),
+        "actor": pg_info[0:actor_count],
         "critic": critic_slice,
-        "rollout": pg_info.slice(offset=rollout_offset, count=rollout_count),
+        "rollout": pg_info[rollout_offset : rollout_offset + rollout_count],
     }
 
 
