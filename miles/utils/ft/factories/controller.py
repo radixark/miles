@@ -87,6 +87,8 @@ def build_ft_controller(
             runtime_env=config.runtime_env,
             ft_id=ft_id,
             k8s_label_prefix=config.k8s_label_prefix,
+            ray_cluster_name=config.ray_cluster_name,
+            k8s_namespace=config.k8s_namespace,
         )
 
     controller_exporter = ControllerExporter(port=config.controller_exporter_port)
@@ -167,6 +169,8 @@ def _build_platform_components(
     runtime_env: dict[str, Any] | None = None,
     ft_id: str = "",
     k8s_label_prefix: str = "",
+    ray_cluster_name: str = "",
+    k8s_namespace: str = "default",
 ) -> tuple[StubNodeManager | K8sNodeManager, StubTrainingJob | RayTrainingJob]:
     if platform == "stub":
         return StubNodeManager(), StubTrainingJob()
@@ -177,7 +181,11 @@ def _build_platform_components(
         from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
         from miles.utils.ft.adapters.impl.ray.training_job import RayTrainingJob
 
-        node_manager = K8sNodeManager(label_prefix=k8s_label_prefix)
+        node_manager = K8sNodeManager(
+            label_prefix=k8s_label_prefix,
+            ray_cluster_name=ray_cluster_name,
+            namespace=k8s_namespace,
+        )
         training_job = RayTrainingJob(
             client=JobSubmissionClient(address=ray_address),
             entrypoint=entrypoint,
