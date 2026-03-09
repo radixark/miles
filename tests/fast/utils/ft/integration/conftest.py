@@ -25,6 +25,7 @@ def _init_local_ray(*, include_dashboard: bool) -> tuple[ray.runtime_env.Runtime
     if ray.is_initialized():
         ray.shutdown()
     subprocess.run(["ray", "stop", "--force"], capture_output=True)
+    time.sleep(2)
     ray_tmp = Path("/tmp/ray")
     if ray_tmp.exists():
         shutil.rmtree(ray_tmp, ignore_errors=True)
