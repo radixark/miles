@@ -474,7 +474,7 @@ class RolloutManager:
         return rollout_data_refs
 
 
-def init_rollout_engines(args, pg, all_rollout_engines):
+def init_rollout_engines(args, pg_slice, all_rollout_engines):
     if args.debug_train_only:
         return 0
 
@@ -487,8 +487,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             num_engines > prefill_num_servers
         ), f"num_engines {num_engines} should be larger than prefill_num_servers {prefill_num_servers}"
 
-    pg, reordered_bundle_indices, reordered_gpu_ids = pg
-
     RolloutRayActor = ray.remote(SGLangEngine)
 
     rollout_engines = []
@@ -500,12 +498,12 @@ def init_rollout_engines(args, pg, all_rollout_engines):
         num_cpus = num_gpus
 
         # Get the base GPU ID from placement group
-        base_gpu_id = int(reordered_gpu_ids[i * num_gpu_per_engine])
+        base_gpu_id = int(pg_slice.reordered_gpu_ids[i * num_gpu_per_engine])
 
         scheduling_strategy = PlacementGroupSchedulingStrategy(
-            placement_group=pg,
+            placement_group=pg_slice.pg,
             placement_group_capture_child_tasks=True,
-            placement_group_bundle_index=reordered_bundle_indices[i * num_gpu_per_engine],
+            placement_group_bundle_index=pg_slice.reordered_bundle_indices[i * num_gpu_per_engine],
         )
 
         env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
