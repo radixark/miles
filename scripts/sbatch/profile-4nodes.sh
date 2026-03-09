@@ -27,10 +27,10 @@ srun --jobid=${JOBID} --nodes=4 --ntasks-per-node=1 --overlap bash -c "
     # Clean stale profiler traces before run
     rm -rf /root/rdma_profiler_logs
 
-    # Runs all 4 models (glm4, moonlight, qwen3-30b, qwen3-32b) x 3 modes (nccl, rdma, rdma-shared)
+    # Runs all 4 models (glm4, moonlight, qwen3-30b, qwen3-32b) x 2 modes (nccl, rdma)
     # Results stored in: \\\$LOG_DIR/4node-profile/<model>/<mode>/
     python /root/miles/tests/test_weight_transfer_moe_multinode.py \\
-        --multinode --mode rdma-shared --models glm4,moonlight,qwen3-30b, qwen3-32b\\
+        --multinode --mode rdma --models glm4,moonlight,qwen3-30b, qwen3-32b\\
         --head-node-ip \\\$HEAD_NODE_IP --nnodes \\\$NNODES --node-rank \\\$NODE_RANK \\
         --enable-nccl-nvls --released-mc-transfer-timeout --wait-after --bucket-size 1 \\
         2>&1 | tee \\\$LOG_DIR/node_\\\$NODE_RANK.log

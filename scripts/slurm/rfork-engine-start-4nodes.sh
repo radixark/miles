@@ -16,7 +16,7 @@
 # Standalone sbatch script – seed-based engine start (4 nodes, 32 GPUs)
 #
 # Runs test_weight_transfer_moe_multinode.py for ALL models (glm4, moonlight,
-# qwen3-30b, qwen3-32b) across ALL transfer modes (nccl, rdma, rdma-shared)
+# qwen3-30b, qwen3-32b) across ALL transfer modes (nccl, rdma)
 # using the jd/rfork-engine-start miles branch.
 # =============================================================================
 
@@ -80,11 +80,11 @@ setup_and_run() {
     git reset --hard jd/remote-instance-loader-miles-integration
 
     cd /root/miles
-    git remote add lt https://github.com/Risc-lt/miles.git 2>/dev/null || true
+    git remote add jd https://github.com/JD-ETH/miles.git 2>/dev/null || true
     git config user.name JD-ETH && git config user.email jaedon.guo@gmail.com
     git add -A && git stash
-    git fetch lt --quiet
-    git reset --hard lt/jd/rdma-sharable-cpu-replica
+    git fetch jd --quiet
+    git reset --hard jd/rdma-weight-transfer-with-profiling
 
     # ---- symlinks ----
     rm -rf /root/models /root/datasets /root/multinode
@@ -103,7 +103,7 @@ setup_and_run() {
     # ---- run test ----
     echo "Starting test ... MILES_LOG_DIR=${MILES_LOG_DIR}"
     python /root/miles/tests/test_weight_transfer_moe_multinode.py \
-        --multinode --mode rdma-shared \
+        --multinode --mode rdma \
         --models glm4,moonlight,qwen3-30b,qwen3-32b \
         --head-node-ip ${HEAD_NODE_IP} --nnodes ${NNODES} --node-rank ${NODE_RANK} \
         --enable-nccl-nvls --released-mc-transfer-timeout --wait-after \

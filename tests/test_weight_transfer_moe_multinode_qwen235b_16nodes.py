@@ -17,7 +17,7 @@ import os
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["nccl", "rdma", "rdma-shared", "all"] = "all"
+    mode: Literal["nccl", "rdma", "all"] = "all"
     # Right now tp=ep=pp=1
     train_tp: int = 4
     train_ep: int = 16
@@ -57,7 +57,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def selected_modes(self) -> list[str]:
         if self.mode == "all":
-            return ["nccl", "rdma", "rdma-shared"]
+            return ["nccl", "rdma"]
         else:
             return [self.mode]
 
@@ -92,7 +92,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs, mode: str, base_log_dir: str):
-    is_rdma = mode in ("rdma", "rdma-shared")
+    is_rdma = mode == "rdma"
 
     run_log_dir = f"{base_log_dir}/qwen235b-profile/{mode}"
     os.makedirs(run_log_dir, exist_ok=True)
@@ -242,8 +242,6 @@ def execute(args: ScriptArgs, mode: str, base_log_dir: str):
         misc_args += "--check-weight-update-equal "
     if is_rdma:
         misc_args += "--update-weight-transfer-mode rdma "
-    if mode == "rdma-shared":
-        misc_args += "--rdma-shared-buffer "
 
     train_args = (
         f"{ckpt_args} "

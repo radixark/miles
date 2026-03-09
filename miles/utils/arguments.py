@@ -210,11 +210,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "RDMA writes are NIC-bound, so more threads = more concurrent NIC utilization. "
                 "Default 8 matches typical 8 GPUs/node (one thread per engine rank).",
             )
-            parser.add_argument(
-                "--rdma-shared-buffer",
-                action="store_true",
-                help="Use shared CPU pinned buffer for RDMA weight transfer (reduces CPU memory 8×).",
-            )
 
             return parser
 

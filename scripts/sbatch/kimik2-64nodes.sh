@@ -28,7 +28,7 @@ srun --jobid=${JOBID} --nodes=64 --ntasks-per-node=1 --overlap bash -c "
     rm -rf /root/rdma_profiler_logs
 
     python /root/miles/tests/test_weight_transfer_moe_multinode_kimik2_64nodes.py \\
-        --multinode --mode rdma-shared \\
+        --multinode --mode rdma \\
         --head-node-ip \\\$HEAD_NODE_IP --nnodes \\\$NNODES --node-rank \\\$NODE_RANK \\
         --enable-nccl-nvls --released-mc-transfer-timeout --wait-after --bucket-size 4 \\
         2>&1 | tee \\\$LOG_DIR/node_\\\$NODE_RANK.log

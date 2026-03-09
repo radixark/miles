@@ -8,7 +8,7 @@ Runs 13 steps; average the last 10 for stable profiling numbers.
 Usage:
     python test_weight_transfer_moe_multinode.py \
         --multinode --head-node-ip <IP> --node-rank <RANK> --nnodes 4 \
-        [--mode nccl|rdma|rdma-shared|all] \
+        [--mode nccl|rdma|all] \
         [--models llama3,glm4,glm45-air,moonlight,qwen3-30b,qwen3-32b]
 """
 
@@ -98,7 +98,7 @@ ALL_MODEL_KEYS = list(MODELS.keys())
 # ---------------------------------------------------------------------------
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["nccl", "rdma", "rdma-shared", "all"] = "all"
+    mode: Literal["nccl", "rdma", "all"] = "all"
     models: str = ",".join(ALL_MODEL_KEYS)  # comma-separated model keys
     skip_validation: bool = False
     # Multi-node settings
@@ -133,7 +133,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def selected_modes(self) -> list[str]:
         if self.mode == "all":
-            return ["nccl", "rdma", "rdma-shared"]
+            return ["nccl", "rdma"]
         else:
             return [self.mode]
 
@@ -165,7 +165,7 @@ def prepare(args: ScriptArgs, cfg: ModelConfig):
 # Execute one (model, mode) pair
 # ---------------------------------------------------------------------------
 def execute(args: ScriptArgs, cfg: ModelConfig, mode: str, base_log_dir: str, is_last_mode: bool = True):
-    is_rdma = mode in ("rdma", "rdma-shared")
+    is_rdma = mode == "rdma"
 
     run_log_dir = f"{base_log_dir}/4node-profile/{cfg.key}/{mode}"
     os.makedirs(run_log_dir, exist_ok=True)
@@ -272,8 +272,6 @@ def execute(args: ScriptArgs, cfg: ModelConfig, mode: str, base_log_dir: str, is
         misc_args += "--check-weight-update-equal "
     if is_rdma:
         misc_args += "--update-weight-transfer-mode rdma "
-    if mode == "rdma-shared":
-        misc_args += "--rdma-shared-buffer "
     misc_args += cfg.extra_train_flags
 
     # --- Assemble ---

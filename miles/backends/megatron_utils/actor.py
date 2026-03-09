@@ -39,7 +39,6 @@ from .parallel import create_megatron_parallel_state
 from .replay_utils import get_register_replay_list_func
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed import UpdateWeightFromDistributed
-from .update_weight.update_weight_from_rdma import UpdateWeightFromRDMA
 from .update_weight.update_weight_from_rdma_shared_buffer import UpdateWeightFromRDMASharedBuffer
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
@@ -143,10 +142,8 @@ class MegatronTrainRayActor(TrainRayActor):
         else:
             if self.args.update_weight_transfer_mode == "nccl":
                 update_weight_cls = UpdateWeightFromDistributed
-            elif getattr(self.args, "rdma_shared_buffer", False):
-                update_weight_cls = UpdateWeightFromRDMASharedBuffer
             else:
-                update_weight_cls = UpdateWeightFromRDMA
+                update_weight_cls = UpdateWeightFromRDMASharedBuffer
         self.weight_updater = update_weight_cls(
             self.args,
             self.model,

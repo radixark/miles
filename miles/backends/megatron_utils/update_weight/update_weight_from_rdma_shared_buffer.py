@@ -1,29 +1,181 @@
 import dataclasses
 import logging
+import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import ray
 import torch
+from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
+from sglang.srt import server_args as server_args_module
+from sglang.srt.configs.device_config import DeviceConfig
+from sglang.srt.configs.load_config import LoadConfig
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
+from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
+from sglang.srt.server_args import ServerArgs
 from tqdm import tqdm
 
 from miles.utils.memory_utils import print_memory
 from miles.utils.timer import timer
 
-from .update_weight_from_rdma import (
-    RDMATransferManager,
-    RemoteWeightInfo,
-    create_cpu_replica,
-    create_transfer_engine,
-    query_remote_weight_infos,
-    register_cpu_memory_region,
-)
 from .update_weight_from_remote import UpdateWeightFromRemote
 
 logger = logging.getLogger(__name__)
+
+
+def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
+    valid_fields = {f.name for f in dataclasses.fields(ServerArgs)}
+    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
+    return ServerArgs(**filtered_data)
+
+
+def register_cpu_memory_region(params_dict: dict, transfer_engine: TransferEngine) -> dict:
+    """Register CPU pinned memory with the transfer engine.
+
+    Returns:
+        dict: name -> (data_ptr, numel, element_size) for each registered tensor.
+    """
+    start_tic = time.time()
+    weight_mr_dict = {}
+
+    for name, cpu_tensor in params_dict.items():
+        addr = cpu_tensor.data_ptr()
+        size = cpu_tensor.numel() * cpu_tensor.element_size()
+        ret = transfer_engine.register_memory(addr, size)
+        if ret != 0:
+            raise RuntimeError(f"register CPU memory failed for weight {name}, error: {ret}")
+        weight_mr_dict[name] = (addr, cpu_tensor.numel(), cpu_tensor.element_size())
+
+    elapsed = time.time() - start_tic
+    logger.info(f"[RDMA] Registered {len(weight_mr_dict)} CPU tensors in {elapsed:.2f}s")
+    return weight_mr_dict
+
+
+def create_transfer_engine() -> TransferEngine:
+    transfer_engine = TransferEngine()
+    local_ip = ray._private.services.get_node_ip_address()
+    transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", "")
+    logger.info(f"[RDMA] Transfer Engine initialized at port {transfer_engine.get_rpc_port()}")
+    return transfer_engine
+
+
+def create_cpu_replica(
+    parallelism_config: RankParallelismConfig,
+    model_path: str,
+    server_args: ServerArgs,
+) -> torch.nn.Module:
+    """Create model on GPU (required by sglang), then move to CPU pinned memory."""
+    load_config = LoadConfig(
+        load_format="dummy",
+        model_loader_extra_config=None,
+        rl_quant_profile=server_args.rl_quant_profile,
+    )
+    server_args_module._global_server_args = server_args
+    with ParallelismContext(parallelism_config):
+        model = get_model(
+            model_config=ModelConfig(model_path),
+            load_config=load_config,
+            device_config=DeviceConfig(),
+        )
+
+    gpu_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"[RDMA] GPU model created: {gpu_params} params")
+
+    # Move all parameters to CPU pinned memory
+    with timer("rdma_move_replica_to_cpu"):
+        for param in model.parameters():
+            cpu_data = param.data.to("cpu", non_blocking=True).pin_memory()
+            param.data = cpu_data
+        torch.cuda.synchronize()
+
+    torch.cuda.empty_cache()
+
+    total_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    logger.info(f"[RDMA] CPU pinned replica: {gpu_params} params, " f"{total_bytes / (1024**3):.2f} GB")
+    print_memory("[RDMA] After moving replica to CPU and freeing GPU")
+    return model
+
+
+def query_remote_weight_infos(
+    rollout_engines: Sequence[ActorHandle],
+    targets,
+) -> tuple[dict, dict, dict]:
+    """Query remote rollout engines for weight info, session IDs, and server args.
+
+    Returns:
+        (remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args)
+    """
+    remote_weight_infos_by_session_id = {}
+    targets_to_session_id = {}
+    session_id_to_server_args = {}
+    targets_to_query = set((target.engine_ind, target.engine_rank) for target in targets)
+
+    for engine_ind, engine_rank in targets_to_query:
+        session_id, weights_info = ray.get(
+            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(rank=engine_rank)
+        )
+        parallelism_info = ray.get(rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank))
+
+        session_id_to_server_args[session_id] = create_server_args_from_dict(
+            ray.get(rollout_engines[engine_ind].get_server_info.remote())
+        )
+        assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
+        logger.info(f"[RDMA] Obtained remote {session_id} info from rollout engine {engine_ind} rank {engine_rank}")
+        logger.info(f"[RDMA] Remote weight info has {len(weights_info)} tensors.")
+        remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
+        targets_to_session_id[(engine_ind, engine_rank)] = session_id
+
+    return remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args
+
+
+@dataclasses.dataclass
+class RemoteWeightInfo:
+    session_id: str
+    weights_info: dict[str, tuple[int, int, int]]  # name -> (remote_address, numel, element_size)
+
+
+class RDMATransferManager:
+    """Generic async task manager for RDMA writes.
+
+    Accepts arbitrary callables via submit(), runs them in a thread pool,
+    and tracks futures for bulk waiting.
+    """
+
+    def __init__(self, num_workers: int = 8):
+        self.num_workers = num_workers
+        self.executor: ThreadPoolExecutor | None = None
+        self.transfer_futures: list[Future] = []
+
+    def ensure_started(self) -> None:
+        if self.executor is None:
+            self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
+
+    def submit(self, fn: Callable, *args) -> None:
+        """Submit a callable to the thread pool."""
+        self.ensure_started()
+        future = self.executor.submit(fn, *args)
+        self.transfer_futures.append(future)
+
+    def submit_returning_future(self, fn: Callable, *args) -> Future:
+        """Submit a callable and return its future (also tracked for bulk waiting)."""
+        self.ensure_started()
+        future = self.executor.submit(fn, *args)
+        self.transfer_futures.append(future)
+        return future
+
+    def wait_transfers(self) -> None:
+        """Wait for all submitted tasks to complete."""
+        for future in self.transfer_futures:
+            try:
+                future.result(timeout=30.0)
+            except Exception as e:
+                logger.error(f"[RDMA] Transfer future failed: {e}")
+
+        self.transfer_futures.clear()
 
 
 @dataclasses.dataclass
@@ -36,6 +188,7 @@ class EngineRankInfo:
 
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
+
 
 
 class UpdateWeightFromRDMASharedBuffer(UpdateWeightFromRemote):
@@ -166,12 +319,6 @@ class UpdateWeightFromRDMASharedBuffer(UpdateWeightFromRemote):
         The model object (layers, weight_loaders) stays alive but shares the underlying
         storage with the first replica's CPU pinned buffers. No new CPU allocation.
         """
-        from sglang.srt import server_args as server_args_module
-        from sglang.srt.configs.device_config import DeviceConfig
-        from sglang.srt.configs.load_config import LoadConfig
-        from sglang.srt.configs.model_config import ModelConfig
-        from sglang.srt.model_loader import get_model
-
         load_config = LoadConfig(
             load_format="dummy",
             model_loader_extra_config=None,

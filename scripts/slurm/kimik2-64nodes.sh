@@ -76,11 +76,11 @@ setup_and_run() {
     git reset --hard jd/remote-instance-loader-slime-integration
 
     cd /root/miles
-    git remote add lt https://github.com/Risc-lt/miles.git 2>/dev/null || true
+    git remote add jd https://github.com/JD-ETH/miles.git 2>/dev/null || true
     git config user.name JD-ETH && git config user.email jaedon.guo@gmail.com
     git add -A && git stash
-    git fetch lt --quiet
-    git reset --hard lt/jd/rdma-sharable-cpu-replica
+    git fetch jd --quiet
+    git reset --hard jd/rdma-weight-transfer-with-profiling
 
     # ---- symlinks ----
     rm -rf /root/models /root/datasets /root/multinode

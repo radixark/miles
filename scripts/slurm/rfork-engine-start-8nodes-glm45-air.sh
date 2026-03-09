@@ -16,7 +16,7 @@
 # Standalone sbatch script – seed-based engine start (8 nodes, 64 GPUs)
 #
 # Runs test_weight_transfer_moe_multinode_glm45_air_8nodes.py for GLM-4.5-Air
-# (106B MoE) across ALL transfer modes (nccl, rdma, rdma-shared) using the
+# (106B MoE) across ALL transfer modes (nccl, rdma) using the
 # jd/rfork-engine-start miles branch.
 #
 # 4 nodes (32 GPUs) for training, 4 nodes (32 GPUs) for rollout.
@@ -82,11 +82,11 @@ setup_and_run() {
     git reset --hard jd/remote-instance-loader-miles-integration
 
     cd /root/miles
-    git remote add lt https://github.com/Risc-lt/miles.git 2>/dev/null || true
+    git remote add jd https://github.com/JD-ETH/miles.git 2>/dev/null || true
     git config user.name JD-ETH && git config user.email jaedon.guo@gmail.com
     git add -A && git stash
-    git fetch lt --quiet
-    git reset --hard lt/jd/rdma-sharable-cpu-replica
+    git fetch jd --quiet
+    git reset --hard jd/rdma-weight-transfer-with-profiling
 
     # ---- symlinks ----
     rm -rf /root/models /root/datasets /root/multinode
@@ -105,7 +105,7 @@ setup_and_run() {
     # ---- run test ----
     echo "Starting test ... MILES_LOG_DIR=${MILES_LOG_DIR}"
     python /root/miles/tests/test_weight_transfer_moe_multinode_glm45_air_8nodes.py \
-        --multinode --mode rdma-shared \
+        --multinode --mode rdma \
         --head-node-ip ${HEAD_NODE_IP} --nnodes ${NNODES} --node-rank ${NODE_RANK} \
         --enable-nccl-nvls --released-mc-transfer-timeout --wait-after \
         --bucket-size '"${BUCKET_SIZE}"' \
