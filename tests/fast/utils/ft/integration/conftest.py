@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 import ray
@@ -23,6 +25,9 @@ def _init_local_ray(*, include_dashboard: bool) -> tuple[ray.runtime_env.Runtime
     if ray.is_initialized():
         ray.shutdown()
     subprocess.run(["ray", "stop", "--force"], capture_output=True)
+    ray_tmp = Path("/tmp/ray")
+    if ray_tmp.exists():
+        shutil.rmtree(ray_tmp, ignore_errors=True)
     kwargs: dict[str, object] = dict(
         address="local",
         num_cpus=32,
