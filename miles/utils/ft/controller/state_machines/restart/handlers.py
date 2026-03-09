@@ -14,6 +14,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     RestartFailed,
     RestartState,
     StoppingAndRestarting,
+    WaitingForNewNode,
 )
 from miles.utils.ft.controller.state_machines.restart.utils import (
     get_already_bad_nodes,
@@ -75,6 +76,15 @@ class EvictingHandler(StateHandler[Evicting, RestartContext]):
             content=f"Evicted: {nodes_to_mark}",
             severity="warning",
         )
+
+        if ctx.get_expected_node_count is not None:
+            expected = await ctx.get_expected_node_count()
+            return WaitingForNewNode(
+                bad_node_ids=state.bad_node_ids,
+                wait_start_time=datetime.now(timezone.utc),
+                expected_node_count=expected,
+            )
+
         return StoppingAndRestarting(bad_node_ids=state.bad_node_ids)
 
 
@@ -135,6 +145,33 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
             if elapsed > _PENDING_TIMEOUT_SECONDS:
                 logger.warning("restart_pending_timeout elapsed=%.0f", elapsed)
                 return RestartFailed(bad_node_ids=state.bad_node_ids)
+
+        return None
+
+
+class WaitingForNewNodeHandler(StateHandler[WaitingForNewNode, RestartContext]):
+    async def step(
+        self,
+        state: WaitingForNewNode,
+        ctx: RestartContext,
+    ) -> RestartState | None:
+        if ctx.get_current_alive_node_count is None:
+            logger.warning("get_current_alive_node_count not configured, skipping wait")
+            return StoppingAndRestarting(bad_node_ids=state.bad_node_ids)
+
+        current_count = await ctx.get_current_alive_node_count()
+        if current_count >= state.expected_node_count:
+            logger.info(
+                "new_node_arrived current=%d expected=%d",
+                current_count,
+                state.expected_node_count,
+            )
+            return StoppingAndRestarting(bad_node_ids=state.bad_node_ids)
+
+        elapsed = (datetime.now(timezone.utc) - state.wait_start_time).total_seconds()
+        if elapsed > ctx.waiting_for_node_timeout_seconds:
+            logger.error("waiting_for_new_node_timeout elapsed=%.0f", elapsed)
+            return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         return None
 

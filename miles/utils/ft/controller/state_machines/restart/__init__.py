@@ -2,6 +2,7 @@ from miles.utils.ft.controller.state_machines.restart.handlers import (
     EvictingHandler,
     MonitoringProgressHandler,
     StoppingAndRestartingHandler,
+    WaitingForNewNodeHandler,
     iteration_progress,
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
@@ -12,6 +13,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     RestartFailed,
     RestartState,
     StoppingAndRestarting,
+    WaitingForNewNode,
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
@@ -19,6 +21,7 @@ RestartContext.model_rebuild()
 
 _RESTART_HANDLER_MAP: dict[type, type] = {
     Evicting: EvictingHandler,
+    WaitingForNewNode: WaitingForNewNodeHandler,
     StoppingAndRestarting: StoppingAndRestartingHandler,
     MonitoringProgress: MonitoringProgressHandler,
 }
@@ -42,6 +45,8 @@ __all__ = [
     "RestartState",
     "StoppingAndRestarting",
     "StoppingAndRestartingHandler",
+    "WaitingForNewNode",
+    "WaitingForNewNodeHandler",
     "create_restart_stepper",
     "iteration_progress",
 ]
