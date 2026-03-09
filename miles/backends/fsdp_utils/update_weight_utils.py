@@ -167,7 +167,12 @@ class UpdateWeightFromTensor(UpdateWeight):
                     "weight_version": str(weight_version),
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
-                ray.get(ref)
+                result = ray.get(ref)
+                if hasattr(result, "success") and not result.success:
+                    error_msg = getattr(result, "error_message", "unknown error")
+                    raise RuntimeError(
+                        f"Weight sync failed on rollout engine: {error_msg}. " f"Check SGLang version compatibility."
+                    )
 
         if dist.get_rank() == self._ipc_gather_src:
             ref = self._ipc_engine.flush_cache.remote()

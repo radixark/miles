@@ -173,10 +173,14 @@ class RolloutManager:
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
 
-    def offload(self):
+    def offload(self, tags: list[str] | None = None):
         self.health_monitoring_pause()
         return ray.get(
-            [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
+            [
+                engine.release_memory_occupation.remote(tags=tags)
+                for engine in self.rollout_engines
+                if engine is not None
+            ]
         )
 
     def onload(self, tags: list[str] | None = None):
@@ -187,6 +191,14 @@ class RolloutManager:
                 if engine is not None
             ]
         )
+
+    def health_monitoring_pause(self):
+        if self.args.use_fault_tolerance and self._health_monitor is not None:
+            self._health_monitor.pause()
+
+    def health_monitoring_resume(self):
+        if self.args.use_fault_tolerance and self._health_monitor is not None:
+            self._health_monitor.resume()
 
     def onload_weights(self):
         self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
@@ -214,14 +226,6 @@ class RolloutManager:
     def clear_num_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights
         self.num_new_engines = 0
-
-    def health_monitoring_pause(self) -> None:
-        if self._health_monitor is not None:
-            self._health_monitor.pause()
-
-    def health_monitoring_resume(self) -> None:
-        if self._health_monitor is not None:
-            self._health_monitor.resume()
 
     def check_weights(self, action: str):
         return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
@@ -509,6 +513,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
             "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
             "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
             "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
@@ -750,6 +755,8 @@ def compute_metrics_from_samples(args, samples):
     log_dict = {}
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
+    log_dict |= _compute_spec_metrics(args, samples)
+    log_dict |= _compute_prefix_cache_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()

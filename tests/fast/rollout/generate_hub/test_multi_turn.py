@@ -570,3 +570,83 @@ class TestRoutedExpertsMultiTurn:
         assert sample.rollout_routed_experts.shape == second_routed_experts.shape
         np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)
         assert len(sample.tokens) - 1 == second_routed_experts.shape[0]
+
+
+_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"]
+_AGENT_METADATA = {"reward": 1.0, "exit_status": "Submitted", "eval_report": {"passed": True}}
+
+
+class TestAgentMetadata:
+    """Tests specific to agentic_tool_call: agent function returning dict | None → metadata merge."""
+
+    @pytest.fixture(params=_AGENTIC_VARIANTS)
+    def variant(self, request):
+        return request.param
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"agentic_return_metadata": _AGENT_METADATA}}],
+        indirect=True,
+    )
+    def test_agent_metadata_merged_into_samples(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+        samples = listify(result.sample)
+        for s in samples:
+            for key, value in _AGENT_METADATA.items():
+                assert key in s.metadata, f"metadata should contain key '{key}'"
+                assert s.metadata[key] == value, f"metadata['{key}'] should be {value}, got {s.metadata[key]}"
+
+    def test_agent_returns_none_metadata_unchanged(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+        sample = make_sample(prompt=TwoTurnStub.PROMPT)
+        sample.metadata = {"instance_id": "test-123"}
+
+        result = _run_generate(variant, generation_env, sample)
+
+        samples = listify(result.sample)
+        for s in samples:
+            assert s.metadata.get("instance_id") == "test-123"
+            assert "reward" not in s.metadata
+
+
+class TestAgentNoRecords:
+    """When agent makes no model calls, generate should return an ABORTED sample."""
+
+    @pytest.mark.parametrize("agentic_variant", _AGENTIC_VARIANTS)
+    def test_no_records_returns_aborted(self, agentic_variant):
+        from tests.fast.fixtures.generation_fixtures import (
+            GenerateEnv,
+            extra_argv_for_variant,
+            make_args,
+            with_miles_router,
+        )
+        from miles.utils.misc import SingletonMeta
+        from miles.utils.test_utils.mock_sglang_server import with_mock_server
+
+        SingletonMeta.clear_all_instances()
+
+        with with_mock_server(
+            model_name=MODEL_NAME,
+            process_fn=lambda _: ProcessResult(text="unused", finish_reason="stop"),
+        ) as mock_server:
+            with with_miles_router(mock_server.url, MODEL_NAME) as router_port:
+                noop_argv = extra_argv_for_variant(
+                    agentic_variant,
+                    custom_agent_function_path="miles.utils.test_utils.mock_tools.run_agentic_noop",
+                )
+                args = make_args(
+                    variant=agentic_variant,
+                    router_port=router_port,
+                    extra_argv=noop_argv,
+                )
+                env = GenerateEnv(args=args, mock_server=mock_server)
+                result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+        SingletonMeta.clear_all_instances()
+
+        samples = listify(result.sample)
+        assert len(samples) == 1
+        assert samples[0].status == Sample.Status.ABORTED
