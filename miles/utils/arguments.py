@@ -10,10 +10,8 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
-from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +196,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
             )
+            parser.add_argument(
+                "--update-weight-transfer-mode",
+                choices=["nccl", "rdma"],
+                default="nccl",
+                help="The method to transfer weights to remote rollout engines during update weight.",
+            )
+            parser.add_argument(
+                "--rdma-transfer-workers",
+                type=int,
+                default=8,
+                help="Number of threadpool workers for async RDMA transfers. "
+                "RDMA writes are NIC-bound, so more threads = more concurrent NIC utilization. "
+                "Default 8 matches typical 8 GPUs/node (one thread per engine rank).",
+            )
+            parser.add_argument(
+                "--rdma-shared-buffer",
+                action="store_true",
+                help="Use shared CPU pinned buffer for RDMA weight transfer (reduces CPU memory 8×).",
+            )
 
             return parser
 
@@ -228,11 +245,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-function-path",
                 type=str,
-                default=(
-                    "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-                    if enable_experimental_rollout_refactor()
-                    else "miles.rollout.sglang_rollout.generate_rollout"
-                ),
+                default="miles.rollout.sglang_rollout.generate_rollout",
                 help=(
                     "Path to the rollout generation function."
                     "You should use this model to create your own custom rollout function, "
@@ -458,6 +471,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 nargs="+",
                 help="Address and ports of the external engines.",
+            )
+            # from https://github.com/Risc-lt/sglang/blob/cc8883ff7bf63dda8627cc696d49055e0c573d5b/python/sglang/srt/model_executor/model_runner.py
+            parser.add_argument(
+                "--update-weights-p2p-transfer",
+                action="store_true",
+                default=False,
+                help="Enable P2P weight transfer between GPUs when updating model weights in RL training.",
+            )
+            parser.add_argument(
+                "--p2p-transfer-ib-device",
+                type=str,
+                default=None,
+                help="The InfiniBand devices for P2P transfer, accepts single device (e.g., --p2p-transfer-ib-device mlx5_0) "
+                "or multiple comma-separated devices (e.g., --p2p-transfer-ib-device mlx5_0,mlx5_1). "
+                "Default is None, which triggers automatic device detection when mooncake backend is enabled.",
             )
             return parser
 
@@ -1220,6 +1248,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--use-pytorch-profiler-update-weight",
+                action="store_true",
+                default=False,
+                help="Enable PyTorch profiler for weight update operations. Requires --tensorboard-dir to be set.",
+            )
+            parser.add_argument(
+                "--profile-update-weight-start",
+                type=int,
+                default=0,
+                help="After enabling PyTorch profiler for weight update operations, start profiling from this point. Requires --tensorboard-dir to be set.",
+            )
+            parser.add_argument(
+                "--profile-update-weight-end",
+                type=int,
+                default=1,
+                help="After enabling PyTorch profiler for weight update operations, end profiling at this point. Requires --tensorboard-dir to be set.",
+            )
             return parser
 
         def add_network_arguments(parser):
@@ -1449,25 +1495,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_user_provided_function_arguments(parser):
-            args_partial, _ = parser.parse_known_args()
-            for path in [
-                args_partial.rollout_function_path,
-                args_partial.custom_generate_function_path,
-            ]:
-                try:
-                    fn = load_function(path)
-                except (ModuleNotFoundError, ValueError):
-                    continue
-                if fn is not None and callable(getattr(fn, "add_arguments", None)):
-                    fn.add_arguments(parser)
-            return parser
-
         def add_sglang_tp_size():
             temp_parser = argparse.ArgumentParser(add_help=False)
             temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
+            temp_parser.add_argument("--sglang-pp-size", type=int, default=1)
+            temp_parser.add_argument("--sglang-pipeline-parallel-size", type=int, default=1)
             temp_args, _ = temp_parser.parse_known_args()
-            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
+            # Use sglang_pp_size if set (non-default), otherwise use sglang_pipeline_parallel_size
+            pp_size = (
+                temp_args.sglang_pp_size if temp_args.sglang_pp_size != 1 else temp_args.sglang_pipeline_parallel_size
+            )
+            sglang_tp_size = temp_args.rollout_num_gpus_per_engine // pp_size
             return sglang_tp_size
 
         # Add custom arguments in front to prevent overwritten some miles arguments.
@@ -1494,8 +1532,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
-        if enable_experimental_rollout_refactor():
-            parser = add_user_provided_function_arguments(parser)
         reset_arg(
             parser,
             "--custom-config-path",
@@ -1532,13 +1568,15 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
+        logger.warning(
+            "🚧 🚧 🚧 FSDP backend is being rewritten, please use Megatron backend for better stability. 🚧 🚧 🚧"
+        )
+
         from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-
-        assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
     miles_validate_args(args)
 

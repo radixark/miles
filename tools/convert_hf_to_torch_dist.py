@@ -64,11 +64,6 @@ def get_args():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     args.global_batch_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-    assert world_size <= args.num_layers, (
-        f"World size {world_size} must be less than or equal to number of layers {args.num_layers}. "
-        "You are using too many GPUs for this conversion."
-    )
-
     def ceildiv(a, b):
         return -(a // -b)
 

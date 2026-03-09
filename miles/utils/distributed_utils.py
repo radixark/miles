@@ -21,7 +21,7 @@ def init_gloo_group():
     """Initialize Gloo group for distributed communication."""
     global GLOO_GROUP
     if GLOO_GROUP is None:
-        GLOO_GROUP = dist.new_group(backend="gloo")
+        GLOO_GROUP = dist.new_group(backend="gloo", timeout=timedelta(hours=2))
     return GLOO_GROUP
 
 

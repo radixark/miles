@@ -1,9 +1,13 @@
+import gzip
+import json
 import logging
+import tempfile
 import time
 import traceback
 from pathlib import Path
 
 import torch
+from torch.profiler import record_function
 
 from miles.utils.memory_utils import print_memory
 
@@ -76,6 +80,78 @@ def _create_torch_profiler(args, name):
         profile_memory=True,
         with_flops=True,
     )
+
+
+class FunctionStepProfiler:
+    """
+    Wraps a function to profile each invocation.
+
+    Uses torch.profiler.profile with CUDA activities to capture kernel-level
+    details and Python-to-CUDA correlation.
+    """
+
+    def __init__(self, args, name: str, label: str = "target_fn", start: int = 0, end: int = 1):
+        self.args = args
+        self.name = name
+        self.label = label
+        self.call_count = 0
+        self.enabled = True
+        self.output_dir = Path(args.tensorboard_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.start = start
+        self.end = end
+
+    def wrap(self, fn):
+        def _wrapped(*args, **kwargs):
+            if not self.enabled:
+                return fn(*args, **kwargs)
+            self.call_count += 1
+            if not (self.start <= self.call_count < self.end):
+                return fn(*args, **kwargs)
+            logger.info(f"FunctionStepProfiler: Profiling call {self.call_count} for '{self.label}'")
+
+            try:
+                # Determine activities based on CUDA availability
+                assert torch.cuda.is_available(), "CUDA must be available for FunctionStepProfiler"
+                activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+
+                # Use torch.profiler.profile for proper CUDA kernel profiling
+                with torch.profiler.profile(
+                    activities=activities,
+                    record_shapes=True,
+                    with_stack=True,
+                    profile_memory=True,
+                    with_flops=True,
+                ) as prof:
+                    with record_function(self.label):
+                        result = fn(*args, **kwargs)
+                        torch.cuda.synchronize()
+
+                # Export the trace to a gzipped file
+                rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+                trace_file = self.output_dir / f"{self.name}_call{self.call_count}_rank_{rank}.pt.trace.json.gz"
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=True) as tmp:
+                    prof.export_chrome_trace(tmp.name)
+                    with open(tmp.name, "rb") as f_in, gzip.open(trace_file, "wb") as f_out:
+                        f_out.write(f_in.read())
+                logger.info(f"FunctionStepProfiler: Call {self.call_count} profiled, trace saved to {trace_file}")
+                return result
+            except Exception as e:
+                raise ValueError(f"FunctionStepProfiler: Profiler error for '{self.label}', details: {e}") from e
+
+        return _wrapped
+
+
+def merge_traces(name="update_weights", call_end=5, rank=0, output_dir="/root/profiler_logs/"):
+    merged = {"traceEvents": []}
+    output_file = Path(output_dir) / f"merged_{name}_rank_{rank}_merged.pt.trace.json.gz"
+    for call_iter in range(1, call_end):
+        f = Path(output_dir) / f"{name}_call{call_iter}_rank_{rank}.pt.trace.json.gz"
+        with gzip.open(f, "rt") as fp:
+            data = json.load(fp)
+            merged["traceEvents"].extend(data.get("traceEvents", []))
+    with gzip.open(output_file, "wt") as fp:
+        json.dump(merged, fp)
 
 
 class _BaseMemoryProfiler:

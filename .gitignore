@@ -182,6 +182,7 @@ local/
 **/rollout_data/
 **/buffer_stats/
 *.out
+*.err
 *.pkl
 *.code-workspace
 

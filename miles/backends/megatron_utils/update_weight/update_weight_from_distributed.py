@@ -6,18 +6,16 @@ from collections.abc import Callable, Mapping, Sequence
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
-from miles.utils.distributed_utils import get_gloo_group, init_process_group
+from miles.utils.distributed_utils import init_process_group
 
-from ..megatron_to_hf import convert_to_hf
-from .common import all_gather_param, named_params_and_buffers
+from .update_weight_from_remote import UpdateWeightFromRemote
 
 
-class UpdateWeightFromDistributed:
+class UpdateWeightFromDistributed(UpdateWeightFromRemote):
     """
     Update distributed engines via NCCL. Each PP rank: group "miles-pp_{pp_rank}",
     only DP=TP=0 broadcasts. Non-expert (TP) and expert (EP) params separate.
@@ -36,11 +34,19 @@ class UpdateWeightFromDistributed:
         """
         Initialize. Groups created in connect_rollout_engines.
         """
-        self.args = args
-        self.model = model
-        self.model_name = model_name
-        self.quantization_config = quantization_config
-        self.weight_version = 0
+        super().__init__(
+            args,
+            model,
+            weights_getter,
+            model_name=model_name,
+            quantization_config=quantization_config,
+            weight_update_mode="nccl",
+        )
+
+        if self._is_source:
+            assert self.transfer_plan.mode == "nccl", "Only NCCL supported currently."
+            self._group_name = self.transfer_plan.get_nccl_group()
+        # Indicates if the nccl group has been established.
         self._model_update_groups = None
 
     def connect_rollout_engines(
@@ -55,15 +61,9 @@ class UpdateWeightFromDistributed:
         # For TP:
         #   1. AllGather parameters to rank 0
         #   2. Broadcast parameters from rank 0 to all sglang engines
-        self._is_pp_src_rank = (
-            mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
-        )
-        pp_rank = mpu.get_pipeline_model_parallel_rank()
-        if self._is_pp_src_rank:
-            self._group_name = f"miles-pp_{pp_rank}"
-
-        if self._is_pp_src_rank:
+        if self._is_source:
             if self._model_update_groups is not None:
+                # Reestablish group if already connected, e.g. new instance has joined.
                 disconnect_rollout_engines_from_distributed(
                     self.args, self._group_name, self._model_update_groups, self.rollout_engines
                 )
@@ -230,7 +230,6 @@ class UpdateWeightFromDistributed:
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
-
         refs = update_weights_from_distributed(
             self._group_name,
             self._model_update_groups,
@@ -316,22 +315,3 @@ def update_weights_from_distributed(
         handle.wait()
 
     return refs
-
-
-def post_process_weights(
-    restore_weights_before_load: bool,
-    post_process_quantization: bool,
-    rollout_engines: Sequence[ActorHandle],
-):
-    """
-    Trigger post-process for int4/fp4 quantization on all rollout engines.
-    """
-    ray.get(
-        [
-            engine.post_process_weights.remote(
-                restore_weights_before_load=restore_weights_before_load,
-                post_process_quantization=post_process_quantization,
-            )
-            for engine in rollout_engines
-        ]
-    )

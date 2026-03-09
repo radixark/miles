@@ -114,7 +114,17 @@ class SGLangEngine(RayActor):
         self.worker_type = worker_type
         self.base_gpu_id = base_gpu_id
 
-    def init(self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None):
+    def init(
+        self,
+        dist_init_addr,
+        port,
+        nccl_port,
+        host=None,
+        disaggregation_bootstrap_port=None,
+        node_hosts=None,
+        seed_instance_ip=None,
+        seed_instance_service_port=None,
+    ):
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
 
@@ -144,6 +154,9 @@ class SGLangEngine(RayActor):
             self.worker_type,
             disaggregation_bootstrap_port,
             base_gpu_id=self.base_gpu_id,
+            node_hosts=node_hosts,
+            seed_instance_ip=seed_instance_ip,
+            seed_instance_service_port=seed_instance_service_port,
         )
 
         self.node_rank = server_args_dict["node_rank"]
@@ -218,7 +231,9 @@ class SGLangEngine(RayActor):
             return
 
         url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
+
         response = requests.post(url, json=payload or {})
+
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -352,6 +367,32 @@ class SGLangEngine(RayActor):
                 response.raise_for_status()
         kill_process_tree(self.process.pid)
 
+    def get_remote_instance_transfer_engine_info(self, rank: int):
+        response = requests.get(
+            f"http://{self.server_host}:{self.server_port}/get_remote_instance_transfer_engine_info",
+            params={"rank": rank},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        return response.json()["remote_instance_transfer_engine_info"]
+
+    def get_parallelism_info(self, rank: int):
+        response = requests.get(
+            f"http://{self.server_host}:{self.server_port}/parallelism_config",
+            params={"rank": rank},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_server_info(self):
+        response = requests.get(
+            f"http://{self.server_host}:{self.server_port}/server_info",
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_weight_version(self):
         if self.node_rank != 0:
             return
@@ -461,6 +502,12 @@ class SGLangEngine(RayActor):
             },
         )
 
+    def update_weight_version(self, weight_version: str):
+        return self._make_request(
+            "update_weight_version",
+            {"new_version": weight_version},
+        )
+
     def start_profile(
         self,
         # The output directory
@@ -517,6 +564,9 @@ def _compute_server_args(
     worker_type: str = "regular",
     disaggregation_bootstrap_port: int | None = None,
     base_gpu_id: int | None = None,
+    node_hosts: str | None = None,
+    seed_instance_ip: str | None = None,
+    seed_instance_service_port: int | None = None,
 ):
     nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
@@ -539,7 +589,7 @@ def _compute_server_args(
         "gpu_id_step": 1,
         "base_gpu_id": base,
         # parallel
-        "tp_size": args.rollout_num_gpus_per_engine,
+        "tp_size": args.rollout_num_gpus_per_engine // args.sglang_pp_size,
         "dp_size": args.sglang_dp_size,
         "pp_size": args.sglang_pp_size,
         "ep_size": args.sglang_ep_size,
@@ -564,6 +614,8 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
+    if node_hosts is not None and nnodes > 1:
+        kwargs["node_hosts"] = node_hosts
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     if is_lora_enabled(args):
@@ -576,6 +628,14 @@ def _compute_server_args(
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
+
+    # Override load_format for follower engines that load from a seed
+    if seed_instance_ip is not None and seed_instance_service_port is not None:
+        kwargs["load_format"] = "remote_instance"
+        kwargs["remote_instance_weight_loader_seed_instance_ip"] = seed_instance_ip
+        kwargs["remote_instance_weight_loader_seed_instance_service_port"] = seed_instance_service_port
+        kwargs["remote_instance_weight_loader_backend"] = "transfer_engine"
+        kwargs["remote_instance_weight_loader_start_seed_via_transfer_engine"] = True
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
