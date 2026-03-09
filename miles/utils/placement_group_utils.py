@@ -19,6 +19,11 @@ class BundleLocationSnapshot:
 
 
 @dataclass
+class RefreshResult:
+    changed_ranks: list[int]
+
+
+@dataclass
 class PlacementGroupInfo:
     pg: PlacementGroup
     _bundle_location_snapshots: list[BundleLocationSnapshot] = field(default_factory=list)
@@ -38,6 +43,52 @@ class PlacementGroupInfo:
         if step != 1:
             raise ValueError("PlacementGroupInfo does not support step in slicing")
         return PlacementGroupSlice(_owner=self, _offset=start, _count=stop - start)
+
+    def refresh(self) -> RefreshResult:
+        """Re-probe all bundles and partially re-sort only changed ranks.
+
+        Calls _probe_bundles with a tiny GPU fraction (0.001) so that probing
+        can co-exist with live actors on the same bundles.
+        """
+        new_probes = _probe_bundles(
+            self.pg,
+            num_bundles=len(self._bundle_location_snapshots),
+            num_gpus=0.001,
+        )
+        return self._refresh_from_probes(new_probes)
+
+    def _refresh_from_probes(self, new_probes: list[BundleLocationSnapshot]) -> RefreshResult:
+        """Pure algorithm: detect changed ranks and partially re-sort.
+
+        Unchanged ranks keep their exact (bundle_index, node_ip, gpu_id).
+        Changed ranks (node_ip differs) are re-sorted among themselves.
+        """
+        probe_by_index: dict[int, BundleLocationSnapshot] = {
+            p.bundle_index: p for p in new_probes
+        }
+
+        # Step 1: find changed logical ranks
+        changed_ranks: list[int] = []
+        for rank, old_bundle in enumerate(self._bundle_location_snapshots):
+            new_probe = probe_by_index[old_bundle.bundle_index]
+            if new_probe.node_ip != old_bundle.node_ip:
+                changed_ranks.append(rank)
+
+        if not changed_ranks:
+            return RefreshResult(changed_ranks=[])
+
+        # Step 2: sort new probes for changed ranks
+        new_probes_for_changed = [
+            probe_by_index[self._bundle_location_snapshots[r].bundle_index]
+            for r in changed_ranks
+        ]
+        new_probes_for_changed.sort(key=_bundle_sort_key)
+
+        # Step 3: write back in-place
+        for rank, new_probe in zip(changed_ranks, new_probes_for_changed):
+            self._bundle_location_snapshots[rank] = new_probe
+
+        return RefreshResult(changed_ranks=changed_ranks)
 
 
 @dataclass
