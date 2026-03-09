@@ -31,7 +31,9 @@ class BaseNodeExecutor(NodeExecutorProtocol):
         )
         if not is_abstract:
             own_annotations = cls.__dict__.get("__annotations__", {})
-            if "diagnostic_type" not in cls.__dict__ and "diagnostic_type" not in own_annotations:
+            has_own = "diagnostic_type" in cls.__dict__ or "diagnostic_type" in own_annotations
+            has_inherited_value = hasattr(cls, "diagnostic_type")
+            if not has_own and not has_inherited_value:
                 raise TypeError(f"{cls.__name__} must define a 'diagnostic_type' class attribute")
 
     def _fail(
