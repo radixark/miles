@@ -31,7 +31,9 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
 
     global TOKENIZER, PROCESSOR, MASK_GENERATOR, SAMPLE_PRINTED
     if TOKENIZER is None:
-        TOKENIZER = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        TOKENIZER = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
 
     if PROCESSOR is None:
         PROCESSOR = load_processor(args.hf_checkpoint, trust_remote_code=True)

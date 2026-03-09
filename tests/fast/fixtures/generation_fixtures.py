@@ -219,7 +219,6 @@ def with_miles_router(backend_url: str, model_name: str):
         miles_router_middleware_paths=[],
         rollout_health_check_interval=60,
         miles_router_health_check_failure_threshold=3,
-        miles_router_enable_token_input_for_chat_completions=False,
         hf_checkpoint=model_name,
     )
     router = MilesRouter(router_args)
@@ -262,7 +261,8 @@ def generation_env(request, variant):
 
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
         with with_miles_router(mock_server.url, model_name) as router_port:
-            other_args_kwargs = {k: v for k, v in args_kwargs.items() if k != "model_name"}
+            _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
+            other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
             args = make_args(
                 variant=variant,
                 router_port=router_port,
@@ -272,7 +272,9 @@ def generation_env(request, variant):
             )
             if variant.startswith("agentic_tool_call"):
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
+                mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)
 
     mock_tools.AGENTIC_MAX_TURNS = None
+    mock_tools.AGENTIC_RETURN_METADATA = None
     SingletonMeta.clear_all_instances()
