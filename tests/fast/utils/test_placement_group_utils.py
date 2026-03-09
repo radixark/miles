@@ -304,3 +304,38 @@ class TestPartialResortSnapshots:
             BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.5", gpu_id="2"),
             BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
         ]
+
+    def test_node_swap(self) -> None:
+        """Two bundles swap nodes (A->B, B->A) — sort decides final rank assignment."""
+        old = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        assert result == [
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+
+    def test_new_snapshots_order_irrelevant(self) -> None:
+        """new_snapshots order doesn't matter — lookup is by bundle_index."""
+        old = _make_six_bundle_snapshots()
+        new_forward = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        new_reversed = list(reversed(new_forward))
+
+        assert _partial_resort_snapshots(old, new_forward) == _partial_resort_snapshots(old, new_reversed)
