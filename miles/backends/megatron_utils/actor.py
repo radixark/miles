@@ -172,6 +172,7 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before offload model")
         destroy_process_groups()
 
+        self._free_grad_buffers()
         torch_memory_saver.pause()
 
         print_memory("after offload model")
@@ -185,10 +186,34 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before wake_up model")
 
         torch_memory_saver.resume()
+        self._realloc_grad_buffers()
 
         clear_memory()
         reload_process_groups()
         print_memory("after wake_up model")
+
+    def _get_grad_buffers(self):
+        """Get all ParamAndGradBuffer objects from the DDP model."""
+        ddp_model = self.model[0]
+        return ddp_model.buffers + ddp_model.expert_parallel_buffers
+
+    def _free_grad_buffers(self):
+        """Free gradient buffer GPU memory before pause() to avoid unnecessary CPU offload.
+
+        Gradient data is consumed after optimizer.step() and zeroed at the start of each
+        training iteration, so it does not need to be preserved across sleep/wake_up cycles.
+        This saves ~4 bytes/param of CPU memory during offload.
+        """
+        self._grad_buffer_nbytes = []
+        for buffer in self._get_grad_buffers():
+            self._grad_buffer_nbytes.append(buffer.grad_data.untyped_storage().nbytes())
+            buffer.grad_data.untyped_storage().resize_(0)
+
+    def _realloc_grad_buffers(self):
+        """Reallocate gradient buffers after resume(). Views (param.main_grad) remain valid."""
+        for buffer, nbytes in zip(self._get_grad_buffers(), self._grad_buffer_nbytes):
+            buffer.grad_data.untyped_storage().resize_(nbytes)
+            buffer.grad_data.zero_()
 
     def _switch_model(self, target_tag: str) -> None:
         if target_tag not in self.weights_backuper.backup_tags:
