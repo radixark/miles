@@ -43,6 +43,7 @@ def _make_context(
     on_new_run: object | None = None,
     monitoring_success_iterations: int = 10,
     monitoring_timeout_seconds: int = 600,
+    resolve_k8s_node_name: object | None = None,
 ) -> RestartContext:
     return RestartContext(
         node_manager=node_manager or FakeNodeManager(),
@@ -52,6 +53,7 @@ def _make_context(
         on_new_run=on_new_run,
         monitoring_success_iterations=monitoring_success_iterations,
         monitoring_timeout_seconds=monitoring_timeout_seconds,
+        resolve_k8s_node_name=resolve_k8s_node_name,
     )
 
 
@@ -142,6 +144,53 @@ class TestEvicting:
 
         assert isinstance(result, StoppingAndRestarting)
         assert result.bad_node_ids == ["node-A", "node-B"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_k8s_translates_ray_id_to_k8s_node_name(self) -> None:
+        """When resolve_k8s_node_name is set, mark_node_bad receives the K8s node name."""
+        node_manager = FakeNodeManager()
+        stepper = _make_stepper()
+        ctx = _make_context(
+            node_manager=node_manager,
+            resolve_k8s_node_name=lambda ray_id: "gke-node-01" if ray_id == "ray-uuid-abc" else None,
+        )
+
+        state = Evicting(bad_node_ids=["ray-uuid-abc"])
+        result = await stepper(state, ctx)
+
+        assert isinstance(result, StoppingAndRestarting)
+        assert node_manager.is_node_bad("gke-node-01")
+        assert not node_manager.is_node_bad("ray-uuid-abc")
+
+    @pytest.mark.asyncio
+    async def test_resolve_k8s_skips_already_bad_by_k8s_name(self) -> None:
+        """already_bad returns K8s node names; resolved ID matches → skip."""
+        node_manager = FakeNodeManager()
+        await node_manager.mark_node_bad("gke-node-01", reason="prior")
+        stepper = _make_stepper()
+        ctx = _make_context(
+            node_manager=node_manager,
+            resolve_k8s_node_name=lambda ray_id: "gke-node-01",
+        )
+
+        state = Evicting(bad_node_ids=["ray-uuid-abc"])
+        result = await stepper(state, ctx)
+
+        assert isinstance(result, StoppingAndRestarting)
+        assert not node_manager.was_ever_marked_bad("ray-uuid-abc")
+
+    @pytest.mark.asyncio
+    async def test_resolve_k8s_none_falls_back_to_ray_id(self) -> None:
+        """resolve_k8s_node_name=None → fallback to raw ray node ID (existing behavior)."""
+        node_manager = FakeNodeManager()
+        stepper = _make_stepper()
+        ctx = _make_context(node_manager=node_manager, resolve_k8s_node_name=None)
+
+        state = Evicting(bad_node_ids=["ray-uuid-abc"])
+        result = await stepper(state, ctx)
+
+        assert isinstance(result, StoppingAndRestarting)
+        assert node_manager.is_node_bad("ray-uuid-abc")
 
 
 # ---------------------------------------------------------------------------
