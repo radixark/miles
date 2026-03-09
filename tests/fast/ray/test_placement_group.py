@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from miles.ray.placement_group import BundleProbe, PlacementGroupInfo, PlacementGroupSlice
+from miles.utils.placement_group_utils import BundleProbe, PlacementGroupInfo, PlacementGroupSlice
 
 
 class _FakePlacementGroup:
