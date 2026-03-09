@@ -208,6 +208,7 @@ class MegatronTrainRayActor(TrainRayActor):
         for buffer in self._get_grad_buffers():
             self._grad_buffer_nbytes.append(buffer.grad_data.untyped_storage().nbytes())
             buffer.grad_data.untyped_storage().resize_(0)
+        torch.cuda.empty_cache()
 
     def _realloc_grad_buffers(self):
         """Reallocate gradient buffers after resume(). Views (param.main_grad) remain valid."""
