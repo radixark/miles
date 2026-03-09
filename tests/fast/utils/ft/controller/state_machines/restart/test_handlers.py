@@ -16,7 +16,6 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from collections.abc import Awaitable, Callable
 
 from miles.utils.ft.controller.state_machines.restart import (
     Evicting,
@@ -25,7 +24,6 @@ from miles.utils.ft.controller.state_machines.restart import (
     RestartDone,
     RestartFailed,
     StoppingAndRestarting,
-    WaitingForNewNode,
     create_restart_stepper,
     iteration_progress,
 )
@@ -45,9 +43,6 @@ def _make_context(
     on_new_run: object | None = None,
     monitoring_success_iterations: int = 10,
     monitoring_timeout_seconds: int = 600,
-    waiting_for_node_timeout_seconds: int = 600,
-    get_expected_node_count: Callable[[], Awaitable[int]] | None = None,
-    get_current_alive_node_count: Callable[[], Awaitable[int]] | None = None,
 ) -> RestartContext:
     return RestartContext(
         node_manager=node_manager or FakeNodeManager(),
@@ -57,9 +52,6 @@ def _make_context(
         on_new_run=on_new_run,
         monitoring_success_iterations=monitoring_success_iterations,
         monitoring_timeout_seconds=monitoring_timeout_seconds,
-        waiting_for_node_timeout_seconds=waiting_for_node_timeout_seconds,
-        get_expected_node_count=get_expected_node_count,
-        get_current_alive_node_count=get_current_alive_node_count,
     )
 
 
@@ -70,7 +62,7 @@ def _make_context(
 
 class TestEvicting:
     @pytest.mark.asyncio
-    async def test_evicting_marks_bad_and_transitions_to_waiting(self) -> None:
+    async def test_evicting_marks_bad_and_transitions_to_stopping(self) -> None:
         node_manager = FakeNodeManager()
         stepper = _make_stepper()
         ctx = _make_context(node_manager=node_manager)
@@ -78,7 +70,7 @@ class TestEvicting:
         state = Evicting(bad_node_ids=["node-A"])
         result = await stepper(state, ctx)
 
-        assert isinstance(result, WaitingForNewNode)
+        assert isinstance(result, StoppingAndRestarting)
         assert result.bad_node_ids == ["node-A"]
         assert node_manager.is_node_bad("node-A")
 
@@ -91,7 +83,7 @@ class TestEvicting:
 
         state = Evicting(bad_node_ids=["node-A"])
         result = await stepper(state, ctx)
-        assert isinstance(result, WaitingForNewNode)
+        assert isinstance(result, StoppingAndRestarting)
 
     @pytest.mark.asyncio
     async def test_evicting_failure_returns_restart_failed(self) -> None:
@@ -120,7 +112,7 @@ class TestEvicting:
         state = Evicting(bad_node_ids=["node-A"])
         result = await stepper(state, ctx)
 
-        assert isinstance(result, WaitingForNewNode)
+        assert isinstance(result, StoppingAndRestarting)
         assert node_manager.is_node_bad("node-A")
 
     @pytest.mark.asyncio
@@ -137,7 +129,7 @@ class TestEvicting:
 
     @pytest.mark.asyncio
     async def test_all_already_bad_still_transitions(self) -> None:
-        """All nodes already marked bad -> still transitions to WaitingForNewNode."""
+        """All nodes already marked bad -> still transitions to StoppingAndRestarting."""
         node_manager = FakeNodeManager()
         await node_manager.mark_node_bad("node-A", reason="prior")
         await node_manager.mark_node_bad("node-B", reason="prior")
@@ -148,7 +140,7 @@ class TestEvicting:
         state = Evicting(bad_node_ids=["node-A", "node-B"])
         result = await stepper(state, ctx)
 
-        assert isinstance(result, WaitingForNewNode)
+        assert isinstance(result, StoppingAndRestarting)
         assert result.bad_node_ids == ["node-A", "node-B"]
 
 
@@ -385,146 +377,6 @@ class TestMonitoringProgress:
 
 
 # ---------------------------------------------------------------------------
-# WaitingForNewNode
-# ---------------------------------------------------------------------------
-
-
-def _make_node_count_fn(count: int) -> Callable[[], Awaitable[int]]:
-    async def _fn() -> int:
-        return count
-    return _fn
-
-
-class TestWaitingForNewNode:
-    @pytest.mark.asyncio
-    async def test_transitions_to_stopping_when_node_count_restored(self) -> None:
-        stepper = _make_stepper()
-        ctx = _make_context(get_current_alive_node_count=_make_node_count_fn(3))
-
-        state = WaitingForNewNode(
-            bad_node_ids=["node-A"],
-            wait_start_time=datetime.now(timezone.utc),
-            expected_node_count=3,
-        )
-        result = await stepper(state, ctx)
-
-        assert isinstance(result, StoppingAndRestarting)
-        assert result.bad_node_ids == ["node-A"]
-
-    @pytest.mark.asyncio
-    async def test_transitions_when_more_nodes_than_expected(self) -> None:
-        stepper = _make_stepper()
-        ctx = _make_context(get_current_alive_node_count=_make_node_count_fn(5))
-
-        state = WaitingForNewNode(
-            bad_node_ids=["node-A"],
-            wait_start_time=datetime.now(timezone.utc),
-            expected_node_count=3,
-        )
-        result = await stepper(state, ctx)
-        assert isinstance(result, StoppingAndRestarting)
-
-    @pytest.mark.asyncio
-    async def test_returns_none_while_waiting(self) -> None:
-        """Node count not restored and timeout not reached -> keep waiting."""
-        stepper = _make_stepper()
-        ctx = _make_context(
-            get_current_alive_node_count=_make_node_count_fn(2),
-            waiting_for_node_timeout_seconds=600,
-        )
-
-        state = WaitingForNewNode(
-            bad_node_ids=["node-A"],
-            wait_start_time=datetime.now(timezone.utc),
-            expected_node_count=3,
-        )
-        result = await stepper(state, ctx)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_timeout_returns_restart_failed(self) -> None:
-        stepper = _make_stepper()
-        ctx = _make_context(
-            get_current_alive_node_count=_make_node_count_fn(2),
-            waiting_for_node_timeout_seconds=60,
-        )
-
-        old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
-        state = WaitingForNewNode(
-            bad_node_ids=["node-A"],
-            wait_start_time=old_time,
-            expected_node_count=3,
-        )
-        result = await stepper(state, ctx)
-        assert isinstance(result, RestartFailed)
-        assert result.bad_node_ids == ["node-A"]
-
-    @pytest.mark.asyncio
-    async def test_bad_node_ids_carried_forward(self) -> None:
-        stepper = _make_stepper()
-        ctx = _make_context(get_current_alive_node_count=_make_node_count_fn(3))
-
-        state = WaitingForNewNode(
-            bad_node_ids=["node-A", "node-B"],
-            wait_start_time=datetime.now(timezone.utc),
-            expected_node_count=3,
-        )
-        result = await stepper(state, ctx)
-        assert isinstance(result, StoppingAndRestarting)
-        assert result.bad_node_ids == ["node-A", "node-B"]
-
-    @pytest.mark.asyncio
-    async def test_skips_wait_when_callback_not_configured(self) -> None:
-        """When get_current_alive_node_count is None, skip directly to StoppingAndRestarting."""
-        stepper = _make_stepper()
-        ctx = _make_context()
-
-        state = WaitingForNewNode(
-            bad_node_ids=["node-A"],
-            wait_start_time=datetime.now(timezone.utc),
-            expected_node_count=3,
-        )
-        result = await stepper(state, ctx)
-        assert isinstance(result, StoppingAndRestarting)
-
-
-# ---------------------------------------------------------------------------
-# Evicting with node count callbacks
-# ---------------------------------------------------------------------------
-
-
-class TestEvictingWithNodeCountCallbacks:
-    @pytest.mark.asyncio
-    async def test_evicting_returns_waiting_for_new_node_when_configured(self) -> None:
-        """When get_expected_node_count is set, Evicting -> WaitingForNewNode."""
-        node_manager = FakeNodeManager()
-        stepper = _make_stepper()
-        ctx = _make_context(
-            node_manager=node_manager,
-            get_expected_node_count=_make_node_count_fn(3),
-        )
-
-        state = Evicting(bad_node_ids=["node-A"])
-        result = await stepper(state, ctx)
-
-        assert isinstance(result, WaitingForNewNode)
-        assert result.bad_node_ids == ["node-A"]
-        assert result.expected_node_count == 3
-        assert node_manager.is_node_bad("node-A")
-
-    @pytest.mark.asyncio
-    async def test_evicting_uses_zero_expected_when_not_configured(self) -> None:
-        """When get_expected_node_count is None, expected_node_count defaults to 0."""
-        stepper = _make_stepper()
-        ctx = _make_context()
-
-        state = Evicting(bad_node_ids=["node-A"])
-        result = await stepper(state, ctx)
-        assert isinstance(result, WaitingForNewNode)
-        assert result.expected_node_count == 0
-
-
-# ---------------------------------------------------------------------------
 # Terminal states
 # ---------------------------------------------------------------------------
 
@@ -552,11 +404,8 @@ class TestTerminalStates:
 
 class TestFullRestartFlow:
     @pytest.mark.asyncio
-    async def test_evict_wait_stop_monitor_done_no_callbacks(self) -> None:
-        """Evicting -> WaitingForNewNode -> StoppingAndRestarting(submit) -> StoppingAndRestarting(poll) -> MonitoringProgress -> RestartDone.
-
-        Without node count callbacks, WaitingForNewNode skips the wait immediately.
-        """
+    async def test_evict_stop_monitor_done(self) -> None:
+        """Evicting -> StoppingAndRestarting(submit) -> StoppingAndRestarting(poll) -> MonitoringProgress -> RestartDone."""
         training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -568,65 +417,22 @@ class TestFullRestartFlow:
             monitoring_success_iterations=5,
         )
 
-        # Step 1: Evicting -> WaitingForNewNode
+        # Step 1: Evicting -> StoppingAndRestarting
         state = Evicting(bad_node_ids=["node-A"])
-        state = await stepper(state, ctx)
-        assert isinstance(state, WaitingForNewNode)
-
-        # Step 2: WaitingForNewNode -> StoppingAndRestarting (no callbacks, skips wait)
         state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
 
-        # Step 3: Submit
+        # Step 2: Submit
         state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
         assert state.submitted
 
-        # Step 4: Poll -> MonitoringProgress
+        # Step 3: Poll -> MonitoringProgress
         state = await stepper(state, ctx)
         assert isinstance(state, MonitoringProgress)
         assert state.base_iteration == 100
 
-        # Step 5: progress achieved
-        mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 110})
-        state = await stepper(state, ctx)
-        assert isinstance(state, RestartDone)
-
-    @pytest.mark.asyncio
-    async def test_evict_wait_stop_monitor_done(self) -> None:
-        """Full flow with WaitingForNewNode: Evicting -> WaitingForNewNode -> StoppingAndRestarting -> MonitoringProgress -> RestartDone."""
-        training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
-        mini_wandb = MiniWandb()
-        mini_wandb.set_active_run_id("r")
-        mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
-        stepper = _make_stepper()
-        ctx = _make_context(
-            training_job=training_job,
-            mini_wandb=mini_wandb,
-            monitoring_success_iterations=5,
-            get_expected_node_count=_make_node_count_fn(3),
-            get_current_alive_node_count=_make_node_count_fn(3),
-        )
-
-        # Step 1: Evicting -> WaitingForNewNode
-        state = Evicting(bad_node_ids=["node-A"])
-        state = await stepper(state, ctx)
-        assert isinstance(state, WaitingForNewNode)
-
-        # Step 2: WaitingForNewNode -> StoppingAndRestarting (node count restored)
-        state = await stepper(state, ctx)
-        assert isinstance(state, StoppingAndRestarting)
-
-        # Step 3: Submit
-        state = await stepper(state, ctx)
-        assert isinstance(state, StoppingAndRestarting)
-        assert state.submitted
-
-        # Step 4: Poll -> MonitoringProgress
-        state = await stepper(state, ctx)
-        assert isinstance(state, MonitoringProgress)
-
-        # Step 5: progress achieved
+        # Step 4: progress achieved
         mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 110})
         state = await stepper(state, ctx)
         assert isinstance(state, RestartDone)

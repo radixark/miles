@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime
 
 from pydantic import ConfigDict
@@ -29,11 +29,6 @@ class MonitoringProgress(RestartState):
     base_iteration: int
 
 
-class WaitingForNewNode(RestartState):
-    wait_start_time: datetime
-    expected_node_count: int
-
-
 class RestartDone(RestartState):
     pass
 
@@ -52,6 +47,3 @@ class RestartContext(FtBaseModel):
     on_new_run: Callable[[str], None] | None
     monitoring_success_iterations: int
     monitoring_timeout_seconds: int
-    waiting_for_node_timeout_seconds: int = 600
-    get_expected_node_count: Callable[[], Awaitable[int]] | None = None
-    get_current_alive_node_count: Callable[[], Awaitable[int]] | None = None

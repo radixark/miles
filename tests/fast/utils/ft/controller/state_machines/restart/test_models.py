@@ -14,7 +14,6 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     RestartFailed,
     RestartState,
     StoppingAndRestarting,
-    WaitingForNewNode,
 )
 
 
@@ -43,17 +42,6 @@ class TestRestartStateConstruction:
         state = MonitoringProgress(start_time=now, base_iteration=100)
         assert state.start_time == now
         assert state.base_iteration == 100
-
-    def test_waiting_for_new_node(self) -> None:
-        now = datetime.now(tz=timezone.utc)
-        state = WaitingForNewNode(
-            bad_node_ids=["node-0"],
-            wait_start_time=now,
-            expected_node_count=3,
-        )
-        assert state.bad_node_ids == ["node-0"]
-        assert state.wait_start_time == now
-        assert state.expected_node_count == 3
 
     def test_restart_done(self) -> None:
         state = RestartDone()
