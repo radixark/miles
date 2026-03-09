@@ -191,7 +191,7 @@ class EngineRankInfo:
 
 
 
-class UpdateWeightFromRDMASharedBuffer(UpdateWeightFromRemote):
+class UpdateWeightFromRDMA(UpdateWeightFromRemote):
     """RDMA weight transfer using a single set of shared CPU pinned buffers.
 
     Architecture:
@@ -219,6 +219,7 @@ class UpdateWeightFromRDMASharedBuffer(UpdateWeightFromRemote):
         *,
         model_name: str,
         quantization_config: dict[str, int | str | list[str]] | None,
+        is_lora: bool = False,
     ) -> None:
         super().__init__(
             args,
