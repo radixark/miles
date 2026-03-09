@@ -46,6 +46,19 @@ class TestPlacementGroupInfo:
         assert info.reordered_bundle_indices == []
         assert info.reordered_gpu_ids == []
 
+    def test_getitem_rejects_int_index(self) -> None:
+        info = _make_pg_info([BundleProbe(bundle_index=0, node_ip="10.0.0.1", gpu_id="0")])
+        with pytest.raises(TypeError, match="slices"):
+            info[0]
+
+    def test_getitem_rejects_step(self) -> None:
+        info = _make_pg_info([
+            BundleProbe(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleProbe(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+        ])
+        with pytest.raises(ValueError, match="step"):
+            info[0:2:2]
+
 
 class TestPlacementGroupSlice:
     def _make_six_bundle_info(self) -> PlacementGroupInfo:
@@ -62,37 +75,44 @@ class TestPlacementGroupSlice:
 
     def test_slice_offset_and_count(self) -> None:
         info = self._make_six_bundle_info()
-        s = info.slice(offset=2, count=2)
+        s = info[2:4]
         assert s.reordered_bundle_indices == [5, 1]
         assert s.reordered_gpu_ids == ["0", "1"]
 
     def test_slice_from_start(self) -> None:
         info = self._make_six_bundle_info()
-        s = info.slice(offset=0, count=4)
+        s = info[0:4]
         assert s.reordered_bundle_indices == [3, 0, 5, 1]
         assert s.reordered_gpu_ids == ["0", "1", "0", "1"]
 
     def test_slice_to_end(self) -> None:
         info = self._make_six_bundle_info()
-        s = info.slice(offset=4, count=2)
+        s = info[4:6]
         assert s.reordered_bundle_indices == [4, 2]
         assert s.reordered_gpu_ids == ["0", "1"]
 
     def test_slice_full(self) -> None:
         info = self._make_six_bundle_info()
-        s = info.slice(offset=0, count=6)
+        s = info[0:6]
         assert s.reordered_bundle_indices == info.reordered_bundle_indices
         assert s.reordered_gpu_ids == info.reordered_gpu_ids
 
+    def test_slice_open_end(self) -> None:
+        """info[4:] should slice to the end."""
+        info = self._make_six_bundle_info()
+        s = info[4:]
+        assert s.reordered_bundle_indices == [4, 2]
+        assert s.reordered_gpu_ids == ["0", "1"]
+
     def test_slice_pg_returns_owner_pg(self) -> None:
         info = self._make_six_bundle_info()
-        s = info.slice(offset=0, count=2)
+        s = info[0:2]
         assert s.pg is info.pg
 
     def test_slice_reflects_bundle_mutation(self) -> None:
         """Slice sees updated data when owner's bundles are mutated in-place (M2 prep)."""
         info = self._make_six_bundle_info()
-        s = info.slice(offset=2, count=2)
+        s = info[2:4]
 
         assert s.reordered_bundle_indices == [5, 1]
 
@@ -106,14 +126,14 @@ class TestPlacementGroupSlice:
 
     def test_multiple_slices_share_owner(self) -> None:
         info = self._make_six_bundle_info()
-        actor_slice = info.slice(offset=0, count=2)
-        rollout_slice = info.slice(offset=4, count=2)
+        actor_slice = info[0:2]
+        rollout_slice = info[4:6]
 
         assert actor_slice.owner is rollout_slice.owner
         assert actor_slice.pg is rollout_slice.pg
 
     def test_single_bundle_slice(self) -> None:
         info = self._make_six_bundle_info()
-        s = info.slice(offset=3, count=1)
+        s = info[3:4]
         assert s.reordered_bundle_indices == [1]
         assert s.reordered_gpu_ids == ["1"]

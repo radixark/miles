@@ -31,8 +31,13 @@ class PlacementGroupInfo:
     def reordered_gpu_ids(self) -> list[str]:
         return [b.gpu_id for b in self.bundles]
 
-    def slice(self, offset: int, count: int) -> PlacementGroupSlice:
-        return PlacementGroupSlice(owner=self, offset=offset, count=count)
+    def __getitem__(self, key: slice) -> PlacementGroupSlice:
+        if not isinstance(key, slice):
+            raise TypeError(f"PlacementGroupInfo indices must be slices, not {type(key).__name__}")
+        start, stop, step = key.indices(len(self.bundles))
+        if step != 1:
+            raise ValueError("PlacementGroupInfo does not support step in slicing")
+        return PlacementGroupSlice(owner=self, offset=start, count=stop - start)
 
 
 @dataclass
