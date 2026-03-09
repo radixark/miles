@@ -3,38 +3,13 @@ from __future__ import annotations
 import logging
 
 import ray
-from ray.util.placement_group import placement_group
 
-from miles.utils.placement_group_utils import (
-    PlacementGroupInfo,
-    PlacementGroupSlice,
-    bundle_sort_key,
-    probe_bundles,
-)
+from miles.utils.placement_group_utils import PlacementGroupSlice, create_placement_group_info
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
 
 logger = logging.getLogger(__name__)
-
-
-def _create_placement_group(num_gpus: int) -> PlacementGroupInfo:
-    """Create a placement group with the specified number of GPUs."""
-    bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
-    pg = placement_group(bundles, strategy="PACK")
-
-    ray.get(pg.ready())
-
-    probes = probe_bundles(pg=pg, num_bundles=num_gpus)
-    sorted_probes = sorted(probes, key=bundle_sort_key)
-
-    for rank, probe in enumerate(sorted_probes):
-        logger.info(
-            f"  bundle {rank:4}, actual_bundle_index: {probe.bundle_index:4}, "
-            f"node: {probe.node_ip}, gpu: {probe.gpu_id}"
-        )
-
-    return PlacementGroupInfo(pg=pg, bundles=sorted_probes)
 
 
 def create_placement_groups(args) -> dict[str, PlacementGroupSlice | None]:
@@ -65,7 +40,7 @@ def create_placement_groups(args) -> dict[str, PlacementGroupSlice | None]:
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg_info = _create_placement_group(num_gpus)
+    pg_info = create_placement_group_info(num_gpus)
 
     actor_count = args.actor_num_nodes * args.actor_num_gpus_per_node
     rollout_count = num_gpus - rollout_offset

@@ -106,3 +106,24 @@ def probe_bundles(pg: PlacementGroup, num_bundles: int, num_gpus: float = 1) -> 
     ]
 
     return probes
+
+
+def create_placement_group_info(num_gpus: int) -> PlacementGroupInfo:
+    """Create a placement group with the specified number of GPUs, probe and sort bundles."""
+    from ray.util.placement_group import placement_group
+
+    bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
+    pg = placement_group(bundles, strategy="PACK")
+
+    ray.get(pg.ready())
+
+    probes = probe_bundles(pg=pg, num_bundles=num_gpus)
+    sorted_probes = sorted(probes, key=bundle_sort_key)
+
+    for rank, probe in enumerate(sorted_probes):
+        logger.info(
+            f"  bundle {rank:4}, actual_bundle_index: {probe.bundle_index:4}, "
+            f"node: {probe.node_ip}, gpu: {probe.gpu_id}"
+        )
+
+    return PlacementGroupInfo(pg=pg, bundles=sorted_probes)
