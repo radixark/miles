@@ -5,7 +5,7 @@ import socket
 from dataclasses import dataclass, field
 
 import ray
-from ray.util.placement_group import PlacementGroup
+from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 logger = logging.getLogger(__name__)
@@ -166,8 +166,6 @@ def _probe_bundles(pg: PlacementGroup, num_bundles: int, num_gpus: float = 1) ->
 
 def create_placement_group_info(num_gpus: int) -> PlacementGroupInfo:
     """Create a placement group with the specified number of GPUs, probe and sort bundles."""
-    from ray.util.placement_group import placement_group
-
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
 

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.placement_group_utils import BundleLocationSnapshot, PlacementGroupInfo, PlacementGroupSlice
+from miles.utils.placement_group_utils import (
+    BundleLocationSnapshot,
+    PlacementGroupInfo,
+    PlacementGroupSlice,
+    RefreshResult,
+    _bundle_sort_key,
+)
 
 
 class _FakePlacementGroup:
@@ -12,6 +18,41 @@ class _FakePlacementGroup:
 
 def _make_pg_info(probes: list[BundleLocationSnapshot]) -> PlacementGroupInfo:
     return PlacementGroupInfo(pg=_FakePlacementGroup(), _bundle_location_snapshots=probes)
+
+
+class TestBundleSortKey:
+    def test_sorts_by_ip_then_gpu_id(self) -> None:
+        probes = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.2", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.2", gpu_id="0"),
+        ]
+        result = sorted(probes, key=_bundle_sort_key)
+        assert [(p.node_ip, p.gpu_id) for p in result] == [
+            ("10.0.0.1", "0"),
+            ("10.0.0.1", "1"),
+            ("10.0.0.2", "0"),
+            ("10.0.0.2", "1"),
+        ]
+
+    def test_hostname_fallback_to_ascii(self) -> None:
+        """Non-resolvable hostnames use ASCII char codes for stable sorting."""
+        probes = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="node-b", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="node-a", gpu_id="0"),
+        ]
+        result = sorted(probes, key=_bundle_sort_key)
+        assert [p.node_ip for p in result] == ["node-a", "node-b"]
+
+    def test_same_node_sorted_by_gpu_id(self) -> None:
+        probes = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.1", gpu_id="2"),
+        ]
+        result = sorted(probes, key=_bundle_sort_key)
+        assert [p.gpu_id for p in result] == ["1", "2", "3"]
 
 
 class TestBundleLocationSnapshot:
