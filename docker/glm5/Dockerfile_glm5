@@ -13,6 +13,7 @@ ARG ENABLE_CUDA_13=0
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
 ARG WHEELS_TAG=cu129-x86_64
+ARG SGL_KERNEL_WHEELS_TAG=sgl-kernel-glm5-cu129-x86_64
 
 # ======================================== Setup =============================================
 
@@ -98,6 +99,15 @@ RUN cd /sgl-workspace/sglang && \
       git checkout FETCH_HEAD; \
     fi && \
     pip install -e "python[all]" --no-deps
+
+# sgl-kernel (pre-built wheel with upgraded deepgemm)
+RUN mkdir -p /tmp/sgl-kernel-wheels && \
+    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${SGL_KERNEL_WHEELS_TAG}" \
+    | python3 -c "import sys, json, subprocess; \
+[subprocess.run(['curl', '-fSL', '-o', '/tmp/sgl-kernel-wheels/' + a['name'], a['browser_download_url']], check=True) \
+ for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.whl')]" && \
+    pip install /tmp/sgl-kernel-wheels/sgl_kernel-*.whl --force-reinstall --no-deps && \
+    rm -rf /tmp/sgl-kernel-wheels
 
 # ====================================== Install main package ============================================
 

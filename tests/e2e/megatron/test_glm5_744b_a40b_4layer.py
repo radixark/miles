@@ -5,7 +5,7 @@ from pathlib import Path
 import miles.utils.external_utils.command_utils as U
 
 
-USE_FP8_ROLLOUT = U.get_bool_env_var("MILES_TEST_USE_FP8_ROLLOUT", "false")
+USE_FP8_ROLLOUT = U.get_bool_env_var("MILES_TEST_USE_FP8_ROLLOUT", "true")
 
 MODEL_NAME = "GLM-5_4layer"
 MODEL_TYPE = "glm5-744B-A40B_4layer"
