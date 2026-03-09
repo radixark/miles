@@ -1,9 +1,9 @@
 import logging
 import random
 import socket
-from functools import partial
 from argparse import Namespace
 from contextlib import nullcontext
+from functools import partial
 
 import ray
 import torch
@@ -99,7 +99,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if args.offload_train and not args.keep_gradient_buffers_on_cpu:
             args.grad_mem_alloc_context = partial(
-                torch_memory_saver.override, tag="grad_buffer", enable_cpu_backup=False,
+                torch_memory_saver.override,
+                tag="grad_buffer",
+                enable_cpu_backup=False,
             )
 
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
