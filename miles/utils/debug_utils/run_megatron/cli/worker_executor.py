@@ -25,7 +25,6 @@ def build_torchrun_cmd(
         f"torchrun --nproc-per-node {nproc} "
         f"-m {worker_module} "
         f"${{MODEL_ARGS[@]}} "
-        f"--tokenizer-type HuggingFaceTokenizer "
         f"--hidden-dropout 0 --attention-dropout 0 "
         f"{worker_args}"
     )
