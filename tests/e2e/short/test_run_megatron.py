@@ -36,8 +36,8 @@ _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
 CONFIGS: dict[str, tuple[str, str]] = {
     # (baseline_parallel_args, target_parallel_args)
-    "tp1_vs_tp2cp2": ("--tp 1", "--tp 2 --cp 2"),
-    "tp1_vs_tp2pp2": ("--tp 1", "--tp 2 --pp 2"),
+    "tp1_vs_tp2cp2": ("--tp 1", "--tp 2 --cp 2 --ep 1"),
+    "tp1_vs_tp2pp2": ("--tp 1", "--tp 2 --pp 2 --ep 1"),
 }
 
 
