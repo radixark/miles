@@ -60,7 +60,9 @@ def _prepare(dump_dir: Path) -> Path:
     exec_command(f"rm -rf {dump_dir}")
 
     source_patcher_path: Path = _RUN_DIR / "megatron_source_patcher.yaml"
-    source_patcher_path.write_text(MEGATRON_SOURCE_PATCHER_CONFIG_YAML)
+    # Strip etp annotations — test_run_megatron configs don't use expert tensor parallelism
+    yaml_content: str = MEGATRON_SOURCE_PATCHER_CONFIG_YAML.replace(" etp:replicated", "")
+    source_patcher_path.write_text(yaml_content)
     return source_patcher_path
 
 
