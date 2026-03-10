@@ -8,6 +8,7 @@ The agent is loaded at runtime by ``agentic_tool_call.generate`` via
 ``--custom-agent-function-path tests.e2e.sglang.session_tool_agent.run_agent``.
 """
 
+import json
 import logging
 import os
 
@@ -116,10 +117,32 @@ def _verify_turn(
 ) -> bool:
     """Check TITO text match and prefix monotonicity. Returns True if text matched."""
     session_text = tokenizer.decode(session_prompt_ids, skip_special_tokens=False)
+
+    # Parse tool_call arguments from JSON string to dict, matching SGLang's
+    # OpenAIServingChat._apply_jinja_template (serving_chat.py L446-462).
+    # Some chat templates (e.g. GLM-4.7) call .items() on arguments.
+    normalized_messages = []
+    for msg in messages:
+        msg = dict(msg)
+        if msg["role"] == "assistant" and "tool_calls" in msg and isinstance(msg["tool_calls"], list):
+            for item in msg["tool_calls"]:
+                if "arguments" in item["function"] and isinstance(item["function"]["arguments"], str):
+                    item["function"]["arguments"] = json.loads(item["function"]["arguments"])
+        normalized_messages.append(msg)
+
+    # Match SGLang's apply_chat_template fallback (serving_chat.py L354-493):
+    # 1. Try function-only format: [item.function.model_dump() for item in request.tools]
+    # 2. On failure, wrap each tool as {"function": t}
     tool_defs = [Tool(**t).function.model_dump() for t in TOOLS]
-    expected_text = tokenizer.apply_chat_template(
-        messages, tools=tool_defs, tokenize=False, add_generation_prompt=True
-    )
+    try:
+        expected_text = tokenizer.apply_chat_template(
+            normalized_messages, tools=tool_defs, tokenize=False, add_generation_prompt=True
+        )
+    except Exception:
+        tool_defs = [{"function": t} for t in tool_defs]
+        expected_text = tokenizer.apply_chat_template(
+            normalized_messages, tools=tool_defs, tokenize=False, add_generation_prompt=True
+        )
 
     text_matched = session_text == expected_text
     if not text_matched:

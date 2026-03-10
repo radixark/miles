@@ -61,7 +61,7 @@ def setup_session_routes(app, router: "MilesRouter"):
         request_body["logprobs"] = True
         request_body["return_prompt_token_ids"] = True
         request_body["return_meta_info"] = True
-        # Set this value to ensure stop token is not included in text to avoid breaking append-only
+        # Set this value to ensure stop token is not included in text to avoid breaking text based apply-only verification. Delete eos token from the message content.
         # This will no changed the output token ids.
         request_body["no_stop_trim"] = False
 
@@ -93,10 +93,9 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         if "meta_info" not in choice or "output_token_logprobs" not in choice.get("meta_info", {}):
             logger.error(
-                "Missing meta_info in choice. status_code=%s, response_keys=%s, choices=%s",
+                "Missing meta_info in choice. status_code=%s, message=%s",
                 result.get("status_code"),
-                list(response.keys()),
-                json.dumps(response.get("choices", []), default=str)[:500],
+                response.get("message", ""),
             )
             raise RuntimeError("meta_info and output_token_logprobs must be in choice (requires logprobs=True)")
 
