@@ -128,7 +128,7 @@ def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) ->
     model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
 
     if args.load is not None:
-        load_checkpoint(model, optimizer=None, opt_param_scheduler=None)
+        load_checkpoint(model, optimizer=None, opt_param_scheduler=None, checkpointing_context=None, skip_load_to_model_and_opt=False)
 
     for m in model:
         m.train()
