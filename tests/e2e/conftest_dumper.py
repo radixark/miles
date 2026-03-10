@@ -53,7 +53,7 @@ patches:
         append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h # """
     + _MEG_REPL
     + """')"
-      - match: "pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)"
+      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h # """
     + _MEG_REPL
     + """')"
@@ -114,7 +114,7 @@ patches:
         append: "dumper.dump('pre_mlp_residual', residual, dims='s[cp:zigzag,sp] b h # """
     + _MEG_REPL
     + """')"
-      - match: "pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)"
+      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp:zigzag,sp] b h # """
     + _MEG_REPL
     + """')"
