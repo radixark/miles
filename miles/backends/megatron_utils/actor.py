@@ -107,12 +107,11 @@ class MegatronTrainRayActor(TrainRayActor):
                 enable_cpu_backup=False,
             )
 
-        try:
-            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
-                args, role
-            )
-        finally:
-            args.grad_mem_alloc_context = None
+        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+            args, role
+        )
+        # Remove unpicklable context manager (ctypes refs) to allow checkpoint serialization.
+        args.grad_mem_alloc_context = None
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
