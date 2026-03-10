@@ -149,11 +149,7 @@ def create_ft_controller(
         on_new_run=instance._activate_run,
         monitoring_success_iterations=monitoring_success_iterations,
         monitoring_timeout_seconds=monitoring_timeout_seconds,
-        resolve_k8s_node_name=lambda ray_id: (
-            instance._node_k8s_info[ray_id].k8s_node_name
-            if ray_id in instance._node_k8s_info
-            else None
-        ),
+        node_metadata=instance._node_metadata,
     )
     tick_loop._restart_context = restart_context
 

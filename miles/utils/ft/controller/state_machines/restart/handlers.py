@@ -59,16 +59,17 @@ class EvictingHandler(StateHandler[Evicting, RestartContext]):
             already_bad = set()
 
         nodes_to_mark: list[str] = []
-        for ray_id in state.bad_node_ids:
-            resolved_id = _resolve_node_id(ray_id, ctx)
-            if resolved_id not in already_bad:
-                nodes_to_mark.append(resolved_id)
+        for node_id in state.bad_node_ids:
+            if node_id not in already_bad:
+                nodes_to_mark.append(node_id)
 
         for node_id in nodes_to_mark:
+            metadata = ctx.node_metadata.get(node_id)
             result = await retry_mark_node_bad(
                 ctx.node_manager,
                 node_id=node_id,
                 reason="recovery eviction",
+                node_metadata=metadata,
             )
             if not result.ok:
                 return RestartFailed(bad_node_ids=state.bad_node_ids)
@@ -81,14 +82,6 @@ class EvictingHandler(StateHandler[Evicting, RestartContext]):
         )
 
         return StoppingAndRestarting(bad_node_ids=state.bad_node_ids)
-
-
-def _resolve_node_id(ray_node_id: str, ctx: RestartContext) -> str:
-    if ctx.resolve_k8s_node_name is not None:
-        k8s_name = ctx.resolve_k8s_node_name(ray_node_id)
-        if k8s_name is not None:
-            return k8s_name
-    return ray_node_id
 
 
 class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartContext]):

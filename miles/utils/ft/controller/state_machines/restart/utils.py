@@ -53,8 +53,9 @@ async def retry_mark_node_bad(
     node_manager: NodeManagerProtocol,
     node_id: str,
     reason: str,
+    node_metadata: dict[str, str] | None = None,
 ) -> RetryResult[None]:
     return await retry_async(
-        lambda: node_manager.mark_node_bad(node_id, reason=reason),
+        lambda: node_manager.mark_node_bad(node_id, reason=reason, node_metadata=node_metadata),
         description=f"mark_node_bad({node_id})",
     )

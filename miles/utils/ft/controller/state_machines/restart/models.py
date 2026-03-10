@@ -47,4 +47,4 @@ class RestartContext(FtBaseModel):
     on_new_run: Callable[[str], None] | None
     monitoring_success_iterations: int
     monitoring_timeout_seconds: int
-    resolve_k8s_node_name: Callable[[str], str | None] | None = None
+    node_metadata: dict[str, dict[str, str]] = {}
