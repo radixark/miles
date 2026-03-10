@@ -51,8 +51,8 @@ def _run_activation_comparison(args: CompareArgs) -> bool:
         str(args.target_dir),
         "--output-format",
         args.output_format,
-        "--grouping",
-        args.grouping,
+        "--preset",
+        "sglang_megatron",
     ]
 
     optional_args: dict[str, object | None] = {

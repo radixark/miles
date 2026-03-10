@@ -68,7 +68,6 @@ class CompareArgs:
     baseline_dir: Path = _field(help="Baseline dump directory")
     target_dir: Path = _field(help="Target dump directory")
     output_format: str = _field(default="text", help="Output format: text / json")
-    grouping: str = _field(default="logical", help="Grouping: logical / raw")
     override_baseline_dims: str | None = _field(default=None, help="Override baseline dims")
     override_target_dims: str | None = _field(default=None, help="Override target dims")
     patch_config: Path | None = _field(default=None, help="Patch config YAML path")
