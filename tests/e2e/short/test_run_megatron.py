@@ -29,7 +29,7 @@ app: typer.Typer = typer.Typer()
 
 HF_REPO: str = "fzyzcjy/Qwen3-30B-A3B-5layer"
 MODEL_NAME: str = "Qwen3-30B-A3B-5layer"
-MODEL_TYPE: str = "qwen3-30B-A3B"
+MODEL_TYPE: str = "qwen3-30B-A3B-5layer"
 NUM_GPUS: int = 4
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
