@@ -20,7 +20,7 @@ import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.pipeline_parallel import get_forward_backward_func
-from megatron.training.arguments import parse_args
+from megatron.training.arguments import parse_args, validate_args
 from megatron.training.training import get_model
 from sglang.srt.debug_utils.dumper import dumper
 from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
@@ -118,19 +118,19 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 
 def _set_missing_arg_defaults(args: argparse.Namespace) -> None:
-    """Set attributes that Megatron's validate_args normally computes but
-    the standalone worker skips."""
-    if not hasattr(args, "virtual_pipeline_model_parallel_size"):
-        args.virtual_pipeline_model_parallel_size = None
-    if not hasattr(args, "data_parallel_size"):
-        total_model_size: int = (
-            args.tensor_model_parallel_size
-            * args.pipeline_model_parallel_size
-            * args.context_parallel_size
-        )
-        args.data_parallel_size = args.world_size // total_model_size
-    if not hasattr(args, "decrease_batch_size_if_needed"):
-        args.decrease_batch_size_if_needed = False
+    """Run Megatron's validate_args (sets computed fields like
+    data_parallel_size, virtual_pipeline_model_parallel_size, etc.)
+    and then add miles-specific defaults the worker needs."""
+    validate_args(args)
+
+    _MILES_DEFAULTS: dict[str, object] = {
+        "megatron_to_hf_mode": "raw",
+        "decrease_batch_size_if_needed": False,
+    }
+    for attr, default in _MILES_DEFAULTS.items():
+        if not hasattr(args, attr):
+            setattr(args, attr, default)
+
     if getattr(args, "tokenizer_model", None) is None and getattr(args, "tokenizer_type", None) == "HuggingFaceTokenizer":
         hf_ckpt = getattr(args, "script_hf_checkpoint", None)
         args.tokenizer_model = str(hf_ckpt) if hf_ckpt is not None else None
