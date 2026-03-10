@@ -40,7 +40,6 @@ class TrainingStateActor:
         self._run_id: str = uuid4().hex[:8]
         self._submit_count: int = 0
         self._stop_called: bool = False
-        self._submit_count: int = 0
         self._hung: bool = False
         self._custom_log_metrics: dict[str, float] = {}
 
@@ -71,7 +70,6 @@ class TrainingStateActor:
 
     def get_stop_called(self) -> bool:
         return self._stop_called
-
 
     def set_hung(self, hung: bool) -> None:
         self._hung = hung

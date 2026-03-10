@@ -29,6 +29,7 @@ def _make_manager_with_mock_api(
 
     mock_core_v1 = AsyncMock()
     manager._ensure_client = AsyncMock(return_value=mock_core_v1)
+    manager._affinity_validated = True
     return manager, mock_core_v1
 
 
@@ -219,6 +220,22 @@ class TestMarkNodeBadDeletesPod:
         mock_core_v1.delete_namespaced_pod.assert_not_awaited()
 
     @pytest.mark.anyio
+    async def test_pod_delete_failure_logs_but_does_not_raise(self) -> None:
+        """Pod delete failure is caught and logged; mark_node_bad still succeeds."""
+        manager, mock_core_v1 = _make_manager_with_mock_api(
+            ray_cluster_name="my-cluster",
+            namespace="test-ns",
+        )
+        manager._delete_ray_worker_pod_on_node = AsyncMock(
+            side_effect=Exception("pod delete timeout"),
+        )
+
+        await manager.mark_node_bad(node_id="node-1", reason="gpu_ecc_error")
+
+        mock_core_v1.patch_node.assert_awaited_once()
+        manager._delete_ray_worker_pod_on_node.assert_awaited_once_with("node-1")
+
+    @pytest.mark.anyio
     async def test_mark_node_bad_deletes_multiple_pods(self) -> None:
         manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
         pods = [
@@ -315,3 +332,88 @@ class TestMetadataTranslation:
 
         list_kwargs = mock_core_v1.list_namespaced_pod.call_args.kwargs
         assert list_kwargs["field_selector"] == "spec.nodeName=gke-node-01"
+
+
+def _make_mock_pod_with_affinity(
+    label_key: str = "ft.miles.io/disabled",
+    operator: str = "NotIn",
+    values: list[str] | None = None,
+) -> SimpleNamespace:
+    """Build a mock pod with nodeAffinity match_expressions."""
+    if values is None:
+        values = ["true"]
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name="worker-0"),
+        spec=SimpleNamespace(
+            affinity=SimpleNamespace(
+                node_affinity=SimpleNamespace(
+                    required_during_scheduling_ignored_during_execution=SimpleNamespace(
+                        node_selector_terms=[
+                            SimpleNamespace(match_expressions=[
+                                SimpleNamespace(key=label_key, operator=operator, values=values),
+                            ]),
+                        ],
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+class TestAssertWorkerNodeAffinity:
+    @pytest.mark.anyio
+    async def test_passes_when_affinity_correct(self) -> None:
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        mock_pod = _make_mock_pod_with_affinity()
+        mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=[mock_pod])
+
+        await manager.assert_worker_node_affinity()
+
+    @pytest.mark.anyio
+    async def test_raises_when_affinity_missing(self) -> None:
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        mock_pod = SimpleNamespace(
+            metadata=SimpleNamespace(name="worker-0"),
+            spec=SimpleNamespace(affinity=None),
+        )
+        mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=[mock_pod])
+
+        with pytest.raises(RuntimeError, match="missing nodeAffinity NotIn rule"):
+            await manager.assert_worker_node_affinity()
+
+    @pytest.mark.anyio
+    async def test_raises_when_wrong_label_key(self) -> None:
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        mock_pod = _make_mock_pod_with_affinity(label_key="wrong.io/label")
+        mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=[mock_pod])
+
+        with pytest.raises(RuntimeError, match="missing nodeAffinity NotIn rule"):
+            await manager.assert_worker_node_affinity()
+
+    @pytest.mark.anyio
+    async def test_raises_when_no_worker_pods(self) -> None:
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=[])
+
+        with pytest.raises(RuntimeError, match="no ray worker pods found"):
+            await manager.assert_worker_node_affinity()
+
+    @pytest.mark.anyio
+    async def test_mark_node_bad_triggers_assertion_once(self) -> None:
+        """First mark_node_bad calls assert_worker_node_affinity; second does not."""
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        manager._affinity_validated = False
+
+        mock_pod = _make_mock_pod_with_affinity()
+        mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=[mock_pod])
+
+        await manager.mark_node_bad(node_id="node-1", reason="test")
+
+        # Step 1: list_namespaced_pod called twice — once for affinity check, once for pod delete
+        assert mock_core_v1.list_namespaced_pod.await_count == 2
+
+        mock_core_v1.list_namespaced_pod.reset_mock()
+        await manager.mark_node_bad(node_id="node-2", reason="test")
+
+        # Step 2: only pod delete call, no second affinity check
+        assert mock_core_v1.list_namespaced_pod.await_count == 1

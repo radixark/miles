@@ -47,8 +47,13 @@ class K8sNodeManager(NodeManagerProtocol):
         self._ray_cluster_name = ray_cluster_name
         self._namespace = namespace
         self._reverse_map: dict[str, str] = {}
+        self._affinity_validated: bool = False
 
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
+        if self._ray_cluster_name and not self._affinity_validated:
+            await self.assert_worker_node_affinity()
+            self._affinity_validated = True
+
         k8s_name = node_id
         if node_metadata and "k8s_node_name" in node_metadata:
             k8s_name = node_metadata["k8s_node_name"]
@@ -67,7 +72,15 @@ class K8sNodeManager(NodeManagerProtocol):
         )
 
         if self._ray_cluster_name:
-            await self._delete_ray_worker_pod_on_node(k8s_name)
+            try:
+                await self._delete_ray_worker_pod_on_node(k8s_name)
+            except Exception:
+                logger.error(
+                    "failed to delete ray worker pod on node %s, "
+                    "pod will remain until RayCluster operator handles it",
+                    k8s_name,
+                    exc_info=True,
+                )
 
     async def unmark_node_bad(self, node_id: str) -> None:
         elapsed = await self._patch_node_labels(
@@ -115,6 +128,59 @@ class K8sNodeManager(NodeManagerProtocol):
             elapsed,
         )
         return result
+
+    async def assert_worker_node_affinity(self) -> None:
+        """Validate that ray worker pods have a nodeAffinity NotIn rule for the label key.
+
+        Raises RuntimeError if no worker pods are found or if the expected
+        anti-affinity rule is missing.
+        """
+        core_v1 = await self._ensure_client()
+
+        label_selector = f"ray.io/cluster={self._ray_cluster_name},ray.io/node-type=worker"
+        pod_list = await retry_async_or_raise(
+            lambda: core_v1.list_namespaced_pod(
+                namespace=self._namespace,
+                label_selector=label_selector,
+            ),
+            description="list_worker_pods(affinity_check)",
+            max_retries=_K8S_API_MAX_RETRIES,
+            per_call_timeout=_K8S_API_TIMEOUT_SECONDS,
+            backoff_base=_K8S_API_BACKOFF_BASE,
+        )
+
+        if not pod_list.items:
+            raise RuntimeError("no ray worker pods found")
+
+        pod = pod_list.items[0]
+        affinity = getattr(pod.spec, "affinity", None)
+        if affinity is None:
+            raise RuntimeError(
+                f"worker pod missing nodeAffinity NotIn rule for {self._label_key}"
+            )
+
+        node_affinity = getattr(affinity, "node_affinity", None)
+        required = getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None) if node_affinity else None
+        terms = getattr(required, "node_selector_terms", None) if required else None
+
+        if terms:
+            for term in terms:
+                for expr in getattr(term, "match_expressions", []) or []:
+                    if (
+                        getattr(expr, "key", None) == self._label_key
+                        and getattr(expr, "operator", None) == "NotIn"
+                        and "true" in (getattr(expr, "values", []) or [])
+                    ):
+                        logger.info(
+                            "assert_worker_node_affinity passed label_key=%s pod=%s",
+                            self._label_key,
+                            pod.metadata.name,
+                        )
+                        return
+
+        raise RuntimeError(
+            f"worker pod missing nodeAffinity NotIn rule for {self._label_key}"
+        )
 
     async def _delete_ray_worker_pod_on_node(self, node_id: str) -> None:
         core_v1 = await self._ensure_client()
