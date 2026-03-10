@@ -27,7 +27,9 @@ class GenerateState:
     def __init__(self, args: Namespace) -> None:
         # persistent state for the generation process
         self.args = args
-        self.tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
         self.generate_fn_semaphore = asyncio.Semaphore(
