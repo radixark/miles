@@ -1,4 +1,4 @@
-"""Tests for FtController: submit_initial_training and detector edge cases."""
+"""Tests for FtController: submit_initial_job and detector edge cases."""
 
 from __future__ import annotations
 
@@ -18,18 +18,18 @@ from miles.utils.ft.controller.state_machines.main import DetectingAnomaly, Reco
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 # ===================================================================
-# submit_initial_training
+# submit_initial_job
 # ===================================================================
 
 
-class TestSubmitInitialTraining:
+class TestSubmitInitialJob:
     @pytest.mark.anyio
     async def test_delegates_to_training_job(self) -> None:
         harness = make_test_controller()
 
-        run_id = await harness.controller.submit_initial_training()
+        run_id = await harness.controller.submit_initial_job()
 
-        assert harness.training_job._submitted
+        assert harness.main_job._submitted
         assert isinstance(run_id, str)
         assert len(run_id) > 0
 

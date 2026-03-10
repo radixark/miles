@@ -13,7 +13,7 @@ from miles.utils.ft.controller.metrics.metric_names import (
     GPU_AVAILABLE,
     NODE_FILESYSTEM_AVAIL_BYTES,
     NODE_NETWORK_UP,
-    TRAINING_JOB_STATUS,
+    MAIN_JOB_STATUS,
     TRAINING_PHASE,
     XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
 )
@@ -174,7 +174,7 @@ def inject_nic_up(
     )
 
 
-def inject_training_job_status(
+def inject_main_job_status(
     store: MiniPrometheus,
     status_value: int,
     timestamp: datetime | None = None,
@@ -182,7 +182,7 @@ def inject_training_job_status(
     store.ingest_samples(
         target_id="controller",
         samples=[
-            GaugeSample(name=TRAINING_JOB_STATUS, labels={}, value=float(status_value)),
+            GaugeSample(name=MAIN_JOB_STATUS, labels={}, value=float(status_value)),
         ],
         timestamp=timestamp,
     )

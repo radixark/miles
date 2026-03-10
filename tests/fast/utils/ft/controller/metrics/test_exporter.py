@@ -41,7 +41,7 @@ class TestControllerExporterGauges:
 
         exporter.update_training_job_status(JobStatus.FAILED)
 
-        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == -1.0
+        assert get_sample_value(registry, mn.MAIN_JOB_STATUS) == -1.0
 
     def test_update_training_metrics_loss_and_mfu(self) -> None:
         registry, exporter = make_test_exporter()

@@ -52,7 +52,7 @@ class TestTrainingJobStatusExporter:
 
         await harness.controller._tick()
 
-        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == expected_value
+        assert get_sample_value(registry, mn.MAIN_JOB_STATUS) == expected_value
 
     @pytest.mark.asyncio
     async def test_tick_count_incremented(self) -> None:
@@ -200,7 +200,7 @@ class TestDefaultDiagnosticOrchestratorWiring:
     def test_default_orchestrator_has_rank_pids_provider(self) -> None:
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeMainJob(),
+            main_job=FakeMainJob(),
             metric_store=make_fake_metric_store(),
             mini_wandb=MiniWandb(),
         )
