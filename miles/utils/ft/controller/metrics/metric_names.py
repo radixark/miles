@@ -29,7 +29,7 @@ AGENT_HEARTBEAT = "miles_ft_agent_heartbeat"
 TRAINING_PHASE = "miles_ft_training_phase"
 
 # Controller synthetic
-TRAINING_JOB_STATUS = "miles_ft_training_job_status"
+MAIN_JOB_STATUS = "miles_ft_main_job_status"
 TRAINING_LOSS_LATEST = "miles_ft_training_loss_latest"
 TRAINING_MFU_LATEST = "miles_ft_training_mfu_latest"
 

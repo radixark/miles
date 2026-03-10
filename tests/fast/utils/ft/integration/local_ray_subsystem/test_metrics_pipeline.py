@@ -12,7 +12,7 @@ from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FastHang
 
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
-from miles.utils.ft.adapters.stubs import StubTrainingJob
+from miles.utils.ft.adapters.stubs import StubMainJob
 from miles.utils.ft.adapters.types import ft_controller_actor_name
 from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
@@ -154,7 +154,7 @@ class TestNanLossTriggersRecovery:
             builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.05, ft_id="nan-det"),
             node_manager_override=FakeNodeManager(),
-            training_job_override=StubTrainingJob(),
+            training_job_override=StubMainJob(),
             notifier_override=None,
             detectors_override=[NanLossDetector()],
         )
@@ -217,7 +217,7 @@ class TestHangDetectionFullPath:
             builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="hang-det"),
             node_manager_override=FakeNodeManager(),
-            training_job_override=StubTrainingJob(),
+            training_job_override=StubMainJob(),
             notifier_override=None,
             detectors_override=[FastHangDetector(timeout_seconds=3.0)],
         )

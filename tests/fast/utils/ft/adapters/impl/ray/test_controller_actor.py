@@ -6,7 +6,7 @@ import pytest
 from tests.fast.utils.ft.conftest import make_test_controller
 
 from miles.utils.ft.adapters.impl.ray.controller_actor import _FtControllerActorCls
-from miles.utils.ft.adapters.stubs import StubNodeManager, StubNotifier, StubTrainingJob
+from miles.utils.ft.adapters.stubs import StubNodeManager, StubNotifier, StubMainJob
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.factories.controller import build_ft_controller
@@ -15,7 +15,7 @@ from miles.utils.ft.factories.controller import build_ft_controller
 class TestBuildFtController:
     def test_stub_platform_creates_correct_components(self) -> None:
         ctrl = build_ft_controller(platform="stub", start_exporter=False)
-        assert isinstance(ctrl._training_job, StubTrainingJob)
+        assert isinstance(ctrl._main_job, StubMainJob)
 
     def test_stub_platform_has_full_detector_chain(self) -> None:
         ctrl = build_ft_controller(platform="stub", start_exporter=False)
@@ -111,7 +111,7 @@ class TestBuildPlatformComponentsK8sRay:
         assert node_mgr is mock_k8s.return_value
 
     def test_k8s_ray_passes_ft_id_and_label_prefix(self) -> None:
-        from miles.utils.ft.adapters.impl.ray.training_job import RayTrainingJob
+        from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
         from miles.utils.ft.factories.controller import _build_platform_components
 
         with (
@@ -130,7 +130,7 @@ class TestBuildPlatformComponentsK8sRay:
             )
 
         mock_k8s.assert_called_once_with(label_prefix="pfx")
-        assert isinstance(training_job, RayTrainingJob)
+        assert isinstance(training_job, RayMainJob)
         assert training_job._ft_id == "abc"
         assert training_job._k8s_label_prefix == "pfx"
 

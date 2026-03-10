@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 from prometheus_client import CollectorRegistry
 
-from miles.utils.ft.adapters.types import JobStatus, NodeManagerProtocol, NotifierProtocol, TrainingJobProtocol
+from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
@@ -62,8 +62,8 @@ class FakeNotifier(NotifierProtocol):
         pass
 
 
-class FakeTrainingJob(TrainingJobProtocol):
-    """Programmable implementation of TrainingJobProtocol for testing."""
+class FakeMainJob(MainJobProtocol):
+    """Programmable implementation of MainJobProtocol for testing."""
 
     def __init__(self, status_sequence: list[JobStatus] | None = None) -> None:
         self._status_sequence = status_sequence or [JobStatus.RUNNING]
@@ -73,16 +73,16 @@ class FakeTrainingJob(TrainingJobProtocol):
         self._submit_call_count: int = 0
         self._run_id: str = "fake-initial"
 
-    async def get_training_status(self) -> JobStatus:
+    async def get_job_status(self) -> JobStatus:
         index = min(self._call_count, len(self._status_sequence) - 1)
         status = self._status_sequence[index]
         self._call_count += 1
         return status
 
-    async def stop_training(self, timeout_seconds: int = 300) -> None:
+    async def stop_job(self, timeout_seconds: int = 300) -> None:
         self._stopped = True
 
-    async def submit_training(self) -> str:
+    async def submit_job(self) -> str:
         self._submitted = True
         self._submit_call_count += 1
         self._call_count = 0
@@ -200,7 +200,7 @@ class OneShotCrashDetector(BaseFaultDetector):
 class ControllerTestHarness(NamedTuple):
     controller: FtController
     node_manager: FakeNodeManager
-    training_job: FakeTrainingJob
+    main_job: FakeMainJob
     metric_store: MiniPrometheus
     mini_wandb: MiniWandb
     controller_exporter: ControllerExporter
@@ -232,7 +232,7 @@ def make_test_controller(
     real_notifier: FakeNotifier | None = FakeNotifier() if notifier is FakeNotifier else notifier
 
     node_manager = FakeNodeManager()
-    training_job = FakeTrainingJob(status_sequence=status_sequence)
+    main_job = FakeMainJob(status_sequence=status_sequence)
     metric_store = MiniPrometheus(config=MiniPrometheusConfig())
     mini_wandb = MiniWandb()
 
@@ -246,7 +246,7 @@ def make_test_controller(
 
     controller = create_ft_controller(
         node_manager=node_manager,
-        training_job=training_job,
+        main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
         scrape_target_manager=metric_store,
@@ -268,7 +268,7 @@ def make_test_controller(
     return ControllerTestHarness(
         controller=controller,
         node_manager=node_manager,
-        training_job=training_job,
+        main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
         controller_exporter=controller_exporter,
@@ -281,11 +281,11 @@ def make_test_controller(
 # ---------------------------------------------------------------------------
 
 
-async def failing_stop_training(timeout_seconds: int = 300) -> None:
+async def failing_stop_job(timeout_seconds: int = 300) -> None:
     raise RuntimeError("stop failed")
 
 
-async def failing_submit_training() -> str:
+async def failing_submit_job() -> str:
     raise RuntimeError("submit failed")
 
 
@@ -300,18 +300,18 @@ async def failing_mark_node_bad(
 # ---------------------------------------------------------------------------
 
 
-def make_failing_training_job(
+def make_failing_main_job(
     *,
     fail_stop: bool = False,
     fail_submit: bool = False,
     status_sequence: list[JobStatus] | None = None,
-) -> FakeTrainingJob:
-    """FakeTrainingJob with configurable method failures."""
-    job = FakeTrainingJob(status_sequence=status_sequence)
+) -> FakeMainJob:
+    """FakeMainJob with configurable method failures."""
+    job = FakeMainJob(status_sequence=status_sequence)
     if fail_stop:
-        job.stop_training = failing_stop_training  # type: ignore[assignment]
+        job.stop_job = failing_stop_job  # type: ignore[assignment]
     if fail_submit:
-        job.submit_training = failing_submit_training  # type: ignore[assignment]
+        job.submit_job = failing_submit_job  # type: ignore[assignment]
     return job
 
 

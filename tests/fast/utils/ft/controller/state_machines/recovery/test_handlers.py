@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FakeNotifier, FakeTrainingJob
+from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FakeNotifier, FakeMainJob
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus
@@ -44,13 +44,13 @@ def _make_stepper(*, timeout_seconds: int = 1800) -> StateMachineStepper:
 
 def _make_restart_stepper_and_context(
     *,
-    training_job: FakeTrainingJob | None = None,
+    training_job: FakeMainJob | None = None,
     mini_wandb: MiniWandb | None = None,
     node_manager: FakeNodeManager | None = None,
     notifier: FakeNotifier | None = None,
 ) -> tuple[StateMachineStepper, RestartContext]:
     resolved_node_manager = node_manager or FakeNodeManager()
-    resolved_training_job = training_job or FakeTrainingJob()
+    resolved_training_job = training_job or FakeMainJob()
     resolved_mini_wandb = mini_wandb or MiniWandb()
 
     stepper = create_restart_stepper()
@@ -335,7 +335,7 @@ class TestFullRecoveryFlow:
     @pytest.mark.asyncio
     async def test_no_fault_direct_restart_success(self) -> None:
         """RealtimeChecks (no faults) -> EvictingAndRestarting -> RestartDone -> RecoveryDone."""
-        training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
+        training_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
@@ -375,7 +375,7 @@ class TestFullRecoveryFlow:
     async def test_fault_evict_restart_full_flow(self) -> None:
         """RealtimeChecks(pre_identified_bad_nodes) -> EvictingAndRestarting ->
         (evict, stop, restart, monitor) -> RestartDone -> RecoveryDone."""
-        training_job = FakeTrainingJob(status_sequence=[JobStatus.RUNNING])
+        training_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
@@ -427,7 +427,7 @@ class TestFullRecoveryFlow:
     async def test_direct_restart_fail_escalation_full_flow(self) -> None:
         """Restart fail -> StopTimeDiagnostics -> diagnostics find bad nodes ->
         EvictingAndRestarting (notify on fail) -> RestartDone -> RecoveryDone."""
-        training_job = FakeTrainingJob(status_sequence=[JobStatus.FAILED])
+        training_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})

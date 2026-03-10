@@ -32,7 +32,7 @@ class _FtControllerActorCls:
         await self._ctrl.run()
 
     async def submit_and_run(self) -> None:
-        await self._ctrl.submit_initial_training()
+        await self._ctrl.submit_initial_job()
         await self._ctrl.run()
 
     async def shutdown(self) -> None:

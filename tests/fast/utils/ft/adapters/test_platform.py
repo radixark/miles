@@ -1,7 +1,7 @@
 import pytest
 
-from miles.utils.ft.adapters.stubs import StubNodeManager, StubNotifier, StubTrainingJob
-from miles.utils.ft.adapters.types import JobStatus, NodeManagerProtocol, NotifierProtocol, TrainingJobProtocol
+from miles.utils.ft.adapters.stubs import StubNodeManager, StubNotifier, StubMainJob
+from miles.utils.ft.adapters.types import JobStatus, NodeManagerProtocol, NotifierProtocol, MainJobProtocol
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol
 
 
@@ -59,13 +59,13 @@ class TestNodeManagerProtocol:
         assert await instance.get_bad_nodes() == []
 
 
-class TestTrainingJobProtocol:
+class TestMainJobProtocol:
     def test_incomplete_subclass_raises_type_error(self) -> None:
-        class _MissingSubmit(TrainingJobProtocol):
-            async def stop_training(self, timeout_seconds: int = 300) -> None:
+        class _MissingSubmit(MainJobProtocol):
+            async def stop_job(self, timeout_seconds: int = 300) -> None:
                 pass
 
-            async def get_training_status(self) -> JobStatus:
+            async def get_job_status(self) -> JobStatus:
                 return JobStatus.RUNNING
 
         with pytest.raises(TypeError):
@@ -73,26 +73,26 @@ class TestTrainingJobProtocol:
 
     @pytest.mark.anyio
     async def test_methods_callable_with_expected_signatures(self) -> None:
-        class _Impl(TrainingJobProtocol):
+        class _Impl(MainJobProtocol):
             def __init__(self) -> None:
                 self._status = JobStatus.PENDING
 
-            async def stop_training(self, timeout_seconds: int = 300) -> None:
+            async def stop_job(self, timeout_seconds: int = 300) -> None:
                 self._status = JobStatus.STOPPED
 
-            async def submit_training(self) -> str:
+            async def submit_job(self) -> str:
                 self._status = JobStatus.RUNNING
                 return "run-abc"
 
-            async def get_training_status(self) -> JobStatus:
+            async def get_job_status(self) -> JobStatus:
                 return self._status
 
-        instance: TrainingJobProtocol = _Impl()
-        run_id = await instance.submit_training()
+        instance: MainJobProtocol = _Impl()
+        run_id = await instance.submit_job()
         assert run_id == "run-abc"
-        assert await instance.get_training_status() == JobStatus.RUNNING
-        await instance.stop_training(timeout_seconds=10)
-        assert await instance.get_training_status() == JobStatus.STOPPED
+        assert await instance.get_job_status() == JobStatus.RUNNING
+        await instance.stop_job(timeout_seconds=10)
+        assert await instance.get_job_status() == JobStatus.STOPPED
 
 
 class TestNotifierProtocol:
@@ -129,7 +129,7 @@ class TestStubProtocolCompliance:
         assert isinstance(StubNodeManager(), NodeManagerProtocol)
 
     def test_stub_training_job_satisfies_protocol(self) -> None:
-        assert isinstance(StubTrainingJob(), TrainingJobProtocol)
+        assert isinstance(StubMainJob(), MainJobProtocol)
 
     def test_stub_notifier_satisfies_protocol(self) -> None:
         assert isinstance(StubNotifier(), NotifierProtocol)

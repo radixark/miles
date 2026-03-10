@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import ConfigDict
 
-from miles.utils.ft.adapters.types import NodeManagerProtocol, NotifierProtocol, TrainingJobProtocol
+from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.utils.base_model import FtBaseModel
 
@@ -41,7 +41,7 @@ class RestartContext(FtBaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     node_manager: NodeManagerProtocol
-    training_job: TrainingJobProtocol
+    main_job: MainJobProtocol
     mini_wandb: MiniWandb
     notifier: NotifierProtocol | None
     on_new_run: Callable[[str], None] | None

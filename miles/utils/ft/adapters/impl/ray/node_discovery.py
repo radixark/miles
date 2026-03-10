@@ -1,6 +1,6 @@
 """Shared Ray node discovery utilities.
 
-Centralises ray.nodes() traversal logic used by both RayTrainingJob
+Centralises ray.nodes() traversal logic used by both RayMainJob
 (node-id resolution) and standalone NCCL diagnostics (GPU node discovery).
 """
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from tests.fast.utils.ft.conftest import FakeTrainingJob, make_failing_training_job
+from tests.fast.utils.ft.conftest import FakeMainJob, make_failing_main_job
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
@@ -118,54 +118,54 @@ class TestRetryAsyncEdgePaths:
 class TestStopAndSubmit:
     @pytest.mark.anyio
     async def test_happy_path_returns_true(self) -> None:
-        training_job = FakeTrainingJob()
+        main_job = FakeMainJob()
 
-        result = await stop_and_submit(training_job)
+        result = await stop_and_submit(main_job)
 
         assert result is True
-        assert training_job._stopped
-        assert training_job._submitted
+        assert main_job._stopped
+        assert main_job._submitted
 
     @pytest.mark.anyio
     async def test_stop_failure_but_job_stopped_still_submits(self) -> None:
-        training_job = make_failing_training_job(
+        main_job = make_failing_main_job(
             fail_stop=True,
             status_sequence=[JobStatus.STOPPED],
         )
 
-        result = await stop_and_submit(training_job)
+        result = await stop_and_submit(main_job)
 
         assert result is True
-        assert training_job._submitted
+        assert main_job._submitted
 
     @pytest.mark.anyio
     async def test_stop_failure_job_still_running_skips_submit(self) -> None:
-        training_job = make_failing_training_job(
+        main_job = make_failing_main_job(
             fail_stop=True,
             status_sequence=[JobStatus.RUNNING],
         )
 
-        result = await stop_and_submit(training_job)
+        result = await stop_and_submit(main_job)
 
         assert result is False
-        assert not training_job._submitted
+        assert not main_job._submitted
 
     @pytest.mark.anyio
     async def test_submit_failure_returns_false(self) -> None:
-        training_job = make_failing_training_job(fail_submit=True)
+        main_job = make_failing_main_job(fail_submit=True)
 
-        result = await stop_and_submit(training_job)
+        result = await stop_and_submit(main_job)
 
         assert result is False
-        assert training_job._stopped
+        assert main_job._stopped
 
     @pytest.mark.anyio
     async def test_on_new_run_called_after_successful_submit(self) -> None:
-        training_job = FakeTrainingJob()
+        main_job = FakeMainJob()
         calls: list[str] = []
 
         result = await stop_and_submit(
-            training_job,
+            main_job,
             on_new_run=lambda run_id: calls.append(run_id),
         )
 
@@ -175,11 +175,11 @@ class TestStopAndSubmit:
 
     @pytest.mark.anyio
     async def test_on_new_run_not_called_on_submit_failure(self) -> None:
-        training_job = make_failing_training_job(fail_submit=True)
+        main_job = make_failing_main_job(fail_submit=True)
         calls: list[str] = []
 
         result = await stop_and_submit(
-            training_job,
+            main_job,
             on_new_run=lambda run_id: calls.append(run_id),
         )
 
@@ -188,31 +188,31 @@ class TestStopAndSubmit:
 
     @pytest.mark.anyio
     async def test_stop_failure_job_failed_still_submits(self) -> None:
-        training_job = make_failing_training_job(
+        main_job = make_failing_main_job(
             fail_stop=True,
             status_sequence=[JobStatus.FAILED],
         )
 
-        result = await stop_and_submit(training_job)
+        result = await stop_and_submit(main_job)
 
         assert result is True
-        assert training_job._submitted
+        assert main_job._submitted
 
     @pytest.mark.anyio
     async def test_submit_called_exactly_once(self) -> None:
-        """stop_and_submit calls submit_training exactly once (no outer retry)."""
-        training_job = FakeTrainingJob()
+        """stop_and_submit calls submit_job exactly once (no outer retry)."""
+        main_job = FakeMainJob()
 
-        result = await stop_and_submit(training_job)
+        result = await stop_and_submit(main_job)
 
         assert result is True
-        assert training_job._submit_call_count == 1
+        assert main_job._submit_call_count == 1
 
     @pytest.mark.anyio
     async def test_submit_exception_returns_false_without_retry(self) -> None:
-        """When submit_training raises, stop_and_submit returns False without retrying."""
-        training_job = make_failing_training_job(fail_submit=True)
+        """When submit_job raises, stop_and_submit returns False without retrying."""
+        main_job = make_failing_main_job(fail_submit=True)
 
-        result = await stop_and_submit(training_job)
+        result = await stop_and_submit(main_job)
 
         assert result is False

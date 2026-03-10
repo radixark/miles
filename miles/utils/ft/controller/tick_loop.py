@@ -9,7 +9,7 @@ from miles.utils.ft.adapters.types import (
     JobStatus,
     NodeAgentProtocol,
     NotifierProtocol,
-    TrainingJobProtocol,
+    MainJobProtocol,
 )
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
@@ -48,7 +48,7 @@ class TickLoop:
         state_machine: StateMachine[MainState, MainContext],
         rank_roster: RankRoster,
         agents: dict[str, NodeAgentProtocol],
-        training_job: TrainingJobProtocol,
+        main_job: MainJobProtocol,
         metric_store: MetricStoreProtocol,
         mini_wandb: MiniWandb,
         detectors: list[BaseFaultDetector],
@@ -69,7 +69,7 @@ class TickLoop:
         self.tick_count: int = 0
 
         self._agents = agents
-        self._training_job = training_job
+        self._main_job = main_job
         self._metric_store = metric_store
         self._mini_wandb = mini_wandb
         self._detectors = detectors
@@ -104,7 +104,7 @@ class TickLoop:
                 training_node_ids=set(self.rank_roster.rank_placement.values()),
                 registered_agent_node_ids=set(self._agents.keys()),
             )
-            job_status = await self._training_job.get_training_status()
+            job_status = await self._main_job.get_job_status()
 
             should_run = self._should_run_detectors()
             detector_ctx = self._build_detector_context(job_status) if should_run else None

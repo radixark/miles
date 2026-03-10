@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from tests.fast.utils.ft.conftest import FakeNodeManager, FakeTrainingJob, get_sample_value, make_test_exporter
+from tests.fast.utils.ft.conftest import FakeNodeManager, FakeMainJob, get_sample_value, make_test_exporter
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
@@ -46,7 +46,7 @@ class TestControllerPrometheusMode:
 
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeTrainingJob(status_sequence=[JobStatus.RUNNING]),
+            training_job=FakeMainJob(status_sequence=[JobStatus.RUNNING]),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
             controller_exporter=exporter,
@@ -66,7 +66,7 @@ class TestControllerPrometheusMode:
 
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeTrainingJob(),
+            training_job=FakeMainJob(),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
             controller_exporter=exporter,
@@ -91,7 +91,7 @@ class TestControllerPrometheusMode:
 
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeTrainingJob(),
+            training_job=FakeMainJob(),
             metric_store=PrometheusClient(url="http://fake:9090"),
             mini_wandb=mini_wandb,
             controller_exporter=exporter,

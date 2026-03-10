@@ -7,7 +7,7 @@ from miles.utils.ft.adapters.types import (
     JobStatus,
     NodeManagerProtocol,
     NotifierProtocol,
-    TrainingJobProtocol,
+    MainJobProtocol,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,18 +33,18 @@ class StubNodeManager(NodeManagerProtocol):
         return []
 
 
-class StubTrainingJob(TrainingJobProtocol):
+class StubMainJob(MainJobProtocol):
     """Logs operations but does not call real Ray Job API."""
 
-    async def stop_training(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
-        logger.info("stub_stop_training timeout_seconds=%d", timeout_seconds)
+    async def stop_job(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
+        logger.info("stub_stop_job timeout_seconds=%d", timeout_seconds)
 
-    async def submit_training(self) -> str:
+    async def submit_job(self) -> str:
         run_id = uuid4().hex[:8]
-        logger.info("stub_submit_training run_id=%s", run_id)
+        logger.info("stub_submit_job run_id=%s", run_id)
         return run_id
 
-    async def get_training_status(self) -> JobStatus:
+    async def get_job_status(self) -> JobStatus:
         return JobStatus.RUNNING
 
 

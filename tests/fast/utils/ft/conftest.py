@@ -18,9 +18,9 @@ from tests.fast.utils.ft.utils.controller_fakes import (  # noqa: F401
     CrashingDetector,
     FakeNodeManager,
     FakeNotifier,
-    FakeTrainingJob,
+    FakeMainJob,
     FixedDecisionDetector,
-    make_failing_training_job,
+    make_failing_main_job,
     make_test_controller,
     run_controller_briefly,
 )

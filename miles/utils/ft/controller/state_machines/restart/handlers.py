@@ -101,7 +101,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
         ctx: RestartContext,
     ) -> RestartState | None:
         success = await stop_and_submit(
-            ctx.training_job,
+            ctx.main_job,
             on_new_run=ctx.on_new_run,
         )
         if not success:
@@ -119,7 +119,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
         state: StoppingAndRestarting,
         ctx: RestartContext,
     ) -> RestartState | None:
-        status = await ctx.training_job.get_training_status()
+        status = await ctx.main_job.get_job_status()
 
         if status == JobStatus.RUNNING:
             current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
@@ -149,7 +149,7 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
         state: MonitoringProgress,
         ctx: RestartContext,
     ) -> RestartState | None:
-        status = await ctx.training_job.get_training_status()
+        status = await ctx.main_job.get_job_status()
 
         if status == JobStatus.FAILED:
             logger.warning("monitoring_training_failed")

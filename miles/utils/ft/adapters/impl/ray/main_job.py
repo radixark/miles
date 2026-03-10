@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from ray.job_submission import JobSubmissionClient
 
-from miles.utils.ft.adapters.types import STOP_TRAINING_TIMEOUT_SECONDS, JobStatus, TrainingJobProtocol
+from miles.utils.ft.adapters.types import STOP_TRAINING_TIMEOUT_SECONDS, JobStatus, MainJobProtocol
 from miles.utils.ft.utils.polling import poll_until
 
 logger = logging.getLogger(__name__)
@@ -55,10 +55,10 @@ async def stop_all_active_jobs(
     return stopped
 
 
-class RayTrainingJob(TrainingJobProtocol):
+class RayMainJob(MainJobProtocol):
     """Manage training jobs via the Ray Job Submission API.
 
-    Implements TrainingJobProtocol. All synchronous Ray client calls are
+    Implements MainJobProtocol. All synchronous Ray client calls are
     wrapped with asyncio.to_thread() to avoid blocking the event loop.
     """
 
@@ -83,10 +83,10 @@ class RayTrainingJob(TrainingJobProtocol):
     def job_id(self) -> str | None:
         return self._job_id
 
-    async def submit_training(self) -> str:
+    async def submit_job(self) -> str:
         if self._job_id is not None:
             raise RuntimeError(
-                f"Cannot submit: previous job {self._job_id} still tracked. " "Call stop_training() first."
+                f"Cannot submit: previous job {self._job_id} still tracked. " "Call stop_job() first."
             )
 
         run_id = uuid4().hex[:8]
@@ -111,16 +111,16 @@ class RayTrainingJob(TrainingJobProtocol):
 
         self._job_id = job_id
         logger.info(
-            "submit_training job_id=%s run_id=%s elapsed_seconds=%.3f",
+            "submit_job job_id=%s run_id=%s elapsed_seconds=%.3f",
             job_id,
             run_id,
             elapsed,
         )
         return run_id
 
-    async def stop_training(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
+    async def stop_job(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
         if self._job_id is None:
-            logger.warning("stop_training called with no active job")
+            logger.warning("stop_job called with no active job")
             return
 
         await _stop_job(
@@ -131,7 +131,7 @@ class RayTrainingJob(TrainingJobProtocol):
         )
         self._job_id = None
 
-    async def get_training_status(self) -> JobStatus:
+    async def get_job_status(self) -> JobStatus:
         if self._job_id is None:
             return JobStatus.STOPPED
 
@@ -149,7 +149,7 @@ class RayTrainingJob(TrainingJobProtocol):
             job_status = JobStatus.FAILED
 
         logger.info(
-            "get_training_status job_id=%s raw_status=%s job_status=%s elapsed_seconds=%.3f",
+            "get_job_status job_id=%s raw_status=%s job_status=%s elapsed_seconds=%.3f",
             self._job_id,
             status_str,
             job_status.value,

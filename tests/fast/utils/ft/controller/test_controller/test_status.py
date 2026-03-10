@@ -8,7 +8,7 @@ import pytest
 from tests.fast.utils.ft.conftest import (
     AlwaysEnterRecoveryDetector,
     FakeNodeManager,
-    FakeTrainingJob,
+    FakeMainJob,
     get_sample_value,
     make_fake_metric_store,
     make_test_controller,
@@ -200,7 +200,7 @@ class TestDefaultDiagnosticOrchestratorWiring:
     def test_default_orchestrator_has_rank_pids_provider(self) -> None:
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeTrainingJob(),
+            training_job=FakeMainJob(),
             metric_store=make_fake_metric_store(),
             mini_wandb=MiniWandb(),
         )

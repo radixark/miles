@@ -6,7 +6,7 @@ import logging
 from miles.utils.ft.adapters.types import (
     NodeAgentProtocol,
     NotifierProtocol,
-    TrainingJobProtocol,
+    MainJobProtocol,
 )
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
@@ -29,7 +29,7 @@ class FtController:
     def __init__(
         self,
         *,
-        training_job: TrainingJobProtocol,
+        main_job: MainJobProtocol,
         state_machine: StateMachine[MainState, MainContext],
         rank_roster: RankRoster,
         mini_wandb: MiniWandb,
@@ -41,7 +41,7 @@ class FtController:
         metric_store: MetricStoreProtocol,
         controller_exporter: ControllerExporter | None = None,
     ) -> None:
-        self._training_job = training_job
+        self._main_job = main_job
         self._state_machine = state_machine
         self._rank_roster = rank_roster
         self._mini_wandb = mini_wandb
@@ -96,8 +96,8 @@ class FtController:
             node_id, exporter_address, sorted(node_metadata) if node_metadata else "(none)",
         )
 
-    async def submit_initial_training(self) -> str:
-        run_id = await self._training_job.submit_training()
+    async def submit_initial_job(self) -> str:
+        run_id = await self._main_job.submit_job()
         self._activate_run(run_id)
         return run_id
 

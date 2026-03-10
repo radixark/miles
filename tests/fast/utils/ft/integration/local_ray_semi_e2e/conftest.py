@@ -17,7 +17,7 @@ from tests.fast.utils.ft.utils.training_simulator import (
     NotifierStateActor,
     RemoteControlledCollector,
     RemoteControlledNotifier,
-    RemoteControlledTrainingJob,
+    RemoteControlledMainJob,
     TrainingStateActor,
     TrainingWorkerActor,
 )
@@ -179,7 +179,7 @@ def _build_e2e_env(
         detectors = [TrainingCrashDetector()]
 
     state_actor = TrainingStateActor.remote()
-    training_job = RemoteControlledTrainingJob(state_actor=state_actor)
+    training_job = RemoteControlledMainJob(state_actor=state_actor)
 
     notifier_state_actor: ray.actor.ActorHandle | None = None
     resolved_notifier = notifier_override

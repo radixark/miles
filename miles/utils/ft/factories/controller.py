@@ -1,7 +1,7 @@
 """Composition root for the FtController and its platform dependencies.
 
 Assembles the controller with all concrete implementations (K8sNodeManager,
-RayTrainingJob, notifiers, metric stores, detectors). Analogous to
+RayMainJob, notifiers, metric stores, detectors). Analogous to
 node_agent.py for the node agent side.
 """
 
@@ -15,8 +15,8 @@ from uuid import uuid4
 
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.notifiers.factory import build_notifier
-from miles.utils.ft.adapters.stubs import StubNodeManager, StubTrainingJob
-from miles.utils.ft.adapters.types import NodeManagerProtocol, NotifierProtocol, TrainingJobProtocol
+from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
+from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
@@ -30,7 +30,7 @@ from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 if TYPE_CHECKING:
     from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
-    from miles.utils.ft.adapters.impl.ray.training_job import RayTrainingJob
+    from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def build_ft_controller(
     *,
     start_exporter: bool = True,
     node_manager_override: NodeManagerProtocol | None = None,
-    training_job_override: TrainingJobProtocol | None = None,
+    main_job_override: MainJobProtocol | None = None,
     notifier_override: NotifierProtocol | None | object = _NOTIFIER_SENTINEL,
     detectors_override: list[BaseFaultDetector] | None = None,
     diagnostic_orchestrator_override: DiagnosticOrchestratorProtocol | None = None,
@@ -68,20 +68,20 @@ def build_ft_controller(
         )
 
     _has_nm = node_manager_override is not None
-    _has_tj = training_job_override is not None
+    _has_tj = main_job_override is not None
     if _has_nm != _has_tj:
-        raise ValueError("node_manager_override and training_job_override must be provided together")
+        raise ValueError("node_manager_override and main_job_override must be provided together")
 
     if config is None:
         config = FtControllerConfig(**kwargs)  # type: ignore[arg-type]
 
     ft_id = config.ft_id or uuid4().hex[:8]
 
-    if node_manager_override is not None and training_job_override is not None:
+    if node_manager_override is not None and main_job_override is not None:
         node_manager: NodeManagerProtocol = node_manager_override
-        training_job: TrainingJobProtocol = training_job_override
+        main_job: MainJobProtocol = main_job_override
     else:
-        node_manager, training_job = _build_platform_components(
+        node_manager, main_job = _build_platform_components(
             platform=config.platform,
             ray_address=config.ray_address,
             entrypoint=config.entrypoint,
@@ -122,7 +122,7 @@ def build_ft_controller(
 
     create_kwargs: dict[str, Any] = dict(
         node_manager=node_manager,
-        training_job=training_job,
+        main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
         scrape_target_manager=scrape_target_manager,
@@ -172,15 +172,15 @@ def _build_platform_components(
     runtime_env: dict[str, Any] | None = None,
     ft_id: str = "",
     k8s_label_prefix: str = "",
-) -> tuple[StubNodeManager | K8sNodeManager, StubTrainingJob | RayTrainingJob]:
+) -> tuple[StubNodeManager | K8sNodeManager, StubMainJob | RayMainJob]:
     if platform == "stub":
-        return StubNodeManager(), StubTrainingJob()
+        return StubNodeManager(), StubMainJob()
 
     if platform == "k8s-ray":
         from ray.job_submission import JobSubmissionClient
 
         from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
-        from miles.utils.ft.adapters.impl.ray.training_job import RayTrainingJob
+        from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
 
         namespace = os.environ.get("K8S_NAMESPACE", "")
         if not namespace:
@@ -193,14 +193,14 @@ def _build_platform_components(
             label_prefix=k8s_label_prefix,
             namespace=namespace,
         )
-        training_job = RayTrainingJob(
+        main_job = RayMainJob(
             client=JobSubmissionClient(address=ray_address),
             entrypoint=entrypoint,
             runtime_env=runtime_env,
             ft_id=ft_id,
             k8s_label_prefix=k8s_label_prefix,
         )
-        return node_manager, training_job
+        return node_manager, main_job
 
     raise ValueError(f"Unknown platform: {platform}")
 

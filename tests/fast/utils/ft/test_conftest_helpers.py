@@ -4,7 +4,7 @@ import pytest
 from tests.fast.utils.ft.conftest import (
     FakeNodeAgent,
     FakeNodeManager,
-    FakeTrainingJob,
+    FakeMainJob,
     TestCollector,
     make_fake_metric_store,
     make_fake_mini_wandb,
@@ -91,10 +91,10 @@ class TestFakeNodeManager:
         await manager.unmark_node_bad(node_id="node-1")
 
 
-class TestFakeTrainingJob:
+class TestFakeMainJob:
     @pytest.mark.anyio
     async def test_status_sequence(self) -> None:
-        job = FakeTrainingJob(
+        job = FakeMainJob(
             status_sequence=[
                 JobStatus.PENDING,
                 JobStatus.RUNNING,
@@ -108,19 +108,19 @@ class TestFakeTrainingJob:
 
     @pytest.mark.anyio
     async def test_default_status_is_running(self) -> None:
-        job = FakeTrainingJob()
+        job = FakeMainJob()
         assert await job.get_training_status() == JobStatus.RUNNING
 
     @pytest.mark.anyio
     async def test_stop_sets_flag(self) -> None:
-        job = FakeTrainingJob()
+        job = FakeMainJob()
         assert not job._stopped
         await job.stop_training()
         assert job._stopped
 
     @pytest.mark.anyio
     async def test_submit_resets_call_count(self) -> None:
-        job = FakeTrainingJob(
+        job = FakeMainJob(
             status_sequence=[
                 JobStatus.PENDING,
                 JobStatus.RUNNING,

@@ -25,7 +25,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e import scenarios as _sce
 
 from miles.utils.external_utils.command_utils import get_bool_env_var
 from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
-from miles.utils.ft.adapters.impl.ray.training_job import stop_all_active_jobs
+from miles.utils.ft.adapters.impl.ray.main_job import stop_all_active_jobs
 from miles.utils.ft.adapters.types import ft_controller_actor_name
 from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
 from miles.utils.ft.fault_injectors.fault_injector import deploy_fault_injector

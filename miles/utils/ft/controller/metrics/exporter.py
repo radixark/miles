@@ -52,7 +52,7 @@ class ControllerExporter:
         )
 
         self._training_job_status = Gauge(
-            metric_names.TRAINING_JOB_STATUS,
+            metric_names.MAIN_JOB_STATUS,
             "Training job status (-1=FAILED, 0=STOPPED, 1=RUNNING, 2=PENDING)",
             registry=self._registry,
         )

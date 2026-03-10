@@ -1,6 +1,6 @@
-"""Remote-controlled training job and training worker for local_ray integration tests.
+"""Remote-controlled main job and training worker for local_ray integration tests.
 
-Provides a TrainingJobProtocol implementation whose state lives in a separate
+Provides a MainJobProtocol implementation whose state lives in a separate
 Ray actor, so the test driver can mutate it (crash, hang, recover) while the
 FtController actor reads it during its tick loop.
 
@@ -20,7 +20,7 @@ from uuid import uuid4
 import ray
 
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
-from miles.utils.ft.adapters.types import JobStatus, NotifierProtocol, TrainingJobProtocol
+from miles.utils.ft.adapters.types import JobStatus, NotifierProtocol, MainJobProtocol
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 from miles.utils.ft.agents.types import MetricSample
@@ -84,8 +84,8 @@ class TrainingStateActor:
         return self._custom_log_metrics
 
 
-class RemoteControlledTrainingJob(TrainingJobProtocol):
-    """TrainingJobProtocol that delegates to a TrainingStateActor.
+class RemoteControlledMainJob(MainJobProtocol):
+    """MainJobProtocol that delegates to a TrainingStateActor.
 
     Instances are serialized into the FtControllerActor via cloudpickle.
     All state queries go through Ray RPCs to the shared TrainingStateActor,
@@ -95,14 +95,14 @@ class RemoteControlledTrainingJob(TrainingJobProtocol):
     def __init__(self, state_actor: ray.actor.ActorHandle) -> None:
         self._state = state_actor
 
-    async def get_training_status(self) -> JobStatus:
+    async def get_job_status(self) -> JobStatus:
         status_str: str = await self._state.get_status.remote()
         return JobStatus(status_str)
 
-    async def stop_training(self, timeout_seconds: int = 300) -> None:
+    async def stop_job(self, timeout_seconds: int = 300) -> None:
         await self._state.stop.remote()
 
-    async def submit_training(self) -> str:
+    async def submit_job(self) -> str:
         run_id: str = await self._state.submit.remote()
         return run_id
 

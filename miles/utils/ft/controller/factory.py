@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from miles.utils.ft.adapters.types import (
     NodeManagerProtocol,
     NotifierProtocol,
-    TrainingJobProtocol,
+    MainJobProtocol,
 )
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
@@ -43,7 +43,7 @@ class PlatformDeps:
     """Bundles platform-level dependencies shared across action handlers."""
 
     node_manager: NodeManagerProtocol
-    training_job: TrainingJobProtocol
+    main_job: MainJobProtocol
     metric_store: MetricQueryProtocol
     mini_wandb: MiniWandb
     notifier: NotifierProtocol | None
@@ -55,7 +55,7 @@ class PlatformDeps:
 
 def create_ft_controller(
     node_manager: NodeManagerProtocol,
-    training_job: TrainingJobProtocol,
+    main_job: MainJobProtocol,
     metric_store: MetricStoreProtocol,
     mini_wandb: MiniWandb,
     scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
@@ -99,7 +99,7 @@ def create_ft_controller(
         state_machine=state_machine,
         rank_roster=rank_roster,
         agents=agents,  # type: ignore[arg-type]
-        training_job=training_job,
+        main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
         detectors=detectors or [],
@@ -118,7 +118,7 @@ def create_ft_controller(
 
     platform_deps = PlatformDeps(
         node_manager=node_manager,
-        training_job=training_job,
+        main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
         notifier=notifier,
@@ -128,7 +128,7 @@ def create_ft_controller(
     )
 
     instance = FtController(
-        training_job=training_job,
+        main_job=main_job,
         state_machine=state_machine,
         rank_roster=rank_roster,
         mini_wandb=mini_wandb,
@@ -143,7 +143,7 @@ def create_ft_controller(
 
     restart_context = RestartContext(
         node_manager=node_manager,
-        training_job=training_job,
+        main_job=main_job,
         mini_wandb=mini_wandb,
         notifier=notifier,
         on_new_run=instance._activate_run,
