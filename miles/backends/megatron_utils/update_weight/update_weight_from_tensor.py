@@ -135,10 +135,20 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
+        sync_chunk_count = 0
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
-            ray.get(refs)
+            results = ray.get(refs)
+            _check_weight_sync_results(results, is_lora=self.is_lora)
             del long_lived_tensors
+            sync_chunk_count += 1
+
+        if self.is_lora and sync_chunk_count == 0:
+            raise RuntimeError(
+                "LoRA weight sync failed: the weight iterator produced zero chunks. "
+                "No adapter weights were sent to the rollout engine. This usually means "
+                "the Megatron-Bridge or SGLang version is incompatible."
+            )
 
         dist.barrier(group=get_gloo_group())
 
@@ -163,6 +173,13 @@ class UpdateWeightFromTensor:
         # Separate LoRA weights from base weights
         if self.is_lora:
             weight_tensors = [(n, t) for n, t in hf_named_tensors if is_lora_weight_name(n)]
+            if not weight_tensors:
+                raise RuntimeError(
+                    "LoRA weight sync failed: no LoRA weights (lora_A/lora_B) found in the "
+                    "HF weight chunk produced by the weight iterator. This usually means the "
+                    "Megatron-Bridge or SGLang version is incompatible and adapter weights were "
+                    "not exported. Check that `megatron_to_hf_mode` and bridge version match."
+                )
         else:
             weight_tensors = hf_named_tensors
 
@@ -281,3 +298,27 @@ def _send_to_colocated_engine(
                 refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
 
     return refs, long_live_tensors
+
+
+def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
+    """Validate return values from rollout engine weight-sync RPCs.
+
+    Raises RuntimeError if any engine reports failure, preventing silent
+    failures when SGLang versions are incompatible.
+    """
+    sync_type = "LoRA" if is_lora else "Base model"
+    for result in results:
+        if isinstance(result, Mapping):
+            success = result.get("success")
+            error_msg = result.get("error_message") or result.get("error") or "unknown error"
+        elif hasattr(result, "success"):
+            success = result.success
+            error_msg = getattr(result, "error_message", "unknown error")
+        else:
+            continue
+
+        if success is False:
+            raise RuntimeError(
+                f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
+                f"Check SGLang version compatibility."
+            )

@@ -15,7 +15,16 @@ WORKDIR /root/
 # ======================================== Apt dependencies =============================================
 
 RUN apt update
-RUN apt install -y nvtop rsync dnsutils
+# ethtool for network diagnostics
+RUN apt install -y nvtop rsync dnsutils ethtool
+
+# nccl-tests for diagnostics
+RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
+    cd /tmp/nccl-tests && \
+    git checkout ae98985f5599617be94042f4aa3637d10014ce89 && \
+    make -j$(nproc) CUDA_HOME=/usr/local/cuda && \
+    cp /tmp/nccl-tests/build/*_perf /usr/local/bin/ && \
+    rm -rf /tmp/nccl-tests
 
 # ====================================== Python dependencies ============================================
 
