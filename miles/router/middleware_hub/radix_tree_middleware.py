@@ -5,10 +5,10 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from transformers import AutoTokenizer
 
 from miles.utils.http_utils import post
 from miles.utils.mask_utils import get_response_lengths
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
 from .radix_tree import StringRadixTrie
@@ -61,7 +61,9 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.router = router
         self.args = router.args
-        self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(
+            self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+        )
         self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=self.tokenizer, verbose=False)
         self.router.radix_tree = self.radix_tree
 

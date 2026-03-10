@@ -137,7 +137,13 @@ def expected_request(input_ids: list[int], sampling_params: dict | None = None) 
 
 
 def expected_openai_request(messages: list[dict]) -> dict:
-    return {"messages": messages, "model": "default", "tools": SAMPLE_TOOLS}
+    return {
+        "messages": messages,
+        "model": "default",
+        "tools": SAMPLE_TOOLS,
+        "logprobs": True,
+        "return_prompt_token_ids": True,
+    }
 
 
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
