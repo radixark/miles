@@ -8,6 +8,8 @@ from miles.utils.ft.agents.collectors.disk import DiskCollector
 from miles.utils.ft.agents.collectors.gpu import GpuCollector
 from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
 from miles.utils.ft.agents.collectors.network import NetworkCollector
+from miles.utils.ft.adapters.stubs import NullMetadataProvider
+from miles.utils.ft.adapters.types import AgentMetadataProvider
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.nccl import NcclNodeExecutor
@@ -88,3 +90,12 @@ class TestBuildNodeAgent:
         custom = [GpuNodeExecutor()]
         agent = build_node_agent(node_id="n1", diagnostics_override=custom)
         assert list(agent._dispatcher._diagnostics.keys()) == ["gpu"]
+
+    def test_metadata_provider_passed_through(self) -> None:
+        provider = NullMetadataProvider()
+        agent = build_node_agent(node_id="n1", metadata_provider=provider)
+        assert agent._metadata_provider is provider
+
+    def test_metadata_provider_defaults_to_none(self) -> None:
+        agent = build_node_agent(node_id="n1")
+        assert agent._metadata_provider is None

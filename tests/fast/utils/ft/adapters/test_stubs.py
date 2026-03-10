@@ -1,5 +1,18 @@
-from miles.utils.ft.adapters.stubs import StubNodeManager, StubTrainingJob
+from miles.utils.ft.adapters.stubs import NullMetadataProvider, StubNodeManager, StubTrainingJob
 from miles.utils.ft.adapters.types import JobStatus
+
+
+class TestNullMetadataProvider:
+    def test_returns_empty_dict(self) -> None:
+        provider = NullMetadataProvider()
+        assert provider.get_metadata() == {}
+
+    def test_returns_new_dict_each_call(self) -> None:
+        provider = NullMetadataProvider()
+        first = provider.get_metadata()
+        second = provider.get_metadata()
+        assert first == second == {}
+        assert first is not second
 
 
 class TestStubNodeManager:

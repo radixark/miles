@@ -7,10 +7,10 @@ import pytest
 from tests.fast.utils.ft.conftest import SlowDiagnostic, StubDiagnostic, TestCollector
 from tests.fast.utils.ft.utils import FailingCloseCollector, FailingCollector
 
-from miles.utils.ft.agents.collectors.base import BaseCollector
+from miles.utils.ft.adapters.types import AgentMetadataProvider
+from miles.utils.ft.agents.collectors.base import BaseCollector, CollectorOutput
 from miles.utils.ft.agents.collectors.stub import StubCollector
 from miles.utils.ft.agents.core.node_agent import FtNodeAgent
-from miles.utils.ft.agents.collectors.base import CollectorOutput
 from miles.utils.ft.agents.types import DiagnosticResult, GaugeSample, UnknownDiagnosticError
 
 
@@ -472,3 +472,55 @@ class TestFtNodeAgentDiagnosticException:
         result = await agent.run_diagnostic("stub")
         assert result.passed is False
         assert "exception" in result.details
+
+
+class _StaticMetadataProvider(AgentMetadataProvider):
+    def __init__(self, metadata: dict[str, str]) -> None:
+        self._metadata = metadata
+
+    def get_metadata(self) -> dict[str, str]:
+        return dict(self._metadata)
+
+
+class _CountingMetadataProvider(AgentMetadataProvider):
+    """Returns incrementing call counts to verify on-demand reads."""
+
+    def __init__(self) -> None:
+        self._call_count = 0
+
+    def get_metadata(self) -> dict[str, str]:
+        self._call_count += 1
+        return {"call_count": str(self._call_count)}
+
+
+class TestFtNodeAgentMetadata:
+    def test_metadata_returns_provider_result(self) -> None:
+        provider = _StaticMetadataProvider({"k8s_node_name": "gke-01", "k8s_pod_name": "pod-abc"})
+        agent = FtNodeAgent(node_id="test-node", metadata_provider=provider)
+
+        assert agent.metadata == {"k8s_node_name": "gke-01", "k8s_pod_name": "pod-abc"}
+
+    def test_metadata_returns_empty_dict_without_provider(self) -> None:
+        agent = FtNodeAgent(node_id="test-node")
+
+        assert agent.metadata == {}
+
+    def test_metadata_reads_on_demand_not_cached(self) -> None:
+        """Each access to .metadata calls get_metadata() — no caching."""
+        provider = _CountingMetadataProvider()
+        agent = FtNodeAgent(node_id="test-node", metadata_provider=provider)
+
+        first = agent.metadata
+        second = agent.metadata
+
+        assert first == {"call_count": "1"}
+        assert second == {"call_count": "2"}
+
+    def test_metadata_returns_new_dict_each_call(self) -> None:
+        provider = _StaticMetadataProvider({"key": "val"})
+        agent = FtNodeAgent(node_id="test-node", metadata_provider=provider)
+
+        first = agent.metadata
+        second = agent.metadata
+        assert first == second
+        assert first is not second

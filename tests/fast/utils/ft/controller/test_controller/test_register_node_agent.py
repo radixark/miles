@@ -71,3 +71,58 @@ class TestRegisterNodeAgentScrapeTarget:
         )
 
         assert "node-2" in ctrl._agents
+
+
+class TestRegisterNodeAgentMetadata:
+    def test_register_stores_node_metadata(self) -> None:
+        harness = make_test_controller()
+        ctrl = harness.controller
+
+        class _FakeAgent:
+            async def run_diagnostic(self, diagnostic_type: str, timeout_seconds: int = 120, **kwargs: object):
+                pass
+
+        metadata = {"k8s_node_name": "gke-node-01", "k8s_pod_name": "trainer-pod"}
+        ctrl.register_node_agent(
+            node_id="node-a",
+            agent=_FakeAgent(),
+            node_metadata=metadata,
+        )
+
+        assert ctrl.node_metadata["node-a"] == {"k8s_node_name": "gke-node-01", "k8s_pod_name": "trainer-pod"}
+
+    def test_register_without_metadata_leaves_empty(self) -> None:
+        harness = make_test_controller()
+        ctrl = harness.controller
+
+        class _FakeAgent:
+            async def run_diagnostic(self, diagnostic_type: str, timeout_seconds: int = 120, **kwargs: object):
+                pass
+
+        ctrl.register_node_agent(node_id="node-b", agent=_FakeAgent())
+
+        assert "node-b" not in ctrl.node_metadata
+
+    def test_register_multiple_nodes_with_metadata(self) -> None:
+        harness = make_test_controller()
+        ctrl = harness.controller
+
+        class _FakeAgent:
+            async def run_diagnostic(self, diagnostic_type: str, timeout_seconds: int = 120, **kwargs: object):
+                pass
+
+        ctrl.register_node_agent(
+            node_id="node-a",
+            agent=_FakeAgent(),
+            node_metadata={"k8s_node_name": "gke-a"},
+        )
+        ctrl.register_node_agent(
+            node_id="node-b",
+            agent=_FakeAgent(),
+            node_metadata={"k8s_node_name": "gke-b"},
+        )
+
+        assert ctrl.node_metadata == {
+            "node-a": {"k8s_node_name": "gke-a"},
+            "node-b": {"k8s_node_name": "gke-b"},
+        }
