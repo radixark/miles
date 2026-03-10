@@ -66,6 +66,7 @@ class E2EEnv:
     node_agents: dict[str, ray.actor.ActorHandle] = field(default_factory=dict)
     workers: list[ray.actor.ActorHandle] = field(default_factory=list)
     collector_states: dict[str, ray.actor.ActorHandle] = field(default_factory=dict)
+    node_manager: FakeNodeManager | None = None
     notifier_state: ray.actor.ActorHandle | None = None
     _cleanup_names: list[str] = field(default_factory=list)
     _cleanup_handles: list[ray.actor.ActorHandle] = field(default_factory=list)
@@ -186,6 +187,7 @@ def _build_e2e_env(
         notifier_state_actor = NotifierStateActor.remote()
         resolved_notifier = RemoteControlledNotifier(state_actor=notifier_state_actor)
 
+    node_manager = FakeNodeManager()
     controller_kwargs: dict[str, Any] = dict(
         builder=build_ft_controller,
         config=FtControllerConfig(
@@ -195,7 +197,7 @@ def _build_e2e_env(
             scrape_interval_seconds=scrape_interval_seconds,
         ),
         training_job_override=training_job,
-        node_manager_override=FakeNodeManager(),
+        node_manager_override=node_manager,
         notifier_override=resolved_notifier,
         detectors_override=detectors,
         start_exporter=True,
@@ -223,6 +225,7 @@ def _build_e2e_env(
         state_actor=state_actor,
         injector=LocalRayFaultInjector(state_actor=state_actor),
         ft_id=ft_id,
+        node_manager=node_manager,
         notifier_state=notifier_state_actor,
     )
     env._cleanup_names.append(controller_name)
