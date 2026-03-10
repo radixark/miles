@@ -28,7 +28,6 @@ class FtNodeAgent(NodeAgentProtocol):
     ) -> None:
         self._node_id = node_id
         self._metadata_provider = metadata_provider
-        self._metadata: dict[str, str] = {}
         self._dispatcher = NodeDiagnosticDispatcher(node_id=node_id, diagnostics=diagnostics)
 
         prepared_collectors = list(collectors or [])
@@ -49,15 +48,14 @@ class FtNodeAgent(NodeAgentProtocol):
 
     @property
     def metadata(self) -> dict[str, str]:
-        return self._metadata
+        if self._metadata_provider is not None:
+            return self._metadata_provider.get_metadata()
+        return {}
 
     def get_exporter_address(self) -> str:
         return self._exporter.get_address()
 
     async def start(self) -> None:
-        if self._metadata_provider is not None:
-            self._metadata = self._metadata_provider.get_metadata()
-
         await self._collection_loop.start()
 
     async def stop(self) -> None:
