@@ -20,7 +20,7 @@ from uuid import uuid4
 import ray
 
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
-from miles.utils.ft.adapters.types import JobStatus, NotifierProtocol, MainJobProtocol
+from miles.utils.ft.adapters.types import JobStatus, NodeManagerProtocol, NotifierProtocol, MainJobProtocol
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 from miles.utils.ft.agents.types import MetricSample
@@ -298,3 +298,60 @@ class RemoteControlledNotifier(NotifierProtocol):
 
     async def aclose(self) -> None:
         pass
+
+
+@ray.remote(num_cpus=0, num_gpus=0)
+class NodeManagerStateActor:
+    """Holds node manager state across Ray actor boundaries.
+
+    Like TrainingStateActor for RemoteControlledMainJob, this actor stores
+    mark/unmark state so both the controller actor and the test driver can
+    access it via Ray RPCs.
+    """
+
+    def __init__(self) -> None:
+        self._bad_nodes: set[str] = set()
+        self._ever_marked_bad: set[str] = set()
+        self._last_node_metadata: dict[str, str] | None = None
+
+    def mark_bad(
+        self, node_id: str, reason: str, node_metadata: dict[str, str] | None,
+    ) -> None:
+        self._bad_nodes.add(node_id)
+        self._ever_marked_bad.add(node_id)
+        self._last_node_metadata = node_metadata
+
+    def unmark_bad(self, node_id: str) -> None:
+        self._bad_nodes.discard(node_id)
+
+    def get_bad_nodes(self) -> list[str]:
+        return sorted(self._bad_nodes)
+
+    def was_ever_marked_bad(self, node_id: str) -> bool:
+        return node_id in self._ever_marked_bad
+
+
+class RemoteControlledNodeManager(NodeManagerProtocol):
+    """NodeManagerProtocol that delegates to a NodeManagerStateActor.
+
+    Serialized into FtControllerActor via cloudpickle. All state mutations
+    go through Ray RPCs to the shared actor, so the test driver can query
+    mark_node_bad history from outside the actor boundary.
+    """
+
+    def __init__(self, state_actor: ray.actor.ActorHandle) -> None:
+        self._state = state_actor
+
+    async def mark_node_bad(
+        self, node_id: str, reason: str = "", node_metadata: dict[str, str] | None = None,
+    ) -> None:
+        await self._state.mark_bad.remote(node_id, reason, node_metadata)
+
+    async def unmark_node_bad(self, node_id: str) -> None:
+        await self._state.unmark_bad.remote(node_id)
+
+    async def get_bad_nodes(self) -> list[str]:
+        return await self._state.get_bad_nodes.remote()
+
+    def was_ever_marked_bad(self, node_id: str) -> bool:
+        return ray.get(self._state.was_ever_marked_bad.remote(node_id))

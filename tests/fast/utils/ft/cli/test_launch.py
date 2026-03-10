@@ -27,6 +27,7 @@ def _patch_build_and_run() -> Generator[tuple[MagicMock, MagicMock], None, None]
     with (
         patch("miles.utils.ft.adapters.impl.ray.controller_actor.FtControllerActor", mock_actor_cls),
         patch("miles.utils.ft.cli.launch.ray") as mock_ray,
+        patch("miles.utils.ft.factories.scheduling.assert_cpu_only_nodes_exist"),
     ):
         yield mock_actor_cls, mock_ray
 

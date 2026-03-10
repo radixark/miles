@@ -9,13 +9,15 @@ from typing import Any
 import pytest
 import ray
 from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for_run_id
-from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FastHangDetector
+from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 from tests.fast.utils.ft.utils.diagnostic_fakes import StubDiagnostic
 from tests.fast.utils.ft.utils.fault_injection import LocalRayFaultInjector
 from tests.fast.utils.ft.utils.training_simulator import (
     CollectorStateActor,
+    NodeManagerStateActor,
     NotifierStateActor,
     RemoteControlledCollector,
+    RemoteControlledNodeManager,
     RemoteControlledNotifier,
     RemoteControlledMainJob,
     TrainingStateActor,
@@ -66,7 +68,7 @@ class E2EEnv:
     node_agents: dict[str, ray.actor.ActorHandle] = field(default_factory=dict)
     workers: list[ray.actor.ActorHandle] = field(default_factory=list)
     collector_states: dict[str, ray.actor.ActorHandle] = field(default_factory=dict)
-    node_manager: FakeNodeManager | None = None
+    node_manager: RemoteControlledNodeManager | None = None
     notifier_state: ray.actor.ActorHandle | None = None
     _cleanup_names: list[str] = field(default_factory=list)
     _cleanup_handles: list[ray.actor.ActorHandle] = field(default_factory=list)
@@ -187,7 +189,8 @@ def _build_e2e_env(
         notifier_state_actor = NotifierStateActor.remote()
         resolved_notifier = RemoteControlledNotifier(state_actor=notifier_state_actor)
 
-    node_manager = FakeNodeManager()
+    nm_state_actor = NodeManagerStateActor.remote()
+    node_manager = RemoteControlledNodeManager(state_actor=nm_state_actor)
     controller_kwargs: dict[str, Any] = dict(
         builder=build_ft_controller,
         config=FtControllerConfig(
@@ -230,6 +233,7 @@ def _build_e2e_env(
     )
     env._cleanup_names.append(controller_name)
     env._cleanup_handles.append(state_actor)
+    env._cleanup_handles.append(nm_state_actor)
     if notifier_state_actor is not None:
         env._cleanup_handles.append(notifier_state_actor)
 
