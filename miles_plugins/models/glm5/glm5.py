@@ -120,11 +120,6 @@ class DSAMultiLatentAttention(Attention):
                 f"Unsupported RoPE type: {self.config.rope_type}, supported types are " "'rope' and 'yarn'"
             )
 
-        import inspect
-        self._rope_uses_packed_seq_params = 'packed_seq_params' in inspect.signature(
-            self.rotary_pos_emb.forward
-        ).parameters
-
         # Output.
         self.linear_proj = build_module(
             submodules.linear_proj,
@@ -433,11 +428,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             inference_context, None, hidden_states, self.config, packed_seq_params
         )
         # TODO: support apply_rope_fusion
-        # TODO: new Megatron changes the rotary_pos_emb signature. for capability keep both code path
-        if self._rope_uses_packed_seq_params:
-            rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq_params=packed_seq_params)
-        else:
-            rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq_params is not None)
+        rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq_params is not None)
 
         cu_seqlens_q = packed_seq_params.cu_seqlens_q
         cu_seqlens_kv = packed_seq_params.cu_seqlens_kv
