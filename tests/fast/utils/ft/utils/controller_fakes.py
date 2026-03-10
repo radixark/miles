@@ -29,9 +29,12 @@ class FakeNodeManager(NodeManagerProtocol):
         self._bad_nodes: set[str] = set()
         self._ever_marked_bad: set[str] = set()
 
-    async def mark_node_bad(self, node_id: str, reason: str = "") -> None:
+    async def mark_node_bad(
+        self, node_id: str, reason: str = "", node_metadata: dict[str, str] | None = None,
+    ) -> None:
         self._bad_nodes.add(node_id)
         self._ever_marked_bad.add(node_id)
+        self.last_node_metadata = node_metadata
 
     async def unmark_node_bad(self, node_id: str) -> None:
         self._bad_nodes.discard(node_id)
@@ -286,7 +289,9 @@ async def failing_submit_training() -> str:
     raise RuntimeError("submit failed")
 
 
-async def failing_mark_node_bad(node_id: str, reason: str = "") -> None:
+async def failing_mark_node_bad(
+    node_id: str, reason: str = "", node_metadata: dict[str, str] | None = None,
+) -> None:
     raise RuntimeError("mark_node_bad failed")
 
 
