@@ -31,7 +31,6 @@ HF_REPO: str = "fzyzcjy/Qwen3-30B-A3B-5layer"
 MODEL_NAME: str = "Qwen3-30B-A3B-5layer"
 MODEL_TYPE: str = "qwen3-30B-A3B"
 NUM_GPUS: int = 4
-NUM_LAYERS: int = 5
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
@@ -89,8 +88,7 @@ def run(
         f"--batch-size 1 "
         f"--prompt-mode math "
         f"--source-patcher-config {source_patcher_config} "
-        f"--dumper-filter 'layer_id is None or layer_id < 3' "
-        f"--extra-args '--num-layers {NUM_LAYERS}'"
+        f"--dumper-filter 'layer_id is None or layer_id < 3'"
     )
     exec_command(cmd)
 
