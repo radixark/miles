@@ -533,7 +533,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     use_seed_loading = (
         getattr(args, "sglang_load_format", None) != "dummy"
         and getattr(args, "sglang_remote_instance_weight_loader_start_seed_via_transfer_engine", False)
-        and len(rollout_engines) > engine_nnodes 
+        and len(rollout_engines) > engine_nnodes
     )
 
     if use_seed_loading:
@@ -548,7 +548,9 @@ def init_rollout_engines(args, pg, all_rollout_engines):
         seed_engine_id = sorted_engine_ids[0]
         seed_group = engine_groups[seed_engine_id]
 
-        assert len(seed_group) == engine_nnodes, f"Seed loading: seed engine group {seed_engine_id} has {len(seed_group)} "
+        assert (
+            len(seed_group) == engine_nnodes
+        ), f"Seed loading: seed engine group {seed_engine_id} has {len(seed_group)} "
 
         # Step 1: Init ALL nodes of the seed engine together.
         seed_head_rank = seed_group[0][0]

@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from miles.utils.misc import exec_command, exec_command_all_ray_node
-
 import ray
+
+from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command, exec_command_all_ray_node, dataclass_cli
@@ -58,7 +58,7 @@ def convert_checkpoint(
             node_rank = int(os.environ["SLURM_NODEID"])
 
         multinode_args = (
-            "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
+            f"--master-addr {master_addr} " f"--master-port 23456 " f"--nnodes={nnodes} " f"--node-rank {node_rank} "
         )
 
     if multinode:

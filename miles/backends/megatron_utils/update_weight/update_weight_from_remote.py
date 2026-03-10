@@ -261,7 +261,9 @@ class UpdateWeightFromRemote:
         with timer("expert_convert_to_hf", log_info=False):
             converted_hf_tensors = []
             for name, param in all_gathered_params:
-                converted_hf_tensors += convert_to_hf(self.args, self.model_name, name, param, self.quantization_config)
+                converted_hf_tensors += convert_to_hf(
+                    self.args, self.model_name, name, param, self.quantization_config
+                )
 
         self._update_bucket_weights_from_remote(converted_hf_tensors, pbar)
 

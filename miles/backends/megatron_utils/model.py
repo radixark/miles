@@ -698,9 +698,10 @@ def save(
     def _sequential_write(transform_list, use_msc, rank, write_buckets, global_results_queue):
         """Write checkpoint files sequentially in the parent process (no fork)."""
         import gc
-        import os
         import inspect
+        import os
         from time import time
+
         from torch.distributed.checkpoint.filesystem import _write_item
 
         gc_was_enabled = gc.isenabled()
@@ -713,6 +714,7 @@ def save(
             extra_kwargs = {}
             if "serialization_format" in inspect.signature(_write_item).parameters:
                 from torch.distributed.checkpoint.filesystem import SerializationFormat
+
                 extra_kwargs["serialization_format"] = SerializationFormat.TORCH_SAVE
 
             for i, write_bucket in enumerate(write_buckets):

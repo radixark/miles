@@ -190,7 +190,6 @@ class EngineRankInfo:
         self.remote_weight_infos.append(remote_info)
 
 
-
 class UpdateWeightFromRDMA(UpdateWeightFromRemote):
     """RDMA weight transfer using a single set of shared CPU pinned buffers.
 
