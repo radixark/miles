@@ -8,14 +8,12 @@ The agent is loaded at runtime by ``agentic_tool_call.generate`` via
 ``--custom-agent-function-path tests.e2e.sglang.session_tool_agent.run_agent``.
 """
 
-import json
 import logging
 import os
 
 import httpx
-from sglang.srt.entrypoints.openai.protocol import Tool
 
-from miles.utils.chat_template_utils import try_get_fixed_chat_template
+from miles.utils.chat_template_utils import apply_chat_template, try_get_fixed_chat_template
 from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -116,35 +114,42 @@ def _verify_turn(
     tokenizer,
 ) -> bool:
     """Check TITO text match and prefix monotonicity. Returns True if text matched."""
-    session_text = tokenizer.decode(session_prompt_ids, skip_special_tokens=False)
-
-    # Parse tool_call arguments from JSON string to dict, matching SGLang's
-    # OpenAIServingChat._apply_jinja_template (serving_chat.py L446-462).
-    # Some chat templates (e.g. GLM-4.7) call .items() on arguments.
-    normalized_messages = []
-    for msg in messages:
-        msg = dict(msg)
-        if msg["role"] == "assistant" and "tool_calls" in msg and isinstance(msg["tool_calls"], list):
-            for item in msg["tool_calls"]:
-                if "arguments" in item["function"] and isinstance(item["function"]["arguments"], str):
-                    item["function"]["arguments"] = json.loads(item["function"]["arguments"])
-        normalized_messages.append(msg)
-
-    # Match SGLang's apply_chat_template fallback (serving_chat.py L354-493):
-    # 1. Try function-only format: [item.function.model_dump() for item in request.tools]
-    # 2. On failure, wrap each tool as {"function": t}
-    tool_defs = [Tool(**t).function.model_dump() for t in TOOLS]
-    try:
-        expected_text = tokenizer.apply_chat_template(
-            normalized_messages, tools=tool_defs, tokenize=False, add_generation_prompt=True
+    # --- DEBUG: dump message trajectory ---
+    for i, msg in enumerate(messages):
+        role = msg.get("role", "?")
+        rc = msg.get("reasoning_content")
+        content = msg.get("content")
+        tc = "yes" if msg.get("tool_calls") else "no"
+        logger.info(
+            "Turn %d MSG[%d] role=%s reasoning_content=%r content=%r tool_calls=%s",
+            turn,
+            i,
+            role,
+            rc[:80] if isinstance(rc, str) and len(rc) > 80 else rc,
+            content[:80] if isinstance(content, str) and len(content) > 80 else content,
+            tc,
         )
-    except Exception:
-        tool_defs = [{"function": t} for t in tool_defs]
-        expected_text = tokenizer.apply_chat_template(
-            normalized_messages, tools=tool_defs, tokenize=False, add_generation_prompt=True
-        )
+
+    session_text = tokenizer.decode(session_prompt_ids)
+
+    expected_text = apply_chat_template(
+        messages,
+        tokenizer=tokenizer,
+        tools=TOOLS,
+        add_generation_prompt=True,
+        tokenize=False,
+    )
 
     text_matched = session_text == expected_text
+
+    # --- DEBUG: always log the tail (generation prompt area) ---
+    logger.info(
+        "Turn %d TAIL COMPARE:\n" "  session_text[-80:] = %r\n" "  expected_text[-80:] = %r",
+        turn,
+        session_text[-80:],
+        expected_text[-80:],
+    )
+
     if not text_matched:
         first_char_diff = next(
             (i for i, (a, b) in enumerate(zip(session_text, expected_text, strict=False)) if a != b),
@@ -158,7 +163,9 @@ def _verify_turn(
             "Template rendered length: %d chars\n"
             "First char diff at index %d\n"
             "\n--- Session decoded text around diff ---\n%r\n"
-            "\n--- Template rendered text around diff ---\n%r",
+            "\n--- Template rendered text around diff ---\n%r\n"
+            "\n--- Session FULL text (last 500 chars) ---\n%r\n"
+            "\n--- Template FULL text (last 500 chars) ---\n%r",
             turn,
             len(session_text),
             len(session_prompt_ids),
@@ -166,6 +173,8 @@ def _verify_turn(
             first_char_diff,
             session_text[ctx_lo:ctx_hi],
             expected_text[ctx_lo:ctx_hi],
+            session_text,
+            expected_text,
         )
 
     if prev_prompt_ids is not None:
@@ -191,6 +200,18 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 
     model_path = metadata.get("model_path", MODEL_NAME) if metadata else MODEL_NAME
     tokenizer = _load_tokenizer(model_path)
+
+    # --- DEBUG: confirm which chat template is loaded ---
+    _tmpl = getattr(tokenizer, "chat_template", None) or ""
+    _gen_prompt_sample = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "x"}], tokenize=False, add_generation_prompt=True
+    )
+    logger.info(
+        "TEMPLATE CHECK: model_path=%s, template_len=%d, gen_prompt_ending=%r",
+        model_path,
+        len(_tmpl),
+        _gen_prompt_sample[-60:],
+    )
 
     turns_completed = 0
     total_tool_calls = 0
@@ -235,6 +256,17 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             turns_completed = turn
 
             assistant_msg = resp_data["choices"][0]["message"]
+
+            # --- DEBUG: dump assistant message fields ---
+            logger.info(
+                "Turn %d ASSISTANT MSG: reasoning_content=%r, content=%r, " "tool_calls=%s, all_keys=%s",
+                turn,
+                assistant_msg.get("reasoning_content"),
+                assistant_msg.get("content"),
+                "present" if assistant_msg.get("tool_calls") else "absent",
+                list(assistant_msg.keys()),
+            )
+
             messages.append(assistant_msg)
 
             if _is_task_complete(assistant_msg):
