@@ -131,6 +131,8 @@ def _set_missing_arg_defaults(args: argparse.Namespace) -> None:
         args.data_parallel_size = args.world_size // total_model_size
     if not hasattr(args, "decrease_batch_size_if_needed"):
         args.decrease_batch_size_if_needed = False
+    if getattr(args, "tokenizer_model", None) is None and getattr(args, "tokenizer_type", None) == "HuggingFaceTokenizer":
+        args.tokenizer_model = getattr(args, "script_hf_checkpoint", None)
 
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
