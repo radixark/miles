@@ -27,9 +27,11 @@ from miles.utils.misc import exec_command
 
 app: typer.Typer = typer.Typer()
 
-MODEL_NAME: str = "Qwen3-30B-A3B"
+HF_REPO: str = "fzyzcjy/Qwen3-30B-A3B-5layer"
+MODEL_NAME: str = "Qwen3-30B-A3B-5layer"
 MODEL_TYPE: str = "qwen3-30B-A3B"
 NUM_GPUS: int = 4
+NUM_LAYERS: int = 5
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
@@ -50,7 +52,7 @@ def _resolve_mode(mode: str) -> tuple[str, str, str]:
 def _prepare(dump_dir: Path) -> Path:
     """Download model, convert checkpoint, write source patcher config."""
     exec_command("mkdir -p /root/models")
-    exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    exec_command(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
@@ -87,7 +89,8 @@ def run(
         f"--batch-size 1 "
         f"--prompt-mode math "
         f"--source-patcher-config {source_patcher_config} "
-        f"--dumper-filter 'layer_id is None or layer_id < 3'"
+        f"--dumper-filter 'layer_id is None or layer_id < 3' "
+        f"--extra-args '--num-layers {NUM_LAYERS}'"
     )
     exec_command(cmd)
 
