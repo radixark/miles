@@ -155,8 +155,12 @@ def launch_ft_controller_actor(
 ) -> Any:
     """Create and return a named FtControllerActor with builder injection."""
     from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
+    from miles.utils.ft.factories.scheduling import get_cpu_only_scheduling_options
 
-    return FtControllerActor.options(name=actor_name).remote(
+    options_kwargs = get_cpu_only_scheduling_options()
+    options_kwargs["name"] = actor_name
+
+    return FtControllerActor.options(**options_kwargs).remote(
         builder=build_ft_controller,
         config=config,
     )

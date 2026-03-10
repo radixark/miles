@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from miles.utils.ft.adapters.impl.ray.node_discovery import (
+    assert_cpu_only_nodes_exist,
     build_node_address_map,
     get_alive_gpu_nodes,
 )
@@ -82,3 +85,63 @@ class TestBuildNodeAddressMap:
 
     def test_empty_input(self) -> None:
         assert build_node_address_map([]) == {}
+
+
+_NODES_WITH_CPU_ONLY = [
+    {
+        "NodeID": "aaa",
+        "Alive": True,
+        "Resources": {"GPU": 8, "CPU": 64},
+    },
+    {
+        "NodeID": "head",
+        "Alive": True,
+        "Resources": {"CPU": 16, "cpu_only": 1},
+    },
+]
+
+_NODES_WITHOUT_CPU_ONLY = [
+    {
+        "NodeID": "aaa",
+        "Alive": True,
+        "Resources": {"GPU": 8, "CPU": 64},
+    },
+    {
+        "NodeID": "ccc",
+        "Alive": True,
+        "Resources": {"CPU": 16},
+    },
+]
+
+_NODES_DEAD_CPU_ONLY = [
+    {
+        "NodeID": "head",
+        "Alive": False,
+        "Resources": {"CPU": 16, "cpu_only": 1},
+    },
+]
+
+
+class TestAssertCpuOnlyNodesExist:
+    @patch("miles.utils.ft.adapters.impl.ray.node_discovery.ray")
+    def test_passes_when_cpu_only_node_exists(self, mock_ray) -> None:
+        mock_ray.nodes.return_value = _NODES_WITH_CPU_ONLY
+        assert_cpu_only_nodes_exist()
+
+    @patch("miles.utils.ft.adapters.impl.ray.node_discovery.ray")
+    def test_raises_when_no_cpu_only_node(self, mock_ray) -> None:
+        mock_ray.nodes.return_value = _NODES_WITHOUT_CPU_ONLY
+        with pytest.raises(RuntimeError, match="cpu_only"):
+            assert_cpu_only_nodes_exist()
+
+    @patch("miles.utils.ft.adapters.impl.ray.node_discovery.ray")
+    def test_raises_when_cpu_only_node_is_dead(self, mock_ray) -> None:
+        mock_ray.nodes.return_value = _NODES_DEAD_CPU_ONLY
+        with pytest.raises(RuntimeError, match="cpu_only"):
+            assert_cpu_only_nodes_exist()
+
+    @patch("miles.utils.ft.adapters.impl.ray.node_discovery.ray")
+    def test_raises_on_empty_cluster(self, mock_ray) -> None:
+        mock_ray.nodes.return_value = []
+        with pytest.raises(RuntimeError, match="cpu_only"):
+            assert_cpu_only_nodes_exist()

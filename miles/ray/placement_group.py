@@ -97,10 +97,14 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
-    rollout_manager = RolloutManager.options(
-        num_cpus=1,
-        num_gpus=0,
-    ).remote(args, pg)
+    options_kwargs: dict = dict(num_cpus=1, num_gpus=0)
+
+    if getattr(args, "use_fault_tolerance", False):
+        from miles.utils.ft.factories.scheduling import get_cpu_only_scheduling_options
+
+        options_kwargs.update(get_cpu_only_scheduling_options())
+
+    rollout_manager = RolloutManager.options(**options_kwargs).remote(args, pg)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None

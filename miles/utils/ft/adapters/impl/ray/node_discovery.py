@@ -13,6 +13,25 @@ import ray
 
 logger = logging.getLogger(__name__)
 
+CPU_ONLY_RESOURCE = "cpu_only"
+
+
+def assert_cpu_only_nodes_exist() -> None:
+    """Assert that at least one alive Ray node has the ``cpu_only`` custom resource.
+
+    Raises ``RuntimeError`` immediately if no such node exists, so callers
+    fail fast instead of hanging on an unsatisfiable scheduling request.
+    """
+    for node in ray.nodes():
+        if node.get("Alive") and node.get("Resources", {}).get(CPU_ONLY_RESOURCE, 0) > 0:
+            return
+
+    raise RuntimeError(
+        f"No alive Ray node has the '{CPU_ONLY_RESOURCE}' custom resource. "
+        "Ensure at least one non-GPU node (e.g. the head node) is started with "
+        f"--resources='{{\"cpu_only\": 1}}' in its rayStartParams."
+    )
+
 
 def get_alive_gpu_nodes(
     node_ids: list[str] | None = None,
