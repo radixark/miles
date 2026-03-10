@@ -80,7 +80,7 @@ def _load_and_merge(directory: Path) -> dict[tuple[int, int], _PositionLogprob]:
 
     for json_file in json_files:
         data: dict[str, Any] = json.loads(json_file.read_text())
-        entries_by_batch: list[list[dict[str, Any]]] = data["entries"]
+        entries_by_batch: list[list[dict[str, Any]]] = data["logprob_entries"]
 
         for batch_idx, batch_entries in enumerate(entries_by_batch):
             for entry in batch_entries:
