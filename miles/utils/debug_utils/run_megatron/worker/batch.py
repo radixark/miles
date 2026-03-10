@@ -56,14 +56,10 @@ def prepare_batch(
         cp_size=cp_size,
     )
 
-    attention_mask: torch.Tensor = torch.tril(
-        torch.ones(batch_size, 1, local_seq_len, local_seq_len, dtype=torch.bool, device=device)
-    )
-
     return {
         "input_ids": input_ids,
         "position_ids": position_ids,
-        "attention_mask": attention_mask,
+        "attention_mask": None,
         "labels": labels,
         "global_input_ids": global_input_ids,
     }
