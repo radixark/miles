@@ -31,42 +31,29 @@ SOURCE_PATCHED_FIELDS: list[str] = [
     "moe_expert_output",
 ]
 
-# Megatron replicated axes: axes that are active (size > 1) but not sharded
-# for most tensors.  Declared once so every dims string stays concise.
-# NOTE: etp is omitted because etp=tp in the tp2_pp2_cp2_ep2_etp2 config,
-# and declaring both tp:replicated and etp:replicated causes an orthogonality
-# error in the comparator.  Similarly ep is kept because ep=cp, and cp is a
-# shard axis (not replicated), so there is no overlap.
-_MEG_REPL = "tp:replicated ep:replicated"
+# NOTE: etp is omitted from replicated annotations because etp=tp in the
+# tp2_pp2_cp2_ep2_etp2 config, and declaring both tp:replicated and
+# etp:replicated causes an orthogonality error in the comparator.
+# Similarly ep is kept because ep=cp, and cp is a shard axis (not replicated),
+# so there is no overlap.
 
-MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = (
-    """\
+MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
     edits:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
-        append: "dumper.dump('layer_input', hidden_states, dims='t[cp:zigzag,sp] 1 h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('layer_input', hidden_states, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
-        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
       - match: "residual = hidden_states"
-        append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
       - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
-        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # """
-    + _MEG_REPL
-    + """')"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
@@ -82,49 +69,33 @@ patches:
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('moe_router_logits', logits, dims='t[cp:zigzag,sp] 1 num_experts # tp:replicated ep:replicated')"
       - match: "return probs, routing_map"
-        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # """
-    + _MEG_REPL
-    + """')"
+        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
 
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "output = self.token_dispatcher.combine_preprocess(expert_output)"
         append: "dumper.dump('moe_expert_output', output, dims='t h[tp:partial] # cp:replicated etp:replicated')"
 """
-)
 
-MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML: str = (
-    """\
+MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML: str = """\
 patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
     edits:
       - match: |
           inference_context = deprecate_inference_params(inference_context, inference_params)
-        append: "dumper.dump('layer_input', hidden_states, dims='s[cp:zigzag,sp] b h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('layer_input', hidden_states, dims='s[cp:zigzag,sp] b h # tp:replicated ep:replicated')"
       - match: "nvtx_range_pop(suffix=\\"self_attention\\")"
-        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s[cp:zigzag,sp] b h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s[cp:zigzag,sp] b h # tp:replicated ep:replicated')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
       - match: "residual = hidden_states"
-        append: "dumper.dump('pre_mlp_residual', residual, dims='s[cp:zigzag,sp] b h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='s[cp:zigzag,sp] b h # tp:replicated ep:replicated')"
       - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
-        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp:zigzag,sp] b h # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp:zigzag,sp] b h # tp:replicated ep:replicated')"
       - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s[cp:zigzag,sp] b h # """
-    + _MEG_REPL
-    + """')"
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s[cp:zigzag,sp] b h # tp:replicated ep:replicated')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
@@ -140,20 +111,15 @@ patches:
   - target: megatron.core.transformer.moe.router.TopKRouter.forward
     edits:
       - match: "logits = self.gating(input)"
-        append: "dumper.dump('moe_router_logits', logits, dims='s[cp:zigzag,sp] b num_experts # """
-    + _MEG_REPL
-    + """')"
+        append: "dumper.dump('moe_router_logits', logits, dims='s[cp:zigzag,sp] b num_experts # tp:replicated ep:replicated')"
       - match: "return probs, routing_map"
-        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # """
-    + _MEG_REPL
-    + """')"
+        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
 
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "output = self.token_dispatcher.combine_preprocess(expert_output)"
         append: "dumper.dump('moe_expert_output', output, dims='t h[tp:partial] # cp:replicated etp:replicated')"
 """
-)
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
