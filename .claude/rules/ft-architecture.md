@@ -18,6 +18,10 @@ Each layer may only import from layers below it.
 Exception: `controller` and `agents` may import `adapters/types.py` (the boundary contract — cross-layer protocols and constants).
 `controller` and `agents` are peers and may import each other's type definitions.
 
+### Adapter actors should be thin
+
+Adapter actors (Ray actors, etc.) should be as thin as possible — only transport-layer conversion (`.remote()` / `ray.get()`). Business logic belongs in the core layer (`controller/`, `agents/`).
+
 ### Error-as-Empty — FORBIDDEN on safety-critical paths
 
 On fault detection / recovery / diagnostic paths, "I don't know" must never look like "everything is fine."
