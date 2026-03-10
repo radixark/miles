@@ -25,9 +25,3 @@ def get_exception_inject_path() -> Path | None:
     return Path(raw) if raw else None
 
 
-def get_k8s_node_name() -> str:
-    return os.environ.get("K8S_NODE_NAME", "")
-
-
-def get_k8s_pod_name() -> str:
-    return os.environ.get("K8S_POD_NAME", "")

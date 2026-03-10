@@ -9,14 +9,21 @@ class K8sMetadataProvider(AgentMetadataProvider):
     """Reads K8s node/pod names from Downward API environment variables."""
 
     def get_metadata(self) -> dict[str, str]:
-        metadata: dict[str, str] = {}
+        node_name = os.environ.get("K8S_NODE_NAME", "")
+        pod_name = os.environ.get("K8S_POD_NAME", "")
 
-        k8s_node_name = os.environ.get("K8S_NODE_NAME", "")
-        if k8s_node_name:
-            metadata["k8s_node_name"] = k8s_node_name
+        if not node_name:
+            raise RuntimeError(
+                "K8S_NODE_NAME env var not set. "
+                "Configure Kubernetes Downward API in pod spec."
+            )
+        if not pod_name:
+            raise RuntimeError(
+                "K8S_POD_NAME env var not set. "
+                "Configure Kubernetes Downward API in pod spec."
+            )
 
-        k8s_pod_name = os.environ.get("K8S_POD_NAME", "")
-        if k8s_pod_name:
-            metadata["k8s_pod_name"] = k8s_pod_name
-
-        return metadata
+        return {
+            "k8s_node_name": node_name,
+            "k8s_pod_name": pod_name,
+        }

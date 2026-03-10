@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from kubernetes_asyncio import config as k8s_config
@@ -30,27 +31,29 @@ class K8sNodeManager(NodeManagerProtocol):
     """Manage bad-node labels on Kubernetes nodes via the K8s API.
 
     Implements NodeManagerProtocol using kubernetes_asyncio for async calls.
-    When ray_cluster_name is provided, mark_node_bad also deletes the Ray
-    worker pod on the labeled node so the RayCluster operator reschedules it.
+    Auto-detects ray_cluster_name from the current pod's labels on first use,
+    then deletes the Ray worker pod on the labeled node so the RayCluster
+    operator reschedules it.
     """
 
     def __init__(
         self,
         api_client: ApiClient | None = None,
         label_prefix: str = "",
-        ray_cluster_name: str = "",
-        namespace: str = "default",
+        namespace: str = "",
     ) -> None:
         self._api_client: ApiClient | None = api_client
         self._core_v1: CoreV1Api | None = None
         self._label_key, self._reason_label_key = _build_label_keys(label_prefix)
-        self._ray_cluster_name = ray_cluster_name
+        self._ray_cluster_name: str = ""
         self._namespace = namespace
         self._reverse_map: dict[str, str] = {}
         self._affinity_validated: bool = False
 
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
-        if self._ray_cluster_name and not self._affinity_validated:
+        await self._ensure_ray_cluster_name()
+
+        if not self._affinity_validated:
             await self.assert_worker_node_affinity()
             self._affinity_validated = True
 
@@ -71,16 +74,15 @@ class K8sNodeManager(NodeManagerProtocol):
             elapsed,
         )
 
-        if self._ray_cluster_name:
-            try:
-                await self._delete_ray_worker_pod_on_node(k8s_name)
-            except Exception:
-                logger.error(
-                    "failed to delete ray worker pod on node %s, "
-                    "pod will remain until RayCluster operator handles it",
-                    k8s_name,
-                    exc_info=True,
-                )
+        try:
+            await self._delete_ray_worker_pod_on_node(k8s_name)
+        except Exception:
+            logger.error(
+                "failed to delete ray worker pod on node %s, "
+                "pod will remain until RayCluster operator handles it",
+                k8s_name,
+                exc_info=True,
+            )
 
     async def unmark_node_bad(self, node_id: str) -> None:
         elapsed = await self._patch_node_labels(
@@ -181,6 +183,42 @@ class K8sNodeManager(NodeManagerProtocol):
         raise RuntimeError(
             f"worker pod missing nodeAffinity NotIn rule for {self._label_key}"
         )
+
+    async def _ensure_ray_cluster_name(self) -> str:
+        if self._ray_cluster_name:
+            return self._ray_cluster_name
+
+        pod_name = os.environ.get("K8S_POD_NAME", "")
+        if not pod_name:
+            raise RuntimeError(
+                "K8S_POD_NAME env var not set. "
+                "Configure Kubernetes Downward API in pod spec."
+            )
+
+        core_v1 = await self._ensure_client()
+        pod = await retry_async_or_raise(
+            lambda: core_v1.read_namespaced_pod(
+                name=pod_name, namespace=self._namespace,
+            ),
+            description=f"read_pod({pod_name})",
+            max_retries=_K8S_API_MAX_RETRIES,
+            per_call_timeout=_K8S_API_TIMEOUT_SECONDS,
+            backoff_base=_K8S_API_BACKOFF_BASE,
+        )
+        labels = pod.metadata.labels or {}
+        cluster_name = labels.get("ray.io/cluster", "")
+        if not cluster_name:
+            raise RuntimeError(
+                f"Pod {pod_name} missing ray.io/cluster label. "
+                "Not running in a RayCluster?"
+            )
+
+        self._ray_cluster_name = cluster_name
+        logger.info(
+            "auto_detected ray_cluster_name=%s from pod=%s",
+            cluster_name, pod_name,
+        )
+        return cluster_name
 
     async def _delete_ray_worker_pod_on_node(self, node_id: str) -> None:
         core_v1 = await self._ensure_client()
