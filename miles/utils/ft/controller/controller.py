@@ -4,7 +4,6 @@ import asyncio
 import logging
 
 from miles.utils.ft.adapters.types import (
-    K8sNodeInfo,
     NodeAgentProtocol,
     NotifierProtocol,
     TrainingJobProtocol,
@@ -54,7 +53,7 @@ class FtController:
         self._metric_store = metric_store
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
-        self._node_k8s_info: dict[str, K8sNodeInfo] = {}
+        self._node_metadata: dict[str, dict[str, str]] = {}
         self._shutting_down: bool = False
 
     # ------------------------------------------------------------------
@@ -74,31 +73,27 @@ class FtController:
         return self._tick_loop.tick_count
 
     @property
-    def node_k8s_info(self) -> dict[str, K8sNodeInfo]:
-        return self._node_k8s_info
+    def node_metadata(self) -> dict[str, dict[str, str]]:
+        return self._node_metadata
 
     def register_node_agent(
         self,
         node_id: str,
         agent: NodeAgentProtocol,
         exporter_address: str = "",
-        k8s_node_name: str = "",
-        k8s_pod_name: str = "",
+        node_metadata: dict[str, str] | None = None,
     ) -> None:
         self._agents[node_id] = agent
-        if k8s_node_name:
-            self._node_k8s_info[node_id] = K8sNodeInfo(
-                k8s_node_name=k8s_node_name,
-                pod_name=k8s_pod_name,
-            )
+        if node_metadata:
+            self._node_metadata[node_id] = node_metadata
         if exporter_address and self._scrape_target_manager is not None:
             self._scrape_target_manager.add_scrape_target(
                 target_id=node_id,
                 address=exporter_address,
             )
         logger.info(
-            "agent_registered node_id=%s exporter=%s k8s_node=%s",
-            node_id, exporter_address, k8s_node_name or "(none)",
+            "agent_registered node_id=%s exporter=%s metadata_keys=%s",
+            node_id, exporter_address, sorted(node_metadata) if node_metadata else "(none)",
         )
 
     async def submit_initial_training(self) -> str:

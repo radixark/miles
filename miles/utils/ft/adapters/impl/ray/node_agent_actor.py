@@ -12,7 +12,6 @@ from miles.utils.ft.adapters.types import (
     ft_controller_actor_name,
 )
 from miles.utils.ft.agents.types import DiagnosticResult
-from miles.utils.ft.utils.env import get_k8s_node_name, get_k8s_pod_name
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 from miles.utils.ft.utils.retry import retry_sync
 
@@ -71,8 +70,7 @@ class _FtNodeAgentActorCls:
         self_handle = ray.get_runtime_context().current_actor
         node_id = self._agent._node_id
         exporter_address = self._agent.get_exporter_address()
-        k8s_node_name = get_k8s_node_name()
-        k8s_pod_name = get_k8s_pod_name()
+        node_metadata = self._agent.metadata
 
         def _do_register() -> None:
             ray.get(
@@ -80,8 +78,7 @@ class _FtNodeAgentActorCls:
                     node_id=node_id,
                     agent=self_handle,
                     exporter_address=exporter_address,
-                    k8s_node_name=k8s_node_name,
-                    k8s_pod_name=k8s_pod_name,
+                    node_metadata=node_metadata,
                 ),
                 timeout=REGISTER_TIMEOUT_SECONDS,
             )

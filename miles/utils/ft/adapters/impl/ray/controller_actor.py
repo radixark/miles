@@ -73,16 +73,14 @@ class _FtControllerActorCls:
         node_id: str,
         agent: object,
         exporter_address: str = "",
-        k8s_node_name: str = "",
-        k8s_pod_name: str = "",
+        node_metadata: dict[str, str] | None = None,
     ) -> None:
         proxy = RayNodeAgentProxy(agent)
         self._ctrl.register_node_agent(
             node_id=node_id,
             agent=proxy,
             exporter_address=exporter_address,
-            k8s_node_name=k8s_node_name,
-            k8s_pod_name=k8s_pod_name,
+            node_metadata=node_metadata,
         )
 
     def get_status(self) -> object:
