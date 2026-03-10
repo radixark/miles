@@ -179,7 +179,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         print_memory("after offload model")
 
-        if dist.get_rank() == 0 and hasattr(self, "_last_rollout_id"):
+        if is_megatron_main_rank() and hasattr(self, "_last_rollout_id"):
             log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
 
     @timer
