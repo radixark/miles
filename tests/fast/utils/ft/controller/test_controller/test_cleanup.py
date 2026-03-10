@@ -53,7 +53,7 @@ class TestRunLoopSurviveTickFailure:
     async def test_run_continues_after_tick_inner_exception(self) -> None:
         harness = make_test_controller(tick_interval=0.01)
 
-        original_get_status = harness.training_job.get_training_status
+        original_get_status = harness.main_job.get_job_status
         call_count = 0
 
         async def _exploding_get_status() -> object:
@@ -63,7 +63,7 @@ class TestRunLoopSurviveTickFailure:
                 raise RuntimeError("transient failure")
             return await original_get_status()
 
-        harness.training_job.get_training_status = _exploding_get_status  # type: ignore[assignment]
+        harness.main_job.get_job_status = _exploding_get_status  # type: ignore[assignment]
 
         async def _shutdown_after_ticks() -> None:
             while harness.controller._tick_count < 4:

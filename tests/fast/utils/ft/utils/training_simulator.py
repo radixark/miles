@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 @ray.remote(num_cpus=0, num_gpus=0)
 class TrainingStateActor:
-    """Holds mutable state shared between the test driver and RemoteControlledTrainingJob.
+    """Holds mutable state shared between the test driver and RemoteControlledMainJob.
 
     Methods are synchronous (not async) since state updates are trivial.
     """

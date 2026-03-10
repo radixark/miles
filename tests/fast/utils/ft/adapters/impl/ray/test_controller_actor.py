@@ -100,7 +100,7 @@ class TestBuildPlatformComponentsK8sRay:
             mock_k8s.return_value = MagicMock()
             mock_jsc.return_value = MagicMock()
 
-            node_mgr, training_job = _build_platform_components(
+            node_mgr, main_job = _build_platform_components(
                 platform="k8s-ray",
                 ray_address="http://ray:8265",
                 entrypoint="python train.py",
@@ -121,7 +121,7 @@ class TestBuildPlatformComponentsK8sRay:
             mock_k8s.return_value = MagicMock()
             mock_jsc.return_value = MagicMock()
 
-            node_mgr, training_job = _build_platform_components(
+            node_mgr, main_job = _build_platform_components(
                 platform="k8s-ray",
                 ray_address="http://ray:8265",
                 entrypoint="python train.py",
@@ -130,9 +130,9 @@ class TestBuildPlatformComponentsK8sRay:
             )
 
         mock_k8s.assert_called_once_with(label_prefix="pfx")
-        assert isinstance(training_job, RayMainJob)
-        assert training_job._ft_id == "abc"
-        assert training_job._k8s_label_prefix == "pfx"
+        assert isinstance(main_job, RayMainJob)
+        assert main_job._ft_id == "abc"
+        assert main_job._k8s_label_prefix == "pfx"
 
 
 class TestFtControllerActorProxy:

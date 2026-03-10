@@ -46,7 +46,7 @@ class TestControllerPrometheusMode:
 
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeMainJob(status_sequence=[JobStatus.RUNNING]),
+            main_job=FakeMainJob(status_sequence=[JobStatus.RUNNING]),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
             controller_exporter=exporter,
@@ -55,7 +55,7 @@ class TestControllerPrometheusMode:
         with patch.object(httpx.Client, "get", return_value=_make_http_response(_make_prom_response())):
             await controller._tick()
 
-        assert get_sample_value(registry, mn.TRAINING_JOB_STATUS) == 1.0
+        assert get_sample_value(registry, mn.MAIN_JOB_STATUS) == 1.0
         assert get_sample_value(registry, mn.CONTROLLER_TICK_COUNT + "_total") == 1.0
 
     @pytest.mark.anyio
@@ -66,7 +66,7 @@ class TestControllerPrometheusMode:
 
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeMainJob(),
+            main_job=FakeMainJob(),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
             controller_exporter=exporter,
@@ -91,7 +91,7 @@ class TestControllerPrometheusMode:
 
         controller = create_ft_controller(
             node_manager=FakeNodeManager(),
-            training_job=FakeMainJob(),
+            main_job=FakeMainJob(),
             metric_store=PrometheusClient(url="http://fake:9090"),
             mini_wandb=mini_wandb,
             controller_exporter=exporter,

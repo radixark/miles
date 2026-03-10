@@ -31,7 +31,7 @@ class TestTickDuration:
         async def _raise(*_a: object, **_kw: object) -> None:
             raise RuntimeError("boom")
 
-        harness.training_job.get_training_status = _raise  # type: ignore[assignment]
+        harness.main_job.get_job_status = _raise  # type: ignore[assignment]
 
         await harness.controller._tick()
 

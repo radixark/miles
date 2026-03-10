@@ -116,7 +116,7 @@ class TestDetectorExceptionIsolation:
     @pytest.mark.anyio
     async def test_tick_survives_exception_in_tick_inner(self) -> None:
         harness = make_test_controller()
-        harness.training_job.get_training_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.main_job.get_job_status = _raise_runtime_error  # type: ignore[assignment]
 
         await harness.controller._tick()
         await harness.controller._tick()
@@ -127,7 +127,7 @@ class TestTickFailureTracker:
     @pytest.mark.anyio
     async def test_persistent_failure_triggers_notification(self) -> None:
         harness = make_test_controller()
-        harness.training_job.get_training_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.main_job.get_job_status = _raise_runtime_error  # type: ignore[assignment]
         harness.controller._tick_loop._tick_failure_tracker._threshold = 3
 
         for _ in range(3):
@@ -140,7 +140,7 @@ class TestTickFailureTracker:
     @pytest.mark.anyio
     async def test_sporadic_failure_does_not_trigger_notification(self) -> None:
         harness = make_test_controller()
-        harness.training_job.get_training_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.main_job.get_job_status = _raise_runtime_error  # type: ignore[assignment]
         harness.controller._tick_loop._tick_failure_tracker._threshold = 5
 
         await harness.controller._tick()
@@ -172,7 +172,7 @@ class TestAllDetectorsCrashSilentPass:
         await harness.controller._tick()
 
         assert not harness.node_manager._bad_nodes
-        assert not harness.training_job._stopped
+        assert not harness.main_job._stopped
         assert not isinstance(harness.controller._state_machine.state, Recovering)
 
 
@@ -185,8 +185,8 @@ class TestExecuteDecision:
         assert harness.notifier is not None
         assert len(harness.notifier.calls) == 0
         assert not harness.node_manager._bad_nodes
-        assert not harness.training_job._stopped
-        assert not harness.training_job._submitted
+        assert not harness.main_job._stopped
+        assert not harness.main_job._submitted
         assert not isinstance(harness.controller._state_machine.state, Recovering)
 
     @pytest.mark.anyio
@@ -314,8 +314,8 @@ class TestMarkBadAndRestartReal:
         harness = make_test_controller(detectors=[AlwaysMarkBadDetector()])
         await harness.controller._tick()
 
-        assert harness.training_job._stopped
-        assert harness.training_job._submitted
+        assert harness.main_job._stopped
+        assert harness.main_job._submitted
 
     @pytest.mark.anyio
     async def test_new_run_isolates_mini_wandb_from_old_data(self) -> None:

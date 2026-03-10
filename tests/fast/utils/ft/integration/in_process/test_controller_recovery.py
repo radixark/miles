@@ -72,8 +72,8 @@ class TestGpuLostDirectEviction:
         await harness.controller._tick()
 
         assert harness.node_manager.is_node_bad("node-0")
-        assert harness.training_job._stopped
-        assert harness.training_job._submitted
+        assert harness.main_job._stopped
+        assert harness.main_job._submitted
         assert harness.mini_wandb.latest(metric_name="loss") is None
 
 

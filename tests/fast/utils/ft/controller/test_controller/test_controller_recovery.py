@@ -61,14 +61,14 @@ class TestRunIdUniqueness:
         )
 
         recorded_run_ids: list[str] = []
-        original_submit = harness.training_job.submit_training
+        original_submit = harness.main_job.submit_job
 
         async def tracking_submit() -> str:
             run_id = await original_submit()
             recorded_run_ids.append(run_id)
             return run_id
 
-        harness.training_job.submit_training = tracking_submit  # type: ignore[assignment]
+        harness.main_job.submit_job = tracking_submit  # type: ignore[assignment]
 
         for _ in range(50):
             await harness.controller._tick()

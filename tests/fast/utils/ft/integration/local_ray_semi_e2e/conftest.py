@@ -179,7 +179,7 @@ def _build_e2e_env(
         detectors = [TrainingCrashDetector()]
 
     state_actor = TrainingStateActor.remote()
-    training_job = RemoteControlledMainJob(state_actor=state_actor)
+    main_job = RemoteControlledMainJob(state_actor=state_actor)
 
     notifier_state_actor: ray.actor.ActorHandle | None = None
     resolved_notifier = notifier_override
@@ -196,7 +196,7 @@ def _build_e2e_env(
             ft_id=ft_id,
             scrape_interval_seconds=scrape_interval_seconds,
         ),
-        main_job_override=training_job,
+        main_job_override=main_job,
         node_manager_override=node_manager,
         notifier_override=resolved_notifier,
         detectors_override=detectors,

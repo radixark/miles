@@ -44,19 +44,19 @@ def _make_stepper(*, timeout_seconds: int = 1800) -> StateMachineStepper:
 
 def _make_restart_stepper_and_context(
     *,
-    training_job: FakeMainJob | None = None,
+    main_job: FakeMainJob | None = None,
     mini_wandb: MiniWandb | None = None,
     node_manager: FakeNodeManager | None = None,
     notifier: FakeNotifier | None = None,
 ) -> tuple[StateMachineStepper, RestartContext]:
     resolved_node_manager = node_manager or FakeNodeManager()
-    resolved_training_job = training_job or FakeMainJob()
+    resolved_main_job = main_job or FakeMainJob()
     resolved_mini_wandb = mini_wandb or MiniWandb()
 
     stepper = create_restart_stepper()
     ctx = RestartContext(
         node_manager=resolved_node_manager,
-        training_job=resolved_training_job,
+        main_job=resolved_main_job,
         mini_wandb=resolved_mini_wandb,
         notifier=notifier,
         on_new_run=None,
@@ -335,13 +335,13 @@ class TestFullRecoveryFlow:
     @pytest.mark.asyncio
     async def test_no_fault_direct_restart_success(self) -> None:
         """RealtimeChecks (no faults) -> EvictingAndRestarting -> RestartDone -> RecoveryDone."""
-        training_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
 
         restart_stepper, restart_ctx = _make_restart_stepper_and_context(
-            training_job=training_job,
+            main_job=main_job,
             mini_wandb=mini_wandb,
         )
         stepper = _make_stepper()
@@ -375,7 +375,7 @@ class TestFullRecoveryFlow:
     async def test_fault_evict_restart_full_flow(self) -> None:
         """RealtimeChecks(pre_identified_bad_nodes) -> EvictingAndRestarting ->
         (evict, stop, restart, monitor) -> RestartDone -> RecoveryDone."""
-        training_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
@@ -383,7 +383,7 @@ class TestFullRecoveryFlow:
         notifier = FakeNotifier()
 
         restart_stepper, restart_ctx = _make_restart_stepper_and_context(
-            training_job=training_job,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             node_manager=node_manager,
             notifier=notifier,
@@ -427,14 +427,14 @@ class TestFullRecoveryFlow:
     async def test_direct_restart_fail_escalation_full_flow(self) -> None:
         """Restart fail -> StopTimeDiagnostics -> diagnostics find bad nodes ->
         EvictingAndRestarting (notify on fail) -> RestartDone -> RecoveryDone."""
-        training_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
+        main_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
         node_manager = FakeNodeManager()
 
         restart_stepper, restart_ctx = _make_restart_stepper_and_context(
-            training_job=training_job,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             node_manager=node_manager,
         )
@@ -471,7 +471,7 @@ class TestFullRecoveryFlow:
         assert diag.call_count == 1
 
         # Switch training job to succeed for the eviction restart path
-        training_job._status_sequence = [JobStatus.RUNNING]
+        main_job._status_sequence = [JobStatus.RUNNING]
 
         # Step 5: Evicting -> mark node bad -> StoppingAndRestarting
         state = await stepper(state, ctx)
