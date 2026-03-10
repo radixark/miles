@@ -28,6 +28,7 @@ from miles.utils.misc import exec_command
 app: typer.Typer = typer.Typer()
 
 HF_REPO: str = "fzyzcjy/Qwen3-30B-A3B-5layer"
+HF_TOKENIZER_REPO: str = "Qwen/Qwen3-30B-A3B"
 MODEL_NAME: str = "Qwen3-30B-A3B-5layer"
 MODEL_TYPE: str = "qwen3-30B-A3B-5layer"
 NUM_GPUS: int = 4
@@ -52,6 +53,10 @@ def _prepare(dump_dir: Path) -> Path:
     """Download model, convert checkpoint, write source patcher config."""
     exec_command("mkdir -p /root/models")
     exec_command(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
+    exec_command(
+        f"huggingface-cli download {HF_TOKENIZER_REPO} tokenizer.json tokenizer_config.json vocab.json merges.txt "
+        f"--local-dir /root/models/{MODEL_NAME}"
+    )
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
