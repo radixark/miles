@@ -53,6 +53,7 @@ def _prepare(dump_dir: Path) -> Path:
     """Download model, convert checkpoint, write source patcher config."""
     exec_command("mkdir -p /root/models")
     exec_command(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
+    # TODO: upload tokenizer files to the 5-layer HF repo so this extra download is unnecessary
     exec_command(
         f"huggingface-cli download {HF_TOKENIZER_REPO} tokenizer.json tokenizer_config.json vocab.json merges.txt "
         f"--local-dir /root/models/{MODEL_NAME}"
