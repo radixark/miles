@@ -24,7 +24,7 @@ from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 class TestSubmitInitialJob:
     @pytest.mark.anyio
-    async def test_delegates_to_training_job(self) -> None:
+    async def test_delegates_to_main_job(self) -> None:
         harness = make_test_controller()
 
         run_id = await harness.controller.submit_initial_job()

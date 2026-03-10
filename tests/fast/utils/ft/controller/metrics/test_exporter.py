@@ -36,10 +36,10 @@ class TestControllerExporterGauges:
 
         assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE) == 2.0
 
-    def test_update_training_job_status(self) -> None:
+    def test_update_main_job_status(self) -> None:
         registry, exporter = make_test_exporter()
 
-        exporter.update_training_job_status(JobStatus.FAILED)
+        exporter.update_main_job_status(JobStatus.FAILED)
 
         assert get_sample_value(registry, mn.MAIN_JOB_STATUS) == -1.0
 

@@ -51,7 +51,7 @@ class ControllerExporter:
             registry=self._registry,
         )
 
-        self._training_job_status = Gauge(
+        self._main_job_status = Gauge(
             metric_names.MAIN_JOB_STATUS,
             "Training job status (-1=FAILED, 0=STOPPED, 1=RUNNING, 2=PENDING)",
             registry=self._registry,
@@ -113,8 +113,8 @@ class ControllerExporter:
     def update_recovery_phase(self, phase_int: int) -> None:
         self._recovery_phase.set(phase_int)
 
-    def update_training_job_status(self, status: JobStatus) -> None:
-        self._training_job_status.set(_JOB_STATUS_TO_NUMERIC.get(status, 0))
+    def update_main_job_status(self, status: JobStatus) -> None:
+        self._main_job_status.set(_JOB_STATUS_TO_NUMERIC.get(status, 0))
 
     def update_tick_duration(self, seconds: float) -> None:
         self._tick_duration_seconds.observe(seconds)
@@ -147,7 +147,7 @@ class ControllerExporter:
         latest_loss: float | None,
         latest_mfu: float | None,
     ) -> None:
-        self.update_training_job_status(job_status)
+        self.update_main_job_status(job_status)
         self.update_tick_count()
         self.update_mode(is_recovery=(mode == ControllerMode.RECOVERY))
         self.update_recovery_phase(recovery_phase_int)
@@ -186,7 +186,7 @@ class NullControllerExporter(ControllerExporter):
     def update_recovery_phase(self, phase_int: int) -> None:
         pass
 
-    def update_training_job_status(self, status: JobStatus) -> None:
+    def update_main_job_status(self, status: JobStatus) -> None:
         pass
 
     def update_tick_duration(self, seconds: float) -> None:

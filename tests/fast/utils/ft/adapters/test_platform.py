@@ -128,7 +128,7 @@ class TestStubProtocolCompliance:
     def test_stub_node_manager_satisfies_protocol(self) -> None:
         assert isinstance(StubNodeManager(), NodeManagerProtocol)
 
-    def test_stub_training_job_satisfies_protocol(self) -> None:
+    def test_stub_main_job_satisfies_protocol(self) -> None:
         assert isinstance(StubMainJob(), MainJobProtocol)
 
     def test_stub_notifier_satisfies_protocol(self) -> None:
