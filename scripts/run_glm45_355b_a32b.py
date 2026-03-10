@@ -77,6 +77,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         multinode=True,
         dir_dst=args.model_dir,
+        hf_checkpoint=str(Path(args.model_dir) / args.model_name),
         megatron_path=args.megatron_path,
     )
 

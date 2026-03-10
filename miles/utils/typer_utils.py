@@ -83,6 +83,18 @@ def _wrap(func: _F, *, env_var_prefix: str) -> _F:
 
     def wrapped(**kwargs: object) -> object:
         data: object = dataclass_cls(**kwargs)
+        fields = dataclasses.fields(data)
+        max_key_len = max(len(f.name) for f in fields)
+        sep = "+" + "-" * (max_key_len + 2) + "+" + "-" * 52 + "+"
+        print(sep)
+        print(f"| {'Argument':<{max_key_len}} | {'Value':<50} |")
+        print(sep)
+        for f in fields:
+            val = str(getattr(data, f.name))
+            if len(val) > 50:
+                val = val[:47] + "..."
+            print(f"| {f.name:<{max_key_len}} | {val:<50} |")
+        print(sep)
         return func(data)
 
     wrapped.__signature__ = init_sig.replace(parameters=new_parameters)  # type: ignore[attr-defined]

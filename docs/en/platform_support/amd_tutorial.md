@@ -14,12 +14,15 @@ If you are running miles on AMD's Instinct, please refer to the following materi
 
 You can download the prebuilt image from DockerHub: [rlsys/miles](https://hub.docker.com/r/rlsys/miles/tags).
 ```bash
-docker pull rlsys/miles:latest
+# MI350/MI355X
+docker pull rlsys/miles:MI350-355-latest
+# MI300
+docker pull rlsys/miles:MI300-latest
 ```
-Or you can use the [Dockerfile.rocm](https://github.com/radixark/miles/blob/main/docker/Dockerfile.rocm) to build it on your side.
+Or you can use the [Dockerfile.rocm](https://github.com/radixark/miles/blob/main/docker/Dockerfile.rocm_MI350-5) to build it on your side.
 ```bash
 cd docker
-docker build -f Dockerfile.rocm -t rlsys/miles:latest .
+docker build -f Dockerfile.rocm_MI350-5 -t rlsys/miles:latest .
 ```
 
 Acknowledgement: Thanks to [Yang Wang](https://www.microsoft.com/en-us/research/people/yangwang5/) for working on the patch for this [ROCm base Docker image](https://hub.docker.com/r/rlsys/rocm-6.3.4-patch/tags) to support virtual memory management on MI300X.
@@ -86,7 +89,6 @@ source scripts/models/qwen3-4B.sh
 MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
 PYTHONPATH=${MEGATRON_LM_PATH} python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
-    --no-gradient-accumulation-fusion \
     --hf-checkpoint /root/Qwen3-4B \
     --save /root/Qwen3-4B_torch_dist
 ```
@@ -107,8 +109,6 @@ MODEL_DIR=/root \
 DATA_DIR=/root \
 bash scripts/run-qwen3-4B-amd.sh
 ``` 
-
-⚠️ TODO: ROCM seems to not support `apex` yet. Thus, we need to disable gradient accumulation fusionby adding the `--no-gradient-accumulation-fusion` flag in the training script currently. We will continue investigating how to enable this.
 
 ⚠️ Note: The main difference between ROCm's training script and NVIDIA's script is that you need to set `RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES` and `HIP_VISIBLE_DEVICES` for ray to function properly on AMD GPUs.
 
@@ -243,9 +243,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   ### AMD Support ###
-   # disable gradient accumulation fusion: Need to add apex to enable this
-   --no-gradient-accumulation-fusion
    ###################
 )
 
