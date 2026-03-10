@@ -122,7 +122,7 @@ class TestExceptionInRecovery:
         """stop_training raises → recovery forces NOTIFY → actor survives.
 
         We simulate this by having the training job's stop fail.
-        In E2E with RemoteControlledTrainingJob, stop() calls state_actor.stop.remote()
+        In E2E with RemoteControlledMainJob, stop() calls state_actor.stop.remote()
         which is unlikely to fail, so this test verifies the controller handles
         the crash → recovery flow and continues operating.
         """

@@ -196,7 +196,7 @@ def _build_e2e_env(
             ft_id=ft_id,
             scrape_interval_seconds=scrape_interval_seconds,
         ),
-        training_job_override=training_job,
+        main_job_override=training_job,
         node_manager_override=node_manager,
         notifier_override=resolved_notifier,
         detectors_override=detectors,

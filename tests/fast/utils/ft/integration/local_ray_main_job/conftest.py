@@ -1,4 +1,4 @@
-"""Fixtures for RayTrainingJob integration tests against a real local Ray cluster."""
+"""Fixtures for RayMainJob integration tests against a real local Ray cluster."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Generator
 import pytest
 from ray.job_submission import JobSubmissionClient
 
-from miles.utils.ft.adapters.impl.ray.training_job import RayTrainingJob, stop_all_active_jobs
+from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob, stop_all_active_jobs
 from miles.utils.ft.adapters.types import JobStatus
 
 pytestmark = [
@@ -25,17 +25,17 @@ def job_client(local_ray_with_dashboard: str) -> JobSubmissionClient:
 
 
 @pytest.fixture
-def make_training_job(
+def make_main_job(
     job_client: JobSubmissionClient,
 ) -> Generator[..., None, None]:
-    """Factory fixture that creates RayTrainingJob instances and cleans up after."""
-    created: list[RayTrainingJob] = []
+    """Factory fixture that creates RayMainJob instances and cleans up after."""
+    created: list[RayMainJob] = []
 
     def _factory(
         entrypoint: str = 'python -c "print(42)"',
         **kwargs: object,
-    ) -> RayTrainingJob:
-        job = RayTrainingJob(
+    ) -> RayMainJob:
+        job = RayMainJob(
             client=job_client,
             entrypoint=entrypoint,
             poll_interval_seconds=_POLL_INTERVAL,
@@ -50,24 +50,24 @@ def make_training_job(
         if job.job_id is not None:
             try:
                 asyncio.get_event_loop().run_until_complete(
-                    job.stop_training(timeout_seconds=15)
+                    job.stop_job(timeout_seconds=15)
                 )
             except Exception:
                 pass
 
 
 async def poll_until_terminal(
-    job: RayTrainingJob,
+    job: RayMainJob,
     *,
     timeout: float = _POLL_TIMEOUT,
     interval: float = _POLL_INTERVAL,
 ) -> JobStatus:
-    """Poll get_training_status until a terminal state is reached."""
+    """Poll get_job_status until a terminal state is reached."""
     import time
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        status = await job.get_training_status()
+        status = await job.get_job_status()
         if status in (JobStatus.STOPPED, JobStatus.FAILED):
             return status
         await asyncio.sleep(interval)

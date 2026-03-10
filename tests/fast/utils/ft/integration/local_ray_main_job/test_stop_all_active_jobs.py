@@ -7,7 +7,7 @@ import asyncio
 import pytest
 from ray.job_submission import JobSubmissionClient
 
-from miles.utils.ft.adapters.impl.ray.training_job import RayTrainingJob, stop_all_active_jobs
+from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob, stop_all_active_jobs
 from miles.utils.ft.adapters.types import JobStatus
 
 pytestmark = [
@@ -19,13 +19,13 @@ class TestStopAllActiveJobs:
     async def test_stops_running_jobs(
         self,
         job_client: JobSubmissionClient,
-        make_training_job: ...,
+        make_main_job: ...,
     ) -> None:
-        # Step 1: submit two long-running jobs (via separate RayTrainingJob instances)
-        job_a: RayTrainingJob = make_training_job(entrypoint='python -c "import time; time.sleep(300)"')
-        job_b: RayTrainingJob = make_training_job(entrypoint='python -c "import time; time.sleep(300)"')
-        await job_a.submit_training()
-        await job_b.submit_training()
+        # Step 1: submit two long-running jobs (via separate RayMainJob instances)
+        job_a: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
+        job_b: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
+        await job_a.submit_job()
+        await job_b.submit_job()
 
         await asyncio.sleep(2)
 
@@ -44,11 +44,11 @@ class TestStopAllActiveJobs:
     async def test_idempotent_on_already_stopped(
         self,
         job_client: JobSubmissionClient,
-        make_training_job: ...,
+        make_main_job: ...,
     ) -> None:
         # Step 1: submit and stop a job
-        job: RayTrainingJob = make_training_job(entrypoint='python -c "import time; time.sleep(300)"')
-        await job.submit_training()
+        job: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
+        await job.submit_job()
         await asyncio.sleep(2)
         await stop_all_active_jobs(client=job_client, timeout_seconds=30)
 

@@ -154,7 +154,7 @@ class TestNanLossTriggersRecovery:
             builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.05, ft_id="nan-det"),
             node_manager_override=FakeNodeManager(),
-            training_job_override=StubMainJob(),
+            main_job_override=StubMainJob(),
             notifier_override=None,
             detectors_override=[NanLossDetector()],
         )
@@ -217,7 +217,7 @@ class TestHangDetectionFullPath:
             builder=build_ft_controller,
             config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="hang-det"),
             node_manager_override=FakeNodeManager(),
-            training_job_override=StubMainJob(),
+            main_job_override=StubMainJob(),
             notifier_override=None,
             detectors_override=[FastHangDetector(timeout_seconds=3.0)],
         )

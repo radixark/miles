@@ -80,9 +80,9 @@ def make_controller_actor(
 def running_controller(
     local_ray: None,
 ) -> Generator[tuple[ray.actor.ActorHandle, str], None, None]:
-    """Controller actor that has already submitted a training run via StubTrainingJob.
+    """Controller actor that has already submitted a training run via StubMainJob.
 
-    Yields (handle, run_id) where run_id is the auto-generated ID from StubTrainingJob.
+    Yields (handle, run_id) where run_id is the auto-generated ID from StubMainJob.
     """
     actor_name = ft_controller_actor_name("")
     handle = FtControllerActor.options(name=actor_name).remote(
