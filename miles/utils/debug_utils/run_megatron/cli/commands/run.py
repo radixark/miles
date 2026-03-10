@@ -61,10 +61,9 @@ def run_impl(args: RunArgs) -> None:
         top_k=args.top_k,
         logprob_output=args.logprob_output,
     )
-    sp: bool = args.sp or parallel.tp > 1
     worker_args_str: str = build_worker_args(
         parallel=parallel,
-        sp=sp,
+        sp=args.sp,
         seq_length=args.seq_length,
         batch_size=args.batch_size,
         script_args=script_args,

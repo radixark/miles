@@ -25,7 +25,7 @@ def build_torchrun_cmd(
         f"torchrun --nproc-per-node {nproc} "
         f"-m {worker_module} "
         f"${{MODEL_ARGS[@]}} "
-        f"--hidden-dropout 0 --attention-dropout 0 --attention-backend flash "
+        f"--hidden-dropout 0 --attention-dropout 0 "
         f"{worker_args}"
     )
     return cmd
