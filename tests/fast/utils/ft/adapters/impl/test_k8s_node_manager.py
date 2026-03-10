@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -23,9 +23,11 @@ def _make_manager_with_mock_api(
     manager = K8sNodeManager(
         api_client=mock_api_client,
         label_prefix=label_prefix,
-        ray_cluster_name=ray_cluster_name,
         namespace=namespace,
     )
+
+    if ray_cluster_name:
+        manager._ray_cluster_name = ray_cluster_name
 
     mock_core_v1 = AsyncMock()
     manager._ensure_client = AsyncMock(return_value=mock_core_v1)
@@ -36,7 +38,7 @@ def _make_manager_with_mock_api(
 class TestMarkNodeBad:
     @pytest.mark.anyio
     async def test_patches_node_with_correct_labels(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api()
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
 
         await manager.mark_node_bad(node_id="node-1", reason="gpu_ecc_error")
 
@@ -49,7 +51,7 @@ class TestMarkNodeBad:
 
     @pytest.mark.anyio
     async def test_raises_on_api_failure(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api()
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
         mock_core_v1.patch_node.side_effect = Exception("K8s API unreachable")
 
         with pytest.raises(Exception, match="K8s API unreachable"):
@@ -83,7 +85,7 @@ class TestGetBadNodes:
     @pytest.mark.anyio
     async def test_returns_mapped_node_ids_after_mark(self) -> None:
         """get_bad_nodes returns node_ids (not k8s names) via reverse map."""
-        manager, mock_core_v1 = _make_manager_with_mock_api()
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
 
         # Step 1: mark_node_bad with metadata to populate reverse map
         await manager.mark_node_bad(
@@ -152,7 +154,9 @@ class TestLabelPrefix:
 
     @pytest.mark.anyio
     async def test_mark_node_bad_uses_prefixed_labels(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api(label_prefix="pfx")
+        manager, mock_core_v1 = _make_manager_with_mock_api(
+            label_prefix="pfx", ray_cluster_name="c1",
+        )
 
         await manager.mark_node_bad(node_id="node-1", reason="test")
 
@@ -174,7 +178,7 @@ class TestLabelPrefix:
 
 class TestMarkNodeBadDeletesPod:
     @pytest.mark.anyio
-    async def test_mark_node_bad_deletes_worker_pod_when_cluster_configured(self) -> None:
+    async def test_mark_node_bad_deletes_worker_pod(self) -> None:
         manager, mock_core_v1 = _make_manager_with_mock_api(
             ray_cluster_name="my-cluster",
             namespace="test-ns",
@@ -196,17 +200,6 @@ class TestMarkNodeBadDeletesPod:
         del_kwargs = mock_core_v1.delete_namespaced_pod.call_args.kwargs
         assert del_kwargs["name"] == "my-cluster-worker-abc"
         assert del_kwargs["namespace"] == "test-ns"
-
-    @pytest.mark.anyio
-    async def test_mark_node_bad_skips_pod_delete_when_no_cluster(self) -> None:
-        """Without ray_cluster_name, mark_node_bad only patches labels."""
-        manager, mock_core_v1 = _make_manager_with_mock_api()
-
-        await manager.mark_node_bad(node_id="node-1", reason="test")
-
-        mock_core_v1.patch_node.assert_awaited_once()
-        mock_core_v1.list_namespaced_pod.assert_not_awaited()
-        mock_core_v1.delete_namespaced_pod.assert_not_awaited()
 
     @pytest.mark.anyio
     async def test_mark_node_bad_handles_no_pods_on_node(self) -> None:
@@ -277,7 +270,7 @@ class TestMetadataTranslation:
     @pytest.mark.anyio
     async def test_mark_node_bad_uses_k8s_name_from_metadata(self) -> None:
         """mark_node_bad uses k8s_node_name from metadata to call K8s API."""
-        manager, mock_core_v1 = _make_manager_with_mock_api()
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
 
         await manager.mark_node_bad(
             node_id="ray-uuid-abc", reason="gpu_ecc",
@@ -290,7 +283,7 @@ class TestMetadataTranslation:
     @pytest.mark.anyio
     async def test_mark_node_bad_without_metadata_uses_node_id(self) -> None:
         """Without metadata, mark_node_bad falls back to node_id."""
-        manager, mock_core_v1 = _make_manager_with_mock_api()
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
 
         await manager.mark_node_bad(node_id="ray-uuid-abc", reason="test")
 
@@ -300,7 +293,7 @@ class TestMetadataTranslation:
     @pytest.mark.anyio
     async def test_get_bad_nodes_reverse_translates(self) -> None:
         """get_bad_nodes uses reverse map to return node_ids instead of k8s names."""
-        manager, mock_core_v1 = _make_manager_with_mock_api()
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
 
         # Step 1: establish reverse mapping via mark_node_bad
         await manager.mark_node_bad(
@@ -417,3 +410,61 @@ class TestAssertWorkerNodeAffinity:
 
         # Step 2: only pod delete call, no second affinity check
         assert mock_core_v1.list_namespaced_pod.await_count == 1
+
+
+class TestAutoDetectRayClusterName:
+    @pytest.mark.anyio
+    async def test_detects_cluster_name_from_pod_labels(self) -> None:
+        manager, mock_core_v1 = _make_manager_with_mock_api(namespace="test-ns")
+        mock_pod = SimpleNamespace(
+            metadata=SimpleNamespace(
+                labels={"ray.io/cluster": "my-train-cluster", "app": "ray"},
+            ),
+        )
+        mock_core_v1.read_namespaced_pod.return_value = mock_pod
+
+        with patch.dict("os.environ", {"K8S_POD_NAME": "my-pod-0"}):
+            result = await manager._ensure_ray_cluster_name()
+
+        assert result == "my-train-cluster"
+        assert manager._ray_cluster_name == "my-train-cluster"
+        mock_core_v1.read_namespaced_pod.assert_awaited_once()
+        call_kwargs = mock_core_v1.read_namespaced_pod.call_args.kwargs
+        assert call_kwargs["name"] == "my-pod-0"
+        assert call_kwargs["namespace"] == "test-ns"
+
+    @pytest.mark.anyio
+    async def test_raises_when_pod_name_env_missing(self) -> None:
+        manager, _ = _make_manager_with_mock_api()
+
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(RuntimeError, match="K8S_POD_NAME env var not set"):
+                await manager._ensure_ray_cluster_name()
+
+    @pytest.mark.anyio
+    async def test_raises_when_pod_missing_cluster_label(self) -> None:
+        manager, mock_core_v1 = _make_manager_with_mock_api()
+        mock_pod = SimpleNamespace(
+            metadata=SimpleNamespace(labels={"app": "ray"}),
+        )
+        mock_core_v1.read_namespaced_pod.return_value = mock_pod
+
+        with patch.dict("os.environ", {"K8S_POD_NAME": "my-pod-0"}):
+            with pytest.raises(RuntimeError, match="missing ray.io/cluster label"):
+                await manager._ensure_ray_cluster_name()
+
+    @pytest.mark.anyio
+    async def test_caches_detected_cluster_name(self) -> None:
+        """Second call returns cached value without querying the API again."""
+        manager, mock_core_v1 = _make_manager_with_mock_api(namespace="ns")
+        mock_pod = SimpleNamespace(
+            metadata=SimpleNamespace(labels={"ray.io/cluster": "cached-cluster"}),
+        )
+        mock_core_v1.read_namespaced_pod.return_value = mock_pod
+
+        with patch.dict("os.environ", {"K8S_POD_NAME": "pod-1"}):
+            first = await manager._ensure_ray_cluster_name()
+            second = await manager._ensure_ray_cluster_name()
+
+        assert first == second == "cached-cluster"
+        assert mock_core_v1.read_namespaced_pod.await_count == 1

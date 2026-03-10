@@ -8,8 +8,6 @@ from unittest.mock import patch
 from miles.utils.ft.utils.env import (
     get_exception_inject_path,
     get_ft_id,
-    get_k8s_node_name,
-    get_k8s_pod_name,
     get_training_run_id,
 )
 
@@ -48,23 +46,3 @@ class TestGetExceptionInjectPath:
     def test_returns_none_when_empty_string(self) -> None:
         with patch.dict("os.environ", {"MILES_FT_EXCEPTION_INJECT_PATH": ""}):
             assert get_exception_inject_path() is None
-
-
-class TestGetK8sNodeName:
-    def test_returns_value_when_set(self) -> None:
-        with patch.dict("os.environ", {"K8S_NODE_NAME": "gke-node-01"}):
-            assert get_k8s_node_name() == "gke-node-01"
-
-    def test_returns_empty_string_when_unset(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            assert get_k8s_node_name() == ""
-
-
-class TestGetK8sPodName:
-    def test_returns_value_when_set(self) -> None:
-        with patch.dict("os.environ", {"K8S_POD_NAME": "trainer-pod-abc"}):
-            assert get_k8s_pod_name() == "trainer-pod-abc"
-
-    def test_returns_empty_string_when_unset(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            assert get_k8s_pod_name() == ""
