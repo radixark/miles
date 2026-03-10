@@ -20,8 +20,10 @@ class SingleUserTurnTrajectory(BaseModel):
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     records: list[SessionRecord] = Field(default_factory=list)
-    # Accumulated token IDs: prompt_token_ids + completion_token_ids from each
-    # turn's response.  Sent as pretokenized_token_ids on the next turn.
+    # Accumulated token IDs from the latest response
+    # (prompt_token_ids + completion_token_ids).
+    # Sent as pretokenized_token_ids on the next turn so SGLang can skip
+    # re-tokenizing the prefix.
     token_ids: list[int] = Field(default_factory=list)
 
     def append_session_record(self, record: SessionRecord):
@@ -126,14 +128,16 @@ class SingleUserTurnTrajectoryManager:
     ) -> None:
         """Update the session's pretokenized state after a successful response.
 
-        Two-step process:
-        1. **Validate**: check that the previously stored token_ids are a prefix
-           of ``prompt_token_ids + completion_token_ids`` from the response,
-           confirming SGLang actually reused our pretokenized input.
-        2. **Store**: re-tokenize the full message history via
-           ``apply_chat_template(add_generation_prompt=False)`` to produce
-           token_ids that match SGLang's ``prefix_ids`` computation for the
-           next turn's pretokenized reuse.
+        Steps:
+        1. **Validate prefix**: assert the previously stored token_ids are a
+           prefix of ``prompt_token_ids + completion_token_ids``, confirming
+           SGLang actually reused our pretokenized input.
+        2. **Sanity check (text-only)**: validate prefix relationships on
+           decoded token text. We intentionally avoid reconstructing assistant
+           text from structured messages/tool_calls because parser output can
+           be lossy for assistant messages.
+        3. **Store**: save ``prompt_token_ids + completion_token_ids`` as the
+           new token_ids for next turn's pretokenized reuse.
 
         Args:
             session_id: The session ID.
@@ -148,12 +152,10 @@ class SingleUserTurnTrajectoryManager:
             if session is None:
                 return
 
-            # Validate that SGLang's output starts with our pretokenized prefix.
             all_token_ids = prompt_token_ids + completion_token_ids
             session.messages = list(request_messages) + [assistant_message]
 
-            # The previously stored token_ids must be a strict prefix of
-            # the new full token sequence.
+            # Step 1: Validate that SGLang reused our pretokenized prefix.
             prev = session.token_ids
             if prev:
                 assert all_token_ids[: len(prev)] == prev, (
@@ -163,6 +165,7 @@ class SingleUserTurnTrajectoryManager:
                     f"({len(all_token_ids)} tokens)"
                 )
 
+            # Step 2: Sanity check — decoded tokens must match chat template output.
             decoded_text = self.tokenizer.decode(all_token_ids)
             applied_text = apply_chat_template(
                 session.messages,
@@ -172,6 +175,8 @@ class SingleUserTurnTrajectoryManager:
                 tokenize=False,
             )
             assert decoded_text == applied_text, f"decoded_text != applied_text: {decoded_text} != {applied_text}"
+
+            # Step 3: Store actual response tokens for next turn's pretokenized reuse.
             session.token_ids = all_token_ids
 
     @staticmethod
