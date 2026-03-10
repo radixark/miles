@@ -22,11 +22,10 @@ def build_torchrun_cmd(
         f'source "{model_script}" && '
         f"PYTHONPATH={megatron_path}:$PYTHONPATH "
         f"CUDA_DEVICE_MAX_CONNECTIONS=1 "
-        f"NVTE_FUSED_ATTN=0 "
         f"torchrun --nproc-per-node {nproc} "
         f"-m {worker_module} "
         f"${{MODEL_ARGS[@]}} "
-        f"--hidden-dropout 0 --attention-dropout 0 "
+        f"--hidden-dropout 0 --attention-dropout 0 --attention-backend flash "
         f"{worker_args}"
     )
     return cmd
