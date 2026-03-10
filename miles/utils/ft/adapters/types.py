@@ -6,17 +6,16 @@ from abc import ABC, abstractmethod
 from enum import Enum
 
 from miles.utils.ft.agents.types import DiagnosticResult
-from miles.utils.ft.utils.base_model import FtBaseModel
 
 
 # ---------------------------------------------------------------------------
-# K8s node metadata (populated from Downward API env vars)
+# Agent metadata provider — agents collect and expose arbitrary metadata
 # ---------------------------------------------------------------------------
 
 
-class K8sNodeInfo(FtBaseModel):
-    k8s_node_name: str
-    pod_name: str
+class AgentMetadataProvider(ABC):
+    @abstractmethod
+    def get_metadata(self) -> dict[str, str]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +123,7 @@ STOP_TRAINING_TIMEOUT_SECONDS: int = 300
 
 class NodeManagerProtocol(ABC):
     @abstractmethod
-    async def mark_node_bad(self, node_id: str, reason: str) -> None: ...
+    async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None: ...
 
     @abstractmethod
     async def unmark_node_bad(self, node_id: str) -> None: ...
