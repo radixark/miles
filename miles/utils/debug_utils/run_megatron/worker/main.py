@@ -113,7 +113,24 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     torch.distributed.init_process_group(backend="nccl")
     local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
+    _set_missing_arg_defaults(args)
     init(args)
+
+
+def _set_missing_arg_defaults(args: argparse.Namespace) -> None:
+    """Set attributes that Megatron's validate_args normally computes but
+    the standalone worker skips."""
+    if not hasattr(args, "virtual_pipeline_model_parallel_size"):
+        args.virtual_pipeline_model_parallel_size = None
+    if not hasattr(args, "data_parallel_size"):
+        total_model_size: int = (
+            args.tensor_model_parallel_size
+            * args.pipeline_model_parallel_size
+            * args.context_parallel_size
+        )
+        args.data_parallel_size = args.world_size // total_model_size
+    if not hasattr(args, "decrease_batch_size_if_needed"):
+        args.decrease_batch_size_if_needed = False
 
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
