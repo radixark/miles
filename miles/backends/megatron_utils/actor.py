@@ -102,7 +102,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if args.offload_train and not args.keep_gradient_buffers_on_cpu:
             args.grad_mem_alloc_context = partial(
-                torch_memory_saver.region, tag="grad_buffer", enable_cpu_backup=False,
+                torch_memory_saver.region,
+                tag="grad_buffer",
+                enable_cpu_backup=False,
             )
 
         try:
