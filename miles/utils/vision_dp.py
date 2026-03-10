@@ -377,6 +377,7 @@ def _patch_vision_class(cls, class_name: str, cp_group, cp_size, cp_rank) -> Non
 # Registry of supported VisionTransformer classes for Vision DP patching.
 # To add a new model: append (module_path, class_name).
 _VISION_CLASSES = [
+    # Qwen series
     (
         "transformers.models.qwen2_vl.modeling_qwen2_vl",
         "Qwen2VisionTransformerPretrainedModel",
@@ -388,6 +389,15 @@ _VISION_CLASSES = [
     (
         "transformers.models.qwen3_vl.modeling_qwen3_vl",
         "Qwen3VLVisionModel",
+    ),
+    # GLM series (forward signature identical: hidden_states, grid_thw -> Tensor)
+    (
+        "transformers.models.glm4v.modeling_glm4v",
+        "Glm4vVisionModel",
+    ),
+    (
+        "transformers.models.glm4v_moe.modeling_glm4v_moe",
+        "Glm4vMoeVisionModel",
     ),
 ]
 
@@ -416,7 +426,7 @@ def apply_vision_dp_patch(cp_group, cp_size, cp_rank):
         logger.warning(
             "[Vision DP] No VisionTransformer classes found to patch. "
             "Check that your transformers version supports "
-            "Qwen2-VL, Qwen2.5-VL, or Qwen3-VL."
+            "Qwen2-VL, Qwen2.5-VL, Qwen3-VL, GLM-4V, or GLM-4V-MoE."
         )
 
 
