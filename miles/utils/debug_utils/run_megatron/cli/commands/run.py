@@ -75,7 +75,7 @@ def run_impl(args: RunArgs) -> None:
         run_backward=args.run_backward,
         dumper_filter=args.dumper_filter,
     )
-    env_prefix: str = " ".join(f"{k}='{v}'" for k, v in dumper_env.items())
+    env_exports: str = " && ".join(f"export {k}='{v}'" for k, v in dumper_env.items())
 
     cmd: str = build_torchrun_cmd(
         model_type=args.model_type,
@@ -83,7 +83,7 @@ def run_impl(args: RunArgs) -> None:
         nproc=parallel.nproc,
         worker_args=worker_args_str,
     )
-    exec_command(f"{env_prefix} {cmd}")
+    exec_command(f"{env_exports} && {cmd}")
     print(f"[cli] Run completed. Output: {args.output_dir}", flush=True)
 
 
