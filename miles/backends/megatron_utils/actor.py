@@ -60,7 +60,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        if is_megatron_main_rank():
+        self._is_main_rank = is_megatron_main_rank()
+
+        if self._is_main_rank:
             init_tracking(args, primary=False)
 
         self.prof = TrainProfiler(args)
@@ -170,7 +172,7 @@ class MegatronTrainRayActor(TrainRayActor):
     @timer
     def sleep(self) -> None:
         assert self.args.offload_train
-        should_log_cpu_memory = is_megatron_main_rank() and hasattr(self, "_last_rollout_id")
+        should_log_cpu_memory = self._is_main_rank and hasattr(self, "_last_rollout_id")
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
