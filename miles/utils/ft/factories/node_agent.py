@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from miles.utils.ft.adapters.types import NodeExecutorProtocol
+from miles.utils.ft.adapters.types import AgentMetadataProvider, NodeExecutorProtocol
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.collectors.disk import DiskCollector
 from miles.utils.ft.agents.collectors.gpu import GpuCollector
@@ -78,6 +78,7 @@ def build_node_agent(
     collect_interval_seconds: float = DEFAULT_COLLECT_INTERVAL_SECONDS,
     collectors_override: list[BaseCollector] | None = None,
     diagnostics_override: list[NodeExecutorProtocol] | None = None,
+    metadata_provider: AgentMetadataProvider | None = None,
     **kwargs: Any,
 ) -> FtNodeAgent:
     resolved_node_id = node_id or socket.gethostname()
@@ -90,6 +91,7 @@ def build_node_agent(
         collectors=collectors,
         collect_interval_seconds=collect_interval_seconds,
         diagnostics=diagnostics,
+        metadata_provider=metadata_provider,
     )
 
 
@@ -97,14 +99,19 @@ def launch_node_agent_actor(
     node_id: str,
     ft_id: str = "",
     actor_name: str = "",
+    metadata_provider: AgentMetadataProvider | None = None,
     **kwargs: Any,
 ) -> Any:
     """Create and return a named FtNodeAgentActor with builder injection."""
+    from miles.utils.ft.adapters.impl.k8s_metadata_provider import K8sMetadataProvider
     from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
+
+    resolved_provider = metadata_provider or K8sMetadataProvider()
 
     return FtNodeAgentActor.options(name=actor_name).remote(
         builder=build_node_agent,
         node_id=node_id,
         ft_id=ft_id,
+        metadata_provider=resolved_provider,
         **kwargs,
     )
