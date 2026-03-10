@@ -46,21 +46,28 @@ class K8sNodeManager(NodeManagerProtocol):
         self._label_key, self._reason_label_key = _build_label_keys(label_prefix)
         self._ray_cluster_name = ray_cluster_name
         self._namespace = namespace
+        self._reverse_map: dict[str, str] = {}
 
-    async def mark_node_bad(self, node_id: str, reason: str) -> None:
+    async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
+        k8s_name = node_id
+        if node_metadata and "k8s_node_name" in node_metadata:
+            k8s_name = node_metadata["k8s_node_name"]
+            self._reverse_map[k8s_name] = node_id
+
         elapsed = await self._patch_node_labels(
-            node_id=node_id,
+            node_id=k8s_name,
             labels={self._label_key: "true", self._reason_label_key: reason},
         )
         logger.info(
-            "mark_node_bad node_id=%s reason=%s elapsed_seconds=%.3f",
+            "mark_node_bad node_id=%s k8s_name=%s reason=%s elapsed_seconds=%.3f",
             node_id,
+            k8s_name,
             reason,
             elapsed,
         )
 
         if self._ray_cluster_name:
-            await self._delete_ray_worker_pod_on_node(node_id)
+            await self._delete_ray_worker_pod_on_node(k8s_name)
 
     async def unmark_node_bad(self, node_id: str) -> None:
         elapsed = await self._patch_node_labels(
@@ -92,13 +99,22 @@ class K8sNodeManager(NodeManagerProtocol):
         )
         elapsed = time.monotonic() - start
 
-        names = [node.metadata.name for node in node_list.items]
+        k8s_names = [node.metadata.name for node in node_list.items]
+
+        result: list[str] = []
+        for k8s_name in k8s_names:
+            if k8s_name in self._reverse_map:
+                result.append(self._reverse_map[k8s_name])
+            else:
+                logger.debug("get_bad_nodes: no reverse mapping for k8s_name=%s, skipping", k8s_name)
+
         logger.info(
-            "get_bad_nodes count=%d elapsed_seconds=%.3f",
-            len(names),
+            "get_bad_nodes k8s_count=%d mapped_count=%d elapsed_seconds=%.3f",
+            len(k8s_names),
+            len(result),
             elapsed,
         )
-        return names
+        return result
 
     async def _delete_ray_worker_pod_on_node(self, node_id: str) -> None:
         core_v1 = await self._ensure_client()
