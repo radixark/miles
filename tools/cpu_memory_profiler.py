@@ -92,7 +92,15 @@ class CPUMemoryProfiler:
                 while next_marker and next_marker[0] <= t:
                     markers_in_interval.append(next_marker[1])
                     next_marker = next(mi, None)
-                w.writerow([f"{t:.2f}", f"{used / 1e9:.3f}", f"{avail / 1e9:.3f}", f"{pct:.1f}", ";".join(markers_in_interval)])
+                w.writerow(
+                    [
+                        f"{t:.2f}",
+                        f"{used / 1e9:.3f}",
+                        f"{avail / 1e9:.3f}",
+                        f"{pct:.1f}",
+                        ";".join(markers_in_interval),
+                    ]
+                )
         logger.info(f"CPU memory profile saved to {self.output_path}")
 
     @property
