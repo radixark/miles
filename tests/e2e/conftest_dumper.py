@@ -31,7 +31,7 @@ SOURCE_PATCHED_FIELDS: list[str] = [
 
 # Megatron replicated axes: axes that are active (size > 1) but not sharded
 # for most tensors.  Declared once so every dims string stays concise.
-_MEG_REPL = "tp:replicated ep:replicated etp:replicated moe_tp:replicated"
+_MEG_REPL = "tp:replicated ep:replicated etp:replicated"
 
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = (
     """\
@@ -90,7 +90,7 @@ patches:
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
-        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated moe_tp:replicated cp:replicated sp:replicated')"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated cp:replicated sp:replicated')"
 """
 )
 
@@ -151,7 +151,7 @@ patches:
   - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
     edits:
       - match: "expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)"
-        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated moe_tp:replicated cp:replicated sp:replicated')"
+        append: "dumper.dump('moe_expert_output', expert_output, dims='t h[tp:partial] # ep:replicated etp:replicated cp:replicated sp:replicated')"
 """
 )
 
@@ -169,7 +169,7 @@ patches:
                   **kwargs,
               )
           )
-        append: "dumper.dump('layer_input', residual, dims='t h # tp:replicated moe_tp:replicated dp:=attn_dp')"
+        append: "dumper.dump('layer_input', residual, dims='t h # tp:replicated dp:=attn_dp')"
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
@@ -177,19 +177,19 @@ patches:
                   hidden_states=hidden_states,
                   forward_batch=forward_batch,
               )
-        append: "dumper.dump('attn_output', hidden_states, dims='t[moe_tp] h # tp:replicated')"
+        append: "dumper.dump('attn_output', hidden_states, dims='t h # tp:replicated dp:=attn_dp')"
       - match: |
           hidden_states, residual = self.layer_communicator.prepare_mlp(
               hidden_states, residual, forward_batch
           )
         append: |
-          dumper.dump('pre_mlp_residual', residual, dims='t[moe_tp] h # tp:replicated')
-          dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated moe_tp:replicated')
+          dumper.dump('pre_mlp_residual', residual, dims='t h # tp:replicated dp:=attn_dp')
+          dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated')
       - match: |
           hidden_states = self.mlp(
               hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
           )
-        append: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated moe_tp:replicated')"
+        append: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated')"
 
   # --- attention internals ---
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeAttention.forward_core
@@ -207,11 +207,11 @@ patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeSparseMoeBlock.forward_normal
     edits:
       - match: "router_logits, _ = self.gate(hidden_states)"
-        append: "dumper.dump('moe_router_logits', router_logits, dims='t num_experts # tp:replicated moe_tp:replicated')"
+        append: "dumper.dump('moe_router_logits', router_logits, dims='t num_experts # tp:replicated')"
       - match: "topk_output = self.topk(hidden_states, router_logits)"
-        append: "dumper.dump('moe_topk_ids', topk_output.topk_ids.sort(dim=-1).values, dims='t topk # tp:replicated moe_tp:replicated')"
+        append: "dumper.dump('moe_topk_ids', topk_output.topk_ids.sort(dim=-1).values, dims='t topk # tp:replicated')"
       - match: "final_hidden_states = self.experts(hidden_states, topk_output)"
-        append: "dumper.dump('moe_expert_output', final_hidden_states, dims='t h[tp:partial] # moe_tp:replicated')"
+        append: "dumper.dump('moe_expert_output', final_hidden_states, dims='t h[tp:partial]')"
 """
 
 
