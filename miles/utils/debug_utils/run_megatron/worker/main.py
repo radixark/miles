@@ -116,15 +116,9 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
 
-    if not hasattr(args, "hf_checkpoint"):
-        args.hf_checkpoint = str(getattr(args, "script_hf_checkpoint", None))
+    args.hf_checkpoint = str(args.script_hf_checkpoint)
     set_default_megatron_args(args)
     validate_args(args)
-
-    if not hasattr(args, "megatron_to_hf_mode"):
-        args.megatron_to_hf_mode = "raw"
-    if not hasattr(args, "decrease_batch_size_if_needed"):
-        args.decrease_batch_size_if_needed = False
 
     init(args)
 
