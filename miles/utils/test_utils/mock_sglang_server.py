@@ -11,9 +11,9 @@ from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
-from transformers import AutoTokenizer
 
 from miles.utils.http_utils import find_available_port
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
@@ -48,8 +48,9 @@ class MockSGLangServer:
         host: str,
         port: int,
         latency: float = 0.0,
+        chat_template_path: str | None = None,
     ):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(model_name, chat_template_path=chat_template_path, trust_remote_code=True)
         self.process_fn = process_fn
         self.host = host
         self.port = port or find_available_port(30000)

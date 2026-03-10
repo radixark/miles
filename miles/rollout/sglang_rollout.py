@@ -39,7 +39,9 @@ class GenerateState(metaclass=SingletonMeta):
     def __init__(self, args: Namespace) -> None:
         # persistent state for the generation process
         self.args = args
-        self.tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
         self.semaphore = asyncio.Semaphore(
@@ -450,9 +452,11 @@ async def eval_rollout_single_dataset(
 
     global EVAL_PROMPT_DATASET
 
-    cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template)
+    cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template, args.chat_template_path)
     if cache_key not in EVAL_PROMPT_DATASET:
-        tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        tokenizer = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
         processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
         EVAL_PROMPT_DATASET[cache_key] = Dataset(
             path=dataset_cfg.path,

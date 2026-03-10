@@ -1,0 +1,187 @@
+name: Docker Build & Push
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/Dockerfile.dev'
+
+  schedule:
+    # Every 12 hours: midnight and noon UTC
+    - cron: '0 0,12 * * *'
+
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'Build variant'
+        required: true
+        type: choice
+        options:
+          - primary
+          - cu129-arm64
+          - cu13-arm64
+          - debug
+      dockerfile:
+        description: 'Path to dockerfile (e.g. docker/Dockerfile.dev)'
+        required: false
+        default: 'docker/Dockerfile'
+        type: string
+
+jobs:
+  set-build-config:
+    # Runs on schedule and push — sets dev defaults
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      variant: ${{ steps.defaults.outputs.variant }}
+      dockerfile: ${{ steps.defaults.outputs.dockerfile }}
+    steps:
+      - name: Set dev build defaults
+        id: defaults
+        run: |
+          echo "variant=dev" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=docker/Dockerfile.dev" >> "$GITHUB_OUTPUT"
+
+  check-upstream:
+    # Only run on schedule — check if upstream repos have new commits
+    if: github.event_name == 'schedule'
+    needs: [set-build-config]
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Restore last known upstream SHAs
+        uses: actions/cache/restore@v4
+        with:
+          path: last_upstream_shas.txt
+          key: upstream-shas-
+          restore-keys: upstream-shas-
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          SHOULD_BUILD=false
+
+          # Check sglang (sglang-miles branch)
+          SGLANG_SHA=$(curl -sf -H "Accept: application/vnd.github.sha" \
+            "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
+
+          # Check Megatron-LM (main branch)
+          MEGATRON_SHA=$(curl -sf -H "Accept: application/vnd.github.sha" \
+            "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
+
+          echo "sglang HEAD:   ${SGLANG_SHA}"
+          echo "megatron HEAD: ${MEGATRON_SHA}"
+
+          # Compare against last known SHAs stored in cache
+          CACHE_FILE="last_upstream_shas.txt"
+          if [ -f "$CACHE_FILE" ]; then
+            LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
+            LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
+          else
+            LAST_SGLANG=""
+            LAST_MEGATRON=""
+          fi
+
+          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ]; then
+            SHOULD_BUILD=true
+            echo "Upstream change detected"
+          else
+            echo "No upstream changes"
+          fi
+
+          # Save current SHAs for next run
+          echo "${SGLANG_SHA}" > "$CACHE_FILE"
+          echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
+
+          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+
+      - name: Save upstream SHAs to cache
+        if: steps.check.outputs.should_build == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: last_upstream_shas.txt
+          key: upstream-shas-${{ github.run_id }}
+
+  build-and-push:
+    needs: [set-build-config, check-upstream]
+    # push: set-build-config ran, check-upstream skipped → build
+    # schedule: both ran → only build if upstream changed
+    # dispatch: both skipped → build
+    if: |
+      always() &&
+      (needs.check-upstream.result == 'skipped' || needs.check-upstream.outputs.should_build == 'true') &&
+      needs.set-build-config.result != 'failed'
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          python docker/build.py \
+            --variant ${{ needs.set-build-config.outputs.variant || inputs.variant }} \
+            --dockerfile ${{ needs.set-build-config.outputs.dockerfile || inputs.dockerfile }} \
+            --push
+
+      - name: Prune old dev tags
+        if: github.event_name == 'schedule' || github.event_name == 'push'
+        run: |
+          KEEP=20
+          IMAGE=radixark/miles
+
+          # Authenticate with Docker Hub API
+          TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
+            | jq -r .token)
+
+          # Collect all dev-YYYYMMDDHHMM tags (paginated)
+          DEV_TAGS=""
+          URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
+          while [ "$URL" != "null" ] && [ -n "$URL" ]; do
+            RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
+            PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E '^dev-[0-9]{12}$' || true)
+            DEV_TAGS="${DEV_TAGS}${PAGE_TAGS}"$'\n'
+            URL=$(echo "$RESP" | jq -r '.next')
+          done
+
+          # Sort and find tags to delete
+          SORTED=$(echo "$DEV_TAGS" | grep -v '^$' | sort)
+          COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
+          echo "Found ${COUNT} dev tags"
+
+          if [ "$COUNT" -le "$KEEP" ]; then
+            echo "Nothing to prune (keep=${KEEP})"
+            exit 0
+          fi
+
+          DELETE_COUNT=$((COUNT - KEEP))
+          TO_DELETE=$(echo "$SORTED" | head -n "$DELETE_COUNT")
+          echo "Pruning ${DELETE_COUNT} old dev tags..."
+
+          echo "$TO_DELETE" | while read -r TAG; do
+            [ -z "$TAG" ] && continue
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: JWT ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  Deleted ${TAG}"
+            else
+              echo "  Failed to delete ${TAG} (HTTP ${HTTP_CODE})"
+            fi
+          done
