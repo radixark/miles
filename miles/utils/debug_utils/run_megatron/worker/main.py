@@ -21,6 +21,8 @@ from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.training.arguments import parse_args, validate_args
+
+from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from megatron.training.training import get_model
 from sglang.srt.debug_utils.dumper import dumper
 from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
@@ -113,36 +115,18 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     torch.distributed.init_process_group(backend="nccl")
     local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
-    _set_missing_arg_defaults(args)
-    init(args)
 
-
-def _set_missing_arg_defaults(args: argparse.Namespace) -> None:
-    """Apply defaults that miles' full training flow normally sets
-    (via set_default_megatron_args + validate_args), then add
-    miles-specific defaults the standalone worker needs."""
-    from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
-
-    if getattr(args, "max_position_embeddings", None) is None:
-        args.max_position_embeddings = args.seq_length
-    if hasattr(args, "rope_type") and args.rope_type is None:
-        args.rope_type = "yarn" if getattr(args, "multi_latent_attention", False) else "rope"
-    if getattr(args, "vocab_size", None) and not getattr(args, "padded_vocab_size", None):
-        args.padded_vocab_size = _vocab_size_with_padding(args.vocab_size, args)
-
-    if getattr(args, "tokenizer_model", None) is None and getattr(args, "tokenizer_type", None) == "HuggingFaceTokenizer":
-        hf_ckpt = getattr(args, "script_hf_checkpoint", None)
-        args.tokenizer_model = str(hf_ckpt) if hf_ckpt is not None else None
-
+    if not hasattr(args, "hf_checkpoint"):
+        args.hf_checkpoint = str(getattr(args, "script_hf_checkpoint", None))
+    set_default_megatron_args(args)
     validate_args(args)
 
-    _MILES_DEFAULTS: dict[str, object] = {
-        "megatron_to_hf_mode": "raw",
-        "decrease_batch_size_if_needed": False,
-    }
-    for attr, default in _MILES_DEFAULTS.items():
-        if not hasattr(args, attr):
-            setattr(args, attr, default)
+    if not hasattr(args, "megatron_to_hf_mode"):
+        args.megatron_to_hf_mode = "raw"
+    if not hasattr(args, "decrease_batch_size_if_needed"):
+        args.decrease_batch_size_if_needed = False
+
+    init(args)
 
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
