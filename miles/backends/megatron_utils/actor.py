@@ -178,13 +178,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
+
+        should_log_cpu_memory: bool = is_megatron_main_rank() and hasattr(self, "_last_rollout_id")
+
         destroy_process_groups()
 
         torch_memory_saver.pause()
 
         print_memory("after offload model")
 
-        if is_megatron_main_rank() and hasattr(self, "_last_rollout_id"):
+        if should_log_cpu_memory:
             log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
 
     @timer
