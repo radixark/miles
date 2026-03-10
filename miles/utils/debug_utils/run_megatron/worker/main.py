@@ -147,7 +147,11 @@ def _set_missing_arg_defaults(args: argparse.Namespace) -> None:
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
     model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
-    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
+    model: list[Any] = get_model(
+        model_provider,
+        ModelType.encoder_or_decoder,
+        wrap_with_ddp=script.run_backward,
+    )
 
     if args.load is not None:
         load_checkpoint(model, optimizer=None, opt_param_scheduler=None)
