@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -96,6 +97,7 @@ class TestBuildPlatformComponentsK8sRay:
         with (
             patch("miles.utils.ft.adapters.impl.k8s_node_manager.K8sNodeManager") as mock_k8s,
             patch("ray.job_submission.JobSubmissionClient") as mock_jsc,
+            patch.dict(os.environ, {"K8S_NAMESPACE": "test-ns"}),
         ):
             mock_k8s.return_value = MagicMock()
             mock_jsc.return_value = MagicMock()
@@ -106,7 +108,7 @@ class TestBuildPlatformComponentsK8sRay:
                 entrypoint="python train.py",
             )
 
-        mock_k8s.assert_called_once_with(label_prefix="")
+        mock_k8s.assert_called_once_with(label_prefix="", namespace="test-ns")
         mock_jsc.assert_called_once_with(address="http://ray:8265")
         assert node_mgr is mock_k8s.return_value
 
@@ -117,6 +119,7 @@ class TestBuildPlatformComponentsK8sRay:
         with (
             patch("miles.utils.ft.adapters.impl.k8s_node_manager.K8sNodeManager") as mock_k8s,
             patch("ray.job_submission.JobSubmissionClient") as mock_jsc,
+            patch.dict(os.environ, {"K8S_NAMESPACE": "test-ns"}),
         ):
             mock_k8s.return_value = MagicMock()
             mock_jsc.return_value = MagicMock()
@@ -129,7 +132,7 @@ class TestBuildPlatformComponentsK8sRay:
                 k8s_label_prefix="pfx",
             )
 
-        mock_k8s.assert_called_once_with(label_prefix="pfx")
+        mock_k8s.assert_called_once_with(label_prefix="pfx", namespace="test-ns")
         assert isinstance(main_job, RayMainJob)
         assert main_job._ft_id == "abc"
         assert main_job._k8s_label_prefix == "pfx"
