@@ -6,13 +6,16 @@ from collections.abc import Callable, Mapping, Sequence
 import ray
 import torch
 import torch.distributed as dist
+from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
-from miles.utils.distributed_utils import init_process_group
+from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
-from .update_weight_from_remote import UpdateWeightFromRemote
+from ..megatron_to_hf import convert_to_hf
+from .common import all_gather_param, named_params_and_buffers
+from .update_weight_from_remote import UpdateWeightFromRemote, post_process_weights
 
 
 class UpdateWeightFromDistributed(UpdateWeightFromRemote):
