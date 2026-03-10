@@ -65,8 +65,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             dumper.apply_source_patches()
 
-        self._is_megatron_main_rank = is_megatron_main_rank()
-        if self._is_megatron_main_rank:
+        if is_megatron_main_rank():
             init_tracking(args, primary=False)
 
         self.prof = TrainProfiler(args)
@@ -185,7 +184,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         print_memory("after offload model")
 
-        if self._is_megatron_main_rank and hasattr(self, "_last_rollout_id"):
+        if is_megatron_main_rank() and hasattr(self, "_last_rollout_id"):
             log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
 
     @timer
