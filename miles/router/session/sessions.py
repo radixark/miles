@@ -99,16 +99,18 @@ def setup_session_routes(app, router: "MilesRouter"):
             )
             raise RuntimeError("meta_info and output_token_logprobs must be in choice (requires logprobs=True)")
 
-        prompt_token_ids = choice.get("prompt_token_ids", [])
-        completion_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
         assistant_message = choice.get("message", {})
+
+        prompt_token_ids = choice.get("prompt_token_ids")
+        completion_token_ids = [t[1] for t in choice["meta_info"]["output_token_logprobs"]]
 
         manager.update_pretokenized_state(
             session_id,
             request_messages,
             assistant_message,
-            prompt_token_ids,
-            completion_token_ids,
+            prompt_token_ids=prompt_token_ids,
+            completion_token_ids=completion_token_ids,
+            tools=request_body.get("tools"),
         )
 
         record = SessionRecord(

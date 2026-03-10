@@ -7,10 +7,15 @@ subsequent calls read from disk without network access.
 ``apply_chat_template_from_str`` renders a Jinja2 chat template string
 without depending on a HuggingFace tokenizer, equivalent to
 ``tokenizer.apply_chat_template(..., tokenize=False)``.
+
+``apply_chat_template`` is the unified entry point that normalizes tool
+arguments, extracts tool dicts, and applies the template with fallback —
+works with both a tokenizer object and a raw Jinja2 template string.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 
 from huggingface_hub import hf_hub_download
@@ -56,50 +61,41 @@ def _tojson(value, ensure_ascii=True, indent=None):
 
 
 def _normalize_tool_arguments(messages: list[dict]) -> list[dict]:
-    """Parse JSON-string tool_call arguments to dicts.
+    """Deep-copy messages and parse JSON-string tool_call arguments to dicts.
 
-    Some templates (e.g. Qwen3-Coder-Next) use ``arguments|items`` which
-    requires a mapping.  Others branch on ``arguments is string``.  Normalizing
-    to dicts is safe for both because ``tojson(dict)`` produces the same compact
-    JSON as the original string.
+    Matches SGLang's ``_apply_jinja_template`` / ``_apply_pretokenized_template``
+    normalization (serving_chat.py L446-462, L669-682).  Some templates
+    (e.g. Qwen3-Coder-Next, GLM-4.7) use ``arguments|items`` which requires
+    a mapping.
     """
-    out = []
-    for msg in messages:
-        if not msg.get("tool_calls"):
-            out.append(msg)
-            continue
-        msg = dict(msg)
-        new_calls = []
-        for tc in msg["tool_calls"]:
-            tc = dict(tc)
-            if "function" in tc:
-                fn = dict(tc["function"])
-                if isinstance(fn.get("arguments"), str):
-                    fn["arguments"] = json.loads(fn["arguments"])
-                tc["function"] = fn
-            new_calls.append(tc)
-        msg["tool_calls"] = new_calls
-        out.append(msg)
-    return out
+    normalized = copy.deepcopy(messages)
+    for msg in normalized:
+        if msg.get("role") == "assistant" and "tool_calls" in msg and isinstance(msg["tool_calls"], list):
+            for item in msg["tool_calls"]:
+                if "arguments" in item["function"] and isinstance(item["function"]["arguments"], str):
+                    item["function"]["arguments"] = json.loads(item["function"]["arguments"])
+    return normalized
 
 
 def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
-    """Extract function definitions from OpenAI tool format for template rendering."""
+    """Extract function definitions from OpenAI tool format for template rendering.
+
+    Idempotent: dicts already in function-only format (no ``"function"`` key)
+    are passed through unchanged.
+    """
     if not tools:
         return None
-    return [t["function"] for t in tools if "function" in t]
+    return [t["function"] if "function" in t else t for t in tools]
 
 
-def apply_chat_template_from_str(
+def _render_jinja(
     chat_template: str,
     messages: list[dict],
     add_generation_prompt: bool = True,
     tools: list[dict] | None = None,
     **kwargs,
 ) -> str:
-    """Render a Jinja2 chat template string (tokenize=False equivalent)."""
-    messages = _normalize_tool_arguments(messages)
-
+    """Render a Jinja2 chat template string (no normalization)."""
     env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
     env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(ValueError(msg))
     env.filters["tojson"] = _tojson
@@ -113,3 +109,78 @@ def apply_chat_template_from_str(
         render_kwargs["tools"] = tools
     render_kwargs.update(kwargs)
     return template.render(**render_kwargs)
+
+
+def apply_chat_template_from_str(
+    chat_template: str,
+    messages: list[dict],
+    add_generation_prompt: bool = True,
+    tools: list[dict] | None = None,
+    **kwargs,
+) -> str:
+    """Render a Jinja2 chat template string (tokenize=False equivalent)."""
+    messages = _normalize_tool_arguments(messages)
+    return _render_jinja(chat_template, messages, add_generation_prompt, tools, **kwargs)
+
+
+def apply_chat_template(
+    messages: list[dict],
+    *,
+    tokenizer=None,
+    chat_template: str | None = None,
+    tools: list[dict] | None = None,
+    add_generation_prompt: bool = True,
+    tokenize: bool = False,
+    **kwargs,
+) -> str | list[int]:
+    """Apply a chat template with normalization, tool extraction, and fallback.
+
+    Unified entry point that handles:
+    - Normalizing tool_call arguments (JSON string -> dict)
+    - Extracting tool dicts from OpenAI format (function-only)
+    - Fallback: tries function-only format first, then wrapped ``{"function": t}``
+
+    Two rendering paths:
+    - **Tokenizer path** (``tokenizer`` provided): calls
+      ``tokenizer.apply_chat_template`` — supports ``tokenize=True/False``.
+    - **String path** (``chat_template`` provided): renders Jinja2 directly —
+      always returns ``str``.  ``tokenize=True`` raises ``ValueError``.
+
+    Args:
+        messages: OpenAI-format message list.
+        tokenizer: HuggingFace tokenizer object (mutually exclusive with
+            *chat_template*).
+        chat_template: Jinja2 template string (mutually exclusive with
+            *tokenizer*).
+        tools: Tool definitions in OpenAI format
+            (``[{"type": "function", "function": {...}}]``).  Also accepts
+            already-extracted function-only dicts.
+        add_generation_prompt: Whether to append the generation prompt.
+        tokenize: If True and using the tokenizer path, return token IDs
+            instead of a string.
+        **kwargs: Forwarded to the template (e.g. ``enable_thinking``).
+    """
+    if tokenizer is None and chat_template is None:
+        raise ValueError("Either tokenizer or chat_template must be provided")
+
+    messages = _normalize_tool_arguments(messages)
+    tool_defs = extract_tool_dicts(tools)
+
+    def _render(td):
+        if tokenizer is not None:
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt,
+                tools=td,
+                **kwargs,
+            )
+        return _render_jinja(chat_template, messages, add_generation_prompt, td, **kwargs)
+
+    try:
+        return _render(tool_defs)
+    except Exception:
+        if tool_defs is not None:
+            wrapped = [{"function": t} for t in tool_defs]
+            return _render(wrapped)
+        raise

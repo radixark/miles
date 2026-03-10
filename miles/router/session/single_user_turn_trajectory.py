@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from miles.router.session.session_types import SessionRecord
+from miles.utils.chat_template_utils import apply_chat_template
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,8 @@ class SingleUserTurnTrajectory(BaseModel):
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     records: list[SessionRecord] = Field(default_factory=list)
-    # Accumulated token IDs from all previous turns (prompt + completion).
-    # Used as pretokenized_token_ids for the next sglang request.
+    # Accumulated token IDs: prompt_token_ids + completion_token_ids from each
+    # turn's response.  Sent as pretokenized_token_ids on the next turn.
     token_ids: list[int] = Field(default_factory=list)
 
     def append_session_record(self, record: SessionRecord):
@@ -121,22 +122,35 @@ class SingleUserTurnTrajectoryManager:
         assistant_message: dict[str, Any],
         prompt_token_ids: list[int],
         completion_token_ids: list[int],
+        tools: list[dict[str, Any]] | None = None,
     ) -> None:
         """Update the session's pretokenized state after a successful response.
+
+        Two-step process:
+        1. **Validate**: check that the previously stored token_ids are a prefix
+           of ``prompt_token_ids + completion_token_ids`` from the response,
+           confirming SGLang actually reused our pretokenized input.
+        2. **Store**: re-tokenize the full message history via
+           ``apply_chat_template(add_generation_prompt=False)`` to produce
+           token_ids that match SGLang's ``prefix_ids`` computation for the
+           next turn's pretokenized reuse.
 
         Args:
             session_id: The session ID.
             request_messages: The full message list from the request.
             assistant_message: The assistant message from the response.
-            prompt_token_ids: Token IDs for the prompt returned by sglang.
-            completion_token_ids: Token IDs for the completion (from logprobs).
+            prompt_token_ids: Prompt token IDs from the response.
+            completion_token_ids: Output token IDs from the response.
+            tools: Tool definitions from the request (OpenAI format).
         """
         with self._lock:
             session = self.sessions.get(session_id)
             if session is None:
                 return
 
+            # Validate that SGLang's output starts with our pretokenized prefix.
             all_token_ids = prompt_token_ids + completion_token_ids
+            session.messages = list(request_messages) + [assistant_message]
 
             # The previously stored token_ids must be a strict prefix of
             # the new full token sequence.
@@ -145,10 +159,19 @@ class SingleUserTurnTrajectoryManager:
                 assert all_token_ids[: len(prev)] == prev, (
                     f"pretokenized prefix mismatch: "
                     f"stored {len(prev)} tokens are not a prefix of "
-                    f"the new {len(all_token_ids)} tokens"
+                    f"prompt_token_ids + completion_token_ids "
+                    f"({len(all_token_ids)} tokens)"
                 )
 
-            session.messages = list(request_messages) + [assistant_message]
+            decoded_text = self.tokenizer.decode(all_token_ids)
+            applied_text = apply_chat_template(
+                session.messages,
+                tokenizer=self.tokenizer,
+                tools=tools,
+                add_generation_prompt=False,
+                tokenize=False,
+            )
+            assert decoded_text == applied_text, f"decoded_text != applied_text: {decoded_text} != {applied_text}"
             session.token_ids = all_token_ids
 
     @staticmethod
