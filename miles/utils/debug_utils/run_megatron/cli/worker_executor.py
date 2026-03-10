@@ -108,7 +108,6 @@ def _build_megatron_flags(
         ("--sequence-parallel", sp),
         ("--bf16", True),
         ("--no-gradient-accumulation-fusion", True),
-        ("--use-miles-router", True),
         ("--use-routing-replay", use_routing_replay),
     ]
 
