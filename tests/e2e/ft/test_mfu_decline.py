@@ -26,6 +26,7 @@ import ray
 from tests.e2e.ft.conftest import (
     FaultInjectorFactory,
     get_status,
+    list_worker_pods_on_node,
     wait_for_recovery_complete,
     wait_for_training_stable,
 )
@@ -83,6 +84,12 @@ async def test_mfu_decline_detection(
                 handle=ft_controller_handle,
                 n_iterations=5,
                 timeout=300.0,
+            )
+
+            # Step: verify no worker pod on evicted node (nodeAffinity blocks reschedule)
+            pods_on_evicted = await list_worker_pods_on_node(node_id=target_node)
+            assert len(pods_on_evicted) == 0, (
+                f"worker pods still on evicted node {target_node}: {pods_on_evicted}"
             )
 
         elif crash_recovery:

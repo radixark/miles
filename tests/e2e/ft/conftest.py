@@ -378,6 +378,26 @@ async def wait_for_mode_transition(
 assert_phase_path_contains = _scenarios.assert_phase_path_contains
 
 
+async def list_worker_pods_on_node(node_id: str, namespace: str = "default") -> list[str]:
+    """List ray worker pod names scheduled on a specific K8s node."""
+    from kubernetes_asyncio import config as k8s_config
+    from kubernetes_asyncio.client import ApiClient, CoreV1Api
+
+    try:
+        k8s_config.load_incluster_config()
+    except k8s_config.ConfigException:
+        await k8s_config.load_kube_config()
+
+    async with ApiClient() as api_client:
+        core_v1 = CoreV1Api(api_client)
+        pod_list = await core_v1.list_namespaced_pod(
+            namespace=namespace,
+            label_selector="ray.io/node-type=worker",
+            field_selector=f"spec.nodeName={node_id}",
+        )
+        return [pod.metadata.name for pod in pod_list.items]
+
+
 class E2eFaultInjector:
     """FaultInjectionProtocol implementation for E2E tests.
 
