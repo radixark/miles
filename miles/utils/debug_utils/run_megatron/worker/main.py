@@ -118,9 +118,22 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 
 def _set_missing_arg_defaults(args: argparse.Namespace) -> None:
-    """Run Megatron's validate_args (sets computed fields like
-    data_parallel_size, virtual_pipeline_model_parallel_size, etc.)
-    and then add miles-specific defaults the worker needs."""
+    """Apply defaults that miles' full training flow normally sets
+    (via set_default_megatron_args + validate_args), then add
+    miles-specific defaults the standalone worker needs."""
+    from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
+
+    if getattr(args, "max_position_embeddings", None) is None:
+        args.max_position_embeddings = args.seq_length
+    if hasattr(args, "rope_type") and args.rope_type is None:
+        args.rope_type = "yarn" if getattr(args, "multi_latent_attention", False) else "rope"
+    if getattr(args, "vocab_size", None) and not getattr(args, "padded_vocab_size", None):
+        args.padded_vocab_size = _vocab_size_with_padding(args.vocab_size, args)
+
+    if getattr(args, "tokenizer_model", None) is None and getattr(args, "tokenizer_type", None) == "HuggingFaceTokenizer":
+        hf_ckpt = getattr(args, "script_hf_checkpoint", None)
+        args.tokenizer_model = str(hf_ckpt) if hf_ckpt is not None else None
+
     validate_args(args)
 
     _MILES_DEFAULTS: dict[str, object] = {
@@ -130,10 +143,6 @@ def _set_missing_arg_defaults(args: argparse.Namespace) -> None:
     for attr, default in _MILES_DEFAULTS.items():
         if not hasattr(args, attr):
             setattr(args, attr, default)
-
-    if getattr(args, "tokenizer_model", None) is None and getattr(args, "tokenizer_type", None) == "HuggingFaceTokenizer":
-        hf_ckpt = getattr(args, "script_hf_checkpoint", None)
-        args.tokenizer_model = str(hf_ckpt) if hf_ckpt is not None else None
 
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
