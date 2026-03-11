@@ -15,6 +15,7 @@ from urllib3.exceptions import NewConnectionError
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
 from miles.ray.ray_actor import RayActor
+from miles.utils.ft.factories.embedded_agent import ensure_node_agent
 from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,9 @@ class SGLangEngine(RayActor):
         self.node_rank = server_args_dict["node_rank"]
         self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
+
+        if "rollout" in getattr(self.args, "ft_components", []):
+            ensure_node_agent()
 
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
