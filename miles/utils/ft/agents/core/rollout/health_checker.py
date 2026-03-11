@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Aggregate health checker for all cells
+# Aggregate health checker — owns the loop, delegates to per-cell checkers
 # ---------------------------------------------------------------------------
 
 
@@ -22,43 +22,81 @@ class _CellEntry:
 
 
 class RolloutHealthChecker:
-    """Manages health checking across all rollout cells.
+    """Periodically probes all rollout cells and reports results via *report_fn*.
 
-    Owns one :class:`RolloutCellHealthChecker` per cell and knows how to
-    retrieve the engine list for each cell via a callback.
+    Owns one :class:`RolloutCellHealthChecker` per cell and drives the
+    async health-check loop.  Callers inject a ``report_fn(*, cell_id, is_healthy)``
+    callback (typically the metrics exporter) to decouple checking from reporting.
     """
 
     def __init__(
         self,
         *,
+        cells: dict[str, Callable[[], list[object]]],
         engine_health_fn: EngineHealthChecker,
+        report_fn: Callable[..., None],
+        check_interval: float = 10.0,
         timeout: float = 10.0,
     ) -> None:
-        self._engine_health_fn = engine_health_fn
-        self._timeout = timeout
-        self._cells: dict[str, _CellEntry] = {}
+        self._report_fn = report_fn
+        self._check_interval = check_interval
+        self._paused = False
 
-    def add_cell(
-        self,
-        cell_id: str,
-        get_engines: Callable[[], list[object]],
-    ) -> None:
-        self._cells[cell_id] = _CellEntry(
-            get_engines=get_engines,
-            checker=RolloutCellHealthChecker(
-                cell_id=cell_id,
-                engine_health_fn=self._engine_health_fn,
-                timeout=self._timeout,
-            ),
-        )
+        self._cells: dict[str, _CellEntry] = {
+            cell_id: _CellEntry(
+                get_engines=get_engines,
+                checker=RolloutCellHealthChecker(
+                    cell_id=cell_id,
+                    engine_health_fn=engine_health_fn,
+                    timeout=timeout,
+                ),
+            )
+            for cell_id, get_engines in cells.items()
+        }
+
+        self._task = asyncio.create_task(self._loop())
 
     @property
     def cell_ids(self) -> list[str]:
         return list(self._cells.keys())
 
-    async def check_cell(self, cell_id: str) -> bool:
-        entry = self._cells[cell_id]
-        return await entry.checker.check_health(engines=entry.get_engines())
+    def pause(self) -> None:
+        self._paused = True
+        logger.info("rollout_health_checker_paused")
+
+    def resume(self) -> None:
+        self._paused = False
+        logger.info("rollout_health_checker_resumed")
+
+    async def shutdown(self) -> None:
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        logger.info("rollout_health_checker_shutdown")
+
+    # --- Private ---
+
+    async def _loop(self) -> None:
+        while True:
+            if not self._paused:
+                await asyncio.gather(
+                    *(self._check_one_cell(cid) for cid in self._cells)
+                )
+            await asyncio.sleep(self._check_interval)
+
+    async def _check_one_cell(self, cell_id: str) -> None:
+        try:
+            entry = self._cells[cell_id]
+            is_healthy = await entry.checker.check_health(
+                engines=entry.get_engines(),
+            )
+            self._report_fn(cell_id=cell_id, is_healthy=is_healthy)
+        except Exception:
+            logger.warning(
+                "health_check_failed cell_id=%s", cell_id, exc_info=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +105,7 @@ class RolloutHealthChecker:
 
 
 class RolloutCellHealthChecker:
-    """Encapsulates health-checking logic for a rollout cell's engines.
+    """Probes a single rollout cell (TP group) by checking engines[0].
 
     All engines in a cell form a single TP group; only engines[0] exposes
     an HTTP health endpoint, so we probe that one and consider the entire

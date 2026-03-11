@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
-from tests.fast.utils.ft.agents.core.rollout.conftest import (
-    MockEngine,
-    MockRolloutHealthChecker,
-    mock_health_checker,
-)
+from tests.fast.utils.ft.agents.core.rollout.conftest import MockEngine
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
+
+
+async def _mock_health_checker(engine: object) -> None:
+    if not engine.alive:  # type: ignore[attr-defined]
+        raise ConnectionError("engine dead")
 
 
 def _make_agent(
@@ -21,85 +22,29 @@ def _make_agent(
     engines = [MockEngine(a) for a in engine_alive]
     rm = MagicMock()
     rm.all_rollout_engines = engines
-    return FtRolloutAgent(rm, health_checker=mock_health_checker, check_interval=check_interval), engines
+    return FtRolloutAgent(rm, health_checker=_mock_health_checker, check_interval=check_interval), engines
 
 
-def _make_multicell_agent(
-    checker: MockRolloutHealthChecker,
-    check_interval: float = 0.05,
-) -> FtRolloutAgent:
-    with patch.object(FtRolloutAgent, '_build_health_checker', return_value=checker):
-        return FtRolloutAgent(MagicMock(), health_checker=AsyncMock(), check_interval=check_interval)
+class TestIntegration:
+    """Verify FtRolloutAgent wires RolloutHealthChecker → RolloutMetricsExporter."""
 
-
-class TestHealthCheckLoopUpdatesMetrics:
     @pytest.mark.anyio
-    async def test_metrics_reflect_healthy_state(self) -> None:
+    async def test_healthy_engines_appear_in_prometheus(self) -> None:
         agent, _ = _make_agent([True, True])
 
         try:
-            # Step 1: wait for at least one health check cycle
             await asyncio.sleep(0.15)
 
-            # Step 2: verify cell-level metric
             registry = agent._metrics_exporter.registry
             assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "default"}) == 1.0
         finally:
             await agent.shutdown()
 
-
-class TestUnhealthyCellMetrics:
     @pytest.mark.anyio
-    async def test_dead_engine0_reflected_in_cell_metric(self) -> None:
-        """Production only probes engines[0]; if dead the cell is unhealthy."""
-        agent, _ = _make_agent([False, True, True])
+    async def test_dead_engine_appears_in_prometheus(self) -> None:
+        agent, _ = _make_agent([False, True])
 
         try:
-            await asyncio.sleep(0.15)
-
-            registry = agent._metrics_exporter.registry
-            assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "default"}) == 0.0
-        finally:
-            await agent.shutdown()
-
-
-class TestPauseDoesNotProduceFalseUpdates:
-    @pytest.mark.anyio
-    async def test_pause_preserves_last_metrics(self) -> None:
-        agent, engines = _make_agent([True, True])
-
-        try:
-            # Step 1: wait for initial healthy check
-            await asyncio.sleep(0.15)
-            registry = agent._metrics_exporter.registry
-            assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "default"}) == 1.0
-
-            # Step 2: pause, then kill the probed engine
-            agent.pause()
-            engines[0].alive = False
-
-            # Step 3: wait another cycle — metrics should NOT update
-            await asyncio.sleep(0.15)
-            assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "default"}) == 1.0
-        finally:
-            await agent.shutdown()
-
-
-class TestResumeRestoresChecks:
-    @pytest.mark.anyio
-    async def test_resume_updates_metrics_after_pause(self) -> None:
-        agent, engines = _make_agent([True, True])
-
-        try:
-            await asyncio.sleep(0.15)
-
-            # Step 1: pause and kill probed engine
-            agent.pause()
-            engines[0].alive = False
-            await asyncio.sleep(0.15)
-
-            # Step 2: resume — metrics should update
-            agent.resume()
             await asyncio.sleep(0.15)
 
             registry = agent._metrics_exporter.registry
@@ -110,7 +55,7 @@ class TestResumeRestoresChecks:
 
 class TestLifecycle:
     @pytest.mark.anyio
-    async def test_address_available_immediately_and_shutdown_stops_loop(self) -> None:
+    async def test_address_available_immediately(self) -> None:
         agent, _ = _make_agent([True])
 
         try:
@@ -118,78 +63,7 @@ class TestLifecycle:
         finally:
             await agent.shutdown()
 
-        assert agent._health_loop_task is not None
-        assert agent._health_loop_task.done()
-
-
-class TestHealthLoopSurvivesException:
     @pytest.mark.anyio
-    async def test_exception_in_check_health_does_not_crash_loop(self) -> None:
-        """If one cell's check_cell raises, the loop continues checking other cells."""
-        checker = _BrokenCellHealthChecker(
-            healthy_cells={"healthy": True},
-            broken_cell_id="broken",
-        )
-        agent = _make_multicell_agent(checker)
-
-        try:
-            # Step 1: wait for multiple cycles
-            await asyncio.sleep(0.15)
-
-            # Step 2: healthy cell's metrics should still be updated
-            registry = agent._metrics_exporter.registry
-            assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "healthy"}) == 1.0
-
-            # Step 3: broken cell should have no metrics (never successfully checked)
-            assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "broken"}) is None
-
-            # Step 4: loop is still running
-            assert not agent._health_loop_task.done()
-        finally:
-            await agent.shutdown()
-
-
-class _BrokenCellHealthChecker(MockRolloutHealthChecker):
-    def __init__(self, *, healthy_cells: dict[str, bool], broken_cell_id: str) -> None:
-        super().__init__(cell_results=healthy_cells)
-        self._broken_cell_id = broken_cell_id
-        self.set_result(broken_cell_id, True)
-
-    async def check_cell(self, cell_id: str) -> bool:
-        if cell_id == self._broken_cell_id:
-            raise RuntimeError("simulated check_health failure")
-        return await super().check_cell(cell_id)
-
-
-class TestMultiCellMetricsAreIndependent:
-    @pytest.mark.anyio
-    async def test_per_cell_metrics_reflect_individual_health(self) -> None:
-        checker = MockRolloutHealthChecker(cell_results={"a0": True, "a1": False})
-        agent = _make_multicell_agent(checker)
-
-        try:
-            await asyncio.sleep(0.15)
-
-            registry = agent._metrics_exporter.registry
-            assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "a0"}) == 1.0
-            assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "a1"}) == 0.0
-        finally:
-            await agent.shutdown()
-
-
-class TestShutdownImmediately:
-    @pytest.mark.anyio
-    async def test_shutdown_immediately_after_construction_is_safe(self) -> None:
+    async def test_shutdown_is_safe(self) -> None:
         agent, _ = _make_agent([True], check_interval=10.0)
-
         await agent.shutdown()
-
-
-class TestBuildHealthChecker:
-    def test_builds_default_cell_from_rollout_manager(self) -> None:
-        rollout_manager = MagicMock()
-        rollout_manager.all_rollout_engines = [MagicMock(), MagicMock(), MagicMock()]
-
-        checker = FtRolloutAgent._build_health_checker(rollout_manager, health_checker=AsyncMock())
-
-        assert checker.cell_ids == ["default"]
