@@ -20,7 +20,6 @@ from miles.utils.ft.controller.state_machines.subsystem import (
     DetectingAnomaly,
     SubsystemContext,
     Recovering,
-    RestartingMainJob,
     create_subsystem_stepper,
 )
 from miles.utils.ft.controller.state_machines.recovery import (
@@ -28,9 +27,7 @@ from miles.utils.ft.controller.state_machines.recovery import (
     NotifyHumans,
     RealtimeChecks,
     RecoveryDone,
-    RecoveryEscalated,
 )
-from miles.utils.ft.controller.state_machines.restart import MonitoringProgress
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
@@ -648,97 +645,3 @@ class TestStateMachineIntegration:
         assert len(machine.state_history) >= 2
 
 
-# ---------------------------------------------------------------------------
-# RecoveryEscalated -> RestartingMainJob
-# ---------------------------------------------------------------------------
-
-
-class TestRecoveryEscalated:
-    @pytest.mark.asyncio
-    async def test_recovery_escalated_transitions_to_restarting_main_job(self) -> None:
-        """RecoveringHandler receives RecoveryEscalated -> returns RestartingMainJob."""
-        stepper = _make_stepper()
-        state = Recovering(
-            recovery=RealtimeChecks(),
-            trigger=TriggerType.CRASH,
-            recovery_start_time=datetime.now(timezone.utc),
-        )
-        result = await stepper(
-            state,
-            _make_subsystem_context(
-                recovery_stepper=AsyncMock(return_value=RecoveryEscalated()),
-                should_run_detectors=False,
-            ),
-        )
-        assert isinstance(result, RestartingMainJob)
-
-
-# ---------------------------------------------------------------------------
-# RestartingMainJob handler (noop)
-# ---------------------------------------------------------------------------
-
-
-class TestRestartingMainJobHandler:
-    @pytest.mark.asyncio
-    async def test_noop_returns_none(self) -> None:
-        stepper = _make_stepper()
-        result = await stepper(
-            RestartingMainJob(),
-            _make_subsystem_context(should_run_detectors=False),
-        )
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# RestartedMainJob handler
-# ---------------------------------------------------------------------------
-
-
-class TestRestartedMainJobHandler:
-    @pytest.mark.asyncio
-    async def test_creates_recovering_with_monitoring_progress(self) -> None:
-        """RestartedMainJobHandler creates Recovering(EvictingAndRestarting(MonitoringProgress))."""
-        from miles.utils.ft.controller.state_machines.subsystem.models import RestartedMainJob
-
-        mini_wandb = MiniWandb()
-        mini_wandb.set_active_run_id("r")
-        mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 42})
-
-        stepper = _make_stepper()
-        result = await stepper(
-            RestartedMainJob(),
-            _make_subsystem_context(
-                should_run_detectors=False,
-                mini_wandb=mini_wandb,
-                monitoring_config=MonitoringIterationProgressConfig(),
-            ),
-        )
-        assert isinstance(result, Recovering)
-        assert isinstance(result.recovery, EvictingAndRestarting)
-        assert isinstance(result.recovery.restart, MonitoringProgress)
-        assert result.recovery.restart.base_iteration == 42
-        assert isinstance(result.recovery.failed_next_state, NotifyHumans)
-        assert result.trigger == TriggerType.MISC
-
-    @pytest.mark.asyncio
-    async def test_sustained_alive_mode_uses_zero_base_iteration(self) -> None:
-        """In sustained_alive mode, base_iteration is always 0."""
-        from miles.utils.ft.controller.state_machines.subsystem.models import RestartedMainJob
-
-        mini_wandb = MiniWandb()
-        mini_wandb.set_active_run_id("r")
-        mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
-
-        stepper = _make_stepper()
-        result = await stepper(
-            RestartedMainJob(),
-            _make_subsystem_context(
-                should_run_detectors=False,
-                mini_wandb=mini_wandb,
-                monitoring_config=MonitoringSustainedAliveConfig(),
-            ),
-        )
-        assert isinstance(result, Recovering)
-        assert isinstance(result.recovery, EvictingAndRestarting)
-        assert isinstance(result.recovery.restart, MonitoringProgress)
-        assert result.recovery.restart.base_iteration == 0

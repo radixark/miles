@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pydantic import ConfigDict
 
+from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.controller.subsystem import SubsystemEntry
 from miles.utils.ft.utils.base_model import FtBaseModel
 
@@ -25,3 +26,4 @@ class RestartingMainJobState(MainState):
 
     requestor_name: str
     start_time: datetime
+    requestor_frozen_state: SubsystemState

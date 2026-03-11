@@ -19,7 +19,6 @@ from miles.utils.ft.controller.state_machines.recovery import (
     RealtimeChecks,
     RecoveryContext,
     RecoveryDone,
-    RecoveryEscalated,
     StopTimeDiagnostics,
     create_recovery_stepper,
 )
@@ -28,7 +27,6 @@ from miles.utils.ft.controller.state_machines.restart import (
     MonitoringProgress,
     RestartContext,
     RestartDone,
-    RestartEscalated,
     RestartFailed,
     StoppingAndRestarting,
     create_restart_stepper,
@@ -238,17 +236,6 @@ class TestEvictingAndRestarting:
         result = await stepper(state, ctx)
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_restart_escalated_returns_recovery_escalated(self) -> None:
-        """RestartEscalated bubbles up to RecoveryEscalated."""
-        stepper = _make_stepper()
-        ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartEscalated()))
-        state = EvictingAndRestarting(
-            restart=StoppingAndRestarting(),
-            failed_next_state=StopTimeDiagnostics(),
-        )
-        result = await stepper(state, ctx)
-        assert isinstance(result, RecoveryEscalated)
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +300,6 @@ class TestTerminal:
         result = await _step(stepper, RecoveryDone())
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_recovery_escalated_is_terminal(self) -> None:
-        stepper = _make_stepper()
-        result = await _step(stepper, RecoveryEscalated())
-        assert result is None
 
 
 # ---------------------------------------------------------------------------

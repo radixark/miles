@@ -43,8 +43,8 @@ def _noop_stepper() -> StateMachineStepper:
     return StateMachineStepper(
         handler_map={
             DetectingAnomaly: type("_NoopHandler", (), {"step": AsyncMock(return_value=None)}),
+            Recovering: type("_NoopRecoveringHandler", (), {"step": AsyncMock(return_value=None)}),
         },
-        terminal_states=frozenset({RestartingMainJob, RestartedMainJob}),
     )
 
 
@@ -135,13 +135,14 @@ class TestNormalOperation:
 
 class TestSingleSubsystemEscalation:
     @pytest.mark.asyncio
-    async def test_sub_sm_in_restarting_main_job_triggers_escalation(self) -> None:
-        """One sub-SM in RestartingMainJob → stop+submit main job → RestartingMainJobState."""
+    async def test_nested_restart_request_triggers_escalation(self) -> None:
+        """Sub-SM in Recovering(EvictingAndRestarting(RestartingMainJob(externally_fulfilled=False)))
+        → peek-and-freeze → stop+submit main job → RestartingMainJobState."""
         main_job = FakeMainJob()
         stepper = create_main_stepper()
 
-        sub_sm = _make_sub_sm()
-        sub_sm.force_state(RestartingMainJob())
+        nested_state = _make_frozen_recovering_state()
+        sub_sm = _make_sub_sm(initial_state=nested_state)
 
         subsystems = {
             "rollout_0": _make_subsystem("rollout_0", state_machine=sub_sm),
@@ -153,6 +154,7 @@ class TestSingleSubsystemEscalation:
 
         assert isinstance(result, RestartingMainJobState)
         assert result.requestor_name == "rollout_0"
+        assert isinstance(result.requestor_frozen_state, Recovering)
         assert main_job._stopped
         assert main_job._submitted
 
@@ -165,7 +167,7 @@ class TestSingleSubsystemEscalation:
 class TestJobRestartComplete:
     @pytest.mark.asyncio
     async def test_running_status_rebuilds_subsystems_and_signals_requestor(self) -> None:
-        """RestartingMainJobState + RUNNING → create_fresh_subsystems → requestor force_state(RestartedMainJob)."""
+        """RestartingMainJobState + RUNNING → create_fresh_subsystems → requestor gets restored frozen state."""
         main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         stepper = create_main_stepper()
 
@@ -191,11 +193,14 @@ class TestJobRestartComplete:
 
         assert isinstance(result, NormalState)
         assert set(result.subsystems.keys()) == {"training", "rollout_0"}
-        # Requestor gets restored frozen state (with externally_fulfilled=True)
-        assert isinstance(
-            result.subsystems["rollout_0"].state_machine.state,
-            Recovering,
-        )
+
+        # Requestor gets restored frozen state with externally_fulfilled=True
+        requestor_state = result.subsystems["rollout_0"].state_machine.state
+        assert isinstance(requestor_state, Recovering)
+        assert isinstance(requestor_state.recovery, EvictingAndRestarting)
+        assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
+        assert requestor_state.recovery.restart.externally_fulfilled is True
+
         assert isinstance(
             result.subsystems["training"].state_machine.state,
             DetectingAnomaly,
@@ -210,13 +215,13 @@ class TestJobRestartComplete:
 class TestMultiSubsystemOneEscalates:
     @pytest.mark.asyncio
     async def test_only_one_escalating_triggers_single_restart(self) -> None:
-        """Two subsystems, only rollout_0 in RestartingMainJob → one job restart, both rebuilt."""
+        """Two subsystems, only rollout_0 requesting restart → one job restart."""
         main_job = FakeMainJob()
         stepper = create_main_stepper()
 
         training_sm = _make_sub_sm()
-        rollout_sm = _make_sub_sm()
-        rollout_sm.force_state(RestartingMainJob())
+        nested_state = _make_frozen_recovering_state()
+        rollout_sm = _make_sub_sm(initial_state=nested_state)
 
         subsystems = {
             "training": _make_subsystem("training", state_machine=training_sm),

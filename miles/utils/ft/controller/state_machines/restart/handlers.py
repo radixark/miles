@@ -12,8 +12,8 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringProgress,
     RestartContext,
     RestartDone,
-    RestartEscalated,
     RestartFailed,
+    RestartingMainJob,
     RestartState,
     StoppingAndRestarting,
 )
@@ -103,7 +103,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
         ctx: RestartContext,
     ) -> RestartState | None:
         if not ctx.has_level1_restart:
-            return RestartEscalated(bad_node_ids=state.bad_node_ids)
+            return RestartingMainJob(bad_node_ids=state.bad_node_ids)
 
         try:
             await ctx.actuator.stop()
@@ -229,3 +229,21 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         return None
+
+
+class RestartingMainJobHandler(StateHandler[RestartingMainJob, RestartContext]):
+    async def step(
+        self,
+        state: RestartingMainJob,
+        ctx: RestartContext,
+    ) -> RestartState | None:
+        if not state.externally_fulfilled:
+            return None
+
+        current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
+        base = int(current_iter) if current_iter is not None and math.isfinite(current_iter) else 0
+        return MonitoringProgress(
+            bad_node_ids=state.bad_node_ids,
+            start_time=datetime.now(timezone.utc),
+            base_iteration=base,
+        )

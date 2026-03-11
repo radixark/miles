@@ -11,11 +11,10 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RealtimeChecks,
     RecoveryContext,
     RecoveryDone,
-    RecoveryEscalated,
     RecoveryState,
     StopTimeDiagnostics,
 )
-from miles.utils.ft.controller.state_machines.restart.models import RestartDone, RestartEscalated, RestartFailed
+from miles.utils.ft.controller.state_machines.restart.models import RestartDone, RestartFailed
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
@@ -60,8 +59,6 @@ class EvictingAndRestartingHandler(StateHandler[EvictingAndRestarting, RecoveryC
             return None
         if isinstance(new_restart, RestartDone):
             return RecoveryDone()
-        if isinstance(new_restart, RestartEscalated):
-            return RecoveryEscalated()
         if isinstance(new_restart, RestartFailed):
             return state.failed_next_state
         return EvictingAndRestarting(

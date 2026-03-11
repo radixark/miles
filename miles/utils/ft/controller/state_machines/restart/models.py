@@ -38,8 +38,10 @@ class RestartFailed(RestartState):
     pass
 
 
-class RestartEscalated(RestartState):
-    """Subsystem does not support Level 1 restart; escalate to Level 2 (job restart)."""
+class RestartingMainJob(RestartState):
+    """Subsystem does not support Level 1 restart; wait for external main job restart."""
+
+    externally_fulfilled: bool = False
 
 
 class RestartContext(FtBaseModel):

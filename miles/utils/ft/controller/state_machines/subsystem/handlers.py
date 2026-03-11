@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import logging
-import math
 from datetime import datetime, timezone
 
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
     SubsystemContext,
     SubsystemState,
     Recovering,
-    RestartedMainJob,
-    RestartingMainJob,
 )
 from miles.utils.ft.controller.state_machines.subsystem.utils import (
     collect_evictable_bad_nodes,
@@ -21,14 +17,10 @@ from miles.utils.ft.controller.state_machines.subsystem.utils import (
     run_detectors,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestarting,
     NotifyHumans,
     RealtimeChecks,
     RecoveryDone,
-    RecoveryEscalated,
 )
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringProgress
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
 
@@ -159,8 +151,6 @@ class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
 
         if new_recovery is None:
             return None
-        if isinstance(new_recovery, RecoveryEscalated):
-            return RestartingMainJob()
         if isinstance(new_recovery, RecoveryDone):
             self._report_recovery_duration(state=state, ctx=ctx)
             return DetectingAnomaly()
@@ -176,33 +166,3 @@ class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
             ctx.on_recovery_duration(duration)
 
 
-_WANDB_ITERATION_METRIC = "iteration"
-
-
-class RestartingMainJobHandler(StateHandler[RestartingMainJob, SubsystemContext]):
-    async def step(self, state: RestartingMainJob, ctx: SubsystemContext) -> SubsystemState | None:
-        return None
-
-
-class RestartedMainJobHandler(StateHandler[RestartedMainJob, SubsystemContext]):
-    async def step(self, state: RestartedMainJob, ctx: SubsystemContext) -> SubsystemState | None:
-        base = _get_base_iteration(ctx.mini_wandb) if isinstance(ctx.monitoring_config, MonitoringIterationProgressConfig) else 0
-
-        return Recovering(
-            recovery=EvictingAndRestarting(
-                restart=MonitoringProgress(
-                    start_time=datetime.now(timezone.utc),
-                    base_iteration=base,
-                ),
-                failed_next_state=NotifyHumans(state_before="RestartedMainJob"),
-            ),
-            trigger=TriggerType.MISC,
-            recovery_start_time=datetime.now(timezone.utc),
-        )
-
-
-def _get_base_iteration(mini_wandb: MiniWandb) -> int:
-    current_iter = mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
-    if current_iter is not None and math.isfinite(current_iter):
-        return int(current_iter)
-    return 0

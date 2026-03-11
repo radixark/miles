@@ -22,8 +22,8 @@ from miles.utils.ft.controller.state_machines.restart import (
     MonitoringProgress,
     RestartContext,
     RestartDone,
-    RestartEscalated,
     RestartFailed,
+    RestartingMainJob,
     StoppingAndRestarting,
     create_restart_stepper,
     iteration_progress,
@@ -211,16 +211,17 @@ class TestEvicting:
 
 class TestStoppingAndRestarting:
     @pytest.mark.asyncio
-    async def test_level2_escalation_returns_restart_escalated(self) -> None:
-        """has_level1_restart=False -> immediate RestartEscalated."""
+    async def test_level2_no_level1_returns_restarting_main_job(self) -> None:
+        """has_level1_restart=False -> RestartingMainJob(externally_fulfilled=False)."""
         stepper = _make_stepper()
         ctx = _make_context(has_level1_restart=False)
 
         state = StoppingAndRestarting(bad_node_ids=["node-A"])
         result = await stepper(state, ctx)
 
-        assert isinstance(result, RestartEscalated)
+        assert isinstance(result, RestartingMainJob)
         assert result.bad_node_ids == ["node-A"]
+        assert result.externally_fulfilled is False
 
     @pytest.mark.asyncio
     async def test_level1_submit_calls_actuator_stop_and_start(self) -> None:
@@ -530,12 +531,51 @@ class TestTerminalStates:
         result = await stepper(RestartFailed(), ctx)
         assert result is None
 
+
+
+# ---------------------------------------------------------------------------
+# RestartingMainJob handler
+# ---------------------------------------------------------------------------
+
+
+class TestRestartingMainJob:
     @pytest.mark.asyncio
-    async def test_restart_escalated_is_terminal(self) -> None:
+    async def test_not_fulfilled_returns_none(self) -> None:
+        """externally_fulfilled=False -> handler returns None (waiting)."""
         stepper = _make_stepper()
         ctx = _make_context()
-        result = await stepper(RestartEscalated(), ctx)
+
+        state = RestartingMainJob(bad_node_ids=["node-A"], externally_fulfilled=False)
+        result = await stepper(state, ctx)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fulfilled_returns_monitoring_progress(self) -> None:
+        """externally_fulfilled=True -> handler returns MonitoringProgress."""
+        mini_wandb = MiniWandb()
+        mini_wandb.set_active_run_id("r")
+        mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 42})
+        stepper = _make_stepper()
+        ctx = _make_context(mini_wandb=mini_wandb)
+
+        state = RestartingMainJob(bad_node_ids=["node-A"], externally_fulfilled=True)
+        result = await stepper(state, ctx)
+
+        assert isinstance(result, MonitoringProgress)
+        assert result.base_iteration == 42
+        assert result.bad_node_ids == ["node-A"]
+
+    @pytest.mark.asyncio
+    async def test_fulfilled_no_wandb_data_uses_zero_base(self) -> None:
+        """externally_fulfilled=True with no wandb data -> base_iteration=0."""
+        stepper = _make_stepper()
+        ctx = _make_context()
+
+        state = RestartingMainJob(externally_fulfilled=True)
+        result = await stepper(state, ctx)
+
+        assert isinstance(result, MonitoringProgress)
+        assert result.base_iteration == 0
 
 
 # ---------------------------------------------------------------------------
@@ -580,8 +620,8 @@ class TestFullRestartFlow:
         assert isinstance(state, RestartDone)
 
     @pytest.mark.asyncio
-    async def test_level2_evict_escalation(self) -> None:
-        """Level 2: Evicting -> StoppingAndRestarting -> RestartEscalated."""
+    async def test_level2_evict_to_restarting_main_job(self) -> None:
+        """Level 2: Evicting -> StoppingAndRestarting -> RestartingMainJob."""
         stepper = _make_stepper()
         ctx = _make_context(has_level1_restart=False)
 
@@ -590,10 +630,11 @@ class TestFullRestartFlow:
         state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
 
-        # Step 2: Submit -> RestartEscalated (Level 2)
+        # Step 2: Submit -> RestartingMainJob (Level 2, waiting for external fulfillment)
         state = await stepper(state, ctx)
-        assert isinstance(state, RestartEscalated)
+        assert isinstance(state, RestartingMainJob)
         assert state.bad_node_ids == ["node-A"]
+        assert state.externally_fulfilled is False
 
     @pytest.mark.asyncio
     async def test_level1_direct_restart_no_eviction(self) -> None:

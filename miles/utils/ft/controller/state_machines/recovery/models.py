@@ -62,10 +62,6 @@ class RecoveryDone(RecoveryState):
     pass
 
 
-class RecoveryEscalated(RecoveryState):
-    """Recovery SM notifies upper layer: Level 2 job restart required."""
-
-
 RECOVERY_STATE_TO_INT: dict[type[RecoveryState], int] = {
     RealtimeChecks: 1,
     EvictingAndRestarting: 2,

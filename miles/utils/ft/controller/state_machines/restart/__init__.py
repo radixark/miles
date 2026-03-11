@@ -1,6 +1,7 @@
 from miles.utils.ft.controller.state_machines.restart.handlers import (
     EvictingHandler,
     MonitoringProgressHandler,
+    RestartingMainJobHandler,
     StoppingAndRestartingHandler,
     iteration_progress,
 )
@@ -9,8 +10,8 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringProgress,
     RestartContext,
     RestartDone,
-    RestartEscalated,
     RestartFailed,
+    RestartingMainJob,
     RestartState,
     StoppingAndRestarting,
 )
@@ -22,13 +23,14 @@ _RESTART_HANDLER_MAP: dict[type, type] = {
     Evicting: EvictingHandler,
     StoppingAndRestarting: StoppingAndRestartingHandler,
     MonitoringProgress: MonitoringProgressHandler,
+    RestartingMainJob: RestartingMainJobHandler,
 }
 
 
 def create_restart_stepper() -> StateMachineStepper:
     return StateMachineStepper(
         handler_map=_RESTART_HANDLER_MAP,
-        terminal_states=frozenset({RestartDone, RestartFailed, RestartEscalated}),
+        terminal_states=frozenset({RestartDone, RestartFailed}),
     )
 
 
@@ -39,8 +41,9 @@ __all__ = [
     "MonitoringProgressHandler",
     "RestartContext",
     "RestartDone",
-    "RestartEscalated",
     "RestartFailed",
+    "RestartingMainJob",
+    "RestartingMainJobHandler",
     "RestartState",
     "StoppingAndRestarting",
     "StoppingAndRestartingHandler",

@@ -12,7 +12,6 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RealtimeChecks,
     RecoveryContext,
     RecoveryDone,
-    RecoveryEscalated,
     RecoveryState,
     StopTimeDiagnostics,
 )
@@ -33,7 +32,7 @@ _RECOVERY_HANDLER_MAP: dict[type, type] = {
 def create_recovery_stepper() -> StateMachineStepper:
     return StateMachineStepper(
         handler_map=_RECOVERY_HANDLER_MAP,
-        terminal_states=frozenset({RecoveryDone, RecoveryEscalated}),
+        terminal_states=frozenset({RecoveryDone}),
         pre_dispatch=recovery_timeout_check,
     )
 
@@ -49,7 +48,6 @@ __all__ = [
     "RealtimeChecksHandler",
     "RecoveryContext",
     "RecoveryDone",
-    "RecoveryEscalated",
     "RecoveryState",
     "StopTimeDiagnostics",
     "StopTimeDiagnosticsHandler",
