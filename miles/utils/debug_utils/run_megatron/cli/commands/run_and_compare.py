@@ -63,6 +63,7 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
             diff_threshold=args.diff_threshold,
             baseline_logprob_dir=baseline_logprob_dir,
             target_logprob_dir=target_logprob_dir,
+            logprob_threshold=args.logprob_threshold,
         )
     )
 
