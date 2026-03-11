@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from collections.abc import Callable
+from typing import Literal
 
 from miles.utils.ft.adapters.types import SubsystemActuatorProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
-from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol
+from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, SubsystemActuatorProtocol
 
 
 @pytest.fixture
@@ -17,17 +17,20 @@ def actuator(mock_main_job: AsyncMock) -> TrainingSubsystemActuator:
 
 
 class TestTrainingSubsystemActuator:
-    @pytest.mark.asyncio
+    def test_implements_subsystem_actuator_protocol(self, actuator: TrainingSubsystemActuator) -> None:
+        assert isinstance(actuator, SubsystemActuatorProtocol)
+
+    @pytest.mark.anyio
     async def test_stop_raises_not_implemented(self, actuator: TrainingSubsystemActuator) -> None:
         with pytest.raises(NotImplementedError, match="subsystem-level restart not yet supported"):
             await actuator.stop()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_start_raises_not_implemented(self, actuator: TrainingSubsystemActuator) -> None:
         with pytest.raises(NotImplementedError, match="subsystem-level restart not yet supported"):
             await actuator.start()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_status_delegates_to_main_job(
         self,
         actuator: TrainingSubsystemActuator,
@@ -40,7 +43,7 @@ class TestTrainingSubsystemActuator:
         assert status == JobStatus.RUNNING
         mock_main_job.get_job_status.assert_awaited_once()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_status_propagates_all_statuses(
         self,
         actuator: TrainingSubsystemActuator,

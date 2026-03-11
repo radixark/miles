@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, SubsystemActuatorProtocol
 
 
