@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from miles.utils.placement_group_utils import (
@@ -7,7 +9,9 @@ from miles.utils.placement_group_utils import (
     PlacementGroupInfo,
     PlacementGroupSlice,
     _bundle_sort_key,
+    _load_snapshots,
     _partial_resort_snapshots,
+    _save_snapshots,
 )
 
 
@@ -344,3 +348,89 @@ class TestPartialResortSnapshots:
         new_reversed = list(reversed(new_forward))
 
         assert _partial_resort_snapshots(old, new_forward) == _partial_resort_snapshots(old, new_reversed)
+
+
+class TestPartialResortSnapshotsCrossPg:
+    """Tests for cross-PG restart scenario (old snapshots from backup file)."""
+
+    def test_all_nodes_survive_perfect_affinity(self) -> None:
+        """All nodes alive after restart → 100% position preservation."""
+        old = _make_six_bundle_snapshots()
+        # New PG: same nodes, different bundle_indices
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.2", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+        assert [(s.node_ip, s.gpu_id) for s in result] == [
+            ("10.0.0.1", "0"), ("10.0.0.1", "1"),
+            ("10.0.0.2", "0"), ("10.0.0.2", "1"),
+            ("10.0.0.3", "0"), ("10.0.0.3", "1"),
+        ]
+        # bundle_indices come from the NEW PG
+        assert [s.bundle_index for s in result] == [0, 1, 2, 3, 4, 5]
+
+    def test_one_node_replaced(self) -> None:
+        """Node 10.0.0.2 evicted, replaced by 10.0.0.4 → other nodes keep positions."""
+        old = _make_six_bundle_snapshots()
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.4", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+        assert [(s.node_ip, s.gpu_id) for s in result] == [
+            ("10.0.0.1", "0"), ("10.0.0.1", "1"),
+            ("10.0.0.4", "0"), ("10.0.0.4", "1"),
+            ("10.0.0.3", "0"), ("10.0.0.3", "1"),
+        ]
+
+    def test_cross_pg_all_nodes_replaced(self) -> None:
+        """All nodes different → degrades to full sort (same as fresh PG creation)."""
+        old = _make_six_bundle_snapshots()
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.7", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.7", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.8", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.8", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.9", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.9", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+        assert result == sorted(new, key=_bundle_sort_key)
+
+
+class TestSnapshotPersistence:
+    def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
+        snapshots = _make_six_bundle_snapshots()
+        path = tmp_path / "pg_snapshot.json"
+        _save_snapshots(path, snapshots)
+        loaded = _load_snapshots(path)
+        assert loaded == snapshots
+
+    def test_load_nonexistent_returns_none(self, tmp_path: Path) -> None:
+        assert _load_snapshots(tmp_path / "does_not_exist.json") is None
+
+    def test_load_corrupt_json_returns_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.json"
+        path.write_text("not valid json!!!")
+        assert _load_snapshots(path) is None
+
+    def test_save_creates_parent_dirs(self, tmp_path: Path) -> None:
+        path = tmp_path / "sub" / "dir" / "pg_snapshot.json"
+        _save_snapshots(path, _make_six_bundle_snapshots())
+        assert path.exists()
+
+    def test_save_atomic_via_rename(self, tmp_path: Path) -> None:
+        """Ensure .tmp file is cleaned up after save."""
+        path = tmp_path / "pg_snapshot.json"
+        _save_snapshots(path, _make_six_bundle_snapshots())
+        assert not path.with_suffix(".tmp").exists()
+        assert path.exists()
