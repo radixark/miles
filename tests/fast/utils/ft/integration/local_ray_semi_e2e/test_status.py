@@ -52,10 +52,9 @@ class TestStatusConsistency:
         for s in snapshots:
             if s.mode == ControllerMode.RECOVERY:
                 assert s.recovery_in_progress is True
-                assert s.recovery_phase is not None
+                assert s.recovery is not None
             elif s.mode == ControllerMode.MONITORING:
-                if s.recovery_in_progress:
-                    assert s.recovery_phase is not None
+                assert s.recovery is None
 
 
 class TestRunIdSwitch:
@@ -247,7 +246,7 @@ class TestBadNodesDuringEviction:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.bad_nodes and "e2ebn-node-0" in status.bad_nodes:
+            if status.recovery is not None and "e2ebn-node-0" in status.recovery.bad_nodes:
                 saw_bad_nodes = True
             if status.mode == ControllerMode.MONITORING and not status.recovery_in_progress:
                 if saw_bad_nodes:
@@ -256,9 +255,9 @@ class TestBadNodesDuringEviction:
 
         assert saw_bad_nodes, "Never observed bad_nodes containing faulted node during recovery"
 
-        # Step 3: after recovery, bad_nodes should be empty
+        # Step 3: after recovery, recovery should be None (back to monitoring)
         final = get_status(env.controller)
-        assert final.bad_nodes == [] or "e2ebn-node-0" not in final.bad_nodes
+        assert final.recovery is None
 
 
 class TestStaleCombined:
