@@ -19,7 +19,9 @@ ContextT_contra = TypeVar("ContextT_contra", contravariant=True)
 
 class StateHandler(ABC, Generic[StateT_contra, ContextT_contra]):
     @abstractmethod
-    async def step(self, state: StateT_contra, context: ContextT_contra) -> BaseModel | None: ...
+    async def step(
+        self, state: StateT_contra, context: ContextT_contra
+    ) -> BaseModel | AsyncGenerator[BaseModel, None] | None: ...
 
 
 class StateMachineStepper(Generic[StateT, ContextT]):
