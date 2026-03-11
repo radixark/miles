@@ -87,7 +87,7 @@ class TickLoop:
         try:
             self.training_rank_roster.warn_if_incomplete()
             self._node_agent_coverage_checker.check(
-                training_node_ids=set(self.training_rank_roster.rank_placement.values()),
+                subsystem_node_ids=set(self.training_rank_roster.rank_placement.values()),
                 registered_agent_node_ids=set(self._agents.keys()),
             )
             job_status = await self._main_job.get_job_status()
@@ -177,7 +177,7 @@ class TickLoop:
         return DetectorContext(
             metric_store=self._metric_store,
             mini_wandb=self._mini_wandb,
-            rank_placement=dict(self.training_rank_roster.rank_placement),
+            active_node_ids=set(self.training_rank_roster.rank_placement.values()),
             job_status=job_status,
         )
 
