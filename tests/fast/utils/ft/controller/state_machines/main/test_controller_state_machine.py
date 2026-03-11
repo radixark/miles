@@ -21,31 +21,21 @@ from miles.utils.ft.controller.state_machines.main import (
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
     Recovering,
+    SubsystemState,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestarting, StopTimeDiagnostics
 from miles.utils.ft.controller.state_machines.restart.models import (
     RestartingMainJob as RestartingMainJobRestart,
 )
-from miles.utils.ft.controller.subsystem import SubsystemEntry
+from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
-from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _noop_stepper() -> StateMachineStepper:
-    """Stepper with no handlers — step() is a no-op for any state."""
-    return StateMachineStepper(
-        handler_map={
-            DetectingAnomaly: type("_NoopHandler", (), {"step": AsyncMock(return_value=None)}),
-            Recovering: type("_NoopRecoveringHandler", (), {"step": AsyncMock(return_value=None)}),
-        },
-    )
 
 
 def _make_frozen_recovering_state() -> Recovering:
@@ -60,31 +50,20 @@ def _make_frozen_recovering_state() -> Recovering:
     )
 
 
-def _make_sub_sm(initial_state=None) -> StateMachine:
-    return StateMachine(
-        initial_state=initial_state or DetectingAnomaly(),
-        stepper=_noop_stepper(),
-    )
-
-
-def _make_subsystem(name: str, state_machine: StateMachine | None = None) -> SubsystemEntry:
-    return SubsystemEntry(
-        name=name,
-        state_machine=state_machine or _make_sub_sm(),
-        actuator=AsyncMock(),
-    )
+def _make_subsystem_config() -> SubsystemConfig:
+    return SubsystemConfig(actuator=AsyncMock())
 
 
 def _make_controller_context(
     *,
     main_job: FakeMainJob | None = None,
-    fresh_subsystems: dict[str, SubsystemEntry] | None = None,
+    subsystem_configs: dict[str, SubsystemConfig] | None = None,
 ) -> MainContext:
     resolved_main_job = main_job or FakeMainJob()
     return MainContext(
         main_job=resolved_main_job,
-        create_fresh_subsystems=lambda: fresh_subsystems or {
-            "training": _make_subsystem("training"),
+        subsystem_configs=subsystem_configs or {
+            "training": _make_subsystem_config(),
         },
         tick_count=10,
         job_status=JobStatus.RUNNING,
@@ -114,14 +93,19 @@ def _make_controller_context(
 class TestNormalOperation:
     @pytest.mark.asyncio
     async def test_all_subsystems_detecting_no_transition(self) -> None:
-        """Two sub-SMs in DetectingAnomaly → NormalStateHandler steps them → no transition."""
+        """Two subsystems in DetectingAnomaly → NormalStateHandler steps them → no transition."""
         stepper = create_main_stepper()
-        subsystems = {
-            "training": _make_subsystem("training"),
-            "rollout_0": _make_subsystem("rollout_0"),
+        subsystems: dict[str, SubsystemState] = {
+            "training": DetectingAnomaly(),
+            "rollout_0": DetectingAnomaly(),
         }
         state = NormalState(subsystems=subsystems)
-        context = _make_controller_context()
+        context = _make_controller_context(
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
+        )
 
         result = await stepper(state, context)
 
@@ -136,19 +120,20 @@ class TestNormalOperation:
 class TestSingleSubsystemEscalation:
     @pytest.mark.asyncio
     async def test_nested_restart_request_triggers_escalation(self) -> None:
-        """Sub-SM in Recovering(EvictingAndRestarting(RestartingMainJob(externally_fulfilled=False)))
+        """Subsystem in Recovering(EvictingAndRestarting(RestartingMainJob(externally_fulfilled=False)))
         → peek-and-freeze → stop+submit main job → RestartingMainJobState."""
         main_job = FakeMainJob()
         stepper = create_main_stepper()
 
         nested_state = _make_frozen_recovering_state()
-        sub_sm = _make_sub_sm(initial_state=nested_state)
-
-        subsystems = {
-            "rollout_0": _make_subsystem("rollout_0", state_machine=sub_sm),
+        subsystems: dict[str, SubsystemState] = {
+            "rollout_0": nested_state,
         }
         state = NormalState(subsystems=subsystems)
-        context = _make_controller_context(main_job=main_job)
+        context = _make_controller_context(
+            main_job=main_job,
+            subsystem_configs={"rollout_0": _make_subsystem_config()},
+        )
 
         result = await stepper(state, context)
 
@@ -167,16 +152,9 @@ class TestSingleSubsystemEscalation:
 class TestJobRestartComplete:
     @pytest.mark.asyncio
     async def test_running_status_rebuilds_subsystems_and_signals_requestor(self) -> None:
-        """RestartingMainJobState + RUNNING → create_fresh_subsystems → requestor gets restored frozen state."""
+        """RestartingMainJobState + RUNNING → fresh states → requestor gets restored frozen state."""
         main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         stepper = create_main_stepper()
-
-        fresh_training_sm = _make_sub_sm()
-        fresh_rollout_sm = _make_sub_sm()
-        fresh_subsystems = {
-            "training": _make_subsystem("training", state_machine=fresh_training_sm),
-            "rollout_0": _make_subsystem("rollout_0", state_machine=fresh_rollout_sm),
-        }
 
         frozen = _make_frozen_recovering_state()
         state = RestartingMainJobState(
@@ -186,7 +164,10 @@ class TestJobRestartComplete:
         )
         context = _make_controller_context(
             main_job=main_job,
-            fresh_subsystems=fresh_subsystems,
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
         )
 
         result = await stepper(state, context)
@@ -195,16 +176,13 @@ class TestJobRestartComplete:
         assert set(result.subsystems.keys()) == {"training", "rollout_0"}
 
         # Requestor gets restored frozen state with externally_fulfilled=True
-        requestor_state = result.subsystems["rollout_0"].state_machine.state
+        requestor_state = result.subsystems["rollout_0"]
         assert isinstance(requestor_state, Recovering)
         assert isinstance(requestor_state.recovery, EvictingAndRestarting)
         assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
         assert requestor_state.recovery.restart.externally_fulfilled is True
 
-        assert isinstance(
-            result.subsystems["training"].state_machine.state,
-            DetectingAnomaly,
-        )
+        assert isinstance(result.subsystems["training"], DetectingAnomaly)
 
 
 # ---------------------------------------------------------------------------
@@ -219,23 +197,19 @@ class TestMultiSubsystemOneEscalates:
         main_job = FakeMainJob()
         stepper = create_main_stepper()
 
-        training_sm = _make_sub_sm()
         nested_state = _make_frozen_recovering_state()
-        rollout_sm = _make_sub_sm(initial_state=nested_state)
-
-        subsystems = {
-            "training": _make_subsystem("training", state_machine=training_sm),
-            "rollout_0": _make_subsystem("rollout_0", state_machine=rollout_sm),
+        subsystems: dict[str, SubsystemState] = {
+            "training": DetectingAnomaly(),
+            "rollout_0": nested_state,
         }
         state = NormalState(subsystems=subsystems)
 
-        fresh_subsystems = {
-            "training": _make_subsystem("training"),
-            "rollout_0": _make_subsystem("rollout_0"),
-        }
         context = _make_controller_context(
             main_job=main_job,
-            fresh_subsystems=fresh_subsystems,
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
         )
 
         result = await stepper(state, context)

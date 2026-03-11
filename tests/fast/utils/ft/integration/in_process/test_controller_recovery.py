@@ -94,15 +94,15 @@ class TestCrashReattemptSuccess:
 
         # Step 1: first tick chains through recovery to MonitoringProgress
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_state_machine.state, Recovering)
-        assert _is_monitoring_progress(harness.controller._training_state_machine.state)
+        assert isinstance(harness.controller._training_subsystem_state, Recovering)
+        assert _is_monitoring_progress(harness.controller._training_subsystem_state)
 
         # Step 2: inject iteration progress, disable detector to prevent re-entry
         _disable_detector(enter_recovery)
         _inject_iteration_data(harness)
 
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_subsystem_state, Recovering)
 
 
 # -------------------------------------------------------------------
@@ -183,14 +183,14 @@ class TestRecoveryCompleteBackToMonitoring:
         )
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_subsystem_state, Recovering)
         initial_detector_count = enter_recovery.call_count
 
         # Step 2: complete recovery with iteration data, detector disabled
         _disable_detector(enter_recovery)
         _inject_iteration_data(harness)
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_subsystem_state, Recovering)
 
         # Step 3: re-enable detector and verify it runs after recovery
         enter_recovery._decision = Decision(
@@ -231,6 +231,6 @@ class TestExporterModeGauge:
         _inject_iteration_data(harness)
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_subsystem_state, Recovering)
         assert get_sample_value(registry, mn.CONTROLLER_MODE) == 0.0
         assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE) == 0.0

@@ -344,12 +344,24 @@ async def run_controller_briefly(harness: ControllerTestHarness, delay: float = 
     await task
 
 
+def set_training_subsystem_state(controller: FtController, new_state: object) -> None:
+    """Directly set the training subsystem state on the controller's main state machine."""
+    from miles.utils.ft.controller.state_machines.main.models import NormalState
+    from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
+
+    main_state = controller._state_machine.state
+    assert isinstance(main_state, NormalState)
+    new_subsystems = dict(main_state.subsystems)
+    new_subsystems["training"] = new_state  # type: ignore[assignment]
+    controller._state_machine._state = NormalState(subsystems=new_subsystems)
+
+
 async def advance_until_recovery_complete(harness: ControllerTestHarness, max_ticks: int = 10) -> None:
     """Tick the controller until recovery is no longer in progress."""
     from miles.utils.ft.controller.state_machines.subsystem import Recovering
 
     for _ in range(max_ticks):
-        if not isinstance(harness.controller._training_state_machine.state, Recovering):
+        if not isinstance(harness.controller._training_subsystem_state, Recovering):
             return
         await harness.controller._tick()
-    assert not isinstance(harness.controller._training_state_machine.state, Recovering)
+    assert not isinstance(harness.controller._training_subsystem_state, Recovering)

@@ -15,6 +15,7 @@ from tests.fast.utils.ft.conftest import (
     make_test_exporter,
     run_controller_briefly,
 )
+from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_state
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
@@ -142,14 +143,14 @@ class TestGetStatus:
 
     def test_bad_nodes_confirmed_when_evicting(self) -> None:
         harness = make_test_controller()
-        harness.controller._training_state_machine._state = Recovering(
+        set_training_subsystem_state(harness.controller, Recovering(
             recovery=EvictingAndRestarting(
                 restart=Evicting(bad_node_ids=["node-0"]),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
-        )
+        ))
         status = harness.controller.get_status()
         assert status.recovery_in_progress is True
         assert status.bad_nodes_confirmed is True
@@ -157,21 +158,21 @@ class TestGetStatus:
 
     def test_bad_nodes_confirmed_when_notifying(self) -> None:
         harness = make_test_controller()
-        harness.controller._training_state_machine._state = Recovering(
+        set_training_subsystem_state(harness.controller, Recovering(
             recovery=NotifyHumans(state_before="Test"),
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
-        )
+        ))
         status = harness.controller.get_status()
         assert status.bad_nodes_confirmed is True
 
     def test_bad_nodes_not_confirmed_during_diagnostics(self) -> None:
         harness = make_test_controller()
-        harness.controller._training_state_machine._state = Recovering(
+        set_training_subsystem_state(harness.controller, Recovering(
             recovery=StopTimeDiagnostics(),
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
-        )
+        ))
         status = harness.controller.get_status()
         assert status.bad_nodes_confirmed is False
 

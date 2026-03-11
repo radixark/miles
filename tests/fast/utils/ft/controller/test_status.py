@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock
 
 from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
@@ -19,8 +18,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     StopTimeDiagnostics,
 )
 from miles.utils.ft.controller.state_machines.restart.models import Evicting, StoppingAndRestarting
-from miles.utils.ft.controller.status import build_controller_status, build_phase_history, recovery_phase_name
-from miles.utils.ft.controller.subsystem import SubsystemEntry
+from miles.utils.ft.controller.status import build_controller_status, recovery_phase_name
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
@@ -63,112 +61,15 @@ class TestRecoveryPhaseName:
 
 
 # ===================================================================
-# build_phase_history
-# ===================================================================
-
-
-class TestBuildPhaseHistory:
-    def test_empty_history(self) -> None:
-        assert build_phase_history([]) == []
-
-    def test_non_recovering_states_excluded(self) -> None:
-        history: list[SubsystemState] = [DetectingAnomaly(), DetectingAnomaly()]
-        assert build_phase_history(history) == []
-
-    def test_single_recovery_phase(self) -> None:
-        history: list[SubsystemState] = [
-            Recovering(
-                recovery=RealtimeChecks(),
-                trigger="crash",
-                recovery_start_time=_now(),
-            ),
-        ]
-        assert build_phase_history(history) == ["RealtimeChecks"]
-
-    def test_duplicate_consecutive_phases_deduplicated(self) -> None:
-        history: list[SubsystemState] = [
-            Recovering(
-                recovery=RealtimeChecks(),
-                trigger="crash",
-                recovery_start_time=_now(),
-            ),
-            Recovering(
-                recovery=RealtimeChecks(),
-                trigger="crash",
-                recovery_start_time=_now(),
-            ),
-        ]
-        assert build_phase_history(history) == ["RealtimeChecks"]
-
-    def test_different_phases_preserved(self) -> None:
-        history: list[SubsystemState] = [
-            Recovering(
-                recovery=RealtimeChecks(),
-                trigger="crash",
-                recovery_start_time=_now(),
-            ),
-            Recovering(
-                recovery=StopTimeDiagnostics(),
-                trigger="crash",
-                recovery_start_time=_now(),
-            ),
-            Recovering(
-                recovery=NotifyHumans(state_before="test"),
-                trigger="crash",
-                recovery_start_time=_now(),
-            ),
-        ]
-        assert build_phase_history(history) == [
-            "RealtimeChecks",
-            "StopTimeDiagnostics",
-            "NotifyHumans",
-        ]
-
-    def test_mixed_detecting_and_recovering(self) -> None:
-        history: list[SubsystemState] = [
-            DetectingAnomaly(),
-            Recovering(
-                recovery=RealtimeChecks(),
-                trigger="crash",
-                recovery_start_time=_now(),
-            ),
-            DetectingAnomaly(),
-            Recovering(
-                recovery=StopTimeDiagnostics(),
-                trigger="hang",
-                recovery_start_time=_now(),
-            ),
-        ]
-        assert build_phase_history(history) == [
-            "RealtimeChecks",
-            "StopTimeDiagnostics",
-        ]
-
-
-# ===================================================================
 # build_controller_status
 # ===================================================================
 
 
 def _make_controller_sm(
     state: SubsystemState,
-    state_history: list[SubsystemState] | None = None,
 ) -> StateMachine[MainState, MainContext]:
-    """Build a MainState SM wrapping a training SubsystemState SM."""
-    main_sm: StateMachine = StateMachine(
-        initial_state=state,
-        stepper=StateMachineStepper(handler_map={}),
-    )
-    if state_history:
-        for s in state_history:
-            main_sm._state_history.append(s)
-
-    training_entry = SubsystemEntry(
-        name="training",
-        state_machine=main_sm,
-        actuator=MagicMock(),
-    )
-    controller_state = NormalState(subsystems={"training": training_entry})
+    """Build a MainState SM wrapping a training SubsystemState directly."""
+    controller_state = NormalState(subsystems={"training": state})
     return StateMachine(
         initial_state=controller_state,
         stepper=StateMachineStepper(handler_map={}),
@@ -260,23 +161,7 @@ class TestBuildControllerStatus:
 
         assert status.bad_nodes_confirmed is True
 
-    def test_phase_history_populated(self) -> None:
-        past = Recovering(
-            recovery=RealtimeChecks(),
-            trigger="crash",
-            recovery_start_time=_now(),
-        )
-        current = DetectingAnomaly()
-        status = build_controller_status(
-            controller_state_machine=_make_controller_sm(current, state_history=[past]),
-            mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
-            tick_count=5,
-        )
-
-        assert status.phase_history == ["RealtimeChecks"]
-
-    def test_phase_history_none_when_empty(self) -> None:
+    def test_phase_history_always_none(self) -> None:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomaly()),
             mini_wandb=MiniWandb(),

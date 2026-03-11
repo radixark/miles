@@ -3,8 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, SubsystemEntry
-from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, SubsystemConfig
 
 
 class TestMonitoringIterationProgressConfig:
@@ -61,32 +60,21 @@ class TestMonitoringSustainedAliveConfig:
             MonitoringSustainedAliveConfig(success_iterations=10)  # type: ignore[call-arg]
 
 
-class TestSubsystemEntry:
+class TestSubsystemConfig:
     def test_defaults(self) -> None:
         """Default detectors, monitoring_config, and get_active_node_ids are sensible."""
-        stepper = StateMachineStepper(handler_map={})
-        sm = StateMachine(initial_state=MonitoringIterationProgressConfig(), stepper=stepper)
+        config = SubsystemConfig(actuator=AsyncMock())
 
-        entry = SubsystemEntry(
-            name="training",
-            state_machine=sm,
-            actuator=AsyncMock(),
-        )
-
-        assert entry.detectors == []
-        assert isinstance(entry.monitoring_config, MonitoringIterationProgressConfig)
-        assert entry.get_active_node_ids() == set()
+        assert config.detectors == []
+        assert isinstance(config.monitoring_config, MonitoringIterationProgressConfig)
+        assert config.get_active_node_ids() == set()
 
     def test_custom_get_active_node_ids(self) -> None:
-        stepper = StateMachineStepper(handler_map={})
-        sm = StateMachine(initial_state=MonitoringIterationProgressConfig(), stepper=stepper)
         nodes = {"node-1", "node-2"}
 
-        entry = SubsystemEntry(
-            name="rollout",
-            state_machine=sm,
+        config = SubsystemConfig(
             actuator=AsyncMock(),
             get_active_node_ids=lambda: nodes,
         )
 
-        assert entry.get_active_node_ids() == {"node-1", "node-2"}
+        assert config.get_active_node_ids() == {"node-1", "node-2"}

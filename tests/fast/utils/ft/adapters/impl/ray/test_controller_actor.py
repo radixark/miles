@@ -15,10 +15,8 @@ from miles.utils.ft.factories.controller import build_ft_controller
 
 
 def _get_training_detectors(ctrl):
-    """Extract detectors from the training SubsystemEntry inside MainState."""
-    state = ctrl._state_machine.state
-    assert isinstance(state, NormalState)
-    return state.subsystems["training"].detectors
+    """Extract detectors from the training SubsystemConfig."""
+    return ctrl._tick_loop.subsystem_configs["training"].detectors
 
 
 class TestBuildFtController:
