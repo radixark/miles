@@ -7,10 +7,10 @@ from pydantic import ConfigDict
 
 from miles.utils.ft.adapters.types import NotifierProtocol
 from miles.utils.ft.controller.state_machines.restart.models import (
-    Evicting,
+    EvictingSt,
     RestartContext,
     RestartState,
-    StoppingAndRestarting,
+    StoppingAndRestartingSt,
 )
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
@@ -31,21 +31,21 @@ class EvictingAndRestarting(RecoveryState):
     @classmethod
     def direct_restart(cls) -> EvictingAndRestarting:
         return cls(
-            restart=StoppingAndRestarting(bad_node_ids=[]),
+            restart=StoppingAndRestartingSt(bad_node_ids=[]),
             failed_next_state=StopTimeDiagnostics(),
         )
 
     @classmethod
     def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
         return cls(
-            restart=Evicting(bad_node_ids=bad_node_ids),
+            restart=EvictingSt(bad_node_ids=bad_node_ids),
             failed_next_state=StopTimeDiagnostics(),
         )
 
     @classmethod
     def evict_and_restart_final(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
         return cls(
-            restart=Evicting(bad_node_ids=bad_node_ids),
+            restart=EvictingSt(bad_node_ids=bad_node_ids),
             failed_next_state=NotifyHumans(state_before="EvictingAndRestarting"),
         )
 

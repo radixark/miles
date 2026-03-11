@@ -22,7 +22,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
-    RestartingMainJob as RestartingMainJobRestart,
+    ExternalRestartingMainJobSt,
 )
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
@@ -37,7 +37,7 @@ def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None
         match sub_state:
             case Recovering(
                 recovery=EvictingAndRestarting(
-                    restart=RestartingMainJobRestart(external_execution_result=None)
+                    restart=ExternalRestartingMainJobSt(external_execution_result=None)
                 )
             ):
                 return name
@@ -51,7 +51,7 @@ def _update_external_execution_result(
     match frozen_state:
         case Recovering(
             recovery=EvictingAndRestarting(
-                restart=RestartingMainJobRestart() as restart
+                restart=ExternalRestartingMainJobSt() as restart
             ) as recovery
         ):
             return frozen_state.model_copy(update={"recovery":
