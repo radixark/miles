@@ -32,6 +32,7 @@ class RolloutCellAgent:
             engine_health_fn=health_checker,
             timeout=health_check_timeout,
         )
+
     @property
     def cell_id(self) -> str:
         return self._cell_id
@@ -41,8 +42,4 @@ class RolloutCellAgent:
     async def check_health(self) -> CellHealthResult:
         """Run health check on all engines concurrently, return aggregated result."""
         return await self._health_checker.check_health(engines=self._engines)
-
-    def is_healthy(self) -> bool:
-        """Based on the most recent check_health result. Returns False if never checked."""
-        return self._health_checker.is_healthy()
 

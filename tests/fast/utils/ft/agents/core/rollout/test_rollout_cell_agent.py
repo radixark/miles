@@ -51,21 +51,6 @@ class TestCheckHealth:
         assert result.dead_engine_indices == (0, 1, 2)
 
 
-class TestIsHealthy:
-    def test_returns_false_before_any_check(self) -> None:
-        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
-
-        assert agent.is_healthy() is False
-
-    @pytest.mark.anyio
-    async def test_returns_true_after_healthy_check(self) -> None:
-        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
-
-        await agent.check_health()
-
-        assert agent.is_healthy() is True
-
-
 class TestConsecutiveChecksUpdateResult:
     @pytest.mark.anyio
     async def test_result_updates_after_state_change(self) -> None:
