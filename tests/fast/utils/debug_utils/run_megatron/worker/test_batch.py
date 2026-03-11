@@ -232,14 +232,14 @@ class TestPrepareBatchCP1:
         assert batch["position_ids"].dtype == torch.long
         assert batch["labels"].dtype == torch.long
         assert batch["global_input_ids"].dtype == torch.long
-        assert batch["attention_mask"].dtype == torch.bool
+        assert batch["attention_mask"] is None
 
     def test_shapes(self) -> None:
         token_ids = list(range(8))
         batch = prepare_batch(token_ids=token_ids, batch_size=2, device="cpu")
         assert batch["input_ids"].shape == (2, 8)
         assert batch["position_ids"].shape == (2, 8)
-        assert batch["attention_mask"].shape == (2, 1, 8, 8)
+        assert batch["attention_mask"] is None
         assert batch["labels"].shape == (2, 8)
         assert batch["global_input_ids"].shape == (2, 8)
 
@@ -253,12 +253,10 @@ class TestPrepareBatchCP1:
         batch = prepare_batch(token_ids=token_ids, batch_size=1, device="cpu")
         assert batch["position_ids"][0].tolist() == [0, 1, 2, 3, 4]
 
-    def test_causal_mask(self) -> None:
+    def test_attention_mask_is_none(self) -> None:
         token_ids = list(range(4))
         batch = prepare_batch(token_ids=token_ids, batch_size=1, device="cpu")
-        mask = batch["attention_mask"][0, 0]
-        expected = torch.tril(torch.ones(4, 4, dtype=torch.bool))
-        assert torch.equal(mask, expected)
+        assert batch["attention_mask"] is None
 
     def test_labels_next_token(self) -> None:
         token_ids = [10, 20, 30, 40]
@@ -281,8 +279,7 @@ class TestPrepareBatchCP1:
         batch = prepare_batch(token_ids=[42], batch_size=1, device="cpu")
         assert batch["input_ids"][0].tolist() == [42]
         assert batch["labels"][0].tolist() == [-100]
-        assert batch["attention_mask"].shape == (1, 1, 1, 1)
-        assert batch["attention_mask"][0, 0, 0, 0].item() is True
+        assert batch["attention_mask"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +355,7 @@ class TestPrepareBatchZigzag:
 
             assert batch["input_ids"].shape == (1, 4)
             assert batch["labels"].shape == (1, 4)
-            assert batch["attention_mask"].shape == (1, 1, 4, 4)
+            assert batch["attention_mask"] is None
             assert batch["global_input_ids"].shape == (1, 8)
             assert batch["global_input_ids"][0].tolist() == [100, 200, 300, 400, 500, 600, 700, 800]
 
@@ -453,12 +450,9 @@ class TestPrepareBatchZigzag:
                 gathered = batch["global_input_ids"][0][batch["position_ids"][0]]
                 assert torch.equal(batch["input_ids"][0], gathered)
 
-    def test_attention_mask_is_causal_locally(self, seq8_cp2: dict) -> None:
+    def test_attention_mask_is_none_zigzag(self, seq8_cp2: dict) -> None:
         for rank_key in seq8_cp2:
-            mask = seq8_cp2[rank_key]["attention_mask"][0, 0]
-            local_len = mask.shape[0]
-            expected = torch.tril(torch.ones(local_len, local_len, dtype=torch.bool))
-            assert torch.equal(mask, expected)
+            assert seq8_cp2[rank_key]["attention_mask"] is None
 
     def test_positions_monotonic_within_each_chunk(self, seq8_cp2: dict, seq16_cp4: dict) -> None:
         """Each half (chunk) of local positions should be monotonically increasing."""
