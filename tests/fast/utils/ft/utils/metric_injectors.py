@@ -227,6 +227,19 @@ def inject_training_phase(
     )
 
 
+def inject_rollout_cell_alive(
+    store: MiniPrometheus,
+    cell_id: str,
+    alive: bool,
+    timestamp: datetime | None = None,
+) -> None:
+    store.ingest_samples(
+        target_id="rollout-ft-agent",
+        samples=[GaugeSample(name="rollout_cell_alive", value=1.0 if alive else 0.0, labels={"cell_id": cell_id})],
+        timestamp=timestamp,
+    )
+
+
 def inject_healthy_node(
     store: MiniPrometheus,
     node_id: str = "node-0",

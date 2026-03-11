@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import logging
+from datetime import timedelta
+
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
+
+logger = logging.getLogger(__name__)
+
+_METRIC_NAME = "rollout_cell_alive"
+
+
+class RolloutCrashDetector(BaseFaultDetector):
+    """Detect rollout cell crash via rollout_cell_alive metric.
+
+    Queries rollout_cell_alive{cell_id=X}. When alive=0 persists
+    beyond alive_threshold_seconds, reports all active nodes as bad.
+    """
+
+    def __init__(
+        self,
+        *,
+        cell_id: str,
+        alive_threshold_seconds: float = 60.0,
+    ) -> None:
+        self._cell_id = cell_id
+        self._threshold = alive_threshold_seconds
+
+    def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
+        if not ctx.active_node_ids:
+            return Decision.no_fault(reason=f"rollout_{self._cell_id}: no active nodes")
+
+        df = ctx.metric_store.query_latest(
+            metric_name=_METRIC_NAME,
+            label_filters={"cell_id": self._cell_id},
+        )
+
+        if df.is_empty():
+            return Decision.no_fault(
+                reason=f"rollout_{self._cell_id}: no rollout_cell_alive metric yet"
+            )
+
+        alive_value = df["value"][0]
+        if alive_value > 0:
+            return Decision.no_fault(
+                reason=f"rollout_{self._cell_id}: cell alive"
+            )
+
+        window = timedelta(seconds=self._threshold)
+        range_df = ctx.metric_store.query_range(
+            metric_name=_METRIC_NAME,
+            window=window,
+            label_filters={"cell_id": self._cell_id},
+        )
+
+        if range_df.is_empty():
+            return Decision.no_fault(
+                reason=f"rollout_{self._cell_id}: no range data"
+            )
+
+        timestamps = range_df["timestamp"]
+        time_span = abs((timestamps[-1] - timestamps[0]).total_seconds())
+        if time_span < self._threshold * 0.8:
+            return Decision.no_fault(
+                reason=f"rollout_{self._cell_id}: insufficient data span ({time_span:.1f}s < {self._threshold:.1f}s)"
+            )
+
+        all_dead = (range_df["value"] == 0).all()
+        if not all_dead:
+            return Decision.no_fault(
+                reason=f"rollout_{self._cell_id}: cell intermittently dead, waiting"
+            )
+
+        bad_node_ids = sorted(ctx.active_node_ids)
+        logger.warning(
+            "rollout_crash_detected cell_id=%s bad_nodes=%s threshold=%.0f",
+            self._cell_id,
+            bad_node_ids,
+            self._threshold,
+        )
+        return Decision(
+            action=ActionType.ENTER_RECOVERY,
+            bad_node_ids=bad_node_ids,
+            reason=f"rollout cell {self._cell_id} dead for {self._threshold:.0f}s",
+            trigger=TriggerType.CRASH,
+        )
