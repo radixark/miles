@@ -65,3 +65,25 @@ class TestRayRolloutActuator:
         calls = handle.stop_cell.remote.await_args_list
         assert calls[0].args == ("0",)
         assert calls[1].args == ("1",)
+
+    async def test_stop_propagates_remote_exception(self) -> None:
+        handle = FakeRmHandle()
+        handle.stop_cell.remote = AsyncMock(side_effect=RuntimeError("actor dead"))
+        actuator = RayRolloutActuator(rm_handle=handle, cell_id="0")
+        with pytest.raises(RuntimeError):
+            await actuator.stop()
+
+    async def test_start_propagates_remote_exception(self) -> None:
+        handle = FakeRmHandle()
+        handle.start_cell.remote = AsyncMock(side_effect=RuntimeError("actor dead"))
+        actuator = RayRolloutActuator(rm_handle=handle, cell_id="0")
+        with pytest.raises(RuntimeError):
+            await actuator.start()
+
+    @pytest.mark.parametrize("status", list(JobStatus))
+    async def test_get_status_all_statuses(self, status: JobStatus) -> None:
+        handle = FakeRmHandle()
+        handle.get_cell_status.remote = AsyncMock(return_value=status)
+        actuator = RayRolloutActuator(rm_handle=handle, cell_id="0")
+        result = await actuator.get_status()
+        assert result == status
