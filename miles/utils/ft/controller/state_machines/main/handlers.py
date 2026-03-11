@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.detectors.base import DetectorContext
+from miles.utils.ft.controller.state_machines.main.context_factories import build_subsystem_context
 from miles.utils.ft.controller.state_machines.main.models import (
     MainContext,
     MainState,
@@ -14,23 +14,19 @@ from miles.utils.ft.controller.state_machines.main.models import (
 from miles.utils.ft.controller.state_machines.subsystem import create_subsystem_stepper
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
-    SubsystemContext,
     SubsystemState,
     Recovering,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestarting,
-    RecoveryContext,
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
-    RestartContext,
     RestartingMainJob as RestartingMainJobRestart,
 )
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.subsystem import SubsystemConfig
-from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
 
 logger = logging.getLogger(__name__)
@@ -82,7 +78,12 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
         curr_state = state
         for name, sub_state in state.subsystems.items():
             config = context.subsystem_configs[name]
-            sub_ctx = self._build_subsystem_context(config=config, context=context)
+            sub_ctx = build_subsystem_context(
+                config=config,
+                context=context,
+                recovery_stepper=self._recovery_stepper,
+                restart_stepper=self._restart_stepper,
+            )
             current = sub_state
             while True:
                 previous = current
@@ -119,94 +120,6 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             start_time=datetime.now(timezone.utc),
             requestor_frozen_state=frozen_state,
         )
-
-    def _build_subsystem_context(
-        self,
-        *,
-        config: SubsystemConfig,
-        context: MainContext,
-    ) -> SubsystemContext:
-        should_run = self._should_run_detectors(config=config, context=context)
-        detector_ctx = self._build_detector_context(config=config, context=context) if should_run else None
-
-        return SubsystemContext(
-            job_status=context.job_status,
-            tick_count=context.tick_count,
-            should_run_detectors=should_run,
-            detector_context=detector_ctx,
-            notifier=context.notifier,
-            detectors=config.detectors,
-            cooldown=context.cooldown,
-            detector_crash_tracker=context.detector_crash_tracker,
-            recovery_stepper=self._recovery_stepper,
-            recovery_context_factory=lambda trigger, start_time: self._build_recovery_context(
-                config=config,
-                context=context,
-                trigger=trigger,
-                recovery_start_time=start_time,
-            ),
-            on_recovery_duration=context.on_recovery_duration,
-            max_simultaneous_bad_nodes=context.max_simultaneous_bad_nodes,
-            monitoring_config=config.monitoring_config,
-            mini_wandb=context.mini_wandb,
-        )
-
-    def _build_detector_context(
-        self,
-        *,
-        config: SubsystemConfig,
-        context: MainContext,
-    ) -> DetectorContext:
-        return DetectorContext(
-            metric_store=context.metric_store,
-            mini_wandb=context.mini_wandb,
-            active_node_ids=config.get_active_node_ids(),
-            job_status=context.job_status,
-        )
-
-    def _build_recovery_context(
-        self,
-        *,
-        config: SubsystemConfig,
-        context: MainContext,
-        trigger: TriggerType,
-        recovery_start_time: datetime,
-    ) -> RecoveryContext:
-        restart_context = RestartContext(
-            node_manager=context.node_manager,
-            main_job=context.main_job,
-            mini_wandb=context.mini_wandb,
-            notifier=context.notifier,
-            on_new_run=context.on_new_run,
-            actuator=config.actuator,
-            monitoring_config=config.monitoring_config,
-            restart_mode=config.restart_mode,
-        )
-        return RecoveryContext(
-            trigger=trigger,
-            recovery_start_time=recovery_start_time,
-            diagnostic_orchestrator=context.diagnostic_orchestrator,
-            restart_stepper=self._restart_stepper,
-            restart_context=restart_context,
-            notifier=context.notifier,
-            timeout_seconds=context.recovery_timeout_seconds,
-            rank_pids_provider=context.rank_pids_provider,
-        )
-
-    def _should_run_detectors(
-        self,
-        *,
-        config: SubsystemConfig,
-        context: MainContext,
-    ) -> bool:
-        active_nodes = config.get_active_node_ids()
-        if len(active_nodes) == 0:
-            return False
-
-        if context.tick_count <= context.registration_grace_ticks:
-            return False
-
-        return True
 
 
 class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainContext]):
