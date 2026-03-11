@@ -33,6 +33,8 @@ class TestRunAndCompare:
             target_output=Path("/tmp/target"),
             replay_dir=None,
             common_fields=_make_common_fields(),
+            baseline_extra_args="",
+            target_extra_args="",
             baseline_logprob_dir=None,
             target_logprob_dir=None,
         )
@@ -52,6 +54,8 @@ class TestRunAndCompare:
             target_output=Path("/tmp/out") / target_config.dir_name(),
             replay_dir=None,
             common_fields=_make_common_fields(),
+            baseline_extra_args="",
+            target_extra_args="",
             baseline_logprob_dir=None,
             target_logprob_dir=None,
         )
@@ -74,6 +78,8 @@ class TestRunAndCompare:
                 target_output=Path("/tmp/target"),
                 replay_dir=Path("/tmp/replay"),
                 common_fields=_make_common_fields(),
+                baseline_extra_args="",
+                target_extra_args="",
                 baseline_logprob_dir=None,
                 target_logprob_dir=None,
             )
@@ -89,6 +95,8 @@ class TestRunAndCompare:
             target_output=Path("/tmp/target"),
             replay_dir=Path("/tmp/replay"),
             common_fields=_make_common_fields(),
+            baseline_extra_args="",
+            target_extra_args="",
             baseline_logprob_dir=None,
             target_logprob_dir=None,
         )
