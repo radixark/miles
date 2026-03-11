@@ -32,7 +32,7 @@ class _FtControllerActorCls:
         await self._ctrl.run()
 
     async def submit_and_run(self) -> None:
-        await self._ctrl.submit_initial_job()
+        await self._ctrl.submit_initial_training()
         await self._ctrl.run()
 
     async def shutdown(self) -> None:
@@ -59,7 +59,7 @@ class _FtControllerActorCls:
         exporter_address: str,
         pid: int,
     ) -> None:
-        self._ctrl.training_rank_roster.register_training_rank(
+        self._ctrl.rank_roster.register_training_rank(
             run_id=run_id,
             rank=rank,
             world_size=world_size,
@@ -73,15 +73,20 @@ class _FtControllerActorCls:
         node_id: str,
         agent: object,
         exporter_address: str = "",
-        node_metadata: dict[str, str] | None = None,
     ) -> None:
         proxy = RayNodeAgentProxy(agent)
         self._ctrl.register_node_agent(
             node_id=node_id,
             agent=proxy,
             exporter_address=exporter_address,
-            node_metadata=node_metadata,
         )
+
+    def add_scrape_target(self, target_id: str, address: str) -> None:
+        if self._ctrl._scrape_target_manager is not None:
+            self._ctrl._scrape_target_manager.add_scrape_target(
+                target_id=target_id,
+                address=address,
+            )
 
     def get_status(self) -> object:
         return self._ctrl.get_status()
