@@ -169,15 +169,22 @@ def _snapshot_bundles(pg: PlacementGroup, num_bundles: int) -> list[BundleLocati
     ]
 
 
-def create_placement_group_info(num_gpus: int) -> PlacementGroupInfo:
+def create_placement_group_info(
+    num_gpus: int,
+    snapshot_path: Path | None = None,
+) -> PlacementGroupInfo:
     """Create a placement group with the specified number of GPUs, snapshot and sort bundles."""
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
-
     ray.get(pg.ready())
 
-    snapshots = _snapshot_bundles(pg, num_bundles=num_gpus)
-    sorted_snapshots = sorted(snapshots, key=_bundle_sort_key)
+    new_snapshots = _snapshot_bundles(pg, num_bundles=num_gpus)
+
+    old_snapshots = _load_snapshots(snapshot_path) if snapshot_path else None
+    if old_snapshots and len(old_snapshots) == num_gpus:
+        sorted_snapshots = _partial_resort_snapshots(old_snapshots, new_snapshots)
+    else:
+        sorted_snapshots = sorted(new_snapshots, key=_bundle_sort_key)
 
     for rank, snapshot in enumerate(sorted_snapshots):
         logger.info(
@@ -185,4 +192,9 @@ def create_placement_group_info(num_gpus: int) -> PlacementGroupInfo:
             f"node: {snapshot.node_ip}, gpu: {snapshot.gpu_id}"
         )
 
-    return PlacementGroupInfo(pg=pg, _bundle_location_snapshots=sorted_snapshots)
+    if snapshot_path:
+        _save_snapshots(snapshot_path, sorted_snapshots)
+
+    return PlacementGroupInfo(
+        pg=pg, _bundle_location_snapshots=sorted_snapshots, _snapshot_path=snapshot_path,
+    )
