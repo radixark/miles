@@ -30,6 +30,11 @@ def _init_local_ray() -> str:
     ray_tmp = Path("/tmp/ray")
     if ray_tmp.exists():
         shutil.rmtree(ray_tmp, ignore_errors=True)
+
+    # In --net=host containers the default dashboard-agent port (52365) is
+    # often already taken by another container.  Let the OS pick a free port.
+    os.environ.setdefault("RAY_DASHBOARD_AGENT_LISTEN_PORT", "0")
+
     ctx = ray.init(
         address="local",
         num_cpus=32,
