@@ -38,24 +38,30 @@ logger = logging.getLogger(__name__)
 
 def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
     for name, sub_state in subsystems.items():
-        if not isinstance(sub_state, Recovering):
-            continue
-        if not isinstance(sub_state.recovery, EvictingAndRestarting):
-            continue
-        if isinstance(sub_state.recovery.restart, RestartingMainJobRestart) and not sub_state.recovery.restart.externally_fulfilled:
-            return name
+        match sub_state:
+            case Recovering(
+                recovery=EvictingAndRestarting(
+                    restart=RestartingMainJobRestart(externally_fulfilled=False)
+                )
+            ):
+                return name
     return None
 
 
 def _update_externally_fulfilled(frozen_state: SubsystemState) -> SubsystemState:
-    assert isinstance(frozen_state, Recovering)
-    recovery = frozen_state.recovery
-    assert isinstance(recovery, EvictingAndRestarting)
-    restart = recovery.restart
-    assert isinstance(restart, RestartingMainJobRestart)
-    new_restart = restart.model_copy(update={"externally_fulfilled": True})
-    new_recovery = recovery.model_copy(update={"restart": new_restart})
-    return frozen_state.model_copy(update={"recovery": new_recovery})
+    match frozen_state:
+        case Recovering(
+            recovery=EvictingAndRestarting(
+                restart=RestartingMainJobRestart() as restart
+            ) as recovery
+        ):
+            return frozen_state.model_copy(update={"recovery":
+                recovery.model_copy(update={"restart":
+                    restart.model_copy(update={"externally_fulfilled": True})
+                })
+            })
+        case _:
+            raise AssertionError(f"Unexpected state for _update_externally_fulfilled: {frozen_state}")
 
 
 def _build_fresh_subsystem_states(configs: dict[str, SubsystemConfig]) -> dict[str, SubsystemState]:
