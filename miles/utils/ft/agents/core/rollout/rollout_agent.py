@@ -31,6 +31,7 @@ class FtRolloutAgent:
             self.address, len(self._cells),
         )
 
+    # TODO this is surely wrong, will be multi cells
     @staticmethod
     def _build_cells(
         rollout_manager: object,
