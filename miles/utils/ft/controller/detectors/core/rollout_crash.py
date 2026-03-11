@@ -4,11 +4,10 @@ import logging
 from datetime import timedelta
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 logger = logging.getLogger(__name__)
-
-_METRIC_NAME = "rollout_cell_alive"
 
 
 class RolloutCrashDetector(BaseFaultDetector):
@@ -32,7 +31,7 @@ class RolloutCrashDetector(BaseFaultDetector):
             return Decision.no_fault(reason=f"rollout_{self._cell_id}: no active nodes")
 
         df = ctx.metric_store.query_latest(
-            metric_name=_METRIC_NAME,
+            metric_name=ROLLOUT_CELL_ALIVE,
             label_filters={"cell_id": self._cell_id},
         )
 
@@ -49,7 +48,7 @@ class RolloutCrashDetector(BaseFaultDetector):
 
         window = timedelta(seconds=self._threshold)
         range_df = ctx.metric_store.query_range(
-            metric_name=_METRIC_NAME,
+            metric_name=ROLLOUT_CELL_ALIVE,
             window=window,
             label_filters={"cell_id": self._cell_id},
         )
@@ -59,8 +58,7 @@ class RolloutCrashDetector(BaseFaultDetector):
                 reason=f"rollout_{self._cell_id}: no range data"
             )
 
-        timestamps = range_df["timestamp"]
-        time_span = abs((timestamps[-1] - timestamps[0]).total_seconds())
+        time_span = (range_df["timestamp"].max() - range_df["timestamp"].min()).total_seconds()
         if time_span < self._threshold * 0.8:
             return Decision.no_fault(
                 reason=f"rollout_{self._cell_id}: insufficient data span ({time_span:.1f}s < {self._threshold:.1f}s)"

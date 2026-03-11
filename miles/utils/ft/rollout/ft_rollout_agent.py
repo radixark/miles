@@ -6,6 +6,7 @@ import logging
 from prometheus_client import CollectorRegistry, Gauge
 
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE, ROLLOUT_ENGINE_ALIVE
 from miles.utils.ft.rollout.cell_agent import CellHealthResult, RolloutCellAgent
 from miles.utils.ft.rollout.metrics_server import MetricsServer
 
@@ -27,13 +28,13 @@ class FtRolloutAgent:
 
         self._registry = CollectorRegistry()
         self._engine_alive = Gauge(
-            "rollout_engine_alive",
+            ROLLOUT_ENGINE_ALIVE,
             "1=alive, 0=dead",
             labelnames=["cell_id", "engine_index"],
             registry=self._registry,
         )
         self._cell_alive = Gauge(
-            "rollout_cell_alive",
+            ROLLOUT_CELL_ALIVE,
             "1=all engines alive, 0=any dead",
             labelnames=["cell_id"],
             registry=self._registry,

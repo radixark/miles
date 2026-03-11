@@ -52,3 +52,7 @@ CONTROLLER_TICK_DURATION_SECONDS = "miles_ft_controller_tick_duration_seconds"
 CONTROLLER_DECISION_TOTAL = "miles_ft_controller_decision_total"
 CONTROLLER_RECOVERY_DURATION_SECONDS = "miles_ft_controller_recovery_duration_seconds"
 CONTROLLER_LAST_TICK_TIMESTAMP = "miles_ft_controller_last_tick_timestamp"
+
+# Rollout health (FtRolloutAgent)
+ROLLOUT_CELL_ALIVE = "rollout_cell_alive"
+ROLLOUT_ENGINE_ALIVE = "rollout_engine_alive"

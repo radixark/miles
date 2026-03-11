@@ -29,5 +29,4 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
         return str(result)
 
     async def get_status(self) -> JobStatus:
-        status = await self._rm_handle.get_cell_status.remote(self._cell_id)  # type: ignore[attr-defined]
-        return status
+        return await self._rm_handle.get_cell_status.remote(self._cell_id)  # type: ignore[attr-defined]

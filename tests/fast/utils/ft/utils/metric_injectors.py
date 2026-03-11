@@ -15,6 +15,7 @@ from miles.utils.ft.controller.metrics.metric_names import (
     MAIN_JOB_STATUS,
     NODE_FILESYSTEM_AVAIL_BYTES,
     NODE_NETWORK_UP,
+    ROLLOUT_CELL_ALIVE,
     TRAINING_PHASE,
     XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
 )
@@ -235,7 +236,7 @@ def inject_rollout_cell_alive(
 ) -> None:
     store.ingest_samples(
         target_id="rollout-ft-agent",
-        samples=[GaugeSample(name="rollout_cell_alive", value=1.0 if alive else 0.0, labels={"cell_id": cell_id})],
+        samples=[GaugeSample(name=ROLLOUT_CELL_ALIVE, value=1.0 if alive else 0.0, labels={"cell_id": cell_id})],
         timestamp=timestamp,
     )
 
