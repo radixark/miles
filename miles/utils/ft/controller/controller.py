@@ -13,7 +13,7 @@ from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext, SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
-from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, SubsystemEntry
+from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, SubsystemConfig
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.box import Box
@@ -30,17 +30,11 @@ class _RolloutSubsystemConfig:
     ft_rollout_agent: object | None = None
 
 
-def _build_rollout_subsystem_entry(*, name: str, config: _RolloutSubsystemConfig) -> SubsystemEntry:
+def _build_rollout_subsystem_config(*, config: _RolloutSubsystemConfig) -> SubsystemConfig:
     from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
     from miles.utils.ft.controller.detectors.chain import build_rollout_detectors, build_shared_hw_detectors
-    from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, create_subsystem_stepper
 
-    return SubsystemEntry(
-        name=name,
-        state_machine=StateMachine(
-            initial_state=DetectingAnomaly(),
-            stepper=create_subsystem_stepper(),
-        ),
+    return SubsystemConfig(
         actuator=RayRolloutActuator(
             rm_handle=config.rm_handle,
             cell_id=config.cell_id,
@@ -136,6 +130,8 @@ class FtController:
         rm_handle: object,
         ft_rollout_agent: object,
     ) -> None:
+        from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomaly
+
         cell_ids: list[str] = ft_rollout_agent.get_cell_ids()  # type: ignore[union-attr]
         state = self._state_machine.state
         if not isinstance(state, NormalState):
@@ -143,25 +139,27 @@ class FtController:
                 f"Cannot register rollout subsystems in {type(state).__name__}, expected NormalState"
             )
 
-        new_subsystems = dict(state.subsystems)
+        new_subsystem_states = dict(state.subsystems)
         for cell_id in cell_ids:
             cell_agent = ft_rollout_agent.get_cell_agent(cell_id)  # type: ignore[union-attr]
-            config = _RolloutSubsystemConfig(
+            rollout_config = _RolloutSubsystemConfig(
                 cell_id=cell_id,
                 rm_handle=rm_handle,
                 get_active_node_ids=cell_agent.get_node_ids,
                 ft_rollout_agent=ft_rollout_agent,
             )
-            self._rollout_configs.append(config)
-            name = f"rollout_{cell_id}"
-            entry = _build_rollout_subsystem_entry(name=name, config=config)
-            new_subsystems[name] = entry
+            self._rollout_configs.append(rollout_config)
 
-        self._state_machine.state = NormalState(subsystems=new_subsystems)
+            name = f"rollout_{cell_id}"
+            subsystem_config = _build_rollout_subsystem_config(config=rollout_config)
+            self._tick_loop.subsystem_configs[name] = subsystem_config
+            new_subsystem_states[name] = DetectingAnomaly()
+
+        self._state_machine.state = NormalState(subsystems=new_subsystem_states)
         logger.info(
             "rollout_subsystems_registered cell_ids=%s total_subsystems=%d",
             cell_ids,
-            len(new_subsystems),
+            len(new_subsystem_states),
         )
 
     async def submit_initial_job(self) -> str:
