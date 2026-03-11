@@ -184,18 +184,12 @@ def _verify_comparator(dump_subdir: str, dump_dir: str) -> None:
     # Relax threshold: deep layers (e.g. layer 24 in PP stage 1)
     # accumulate bf16 numerical drift across 24+ transformer layers,
     # reaching ~0.008 rel_diff which exceeds the default 0.001 threshold.
-    # moe_expert_output: tp:partial means each rank holds a partial sum;
-    # rank ordering differs between sglang and megatron so direct
-    # comparison is meaningless (rel_diff ≈ 1.0). Allow-fail until
-    # a partial-sum-aware aligner is implemented.
     run_and_verify_comparator(
         baseline_dir=baseline_dir,
         target_dir=target_dir,
         extra_args=[
             "--diff-threshold",
             "0.0085",
-            "--allow-failed-pattern",
-            "moe_expert_output",
             "--allow-skipped-pattern",
             "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
         ],

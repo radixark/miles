@@ -28,7 +28,6 @@ SOURCE_PATCHED_FIELDS: list[str] = [
     "mlp_output",
     "moe_router_logits",
     "moe_topk_ids",
-    "moe_expert_output",
 ]
 
 # NOTE: etp is omitted from replicated annotations because etp=tp in the
@@ -73,10 +72,6 @@ patches:
       - match: "return probs, routing_map"
         prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
 
-  - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
-    edits:
-      - match: "output = self.token_dispatcher.combine_preprocess(expert_output)"
-        append: "dumper.dump('moe_expert_output', output, dims='t h[tp:partial] # cp:replicated etp:replicated')"
 """
 
 MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML: str = """\
@@ -115,10 +110,6 @@ patches:
       - match: "return probs, routing_map"
         prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
 
-  - target: megatron.core.transformer.moe.moe_layer.MoELayer.routed_experts_compute
-    edits:
-      - match: "output = self.token_dispatcher.combine_preprocess(expert_output)"
-        append: "dumper.dump('moe_expert_output', output, dims='t h[tp:partial] # cp:replicated etp:replicated')"
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
