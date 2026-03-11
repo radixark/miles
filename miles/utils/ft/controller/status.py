@@ -3,7 +3,7 @@ from __future__ import annotations
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState, RestartingMainJobState
-from miles.utils.ft.controller.state_machines.subsystem import SubsystemContext, SubsystemState, Recovering, get_known_bad_nodes
+from miles.utils.ft.controller.state_machines.subsystem import SubsystemState, Recovering, get_known_bad_nodes
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestarting,
     NotifyHumans,
@@ -20,23 +20,9 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
     return type(recovery).__name__
 
 
-def build_phase_history(state_history: list[SubsystemState]) -> list[str]:
-    phases: list[str] = []
-    for past_state in state_history:
-        if isinstance(past_state, Recovering):
-            name = recovery_phase_name(past_state.recovery)
-            if not phases or phases[-1] != name:
-                phases.append(name)
-    return phases
-
-
-def _extract_training_sm(
-    controller_state: MainState,
-) -> StateMachine[SubsystemState, SubsystemContext] | None:
+def _extract_training_state(controller_state: MainState) -> SubsystemState | None:
     if isinstance(controller_state, NormalState):
-        training = controller_state.subsystems.get("training")
-        if training is not None:
-            return training.state_machine
+        return controller_state.subsystems.get("training")
     return None
 
 
@@ -46,9 +32,9 @@ def _extract_rollout_subsystem_states(
     if not isinstance(controller_state, NormalState):
         return None
     result: dict[str, str] = {}
-    for name, entry in controller_state.subsystems.items():
+    for name, sub_state in controller_state.subsystems.items():
         if name.startswith("rollout_"):
-            result[name] = type(entry.state_machine.state).__name__
+            result[name] = type(sub_state).__name__
     return result if result else None
 
 
@@ -64,9 +50,6 @@ def build_controller_status(
     latest_iteration = int(iteration_val) if iteration_val is not None else None
     rollout_states = _extract_rollout_subsystem_states(controller_state)
 
-    # Extract training sub-SM state
-    training_sm = _extract_training_sm(controller_state)
-
     if isinstance(controller_state, RestartingMainJobState):
         return ControllerStatus(
             mode=ControllerMode.RECOVERY,
@@ -81,7 +64,9 @@ def build_controller_status(
             rollout_subsystem_states=rollout_states,
         )
 
-    if training_sm is None:
+    training_state = _extract_training_state(controller_state)
+
+    if training_state is None:
         return ControllerStatus(
             mode=ControllerMode.MONITORING,
             recovery_phase=None,
@@ -95,11 +80,8 @@ def build_controller_status(
             rollout_subsystem_states=rollout_states,
         )
 
-    state = training_sm.state
-    phase_history = build_phase_history(training_sm.state_history)
-
-    if isinstance(state, Recovering):
-        recovery = state.recovery
+    if isinstance(training_state, Recovering):
+        recovery = training_state.recovery
         mode = ControllerMode.RECOVERY
         recovery_phase_str = recovery_phase_name(recovery)
         bad_nodes = sorted(get_known_bad_nodes(recovery))
@@ -113,11 +95,11 @@ def build_controller_status(
     return ControllerStatus(
         mode=mode,
         recovery_phase=recovery_phase_str,
-        phase_history=phase_history if phase_history else None,
+        phase_history=None,
         tick_count=tick_count,
         active_run_id=training_rank_roster.run_id,
         bad_nodes=bad_nodes,
-        recovery_in_progress=isinstance(state, Recovering),
+        recovery_in_progress=isinstance(training_state, Recovering),
         bad_nodes_confirmed=bad_nodes_confirmed,
         latest_iteration=latest_iteration,
         rollout_subsystem_states=rollout_states,
