@@ -28,7 +28,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryEscalated,
 )
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringProgress
-from miles.utils.ft.controller.subsystem import IterationProgressConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
 
@@ -186,7 +186,7 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJob, MainContext]):
 
 class RestartedMainJobHandler(StateHandler[RestartedMainJob, MainContext]):
     async def step(self, state: RestartedMainJob, ctx: MainContext) -> MainState | None:
-        base = _get_base_iteration(ctx.mini_wandb) if isinstance(ctx.monitoring_config, IterationProgressConfig) else 0
+        base = _get_base_iteration(ctx.mini_wandb) if isinstance(ctx.monitoring_config, MonitoringIterationProgressConfig) else 0
 
         return Recovering(
             recovery=EvictingAndRestarting(

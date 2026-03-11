@@ -28,7 +28,7 @@ from miles.utils.ft.controller.state_machines.restart import (
     create_restart_stepper,
     iteration_progress,
 )
-from miles.utils.ft.controller.subsystem import IterationProgressConfig, SustainedAliveConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
@@ -67,11 +67,9 @@ def _make_context(
     mini_wandb: MiniWandb | None = None,
     notifier: FakeNotifier | None = None,
     on_new_run: object | None = None,
-    monitoring_success_iterations: int = 10,
-    monitoring_timeout_seconds: int = 600,
     node_metadata: dict[str, dict[str, str]] | None = None,
     actuator: SubsystemActuatorProtocol | None = None,
-    monitoring_config: IterationProgressConfig | SustainedAliveConfig | None = None,
+    monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
     has_level1_restart: bool = True,
 ) -> RestartContext:
     resolved_main_job = main_job or FakeMainJob()
@@ -81,11 +79,9 @@ def _make_context(
         mini_wandb=mini_wandb or MiniWandb(),
         notifier=notifier,
         on_new_run=on_new_run,
-        monitoring_success_iterations=monitoring_success_iterations,
-        monitoring_timeout_seconds=monitoring_timeout_seconds,
         node_metadata=node_metadata or {},
         actuator=actuator or FakeActuator(),
-        monitoring_config=monitoring_config or IterationProgressConfig(),
+        monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
         has_level1_restart=has_level1_restart,
     )
 
@@ -338,7 +334,7 @@ class TestMonitoringProgress:
         ctx = _make_context(
             main_job=main_job,
             mini_wandb=mini_wandb,
-            monitoring_success_iterations=10,
+            monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
         )
 
         state = MonitoringProgress(
@@ -371,7 +367,7 @@ class TestMonitoringProgress:
         ctx = _make_context(
             main_job=main_job,
             mini_wandb=mini_wandb,
-            monitoring_timeout_seconds=60,
+            monitoring_config=MonitoringIterationProgressConfig(timeout_seconds=60),
         )
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
@@ -389,7 +385,7 @@ class TestMonitoringProgress:
         ctx = _make_context(
             main_job=main_job,
             mini_wandb=mini_wandb,
-            monitoring_success_iterations=10,
+            monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
         )
 
         state = MonitoringProgress(
@@ -410,8 +406,7 @@ class TestMonitoringProgress:
         ctx = _make_context(
             main_job=main_job,
             mini_wandb=mini_wandb,
-            monitoring_success_iterations=100,
-            monitoring_timeout_seconds=60,
+            monitoring_config=MonitoringIterationProgressConfig(success_iterations=100, timeout_seconds=60),
         )
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
@@ -460,11 +455,10 @@ class TestSustainedAlive:
         """actuator.get_status()==RUNNING for alive_duration_seconds -> RestartDone."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         stepper = _make_stepper()
-        config = SustainedAliveConfig(alive_duration_seconds=60)
+        config = MonitoringSustainedAliveConfig(alive_duration_seconds=60, timeout_seconds=600)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
-            monitoring_timeout_seconds=600,
         )
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
@@ -477,7 +471,7 @@ class TestSustainedAlive:
         """actuator.get_status()==FAILED -> RestartFailed."""
         actuator = FakeActuator(status_sequence=[JobStatus.FAILED])
         stepper = _make_stepper()
-        config = SustainedAliveConfig(alive_duration_seconds=60)
+        config = MonitoringSustainedAliveConfig(alive_duration_seconds=60)
         ctx = _make_context(actuator=actuator, monitoring_config=config)
 
         state = MonitoringProgress(start_time=datetime.now(timezone.utc), base_iteration=0)
@@ -489,11 +483,10 @@ class TestSustainedAlive:
         """actuator.get_status()==PENDING past monitoring_timeout_seconds -> RestartFailed."""
         actuator = FakeActuator(status_sequence=[JobStatus.PENDING])
         stepper = _make_stepper()
-        config = SustainedAliveConfig(alive_duration_seconds=60)
+        config = MonitoringSustainedAliveConfig(alive_duration_seconds=60, timeout_seconds=60)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
-            monitoring_timeout_seconds=60,
         )
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
@@ -506,11 +499,10 @@ class TestSustainedAlive:
         """Running but not yet alive_duration_seconds -> None."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         stepper = _make_stepper()
-        config = SustainedAliveConfig(alive_duration_seconds=300)
+        config = MonitoringSustainedAliveConfig(alive_duration_seconds=300, timeout_seconds=600)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
-            monitoring_timeout_seconds=600,
         )
 
         state = MonitoringProgress(start_time=datetime.now(timezone.utc), base_iteration=0)
@@ -563,7 +555,7 @@ class TestFullRestartFlow:
         ctx = _make_context(
             actuator=actuator,
             mini_wandb=mini_wandb,
-            monitoring_success_iterations=5,
+            monitoring_config=MonitoringIterationProgressConfig(success_iterations=5),
             has_level1_restart=True,
         )
 
@@ -614,7 +606,7 @@ class TestFullRestartFlow:
         ctx = _make_context(
             actuator=actuator,
             mini_wandb=mini_wandb,
-            monitoring_success_iterations=5,
+            monitoring_config=MonitoringIterationProgressConfig(success_iterations=5),
             has_level1_restart=True,
         )
 

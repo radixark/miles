@@ -19,7 +19,7 @@ from miles.utils.ft.controller.state_machines.controller import (
 from miles.utils.ft.controller.state_machines.controller.models import ControllerState
 from miles.utils.ft.controller.state_machines.main import DetectingAnomaly, MainContext, MainState, create_main_stepper
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
-from miles.utils.ft.controller.subsystem import IterationProgressConfig, SubsystemEntry
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, SubsystemEntry
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
@@ -88,7 +88,7 @@ def create_ft_controller(
     cooldown = recovery_cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3)
     resolved_detectors = detectors or []
 
-    monitoring_config = IterationProgressConfig(
+    monitoring_config = MonitoringIterationProgressConfig(
         success_iterations=monitoring_success_iterations,
         timeout_seconds=monitoring_timeout_seconds,
     )

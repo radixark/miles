@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.subsystem import SustainedAliveConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.restart.models import (
     Evicting,
@@ -162,7 +162,7 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
         state: MonitoringProgress,
         ctx: RestartContext,
     ) -> RestartState | None:
-        if isinstance(ctx.monitoring_config, SustainedAliveConfig):
+        if isinstance(ctx.monitoring_config, MonitoringSustainedAliveConfig):
             return await self._step_sustained_alive(state=state, ctx=ctx)
         return await self._step_iteration_progress(state=state, ctx=ctx)
 
@@ -178,18 +178,21 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
             logger.warning("monitoring_training_failed")
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
+        assert isinstance(ctx.monitoring_config, MonitoringIterationProgressConfig)
+        config = ctx.monitoring_config
+
         progress = iteration_progress(state=state, mini_wandb=ctx.mini_wandb)
 
-        if status == JobStatus.RUNNING and progress >= ctx.monitoring_success_iterations:
+        if status == JobStatus.RUNNING and progress >= config.success_iterations:
             logger.info(
                 "monitoring_success progress_iterations=%d threshold=%d",
                 progress,
-                ctx.monitoring_success_iterations,
+                config.success_iterations,
             )
             return RestartDone(bad_node_ids=state.bad_node_ids)
 
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
-        if elapsed > ctx.monitoring_timeout_seconds:
+        if elapsed > config.timeout_seconds:
             logger.warning("monitoring_timeout elapsed=%.0f", elapsed)
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
@@ -201,6 +204,9 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
         state: MonitoringProgress,
         ctx: RestartContext,
     ) -> RestartState | None:
+        assert isinstance(ctx.monitoring_config, MonitoringSustainedAliveConfig)
+        config = ctx.monitoring_config
+
         status = await ctx.actuator.get_status()
 
         if status == JobStatus.FAILED:
@@ -209,16 +215,16 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
 
         if status == JobStatus.RUNNING:
             elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
-            if elapsed >= ctx.monitoring_config.alive_duration_seconds:
+            if elapsed >= config.alive_duration_seconds:
                 logger.info(
                     "sustained_alive_success elapsed=%.0f threshold=%d",
                     elapsed,
-                    ctx.monitoring_config.alive_duration_seconds,
+                    config.alive_duration_seconds,
                 )
                 return RestartDone(bad_node_ids=state.bad_node_ids)
 
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
-        if elapsed > ctx.monitoring_timeout_seconds:
+        if elapsed > config.timeout_seconds:
             logger.warning("sustained_alive_timeout elapsed=%.0f", elapsed)
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 

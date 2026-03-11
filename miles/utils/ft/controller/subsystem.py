@@ -12,7 +12,7 @@ from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.state_machine import StateMachine
 
 
-class IterationProgressConfig(FtBaseModel):
+class MonitoringIterationProgressConfig(FtBaseModel):
     """Training mode: confirm recovery after N successful iterations."""
 
     mode: Literal["iteration_progress"] = "iteration_progress"
@@ -20,7 +20,7 @@ class IterationProgressConfig(FtBaseModel):
     timeout_seconds: int = 600
 
 
-class SustainedAliveConfig(FtBaseModel):
+class MonitoringSustainedAliveConfig(FtBaseModel):
     """Rollout mode: confirm recovery after get_status() == RUNNING for N seconds."""
 
     mode: Literal["sustained_alive"] = "sustained_alive"
@@ -29,7 +29,7 @@ class SustainedAliveConfig(FtBaseModel):
 
 
 MonitoringConfig = Annotated[
-    Union[IterationProgressConfig, SustainedAliveConfig],
+    Union[MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig],
     Field(discriminator="mode"),
 ]
 
@@ -46,7 +46,7 @@ class SubsystemEntry:
     state_machine: StateMachine  # Generic params (MainState, MainContext) defined in M5
     actuator: SubsystemActuatorProtocol
     detectors: list[BaseFaultDetector] = field(default_factory=list)
-    monitoring_config: IterationProgressConfig | SustainedAliveConfig = field(
-        default_factory=IterationProgressConfig
+    monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig = field(
+        default_factory=MonitoringIterationProgressConfig
     )
     get_active_node_ids: Callable[[], set[str]] = field(default_factory=lambda: lambda: set())
