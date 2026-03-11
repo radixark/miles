@@ -17,10 +17,9 @@ from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.notifiers.factory import build_notifier
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
-from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
-from miles.utils.ft.controller.factory import create_ft_controller
+from miles.utils.ft.controller.factory import FtControllerBundle, create_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -35,6 +34,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NOTIFIER_SENTINEL: object = object()
+
+
+def _rollout_num_cells_to_ids(num_cells: int) -> list[str] | None:
+    if num_cells == 0:
+        return None
+    if num_cells == 1:
+        return ["default"]
+    return [str(i) for i in range(num_cells)]
 
 
 def build_ft_controller(
@@ -53,7 +60,7 @@ def build_ft_controller(
     monitoring_timeout_seconds_override: int | None = None,
     monitoring_success_iterations_override: int | None = None,
     **kwargs: object,
-) -> FtController:
+) -> FtControllerBundle:
     """Build an FtController with all dependent components from config parameters.
 
     Accepts either an ``FtControllerConfig`` or keyword arguments that
@@ -120,6 +127,8 @@ def build_ft_controller(
         config.k8s_label_prefix or "(none)",
     )
 
+    rollout_cell_ids = _rollout_num_cells_to_ids(config.rollout_num_cells)
+
     create_kwargs: dict[str, Any] = dict(
         node_manager=node_manager,
         main_job=main_job,
@@ -129,7 +138,7 @@ def build_ft_controller(
         notifier=notifier,
         detectors=detectors,
         tick_interval=config.tick_interval,
-        rollout_num_cells=config.rollout_num_cells,
+        rollout_cell_ids=rollout_cell_ids,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator_override,
     )
