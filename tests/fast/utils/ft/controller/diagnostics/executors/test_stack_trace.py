@@ -38,8 +38,16 @@ class TestStackTraceClusterExecutorBasic:
     @pytest.mark.anyio
     async def test_all_traces_same_returns_no_bad_nodes(self) -> None:
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=True, trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {
@@ -56,9 +64,21 @@ class TestStackTraceClusterExecutorBasic:
     @pytest.mark.anyio
     async def test_outlier_detected_returns_as_bad_node(self) -> None:
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=False, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=False, trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-2": _make_agent("node-2", gpu_passed=False, trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_DIFFERENT_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-2": _make_agent(
+                "node-2",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_DIFFERENT_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {
@@ -78,8 +98,16 @@ class TestStackTraceClusterExecutorFailures:
     @pytest.mark.anyio
     async def test_collection_failure_makes_node_bad(self) -> None:
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=False, trace_result=make_trace_result("node-1", passed=False, details="failed to collect")),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-1", passed=False, details="failed to collect"),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {
@@ -97,9 +125,17 @@ class TestStackTraceClusterExecutorFailures:
     async def test_agent_returning_unknown_diagnostic_makes_node_bad(self) -> None:
         """When agent has no stack_trace executor registered, call_agent_diagnostic returns fail."""
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
             "node-1": _make_agent("node-1", gpu_passed=False),
-            "node-2": _make_agent("node-2", gpu_passed=True, trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
+            "node-2": _make_agent(
+                "node-2",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {
@@ -118,9 +154,21 @@ class TestStackTraceClusterExecutorFailures:
     @pytest.mark.anyio
     async def test_rank_pids_provider_exception_isolates_node(self) -> None:
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=False, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=True, trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-2": _make_agent("node-2", gpu_passed=True, trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-2": _make_agent(
+                "node-2",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
         }
 
         def raising_provider(node_id: str) -> dict[int, int]:
@@ -144,9 +192,21 @@ class TestStackTraceClusterExecutorIntegrationWithPipeline:
         from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=True, trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-2": _make_agent("node-2", gpu_passed=True, trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_DIFFERENT_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-2": _make_agent(
+                "node-2",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_DIFFERENT_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {
@@ -173,8 +233,16 @@ class TestStackTraceClusterExecutorIntegrationWithPipeline:
         from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=False, trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {

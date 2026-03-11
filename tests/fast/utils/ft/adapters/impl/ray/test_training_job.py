@@ -5,12 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.utils.ft.adapters.impl.ray.main_job import (
-    RayMainJob,
-    _parse_ray_status,
-    _stop_job,
-    stop_all_active_jobs,
-)
+from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob, _parse_ray_status, _stop_job, stop_all_active_jobs
 from miles.utils.ft.adapters.types import JobStatus
 
 

@@ -96,9 +96,13 @@ class TestParseAvgBusBandwidth:
 class TestParseJsonAvgBusBandwidth:
     def test_parses_valid_json(self, tmp_path: Path) -> None:
         json_file = tmp_path / "output.json"
-        json_file.write_text(json.dumps({
-            "average_bus_bandwidth": {"bandwidth": 380.50},
-        }))
+        json_file.write_text(
+            json.dumps(
+                {
+                    "average_bus_bandwidth": {"bandwidth": 380.50},
+                }
+            )
+        )
         assert _parse_json_avg_bus_bandwidth(json_file) == pytest.approx(380.50)
 
     def test_returns_none_when_file_missing(self, tmp_path: Path) -> None:
@@ -116,9 +120,13 @@ class TestParseJsonAvgBusBandwidth:
 
     def test_returns_none_when_bandwidth_not_numeric(self, tmp_path: Path) -> None:
         json_file = tmp_path / "bad_value.json"
-        json_file.write_text(json.dumps({
-            "average_bus_bandwidth": {"bandwidth": "not_a_number"},
-        }))
+        json_file.write_text(
+            json.dumps(
+                {
+                    "average_bus_bandwidth": {"bandwidth": "not_a_number"},
+                }
+            )
+        )
         assert _parse_json_avg_bus_bandwidth(json_file) is None
 
 
@@ -182,9 +190,13 @@ class TestInterpretNcclOutput:
 
     def test_json_result_preferred_over_text(self, tmp_path: Path) -> None:
         json_file = tmp_path / "output.json"
-        json_file.write_text(json.dumps({
-            "average_bus_bandwidth": {"bandwidth": 999.99},
-        }))
+        json_file.write_text(
+            json.dumps(
+                {
+                    "average_bus_bandwidth": {"bandwidth": 999.99},
+                }
+            )
+        )
         result = _interpret_nccl_output(
             stdout=_SUMMARY_OUTPUT,
             stderr="",

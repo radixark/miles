@@ -4,17 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
-
 from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_roster import RankRoster
-from miles.utils.ft.controller.state_machines.main.models import (
-    DetectingAnomaly,
-    MainState,
-    Recovering,
-)
+from miles.utils.ft.controller.state_machines.main.models import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestarting,
     NotifyHumans,
@@ -22,15 +16,8 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryDone,
     StopTimeDiagnostics,
 )
-from miles.utils.ft.controller.state_machines.restart.models import (
-    Evicting,
-    StoppingAndRestarting,
-)
-from miles.utils.ft.controller.status import (
-    build_controller_status,
-    build_phase_history,
-    recovery_phase_name,
-)
+from miles.utils.ft.controller.state_machines.restart.models import Evicting, StoppingAndRestarting
+from miles.utils.ft.controller.status import build_controller_status, build_phase_history, recovery_phase_name
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 

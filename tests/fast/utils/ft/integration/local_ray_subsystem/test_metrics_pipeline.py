@@ -14,8 +14,8 @@ from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
 from miles.utils.ft.adapters.stubs import StubMainJob
 from miles.utils.ft.adapters.types import ft_controller_actor_name
-from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
+from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig

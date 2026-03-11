@@ -44,9 +44,21 @@ class TestHangWithStackTraceSuspect:
 
     async def test_hang_suspects_from_trace_evicted_directly(self) -> None:
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=True, trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-2": _make_agent("node-2", gpu_passed=False, trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_DIFFERENT_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-2": _make_agent(
+                "node-2",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_DIFFERENT_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {
@@ -69,9 +81,21 @@ class TestHangWithStackTraceSuspect:
 
     async def test_hang_all_traces_same_falls_through_to_gpu(self) -> None:
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=True, trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-2": _make_agent("node-2", gpu_passed=True, trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-1", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-2": _make_agent(
+                "node-2",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {
@@ -115,9 +139,21 @@ class TestHangWithCollectionFailure:
 
     async def test_failed_collection_node_evicted(self) -> None:
         agents = {
-            "node-0": _make_agent("node-0", gpu_passed=True, trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
-            "node-1": _make_agent("node-1", gpu_passed=False, trace_result=make_trace_result("node-1", passed=False, details="py-spy failed")),
-            "node-2": _make_agent("node-2", gpu_passed=True, trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK)),
+            "node-0": _make_agent(
+                "node-0",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-0", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
+            "node-1": _make_agent(
+                "node-1",
+                gpu_passed=False,
+                trace_result=make_trace_result("node-1", passed=False, details="py-spy failed"),
+            ),
+            "node-2": _make_agent(
+                "node-2",
+                gpu_passed=True,
+                trace_result=make_trace_result("node-2", passed=True, details=SAMPLE_PYSPY_JSON_STUCK),
+            ),
         }
         pids_provider = make_rank_pids_provider(
             {

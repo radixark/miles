@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.ft.utils.controller_fakes import FakeNodeManager, FakeNotifier, FakeMainJob
+from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus

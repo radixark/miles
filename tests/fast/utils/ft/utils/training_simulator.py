@@ -20,7 +20,7 @@ from uuid import uuid4
 import ray
 
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
-from miles.utils.ft.adapters.types import JobStatus, NodeManagerProtocol, NotifierProtocol, MainJobProtocol
+from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 from miles.utils.ft.agents.types import MetricSample
@@ -315,7 +315,10 @@ class NodeManagerStateActor:
         self._last_node_metadata: dict[str, str] | None = None
 
     def mark_bad(
-        self, node_id: str, reason: str, node_metadata: dict[str, str] | None,
+        self,
+        node_id: str,
+        reason: str,
+        node_metadata: dict[str, str] | None,
     ) -> None:
         self._bad_nodes.add(node_id)
         self._ever_marked_bad.add(node_id)
@@ -343,7 +346,10 @@ class RemoteControlledNodeManager(NodeManagerProtocol):
         self._state = state_actor
 
     async def mark_node_bad(
-        self, node_id: str, reason: str = "", node_metadata: dict[str, str] | None = None,
+        self,
+        node_id: str,
+        reason: str = "",
+        node_metadata: dict[str, str] | None = None,
     ) -> None:
         await self._state.mark_bad.remote(node_id, reason, node_metadata)
 

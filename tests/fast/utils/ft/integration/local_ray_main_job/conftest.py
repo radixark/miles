@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import Generator
 
 import pytest
 from ray.job_submission import JobSubmissionClient
 
-from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob, stop_all_active_jobs
+from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
 from miles.utils.ft.adapters.types import JobStatus
 
 pytestmark = [
@@ -49,9 +49,7 @@ def make_main_job(
     for job in created:
         if job.job_id is not None:
             try:
-                asyncio.get_event_loop().run_until_complete(
-                    job.stop_job(timeout_seconds=15)
-                )
+                asyncio.get_event_loop().run_until_complete(job.stop_job(timeout_seconds=15))
             except Exception:
                 pass
 

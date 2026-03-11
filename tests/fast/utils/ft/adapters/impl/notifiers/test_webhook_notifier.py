@@ -129,7 +129,6 @@ class TestWebhookNotifierRealHttp:
     @pytest.mark.anyio
     async def test_send_posts_to_real_http_server(self) -> None:
         """A real HTTP POST should arrive at a local server with the expected payload."""
-        import asyncio
         import json
 
         from aiohttp import web

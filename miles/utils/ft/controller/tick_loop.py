@@ -5,33 +5,19 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 
-from miles.utils.ft.adapters.types import (
-    JobStatus,
-    NodeAgentProtocol,
-    NotifierProtocol,
-    MainJobProtocol,
-)
+from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeAgentProtocol, NotifierProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
 from miles.utils.ft.controller.rank_roster import RankRoster
-from miles.utils.ft.controller.state_machines.main import (
-    MainContext,
-    MainState,
-    Recovering,
-)
-from miles.utils.ft.controller.state_machines.recovery import (
-    RECOVERY_STATE_TO_INT,
-    RecoveryContext,
-    RecoveryState,
-)
+from miles.utils.ft.controller.state_machines.main import MainContext, MainState, Recovering
+from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT, RecoveryContext
 from miles.utils.ft.controller.state_machines.restart import RestartContext
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import (
     ControllerMode,
     DiagnosticOrchestratorProtocol,
-    MetricQueryProtocol,
     MetricStoreProtocol,
     TriggerType,
 )

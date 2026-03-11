@@ -6,11 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.types import (
-    Decision,
-    MetricQueryProtocol,
-    TrainingMetricStoreProtocol,
-)
+from miles.utils.ft.controller.types import Decision, MetricQueryProtocol, TrainingMetricStoreProtocol
 
 logger = logging.getLogger(__name__)
 

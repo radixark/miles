@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from tests.fast.utils.ft.integration.local_ray_main_job.conftest import poll_until_terminal
 
 from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
 from miles.utils.ft.adapters.types import JobStatus
-from tests.fast.utils.ft.integration.local_ray_main_job.conftest import poll_until_terminal
 
 pytestmark = [
     pytest.mark.local_ray,

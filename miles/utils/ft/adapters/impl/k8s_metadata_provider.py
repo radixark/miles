@@ -13,15 +13,9 @@ class K8sMetadataProvider(AgentMetadataProvider):
         pod_name = os.environ.get("K8S_POD_NAME", "")
 
         if not node_name:
-            raise RuntimeError(
-                "K8S_NODE_NAME env var not set. "
-                "Configure Kubernetes Downward API in pod spec."
-            )
+            raise RuntimeError("K8S_NODE_NAME env var not set. " "Configure Kubernetes Downward API in pod spec.")
         if not pod_name:
-            raise RuntimeError(
-                "K8S_POD_NAME env var not set. "
-                "Configure Kubernetes Downward API in pod spec."
-            )
+            raise RuntimeError("K8S_POD_NAME env var not set. " "Configure Kubernetes Downward API in pod spec.")
 
         return {
             "k8s_node_name": node_name,

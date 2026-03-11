@@ -5,11 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from miles.utils.ft.utils.env import (
-    get_exception_inject_path,
-    get_ft_id,
-    get_training_run_id,
-)
+from miles.utils.ft.utils.env import get_exception_inject_path, get_ft_id, get_training_run_id
 
 
 class TestGetFtId:

@@ -1,6 +1,7 @@
 import math
 
 import pytest
+from tests.fast.utils.ft.utils.metric_injectors import make_detector_context, make_fake_mini_wandb
 
 from miles.utils.ft.controller.detectors.base import (
     BaseFaultDetector,
@@ -9,7 +10,6 @@ from miles.utils.ft.controller.detectors.base import (
     get_non_finite_loss,
 )
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
-from tests.fast.utils.ft.utils.metric_injectors import make_detector_context, make_fake_mini_wandb
 
 
 class TestBaseFaultDetector:

@@ -7,7 +7,7 @@ import pytest
 from tests.fast.utils.ft.conftest import make_test_controller
 
 from miles.utils.ft.adapters.impl.ray.controller_actor import _FtControllerActorCls
-from miles.utils.ft.adapters.stubs import StubNodeManager, StubNotifier, StubMainJob
+from miles.utils.ft.adapters.stubs import StubMainJob, StubNotifier
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.factories.controller import build_ft_controller

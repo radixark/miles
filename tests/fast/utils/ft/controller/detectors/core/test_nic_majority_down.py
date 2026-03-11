@@ -1,9 +1,4 @@
-from tests.fast.utils.ft.utils import (
-    inject_nic_down,
-    inject_nic_up,
-    make_detector_context,
-    make_fake_metric_store,
-)
+from tests.fast.utils.ft.utils import inject_nic_down, inject_nic_up, make_detector_context, make_fake_metric_store
 
 from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
 from miles.utils.ft.controller.types import ActionType

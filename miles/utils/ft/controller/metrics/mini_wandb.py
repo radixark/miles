@@ -19,6 +19,7 @@ class TimedStepValue(NamedTuple):
     timestamp: datetime
     value: float
 
+
 logger = logging.getLogger(__name__)
 
 

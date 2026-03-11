@@ -78,8 +78,7 @@ class K8sNodeManager(NodeManagerProtocol):
             await self._delete_ray_worker_pod_on_node(k8s_name)
         except Exception:
             logger.error(
-                "failed to delete ray worker pod on node %s, "
-                "pod will remain until RayCluster operator handles it",
+                "failed to delete ray worker pod on node %s, " "pod will remain until RayCluster operator handles it",
                 k8s_name,
                 exc_info=True,
             )
@@ -157,12 +156,14 @@ class K8sNodeManager(NodeManagerProtocol):
         pod = pod_list.items[0]
         affinity = getattr(pod.spec, "affinity", None)
         if affinity is None:
-            raise RuntimeError(
-                f"worker pod missing nodeAffinity NotIn rule for {self._label_key}"
-            )
+            raise RuntimeError(f"worker pod missing nodeAffinity NotIn rule for {self._label_key}")
 
         node_affinity = getattr(affinity, "node_affinity", None)
-        required = getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None) if node_affinity else None
+        required = (
+            getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None)
+            if node_affinity
+            else None
+        )
         terms = getattr(required, "node_selector_terms", None) if required else None
 
         if terms:
@@ -180,9 +181,7 @@ class K8sNodeManager(NodeManagerProtocol):
                         )
                         return
 
-        raise RuntimeError(
-            f"worker pod missing nodeAffinity NotIn rule for {self._label_key}"
-        )
+        raise RuntimeError(f"worker pod missing nodeAffinity NotIn rule for {self._label_key}")
 
     async def _ensure_ray_cluster_name(self) -> str:
         if self._ray_cluster_name:
@@ -190,15 +189,13 @@ class K8sNodeManager(NodeManagerProtocol):
 
         pod_name = os.environ.get("K8S_POD_NAME", "")
         if not pod_name:
-            raise RuntimeError(
-                "K8S_POD_NAME env var not set. "
-                "Configure Kubernetes Downward API in pod spec."
-            )
+            raise RuntimeError("K8S_POD_NAME env var not set. " "Configure Kubernetes Downward API in pod spec.")
 
         core_v1 = await self._ensure_client()
         pod = await retry_async_or_raise(
             lambda: core_v1.read_namespaced_pod(
-                name=pod_name, namespace=self._namespace,
+                name=pod_name,
+                namespace=self._namespace,
             ),
             description=f"read_pod({pod_name})",
             max_retries=_K8S_API_MAX_RETRIES,
@@ -208,15 +205,13 @@ class K8sNodeManager(NodeManagerProtocol):
         labels = pod.metadata.labels or {}
         cluster_name = labels.get("ray.io/cluster", "")
         if not cluster_name:
-            raise RuntimeError(
-                f"Pod {pod_name} missing ray.io/cluster label. "
-                "Not running in a RayCluster?"
-            )
+            raise RuntimeError(f"Pod {pod_name} missing ray.io/cluster label. " "Not running in a RayCluster?")
 
         self._ray_cluster_name = cluster_name
         logger.info(
             "auto_detected ray_cluster_name=%s from pod=%s",
-            cluster_name, pod_name,
+            cluster_name,
+            pod_name,
         )
         return cluster_name
 

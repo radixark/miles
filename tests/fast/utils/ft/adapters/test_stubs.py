@@ -1,4 +1,4 @@
-from miles.utils.ft.adapters.stubs import NullMetadataProvider, StubNodeManager, StubMainJob
+from miles.utils.ft.adapters.stubs import NullMetadataProvider, StubMainJob, StubNodeManager
 from miles.utils.ft.adapters.types import JobStatus
 
 

@@ -3,11 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.ft.adapters.types import (
-    NodeAgentProtocol,
-    NotifierProtocol,
-    MainJobProtocol,
-)
+from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -15,11 +11,7 @@ from miles.utils.ft.controller.rank_roster import RankRoster
 from miles.utils.ft.controller.state_machines.main import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.tick_loop import TickLoop
-from miles.utils.ft.controller.types import (
-    ControllerStatus,
-    MetricStoreProtocol,
-    ScrapeTargetManagerProtocol,
-)
+from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -93,7 +85,9 @@ class FtController:
             )
         logger.info(
             "agent_registered node_id=%s exporter=%s metadata_keys=%s",
-            node_id, exporter_address, sorted(node_metadata) if node_metadata else "(none)",
+            node_id,
+            exporter_address,
+            sorted(node_metadata) if node_metadata else "(none)",
         )
 
     async def submit_initial_job(self) -> str:

@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from tests.fast.utils.ft.integration.local_ray_main_job.conftest import poll_until_terminal
 
 from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
 from miles.utils.ft.adapters.types import JobStatus
-from tests.fast.utils.ft.integration.local_ray_main_job.conftest import poll_until_terminal
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -94,7 +94,7 @@ class TestSubmitAndStatus:
     ) -> None:
         """The MILES_FT_TRAINING_RUN_ID env var should appear in the job logs."""
         job: RayMainJob = make_main_job(
-            entrypoint='python -c "import os; print(os.environ[\'MILES_FT_TRAINING_RUN_ID\'])"',
+            entrypoint="python -c \"import os; print(os.environ['MILES_FT_TRAINING_RUN_ID'])\"",
         )
         run_id = await job.submit_job()
 

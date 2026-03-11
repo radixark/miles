@@ -15,7 +15,6 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 from tests.fast.utils.ft.utils.metric_injectors import make_detector_context
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main import (
     DetectingAnomaly,
     MainContext,

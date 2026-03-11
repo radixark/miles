@@ -18,9 +18,9 @@ from miles.utils.ft.adapters.impl.notifiers.factory import build_notifier
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
-from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -184,10 +184,7 @@ def _build_platform_components(
 
         namespace = os.environ.get("K8S_NAMESPACE", "")
         if not namespace:
-            raise RuntimeError(
-                "K8S_NAMESPACE env var not set. "
-                "Configure Kubernetes Downward API in pod spec."
-            )
+            raise RuntimeError("K8S_NAMESPACE env var not set. " "Configure Kubernetes Downward API in pod spec.")
 
         node_manager = K8sNodeManager(
             label_prefix=k8s_label_prefix,

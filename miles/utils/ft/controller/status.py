@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-from miles.utils.ft.controller.state_machines.main import (
-    MainContext,
-    MainState,
-    Recovering,
-    get_known_bad_nodes,
-)
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.rank_roster import RankRoster
+from miles.utils.ft.controller.state_machines.main import MainContext, MainState, Recovering, get_known_bad_nodes
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestarting,
     NotifyHumans,
     RecoveryDone,
     RecoveryState,
 )
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.rank_roster import RankRoster
 from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
 from miles.utils.ft.utils.state_machine import StateMachine
 

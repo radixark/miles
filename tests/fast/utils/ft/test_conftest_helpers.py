@@ -2,9 +2,9 @@
 
 import pytest
 from tests.fast.utils.ft.conftest import (
+    FakeMainJob,
     FakeNodeAgent,
     FakeNodeManager,
-    FakeMainJob,
     TestCollector,
     make_fake_metric_store,
     make_fake_mini_wandb,

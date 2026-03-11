@@ -22,9 +22,7 @@ class BaseNodeExecutor(NodeExecutorProtocol):
         super().__init_subclass__(**kwargs)
         # ABCMeta sets __abstractmethods__ AFTER __init_subclass__ runs,
         # so we check for abstract methods directly.
-        is_abstract = any(
-            getattr(v, "__isabstractmethod__", False) for v in vars(cls).values()
-        ) or any(
+        is_abstract = any(getattr(v, "__isabstractmethod__", False) for v in vars(cls).values()) or any(
             getattr(getattr(cls, n, None), "__isabstractmethod__", False)
             for b in cls.__mro__[1:]
             for n in getattr(b, "__abstractmethods__", ())

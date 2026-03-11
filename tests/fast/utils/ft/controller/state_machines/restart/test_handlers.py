@@ -6,9 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from tests.fast.utils.ft.utils.controller_fakes import (
+    FakeMainJob,
     FakeNodeManager,
     FakeNotifier,
-    FakeMainJob,
     failing_mark_node_bad,
     failing_stop_job,
     failing_submit_job,
@@ -16,7 +16,6 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-
 from miles.utils.ft.controller.state_machines.restart import (
     Evicting,
     MonitoringProgress,

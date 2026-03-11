@@ -5,9 +5,9 @@ from miles.utils.ft.adapters.types import (
     STOP_TRAINING_TIMEOUT_SECONDS,
     AgentMetadataProvider,
     JobStatus,
+    MainJobProtocol,
     NodeManagerProtocol,
     NotifierProtocol,
-    MainJobProtocol,
 )
 
 logger = logging.getLogger(__name__)

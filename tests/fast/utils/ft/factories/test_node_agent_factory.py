@@ -4,12 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from miles.utils.ft.adapters.stubs import NullMetadataProvider
 from miles.utils.ft.agents.collectors.disk import DiskCollector
 from miles.utils.ft.agents.collectors.gpu import GpuCollector
 from miles.utils.ft.agents.collectors.kmsg import KmsgCollector
 from miles.utils.ft.agents.collectors.network import NetworkCollector
-from miles.utils.ft.adapters.stubs import NullMetadataProvider
-from miles.utils.ft.adapters.types import AgentMetadataProvider
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.nccl import NcclNodeExecutor

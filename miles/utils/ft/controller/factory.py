@@ -4,26 +4,14 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from miles.utils.ft.adapters.types import (
-    NodeManagerProtocol,
-    NotifierProtocol,
-    MainJobProtocol,
-)
+from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.rank_roster import RankRoster
-from miles.utils.ft.controller.state_machines.main import (
-    DetectingAnomaly,
-    MainContext,
-    MainState,
-    create_main_stepper,
-)
-from miles.utils.ft.controller.state_machines.recovery import (
-    RECOVERY_TIMEOUT_SECONDS,
-    create_recovery_stepper,
-)
+from miles.utils.ft.controller.state_machines.main import DetectingAnomaly, MainContext, MainState, create_main_stepper
+from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS, create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import RestartContext, create_restart_stepper
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (

@@ -20,9 +20,9 @@ class GpuClusterExecutor(ClusterExecutorProtocol):
     """
 
     async def execute(
-            self,
-            agents: dict[str, NodeAgentProtocol],
-            timeout_seconds: int,
+        self,
+        agents: dict[str, NodeAgentProtocol],
+        timeout_seconds: int,
     ) -> list[str]:
         results = await gather_diagnostic_results(
             diagnostic_type=_GPU_DIAGNOSTIC_TYPE,

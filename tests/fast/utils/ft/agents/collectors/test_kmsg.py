@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 from tests.fast.utils.ft.conftest import FakeKmsgReader
 
+from miles.utils.ft.agents.collectors.base import CollectorOutput
 from miles.utils.ft.agents.collectors.kmsg import (
     KmsgCollector,
     _build_xid_samples,
@@ -17,7 +18,6 @@ from miles.utils.ft.agents.collectors.kmsg import (
     _parse_xid_codes,
     _prune_xid_window,
 )
-from miles.utils.ft.agents.collectors.base import CollectorOutput
 from miles.utils.ft.agents.types import CounterSample, GaugeSample
 
 

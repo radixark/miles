@@ -89,19 +89,23 @@ class TestGetBadNodes:
 
         # Step 1: mark_node_bad with metadata to populate reverse map
         await manager.mark_node_bad(
-            node_id="ray-uuid-a", reason="test",
+            node_id="ray-uuid-a",
+            reason="test",
             node_metadata={"k8s_node_name": "gke-node-a"},
         )
         await manager.mark_node_bad(
-            node_id="ray-uuid-b", reason="test",
+            node_id="ray-uuid-b",
+            reason="test",
             node_metadata={"k8s_node_name": "gke-node-b"},
         )
 
         # Step 2: get_bad_nodes returns k8s names from API
-        mock_core_v1.list_node.return_value = SimpleNamespace(items=[
-            SimpleNamespace(metadata=SimpleNamespace(name="gke-node-a")),
-            SimpleNamespace(metadata=SimpleNamespace(name="gke-node-b")),
-        ])
+        mock_core_v1.list_node.return_value = SimpleNamespace(
+            items=[
+                SimpleNamespace(metadata=SimpleNamespace(name="gke-node-a")),
+                SimpleNamespace(metadata=SimpleNamespace(name="gke-node-b")),
+            ]
+        )
 
         result = await manager.get_bad_nodes()
 
@@ -124,9 +128,11 @@ class TestGetBadNodes:
         """K8s names without a reverse mapping are skipped."""
         manager, mock_core_v1 = _make_manager_with_mock_api()
 
-        mock_core_v1.list_node.return_value = SimpleNamespace(items=[
-            SimpleNamespace(metadata=SimpleNamespace(name="unknown-node")),
-        ])
+        mock_core_v1.list_node.return_value = SimpleNamespace(
+            items=[
+                SimpleNamespace(metadata=SimpleNamespace(name="unknown-node")),
+            ]
+        )
 
         result = await manager.get_bad_nodes()
 
@@ -155,7 +161,8 @@ class TestLabelPrefix:
     @pytest.mark.anyio
     async def test_mark_node_bad_uses_prefixed_labels(self) -> None:
         manager, mock_core_v1 = _make_manager_with_mock_api(
-            label_prefix="pfx", ray_cluster_name="c1",
+            label_prefix="pfx",
+            ray_cluster_name="c1",
         )
 
         await manager.mark_node_bad(node_id="node-1", reason="test")
@@ -240,10 +247,7 @@ class TestMarkNodeBadDeletesPod:
         await manager.mark_node_bad(node_id="node-1", reason="test")
 
         assert mock_core_v1.delete_namespaced_pod.await_count == 2
-        deleted_names = [
-            call.kwargs["name"]
-            for call in mock_core_v1.delete_namespaced_pod.call_args_list
-        ]
+        deleted_names = [call.kwargs["name"] for call in mock_core_v1.delete_namespaced_pod.call_args_list]
         assert "c1-worker-0" in deleted_names
         assert "c1-worker-1" in deleted_names
 
@@ -273,7 +277,8 @@ class TestMetadataTranslation:
         manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
 
         await manager.mark_node_bad(
-            node_id="ray-uuid-abc", reason="gpu_ecc",
+            node_id="ray-uuid-abc",
+            reason="gpu_ecc",
             node_metadata={"k8s_node_name": "gke-node-01"},
         )
 
@@ -297,14 +302,17 @@ class TestMetadataTranslation:
 
         # Step 1: establish reverse mapping via mark_node_bad
         await manager.mark_node_bad(
-            node_id="ray-uuid-abc", reason="test",
+            node_id="ray-uuid-abc",
+            reason="test",
             node_metadata={"k8s_node_name": "gke-node-01"},
         )
 
         # Step 2: get_bad_nodes returns k8s names from API
-        mock_core_v1.list_node.return_value = SimpleNamespace(items=[
-            SimpleNamespace(metadata=SimpleNamespace(name="gke-node-01")),
-        ])
+        mock_core_v1.list_node.return_value = SimpleNamespace(
+            items=[
+                SimpleNamespace(metadata=SimpleNamespace(name="gke-node-01")),
+            ]
+        )
 
         result = await manager.get_bad_nodes()
         assert result == ["ray-uuid-abc"]
@@ -319,7 +327,8 @@ class TestMetadataTranslation:
         mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=[])
 
         await manager.mark_node_bad(
-            node_id="ray-uuid-abc", reason="test",
+            node_id="ray-uuid-abc",
+            reason="test",
             node_metadata={"k8s_node_name": "gke-node-01"},
         )
 
@@ -342,9 +351,11 @@ def _make_mock_pod_with_affinity(
                 node_affinity=SimpleNamespace(
                     required_during_scheduling_ignored_during_execution=SimpleNamespace(
                         node_selector_terms=[
-                            SimpleNamespace(match_expressions=[
-                                SimpleNamespace(key=label_key, operator=operator, values=values),
-                            ]),
+                            SimpleNamespace(
+                                match_expressions=[
+                                    SimpleNamespace(key=label_key, operator=operator, values=values),
+                                ]
+                            ),
                         ],
                     ),
                 ),

@@ -45,9 +45,7 @@ class _AlwaysFailDetector(BaseFaultDetector):
 
 class TestCollectorBasedNodeExecutor:
     def test_pass_when_detector_returns_no_fault(self) -> None:
-        collector = _FakeCollector(
-            metrics=[GaugeSample(name="m", labels={}, value=1.0)]
-        )
+        collector = _FakeCollector(metrics=[GaugeSample(name="m", labels={}, value=1.0)])
         executor = CollectorBasedNodeExecutor(
             diagnostic_type="test",
             collector=collector,
@@ -60,9 +58,7 @@ class TestCollectorBasedNodeExecutor:
         assert result.diagnostic_type == "test"
 
     def test_fail_when_detector_returns_fault(self) -> None:
-        collector = _FakeCollector(
-            metrics=[GaugeSample(name="m", labels={}, value=1.0)]
-        )
+        collector = _FakeCollector(metrics=[GaugeSample(name="m", labels={}, value=1.0)])
         executor = CollectorBasedNodeExecutor(
             diagnostic_type="test",
             collector=collector,

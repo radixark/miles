@@ -17,9 +17,9 @@ from tests.fast.utils.ft.utils.training_simulator import (
     NodeManagerStateActor,
     NotifierStateActor,
     RemoteControlledCollector,
+    RemoteControlledMainJob,
     RemoteControlledNodeManager,
     RemoteControlledNotifier,
-    RemoteControlledMainJob,
     TrainingStateActor,
     TrainingWorkerActor,
 )

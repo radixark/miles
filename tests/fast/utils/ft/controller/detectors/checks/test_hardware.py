@@ -2,12 +2,7 @@
 
 from datetime import timedelta
 
-from tests.fast.utils.ft.conftest import (
-    inject_disk_fault,
-    inject_nic_down,
-    inject_nic_up,
-    make_fake_metric_store,
-)
+from tests.fast.utils.ft.conftest import inject_disk_fault, inject_nic_down, inject_nic_up, make_fake_metric_store
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.checks.hardware import (
@@ -316,5 +311,3 @@ class TestCheckDiskFault:
 
         result = check_disk_fault(store, disk_available_threshold_bytes=1e9)
         assert result == []
-
-

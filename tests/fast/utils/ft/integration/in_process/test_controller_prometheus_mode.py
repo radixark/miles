@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from tests.fast.utils.ft.conftest import FakeNodeManager, FakeMainJob, get_sample_value, make_test_exporter
+from tests.fast.utils.ft.conftest import FakeMainJob, FakeNodeManager, get_sample_value, make_test_exporter
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus

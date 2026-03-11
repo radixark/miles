@@ -141,6 +141,7 @@ class TestCheckExceptionInjection:
         with patch.dict("os.environ", {}, clear=False):
             # Ensure the env var is absent
             import os
+
             os.environ.pop("MILES_FT_EXCEPTION_INJECT_PATH", None)
 
             mock_client = MagicMock()

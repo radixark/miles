@@ -7,12 +7,12 @@ from pydantic import ValidationError
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.chain import DetectorChainConfig, build_detector_chain
-from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
-from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
+from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector
+from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 
 

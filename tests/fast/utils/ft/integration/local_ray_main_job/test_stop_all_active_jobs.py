@@ -8,7 +8,6 @@ import pytest
 from ray.job_submission import JobSubmissionClient
 
 from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob, stop_all_active_jobs
-from miles.utils.ft.adapters.types import JobStatus
 
 pytestmark = [
     pytest.mark.local_ray,

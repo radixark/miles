@@ -11,13 +11,13 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from miles.utils.ft.controller.metrics.prometheus_api.errors import PrometheusQueryError
 from miles.utils.ft.controller.metrics.prometheus_api.client import (
     PrometheusClient,
     _build_selector,
     _escape_promql_label_value,
     _format_duration,
 )
+from miles.utils.ft.controller.metrics.prometheus_api.errors import PrometheusQueryError
 
 
 def _make_response(json_data: dict[str, Any], status_code: int = 200) -> httpx.Response:

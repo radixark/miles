@@ -40,7 +40,9 @@ def _init_local_ray() -> str:
 
     result = subprocess.run(
         [
-            "ray", "start", "--head",
+            "ray",
+            "start",
+            "--head",
             "--port=0",
             "--num-cpus=32",
             "--num-gpus=0",
@@ -114,9 +116,7 @@ def _wait_for_dashboard_agent(dashboard_url: str, timeout: float = _DASHBOARD_AG
             last_error = exc
             logger.debug("Dashboard agent not ready yet", exc_info=True)
         time.sleep(2.0)
-    raise RuntimeError(
-        f"Ray dashboard agent not ready after {timeout}s: {last_error}"
-    )
+    raise RuntimeError(f"Ray dashboard agent not ready after {timeout}s: {last_error}")
 
 
 def _kill_named_actor(name: str) -> None:
