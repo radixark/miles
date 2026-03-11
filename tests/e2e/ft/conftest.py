@@ -375,9 +375,6 @@ async def wait_for_mode_transition(
     )
 
 
-assert_phase_path_contains = _scenarios.assert_phase_path_contains
-
-
 async def list_worker_pods_on_node(node_id: str, namespace: str = "default") -> list[str]:
     """List ray worker pod names scheduled on a specific K8s node."""
     from kubernetes_asyncio import config as k8s_config

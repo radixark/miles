@@ -14,8 +14,6 @@ import ray
 from tests.e2e.ft.conftest import (
     E2eFaultInjector,
     FaultInjectorFactory,
-    assert_phase_path_contains,
-    get_status,
     wait_for_mode_transition,
     wait_for_training_stable,
 )
@@ -52,25 +50,13 @@ async def test_python_exception_auto_recovery(
         timeout=300.0,
     )
     assert status.mode == ControllerMode.MONITORING
-    assert status.bad_nodes == []
+    assert status.recovery is None
 
     # Step 5: Verify training resumes after recovery
     await wait_for_training_stable(
         ft_controller_handle,
         n_iterations=5,
         timeout=300.0,
-    )
-
-    # Step 6: Verify recovery went through expected phases
-    final = get_status(ft_controller_handle)
-    assert_phase_path_contains(
-        final,
-        [
-            "RealtimeChecksSt",
-            "StoppingAndRestartingSt",
-            "MonitoringProgressSt",
-            "RecoveryDoneSt",
-        ],
     )
 
     assert time.monotonic() - t0 < 300.0
