@@ -77,19 +77,16 @@ def make_test_exporter() -> tuple[CollectorRegistry, ControllerExporter]:
     return registry, exporter
 
 
-EMPTY_RANK_PLACEMENT: dict[int, str] = {}
-
-
 def make_detector_context(
     metric_store: MiniPrometheus | None = None,
     mini_wandb: MiniWandb | None = None,
-    rank_placement: dict[int, str] | None = None,
+    active_node_ids: set[str] | None = None,
     job_status: JobStatus = JobStatus.RUNNING,
 ) -> DetectorContext:
     return DetectorContext(
         metric_store=metric_store or make_fake_metric_store(),
         mini_wandb=mini_wandb or make_fake_mini_wandb(),
-        rank_placement=rank_placement if rank_placement is not None else {},
+        active_node_ids=active_node_ids if active_node_ids is not None else set(),
         job_status=job_status,
     )
 

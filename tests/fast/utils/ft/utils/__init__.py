@@ -57,7 +57,6 @@ from tests.fast.utils.ft.utils.diagnostic_fakes import (
     mock_nccl_pairwise_run,
 )
 from tests.fast.utils.ft.utils.metric_injectors import (
-    EMPTY_RANK_PLACEMENT,
     get_sample_value,
     inject_critical_xid,
     inject_disk_fault,
@@ -77,7 +76,6 @@ from tests.fast.utils.ft.utils.metric_injectors import (
 )
 
 __all__ = [
-    "EMPTY_RANK_PLACEMENT",
     "SAMPLE_PYSPY_JSON_DIFFERENT_STUCK",
     "SAMPLE_PYSPY_JSON_NORMAL",
     "SAMPLE_PYSPY_JSON_STUCK",
