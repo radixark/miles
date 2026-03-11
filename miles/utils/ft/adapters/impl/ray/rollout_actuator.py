@@ -13,9 +13,6 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
     Each rollout subsystem has its own RayRolloutActuator instance.
     All instances share the same rm_handle (RolloutManager Ray actor handle).
     rm_handle exposes stop_cell/start_cell/get_cell_status as remote methods.
-
-    When ft_rollout_agent is provided, start() also updates the local
-    RolloutCellAgent's engine handles from the dict returned by start_cell.
     """
 
     def __init__(
@@ -23,11 +20,9 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
         *,
         rm_handle: object,
         cell_id: str,
-        ft_rollout_agent: object | None = None,
     ) -> None:
         self._rm_handle = rm_handle
         self._cell_id = cell_id
-        self._ft_rollout_agent = ft_rollout_agent
 
     async def stop(self) -> None:
         logger.info("rollout_actuator_stop cell_id=%s", self._cell_id)
@@ -37,12 +32,8 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
         logger.info("rollout_actuator_start cell_id=%s", self._cell_id)
         result = await self._rm_handle.start_cell.remote(self._cell_id)  # type: ignore[attr-defined]
 
-        if self._ft_rollout_agent is not None and isinstance(result, dict):
-            self._ft_rollout_agent.update_cell_engines(  # type: ignore[union-attr]
-                self._cell_id, result["engine_handles"],
-            )
+        if isinstance(result, dict):
             return str(result["count"])
-
         return str(result)
 
     async def get_status(self) -> JobStatus:

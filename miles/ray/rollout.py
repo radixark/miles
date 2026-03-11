@@ -92,14 +92,16 @@ class RolloutManager:
 
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
-        self._full_ft_mode = (
-            "rollout" in self.args.ft_components and "train" in self.args.ft_components
-        )
-        if "rollout" in self.args.ft_components and not self._full_ft_mode:
+        self._ft_agent = None
+        self._full_ft_mode = {"rollout", "train"} <= set(getattr(self.args, "ft_components", frozenset()))
+        if self._full_ft_mode:
+            from miles.utils.ft.agents.core.rollout.ft_rollout_agent import FtRolloutAgent
+            self._ft_agent = FtRolloutAgent(self)
+        elif "rollout" in getattr(self.args, "ft_components", frozenset()):
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()
         self._ci_fault_injection_pending = (
-            self.args.ci_test and "rollout" in self.args.ft_components
+            self.args.ci_test and "rollout" in getattr(self.args, "ft_components", frozenset())
         )
 
     def _try_ci_fault_injection(self):
@@ -123,11 +125,13 @@ class RolloutManager:
             except Exception as e:
                 logger.warning(f"CI Fault Injection failed: {e}")
 
-    def dispose(self):
+    async def dispose(self):
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         if self._health_monitor is not None:
             self._health_monitor.stop()
+        if self._ft_agent is not None:
+            await self._ft_agent.shutdown()
 
     # TODO maybe rename "rollout_engines" and "all_rollout_engines" later
     @property
@@ -198,11 +202,15 @@ class RolloutManager:
         )
 
     def health_monitoring_pause(self):
-        if "rollout" in self.args.ft_components and self._health_monitor is not None:
+        if self._ft_agent is not None:
+            self._ft_agent.pause()
+        if self._health_monitor is not None:
             self._health_monitor.pause()
 
     def health_monitoring_resume(self):
-        if "rollout" in self.args.ft_components and self._health_monitor is not None:
+        if self._ft_agent is not None:
+            self._ft_agent.resume()
+        if self._health_monitor is not None:
             self._health_monitor.resume()
 
     def onload_weights(self):
@@ -260,28 +268,6 @@ class RolloutManager:
 
         all_alive = all(e is not None for e in self.all_rollout_engines)
         return JobStatus.RUNNING if all_alive else JobStatus.FAILED
-
-    def register_with_ft_controller(self, self_handle: object) -> None:
-        """Register this RolloutManager with the FT controller for health monitoring."""
-        from miles.utils.ft.adapters.types import ft_controller_actor_name
-        from miles.utils.ft.utils.env import get_ft_id
-
-        ft_id = get_ft_id()
-        if not ft_id:
-            return
-        try:
-            controller = ray.get_actor(ft_controller_actor_name(ft_id))
-        except ValueError:
-            logger.warning("FT controller not found, skipping rollout registration")
-            return
-        ray.get(controller.register_rollout.remote(
-            rm_handle=self_handle,
-            engine_handles=list(self.all_rollout_engines),
-            node_ids=[],
-        ))
-        logger.info("registered_with_ft_controller ft_id=%s", ft_id)
-
-    # --- End FT Controller integration ---
 
     def clear_num_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights

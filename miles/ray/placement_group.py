@@ -122,7 +122,4 @@ def create_rollout_manager(args, pg):
     if args.offload_rollout:
         ray.get(rollout_manager.offload.remote())
 
-    if {"train", "rollout"} <= set(getattr(args, "ft_components", frozenset())):
-        ray.get(rollout_manager.register_with_ft_controller.remote(rollout_manager))
-
     return rollout_manager, num_rollout_per_epoch

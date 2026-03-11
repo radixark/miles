@@ -27,7 +27,6 @@ class _RolloutSubsystemConfig:
     cell_id: str
     rm_handle: object
     get_active_node_ids: Callable[[], set[str]]
-    ft_rollout_agent: object | None = None
 
 
 def _build_rollout_subsystem_config(*, config: _RolloutSubsystemConfig) -> SubsystemConfig:
@@ -38,7 +37,6 @@ def _build_rollout_subsystem_config(*, config: _RolloutSubsystemConfig) -> Subsy
         actuator=RayRolloutActuator(
             rm_handle=config.rm_handle,
             cell_id=config.cell_id,
-            ft_rollout_agent=config.ft_rollout_agent,
         ),
         restart_mode=RestartMode.SUBSYSTEM,
         detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=config.cell_id),
@@ -130,11 +128,13 @@ class FtController:
         self,
         *,
         rm_handle: object,
-        ft_rollout_agent: object,
+        cell_ids: list[str] | None = None,
     ) -> None:
         from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomaly
 
-        cell_ids: list[str] = ft_rollout_agent.get_cell_ids()  # type: ignore[union-attr]
+        if cell_ids is None:
+            cell_ids = ["default"]
+
         assert len(cell_ids) == self._rollout_num_cells, (
             f"Expected {self._rollout_num_cells} rollout cells, got {len(cell_ids)}"
         )
@@ -147,12 +147,10 @@ class FtController:
 
         new_subsystem_states = dict(state.subsystems)
         for cell_id in cell_ids:
-            cell_agent = ft_rollout_agent.get_cell_agent(cell_id)  # type: ignore[union-attr]
             rollout_config = _RolloutSubsystemConfig(
                 cell_id=cell_id,
                 rm_handle=rm_handle,
-                get_active_node_ids=cell_agent.get_node_ids,
-                ft_rollout_agent=ft_rollout_agent,
+                get_active_node_ids=lambda: set(),
             )
             self._rollout_configs.append(rollout_config)
 
