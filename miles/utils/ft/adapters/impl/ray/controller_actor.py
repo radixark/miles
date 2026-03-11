@@ -16,7 +16,7 @@ class _FtControllerActorCls:
     FtController remains a plain Python class for testability.
 
     Agent-facing methods (register_training_rank, log_step, register_node_agent)
-    route to the appropriate component on FtController.
+    route to the appropriate component on FtController or SubsystemHub.
     """
 
     def __init__(
@@ -26,13 +26,15 @@ class _FtControllerActorCls:
         config: Any = None,
         **kwargs: object,
     ) -> None:
-        self._ctrl = builder(config=config, **kwargs)
+        bundle = builder(config=config, **kwargs)
+        self._ctrl = bundle.controller
+        self._hub = bundle.hub
 
     async def run(self) -> None:
         await self._ctrl.run()
 
     async def submit_and_run(self) -> None:
-        await self._ctrl.submit_initial_training()
+        await self._ctrl.submit_initial_job()
         await self._ctrl.run()
 
     async def shutdown(self) -> None:
@@ -59,7 +61,7 @@ class _FtControllerActorCls:
         exporter_address: str,
         pid: int,
     ) -> None:
-        self._ctrl.rank_roster.register_training_rank(
+        self._hub.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=rank,
             world_size=world_size,
@@ -82,7 +84,7 @@ class _FtControllerActorCls:
         )
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
-        self._ctrl.add_scrape_target(target_id=target_id, address=address)
+        self._hub.add_scrape_target(target_id=target_id, address=address)
 
     def get_status(self) -> object:
         return self._ctrl.get_status()
@@ -91,13 +93,10 @@ class _FtControllerActorCls:
         self,
         rollout_manager_handle: object,
         metrics_address: str = "",
-        cell_ids: list[str] | None = None,
     ) -> None:
-        self._ctrl.register_rollout_subsystems(
-            rollout_manager_handle=rollout_manager_handle, cell_ids=cell_ids,
-        )
+        self._hub.set_rollout_handle(rollout_manager_handle)
         if metrics_address:
-            self._ctrl.add_scrape_target("rollout-ft-agent", metrics_address)
+            self._hub.add_scrape_target("rollout-ft-agent", metrics_address)
 
 
 FtControllerActor = ray.remote(
