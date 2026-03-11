@@ -61,7 +61,7 @@ def launch(
 
     entrypoint = shlex.join(ctx.args)
 
-    if "--placement-persist-path" not in entrypoint:
+    if entrypoint and "--placement-persist-path" not in entrypoint:
         raise typer.BadParameter(
             "FT mode requires --placement-persist-path in the training command. "
             "Add e.g. --placement-persist-path /shared-storage/pg_snapshot.json"
