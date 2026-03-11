@@ -4,12 +4,12 @@ from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
-from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
+from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
+from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
 from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
-from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
 from miles.utils.ft.controller.detectors.core.thermal_throttling import (
     ThermalThrottlingDetector,
     ThermalThrottlingDetectorConfig,
@@ -27,19 +27,42 @@ class DetectorChainConfig(FtBaseModel):
     mfu: MfuDeclineDetectorConfig = Field(default_factory=MfuDeclineDetectorConfig)
 
 
-def build_detector_chain(
+def build_shared_hw_detectors(
     config: DetectorChainConfig | None = None,
 ) -> list[BaseFaultDetector]:
-    """Build the default detector chain in priority order (highest first)."""
+    """GPU, NIC, disk, thermal — shared by all subsystems."""
     cfg = config or DetectorChainConfig()
     return [
         GpuFaultDetector(),
         NicMajorityDownDetector(),
         DiskSpaceLowDetector(),
         ThermalThrottlingDetector(config=cfg.thermal),
+    ]
+
+
+def build_training_detectors(
+    config: DetectorChainConfig | None = None,
+) -> list[BaseFaultDetector]:
+    """Training-specific: network, crash, hang, nan_loss, mfu_decline."""
+    cfg = config or DetectorChainConfig()
+    return [
         NetworkAlertDetector(config=cfg.network),
         TrainingCrashDetector(),
         HangDetector(config=cfg.hang),
         NanLossDetector(),
         MfuDeclineDetector(config=cfg.mfu),
     ]
+
+
+def build_rollout_detectors(*, cell_id: str) -> list[BaseFaultDetector]:
+    """Per-cell rollout detectors."""
+    from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
+
+    return [RolloutCrashDetector(cell_id=cell_id)]
+
+
+def build_detector_chain(
+    config: DetectorChainConfig | None = None,
+) -> list[BaseFaultDetector]:
+    """Training full chain (backward compat)."""
+    return build_shared_hw_detectors(config) + build_training_detectors(config)
