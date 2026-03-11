@@ -62,7 +62,15 @@ class FtRolloutAgent:
         self._metrics_exporter.shutdown()
         logger.info("ft_rollout_agent_shutdown")
 
-    # --- Health check loop ---
+    def pause(self) -> None:
+        self._paused = True
+        logger.info("ft_rollout_agent_paused")
+
+    def resume(self) -> None:
+        self._paused = False
+        logger.info("ft_rollout_agent_resumed")
+
+    # --- Health check loop (private) ---
 
     async def _health_check_loop(self) -> None:
         while True:
@@ -83,11 +91,3 @@ class FtRolloutAgent:
             logger.warning(
                 "health_check_failed cell_id=%s", cell_id, exc_info=True
             )
-
-    def pause(self) -> None:
-        self._paused = True
-        logger.info("ft_rollout_agent_paused")
-
-    def resume(self) -> None:
-        self._paused = False
-        logger.info("ft_rollout_agent_resumed")
