@@ -31,9 +31,6 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
     async def start(self) -> str:
         logger.info("rollout_actuator_start cell_id=%s", self._cell_id)
         result = await self._reward_manager_handle.start_cell.remote(self._cell_id)  # type: ignore[attr-defined]
-
-        if isinstance(result, dict):
-            return str(result["count"])
         return str(result)
 
     async def get_status(self) -> JobStatus:
