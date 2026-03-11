@@ -19,6 +19,7 @@ from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.restart import (
     Evicting,
+    ExternalExecutionResult,
     MonitoringProgress,
     RestartContext,
     RestartDone,
@@ -212,7 +213,7 @@ class TestEvicting:
 class TestStoppingAndRestarting:
     @pytest.mark.asyncio
     async def test_main_job_restart_mode_returns_restarting_main_job(self) -> None:
-        """restart_mode=MAIN_JOB -> RestartingMainJob(externally_fulfilled=False)."""
+        """restart_mode=MAIN_JOB -> RestartingMainJob(external_execution_result=None)."""
         stepper = _make_stepper()
         ctx = _make_context(restart_mode=RestartMode.MAIN_JOB)
 
@@ -221,7 +222,7 @@ class TestStoppingAndRestarting:
 
         assert isinstance(result, RestartingMainJob)
         assert result.bad_node_ids == ["node-A"]
-        assert result.externally_fulfilled is False
+        assert result.external_execution_result is None
 
     @pytest.mark.asyncio
     async def test_subsystem_restart_submit_calls_actuator_stop_and_start(self) -> None:
@@ -540,25 +541,28 @@ class TestTerminalStates:
 
 class TestRestartingMainJob:
     @pytest.mark.asyncio
-    async def test_not_fulfilled_returns_none(self) -> None:
-        """externally_fulfilled=False -> handler returns None (waiting)."""
+    async def test_no_result_returns_none(self) -> None:
+        """external_execution_result=None -> handler returns None (waiting)."""
         stepper = _make_stepper()
         ctx = _make_context()
 
-        state = RestartingMainJob(bad_node_ids=["node-A"], externally_fulfilled=False)
+        state = RestartingMainJob(bad_node_ids=["node-A"], external_execution_result=None)
         result = await stepper.step_once(state, ctx)
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_fulfilled_returns_monitoring_progress(self) -> None:
-        """externally_fulfilled=True -> handler returns MonitoringProgress."""
+    async def test_succeeded_returns_monitoring_progress(self) -> None:
+        """SUCCEEDED -> handler returns MonitoringProgress."""
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 42})
         stepper = _make_stepper()
         ctx = _make_context(mini_wandb=mini_wandb)
 
-        state = RestartingMainJob(bad_node_ids=["node-A"], externally_fulfilled=True)
+        state = RestartingMainJob(
+            bad_node_ids=["node-A"],
+            external_execution_result=ExternalExecutionResult.SUCCEEDED,
+        )
         result = await stepper.step_once(state, ctx)
 
         assert isinstance(result, MonitoringProgress)
@@ -566,16 +570,46 @@ class TestRestartingMainJob:
         assert result.bad_node_ids == ["node-A"]
 
     @pytest.mark.asyncio
-    async def test_fulfilled_no_wandb_data_uses_zero_base(self) -> None:
-        """externally_fulfilled=True with no wandb data -> base_iteration=0."""
+    async def test_succeeded_no_wandb_data_uses_zero_base(self) -> None:
+        """SUCCEEDED with no wandb data -> base_iteration=0."""
         stepper = _make_stepper()
         ctx = _make_context()
 
-        state = RestartingMainJob(externally_fulfilled=True)
+        state = RestartingMainJob(external_execution_result=ExternalExecutionResult.SUCCEEDED)
         result = await stepper.step_once(state, ctx)
 
         assert isinstance(result, MonitoringProgress)
         assert result.base_iteration == 0
+
+    @pytest.mark.asyncio
+    async def test_failed_returns_restart_failed(self) -> None:
+        """FAILED -> handler returns RestartFailed."""
+        stepper = _make_stepper()
+        ctx = _make_context()
+
+        state = RestartingMainJob(
+            bad_node_ids=["node-A"],
+            external_execution_result=ExternalExecutionResult.FAILED,
+        )
+        result = await stepper.step_once(state, ctx)
+
+        assert isinstance(result, RestartFailed)
+        assert result.bad_node_ids == ["node-A"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_restart_failed(self) -> None:
+        """TIMEOUT -> handler returns RestartFailed."""
+        stepper = _make_stepper()
+        ctx = _make_context()
+
+        state = RestartingMainJob(
+            bad_node_ids=["node-B"],
+            external_execution_result=ExternalExecutionResult.TIMEOUT,
+        )
+        result = await stepper.step_once(state, ctx)
+
+        assert isinstance(result, RestartFailed)
+        assert result.bad_node_ids == ["node-B"]
 
 
 # ---------------------------------------------------------------------------
@@ -630,11 +664,11 @@ class TestFullRestartFlow:
         state = await stepper.step_once(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
 
-        # Step 2: Submit -> RestartingMainJob (MAIN_JOB mode, waiting for external fulfillment)
+        # Step 2: Submit -> RestartingMainJob (MAIN_JOB mode, waiting for external result)
         state = await stepper.step_once(state, ctx)
         assert isinstance(state, RestartingMainJob)
         assert state.bad_node_ids == ["node-A"]
-        assert state.externally_fulfilled is False
+        assert state.external_execution_result is None
 
     @pytest.mark.asyncio
     async def test_subsystem_restart_direct_restart_no_eviction(self) -> None:
