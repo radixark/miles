@@ -2,7 +2,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from tests.fast.utils.ft.utils import (
-    EMPTY_RANK_PLACEMENT,
     inject_heartbeat,
     inject_training_phase,
     make_detector_context,
@@ -25,7 +24,7 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=JobStatus.RUNNING,
         )
 
@@ -42,7 +41,7 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=JobStatus.RUNNING,
         )
 
@@ -68,7 +67,7 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=JobStatus.RUNNING,
         )
 
@@ -94,7 +93,7 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=JobStatus.RUNNING,
         )
 
@@ -118,7 +117,7 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=JobStatus.RUNNING,
         )
 
@@ -134,7 +133,7 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=JobStatus.FAILED,
         )
 
@@ -148,7 +147,7 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=JobStatus.RUNNING,
         )
 
