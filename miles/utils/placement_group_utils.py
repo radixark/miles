@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import socket
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import ray
 from ray.util.placement_group import PlacementGroup, placement_group
@@ -63,6 +65,25 @@ def _partial_resort_snapshots(
         result[rank] = snapshot
 
     return result  # type: ignore[return-value]
+
+
+def _save_snapshots(path: Path, snapshots: list[BundleLocationSnapshot]) -> None:
+    data = [{"bundle_index": s.bundle_index, "node_ip": s.node_ip, "gpu_id": s.gpu_id} for s in snapshots]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.rename(path)
+
+
+def _load_snapshots(path: Path) -> list[BundleLocationSnapshot] | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        return [BundleLocationSnapshot(**item) for item in data]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        logger.warning("Failed to load PG snapshot from %s, ignoring", path, exc_info=True)
+        return None
 
 
 @dataclass
