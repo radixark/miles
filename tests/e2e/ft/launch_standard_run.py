@@ -23,6 +23,7 @@ class ScriptArgs(ExecuteTrainConfig):
     tight_device_memory: bool = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
     few_gpu: bool = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
     full_fault_tolerance: bool = True
+    ft_launch_extra_args: str = "--rollout-num-cells 1"
 
     @property
     def num_gpus(self) -> int:
