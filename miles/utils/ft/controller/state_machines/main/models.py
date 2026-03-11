@@ -28,8 +28,6 @@ class MainState(FtBaseModel):
 class NormalState(MainState):
     """All subsystems running normally; step each sub-SM every tick."""
 
-    model_config = ConfigDict(frozen=True)
-
     subsystems: dict[str, SubsystemState]
 
 
