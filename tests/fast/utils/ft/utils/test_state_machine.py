@@ -60,6 +60,35 @@ class TerminalStateHandler:
         return None
 
 
+class StateAGenHandler:
+    """Yields multiple states (async generator handler)."""
+
+    async def step(self, state: StateA, _context: None):
+        yield StateB(value=1)
+        yield StateB(value=2)
+
+
+class EmptyGenHandler:
+    """Yields nothing (async generator that returns immediately)."""
+
+    async def step(self, state: StateA, _context: None):
+        return
+
+
+class SingleYieldGenHandler:
+    """Yields exactly one state."""
+
+    async def step(self, state: StateA, _context: None):
+        yield StateB(value=42)
+
+
+class SameStateGenHandler:
+    """Yields a state identical to the input."""
+
+    async def step(self, state: StateA, _context: None):
+        yield StateA()
+
+
 HANDLER_MAP: dict[type, type] = {
     StateA: StateAHandler,
     StateB: StateBHandler,
@@ -70,6 +99,18 @@ HANDLER_MAP: dict[type, type] = {
 
 def _make_stepper(**kwargs) -> StateMachineStepper[DummyState, None]:
     return StateMachineStepper(handler_map=HANDLER_MAP, **kwargs)
+
+
+def _make_gen_stepper(
+    handler_cls: type = StateAGenHandler,
+    **kwargs,
+) -> StateMachineStepper[DummyState, None]:
+    handler_map: dict[type, type] = {
+        StateA: handler_cls,
+        StateB: StateBHandler,
+        TerminalState: TerminalStateHandler,
+    }
+    return StateMachineStepper(handler_map=handler_map, **kwargs)
 
 
 # -- Tests: StateMachineStepper ------------------------------------------------
@@ -180,3 +221,163 @@ class TestStateMachine:
         stepper = _make_stepper()
         machine = StateMachine(initial_state=StateA(), stepper=stepper)
         assert machine.stepper is stepper
+
+
+# -- Tests: StateMachineStepper — generator support ----------------------------
+
+
+class TestStateMachineStepperGenerator:
+    @pytest.mark.asyncio
+    async def test_gen_handler_yields_states(self) -> None:
+        stepper = _make_gen_stepper(StateAGenHandler)
+        results = [s async for s in stepper(StateA(), None)]
+        assert results == [StateB(value=1), StateB(value=2)]
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_step_once_returns_first(self) -> None:
+        stepper = _make_gen_stepper(StateAGenHandler)
+        result = await stepper.step_once(StateA(), None)
+        assert result == StateB(value=1)
+
+    @pytest.mark.asyncio
+    async def test_empty_gen_yields_nothing(self) -> None:
+        stepper = _make_gen_stepper(EmptyGenHandler)
+        results = [s async for s in stepper(StateA(), None)]
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_empty_gen_step_once_returns_none(self) -> None:
+        stepper = _make_gen_stepper(EmptyGenHandler)
+        result = await stepper.step_once(StateA(), None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_single_yield_gen(self) -> None:
+        stepper = _make_gen_stepper(SingleYieldGenHandler)
+        results = [s async for s in stepper(StateA(), None)]
+        assert results == [StateB(value=42)]
+
+    @pytest.mark.asyncio
+    async def test_single_yield_gen_step_once(self) -> None:
+        stepper = _make_gen_stepper(SingleYieldGenHandler)
+        result = await stepper.step_once(StateA(), None)
+        assert result == StateB(value=42)
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_terminal_state_skips(self) -> None:
+        stepper = _make_gen_stepper(
+            StateAGenHandler,
+            terminal_states=frozenset({StateA}),
+        )
+        results = [s async for s in stepper(StateA(), None)]
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_pre_dispatch_short_circuits(self) -> None:
+        async def always_terminal(state: DummyState, ctx: None) -> DummyState | None:
+            return TerminalState()
+
+        stepper = _make_gen_stepper(StateAGenHandler, pre_dispatch=always_terminal)
+        results = [s async for s in stepper(StateA(), None)]
+        assert results == [TerminalState()]
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_unregistered_raises(self) -> None:
+        stepper = _make_gen_stepper(StateAGenHandler)
+        with pytest.raises(TypeError, match="has no handler for state type"):
+            await stepper.step_once(UnregisteredState(), None)
+
+
+# -- Tests: step_once regression -----------------------------------------------
+
+
+class TestStepOnceRegression:
+    @pytest.mark.asyncio
+    async def test_step_once_regular_handler(self) -> None:
+        stepper = _make_stepper()
+        result = await stepper.step_once(StateA(), None)
+        assert result == StateB(value=1)
+
+    @pytest.mark.asyncio
+    async def test_step_once_returns_none_on_no_transition(self) -> None:
+        stepper = _make_stepper()
+        result = await stepper.step_once(StateC(), None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_step_once_terminal_state(self) -> None:
+        stepper = _make_stepper(terminal_states=frozenset({TerminalState}))
+        result = await stepper.step_once(TerminalState(), None)
+        assert result is None
+
+
+# -- Tests: StateMachine — generator & history/logging integration -------------
+
+
+class TestStateMachineGenerator:
+    @pytest.mark.asyncio
+    async def test_gen_handler_all_yields_in_history(self) -> None:
+        """Gen handler yields 2 states → both recorded in history."""
+        stepper = _make_gen_stepper(StateAGenHandler)
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        await machine.step(None)
+
+        assert machine.state == StateB(value=2)
+        values = [s.value for s in machine.state_history if isinstance(s, StateB)]
+        assert values == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_empty_no_transition(self) -> None:
+        stepper = _make_gen_stepper(EmptyGenHandler)
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        await machine.step(None)
+
+        assert machine.state == StateA()
+        assert len(machine.state_history) == 0
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_logging_per_transition(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Each state change from generator produces an INFO log."""
+        stepper = _make_gen_stepper(StateAGenHandler)
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        with caplog.at_level("INFO"):
+            await machine.step(None)
+
+        assert "StateA()" in caplog.text
+        assert "StateB(value=1)" in caplog.text
+        assert "StateB(value=2)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_same_state_no_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Generator yielding same state as current → no log but history recorded."""
+        stepper = _make_gen_stepper(SameStateGenHandler)
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        with caplog.at_level("INFO"):
+            await machine.step(None)
+
+        assert caplog.text == ""
+        assert len(machine.state_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_gen_then_regular_handler_chain(self) -> None:
+        """Gen handler yields StateB(1) → regular StateBHandler chains: B(2) → B(3) → TerminalState."""
+        stepper = _make_gen_stepper(SingleYieldGenHandler)
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        await machine.step(None)
+
+        assert machine.state == TerminalState()
+        types = [type(s).__name__ for s in machine.state_history]
+        assert "StateB" in types
+        assert "TerminalState" in types
+
+    @pytest.mark.asyncio
+    async def test_mixed_gen_and_regular_handlers(self) -> None:
+        """StateA (gen handler) yields StateB → StateBHandler (regular) continues chain."""
+        stepper = _make_gen_stepper(StateAGenHandler)
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        await machine.step(None)
+
+        assert isinstance(machine.state, TerminalState)
+        history_types = [type(s).__name__ for s in machine.state_history]
+        assert "StateB" in history_types
+        assert "TerminalState" in history_types
