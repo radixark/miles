@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import NamedTuple
 
 import pytest
@@ -9,21 +10,23 @@ from prometheus_client import CollectorRegistry
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.controller import FtController, _RolloutSubsystemConfig, _build_rollout_subsystem_entry
-from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.main.models import NormalState
+from miles.utils.ft.controller.state_machines.main.models import NormalState, RestartingMainJobState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, Recovering
-from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from tests.fast.utils.ft.conftest import (
+    FakeDiagnosticOrchestrator,
     FakeMainJob,
     FakeNodeManager,
     FakeNotifier,
     FixedDecisionDetector,
+    make_test_controller,
 )
 
 
@@ -79,6 +82,20 @@ class _FakeRemoteMethod:
         return self._result
 
 
+class _OneShotDecisionDetector(BaseFaultDetector):
+    """Fires a configured decision once, then returns NONE forever."""
+
+    def __init__(self, decision: Decision) -> None:
+        self._decision = decision
+        self._fired = False
+
+    def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
+        if not self._fired:
+            self._fired = True
+            return self._decision
+        return Decision(action=ActionType.NONE, reason="already fired")
+
+
 # ---------------------------------------------------------------------------
 # Test harness
 # ---------------------------------------------------------------------------
@@ -99,6 +116,7 @@ def _make_test_controller_with_rollout(
     cell_ids: list[str] | None = None,
     cell_node_ids: dict[str, set[str]] | None = None,
     monitoring_success_iterations: int = 10,
+    diagnostic_orchestrator: object | None = None,
 ) -> _RolloutTestHarness:
     resolved_cell_ids = cell_ids or ["ep72"]
     resolved_cell_nodes = cell_node_ids or {
@@ -124,6 +142,7 @@ def _make_test_controller_with_rollout(
         detectors=training_detectors,
         tick_interval=0.01,
         controller_exporter=controller_exporter,
+        diagnostic_orchestrator=diagnostic_orchestrator,
         recovery_cooldown=cooldown,
         registration_grace_ticks=0,
         monitoring_success_iterations=monitoring_success_iterations,
@@ -202,12 +221,36 @@ class TestRegisterRolloutSubsystems:
         rollout = state.subsystems["rollout_ep72"]
         assert rollout.get_active_node_ids() == {"node-r0", "node-r1", "node-r2"}
 
+    def test_register_in_non_normal_state_raises_runtime_error(self) -> None:
+        harness = make_test_controller()
+        controller = harness.controller
+
+        controller._state_machine.force_state(
+            RestartingMainJobState(
+                requestor_name="training",
+                start_time=datetime.now(timezone.utc),
+                requestor_frozen_state=DetectingAnomaly(),
+            )
+        )
+
+        rm_handle = FakeRmHandle()
+        cells = {"ep72": FakeRolloutCellAgent(cell_id="ep72", node_ids={"n1"})}
+        rollout_agent = FakeRolloutAgent(cells=cells)
+
+        with pytest.raises(RuntimeError, match="Cannot register rollout subsystems"):
+            controller.register_rollout_subsystems(
+                rm_handle=rm_handle,
+                ft_rollout_agent=rollout_agent,
+            )
+
 
 class TestNormalOperationWithRollout:
     @pytest.mark.anyio
     async def test_all_subsystems_healthy_stays_in_normal_state(self) -> None:
-        """Training + rollout, no detectors fire → NormalState stays."""
-        controller, *_ = _make_test_controller_with_rollout()
+        """Training + 2 rollout cells, no detectors fire → NormalState stays."""
+        controller, *_ = _make_test_controller_with_rollout(
+            cell_ids=["ep72", "ep36"],
+        )
 
         for _ in range(3):
             await controller._tick()
@@ -216,6 +259,7 @@ class TestNormalOperationWithRollout:
         assert isinstance(state, NormalState)
         assert "training" in state.subsystems
         assert "rollout_ep72" in state.subsystems
+        assert "rollout_ep36" in state.subsystems
 
     @pytest.mark.anyio
     async def test_initial_subsystem_states_are_detecting_anomaly(self) -> None:
@@ -283,6 +327,24 @@ class TestCreateFreshSubsystemsIncludesRollout:
                 f"Expected DetectingAnomaly for {name}, got {type(entry.state_machine.state).__name__}"
             )
 
+    def test_fresh_subsystems_have_correct_actuator_and_config_types(self) -> None:
+        from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
+        from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
+
+        controller, *_ = _make_test_controller_with_rollout()
+        fresh = controller._tick_loop._create_fresh_subsystems()
+
+        training = fresh["training"]
+        assert isinstance(training.actuator, TrainingSubsystemActuator)
+        assert training.has_level1_restart is False
+        assert isinstance(training.monitoring_config, MonitoringIterationProgressConfig)
+
+        rollout = fresh["rollout_ep72"]
+        assert isinstance(rollout.actuator, RayRolloutActuator)
+        assert rollout.has_level1_restart is True
+        assert isinstance(rollout.monitoring_config, MonitoringSustainedAliveConfig)
+        assert len(rollout.detectors) > 0
+
 
 class TestStatusReportsRollout:
     def test_status_includes_rollout_subsystem_states(self) -> None:
@@ -297,8 +359,6 @@ class TestStatusReportsRollout:
         assert status.rollout_subsystem_states["rollout_ep72"] == "DetectingAnomaly"
 
     def test_status_no_rollout_when_training_only(self) -> None:
-        from tests.fast.utils.ft.conftest import make_test_controller
-
         harness = make_test_controller()
         status = harness.controller.get_status()
         assert status.rollout_subsystem_states is None
@@ -320,3 +380,150 @@ class TestBuildRolloutSubsystemEntry:
         assert isinstance(entry.state_machine.state, DetectingAnomaly)
         assert isinstance(entry.monitoring_config, MonitoringSustainedAliveConfig)
         assert entry.monitoring_config.alive_duration_seconds == 180
+
+
+class TestFullLevel1RecoveryCycle:
+    @pytest.mark.anyio
+    async def test_rollout_completes_full_recovery_and_returns_to_detecting_anomaly(self) -> None:
+        """Detect → RealtimeChecks → Evict → Stop+Start → Monitor(sustained_alive) → Done."""
+        harness = _make_test_controller_with_rollout(
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        )
+        controller = harness.controller
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+
+        rollout_entry = state.subsystems["rollout_ep72"]
+        rollout_entry.monitoring_config = MonitoringSustainedAliveConfig(
+            alive_duration_seconds=0,
+            timeout_seconds=60,
+        )
+
+        rollout_detector = _OneShotDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["rollout-node-ep72-0"],
+                reason="rollout cell ep72 dead",
+                trigger=TriggerType.CRASH,
+            )
+        )
+        rollout_entry.detectors.clear()
+        rollout_entry.detectors.append(rollout_detector)
+
+        await controller._tick()
+
+        assert isinstance(rollout_entry.state_machine.state, DetectingAnomaly)
+
+        training_entry = state.subsystems["training"]
+        assert isinstance(training_entry.state_machine.state, DetectingAnomaly)
+
+        assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
+        assert harness.rm_handle.stop_cell.call_count == 1
+        assert harness.rm_handle.start_cell.call_count == 1
+
+
+class TestLevel1FailureEscalation:
+    @pytest.mark.anyio
+    async def test_level1_restart_failure_escalates_to_notify_humans(self) -> None:
+        """L1 restart fails (FAILED status) → StopTimeDiagnostics → NotifyHumans → notifier called."""
+        harness = _make_test_controller_with_rollout(
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        )
+        controller = harness.controller
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+
+        rollout_entry = state.subsystems["rollout_ep72"]
+        rollout_entry.monitoring_config = MonitoringSustainedAliveConfig(
+            alive_duration_seconds=0,
+            timeout_seconds=60,
+        )
+
+        harness.rm_handle.get_cell_status = _FakeRemoteMethod(result=JobStatus.FAILED)
+
+        rollout_detector = _OneShotDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["rollout-node-ep72-0"],
+                reason="rollout cell ep72 dead",
+                trigger=TriggerType.CRASH,
+            )
+        )
+        rollout_entry.detectors.clear()
+        rollout_entry.detectors.append(rollout_detector)
+
+        await controller._tick()
+
+        assert isinstance(rollout_entry.state_machine.state, DetectingAnomaly)
+        assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
+
+        recovery_alerts = [
+            (title, content)
+            for title, content, _ in harness.notifier.calls
+            if title == "Recovery Alert"
+        ]
+        assert len(recovery_alerts) >= 1, (
+            f"Expected 'Recovery Alert' notification, got: {harness.notifier.calls}"
+        )
+
+
+class TestColocatedHardwareFault:
+    @pytest.mark.anyio
+    async def test_shared_bad_node_triggers_training_main_job_restart(self) -> None:
+        """Training (no L1) and rollout (L1) share a bad node; training escalates to main job restart."""
+        shared_node = "node-X"
+        training_detector = _OneShotDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=[shared_node],
+                reason="training fault on shared node",
+                trigger=TriggerType.CRASH,
+            )
+        )
+
+        harness = _make_test_controller_with_rollout(
+            training_detectors=[training_detector],
+            cell_node_ids={"ep72": {shared_node, "rollout-node-0"}},
+            monitoring_success_iterations=0,
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        )
+        controller = harness.controller
+
+        controller.training_rank_roster.rank_placement[0] = shared_node
+        controller.training_rank_roster.rank_placement[1] = "train-node-1"
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+
+        rollout_entry = state.subsystems["rollout_ep72"]
+        rollout_entry.monitoring_config = MonitoringSustainedAliveConfig(
+            alive_duration_seconds=0,
+            timeout_seconds=60,
+        )
+
+        rollout_detector = _OneShotDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=[shared_node],
+                reason="rollout fault on shared node",
+                trigger=TriggerType.CRASH,
+            )
+        )
+        rollout_entry.detectors.clear()
+        rollout_entry.detectors.append(rollout_detector)
+
+        await controller._tick()
+
+        assert harness.node_manager.was_ever_marked_bad(shared_node)
+        assert harness.main_job._stopped is True
+        assert harness.main_job._submitted is True
+
+        final_state = controller._state_machine.state
+        assert isinstance(final_state, NormalState)
+        assert "training" in final_state.subsystems
+        assert "rollout_ep72" in final_state.subsystems
+
+        assert harness.rm_handle.stop_cell.call_count >= 1
+        assert harness.rm_handle.start_cell.call_count >= 1
