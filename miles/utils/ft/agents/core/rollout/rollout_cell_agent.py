@@ -48,16 +48,6 @@ class RolloutCellAgent:
         """Based on the most recent check_health result. Returns False if never checked."""
         return self._health_checker.is_healthy()
 
-    # --- Lifecycle ---
-
-    async def stop(self) -> None:
-        """Stop all engines in this cell."""
-        raise NotImplementedError("Depends on rollout architecture")
-
-    async def start(self) -> int:
-        """Rebuild engines for this cell. Returns alive engine count."""
-        raise NotImplementedError("Depends on rollout architecture")
-
     # --- Node tracking ---
 
     def get_node_ids(self) -> set[str]:
@@ -78,5 +68,5 @@ class RolloutCellAgent:
         self._health_checker.invalidate()
 
     def set_node_ids(self, node_ids: set[str]) -> None:
-        """Called by FtRolloutAgent after startup or rebuild."""
+        """Called by FtRolloutAgent after startup."""
         self._node_ids = set(node_ids)

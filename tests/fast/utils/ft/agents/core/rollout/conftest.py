@@ -40,10 +40,3 @@ class MockRolloutCellAgent(RolloutCellAgent):
         )
         mock = _MockHealthChecker(cell_id=cell_id, engine_alive=engine_alive)
         self._health_checker = mock
-        self._engine_alive = mock.engine_alive
-
-    async def stop(self) -> None:
-        pass
-
-    async def start(self) -> int:
-        return sum(self._engine_alive)

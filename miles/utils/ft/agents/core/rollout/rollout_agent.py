@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.ft.adapters.types import EngineHealthChecker, JobStatus
+from miles.utils.ft.adapters.types import EngineHealthChecker
 from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
 from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 
@@ -18,7 +18,6 @@ class FtRolloutAgent:
         health_checker: EngineHealthChecker,
         check_interval: float = 10.0,
     ) -> None:
-        self._rollout_manager = rollout_manager
         self._cells = self._build_cells(rollout_manager, health_checker=health_checker)
 
         self._check_interval = check_interval
@@ -86,30 +85,6 @@ class FtRolloutAgent:
     def resume(self) -> None:
         self._paused = False
         logger.info("ft_rollout_agent_resumed")
-
-    # --- Control plane: subsystem level (Level 2) ---
-
-    async def stop_all(self) -> None:
-        for cell in self._cells.values():
-            await cell.stop()
-
-    async def rebuild(self) -> str:
-        raise NotImplementedError("Full rebuild depends on rollout architecture")
-
-    async def get_status(self) -> JobStatus:
-        all_healthy = all(cell.is_healthy() for cell in self._cells.values())
-        return JobStatus.RUNNING if all_healthy else JobStatus.FAILED
-
-    # --- Control plane: cell level (routes to RolloutManager when available) ---
-
-    async def stop_cell(self, cell_id: str) -> None:
-        await self._rollout_manager.stop_cell(cell_id)  # type: ignore[attr-defined]
-
-    async def start_cell(self, cell_id: str) -> int:
-        return await self._rollout_manager.start_cell(cell_id)  # type: ignore[attr-defined]
-
-    async def get_cell_status(self, cell_id: str) -> JobStatus:
-        return await self._rollout_manager.get_cell_status(cell_id)  # type: ignore[attr-defined]
 
     # --- Public API for M12 integration ---
 

@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
 from tests.fast.utils.ft.agents.core.rollout.conftest import (
     MockEngine,
@@ -113,52 +112,6 @@ class TestResumeRestoresChecks:
             await agent.shutdown()
 
 
-class TestGetStatus:
-    @pytest.mark.anyio
-    async def test_all_healthy_returns_running(self) -> None:
-        cells = {
-            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
-            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True]),
-        }
-        agent = _make_multicell_agent(cells)
-
-        try:
-            await asyncio.sleep(0.15)
-            assert await agent.get_status() == JobStatus.RUNNING
-        finally:
-            await agent.shutdown()
-
-    @pytest.mark.anyio
-    async def test_any_dead_returns_failed(self) -> None:
-        cells = {
-            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
-            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
-        }
-        agent = _make_multicell_agent(cells)
-
-        try:
-            await asyncio.sleep(0.15)
-            assert await agent.get_status() == JobStatus.FAILED
-        finally:
-            await agent.shutdown()
-
-
-class TestGetCellStatus:
-    @pytest.mark.anyio
-    async def test_delegates_to_rollout_manager(self) -> None:
-        rm = AsyncMock()
-        rm.all_rollout_engines = []
-        rm.get_cell_status.side_effect = [JobStatus.RUNNING, JobStatus.FAILED]
-        with patch.object(FtRolloutAgent, '_build_cells', return_value={}):
-            agent = FtRolloutAgent(rm, health_checker=AsyncMock(), check_interval=10.0)
-
-        try:
-            assert await agent.get_cell_status("a0") == JobStatus.RUNNING
-            assert await agent.get_cell_status("a1") == JobStatus.FAILED
-        finally:
-            await agent.shutdown()
-
-
 class TestLifecycle:
     @pytest.mark.anyio
     async def test_address_available_immediately_and_shutdown_stops_loop(self) -> None:
@@ -204,86 +157,6 @@ class _BrokenCheckHealthCell(MockRolloutCellAgent):
 
     async def check_health(self) -> object:
         raise RuntimeError("simulated check_health failure")
-
-
-class TestStopCell:
-    @pytest.mark.anyio
-    async def test_delegates_to_rollout_manager(self) -> None:
-        rm = AsyncMock()
-        rm.all_rollout_engines = [MockEngine(True)]
-        agent = FtRolloutAgent(rm, health_checker=mock_health_checker, check_interval=10.0)
-
-        try:
-            await agent.stop_cell("a0")
-            rm.stop_cell.assert_awaited_once_with("a0")
-        finally:
-            await agent.shutdown()
-
-
-class TestStartCell:
-    @pytest.mark.anyio
-    async def test_delegates_to_rollout_manager(self) -> None:
-        rm = AsyncMock()
-        rm.all_rollout_engines = [MockEngine(True)]
-        rm.start_cell.return_value = 2
-        agent = FtRolloutAgent(rm, health_checker=mock_health_checker, check_interval=10.0)
-
-        try:
-            result = await agent.start_cell("a0")
-            assert result == 2
-            rm.start_cell.assert_awaited_once_with("a0")
-        finally:
-            await agent.shutdown()
-
-
-class TestStopAll:
-    @pytest.mark.anyio
-    async def test_calls_stop_on_every_cell(self) -> None:
-        cells = {
-            "a0": _TrackingStopCell(cell_id="a0", engine_alive=[True]),
-            "a1": _TrackingStopCell(cell_id="a1", engine_alive=[True, True]),
-        }
-        agent = _make_multicell_agent(cells, check_interval=10.0)
-
-        try:
-            await agent.stop_all()
-            assert cells["a0"].stop_called
-            assert cells["a1"].stop_called
-        finally:
-            await agent.shutdown()
-
-
-class _TrackingStopCell(MockRolloutCellAgent):
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)
-        self.stop_called = False
-
-    async def stop(self) -> None:
-        self.stop_called = True
-
-
-class TestRebuild:
-    @pytest.mark.anyio
-    async def test_raises_not_implemented(self) -> None:
-        agent, _ = _make_agent([True], check_interval=10.0)
-
-        try:
-            with pytest.raises(NotImplementedError):
-                await agent.rebuild()
-        finally:
-            await agent.shutdown()
-
-
-class TestGetStatusBeforeAnyHealthCheck:
-    @pytest.mark.anyio
-    async def test_returns_failed_when_no_check_has_run(self) -> None:
-        """Before any health check, is_healthy() returns False, so get_status should be FAILED."""
-        agent, _ = _make_agent([True, True], check_interval=10.0)
-
-        try:
-            assert await agent.get_status() == JobStatus.FAILED
-        finally:
-            await agent.shutdown()
 
 
 class TestMultiCellMetricsAreIndependent:
