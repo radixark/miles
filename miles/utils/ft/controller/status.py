@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
+from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState, RestartingMainJobState
 from miles.utils.ft.controller.state_machines.main import MainContext, MainState, Recovering, get_known_bad_nodes
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestarting,
@@ -29,18 +31,58 @@ def build_phase_history(state_history: list[MainState]) -> list[str]:
     return phases
 
 
+def _extract_training_sm(
+    controller_state: ControllerState,
+) -> StateMachine[MainState, MainContext] | None:
+    if isinstance(controller_state, NormalState):
+        training = controller_state.subsystems.get("training")
+        if training is not None:
+            return training.state_machine
+    return None
+
+
 def build_controller_status(
     *,
-    state_machine: StateMachine[MainState, MainContext],
+    controller_state_machine: StateMachine[ControllerState, ControllerContext],
     mini_wandb: MiniWandb,
     training_rank_roster: TrainingRankRoster,
     tick_count: int,
 ) -> ControllerStatus:
-    state = state_machine.state
+    controller_state = controller_state_machine.state
     iteration_val = mini_wandb.latest(metric_name="iteration")
     latest_iteration = int(iteration_val) if iteration_val is not None else None
 
-    phase_history = build_phase_history(state_machine.state_history)
+    # Extract training sub-SM state
+    training_sm = _extract_training_sm(controller_state)
+
+    if isinstance(controller_state, RestartingMainJobState):
+        return ControllerStatus(
+            mode=ControllerMode.RECOVERY,
+            recovery_phase="RestartingMainJob",
+            phase_history=None,
+            tick_count=tick_count,
+            active_run_id=training_rank_roster.run_id,
+            bad_nodes=[],
+            recovery_in_progress=True,
+            bad_nodes_confirmed=False,
+            latest_iteration=latest_iteration,
+        )
+
+    if training_sm is None:
+        return ControllerStatus(
+            mode=ControllerMode.MONITORING,
+            recovery_phase=None,
+            phase_history=None,
+            tick_count=tick_count,
+            active_run_id=training_rank_roster.run_id,
+            bad_nodes=[],
+            recovery_in_progress=False,
+            bad_nodes_confirmed=False,
+            latest_iteration=latest_iteration,
+        )
+
+    state = training_sm.state
+    phase_history = build_phase_history(training_sm.state_history)
 
     if isinstance(state, Recovering):
         recovery = state.recovery

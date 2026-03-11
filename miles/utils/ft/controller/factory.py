@@ -11,10 +11,15 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.state_machines.controller import (
+    ControllerContext,
+    NormalState,
+    create_controller_stepper,
+)
+from miles.utils.ft.controller.state_machines.controller.models import ControllerState
 from miles.utils.ft.controller.state_machines.main import DetectingAnomaly, MainContext, MainState, create_main_stepper
-from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS, create_recovery_stepper
-from miles.utils.ft.controller.state_machines.restart import RestartContext, create_restart_stepper
-from miles.utils.ft.controller.subsystem import MonitoringConfig
+from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
+from miles.utils.ft.controller.subsystem import MonitoringConfig, SubsystemEntry
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
@@ -75,37 +80,90 @@ def create_ft_controller(
     resolved_exporter = controller_exporter or NullControllerExporter()
     duration_cb = resolved_exporter.observe_recovery_duration
     cooldown = recovery_cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3)
+    resolved_detectors = detectors or []
 
-    restart_stepper = create_restart_stepper()
-    recovery_stepper = create_recovery_stepper()
-    main_stepper = create_main_stepper()
-
-    state_machine: StateMachine[MainState, MainContext] = StateMachine(
-        initial_state=DetectingAnomaly(),
-        stepper=main_stepper,
+    monitoring_config = MonitoringConfig(
+        mode="iteration_progress",
+        success_iterations=monitoring_success_iterations,
+        timeout_seconds=monitoring_timeout_seconds,
     )
 
+    # --- Create SubsystemEntry ---
+    main_stepper = create_main_stepper()
+
+    def _make_training_sub_sm() -> StateMachine[MainState, MainContext]:
+        return StateMachine(
+            initial_state=DetectingAnomaly(),
+            stepper=main_stepper,
+        )
+
+    training_entry = SubsystemEntry(
+        name="training",
+        state_machine=_make_training_sub_sm(),
+        actuator=TrainingSubsystemActuator(main_job=main_job),
+        detectors=resolved_detectors,
+        monitoring_config=monitoring_config,
+        get_active_node_ids=lambda: set(training_rank_roster.rank_placement.values()),
+    )
+
+    # --- Create Controller SM ---
+    controller_stepper = create_controller_stepper()
+    initial_subsystems = {"training": training_entry}
+    controller_sm: StateMachine[ControllerState, ControllerContext] = StateMachine(
+        initial_state=NormalState(subsystems=initial_subsystems),
+        stepper=controller_stepper,
+    )
+
+    # --- create_fresh_subsystems callback ---
+    def create_fresh_subsystems() -> dict[str, SubsystemEntry]:
+        return {
+            "training": SubsystemEntry(
+                name="training",
+                state_machine=_make_training_sub_sm(),
+                actuator=TrainingSubsystemActuator(main_job=main_job),
+                detectors=resolved_detectors,
+                monitoring_config=monitoring_config,
+                get_active_node_ids=lambda: set(training_rank_roster.rank_placement.values()),
+            ),
+        }
+
+    # --- Create FtController ---
+    instance = FtController(
+        main_job=main_job,
+        state_machine=controller_sm,
+        training_rank_roster=training_rank_roster,
+        mini_wandb=mini_wandb,
+        scrape_target_manager=scrape_target_manager,
+        agents=agents,  # type: ignore[arg-type]
+        tick_interval=tick_interval,
+        tick_loop=None,  # type: ignore[arg-type]  # set below
+        notifier=notifier,
+        metric_store=metric_store,
+        controller_exporter=controller_exporter,
+    )
+
+    # --- Create TickLoop ---
     tick_loop = TickLoop(
-        state_machine=state_machine,
+        state_machine=controller_sm,
         training_rank_roster=training_rank_roster,
         agents=agents,  # type: ignore[arg-type]
         main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
-        detectors=detectors or [],
         notifier=notifier,
+        node_manager=node_manager,
         cooldown=cooldown,
-        recovery_stepper=recovery_stepper,
-        on_recovery_duration=duration_cb,
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         diagnostic_orchestrator=resolved_orchestrator,
-        restart_stepper=restart_stepper,
-        restart_context=None,
         recovery_timeout_seconds=recovery_timeout_seconds,
-        monitoring_config=MonitoringConfig(mode="iteration_progress"),
+        create_fresh_subsystems=create_fresh_subsystems,
+        on_new_run=instance._activate_run,
+        rank_pids_provider=lambda node_id: instance._training_rank_roster.get_rank_pids_for_node(node_id),
+        on_recovery_duration=duration_cb,
         controller_exporter=controller_exporter,
         registration_grace_ticks=registration_grace_ticks,
     )
+    instance._tick_loop = tick_loop
 
     platform_deps = PlatformDeps(
         node_manager=node_manager,
@@ -115,40 +173,8 @@ def create_ft_controller(
         notifier=notifier,
         diagnostic_orchestrator=resolved_orchestrator,
         controller_exporter=controller_exporter,
-        on_new_run=None,
-    )
-
-    instance = FtController(
-        main_job=main_job,
-        state_machine=state_machine,
-        training_rank_roster=training_rank_roster,
-        mini_wandb=mini_wandb,
-        scrape_target_manager=scrape_target_manager,
-        agents=agents,  # type: ignore[arg-type]
-        tick_interval=tick_interval,
-        tick_loop=tick_loop,
-        notifier=notifier,
-        metric_store=metric_store,
-        controller_exporter=controller_exporter,
-    )
-
-    monitoring_config = MonitoringConfig(mode="iteration_progress")
-    restart_context = RestartContext(
-        node_manager=node_manager,
-        main_job=main_job,
-        mini_wandb=mini_wandb,
-        notifier=notifier,
         on_new_run=instance._activate_run,
-        monitoring_success_iterations=monitoring_success_iterations,
-        monitoring_timeout_seconds=monitoring_timeout_seconds,
-        node_metadata=instance._node_metadata,
-        actuator=TrainingSubsystemActuator(main_job=main_job),
-        monitoring_config=monitoring_config,
-        has_level1_restart=False,
+        rank_pids_provider=lambda node_id: instance._training_rank_roster.get_rank_pids_for_node(node_id),
     )
-    tick_loop._restart_context = restart_context
-
-    platform_deps.on_new_run = instance._activate_run
-    platform_deps.rank_pids_provider = lambda node_id: instance._training_rank_roster.get_rank_pids_for_node(node_id)
 
     return instance

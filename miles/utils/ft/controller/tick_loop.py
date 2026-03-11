@@ -3,27 +3,25 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime
 
-from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeAgentProtocol, NotifierProtocol
-from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main import MainContext, MainState, Recovering
-from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT, RecoveryContext
-from miles.utils.ft.controller.state_machines.restart import RestartContext
+from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
+from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
+from miles.utils.ft.controller.state_machines.main import Recovering
+from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem import MonitoringConfig
+from miles.utils.ft.controller.subsystem import SubsystemEntry
 from miles.utils.ft.controller.types import (
     ControllerMode,
     DiagnosticOrchestratorProtocol,
     MetricStoreProtocol,
-    TriggerType,
 )
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
-from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
+from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
 
@@ -32,23 +30,22 @@ class TickLoop:
     def __init__(
         self,
         *,
-        state_machine: StateMachine[MainState, MainContext],
+        state_machine: StateMachine[ControllerState, ControllerContext],
         training_rank_roster: TrainingRankRoster,
         agents: dict[str, NodeAgentProtocol],
         main_job: MainJobProtocol,
         metric_store: MetricStoreProtocol,
         mini_wandb: MiniWandb,
-        detectors: list[BaseFaultDetector],
         notifier: NotifierProtocol | None,
+        node_manager: NodeManagerProtocol,
         cooldown: SlidingWindowThrottle,
-        recovery_stepper: StateMachineStepper,
-        on_recovery_duration: Callable[[float], None] | None,
         max_simultaneous_bad_nodes: int,
         diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
-        restart_stepper: StateMachineStepper,
-        restart_context: RestartContext | None,
         recovery_timeout_seconds: int,
-        monitoring_config: MonitoringConfig | None = None,
+        create_fresh_subsystems: Callable[[], dict[str, SubsystemEntry]],
+        on_new_run: Callable[[str], None] | None = None,
+        rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
+        on_recovery_duration: Callable[[float], None] | None = None,
         controller_exporter: ControllerExporter | None = None,
         registration_grace_ticks: int = 5,
     ) -> None:
@@ -60,20 +57,18 @@ class TickLoop:
         self._main_job = main_job
         self._metric_store = metric_store
         self._mini_wandb = mini_wandb
-        self._detectors = detectors
-        self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
-        self._registration_grace_ticks = registration_grace_ticks
-
         self._notifier = notifier
+        self._node_manager = node_manager
         self._cooldown = cooldown
-        self._recovery_stepper = recovery_stepper
-        self._on_recovery_duration = on_recovery_duration
         self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
         self._diagnostic_orchestrator = diagnostic_orchestrator
-        self._restart_stepper = restart_stepper
-        self._restart_context = restart_context
         self._recovery_timeout_seconds = recovery_timeout_seconds
-        self._monitoring_config = monitoring_config or MonitoringConfig(mode="iteration_progress")
+        self._create_fresh_subsystems = create_fresh_subsystems
+        self._on_new_run = on_new_run
+        self._rank_pids_provider = rank_pids_provider
+        self._on_recovery_duration = on_recovery_duration
+        self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
+        self._registration_grace_ticks = registration_grace_ticks
 
         self._detector_crash_tracker = SlidingWindowCounter(window_seconds=1800, threshold=5)
         self._tick_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=5)
@@ -95,16 +90,8 @@ class TickLoop:
             )
             job_status = await self._main_job.get_job_status()
 
-            should_run = self._should_run_detectors()
-            detector_ctx = self._build_detector_context(job_status) if should_run else None
-
-            main_context = self._build_main_context(
-                job_status=job_status,
-                should_run_detectors=should_run,
-                detector_context=detector_ctx,
-            )
-
-            await self.state_machine.step(main_context)
+            context = self._build_controller_context(job_status=job_status)
+            await self.state_machine.step(context)
         except Exception:
             logger.error("tick_failed tick=%d", self.tick_count, exc_info=True)
             self._tick_failure_tracker.record()
@@ -119,71 +106,31 @@ class TickLoop:
             tick_duration = time.monotonic() - t0
             self._update_exporter_metrics(job_status, tick_duration=tick_duration)
 
-    def _should_run_detectors(self) -> bool:
-        if len(self.training_rank_roster.rank_placement) == 0:
-            logger.info("skip_detectors_no_ranks tick=%d", self.tick_count)
-            return False
-
-        if self.tick_count <= self._registration_grace_ticks:
-            logger.info(
-                "skip_detectors_grace_period tick=%d grace_ticks=%d",
-                self.tick_count,
-                self._registration_grace_ticks,
-            )
-            return False
-
-        return True
-
     # ------------------------------------------------------------------
-    # Context factories
+    # Context factory
     # ------------------------------------------------------------------
 
-    def _build_recovery_context(
-        self,
-        trigger: TriggerType,
-        recovery_start_time: datetime,
-    ) -> RecoveryContext:
-        return RecoveryContext(
-            trigger=trigger,
-            recovery_start_time=recovery_start_time,
-            diagnostic_orchestrator=self._diagnostic_orchestrator,
-            restart_stepper=self._restart_stepper,
-            restart_context=self._restart_context,
-            notifier=self._notifier,
-            timeout_seconds=self._recovery_timeout_seconds,
-            rank_pids_provider=lambda node_id: self.training_rank_roster.get_rank_pids_for_node(node_id),
-        )
-
-    def _build_main_context(
-        self,
-        *,
-        job_status: JobStatus,
-        should_run_detectors: bool,
-        detector_context: DetectorContext | None,
-    ) -> MainContext:
-        return MainContext(
-            job_status=job_status,
+    def _build_controller_context(self, *, job_status: JobStatus) -> ControllerContext:
+        return ControllerContext(
+            main_job=self._main_job,
+            create_fresh_subsystems=self._create_fresh_subsystems,
             tick_count=self.tick_count,
-            should_run_detectors=should_run_detectors,
-            detector_context=detector_context,
-            notifier=self._notifier,
-            detectors=self._detectors,
-            cooldown=self._cooldown,
-            detector_crash_tracker=self._detector_crash_tracker,
-            recovery_stepper=self._recovery_stepper,
-            recovery_context_factory=self._build_recovery_context,
-            on_recovery_duration=self._on_recovery_duration,
-            max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
-            monitoring_config=self._monitoring_config,
-            mini_wandb=self._mini_wandb,
-        )
-
-    def _build_detector_context(self, job_status: JobStatus) -> DetectorContext:
-        return DetectorContext(
+            job_status=job_status,
             metric_store=self._metric_store,
             mini_wandb=self._mini_wandb,
-            active_node_ids=set(self.training_rank_roster.rank_placement.values()),
-            job_status=job_status,
+            agents=self._agents,
+            notifier=self._notifier,
+            node_manager=self._node_manager,
+            diagnostic_orchestrator=self._diagnostic_orchestrator,
+            cooldown=self._cooldown,
+            detector_crash_tracker=self._detector_crash_tracker,
+            recovery_timeout_seconds=self._recovery_timeout_seconds,
+            max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
+            on_new_run=self._on_new_run,
+            rank_pids_provider=self._rank_pids_provider,
+            controller_exporter=self._controller_exporter,
+            on_recovery_duration=self._on_recovery_duration,
+            registration_grace_ticks=self._registration_grace_ticks,
         )
 
     # ------------------------------------------------------------------
@@ -197,12 +144,11 @@ class TickLoop:
         if job_status is None:
             return
 
-        is_recovery = isinstance(self.state_machine.state, Recovering)
+        main_state = self._extract_main_state()
+        is_recovery = isinstance(main_state, Recovering)
         phase_int = 0
-        if is_recovery:
-            state = self.state_machine.state
-            if isinstance(state, Recovering):
-                phase_int = RECOVERY_STATE_TO_INT.get(type(state.recovery), 0)
+        if is_recovery and isinstance(main_state, Recovering):
+            phase_int = RECOVERY_STATE_TO_INT.get(type(main_state.recovery), 0)
 
         self._controller_exporter.update_from_state(
             job_status=job_status,
@@ -211,3 +157,11 @@ class TickLoop:
             latest_loss=self._mini_wandb.latest(metric_name="loss"),
             latest_mfu=self._mini_wandb.latest(metric_name="mfu"),
         )
+
+    def _extract_main_state(self) -> object:
+        controller_state = self.state_machine.state
+        if isinstance(controller_state, NormalState):
+            training = controller_state.subsystems.get("training")
+            if training is not None:
+                return training.state_machine.state
+        return None
