@@ -15,7 +15,7 @@ from miles.utils.ft.adapters.types import (
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
-from miles.utils.ft.controller.subsystem import SubsystemEntry
+from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStoreProtocol
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
@@ -28,9 +28,9 @@ class MainState(FtBaseModel):
 class NormalState(MainState):
     """All subsystems running normally; step each sub-SM every tick."""
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(frozen=True)
 
-    subsystems: dict[str, SubsystemEntry]
+    subsystems: dict[str, SubsystemState]
 
 
 class RestartingMainJobState(MainState):
@@ -46,7 +46,7 @@ class MainContext(FtBaseModel):
 
     # Level 2 job management
     main_job: MainJobProtocol
-    create_fresh_subsystems: Callable[[], dict[str, SubsystemEntry]]
+    subsystem_configs: dict[str, SubsystemConfig]
 
     # Shared per-tick data
     tick_count: int
