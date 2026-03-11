@@ -95,8 +95,8 @@ class RolloutManager:
         self._ft_agent = None
         self._full_ft_mode = {"rollout", "train"} <= set(getattr(self.args, "ft_components", frozenset()))
         if self._full_ft_mode:
-            from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
-            self._ft_agent = FtRolloutAgent(self)
+            from miles.utils.ft.factories.rollout_agent import create_rollout_agent
+            self._ft_agent = create_rollout_agent(self)
         elif "rollout" in self.args.ft_components:
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()
@@ -236,33 +236,12 @@ class RolloutManager:
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
     # NOTE: it will be `async def`
-    def start_cell(self, cell_id: str) -> int:
-        """
-        Imagined code:
-
-        class ServerCell:
-          def __init__(self):
-            self._lock = asyncio.Lock()
-            self._status: Literal["running", "stopping", "starting", ...] = ...
-
-          async def start(self):
-            async with self._lock:
-              really start engine
-
-          async def stop(self): ...
-
-        class ServerGroup:
-          cells: List[ServerCell]
-          # no `start`/`stop`/`recover`/... here.
-
-        then here we just do `find_the_cell(cell_id).start()`
-        and with the single-thread async lock we are not worried about racing condition
-        """
-        raise NotImplementedError("engine start not yet implemented")
-
-    # NOTE: it will be `async def`
     def stop_cell(self, cell_id: str) -> None:
         raise NotImplementedError("engine stop not yet implemented")
+
+    # NOTE: it will be `async def`
+    def start_cell(self, cell_id: str) -> int:
+        raise NotImplementedError("engine start not yet implemented")
 
     # NOTE: it will be `async def`
     def get_cell_status(self, cell_id: str):
