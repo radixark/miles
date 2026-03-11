@@ -76,13 +76,6 @@ for _sub in [
         if not hasattr(mod, name):
             setattr(mod, name, MagicMock())
 
-# Replay module
-_ensure_module("miles.utils.debug_utils.run_megatron.worker.replay")
-for name in ["load_replay_data", "save_replay_data", "setup_replay_before_model"]:
-    mod = sys.modules["miles.utils.debug_utils.run_megatron.worker.replay"]
-    if not hasattr(mod, name):
-        setattr(mod, name, MagicMock())
-
 from miles.utils.debug_utils.run_megatron.worker.main import (  # noqa: E402
     _apply_source_patches,
     _finalize_dumper,
