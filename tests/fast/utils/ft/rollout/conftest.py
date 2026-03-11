@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from miles.utils.ft.rollout.atom_agent import RolloutAtomAgent
+from miles.utils.ft.rollout.cell_agent import RolloutCellAgent
 
 
-class MockRolloutAtomAgent(RolloutAtomAgent):
+class MockRolloutCellAgent(RolloutCellAgent):
     """Overrides _check_single_engine to avoid Ray dependency."""
 
-    def __init__(self, *, atom_id: str, engine_alive: list[bool]) -> None:
-        super().__init__(atom_id=atom_id, engines=list(range(len(engine_alive))))
+    def __init__(self, *, cell_id: str, engine_alive: list[bool]) -> None:
+        super().__init__(cell_id=cell_id, engines=list(range(len(engine_alive))))
         self._engine_alive = list(engine_alive)
 
     async def _check_single_engine(self, *, engine: object, index: int) -> bool:

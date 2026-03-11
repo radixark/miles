@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class AtomHealthResult:
-    atom_id: str
+class CellHealthResult:
+    cell_id: str
     total_engines: int
     alive_engines: int
     dead_engine_indices: tuple[int, ...]
@@ -18,7 +18,7 @@ class AtomHealthResult:
     checked_at: float
 
 
-class RolloutAtomAgent:
+class RolloutCellAgent:
     """Manages a group of engines forming a fault domain.
 
     E.g. EP72 = 9 engines across 9 nodes. Any single engine death makes
@@ -30,23 +30,23 @@ class RolloutAtomAgent:
     def __init__(
         self,
         *,
-        atom_id: str,
+        cell_id: str,
         engines: list[object],
         health_check_timeout: float = 10.0,
     ) -> None:
-        self._atom_id = atom_id
+        self._cell_id = cell_id
         self._engines = list(engines)
         self._health_check_timeout = health_check_timeout
         self._node_ids: set[str] = set()
-        self._last_result: AtomHealthResult | None = None
+        self._last_result: CellHealthResult | None = None
 
     @property
-    def atom_id(self) -> str:
-        return self._atom_id
+    def cell_id(self) -> str:
+        return self._cell_id
 
     # --- Health ---
 
-    async def check_health(self) -> AtomHealthResult:
+    async def check_health(self) -> CellHealthResult:
         """Run health check on all engines concurrently, return aggregated result."""
         results = await asyncio.gather(
             *(self._check_single_engine(engine=engine, index=i)
@@ -56,8 +56,8 @@ class RolloutAtomAgent:
         alive_count = sum(results)
         dead_indices = tuple(i for i, ok in enumerate(results) if not ok)
 
-        result = AtomHealthResult(
-            atom_id=self._atom_id,
+        result = CellHealthResult(
+            cell_id=self._cell_id,
             total_engines=len(self._engines),
             alive_engines=alive_count,
             dead_engine_indices=dead_indices,
@@ -77,7 +77,7 @@ class RolloutAtomAgent:
         """Check whether a single engine is alive.
 
         Default implementation calls engine.health_check.remote() (Ray actor interface).
-        Tests override via MockRolloutAtomAgent subclass.
+        Tests override via MockRolloutCellAgent subclass.
         """
         try:
             await asyncio.wait_for(
@@ -87,19 +87,19 @@ class RolloutAtomAgent:
             return True
         except Exception:
             logger.debug(
-                "engine_health_check_failed atom_id=%s index=%d",
-                self._atom_id, index, exc_info=True,
+                "engine_health_check_failed cell_id=%s index=%d",
+                self._cell_id, index, exc_info=True,
             )
             return False
 
     # --- Lifecycle ---
 
     async def stop(self) -> None:
-        """Stop all engines in this atom."""
+        """Stop all engines in this cell."""
         raise NotImplementedError("Depends on rollout architecture")
 
     async def start(self) -> int:
-        """Rebuild engines for this atom. Returns alive engine count."""
+        """Rebuild engines for this cell. Returns alive engine count."""
         raise NotImplementedError("Depends on rollout architecture")
 
     # --- Node tracking ---

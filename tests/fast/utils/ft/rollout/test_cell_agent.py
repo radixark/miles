@@ -4,14 +4,14 @@ import asyncio
 
 import pytest
 
-from miles.utils.ft.rollout.atom_agent import RolloutAtomAgent
-from tests.fast.utils.ft.rollout.conftest import MockRolloutAtomAgent
+from miles.utils.ft.rollout.cell_agent import RolloutCellAgent
+from tests.fast.utils.ft.rollout.conftest import MockRolloutCellAgent
 
 
 class TestCheckHealth:
     @pytest.mark.anyio
     async def test_all_engines_alive_returns_healthy(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True, True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True, True])
 
         result = await agent.check_health()
 
@@ -19,11 +19,11 @@ class TestCheckHealth:
         assert result.alive_engines == 3
         assert result.total_engines == 3
         assert result.dead_engine_indices == ()
-        assert result.atom_id == "a0"
+        assert result.cell_id == "a0"
 
     @pytest.mark.anyio
     async def test_one_engine_dead_returns_unhealthy(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a1", engine_alive=[True, False, True])
+        agent = MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False, True])
 
         result = await agent.check_health()
 
@@ -34,7 +34,7 @@ class TestCheckHealth:
     @pytest.mark.anyio
     async def test_empty_engines_returns_healthy(self) -> None:
         """Empty fault domain has zero engines, so 0==0 → healthy."""
-        agent = MockRolloutAtomAgent(atom_id="empty", engine_alive=[])
+        agent = MockRolloutCellAgent(cell_id="empty", engine_alive=[])
 
         result = await agent.check_health()
 
@@ -45,7 +45,7 @@ class TestCheckHealth:
 
     @pytest.mark.anyio
     async def test_all_engines_dead_returns_unhealthy(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a2", engine_alive=[False, False, False])
+        agent = MockRolloutCellAgent(cell_id="a2", engine_alive=[False, False, False])
 
         result = await agent.check_health()
 
@@ -56,13 +56,13 @@ class TestCheckHealth:
 
 class TestIsHealthy:
     def test_returns_false_before_any_check(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
 
         assert agent.is_healthy() is False
 
     @pytest.mark.anyio
     async def test_returns_true_after_healthy_check(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
 
         await agent.check_health()
 
@@ -71,14 +71,14 @@ class TestIsHealthy:
 
 class TestNodeTracking:
     def test_set_and_get_node_ids(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True])
 
         agent.set_node_ids({"node-1", "node-2"})
 
         assert agent.get_node_ids() == {"node-1", "node-2"}
 
     def test_set_node_ids_returns_copy(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True])
         agent.set_node_ids({"node-1"})
 
         returned = agent.get_node_ids()
@@ -89,18 +89,18 @@ class TestNodeTracking:
 
 class TestEngineCounts:
     def test_get_engine_count(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, False, True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, False, True])
 
         assert agent.get_engine_count() == 3
 
     def test_get_alive_engine_count_before_check(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
 
         assert agent.get_alive_engine_count() == 0
 
     @pytest.mark.anyio
     async def test_get_alive_engine_count_after_check(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, False, True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, False, True])
 
         await agent.check_health()
 
@@ -110,7 +110,7 @@ class TestEngineCounts:
 class TestConsecutiveChecksUpdateResult:
     @pytest.mark.anyio
     async def test_result_updates_after_state_change(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True, True])
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True, True])
 
         # Step 1: all alive
         result1 = await agent.check_health()
@@ -152,7 +152,7 @@ class TestCheckSingleEngine:
 
     @pytest.mark.anyio
     async def test_alive_engine_returns_true(self) -> None:
-        agent = RolloutAtomAgent(atom_id="a0", engines=[_AliveEngine()])
+        agent = RolloutCellAgent(cell_id="a0", engines=[_AliveEngine()])
 
         result = await agent._check_single_engine(engine=_AliveEngine(), index=0)
 
@@ -160,8 +160,8 @@ class TestCheckSingleEngine:
 
     @pytest.mark.anyio
     async def test_timeout_returns_false(self) -> None:
-        agent = RolloutAtomAgent(
-            atom_id="a0", engines=[_SlowEngine()], health_check_timeout=0.01,
+        agent = RolloutCellAgent(
+            cell_id="a0", engines=[_SlowEngine()], health_check_timeout=0.01,
         )
 
         result = await agent._check_single_engine(engine=_SlowEngine(), index=0)
@@ -170,15 +170,15 @@ class TestCheckSingleEngine:
 
     @pytest.mark.anyio
     async def test_exception_returns_false(self) -> None:
-        agent = RolloutAtomAgent(atom_id="a0", engines=[_BrokenEngine()])
+        agent = RolloutCellAgent(cell_id="a0", engines=[_BrokenEngine()])
 
         result = await agent._check_single_engine(engine=_BrokenEngine(), index=0)
 
         assert result is False
 
 
-class TestAtomId:
-    def test_atom_id_property(self) -> None:
-        agent = MockRolloutAtomAgent(atom_id="my-atom", engine_alive=[True])
+class TestCellId:
+    def test_cell_id_property(self) -> None:
+        agent = MockRolloutCellAgent(cell_id="my-cell", engine_alive=[True])
 
-        assert agent.atom_id == "my-atom"
+        assert agent.cell_id == "my-cell"

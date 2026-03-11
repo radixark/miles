@@ -7,16 +7,16 @@ import pytest
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.rollout.ft_rollout_agent import FtRolloutAgent
-from tests.fast.utils.ft.rollout.conftest import MockRolloutAtomAgent
+from tests.fast.utils.ft.rollout.conftest import MockRolloutCellAgent
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
 
 
 def _make_agent(
-    atoms: dict[str, MockRolloutAtomAgent],
+    cells: dict[str, MockRolloutCellAgent],
     check_interval: float = 0.05,
 ) -> FtRolloutAgent:
     return FtRolloutAgent(
-        atoms=atoms,
+        cells=cells,
         check_interval=check_interval,
         metrics_port=0,
     )
@@ -25,10 +25,10 @@ def _make_agent(
 class TestHealthCheckLoopUpdatesMetrics:
     @pytest.mark.anyio
     async def test_metrics_reflect_healthy_state(self) -> None:
-        atoms = {
-            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True]),
+        cells = {
+            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
         }
-        agent = _make_agent(atoms)
+        agent = _make_agent(cells)
         await agent.start()
 
         try:
@@ -36,9 +36,9 @@ class TestHealthCheckLoopUpdatesMetrics:
             await asyncio.sleep(0.15)
 
             # Step 2: verify metrics
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
-            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "0"}) == 1.0
-            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "1"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "a0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"cell_id": "a0", "engine_index": "0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"cell_id": "a0", "engine_index": "1"}) == 1.0
         finally:
             await agent.shutdown()
 
@@ -46,19 +46,19 @@ class TestHealthCheckLoopUpdatesMetrics:
 class TestPartialEngineDeathMetrics:
     @pytest.mark.anyio
     async def test_dead_engine_reflected_in_metrics(self) -> None:
-        atoms = {
-            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, False, True]),
+        cells = {
+            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, False, True]),
         }
-        agent = _make_agent(atoms)
+        agent = _make_agent(cells)
         await agent.start()
 
         try:
             await asyncio.sleep(0.15)
 
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 0.0
-            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "0"}) == 1.0
-            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "1"}) == 0.0
-            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "2"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "a0"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"cell_id": "a0", "engine_index": "0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"cell_id": "a0", "engine_index": "1"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"cell_id": "a0", "engine_index": "2"}) == 1.0
         finally:
             await agent.shutdown()
 
@@ -66,22 +66,22 @@ class TestPartialEngineDeathMetrics:
 class TestPauseDoesNotProduceFalseUpdates:
     @pytest.mark.anyio
     async def test_pause_preserves_last_metrics(self) -> None:
-        atom = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])
-        agent = _make_agent({"a0": atom})
+        cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
+        agent = _make_agent({"a0": cell})
         await agent.start()
 
         try:
             # Step 1: wait for initial healthy check
             await asyncio.sleep(0.15)
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "a0"}) == 1.0
 
             # Step 2: pause, then kill an engine
             agent.pause()
-            atom._engine_alive[1] = False
+            cell._engine_alive[1] = False
 
             # Step 3: wait another cycle — metrics should NOT update
             await asyncio.sleep(0.15)
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "a0"}) == 1.0
         finally:
             await agent.shutdown()
 
@@ -89,8 +89,8 @@ class TestPauseDoesNotProduceFalseUpdates:
 class TestResumeRestoresChecks:
     @pytest.mark.anyio
     async def test_resume_updates_metrics_after_pause(self) -> None:
-        atom = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])
-        agent = _make_agent({"a0": atom})
+        cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
+        agent = _make_agent({"a0": cell})
         await agent.start()
 
         try:
@@ -98,14 +98,14 @@ class TestResumeRestoresChecks:
 
             # Step 1: pause and kill engine
             agent.pause()
-            atom._engine_alive[0] = False
+            cell._engine_alive[0] = False
             await asyncio.sleep(0.15)
 
             # Step 2: resume — metrics should update
             agent.resume()
             await asyncio.sleep(0.15)
 
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "a0"}) == 0.0
         finally:
             await agent.shutdown()
 
@@ -113,11 +113,11 @@ class TestResumeRestoresChecks:
 class TestGetStatus:
     @pytest.mark.anyio
     async def test_all_healthy_returns_running(self) -> None:
-        atoms = {
-            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True]),
-            "a1": MockRolloutAtomAgent(atom_id="a1", engine_alive=[True]),
+        cells = {
+            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
+            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True]),
         }
-        agent = _make_agent(atoms)
+        agent = _make_agent(cells)
         await agent.start()
 
         try:
@@ -128,11 +128,11 @@ class TestGetStatus:
 
     @pytest.mark.anyio
     async def test_any_dead_returns_failed(self) -> None:
-        atoms = {
-            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True]),
-            "a1": MockRolloutAtomAgent(atom_id="a1", engine_alive=[True, False]),
+        cells = {
+            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
+            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
         }
-        agent = _make_agent(atoms)
+        agent = _make_agent(cells)
         await agent.start()
 
         try:
@@ -142,20 +142,20 @@ class TestGetStatus:
             await agent.shutdown()
 
 
-class TestGetAtomStatusPerAtomIsolation:
+class TestGetCellStatusPerCellIsolation:
     @pytest.mark.anyio
-    async def test_per_atom_status_is_independent(self) -> None:
-        atoms = {
-            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True]),
-            "a1": MockRolloutAtomAgent(atom_id="a1", engine_alive=[True, False]),
+    async def test_per_cell_status_is_independent(self) -> None:
+        cells = {
+            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
+            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
         }
-        agent = _make_agent(atoms)
+        agent = _make_agent(cells)
         await agent.start()
 
         try:
             await asyncio.sleep(0.15)
-            assert await agent.get_atom_status("a0") == JobStatus.RUNNING
-            assert await agent.get_atom_status("a1") == JobStatus.FAILED
+            assert await agent.get_cell_status("a0") == JobStatus.RUNNING
+            assert await agent.get_cell_status("a1") == JobStatus.FAILED
         finally:
             await agent.shutdown()
 
@@ -163,7 +163,7 @@ class TestGetAtomStatusPerAtomIsolation:
 class TestLifecycle:
     @pytest.mark.anyio
     async def test_start_makes_address_available_and_shutdown_stops_loop(self) -> None:
-        agent = _make_agent({"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])})
+        agent = _make_agent({"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])})
         await agent.start()
 
         try:
@@ -178,7 +178,7 @@ class TestLifecycle:
 class TestRegisterWithController:
     @pytest.mark.anyio
     async def test_calls_add_scrape_target_with_correct_address(self) -> None:
-        agent = _make_agent({"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])})
+        agent = _make_agent({"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])})
         await agent.start()
 
         try:
@@ -199,21 +199,21 @@ class TestRegisterWithController:
 class TestHealthLoopSurvivesException:
     @pytest.mark.anyio
     async def test_exception_in_check_health_does_not_crash_loop(self) -> None:
-        """If one atom's check_health raises, the loop continues checking other atoms."""
-        healthy_atom = MockRolloutAtomAgent(atom_id="healthy", engine_alive=[True])
-        broken_atom = _BrokenCheckHealthAtom(atom_id="broken")
-        agent = _make_agent({"healthy": healthy_atom, "broken": broken_atom})
+        """If one cell's check_health raises, the loop continues checking other cells."""
+        healthy_cell = MockRolloutCellAgent(cell_id="healthy", engine_alive=[True])
+        broken_cell = _BrokenCheckHealthCell(cell_id="broken")
+        agent = _make_agent({"healthy": healthy_cell, "broken": broken_cell})
         await agent.start()
 
         try:
             # Step 1: wait for multiple cycles
             await asyncio.sleep(0.15)
 
-            # Step 2: healthy atom's metrics should still be updated
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "healthy"}) == 1.0
+            # Step 2: healthy cell's metrics should still be updated
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "healthy"}) == 1.0
 
-            # Step 3: broken atom should have no metrics (never successfully checked)
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "broken"}) is None
+            # Step 3: broken cell should have no metrics (never successfully checked)
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "broken"}) is None
 
             # Step 4: loop is still running
             assert not agent._health_loop_task.done()
@@ -221,72 +221,72 @@ class TestHealthLoopSurvivesException:
             await agent.shutdown()
 
 
-class _BrokenCheckHealthAtom(MockRolloutAtomAgent):
-    def __init__(self, *, atom_id: str) -> None:
-        super().__init__(atom_id=atom_id, engine_alive=[True])
+class _BrokenCheckHealthCell(MockRolloutCellAgent):
+    def __init__(self, *, cell_id: str) -> None:
+        super().__init__(cell_id=cell_id, engine_alive=[True])
 
     async def check_health(self) -> object:
         raise RuntimeError("simulated check_health failure")
 
 
-class TestStopAtom:
+class TestStopCell:
     @pytest.mark.anyio
-    async def test_delegates_to_atom(self) -> None:
-        atom = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])
-        agent = FtRolloutAgent(atoms={"a0": atom}, check_interval=10.0, metrics_port=0)
+    async def test_delegates_to_cell(self) -> None:
+        cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
+        agent = FtRolloutAgent(cells={"a0": cell}, check_interval=10.0, metrics_port=0)
 
-        await agent.stop_atom("a0")
+        await agent.stop_cell("a0")
 
     @pytest.mark.anyio
-    async def test_raises_key_error_for_unknown_atom(self) -> None:
+    async def test_raises_key_error_for_unknown_cell(self) -> None:
         agent = FtRolloutAgent(
-            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])},
             check_interval=10.0,
             metrics_port=0,
         )
 
         with pytest.raises(KeyError):
-            await agent.stop_atom("nonexistent")
+            await agent.stop_cell("nonexistent")
 
 
-class TestStartAtom:
+class TestStartCell:
     @pytest.mark.anyio
-    async def test_delegates_to_atom_and_returns_count(self) -> None:
-        atom = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, False, True])
-        agent = FtRolloutAgent(atoms={"a0": atom}, check_interval=10.0, metrics_port=0)
+    async def test_delegates_to_cell_and_returns_count(self) -> None:
+        cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, False, True])
+        agent = FtRolloutAgent(cells={"a0": cell}, check_interval=10.0, metrics_port=0)
 
-        result = await agent.start_atom("a0")
+        result = await agent.start_cell("a0")
 
         assert result == 2
 
     @pytest.mark.anyio
-    async def test_raises_key_error_for_unknown_atom(self) -> None:
+    async def test_raises_key_error_for_unknown_cell(self) -> None:
         agent = FtRolloutAgent(
-            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])},
             check_interval=10.0,
             metrics_port=0,
         )
 
         with pytest.raises(KeyError):
-            await agent.start_atom("nonexistent")
+            await agent.start_cell("nonexistent")
 
 
 class TestStopAll:
     @pytest.mark.anyio
-    async def test_calls_stop_on_every_atom(self) -> None:
-        atoms = {
-            "a0": _TrackingStopAtom(atom_id="a0", engine_alive=[True]),
-            "a1": _TrackingStopAtom(atom_id="a1", engine_alive=[True, True]),
+    async def test_calls_stop_on_every_cell(self) -> None:
+        cells = {
+            "a0": _TrackingStopCell(cell_id="a0", engine_alive=[True]),
+            "a1": _TrackingStopCell(cell_id="a1", engine_alive=[True, True]),
         }
-        agent = FtRolloutAgent(atoms=atoms, check_interval=10.0, metrics_port=0)
+        agent = FtRolloutAgent(cells=cells, check_interval=10.0, metrics_port=0)
 
         await agent.stop_all()
 
-        assert atoms["a0"].stop_called
-        assert atoms["a1"].stop_called
+        assert cells["a0"].stop_called
+        assert cells["a1"].stop_called
 
 
-class _TrackingStopAtom(MockRolloutAtomAgent):
+class _TrackingStopCell(MockRolloutCellAgent):
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
         self.stop_called = False
@@ -299,7 +299,7 @@ class TestRebuild:
     @pytest.mark.anyio
     async def test_raises_not_implemented(self) -> None:
         agent = FtRolloutAgent(
-            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])},
             check_interval=10.0,
             metrics_port=0,
         )
@@ -313,7 +313,7 @@ class TestGetStatusBeforeAnyHealthCheck:
     async def test_returns_failed_when_no_check_has_run(self) -> None:
         """Before any health check, is_healthy() returns False, so get_status should be FAILED."""
         agent = FtRolloutAgent(
-            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])},
+            cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])},
             check_interval=10.0,
             metrics_port=0,
         )
@@ -321,23 +321,23 @@ class TestGetStatusBeforeAnyHealthCheck:
         assert await agent.get_status() == JobStatus.FAILED
 
 
-class TestMultiAtomMetricsAreIndependent:
+class TestMultiCellMetricsAreIndependent:
     @pytest.mark.anyio
-    async def test_per_atom_metrics_reflect_individual_health(self) -> None:
-        atoms = {
-            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True]),
-            "a1": MockRolloutAtomAgent(atom_id="a1", engine_alive=[True, False]),
+    async def test_per_cell_metrics_reflect_individual_health(self) -> None:
+        cells = {
+            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
+            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
         }
-        agent = _make_agent(atoms)
+        agent = _make_agent(cells)
         await agent.start()
 
         try:
             await asyncio.sleep(0.15)
 
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
-            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a1"}) == 0.0
-            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a1", "engine_index": "0"}) == 1.0
-            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a1", "engine_index": "1"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "a0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_cell_alive", {"cell_id": "a1"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"cell_id": "a1", "engine_index": "0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"cell_id": "a1", "engine_index": "1"}) == 0.0
         finally:
             await agent.shutdown()
 
@@ -346,7 +346,7 @@ class TestShutdownWithoutStart:
     @pytest.mark.anyio
     async def test_shutdown_without_start_is_safe(self) -> None:
         agent = FtRolloutAgent(
-            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])},
             check_interval=10.0,
             metrics_port=0,
         )
@@ -355,17 +355,17 @@ class TestShutdownWithoutStart:
 
 
 class TestPublicApi:
-    def test_get_atom_ids(self) -> None:
-        atoms = {
-            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True]),
-            "a1": MockRolloutAtomAgent(atom_id="a1", engine_alive=[True, True]),
+    def test_get_cell_ids(self) -> None:
+        cells = {
+            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True]),
+            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, True]),
         }
-        agent = FtRolloutAgent(atoms=atoms, check_interval=10.0, metrics_port=0)
+        agent = FtRolloutAgent(cells=cells, check_interval=10.0, metrics_port=0)
 
-        assert sorted(agent.get_atom_ids()) == ["a0", "a1"]
+        assert sorted(agent.get_cell_ids()) == ["a0", "a1"]
 
-    def test_get_atom_agent(self) -> None:
-        atom = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])
-        agent = FtRolloutAgent(atoms={"a0": atom}, check_interval=10.0, metrics_port=0)
+    def test_get_cell_agent(self) -> None:
+        cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True])
+        agent = FtRolloutAgent(cells={"a0": cell}, check_interval=10.0, metrics_port=0)
 
-        assert agent.get_atom_agent("a0") is atom
+        assert agent.get_cell_agent("a0") is cell
