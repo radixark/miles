@@ -497,6 +497,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
+            parser.add_argument(
+                "--placement-persist-path",
+                type=str,
+                default=None,
+                help="Path to persist PG bundle-to-node snapshot. "
+                "On restart, the new PG reuses the old node-role mapping for stability. "
+                "Typically on shared storage (e.g. {save_dir}/pg_snapshot.json).",
+            )
             return parser
 
         # data
@@ -1863,6 +1871,11 @@ def miles_validate_args(args):
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+
+    if getattr(args, "use_fault_tolerance", False) and getattr(args, "placement_persist_path", None) is None:
+        save_dir = getattr(args, "save", None)
+        if save_dir:
+            args.placement_persist_path = os.path.join(save_dir, "pg_snapshot.json")
 
     args.ft_components = _resolve_ft_components(args)
 
