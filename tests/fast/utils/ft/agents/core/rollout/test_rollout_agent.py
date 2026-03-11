@@ -8,7 +8,7 @@ import pytest
 from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
 from tests.fast.utils.ft.agents.core.rollout.conftest import (
     MockEngine,
-    MockRolloutCellAgent,
+    MockRolloutHealthChecker,
     mock_health_checker,
 )
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
@@ -25,10 +25,10 @@ def _make_agent(
 
 
 def _make_multicell_agent(
-    cells: dict[str, MockRolloutCellAgent],
+    checker: MockRolloutHealthChecker,
     check_interval: float = 0.05,
 ) -> FtRolloutAgent:
-    with patch.object(FtRolloutAgent, '_build_cells', return_value=cells):
+    with patch.object(FtRolloutAgent, '_build_health_checker', return_value=checker):
         return FtRolloutAgent(MagicMock(), health_checker=AsyncMock(), check_interval=check_interval)
 
 
@@ -125,10 +125,12 @@ class TestLifecycle:
 class TestHealthLoopSurvivesException:
     @pytest.mark.anyio
     async def test_exception_in_check_health_does_not_crash_loop(self) -> None:
-        """If one cell's check_health raises, the loop continues checking other cells."""
-        healthy_cell = MockRolloutCellAgent(cell_id="healthy", healthy=True)
-        broken_cell = _BrokenCheckHealthCell(cell_id="broken")
-        agent = _make_multicell_agent({"healthy": healthy_cell, "broken": broken_cell})
+        """If one cell's check_cell raises, the loop continues checking other cells."""
+        checker = _BrokenCellHealthChecker(
+            healthy_cells={"healthy": True},
+            broken_cell_id="broken",
+        )
+        agent = _make_multicell_agent(checker)
 
         try:
             # Step 1: wait for multiple cycles
@@ -147,22 +149,23 @@ class TestHealthLoopSurvivesException:
             await agent.shutdown()
 
 
-class _BrokenCheckHealthCell(MockRolloutCellAgent):
-    def __init__(self, *, cell_id: str) -> None:
-        super().__init__(cell_id=cell_id, healthy=True)
+class _BrokenCellHealthChecker(MockRolloutHealthChecker):
+    def __init__(self, *, healthy_cells: dict[str, bool], broken_cell_id: str) -> None:
+        super().__init__(cell_results=healthy_cells)
+        self._broken_cell_id = broken_cell_id
+        self.set_result(broken_cell_id, True)
 
-    async def check_health(self) -> bool:
-        raise RuntimeError("simulated check_health failure")
+    async def check_cell(self, cell_id: str) -> bool:
+        if cell_id == self._broken_cell_id:
+            raise RuntimeError("simulated check_health failure")
+        return await super().check_cell(cell_id)
 
 
 class TestMultiCellMetricsAreIndependent:
     @pytest.mark.anyio
     async def test_per_cell_metrics_reflect_individual_health(self) -> None:
-        cells = {
-            "a0": MockRolloutCellAgent(cell_id="a0", healthy=True),
-            "a1": MockRolloutCellAgent(cell_id="a1", healthy=False),
-        }
-        agent = _make_multicell_agent(cells)
+        checker = MockRolloutHealthChecker(cell_results={"a0": True, "a1": False})
+        agent = _make_multicell_agent(checker)
 
         try:
             await asyncio.sleep(0.15)
@@ -182,19 +185,11 @@ class TestShutdownImmediately:
         await agent.shutdown()
 
 
-class TestBuildCells:
+class TestBuildHealthChecker:
     def test_builds_default_cell_from_rollout_manager(self) -> None:
         rollout_manager = MagicMock()
         rollout_manager.all_rollout_engines = [MagicMock(), MagicMock(), MagicMock()]
 
-        cells = FtRolloutAgent._build_cells(rollout_manager, health_checker=AsyncMock())
+        checker = FtRolloutAgent._build_health_checker(rollout_manager, health_checker=AsyncMock())
 
-        assert list(cells.keys()) == ["default"]
-        assert len(cells["default"]._get_engines()) == 3
-
-    def test_cell_id_is_default(self) -> None:
-        rollout_manager = MagicMock()
-        rollout_manager.all_rollout_engines = [MagicMock()]
-
-        cells = FtRolloutAgent._build_cells(rollout_manager, health_checker=AsyncMock())
-        assert cells["default"].cell_id == "default"
+        assert checker.cell_ids == ["default"]

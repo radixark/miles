@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from miles.utils.ft.adapters.types import EngineHealthChecker
-from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
+from miles.utils.ft.agents.core.rollout.health_checker import RolloutHealthChecker
 from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,9 @@ class FtRolloutAgent:
         health_checker: EngineHealthChecker,
         check_interval: float = 10.0,
     ) -> None:
-        self._cells = self._build_cells(rollout_manager, health_checker=health_checker)
+        self._health_checker = self._build_health_checker(
+            rollout_manager, health_checker=health_checker,
+        )
 
         self._check_interval = check_interval
         self._paused = False
@@ -27,22 +29,22 @@ class FtRolloutAgent:
         self._health_loop_task = asyncio.create_task(self._health_check_loop())
 
         logger.info(
-            "ft_rollout_agent_started address=%s cells=%d",
-            self.address, len(self._cells),
+            "ft_rollout_agent_started address=%s cells=%s",
+            self.address, self._health_checker.cell_ids,
         )
 
-    # TODO this is surely wrong, will be multi cells
     @staticmethod
-    def _build_cells(
+    def _build_health_checker(
         rollout_manager: object,
         *,
         health_checker: EngineHealthChecker,
-    ) -> dict[str, RolloutCellAgent]:
-        return {"default": RolloutCellAgent(
+    ) -> RolloutHealthChecker:
+        checker = RolloutHealthChecker(engine_health_fn=health_checker)
+        checker.add_cell(
             cell_id="default",
             get_engines=lambda: list(rollout_manager.all_rollout_engines),  # type: ignore[attr-defined]
-            health_checker=health_checker,
-        )}
+        )
+        return checker
 
     @property
     def address(self) -> str:
@@ -66,17 +68,20 @@ class FtRolloutAgent:
         while True:
             if not self._paused:
                 await asyncio.gather(
-                    *(self._check_one_cell(cell) for cell in self._cells.values())
+                    *(
+                        self._check_one_cell(cell_id)
+                        for cell_id in self._health_checker.cell_ids
+                    )
                 )
             await asyncio.sleep(self._check_interval)
 
-    async def _check_one_cell(self, cell: RolloutCellAgent) -> None:
+    async def _check_one_cell(self, cell_id: str) -> None:
         try:
-            is_healthy = await cell.check_health()
-            self._metrics_exporter.update(cell_id=cell.cell_id, is_healthy=is_healthy)
+            is_healthy = await self._health_checker.check_cell(cell_id)
+            self._metrics_exporter.update(cell_id=cell_id, is_healthy=is_healthy)
         except Exception:
             logger.warning(
-                "health_check_failed cell_id=%s", cell.cell_id, exc_info=True
+                "health_check_failed cell_id=%s", cell_id, exc_info=True
             )
 
     def pause(self) -> None:
@@ -86,4 +91,3 @@ class FtRolloutAgent:
     def resume(self) -> None:
         self._paused = False
         logger.info("ft_rollout_agent_resumed")
-
