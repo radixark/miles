@@ -8,6 +8,11 @@ These failures are considered:
 1. Program error (recoverable by restarting corresponding components or the whole system)
 2. Node error (only recoverable by removing the bad nodes and use replacement good nodes)
 
+These constraints are considered:
+* Be extensible: can add arbitrary complex detectors / diagnostics / sub state machines / … when we find sth is useful in large scale experiments
+* Avoid unnecessary complexity / abstractions: we only need it for miles, not for all libraries in the world
+* Avoid too strong assumptions to the environment: not assume users have Prometheus, DCGM exporter, node diagnoser, etc; only assume a Kubernetes + KubeRay; and this is in adapter layer thus replaceable
+
 ## Architecture & State Machines
 
 ### Figure
