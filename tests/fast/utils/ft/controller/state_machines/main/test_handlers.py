@@ -31,7 +31,7 @@ from miles.utils.ft.controller.state_machines.recovery import (
     RecoveryEscalated,
 )
 from miles.utils.ft.controller.state_machines.restart import MonitoringProgress
-from miles.utils.ft.controller.subsystem import MonitoringConfig
+from miles.utils.ft.controller.subsystem import IterationProgressConfig, SustainedAliveConfig
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
@@ -62,7 +62,7 @@ def _make_main_context(
     on_recovery_duration: object | None = None,
     notifier: FakeNotifier | None = None,
     max_simultaneous_bad_nodes: int = 3,
-    monitoring_config: MonitoringConfig | None = None,
+    monitoring_config: IterationProgressConfig | SustainedAliveConfig | None = None,
     mini_wandb: MiniWandb | None = None,
 ) -> MainContext:
     return MainContext(
@@ -92,7 +92,7 @@ def _make_main_context(
         recovery_context_factory=recovery_context_factory or _dummy_recovery_context_factory,
         on_recovery_duration=on_recovery_duration,
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
-        monitoring_config=monitoring_config or MonitoringConfig(mode="iteration_progress"),
+        monitoring_config=monitoring_config or IterationProgressConfig(),
         mini_wandb=mini_wandb or MiniWandb(),
     )
 
@@ -710,7 +710,7 @@ class TestRestartedMainJobHandler:
             _make_main_context(
                 should_run_detectors=False,
                 mini_wandb=mini_wandb,
-                monitoring_config=MonitoringConfig(mode="iteration_progress"),
+                monitoring_config=IterationProgressConfig(),
             ),
         )
         assert isinstance(result, Recovering)
@@ -735,7 +735,7 @@ class TestRestartedMainJobHandler:
             _make_main_context(
                 should_run_detectors=False,
                 mini_wandb=mini_wandb,
-                monitoring_config=MonitoringConfig(mode="sustained_alive"),
+                monitoring_config=SustainedAliveConfig(),
             ),
         )
         assert isinstance(result, Recovering)
