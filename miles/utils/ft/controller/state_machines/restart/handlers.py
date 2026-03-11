@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.restart.models import (
     Evicting,
@@ -102,7 +102,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
         state: StoppingAndRestarting,
         ctx: RestartContext,
     ) -> RestartState | None:
-        if not ctx.has_level1_restart:
+        if ctx.restart_mode == RestartMode.MAIN_JOB:
             return RestartingMainJob(bad_node_ids=state.bad_node_ids)
 
         try:

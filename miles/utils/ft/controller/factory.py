@@ -19,7 +19,7 @@ from miles.utils.ft.controller.state_machines.main import (
 from miles.utils.ft.controller.state_machines.main.models import MainState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, SubsystemConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, RestartMode, SubsystemConfig
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
@@ -96,7 +96,7 @@ def create_ft_controller(
     # --- Create SubsystemConfig ---
     training_config = SubsystemConfig(
         actuator=TrainingSubsystemActuator(main_job=main_job),
-        has_level1_restart=False,
+        restart_mode=RestartMode.MAIN_JOB,
         detectors=resolved_detectors,
         monitoring_config=monitoring_config,
         get_active_node_ids=_get_active_training_nodes,

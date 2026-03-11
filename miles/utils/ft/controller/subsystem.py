@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Annotated, Literal, Union
 
 from pydantic import Field
@@ -33,12 +34,17 @@ MonitoringConfig = Annotated[
 ]
 
 
+class RestartMode(Enum):
+    SUBSYSTEM = "subsystem"
+    MAIN_JOB = "main_job"
+
+
 @dataclass
 class SubsystemConfig:
     """Static configuration for a single subsystem (no runtime state)."""
 
     actuator: SubsystemActuatorProtocol
-    has_level1_restart: bool = True
+    restart_mode: RestartMode = RestartMode.SUBSYSTEM
     detectors: list[BaseFaultDetector] = field(default_factory=list)
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig = field(
         default_factory=MonitoringIterationProgressConfig

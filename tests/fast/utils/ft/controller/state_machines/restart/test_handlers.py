@@ -28,12 +28,12 @@ from miles.utils.ft.controller.state_machines.restart import (
     create_restart_stepper,
     iteration_progress,
 )
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
 class FakeActuator(SubsystemActuatorProtocol):
-    """In-memory actuator for Level 1 restart tests."""
+    """In-memory actuator for subsystem restart tests."""
 
     def __init__(self, status_sequence: list[JobStatus] | None = None) -> None:
         self._status_sequence = status_sequence or [JobStatus.RUNNING]
@@ -70,7 +70,7 @@ def _make_context(
     node_metadata: dict[str, dict[str, str]] | None = None,
     actuator: SubsystemActuatorProtocol | None = None,
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
-    has_level1_restart: bool = True,
+    restart_mode: RestartMode = RestartMode.SUBSYSTEM,
 ) -> RestartContext:
     resolved_main_job = main_job or FakeMainJob()
     return RestartContext(
@@ -82,7 +82,7 @@ def _make_context(
         node_metadata=node_metadata or {},
         actuator=actuator or FakeActuator(),
         monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
-        has_level1_restart=has_level1_restart,
+        restart_mode=restart_mode,
     )
 
 
@@ -211,10 +211,10 @@ class TestEvicting:
 
 class TestStoppingAndRestarting:
     @pytest.mark.asyncio
-    async def test_level2_no_level1_returns_restarting_main_job(self) -> None:
-        """has_level1_restart=False -> RestartingMainJob(externally_fulfilled=False)."""
+    async def test_main_job_restart_mode_returns_restarting_main_job(self) -> None:
+        """restart_mode=MAIN_JOB -> RestartingMainJob(externally_fulfilled=False)."""
         stepper = _make_stepper()
-        ctx = _make_context(has_level1_restart=False)
+        ctx = _make_context(restart_mode=RestartMode.MAIN_JOB)
 
         state = StoppingAndRestarting(bad_node_ids=["node-A"])
         result = await stepper(state, ctx)
@@ -224,10 +224,10 @@ class TestStoppingAndRestarting:
         assert result.externally_fulfilled is False
 
     @pytest.mark.asyncio
-    async def test_level1_submit_calls_actuator_stop_and_start(self) -> None:
+    async def test_subsystem_restart_submit_calls_actuator_stop_and_start(self) -> None:
         actuator = FakeActuator()
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, has_level1_restart=True)
+        ctx = _make_context(actuator=actuator, restart_mode=RestartMode.SUBSYSTEM)
 
         state = StoppingAndRestarting(bad_node_ids=["node-A"])
         result = await stepper(state, ctx)
@@ -239,22 +239,22 @@ class TestStoppingAndRestarting:
         assert actuator.started
 
     @pytest.mark.asyncio
-    async def test_level1_actuator_stop_failure_returns_restart_failed(self) -> None:
+    async def test_subsystem_restart_actuator_stop_failure_returns_restart_failed(self) -> None:
         actuator = FakeActuator()
         actuator.stop = AsyncMock(side_effect=RuntimeError("stop failed"))  # type: ignore[assignment]
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, has_level1_restart=True)
+        ctx = _make_context(actuator=actuator, restart_mode=RestartMode.SUBSYSTEM)
 
         state = StoppingAndRestarting()
         result = await stepper(state, ctx)
         assert isinstance(result, RestartFailed)
 
     @pytest.mark.asyncio
-    async def test_level1_actuator_start_failure_returns_restart_failed(self) -> None:
+    async def test_subsystem_restart_actuator_start_failure_returns_restart_failed(self) -> None:
         actuator = FakeActuator()
         actuator.start = AsyncMock(side_effect=RuntimeError("start failed"))  # type: ignore[assignment]
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, has_level1_restart=True)
+        ctx = _make_context(actuator=actuator, restart_mode=RestartMode.SUBSYSTEM)
 
         state = StoppingAndRestarting()
         result = await stepper(state, ctx)
@@ -585,8 +585,8 @@ class TestRestartingMainJob:
 
 class TestFullRestartFlow:
     @pytest.mark.asyncio
-    async def test_level1_evict_stop_monitor_done(self) -> None:
-        """Level 1: Evicting -> StoppingAndRestarting(submit) -> poll -> MonitoringProgress -> RestartDone."""
+    async def test_subsystem_restart_evict_stop_monitor_done(self) -> None:
+        """SUBSYSTEM: Evicting -> StoppingAndRestarting(submit) -> poll -> MonitoringProgress -> RestartDone."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -596,7 +596,7 @@ class TestFullRestartFlow:
             actuator=actuator,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=5),
-            has_level1_restart=True,
+            restart_mode=RestartMode.SUBSYSTEM,
         )
 
         # Step 1: Evicting -> StoppingAndRestarting
@@ -620,25 +620,25 @@ class TestFullRestartFlow:
         assert isinstance(state, RestartDone)
 
     @pytest.mark.asyncio
-    async def test_level2_evict_to_restarting_main_job(self) -> None:
-        """Level 2: Evicting -> StoppingAndRestarting -> RestartingMainJob."""
+    async def test_main_job_restart_evict_to_restarting_main_job(self) -> None:
+        """MAIN_JOB: Evicting -> StoppingAndRestarting -> RestartingMainJob."""
         stepper = _make_stepper()
-        ctx = _make_context(has_level1_restart=False)
+        ctx = _make_context(restart_mode=RestartMode.MAIN_JOB)
 
         # Step 1: Evicting -> StoppingAndRestarting
         state = Evicting(bad_node_ids=["node-A"])
         state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
 
-        # Step 2: Submit -> RestartingMainJob (Level 2, waiting for external fulfillment)
+        # Step 2: Submit -> RestartingMainJob (MAIN_JOB mode, waiting for external fulfillment)
         state = await stepper(state, ctx)
         assert isinstance(state, RestartingMainJob)
         assert state.bad_node_ids == ["node-A"]
         assert state.externally_fulfilled is False
 
     @pytest.mark.asyncio
-    async def test_level1_direct_restart_no_eviction(self) -> None:
-        """Level 1: When bad_node_ids is empty, caller starts at StoppingAndRestarting."""
+    async def test_subsystem_restart_direct_restart_no_eviction(self) -> None:
+        """SUBSYSTEM: When bad_node_ids is empty, caller starts at StoppingAndRestarting."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -648,7 +648,7 @@ class TestFullRestartFlow:
             actuator=actuator,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=5),
-            has_level1_restart=True,
+            restart_mode=RestartMode.SUBSYSTEM,
         )
 
         state = StoppingAndRestarting(bad_node_ids=[])

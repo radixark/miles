@@ -9,7 +9,7 @@ import pytest
 from prometheus_client import CollectorRegistry
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.controller import FtController, _RolloutSubsystemConfig, _build_rollout_subsystem_entry
+from miles.utils.ft.controller.controller import FtController, _RolloutSubsystemConfig, _build_rollout_subsystem_config
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
@@ -17,7 +17,7 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, Mi
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main.models import NormalState, RestartingMainJobState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, Recovering
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from tests.fast.utils.ft.conftest import (
@@ -193,19 +193,15 @@ class TestRegisterRolloutSubsystems:
         assert "rollout_ep36" in state.subsystems
         assert len(state.subsystems) == 3
 
-    def test_rollout_entry_has_level1_restart(self) -> None:
+    def test_rollout_config_has_subsystem_restart_mode(self) -> None:
         controller, *_ = _make_test_controller_with_rollout()
-        state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        rollout = state.subsystems["rollout_ep72"]
-        assert rollout.has_level1_restart is True
+        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        assert rollout_config.restart_mode == RestartMode.SUBSYSTEM
 
-    def test_training_entry_has_no_level1_restart(self) -> None:
+    def test_training_config_has_main_job_restart_mode(self) -> None:
         controller, *_ = _make_test_controller_with_rollout()
-        state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        training = state.subsystems["training"]
-        assert training.has_level1_restart is False
+        training_config = controller._tick_loop.subsystem_configs["training"]
+        assert training_config.restart_mode == RestartMode.MAIN_JOB
 
     def test_rollout_configs_stored_on_controller(self) -> None:
         controller, *_ = _make_test_controller_with_rollout(cell_ids=["ep72", "ep36"])
@@ -214,14 +210,12 @@ class TestRegisterRolloutSubsystems:
         assert "ep72" in cell_ids
         assert "ep36" in cell_ids
 
-    def test_rollout_entry_returns_configured_node_ids(self) -> None:
+    def test_rollout_config_returns_configured_node_ids(self) -> None:
         controller, *_ = _make_test_controller_with_rollout(
             cell_node_ids={"ep72": {"node-r0", "node-r1", "node-r2"}},
         )
-        state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        rollout = state.subsystems["rollout_ep72"]
-        assert rollout.get_active_node_ids() == {"node-r0", "node-r1", "node-r2"}
+        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        assert rollout_config.get_active_node_ids() == {"node-r0", "node-r1", "node-r2"}
 
     def test_register_in_non_normal_state_raises_runtime_error(self) -> None:
         harness = make_test_controller()
@@ -270,22 +264,19 @@ class TestNormalOperationWithRollout:
         state = controller._state_machine.state
         assert isinstance(state, NormalState)
 
-        for name, entry in state.subsystems.items():
-            assert isinstance(entry.state_machine.state, DetectingAnomaly), (
-                f"Expected DetectingAnomaly for {name}, got {type(entry.state_machine.state).__name__}"
+        for name, sub_state in state.subsystems.items():
+            assert isinstance(sub_state, DetectingAnomaly), (
+                f"Expected DetectingAnomaly for {name}, got {type(sub_state).__name__}"
             )
 
 
 class TestRolloutCrashRecovery:
     @pytest.mark.anyio
     async def test_rollout_detector_fires_enters_recovery(self) -> None:
-        """When a rollout detector fires, the rollout sub-SM enters Recovering."""
+        """When a rollout detector fires, the rollout subsystem enters Recovering."""
         controller, *_ = _make_test_controller_with_rollout()
 
-        state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-
-        rollout_entry = state.subsystems["rollout_ep72"]
+        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
         crash_detector = FixedDecisionDetector(
             Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -294,56 +285,47 @@ class TestRolloutCrashRecovery:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_entry.detectors.clear()
-        rollout_entry.detectors.append(crash_detector)
+        rollout_config.detectors.clear()
+        rollout_config.detectors.append(crash_detector)
 
         await controller._tick()
 
-        rollout_state = rollout_entry.state_machine.state
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        rollout_state = state.subsystems["rollout_ep72"]
         assert isinstance(rollout_state, Recovering), (
             f"Expected Recovering, got {type(rollout_state).__name__}"
         )
 
 
-class TestCreateFreshSubsystemsIncludesRollout:
-    @pytest.mark.anyio
-    async def test_fresh_subsystems_include_rollout_after_registration(self) -> None:
-        """After rollout registration, create_fresh_subsystems returns both training + rollout."""
+class TestSubsystemConfigsIncludeRollout:
+    def test_subsystem_configs_include_rollout_after_registration(self) -> None:
+        """After rollout registration, subsystem_configs contains both training + rollout."""
         controller, *_ = _make_test_controller_with_rollout(
             cell_ids=["ep72", "ep36"],
         )
 
-        fresh = controller._tick_loop._create_fresh_subsystems()
-        assert "training" in fresh
-        assert "rollout_ep72" in fresh
-        assert "rollout_ep36" in fresh
-        assert len(fresh) == 3
+        configs = controller._tick_loop.subsystem_configs
+        assert "training" in configs
+        assert "rollout_ep72" in configs
+        assert "rollout_ep36" in configs
+        assert len(configs) == 3
 
-    @pytest.mark.anyio
-    async def test_fresh_subsystems_have_detecting_anomaly_state(self) -> None:
-        controller, *_ = _make_test_controller_with_rollout()
-
-        fresh = controller._tick_loop._create_fresh_subsystems()
-        for name, entry in fresh.items():
-            assert isinstance(entry.state_machine.state, DetectingAnomaly), (
-                f"Expected DetectingAnomaly for {name}, got {type(entry.state_machine.state).__name__}"
-            )
-
-    def test_fresh_subsystems_have_correct_actuator_and_config_types(self) -> None:
+    def test_subsystem_configs_have_correct_actuator_and_config_types(self) -> None:
         from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
         from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
 
         controller, *_ = _make_test_controller_with_rollout()
-        fresh = controller._tick_loop._create_fresh_subsystems()
+        configs = controller._tick_loop.subsystem_configs
 
-        training = fresh["training"]
+        training = configs["training"]
         assert isinstance(training.actuator, TrainingSubsystemActuator)
-        assert training.has_level1_restart is False
+        assert training.restart_mode == RestartMode.MAIN_JOB
         assert isinstance(training.monitoring_config, MonitoringIterationProgressConfig)
 
-        rollout = fresh["rollout_ep72"]
+        rollout = configs["rollout_ep72"]
         assert isinstance(rollout.actuator, RayRolloutActuator)
-        assert rollout.has_level1_restart is True
+        assert rollout.restart_mode == RestartMode.SUBSYSTEM
         assert isinstance(rollout.monitoring_config, MonitoringSustainedAliveConfig)
         assert len(rollout.detectors) > 0
 
@@ -366,22 +348,20 @@ class TestStatusReportsRollout:
         assert status.rollout_subsystem_states is None
 
 
-class TestBuildRolloutSubsystemEntry:
-    def test_entry_has_correct_name_and_monitoring_config(self) -> None:
+class TestBuildRolloutSubsystemConfig:
+    def test_config_has_correct_monitoring_config(self) -> None:
         rm_handle = FakeRmHandle()
         config = _RolloutSubsystemConfig(
             cell_id="ep72",
             rm_handle=rm_handle,
             get_active_node_ids=lambda: {"n1", "n2"},
         )
-        entry = _build_rollout_subsystem_entry(name="rollout_ep72", config=config)
+        subsystem_config = _build_rollout_subsystem_config(config=config)
 
-        assert entry.name == "rollout_ep72"
-        assert entry.has_level1_restart is True
-        assert entry.get_active_node_ids() == {"n1", "n2"}
-        assert isinstance(entry.state_machine.state, DetectingAnomaly)
-        assert isinstance(entry.monitoring_config, MonitoringSustainedAliveConfig)
-        assert entry.monitoring_config.alive_duration_seconds == 180
+        assert subsystem_config.restart_mode == RestartMode.SUBSYSTEM
+        assert subsystem_config.get_active_node_ids() == {"n1", "n2"}
+        assert isinstance(subsystem_config.monitoring_config, MonitoringSustainedAliveConfig)
+        assert subsystem_config.monitoring_config.alive_duration_seconds == 180
 
 
 class TestFullLevel1RecoveryCycle:
@@ -393,11 +373,8 @@ class TestFullLevel1RecoveryCycle:
         )
         controller = harness.controller
 
-        state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-
-        rollout_entry = state.subsystems["rollout_ep72"]
-        rollout_entry.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        rollout_config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -410,15 +387,15 @@ class TestFullLevel1RecoveryCycle:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_entry.detectors.clear()
-        rollout_entry.detectors.append(rollout_detector)
+        rollout_config.detectors.clear()
+        rollout_config.detectors.append(rollout_detector)
 
         await controller._tick()
 
-        assert isinstance(rollout_entry.state_machine.state, DetectingAnomaly)
-
-        training_entry = state.subsystems["training"]
-        assert isinstance(training_entry.state_machine.state, DetectingAnomaly)
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomaly)
+        assert isinstance(state.subsystems["training"], DetectingAnomaly)
 
         assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
         assert harness.rm_handle.stop_cell.call_count == 1
@@ -434,11 +411,8 @@ class TestLevel1FailureEscalation:
         )
         controller = harness.controller
 
-        state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-
-        rollout_entry = state.subsystems["rollout_ep72"]
-        rollout_entry.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        rollout_config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -453,12 +427,14 @@ class TestLevel1FailureEscalation:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_entry.detectors.clear()
-        rollout_entry.detectors.append(rollout_detector)
+        rollout_config.detectors.clear()
+        rollout_config.detectors.append(rollout_detector)
 
         await controller._tick()
 
-        assert isinstance(rollout_entry.state_machine.state, DetectingAnomaly)
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomaly)
         assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
 
         recovery_alerts = [
@@ -496,11 +472,8 @@ class TestColocatedHardwareFault:
         controller.training_rank_roster.rank_placement[0] = shared_node
         controller.training_rank_roster.rank_placement[1] = "train-node-1"
 
-        state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-
-        rollout_entry = state.subsystems["rollout_ep72"]
-        rollout_entry.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        rollout_config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -513,8 +486,8 @@ class TestColocatedHardwareFault:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_entry.detectors.clear()
-        rollout_entry.detectors.append(rollout_detector)
+        rollout_config.detectors.clear()
+        rollout_config.detectors.append(rollout_detector)
 
         await controller._tick()
 

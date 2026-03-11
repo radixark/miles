@@ -13,7 +13,7 @@ from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
-from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, SubsystemConfig
+from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, RestartMode, SubsystemConfig
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.box import Box
@@ -40,7 +40,7 @@ def _build_rollout_subsystem_config(*, config: _RolloutSubsystemConfig) -> Subsy
             cell_id=config.cell_id,
             ft_rollout_agent=config.ft_rollout_agent,
         ),
-        has_level1_restart=True,
+        restart_mode=RestartMode.SUBSYSTEM,
         detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=config.cell_id),
         monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
         get_active_node_ids=config.get_active_node_ids,

@@ -162,7 +162,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             on_new_run=context.on_new_run,
             actuator=config.actuator,
             monitoring_config=config.monitoring_config,
-            has_level1_restart=config.has_level1_restart,
+            restart_mode=config.restart_mode,
         )
         return RecoveryContext(
             trigger=trigger,

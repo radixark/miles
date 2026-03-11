@@ -7,7 +7,7 @@ from pydantic import ConfigDict
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 
@@ -39,7 +39,7 @@ class RestartFailed(RestartState):
 
 
 class RestartingMainJob(RestartState):
-    """Subsystem does not support Level 1 restart; wait for external main job restart."""
+    """restart_mode is MAIN_JOB; wait for external main job restart."""
 
     externally_fulfilled: bool = False
 
@@ -56,4 +56,4 @@ class RestartContext(FtBaseModel):
 
     actuator: SubsystemActuatorProtocol
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig
-    has_level1_restart: bool
+    restart_mode: RestartMode
