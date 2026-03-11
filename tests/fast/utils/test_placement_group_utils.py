@@ -423,6 +423,17 @@ class TestSnapshotPersistence:
         path.write_text("not valid json!!!")
         assert _load_snapshots(path) is None
 
+    def test_load_wrong_schema_returns_none(self, tmp_path: Path) -> None:
+        """Valid JSON but wrong field names → TypeError caught, returns None."""
+        path = tmp_path / "wrong_schema.json"
+        path.write_text('[{"index": 0, "ip": "1.2.3.4", "gpu": "0"}]')
+        assert _load_snapshots(path) is None
+
+    def test_save_and_load_empty_list(self, tmp_path: Path) -> None:
+        path = tmp_path / "empty.json"
+        _save_snapshots(path, [])
+        assert _load_snapshots(path) == []
+
     def test_save_creates_parent_dirs(self, tmp_path: Path) -> None:
         path = tmp_path / "sub" / "dir" / "pg_snapshot.json"
         _save_snapshots(path, _make_six_bundle_snapshots())
