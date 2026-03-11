@@ -27,7 +27,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.subsystem import SubsystemConfig
-from miles.utils.ft.utils.state_machine import StateHandler
+from miles.utils.ft.utils.state_machine import StateHandler, run_stepper_to_convergence
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 restart_stepper=self._restart_stepper,
             )
             old_sub_state = curr_state.subsystems[name]
-            async for new_sub_state in self._subsystem_stepper(old_sub_state, sub_ctx):
+            async for new_sub_state in run_stepper_to_convergence(self._subsystem_stepper, old_sub_state, sub_ctx):
                 curr_state = NormalState(subsystems={**curr_state.subsystems, name: new_sub_state})
                 yield curr_state
 

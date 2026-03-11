@@ -83,6 +83,33 @@ class StateMachineStepper(Generic[StateT, ContextT]):
                 yield result
 
 
+_MAX_CONVERGENCE_ITERATIONS = 50
+
+
+async def run_stepper_to_convergence(
+    stepper: StateMachineStepper[StateT, ContextT],
+    state: StateT,
+    context: ContextT,
+    *,
+    max_iterations: int = _MAX_CONVERGENCE_ITERATIONS,
+) -> AsyncGenerator[StateT, None]:
+    current = state
+    for _ in range(max_iterations):
+        had_transition = False
+        async for new_state in stepper(current, context):
+            current = new_state
+            had_transition = True
+            yield current
+        if not had_transition:
+            return
+
+    logger.warning(
+        "run_stepper_to_convergence hit max iterations (%d), last state: %r",
+        max_iterations,
+        current,
+    )
+
+
 class StateMachine(Generic[StateT, ContextT]):
     """The ONLY mutable state holder in the state machine architecture.
 
