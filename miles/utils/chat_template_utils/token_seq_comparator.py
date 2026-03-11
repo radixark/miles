@@ -21,7 +21,21 @@ class Segment:
 
 
 class MismatchType(Enum):
-    SPECIAL_TOKEN = "special_token"
+    # Segment count or structure (special/content pattern) differs between
+    # expected and actual.  When this happens, segments can't be aligned so
+    # no per-segment text/JSON comparison is possible.
+    SPECIAL_TOKEN_COUNT = "special_token_count"
+
+    # A special-token segment has the same position in both sequences but
+    # contains a different token ID.  This is acceptable for models like
+    # GLM 4.7 where certain special tokens (e.g. <|user|> / <|observation|>)
+    # double as both the assistant's stop token and the next turn's start
+    # token.  When tool-call parsing fails, the model may stop on
+    # <|observation|> (expecting a tool response) but the re-tokenized
+    # expected sequence has <|user|> (because a retry system message was
+    # inserted instead).  The content on both sides is still valid.
+    SPECIAL_TOKEN_TYPE = "special_token_type"
+
     JSON = "json"
     TEXT = "text"
 
@@ -144,10 +158,10 @@ class TokenSeqComparator:
         1. Segment both sequences by special tokens.
         2. Verify that the segment structures match (same count, same
            ``is_special`` pattern).  Any difference is reported as
-           ``MismatchType.SPECIAL_TOKEN``.
+           ``MismatchType.SPECIAL_TOKEN_COUNT``.
         3. For each pair of aligned segments:
            - **Special-token segments**: token IDs must be identical (or both
-             in *equivalent_special_ids*) — ``MismatchType.SPECIAL_TOKEN``
+             in *equivalent_special_ids*) — ``MismatchType.SPECIAL_TOKEN_TYPE``
              on mismatch.
            - **Tool-call / tool-response content segments** (preceded by a
              tool-start token and, when end tokens exist, followed by a
@@ -166,10 +180,12 @@ class TokenSeqComparator:
         actual_segs = self.segment_by_special_tokens(actual_ids)
 
         # --- structural check ---
+        # When segment count or structure pattern differs, segments can't be
+        # aligned — no per-segment comparison is possible.
         if len(expected_segs) != len(actual_segs):
             return [
                 Mismatch(
-                    type=MismatchType.SPECIAL_TOKEN,
+                    type=MismatchType.SPECIAL_TOKEN_COUNT,
                     segment_index=-1,
                     expected_text=self._describe_structure(expected_segs),
                     actual_text=self._describe_structure(actual_segs),
@@ -182,7 +198,7 @@ class TokenSeqComparator:
         if pattern_expected != pattern_actual:
             return [
                 Mismatch(
-                    type=MismatchType.SPECIAL_TOKEN,
+                    type=MismatchType.SPECIAL_TOKEN_COUNT,
                     segment_index=-1,
                     expected_text=self._describe_structure(expected_segs),
                     actual_text=self._describe_structure(actual_segs),
@@ -201,7 +217,7 @@ class TokenSeqComparator:
                 ):
                     mismatches.append(
                         Mismatch(
-                            type=MismatchType.SPECIAL_TOKEN,
+                            type=MismatchType.SPECIAL_TOKEN_TYPE,
                             segment_index=idx,
                             expected_text=self._decode(exp.token_ids),
                             actual_text=self._decode(act.token_ids),
