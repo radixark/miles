@@ -17,7 +17,7 @@ if str(_MILES_ROOT) not in sys.path:
 
 import typer
 from tests.e2e.conftest_dumper import (
-    MEGATRON_SOURCE_PATCHER_CONFIG_YAML,
+    MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML,
     clear_proxy_env,
 )
 
@@ -60,8 +60,10 @@ def _prepare(dump_dir: Path) -> Path:
     exec_command(f"rm -rf {dump_dir}")
 
     source_patcher_path: Path = _RUN_DIR / "megatron_source_patcher.yaml"
+    # Use BSHD config: standalone megatron with --qkv-format bshd doesn't
+    # record thd_global_seq_lens, so THD zigzag reorder would fail.
     # Strip ep/etp annotations — test_run_megatron configs use ep=1 (inactive axis)
-    yaml_content: str = MEGATRON_SOURCE_PATCHER_CONFIG_YAML.replace(" ep:replicated", "").replace(" etp:replicated", "")
+    yaml_content: str = MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML.replace(" ep:replicated", "").replace(" etp:replicated", "")
     source_patcher_path.write_text(yaml_content)
     return source_patcher_path
 
@@ -92,7 +94,7 @@ def run(
         f"--sp "
         f"--source-patcher-config {source_patcher_config} "
         f"--dumper-filter 'layer_id is None or layer_id < 3' "
-        f"--extra-args '--attention-backend flash'"
+        f"--extra-args '--attention-backend flash --qkv-format bshd'"
     )
     exec_command(cmd)
 
