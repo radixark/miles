@@ -10,7 +10,7 @@ from miles.utils.ft.factories.controller import build_ft_controller
 
 class TestFtControllerConfig:
     def test_default_values(self) -> None:
-        config = FtControllerConfig()
+        config = FtControllerConfig(rollout_num_cells=0)
         assert config.platform == "stub"
         assert config.metric_store_backend == "mini"
         assert config.tick_interval == 30.0
@@ -30,7 +30,7 @@ class TestFtControllerConfig:
 
 class TestBuildFtControllerConfigConflict:
     def test_config_and_kwargs_raises_value_error(self) -> None:
-        config = FtControllerConfig()
+        config = FtControllerConfig(rollout_num_cells=0)
         with pytest.raises(ValueError, match="Cannot provide both"):
             build_ft_controller(config=config, platform="stub")  # type: ignore[call-overload]
 
@@ -38,7 +38,7 @@ class TestBuildFtControllerConfigConflict:
 class TestBuildFtControllerStub:
     def test_stub_platform_returns_controller(self) -> None:
         controller = build_ft_controller(
-            config=FtControllerConfig(platform="stub"),
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
             start_exporter=False,
         )
         assert controller is not None
@@ -46,7 +46,7 @@ class TestBuildFtControllerStub:
 
     def test_start_exporter_false_skips_exporter_start(self) -> None:
         controller = build_ft_controller(
-            config=FtControllerConfig(platform="stub"),
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
             start_exporter=False,
         )
         assert controller._controller_exporter is not None
@@ -56,24 +56,25 @@ class TestBuildFtControllerStub:
         controller = build_ft_controller(
             platform="stub",
             tick_interval=5.0,
+            rollout_num_cells=0,
             start_exporter=False,
         )
         assert controller._tick_interval == 5.0
 
     def test_empty_ft_id_gets_auto_generated(self) -> None:
         controller1 = build_ft_controller(
-            config=FtControllerConfig(ft_id=""),
+            config=FtControllerConfig(ft_id="", rollout_num_cells=0),
             start_exporter=False,
         )
         controller2 = build_ft_controller(
-            config=FtControllerConfig(ft_id=""),
+            config=FtControllerConfig(ft_id="", rollout_num_cells=0),
             start_exporter=False,
         )
         assert controller1 is not controller2
 
     def test_explicit_ft_id_preserved(self) -> None:
         controller = build_ft_controller(
-            config=FtControllerConfig(ft_id="my-ft-123"),
+            config=FtControllerConfig(ft_id="my-ft-123", rollout_num_cells=0),
             start_exporter=False,
         )
         assert controller is not None
@@ -85,7 +86,7 @@ class TestBuildFtControllerNotifier:
         from miles.utils.ft.adapters.stubs import StubNotifier
 
         controller = build_ft_controller(
-            config=FtControllerConfig(platform="stub"),
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
             start_exporter=False,
         )
         assert isinstance(controller._notifier, StubNotifier)
@@ -97,6 +98,7 @@ class TestBuildFtControllerNotifier:
             config=FtControllerConfig(
                 platform="stub",
                 notify_webhook_url="https://lark.example.com/hook",
+                rollout_num_cells=0,
             ),
             start_exporter=False,
         )

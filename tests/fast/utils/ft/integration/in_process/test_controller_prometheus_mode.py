@@ -49,6 +49,7 @@ class TestControllerPrometheusMode:
             main_job=FakeMainJob(status_sequence=[JobStatus.RUNNING]),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
+            rollout_num_cells=0,
             controller_exporter=exporter,
         )
 
@@ -69,6 +70,7 @@ class TestControllerPrometheusMode:
             main_job=FakeMainJob(),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
+            rollout_num_cells=0,
             controller_exporter=exporter,
         )
 
@@ -94,6 +96,7 @@ class TestControllerPrometheusMode:
             main_job=FakeMainJob(),
             metric_store=PrometheusClient(url="http://fake:9090"),
             mini_wandb=mini_wandb,
+            rollout_num_cells=0,
             controller_exporter=exporter,
         )
 

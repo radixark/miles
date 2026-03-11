@@ -129,6 +129,7 @@ def build_ft_controller(
         notifier=notifier,
         detectors=detectors,
         tick_interval=config.tick_interval,
+        rollout_num_cells=config.rollout_num_cells,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator_override,
     )

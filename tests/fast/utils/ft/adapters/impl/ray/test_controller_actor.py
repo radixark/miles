@@ -21,16 +21,16 @@ def _get_training_detectors(ctrl):
 
 class TestBuildFtController:
     def test_stub_platform_creates_correct_components(self) -> None:
-        ctrl = build_ft_controller(platform="stub", start_exporter=False)
+        ctrl = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
         assert isinstance(ctrl._main_job, StubMainJob)
 
     def test_stub_platform_has_full_detector_chain(self) -> None:
-        ctrl = build_ft_controller(platform="stub", start_exporter=False)
+        ctrl = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
         expected_count = len(build_detector_chain())
         assert len(_get_training_detectors(ctrl)) == expected_count
 
     def test_stub_platform_has_stub_notifier(self) -> None:
-        ctrl = build_ft_controller(platform="stub", start_exporter=False)
+        ctrl = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
         assert isinstance(ctrl._notifier, StubNotifier)
 
     def test_lark_webhook_notifier_when_url_provided(self) -> None:
@@ -40,6 +40,7 @@ class TestBuildFtController:
             platform="stub",
             notify_webhook_url="https://hook.example.com",
             start_exporter=False,
+            rollout_num_cells=0,
         )
         assert isinstance(ctrl._notifier, LarkWebhookNotifier)
 
@@ -48,6 +49,7 @@ class TestBuildFtController:
             platform="stub",
             tick_interval=5.0,
             start_exporter=False,
+            rollout_num_cells=0,
         )
         assert ctrl._tick_interval == 5.0
 
@@ -72,6 +74,7 @@ class TestBuildFtController:
             platform="stub",
             metric_store_backend="mini",
             start_exporter=False,
+            rollout_num_cells=0,
         )
         assert ctrl._scrape_target_manager is not None
 

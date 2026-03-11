@@ -139,6 +139,7 @@ def _make_test_controller_with_rollout(
         main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
+        rollout_num_cells=len(resolved_cell_ids),
         scrape_target_manager=metric_store,
         notifier=notifier,
         detectors=training_detectors,
@@ -502,3 +503,20 @@ class TestColocatedHardwareFault:
 
         assert harness.rm_handle.stop_cell.call_count >= 1
         assert harness.rm_handle.start_cell.call_count >= 1
+
+
+class TestRolloutNumCellsValidation:
+    def test_register_mismatched_num_cells_raises(self) -> None:
+        """Declaring N rollout cells but registering M should fail."""
+        harness = make_test_controller(rollout_num_cells=2)
+        controller = harness.controller
+
+        rm_handle = FakeRmHandle()
+        cells = {"ep72": FakeRolloutCellAgent(cell_id="ep72", node_ids={"n1"})}
+        rollout_agent = FakeRolloutAgent(cells=cells)
+
+        with pytest.raises(AssertionError, match="Expected 2 rollout cells, got 1"):
+            controller.register_rollout_subsystems(
+                rm_handle=rm_handle,
+                ft_rollout_agent=rollout_agent,
+            )

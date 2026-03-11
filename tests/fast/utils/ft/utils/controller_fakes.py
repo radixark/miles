@@ -222,6 +222,7 @@ def make_test_controller(
     registration_grace_ticks: int = 0,
     register_dummy_rank: bool = True,
     monitoring_success_iterations: int = 10,
+    rollout_num_cells: int = 0,
 ) -> ControllerTestHarness:
     """Construct a Controller and all its dependencies for testing.
 
@@ -252,6 +253,7 @@ def make_test_controller(
         main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
+        rollout_num_cells=rollout_num_cells,
         scrape_target_manager=metric_store,
         notifier=real_notifier,
         detectors=detectors,

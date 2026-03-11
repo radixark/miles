@@ -24,4 +24,5 @@ class FtControllerConfig(FtBaseModel):
     scrape_interval_seconds: float = 10.0
     notify_webhook_url: str = ""
     notify_platform: str = ""
+    rollout_num_cells: int
     detector_config: DetectorChainConfig = Field(default_factory=DetectorChainConfig)

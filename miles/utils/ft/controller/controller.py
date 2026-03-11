@@ -61,6 +61,7 @@ class FtController:
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
         metric_store: MetricStoreProtocol,
+        rollout_num_cells: int,
         controller_exporter: ControllerExporter | None = None,
     ) -> None:
         self._main_job = main_job
@@ -73,6 +74,7 @@ class FtController:
         self._tick_loop = tick_loop
         self._notifier = notifier
         self._metric_store = metric_store
+        self._rollout_num_cells = rollout_num_cells
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
         self._rollout_configs: list[_RolloutSubsystemConfig] = []
@@ -133,6 +135,10 @@ class FtController:
         from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomaly
 
         cell_ids: list[str] = ft_rollout_agent.get_cell_ids()  # type: ignore[union-attr]
+        assert len(cell_ids) == self._rollout_num_cells, (
+            f"Expected {self._rollout_num_cells} rollout cells, got {len(cell_ids)}"
+        )
+
         state = self._state_machine.state
         if not isinstance(state, NormalState):
             raise RuntimeError(

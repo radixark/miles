@@ -203,6 +203,7 @@ class TestDefaultDiagnosticOrchestratorWiring:
             main_job=FakeMainJob(),
             metric_store=make_fake_metric_store(),
             mini_wandb=MiniWandb(),
+            rollout_num_cells=0,
         )
 
         assert controller._tick_loop._on_new_run is not None

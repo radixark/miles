@@ -54,6 +54,8 @@ def create_ft_controller(
     main_job: MainJobProtocol,
     metric_store: MetricStoreProtocol,
     mini_wandb: MiniWandb,
+    *,
+    rollout_num_cells: int,
     scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
     notifier: NotifierProtocol | None = None,
     detectors: list[BaseFaultDetector] | None = None,
@@ -123,6 +125,7 @@ def create_ft_controller(
         notifier=notifier,
         metric_store=metric_store,
         controller_exporter=controller_exporter,
+        rollout_num_cells=rollout_num_cells,
     )
 
     # --- Create TickLoop ---

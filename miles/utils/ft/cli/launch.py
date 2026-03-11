@@ -45,6 +45,7 @@ def launch(
         str, typer.Option(help="Webhook URL for notifications (empty = no webhook notifications)")
     ] = "",
     notify_platform: Annotated[str, typer.Option(help="Notification platform: 'lark', 'slack', or 'discord'")] = "",
+    rollout_num_cells: Annotated[int, typer.Option(help="Number of rollout cells")] = 0,
     detector_config_json: Annotated[
         str, typer.Option(help="Detector config JSON string or @filepath (default: all detectors with defaults)")
     ] = "",
@@ -77,6 +78,7 @@ def launch(
         prometheus_url=prometheus_url,
         controller_exporter_port=controller_exporter_port,
         tick_interval=tick_interval,
+        rollout_num_cells=rollout_num_cells,
         notify_webhook_url=notify_webhook_url,
         notify_platform=notify_platform,
         detector_config=detector_config,

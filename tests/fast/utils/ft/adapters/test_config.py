@@ -11,7 +11,7 @@ from miles.utils.ft.controller.detectors.chain import DetectorChainConfig
 
 class TestFtControllerConfig:
     def test_defaults(self) -> None:
-        config = FtControllerConfig()
+        config = FtControllerConfig(rollout_num_cells=0)
 
         assert config.ft_id == ""
         assert config.platform == "stub"
@@ -24,13 +24,14 @@ class TestFtControllerConfig:
             FtControllerConfig(bogus="x")  # type: ignore[call-arg]
 
     def test_frozen(self) -> None:
-        config = FtControllerConfig()
+        config = FtControllerConfig(rollout_num_cells=0)
 
         with pytest.raises(ValidationError):
             config.ft_id = "changed"  # type: ignore[misc]
 
     def test_custom_values(self) -> None:
         config = FtControllerConfig(
+            rollout_num_cells=0,
             ft_id="my-ft",
             platform="k8s-ray",
             tick_interval=10.0,
