@@ -143,6 +143,24 @@ class MainJobProtocol(ABC):
     async def get_job_status(self) -> JobStatus: ...
 
 
+class SubsystemActuatorProtocol(ABC):
+    """Subsystem-level (Level 1) lifecycle management.
+
+    Only operates on this subsystem's resources; does not affect other subsystems.
+    Bad-node exclusion is handled at the infrastructure layer (K8s labels via
+    mark_node_bad) and is not passed as a parameter.
+    """
+
+    @abstractmethod
+    async def stop(self) -> None: ...
+
+    @abstractmethod
+    async def start(self) -> str: ...
+
+    @abstractmethod
+    async def get_status(self) -> JobStatus: ...
+
+
 class NotifierProtocol(ABC):
     @abstractmethod
     async def send(self, title: str, content: str, severity: str) -> None: ...
