@@ -41,9 +41,9 @@ def _extract_rollout_subsystem_states(
     if not isinstance(controller_state, NormalSt):
         return None
     result: dict[str, str] = {}
-    for name, entry in controller_state.subsystems.items():
+    for name, state in controller_state.subsystems.items():
         if name.startswith("rollout_"):
-            result[name] = type(entry.state_machine.state).__name__
+            result[name] = type(state).__name__
     return result if result else None
 
 
