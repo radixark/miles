@@ -94,22 +94,15 @@ class FtController:
         return self._mini_wandb
 
     @property
-    def _tick_count(self) -> int:
-        return self._tick_loop.tick_count
-
-    @property
     def node_metadata(self) -> dict[str, dict[str, str]]:
         return self._node_metadata
 
-    @property
-    def _training_state_machine(self) -> StateMachine[SubsystemState, SubsystemContext]:
-        state = self._state_machine.state
-        if not isinstance(state, NormalState):
-            raise RuntimeError(f"Expected NormalState, got {type(state).__name__}")
-        training = state.subsystems.get("training")
-        if training is None:
-            raise RuntimeError("No 'training' subsystem in NormalState")
-        return training.state_machine
+    def add_scrape_target(self, target_id: str, address: str) -> None:
+        if self._scrape_target_manager is not None:
+            self._scrape_target_manager.add_scrape_target(
+                target_id=target_id,
+                address=address,
+            )
 
     def register_node_agent(
         self,
@@ -198,6 +191,20 @@ class FtController:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    @property
+    def _tick_count(self) -> int:
+        return self._tick_loop.tick_count
+
+    @property
+    def _training_state_machine(self) -> StateMachine[SubsystemState, SubsystemContext]:
+        state = self._state_machine.state
+        if not isinstance(state, NormalState):
+            raise RuntimeError(f"Expected NormalState, got {type(state).__name__}")
+        training = state.subsystems.get("training")
+        if training is None:
+            raise RuntimeError("No 'training' subsystem in NormalState")
+        return training.state_machine
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
