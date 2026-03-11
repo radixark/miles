@@ -36,33 +36,33 @@ def _partial_resort_snapshots(
     old_snapshots: list[BundleLocationSnapshot],
     new_snapshots: list[BundleLocationSnapshot],
 ) -> list[BundleLocationSnapshot]:
-    """Detect changed ranks and partially re-sort.
+    """Keep bundles at positions where (node_ip, gpu_id) didn't change, re-sort the rest.
 
-    Unchanged ranks keep their exact (bundle_index, node_ip, gpu_id).
-    Changed ranks (node_ip differs) are re-sorted among themselves.
-
-    Returns a new list — does not mutate inputs.
+    Works for both same-PG refresh (bundles moved after node failure) and
+    cross-PG restart (entirely new PG, old snapshots from backup).
     """
-    new_by_index = {s.bundle_index: s for s in new_snapshots}
+    new_by_location: dict[tuple[str, str], BundleLocationSnapshot] = {
+        (s.node_ip, s.gpu_id): s for s in new_snapshots
+    }
 
-    changed_ranks = [
-        rank for rank, old in enumerate(old_snapshots)
-        if new_by_index[old.bundle_index].node_ip != old.node_ip
-    ]
+    result: list[BundleLocationSnapshot | None] = [None] * len(old_snapshots)
+    used: set[tuple[str, str]] = set()
 
-    if not changed_ranks:
-        return list(old_snapshots)
+    for rank, old in enumerate(old_snapshots):
+        key = (old.node_ip, old.gpu_id)
+        if key in new_by_location:
+            result[rank] = new_by_location[key]
+            used.add(key)
 
-    changed_sorted = sorted(
-        [new_by_index[old_snapshots[r].bundle_index] for r in changed_ranks],
+    unmatched = sorted(
+        [s for s in new_snapshots if (s.node_ip, s.gpu_id) not in used],
         key=_bundle_sort_key,
     )
-
-    result = list(old_snapshots)
-    for rank, snapshot in zip(changed_ranks, changed_sorted):
+    empty_ranks = [r for r in range(len(result)) if result[r] is None]
+    for rank, snapshot in zip(empty_ranks, unmatched):
         result[rank] = snapshot
 
-    return result
+    return result  # type: ignore[return-value]
 
 
 @dataclass
