@@ -86,6 +86,13 @@ def _make_controller_context(
     )
 
 
+async def _step_last(stepper, state, ctx):
+    result = None
+    async for result in stepper(state, ctx):
+        pass
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1: Normal operation — no state transition
 # ---------------------------------------------------------------------------
@@ -108,7 +115,7 @@ class TestNormalOperation:
             },
         )
 
-        result = await stepper.step_once(state, context)
+        result = await _step_last(stepper, state, context)
 
         assert result is None
 
@@ -136,7 +143,7 @@ class TestSingleSubsystemEscalation:
             subsystem_configs={"rollout_0": _make_subsystem_config()},
         )
 
-        result = await stepper.step_once(state, context)
+        result = await _step_last(stepper, state, context)
 
         assert isinstance(result, RestartingMainJobState)
         assert result.requestor_name == "rollout_0"
@@ -171,7 +178,7 @@ class TestJobRestartComplete:
             },
         )
 
-        result = await stepper.step_once(state, context)
+        result = await _step_last(stepper, state, context)
 
         assert isinstance(result, NormalState)
         assert set(result.subsystems.keys()) == {"training", "rollout_0"}
@@ -213,7 +220,7 @@ class TestMultiSubsystemOneEscalates:
             },
         )
 
-        result = await stepper.step_once(state, context)
+        result = await _step_last(stepper, state, context)
 
         assert isinstance(result, RestartingMainJobState)
         assert result.requestor_name == "rollout_0"
@@ -240,7 +247,7 @@ class TestJobRestartPending:
         )
         context = _make_controller_context(main_job=main_job)
 
-        result = await stepper.step_once(state, context)
+        result = await _step_last(stepper, state, context)
 
         assert result is None
 
@@ -264,7 +271,7 @@ class TestJobRestartPending:
             },
         )
 
-        result = await stepper.step_once(state, context)
+        result = await _step_last(stepper, state, context)
 
         assert isinstance(result, NormalState)
         requestor_state = result.subsystems["rollout_0"]
@@ -295,7 +302,7 @@ class TestJobRestartPending:
             },
         )
 
-        result = await stepper.step_once(state, context)
+        result = await _step_last(stepper, state, context)
 
         assert isinstance(result, NormalState)
         requestor_state = result.subsystems["rollout_0"]

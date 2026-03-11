@@ -94,6 +94,13 @@ def _make_subsystem_context(
     )
 
 
+async def _step_last(stepper, state, ctx):
+    result = None
+    async for result in stepper(state, ctx):
+        pass
+    return result
+
+
 # ---------------------------------------------------------------------------
 # DetectingAnomaly
 # ---------------------------------------------------------------------------
@@ -103,13 +110,13 @@ class TestDetectingAnomaly:
     @pytest.mark.asyncio
     async def test_no_detectors_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(DetectingAnomaly(), _make_subsystem_context())
+        result = await _step_last(stepper, DetectingAnomaly(), _make_subsystem_context())
         assert result is None
 
     @pytest.mark.asyncio
     async def test_none_decision_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(detectors=[AlwaysNoneDetector()]),
         )
@@ -118,7 +125,7 @@ class TestDetectingAnomaly:
     @pytest.mark.asyncio
     async def test_enter_recovery_transitions_to_recovering(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
         )
@@ -137,7 +144,7 @@ class TestDetectingAnomaly:
             )
         )
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(detectors=[detector], notifier=notifier),
         )
@@ -151,7 +158,7 @@ class TestDetectingAnomaly:
         cooldown.record()
 
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(
                 detectors=[AlwaysEnterRecoveryDetector()],
@@ -165,7 +172,7 @@ class TestDetectingAnomaly:
     @pytest.mark.asyncio
     async def test_skip_detectors_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(
                 detectors=[AlwaysEnterRecoveryDetector()],
@@ -193,7 +200,7 @@ class TestTemplateMethodFiltering:
             )
         )
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(
                 detectors=[detector],
@@ -214,7 +221,7 @@ class TestTemplateMethodFiltering:
             )
         )
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(
                 detectors=[detector],
@@ -229,7 +236,7 @@ class TestTemplateMethodFiltering:
     async def test_detector_without_bad_node_ids_still_triggers_recovery(self) -> None:
         """Detector returning ENTER_RECOVERY with empty bad_node_ids is not affected by filtering."""
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
         )
@@ -248,7 +255,7 @@ class TestTemplateMethodFiltering:
         )
         active_detector = AlwaysEnterRecoveryDetector(reason="active fault")
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(
                 detectors=[inactive_detector, active_detector],
@@ -272,7 +279,7 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=RecoveryDone()),
@@ -296,7 +303,7 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=new_recovery),
@@ -314,7 +321,7 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=None),
@@ -331,7 +338,7 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=AsyncMock(side_effect=RuntimeError("boom")),
@@ -360,12 +367,12 @@ class TestRecovering:
         )
 
         # Step 1: exception -> NotifyHumans
-        result = await stepper.step_once(state, ctx)
+        result = await _step_last(stepper, state, ctx)
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, NotifyHumans)
 
         # Step 2: NotifyHumans -> RecoveryDone -> DetectingAnomaly
-        result = await stepper.step_once(result, ctx)
+        result = await _step_last(stepper, result, ctx)
         assert isinstance(result, DetectingAnomaly)
 
     @pytest.mark.asyncio
@@ -377,7 +384,7 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=RecoveryDone()),
@@ -413,7 +420,7 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -450,7 +457,7 @@ class TestBadNodeCountSafeguard:
             )
         )
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(
                 detectors=[detector],
@@ -475,7 +482,7 @@ class TestBadNodeCountSafeguard:
             )
         )
         stepper = _make_stepper()
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             DetectingAnomaly(),
             _make_subsystem_context(
                 detectors=[detector],
@@ -513,7 +520,7 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -553,7 +560,7 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -591,7 +598,7 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await stepper.step_once(
+        result = await _step_last(stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -623,7 +630,7 @@ class TestInvalidDetectorDecision:
         detector = FixedDecisionDetector(malformed_decision)
         stepper = _make_stepper()
         with pytest.raises(ValueError, match="has no trigger"):
-            await stepper.step_once(
+            await _step_last(stepper,
                 DetectingAnomaly(),
                 _make_subsystem_context(detectors=[detector]),
             )
