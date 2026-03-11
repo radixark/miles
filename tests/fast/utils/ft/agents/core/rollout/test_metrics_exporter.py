@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
 from miles.utils.ft.agents.core.rollout.rollout_cell_agent import CellHealthResult
 from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
@@ -70,21 +66,3 @@ class TestShutdown:
         exporter.shutdown()
 
 
-class TestRegisterWithController:
-    @pytest.mark.anyio
-    async def test_calls_add_scrape_target_with_correct_address(self) -> None:
-        exporter = RolloutMetricsExporter()
-
-        try:
-            controller_handle = MagicMock()
-            controller_handle.add_scrape_target = MagicMock()
-            controller_handle.add_scrape_target.remote = AsyncMock()
-
-            await exporter.register_with_controller(controller_handle)
-
-            controller_handle.add_scrape_target.remote.assert_called_once_with(
-                target_id="rollout-ft-agent",
-                address=exporter.address,
-            )
-        finally:
-            exporter.shutdown()

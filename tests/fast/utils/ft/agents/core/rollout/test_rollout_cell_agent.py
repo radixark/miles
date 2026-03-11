@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
 from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
 from tests.fast.utils.ft.agents.core.rollout.conftest import MockRolloutCellAgent
+
+
+async def _engine_method_health_checker(engine: object) -> None:
+    await engine.health_check()  # type: ignore[attr-defined]
 
 
 class TestCheckHealth:
@@ -127,24 +132,18 @@ class TestConsecutiveChecksUpdateResult:
 
 
 class _AliveEngine:
-    class health_check:
-        @staticmethod
-        async def remote() -> None:
-            pass
+    async def health_check(self) -> None:
+        pass
 
 
 class _SlowEngine:
-    class health_check:
-        @staticmethod
-        async def remote() -> None:
-            await asyncio.sleep(999)
+    async def health_check(self) -> None:
+        await asyncio.sleep(999)
 
 
 class _BrokenEngine:
-    class health_check:
-        @staticmethod
-        async def remote() -> None:
-            raise ConnectionError("engine crashed")
+    async def health_check(self) -> None:
+        raise ConnectionError("engine crashed")
 
 
 class TestCheckSingleEngine:
@@ -152,7 +151,10 @@ class TestCheckSingleEngine:
 
     @pytest.mark.anyio
     async def test_alive_engine_returns_true(self) -> None:
-        agent = RolloutCellAgent(cell_id="a0", engines=[_AliveEngine()])
+        agent = RolloutCellAgent(
+            cell_id="a0", engines=[_AliveEngine()],
+            health_checker=_engine_method_health_checker,
+        )
 
         result = await agent._check_single_engine(engine=_AliveEngine(), index=0)
 
@@ -161,7 +163,9 @@ class TestCheckSingleEngine:
     @pytest.mark.anyio
     async def test_timeout_returns_false(self) -> None:
         agent = RolloutCellAgent(
-            cell_id="a0", engines=[_SlowEngine()], health_check_timeout=0.01,
+            cell_id="a0", engines=[_SlowEngine()],
+            health_checker=_engine_method_health_checker,
+            health_check_timeout=0.01,
         )
 
         result = await agent._check_single_engine(engine=_SlowEngine(), index=0)
@@ -170,7 +174,10 @@ class TestCheckSingleEngine:
 
     @pytest.mark.anyio
     async def test_exception_returns_false(self) -> None:
-        agent = RolloutCellAgent(cell_id="a0", engines=[_BrokenEngine()])
+        agent = RolloutCellAgent(
+            cell_id="a0", engines=[_BrokenEngine()],
+            health_checker=_engine_method_health_checker,
+        )
 
         result = await agent._check_single_engine(engine=_BrokenEngine(), index=0)
 
@@ -179,7 +186,10 @@ class TestCheckSingleEngine:
 
 class TestUpdateEngines:
     def test_replaces_engines_and_invalidates_result(self) -> None:
-        agent = RolloutCellAgent(cell_id="a0", engines=["e0", "e1"])
+        agent = RolloutCellAgent(
+            cell_id="a0", engines=["e0", "e1"],
+            health_checker=AsyncMock(),
+        )
 
         agent.update_engines(["e2", "e3", "e4"])
 
@@ -198,7 +208,10 @@ class TestUpdateEngines:
 
     def test_stores_defensive_copy(self) -> None:
         engines: list[object] = ["e0", "e1"]
-        agent = RolloutCellAgent(cell_id="a0", engines=[])
+        agent = RolloutCellAgent(
+            cell_id="a0", engines=[],
+            health_checker=AsyncMock(),
+        )
         agent.update_engines(engines)
 
         engines.append("e2")

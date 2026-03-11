@@ -53,12 +53,5 @@ class RolloutMetricsExporter:
                 cell_id=result.cell_id, engine_index=str(i)
             ).set(0.0 if i in dead_set else 1.0)
 
-    async def register_with_controller(self, controller_handle: object) -> None:
-        await controller_handle.add_scrape_target.remote(  # type: ignore[attr-defined]
-            target_id="rollout-ft-agent",
-            address=self.address,
-        )
-        logger.info("registered_with_controller address=%s", self.address)
-
     def shutdown(self) -> None:
         self._exporter.shutdown()

@@ -5,6 +5,8 @@ import logging
 import time
 from dataclasses import dataclass
 
+from miles.utils.ft.adapters.types import EngineHealthChecker
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,10 +34,12 @@ class RolloutCellAgent:
         *,
         cell_id: str,
         engines: list[object],
+        health_checker: EngineHealthChecker,
         health_check_timeout: float = 10.0,
     ) -> None:
         self._cell_id = cell_id
         self._engines = list(engines)
+        self._health_checker = health_checker
         self._health_check_timeout = health_check_timeout
         self._node_ids: set[str] = set()
         self._last_result: CellHealthResult | None = None
@@ -74,14 +78,10 @@ class RolloutCellAgent:
         return self._last_result.is_healthy
 
     async def _check_single_engine(self, *, engine: object, index: int) -> bool:
-        """Check whether a single engine is alive.
-
-        Default implementation calls engine.health_check.remote() (Ray actor interface).
-        Tests override via MockRolloutCellAgent subclass.
-        """
+        """Check whether a single engine is alive via the injected health_checker."""
         try:
             await asyncio.wait_for(
-                engine.health_check.remote(),  # type: ignore[attr-defined]
+                self._health_checker(engine),
                 timeout=self._health_check_timeout,
             )
             return True

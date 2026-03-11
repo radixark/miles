@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.adapters.types import EngineHealthChecker, JobStatus
 from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
 from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 
@@ -16,11 +16,14 @@ class FtRolloutAgent:
         rollout_manager: object | None = None,
         *,
         cells: dict[str, RolloutCellAgent] | None = None,
+        health_checker: EngineHealthChecker | None = None,
         check_interval: float = 10.0,
     ) -> None:
         if rollout_manager is not None:
+            if health_checker is None:
+                raise ValueError("health_checker is required when rollout_manager is provided")
             self._rollout_manager = rollout_manager
-            self._cells = self._build_cells(rollout_manager)
+            self._cells = self._build_cells(rollout_manager, health_checker=health_checker)
         elif cells is not None:
             self._rollout_manager = None
             self._cells = cells
@@ -32,9 +35,6 @@ class FtRolloutAgent:
         self._metrics_exporter = RolloutMetricsExporter()
 
         self._health_loop_task = asyncio.create_task(self._health_check_loop())
-        self._register_task: asyncio.Task[None] | None = None
-        if rollout_manager is not None:
-            self._register_task = asyncio.create_task(self._register_with_controller())
 
         logger.info(
             "ft_rollout_agent_started address=%s cells=%d",
@@ -42,10 +42,15 @@ class FtRolloutAgent:
         )
 
     @staticmethod
-    def _build_cells(rollout_manager: object) -> dict[str, RolloutCellAgent]:
+    def _build_cells(
+        rollout_manager: object,
+        *,
+        health_checker: EngineHealthChecker,
+    ) -> dict[str, RolloutCellAgent]:
         return {"default": RolloutCellAgent(
             cell_id="default",
             engines=list(rollout_manager.all_rollout_engines),  # type: ignore[attr-defined]
+            health_checker=health_checker,
         )}
 
     @property
@@ -59,12 +64,6 @@ class FtRolloutAgent:
             self._health_loop_task.cancel()
             try:
                 await self._health_loop_task
-            except asyncio.CancelledError:
-                pass
-        if self._register_task is not None:
-            self._register_task.cancel()
-            try:
-                await self._register_task
             except asyncio.CancelledError:
                 pass
         self._metrics_exporter.shutdown()
@@ -96,27 +95,6 @@ class FtRolloutAgent:
     def resume(self) -> None:
         self._paused = False
         logger.info("ft_rollout_agent_resumed")
-
-    # --- Controller registration (async, fire-and-forget via create_task) ---
-
-    async def _register_with_controller(self) -> None:
-        import ray
-        from miles.utils.ft.adapters.types import ft_controller_actor_name
-        from miles.utils.ft.utils.env import get_ft_id
-
-        ft_id = get_ft_id()
-        if not ft_id:
-            return
-        try:
-            controller = ray.get_actor(ft_controller_actor_name(ft_id))
-        except ValueError:
-            logger.warning("ft_controller_not_found ft_id=%s", ft_id)
-            return
-        rollout_manager_handle = ray.get_runtime_context().current_actor
-        await controller.register_rollout.remote(
-            reward_manager_handle=rollout_manager_handle, metrics_address=self.address,
-        )
-        logger.info("registered_with_ft_controller ft_id=%s", ft_id)
 
     # --- Control plane: subsystem level (Level 2) ---
 

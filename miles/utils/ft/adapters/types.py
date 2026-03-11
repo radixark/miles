@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from enum import Enum
 
 from miles.utils.ft.agents.types import DiagnosticResult
+
+EngineHealthChecker = Callable[[object], Awaitable[None]]
 
 
 # ---------------------------------------------------------------------------

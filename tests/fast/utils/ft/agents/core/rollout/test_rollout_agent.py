@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -400,7 +400,7 @@ class TestBuildCells:
         rollout_manager = MagicMock()
         rollout_manager.all_rollout_engines = [MagicMock(), MagicMock(), MagicMock()]
 
-        cells = FtRolloutAgent._build_cells(rollout_manager)
+        cells = FtRolloutAgent._build_cells(rollout_manager, health_checker=AsyncMock())
 
         assert list(cells.keys()) == ["default"]
         assert cells["default"].get_engine_count() == 3
@@ -409,7 +409,7 @@ class TestBuildCells:
         rollout_manager = MagicMock()
         rollout_manager.all_rollout_engines = [MagicMock()]
 
-        cells = FtRolloutAgent._build_cells(rollout_manager)
+        cells = FtRolloutAgent._build_cells(rollout_manager, health_checker=AsyncMock())
         assert cells["default"].cell_id == "default"
 
 
