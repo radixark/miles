@@ -198,6 +198,7 @@ def _build_e2e_env(
             tick_interval=tick_interval,
             ft_id=ft_id,
             scrape_interval_seconds=scrape_interval_seconds,
+            rollout_num_cells=0,
         ),
         main_job_override=main_job,
         node_manager_override=node_manager,

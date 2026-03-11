@@ -31,7 +31,7 @@ def controller_actor(
     actor_name = ft_controller_actor_name("")
     handle = FtControllerActor.options(name=actor_name).remote(
         builder=build_ft_controller,
-        config=FtControllerConfig(platform="stub", tick_interval=0.05),
+        config=FtControllerConfig(platform="stub", tick_interval=0.05, rollout_num_cells=0),
     )
     yield handle
     try:
@@ -60,6 +60,7 @@ def make_controller_actor(
                 platform="stub",
                 tick_interval=tick_interval,
                 ft_id=ft_id,
+                rollout_num_cells=0,
             ),
             **overrides,
         )
@@ -87,7 +88,7 @@ def running_controller(
     actor_name = ft_controller_actor_name("")
     handle = FtControllerActor.options(name=actor_name).remote(
         builder=build_ft_controller,
-        config=FtControllerConfig(platform="stub", tick_interval=0.05),
+        config=FtControllerConfig(platform="stub", tick_interval=0.05, rollout_num_cells=0),
     )
     handle.submit_and_run.remote()
     run_id = poll_for_run_id(handle)
