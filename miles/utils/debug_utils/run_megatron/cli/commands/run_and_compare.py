@@ -60,6 +60,7 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
             baseline_dir=baseline_output / "standalone",
             target_dir=target_output / "standalone",
             output_format="json",
+            diff_threshold=args.diff_threshold,
             baseline_logprob_dir=baseline_logprob_dir,
             target_logprob_dir=target_logprob_dir,
         )

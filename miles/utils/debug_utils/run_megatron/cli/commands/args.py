@@ -61,6 +61,7 @@ class RunAndCompareArgs(CommonRunArgs):
         default=True,
         help="Compute and compare per-token logprobs between baseline and target",
     )
+    diff_threshold: float | None = _field(default=None, help="Activation diff pass/fail threshold")
 
 
 @dataclasses.dataclass
