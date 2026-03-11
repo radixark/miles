@@ -27,7 +27,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.subsystem import SubsystemConfig
-from miles.utils.ft.utils.state_machine import StateHandler, run_stepper_to_convergence
+from miles.utils.ft.utils.state_machine import StateHandler
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,9 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
     async def step(self, state: NormalState, context: MainContext):  # type: ignore[override]
         # Step 1: Step all subsystems to convergence
         curr_state = state
-        for name, sub_state in state.subsystems.items():
+        del state
+
+        for name in curr_state.subsystems:
             config = context.subsystem_configs[name]
             sub_ctx = build_subsystem_context(
                 config=config,
@@ -84,15 +86,14 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 recovery_stepper=self._recovery_stepper,
                 restart_stepper=self._restart_stepper,
             )
-            converged = await run_stepper_to_convergence(self._subsystem_stepper, sub_state, sub_ctx)
-            if converged != sub_state:
-                curr_state = NormalState(subsystems={**curr_state.subsystems, name: converged})
+            old_sub_state = state.subsystems[name]
+            async for new_sub_state in self._subsystem_stepper(old_sub_state, sub_ctx):
+                curr_state = NormalState(subsystems={**curr_state.subsystems, name: new_sub_state})
                 yield curr_state
 
         # Step 2: Check for RestartingMainJob(external_execution_result=None)
-        escalation = await self._check_main_job_restart(curr_state, context)
-        if escalation is not None:
-            yield escalation
+        if (s := await self._check_main_job_restart(curr_state, context)) is not None:
+            yield s
 
     async def _check_main_job_restart(
         self,
@@ -104,11 +105,14 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             return None
 
         frozen_state = state.subsystems[requestor]
+
         logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
         await context.main_job.stop_job()
         run_id = await context.main_job.submit_job()
+
         if context.on_new_run is not None:
             context.on_new_run(run_id)
+
         return RestartingMainJobState(
             requestor_name=requestor,
             start_time=datetime.now(timezone.utc),
