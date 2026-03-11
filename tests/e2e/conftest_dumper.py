@@ -28,6 +28,9 @@ SOURCE_PATCHED_FIELDS: list[str] = [
     "mlp_output",
     "moe_router_logits",
     "moe_topk_ids",
+    # moe_expert_output disabled: MoE token dispatch produces variable token
+    # counts across EP ranks, causing shape mismatch during partial-sum
+    # unsharding (torch.stack fails on unequal sizes).
 ]
 
 # NOTE: etp is omitted from replicated annotations because etp=tp in the
@@ -72,6 +75,7 @@ patches:
       - match: "return probs, routing_map"
         prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
 
+  # moe_expert_output disabled: see SOURCE_PATCHED_FIELDS comment
 """
 
 MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML: str = """\
@@ -110,6 +114,7 @@ patches:
       - match: "return probs, routing_map"
         prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
 
+  # moe_expert_output disabled: see SOURCE_PATCHED_FIELDS comment
 """
 
 SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
@@ -166,8 +171,7 @@ patches:
         append: "dumper.dump('moe_router_logits', router_logits, dims='t num_experts # tp:replicated')"
       - match: "topk_output = self.topk(hidden_states, router_logits)"
         append: "dumper.dump('moe_topk_ids', topk_output.topk_ids.sort(dim=-1).values, dims='t topk # tp:replicated')"
-      - match: "final_hidden_states = self.experts(hidden_states, topk_output)"
-        append: "dumper.dump('moe_expert_output', final_hidden_states, dims='t h[tp:partial]')"
+      # moe_expert_output disabled: see SOURCE_PATCHED_FIELDS comment
 """
 
 
