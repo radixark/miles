@@ -20,7 +20,7 @@ def _filter_node_ids_by_active(node_ids: list[str], active_node_ids: set[str]) -
 class DetectorContext:
     metric_store: MetricQueryProtocol
     mini_wandb: TrainingMetricStoreProtocol | None = None
-    rank_placement: dict[int, str] = field(default_factory=dict)
+    active_node_ids: set[str] = field(default_factory=set)
     job_status: JobStatus | None = None
 
 
@@ -29,26 +29,25 @@ class BaseFaultDetector(ABC):
 
     Detectors must be **stateless**: ``_evaluate_raw()`` must derive its
     answer entirely from the data available in ``DetectorContext`` (metric
-    stores, job status, rank placement).  No mutable instance state should
+    stores, job status, active node IDs).  No mutable instance state should
     be accumulated across calls.  Constructor parameters (thresholds,
     config) are fine because they are immutable after init.
 
     The public ``evaluate()`` method wraps ``_evaluate_raw()`` and filters
     out bad-node IDs that are not in the current training's
-    ``rank_placement``, so individual detectors do not need to handle this.
+    ``active_node_ids``, so individual detectors do not need to handle this.
     """
 
     def evaluate(self, ctx: DetectorContext) -> Decision:
         decision = self._evaluate_raw(ctx)
-        if decision.bad_node_ids and ctx.rank_placement:
-            active_node_ids = set(ctx.rank_placement.values())
-            filtered = _filter_node_ids_by_active(decision.bad_node_ids, active_node_ids)
+        if decision.bad_node_ids and ctx.active_node_ids:
+            filtered = _filter_node_ids_by_active(decision.bad_node_ids, ctx.active_node_ids)
             if not filtered:
                 logger.info(
                     "detector_bad_nodes_not_active detector=%s bad=%s active=%s",
                     type(self).__name__,
                     decision.bad_node_ids,
-                    sorted(active_node_ids),
+                    sorted(ctx.active_node_ids),
                 )
                 return Decision.no_fault(
                     reason=f"all bad nodes not active ({type(self).__name__})",
