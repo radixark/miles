@@ -14,14 +14,15 @@ import pytest
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.chain import build_shared_hw_detectors
 from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.state_machines.main.models import NormalState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly
 from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator
 from tests.fast.utils.ft.controller.test_controller.test_integration import (
-    FakeRmHandle,
     _FakeRemoteMethod,
+    _RolloutTestHarness,
     _make_test_controller_with_rollout,
 )
 from tests.fast.utils.ft.utils.metric_injectors import (
@@ -32,10 +33,8 @@ from tests.fast.utils.ft.utils.metric_injectors import (
 )
 
 
-def _override_rollout_monitoring(harness: object, *, cell_ids: list[str] | None = None) -> None:
+def _override_rollout_monitoring(harness: _RolloutTestHarness, *, cell_ids: list[str] | None = None) -> None:
     """Set alive_duration_seconds=0 on rollout entries so tests don't wait 180s."""
-    from miles.utils.ft.controller.state_machines.main.models import NormalState
-
     state = harness.controller._state_machine.state  # type: ignore[union-attr]
     assert isinstance(state, NormalState)
     resolved = cell_ids or ["ep72"]
@@ -48,7 +47,7 @@ def _override_rollout_monitoring(harness: object, *, cell_ids: list[str] | None 
 
 
 def _inject_crash_samples(
-    store: object,
+    store: MiniPrometheus,
     cell_id: str,
     *,
     span_seconds: float = 3.0,
