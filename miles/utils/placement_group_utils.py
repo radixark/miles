@@ -81,7 +81,7 @@ def _load_snapshots(path: Path) -> list[BundleLocationSnapshot] | None:
     try:
         data = json.loads(path.read_text())
         return [BundleLocationSnapshot(**item) for item in data]
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError, OSError):
         logger.warning("Failed to load PG snapshot from %s, ignoring", path, exc_info=True)
         return None
 
