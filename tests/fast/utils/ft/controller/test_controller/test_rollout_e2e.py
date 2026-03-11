@@ -1,0 +1,360 @@
+"""E2E tests for training + rollout FT behavior.
+
+Uses real state machines, real detectors (GpuFaultDetector, RolloutCrashDetector,
+etc.) with injected metrics via MiniPrometheus.  Mock MainJob, NodeManager,
+Notifier, DiagnosticOrchestrator, and RmHandle provide controllable boundaries.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.detectors.chain import build_shared_hw_detectors
+from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
+from miles.utils.ft.controller.state_machines.main.models import NormalState
+from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly
+from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig
+from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
+from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator
+from tests.fast.utils.ft.controller.test_controller.test_integration import (
+    FakeRmHandle,
+    _FakeRemoteMethod,
+    _make_test_controller_with_rollout,
+)
+from tests.fast.utils.ft.utils.metric_injectors import (
+    inject_critical_xid,
+    inject_gpu_unavailable,
+    inject_healthy_node,
+    inject_rollout_cell_alive,
+)
+
+
+def _override_rollout_monitoring(harness: object, *, cell_ids: list[str] | None = None) -> None:
+    """Set alive_duration_seconds=0 on rollout entries so tests don't wait 180s."""
+    from miles.utils.ft.controller.state_machines.main.models import NormalState
+
+    state = harness.controller._state_machine.state  # type: ignore[union-attr]
+    assert isinstance(state, NormalState)
+    resolved = cell_ids or ["ep72"]
+    for cell_id in resolved:
+        entry = state.subsystems[f"rollout_{cell_id}"]
+        entry.monitoring_config = MonitoringSustainedAliveConfig(
+            alive_duration_seconds=0,
+            timeout_seconds=60,
+        )
+
+
+def _inject_crash_samples(
+    store: object,
+    cell_id: str,
+    *,
+    span_seconds: float = 3.0,
+    count: int = 20,
+) -> None:
+    """Inject rollout_cell_alive=False samples spanning *span_seconds*."""
+    now = datetime.now(timezone.utc)
+    for i in range(count):
+        ts = now - timedelta(seconds=span_seconds * (1 - i / (count - 1)))
+        inject_rollout_cell_alive(store, cell_id, alive=False, timestamp=ts)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1: Rollout GPU XID → recovery
+# ---------------------------------------------------------------------------
+
+
+class TestRolloutGpuXidRecovery:
+    """GPU XID on a rollout-only node triggers rollout L1 recovery;
+    training stays unaffected."""
+
+    @pytest.mark.anyio
+    async def test_rollout_gpu_xid_triggers_recovery_and_restores_normal(self) -> None:
+        harness = _make_test_controller_with_rollout(
+            training_detectors=build_shared_hw_detectors(),
+            cell_node_ids={"ep72": {"rollout-0", "rollout-1"}},
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        )
+        controller = harness.controller
+        store = harness.metric_store
+        _override_rollout_monitoring(harness)
+
+        # Step 1: Inject healthy metrics for all nodes
+        for node_id in ["train-node-0", "train-node-1", "rollout-0", "rollout-1"]:
+            inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
+
+        # Step 2: Tick several times → all healthy
+        for _ in range(3):
+            await controller._tick()
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+
+        # Step 3: Inject GPU XID + unavailable on rollout-0
+        inject_critical_xid(store, "rollout-0")
+        inject_gpu_unavailable(store, "rollout-0", gpu="0")
+
+        # Step 4: Tick → rollout detects fault, cascades through L1 recovery
+        await controller._tick()
+
+        # Step 5: Verify
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomaly)
+
+        assert harness.node_manager.was_ever_marked_bad("rollout-0")
+        assert not harness.node_manager.was_ever_marked_bad("train-node-0")
+        assert harness.rm_handle.stop_cell.call_count >= 1
+        assert harness.rm_handle.start_cell.call_count >= 1
+        assert not harness.main_job._stopped
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2: Rollout engine crash (hardware OK)
+# ---------------------------------------------------------------------------
+
+
+class TestRolloutCrashRecovery:
+    """RolloutCrashDetector fires when rollout_cell_alive stays 0 beyond
+    threshold; L1 recovery restarts the cell while training is unaffected."""
+
+    @pytest.mark.anyio
+    async def test_rollout_crash_detector_triggers_recovery_when_cell_dead(self) -> None:
+        harness = _make_test_controller_with_rollout(
+            cell_node_ids={"ep72": {"rollout-0", "rollout-1"}},
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        )
+        controller = harness.controller
+        store = harness.metric_store
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        rollout_entry = state.subsystems["rollout_ep72"]
+        rollout_entry.detectors = [
+            RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),
+        ]
+        _override_rollout_monitoring(harness)
+
+        # Step 1: Inject healthy metrics + cell alive
+        for node_id in ["rollout-0", "rollout-1"]:
+            inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
+        inject_rollout_cell_alive(store, "ep72", alive=True)
+
+        for _ in range(3):
+            await controller._tick()
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+
+        # Step 2: Inject sustained dead cell (spanning 3s > threshold=2s)
+        _inject_crash_samples(store, "ep72", span_seconds=3.0)
+
+        # Step 3: Tick → crash detector fires → recovery cascades
+        await controller._tick()
+
+        # Step 4: Verify
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomaly)
+
+        assert harness.rm_handle.stop_cell.call_count >= 1
+        assert harness.rm_handle.start_cell.call_count >= 1
+        assert not harness.main_job._stopped
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3: Co-located node fault
+# ---------------------------------------------------------------------------
+
+
+class TestColocatedNodeFault:
+    """GPU XID on a node shared by training and rollout: training escalates
+    to main-job restart (Level 2); rollout does L1 restart.  All subsystems
+    are rebuilt after the main-job restart."""
+
+    @pytest.mark.anyio
+    async def test_shared_node_fault_triggers_main_job_restart_and_rebuilds_all(self) -> None:
+        shared_node = "shared-node"
+        harness = _make_test_controller_with_rollout(
+            training_detectors=build_shared_hw_detectors(),
+            cell_node_ids={"ep72": {shared_node, "rollout-only-1"}},
+            monitoring_success_iterations=0,
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        )
+        controller = harness.controller
+        store = harness.metric_store
+
+        controller.training_rank_roster.rank_placement[0] = shared_node
+        controller.training_rank_roster.rank_placement[1] = "train-only-1"
+        _override_rollout_monitoring(harness)
+
+        # Step 1: Inject healthy metrics for all nodes
+        for node_id in [shared_node, "train-only-1", "rollout-only-1"]:
+            inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
+
+        await controller._tick()
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+
+        # Step 2: Inject GPU XID on the shared node
+        inject_critical_xid(store, shared_node)
+        inject_gpu_unavailable(store, shared_node, gpu="0")
+
+        # Step 3: Tick → both subsystems detect, training L2 escalates to
+        #   main-job restart; main SM rebuilds all subsystems
+        await controller._tick()
+
+        # Step 4: Verify
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert "training" in state.subsystems
+        assert "rollout_ep72" in state.subsystems
+
+        assert harness.node_manager.was_ever_marked_bad(shared_node)
+        assert harness.main_job._stopped
+        assert harness.main_job._submitted
+        assert harness.rm_handle.stop_cell.call_count >= 1
+        assert harness.rm_handle.start_cell.call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: Multi-cell independent failures
+# ---------------------------------------------------------------------------
+
+
+class TestMultiCellIndependentFailures:
+    """Two rollout cells fail at different times; each recovers independently
+    without affecting training or the other cell."""
+
+    @pytest.mark.anyio
+    async def test_two_cells_recover_independently(self) -> None:
+        harness = _make_test_controller_with_rollout(
+            cell_ids=["ep72", "ep36"],
+            cell_node_ids={
+                "ep72": {"rollout-ep72-0", "rollout-ep72-1"},
+                "ep36": {"rollout-ep36-0", "rollout-ep36-1"},
+            },
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        )
+        controller = harness.controller
+        store = harness.metric_store
+
+        controller._tick_loop._cooldown = SlidingWindowThrottle(
+            window_minutes=30.0, max_count=10,
+        )
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        for cell_id in ["ep72", "ep36"]:
+            entry = state.subsystems[f"rollout_{cell_id}"]
+            entry.detectors = [
+                RolloutCrashDetector(cell_id=cell_id, alive_threshold_seconds=2.0),
+            ]
+        _override_rollout_monitoring(harness, cell_ids=["ep72", "ep36"])
+
+        # Step 1: Inject healthy baselines
+        for node_id in [
+            "train-node-0", "train-node-1",
+            "rollout-ep72-0", "rollout-ep72-1",
+            "rollout-ep36-0", "rollout-ep36-1",
+        ]:
+            inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
+        inject_rollout_cell_alive(store, "ep72", alive=True)
+        inject_rollout_cell_alive(store, "ep36", alive=True)
+        await controller._tick()
+
+        # Step 2: Crash ep72 only
+        _inject_crash_samples(store, "ep72", span_seconds=3.0)
+        stop_before = harness.rm_handle.stop_cell.call_count
+
+        # Step 3: Tick → ep72 recovers, ep36 stays healthy
+        await controller._tick()
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomaly)
+        assert harness.rm_handle.stop_cell.call_count > stop_before
+
+        # Step 4: Clear ep72 crash, crash ep36
+        inject_rollout_cell_alive(store, "ep72", alive=True)
+        _inject_crash_samples(store, "ep36", span_seconds=3.0)
+        stop_before = harness.rm_handle.stop_cell.call_count
+
+        # Step 5: Tick → ep36 recovers
+        await controller._tick()
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+        assert harness.rm_handle.stop_cell.call_count > stop_before
+
+        assert not harness.main_job._stopped
+
+
+# ---------------------------------------------------------------------------
+# Scenario 5: L1 failure → diagnostics → NotifyHumans
+# ---------------------------------------------------------------------------
+
+
+class TestRolloutLevel1FailureNotifyHumans:
+    """L1 restart repeatedly returns FAILED status → RestartFailed →
+    StopTimeDiagnostics → (empty findings) → NotifyHumans.  Notifier
+    receives a Recovery Alert and rollout returns to DetectingAnomaly."""
+
+    @pytest.mark.anyio
+    async def test_level1_failure_runs_diagnostics_then_notifies_humans(self) -> None:
+        diag_orch = FakeDiagnosticOrchestrator()
+        harness = _make_test_controller_with_rollout(
+            cell_node_ids={"ep72": {"rollout-0", "rollout-1"}},
+            diagnostic_orchestrator=diag_orch,
+        )
+        controller = harness.controller
+        store = harness.metric_store
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        rollout_entry = state.subsystems["rollout_ep72"]
+        rollout_entry.detectors = [
+            RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),
+        ]
+        _override_rollout_monitoring(harness)
+
+        harness.rm_handle.get_cell_status = _FakeRemoteMethod(result=JobStatus.FAILED)
+
+        # Step 1: Inject healthy metrics + cell alive
+        for node_id in ["rollout-0", "rollout-1"]:
+            inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
+        inject_rollout_cell_alive(store, "ep72", alive=True)
+        await controller._tick()
+
+        # Step 2: Inject sustained dead cell
+        _inject_crash_samples(store, "ep72", span_seconds=3.0)
+
+        # Step 3: Tick → crash → L1 restart → FAILED → StopTimeDiagnostics
+        #   → diagnostics empty → NotifyHumans → RecoveryDone → DetectingAnomaly
+        await controller._tick()
+
+        # Step 4: Verify
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+
+        assert harness.rm_handle.stop_cell.call_count >= 1
+        assert harness.rm_handle.start_cell.call_count >= 1
+        assert diag_orch.call_count >= 1
+
+        recovery_alerts = [
+            (title, content)
+            for title, content, _ in harness.notifier.calls
+            if title == "Recovery Alert"
+        ]
+        assert len(recovery_alerts) >= 1, (
+            f"Expected 'Recovery Alert' notification, got: {harness.notifier.calls}"
+        )
+
+        assert not harness.main_job._stopped
