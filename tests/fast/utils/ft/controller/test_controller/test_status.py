@@ -70,11 +70,9 @@ class TestGetStatus:
         harness = make_test_controller(register_dummy_rank=False)
         status = harness.controller.get_status()
         assert status.mode == ControllerMode.MONITORING
-        assert status.recovery_phase is None
-        assert status.phase_history is None
+        assert status.recovery is None
         assert status.tick_count == 0
         assert status.active_run_id is None
-        assert status.bad_nodes == []
 
     @pytest.mark.asyncio
     async def test_monitoring_mode_after_tick(self) -> None:
@@ -94,7 +92,7 @@ class TestGetStatus:
         status = harness.controller.get_status()
 
         assert status.mode == ControllerMode.RECOVERY
-        assert status.recovery_phase is not None
+        assert status.recovery is not None
 
     @pytest.mark.asyncio
     async def test_active_run_id_after_register(self) -> None:
@@ -115,7 +113,7 @@ class TestGetStatus:
         harness = make_test_controller()
         status = harness.controller.get_status()
         assert status.recovery_in_progress is False
-        assert status.bad_nodes_confirmed is False
+        assert status.recovery is None
 
     @pytest.mark.asyncio
     async def test_recovery_in_progress_true_during_recovery(self) -> None:
@@ -139,7 +137,8 @@ class TestGetStatus:
         status = harness.controller.get_status()
 
         assert status.recovery_in_progress is True
-        assert status.bad_nodes_confirmed is False
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes_confirmed is False
 
     def test_bad_nodes_confirmed_when_evicting(self) -> None:
         harness = make_test_controller()
@@ -153,8 +152,9 @@ class TestGetStatus:
         ))
         status = harness.controller.get_status()
         assert status.recovery_in_progress is True
-        assert status.bad_nodes_confirmed is True
-        assert status.bad_nodes == ["node-0"]
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes_confirmed is True
+        assert status.recovery.bad_nodes == ["node-0"]
 
     def test_bad_nodes_confirmed_when_notifying(self) -> None:
         harness = make_test_controller()
@@ -164,7 +164,8 @@ class TestGetStatus:
             recovery_start_time=datetime.now(timezone.utc),
         ))
         status = harness.controller.get_status()
-        assert status.bad_nodes_confirmed is True
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes_confirmed is True
 
     def test_bad_nodes_not_confirmed_during_diagnostics(self) -> None:
         harness = make_test_controller()
@@ -174,7 +175,8 @@ class TestGetStatus:
             recovery_start_time=datetime.now(timezone.utc),
         ))
         status = harness.controller.get_status()
-        assert status.bad_nodes_confirmed is False
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes_confirmed is False
 
 
 class TestAgentManagement:
