@@ -93,7 +93,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 curr_state = NormalState(subsystems={**curr_state.subsystems, name: current})
                 yield curr_state
 
-        # Step 2: Check for RestartingMainJob(externally_fulfilled=False)
+        # Step 2: Check for RestartingMainJob(external_execution_result=None)
         requestor = _find_restart_requestor(curr_state.subsystems)
         if requestor is not None:
             frozen_state = curr_state.subsystems[requestor]

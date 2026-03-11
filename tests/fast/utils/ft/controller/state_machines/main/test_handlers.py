@@ -1,4 +1,4 @@
-"""Tests for _find_restart_requestor and _update_externally_fulfilled."""
+"""Tests for _find_restart_requestor and _update_external_execution_result."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 
 from miles.utils.ft.controller.state_machines.main.handlers import (
     _find_restart_requestor,
-    _update_externally_fulfilled,
+    _update_external_execution_result,
 )
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
@@ -20,6 +20,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
     Evicting,
+    ExternalExecutionResult,
     RestartingMainJob as RestartingMainJobRestart,
     StoppingAndRestarting,
 )
@@ -28,11 +29,11 @@ from miles.utils.ft.controller.types import TriggerType
 
 def _make_recovering_with_main_job_restart(
     *,
-    externally_fulfilled: bool = False,
+    external_execution_result: ExternalExecutionResult | None = None,
 ) -> Recovering:
     return Recovering(
         recovery=EvictingAndRestarting(
-            restart=RestartingMainJobRestart(externally_fulfilled=externally_fulfilled),
+            restart=RestartingMainJobRestart(external_execution_result=external_execution_result),
             failed_next_state=StopTimeDiagnostics(),
         ),
         trigger=TriggerType.CRASH,
@@ -72,7 +73,7 @@ def _make_recovering_with_stopping_and_restarting() -> Recovering:
 class TestFindRestartRequestor:
     def test_returns_name_when_unfulfilled_restart_exists(self) -> None:
         subsystems = {
-            "gpu": _make_recovering_with_main_job_restart(externally_fulfilled=False),
+            "gpu": _make_recovering_with_main_job_restart(),
         }
         assert _find_restart_requestor(subsystems) == "gpu"
 
@@ -86,9 +87,11 @@ class TestFindRestartRequestor:
         }
         assert _find_restart_requestor(subsystems) is None
 
-    def test_returns_none_when_externally_fulfilled_is_true(self) -> None:
+    def test_returns_none_when_execution_result_is_set(self) -> None:
         subsystems = {
-            "gpu": _make_recovering_with_main_job_restart(externally_fulfilled=True),
+            "gpu": _make_recovering_with_main_job_restart(
+                external_execution_result=ExternalExecutionResult.SUCCEEDED,
+            ),
         }
         assert _find_restart_requestor(subsystems) is None
 
@@ -109,8 +112,10 @@ class TestFindRestartRequestor:
         """When multiple subsystems have unfulfilled restarts, return one of them."""
         subsystems = {
             "detecting": DetectingAnomaly(),
-            "fulfilled": _make_recovering_with_main_job_restart(externally_fulfilled=True),
-            "requestor": _make_recovering_with_main_job_restart(externally_fulfilled=False),
+            "fulfilled": _make_recovering_with_main_job_restart(
+                external_execution_result=ExternalExecutionResult.SUCCEEDED,
+            ),
+            "requestor": _make_recovering_with_main_job_restart(),
             "evicting": _make_recovering_with_evicting(),
         }
         assert _find_restart_requestor(subsystems) == "requestor"
@@ -120,31 +125,31 @@ class TestFindRestartRequestor:
         subsystems = {
             "a": DetectingAnomaly(),
             "b": _make_recovering_with_evicting(),
-            "c": _make_recovering_with_main_job_restart(externally_fulfilled=False),
+            "c": _make_recovering_with_main_job_restart(),
         }
         assert _find_restart_requestor(subsystems) == "c"
 
 
 # ---------------------------------------------------------------------------
-# _update_externally_fulfilled
+# _update_external_execution_result
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateExternallyFulfilled:
-    def test_sets_externally_fulfilled_to_true(self) -> None:
-        state = _make_recovering_with_main_job_restart(externally_fulfilled=False)
+class TestUpdateExternalExecutionResult:
+    def test_sets_execution_result_to_succeeded(self) -> None:
+        state = _make_recovering_with_main_job_restart()
 
-        result = _update_externally_fulfilled(state)
+        result = _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, EvictingAndRestarting)
         assert isinstance(result.recovery.restart, RestartingMainJobRestart)
-        assert result.recovery.restart.externally_fulfilled is True
+        assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
 
     def test_preserves_other_fields(self) -> None:
-        state = _make_recovering_with_main_job_restart(externally_fulfilled=False)
+        state = _make_recovering_with_main_job_restart()
 
-        result = _update_externally_fulfilled(state)
+        result = _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
         assert isinstance(result, Recovering)
         assert result.trigger == state.trigger
@@ -155,39 +160,38 @@ class TestUpdateExternallyFulfilled:
 
     def test_does_not_mutate_original(self) -> None:
         """Frozen models — the original state must remain unchanged."""
-        state = _make_recovering_with_main_job_restart(externally_fulfilled=False)
+        state = _make_recovering_with_main_job_restart()
 
-        _update_externally_fulfilled(state)
+        _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
         assert isinstance(state.recovery, EvictingAndRestarting)
         assert isinstance(state.recovery.restart, RestartingMainJobRestart)
-        assert state.recovery.restart.externally_fulfilled is False
+        assert state.recovery.restart.external_execution_result is None
 
-    def test_idempotent_when_already_fulfilled(self) -> None:
-        state = _make_recovering_with_main_job_restart(externally_fulfilled=True)
+    def test_sets_failed_result(self) -> None:
+        state = _make_recovering_with_main_job_restart()
 
-        result = _update_externally_fulfilled(state)
+        result = _update_external_execution_result(state, ExternalExecutionResult.FAILED)
 
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, EvictingAndRestarting)
         assert isinstance(result.recovery.restart, RestartingMainJobRestart)
-        assert result.recovery.restart.externally_fulfilled is True
+        assert result.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
 
     def test_raises_on_detecting_anomaly_state(self) -> None:
         with pytest.raises(AssertionError, match="Unexpected state"):
-            _update_externally_fulfilled(DetectingAnomaly())
+            _update_external_execution_result(DetectingAnomaly(), ExternalExecutionResult.SUCCEEDED)
 
     def test_raises_on_recovering_with_non_matching_restart(self) -> None:
         """Recovering → EvictingAndRestarting but restart is Evicting, not RestartingMainJob."""
         state = _make_recovering_with_evicting()
         with pytest.raises(AssertionError, match="Unexpected state"):
-            _update_externally_fulfilled(state)
+            _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
     def test_preserves_bad_node_ids(self) -> None:
         state = Recovering(
             recovery=EvictingAndRestarting(
                 restart=RestartingMainJobRestart(
-                    externally_fulfilled=False,
                     bad_node_ids=["node-0", "node-1"],
                 ),
                 failed_next_state=StopTimeDiagnostics(),
@@ -196,10 +200,10 @@ class TestUpdateExternallyFulfilled:
             recovery_start_time=datetime.now(timezone.utc),
         )
 
-        result = _update_externally_fulfilled(state)
+        result = _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, EvictingAndRestarting)
         assert isinstance(result.recovery.restart, RestartingMainJobRestart)
-        assert result.recovery.restart.externally_fulfilled is True
+        assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
         assert result.recovery.restart.bad_node_ids == ["node-0", "node-1"]

@@ -25,6 +25,7 @@ from miles.utils.ft.controller.state_machines.subsystem.models import (
 )
 from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestarting, StopTimeDiagnostics
 from miles.utils.ft.controller.state_machines.restart.models import (
+    ExternalExecutionResult,
     RestartingMainJob as RestartingMainJobRestart,
 )
 from miles.utils.ft.controller.subsystem import SubsystemConfig
@@ -42,7 +43,7 @@ def _make_frozen_recovering_state() -> Recovering:
     """Create a Recovering state matching what NormalStateHandler would freeze."""
     return Recovering(
         recovery=EvictingAndRestarting(
-            restart=RestartingMainJobRestart(externally_fulfilled=False),
+            restart=RestartingMainJobRestart(),
             failed_next_state=StopTimeDiagnostics(),
         ),
         trigger=TriggerType.CRASH,
@@ -120,7 +121,7 @@ class TestNormalOperation:
 class TestSingleSubsystemEscalation:
     @pytest.mark.asyncio
     async def test_nested_restart_request_triggers_escalation(self) -> None:
-        """Subsystem in Recovering(EvictingAndRestarting(RestartingMainJob(externally_fulfilled=False)))
+        """Subsystem in Recovering(EvictingAndRestarting(RestartingMainJob(external_execution_result=None)))
         → peek-and-freeze → stop+submit main job → RestartingMainJobState."""
         main_job = FakeMainJob()
         stepper = create_main_stepper()
@@ -175,12 +176,12 @@ class TestJobRestartComplete:
         assert isinstance(result, NormalState)
         assert set(result.subsystems.keys()) == {"training", "rollout_0"}
 
-        # Requestor gets restored frozen state with externally_fulfilled=True
+        # Requestor gets restored frozen state with external_execution_result=SUCCEEDED
         requestor_state = result.subsystems["rollout_0"]
         assert isinstance(requestor_state, Recovering)
         assert isinstance(requestor_state.recovery, EvictingAndRestarting)
         assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
-        assert requestor_state.recovery.restart.externally_fulfilled is True
+        assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
 
         assert isinstance(result.subsystems["training"], DetectingAnomaly)
 
@@ -244,8 +245,8 @@ class TestJobRestartPending:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_failed_status_rebuilds_for_retry(self) -> None:
-        """RestartingMainJobState + FAILED → rebuild subsystems, notify."""
+    async def test_failed_status_restores_requestor_with_failed_result(self) -> None:
+        """RestartingMainJobState + FAILED → requestor restored with FAILED result."""
         main_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
         stepper = create_main_stepper()
 
@@ -255,8 +256,50 @@ class TestJobRestartPending:
             start_time=datetime.now(timezone.utc),
             requestor_frozen_state=frozen,
         )
-        context = _make_controller_context(main_job=main_job)
+        context = _make_controller_context(
+            main_job=main_job,
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
+        )
 
         result = await stepper.step_once(state, context)
 
         assert isinstance(result, NormalState)
+        requestor_state = result.subsystems["rollout_0"]
+        assert isinstance(requestor_state, Recovering)
+        assert isinstance(requestor_state.recovery, EvictingAndRestarting)
+        assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
+        assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
+
+    @pytest.mark.asyncio
+    async def test_timeout_writes_timeout_result(self) -> None:
+        """RestartingMainJobState + PENDING past timeout → requestor restored with TIMEOUT result."""
+        from datetime import timedelta
+
+        main_job = FakeMainJob(status_sequence=[JobStatus.PENDING])
+        stepper = create_main_stepper()
+
+        frozen = _make_frozen_recovering_state()
+        state = RestartingMainJobState(
+            requestor_name="rollout_0",
+            start_time=datetime.now(timezone.utc) - timedelta(seconds=3600),
+            requestor_frozen_state=frozen,
+        )
+        context = _make_controller_context(
+            main_job=main_job,
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
+        )
+
+        result = await stepper.step_once(state, context)
+
+        assert isinstance(result, NormalState)
+        requestor_state = result.subsystems["rollout_0"]
+        assert isinstance(requestor_state, Recovering)
+        assert isinstance(requestor_state.recovery, EvictingAndRestarting)
+        assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
+        assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.TIMEOUT
