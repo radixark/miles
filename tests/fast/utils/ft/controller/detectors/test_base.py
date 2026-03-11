@@ -94,7 +94,7 @@ class TestBaseFaultDetectorEvaluate:
             trigger=TriggerType.HARDWARE,
         )
         detector = _StubDetector(decision=decision)
-        ctx = make_detector_context(rank_placement={0: "n1", 1: "n2"})
+        ctx = make_detector_context(active_node_ids={"n1", "n2"})
 
         result = detector.evaluate(ctx)
         assert result.bad_node_ids == ["n1", "n2"]
@@ -108,7 +108,7 @@ class TestBaseFaultDetectorEvaluate:
             trigger=TriggerType.HARDWARE,
         )
         detector = _StubDetector(decision=decision)
-        ctx = make_detector_context(rank_placement={0: "n1", 1: "n3"})
+        ctx = make_detector_context(active_node_ids={"n1", "n3"})
 
         result = detector.evaluate(ctx)
         assert result.bad_node_ids == ["n1", "n3"]
@@ -121,7 +121,7 @@ class TestBaseFaultDetectorEvaluate:
             trigger=TriggerType.HARDWARE,
         )
         detector = _StubDetector(decision=decision)
-        ctx = make_detector_context(rank_placement={0: "n3", 1: "n4"})
+        ctx = make_detector_context(active_node_ids={"n3", "n4"})
 
         result = detector.evaluate(ctx)
         assert result.action == ActionType.NONE
@@ -130,7 +130,7 @@ class TestBaseFaultDetectorEvaluate:
     def test_no_bad_nodes_returned_unchanged(self) -> None:
         decision = Decision.no_fault(reason="all clear")
         detector = _StubDetector(decision=decision)
-        ctx = make_detector_context(rank_placement={0: "n1"})
+        ctx = make_detector_context(active_node_ids={"n1"})
 
         result = detector.evaluate(ctx)
         assert result.action == ActionType.NONE
