@@ -105,11 +105,11 @@ def execute():
         f"--prompt-data {PROMPT_DATA_PATH} "
         "--input-key messages "
         "--num-rollout 1 "
-        "--rollout-batch-size 4 "
+        "--rollout-batch-size 16 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.7 "
-        "--global-batch-size 16 "
+        "--global-batch-size 64 "
     )
 
     generate_args = (

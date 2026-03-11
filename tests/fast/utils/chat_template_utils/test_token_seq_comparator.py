@@ -230,7 +230,7 @@ class TestCompareSpecialToken:
         actual = [sp1] + text_ids  # missing trailing special
         result = env.comparator.compare_sequences(expected, actual)
         assert len(result) == 1
-        assert result[0].type == MismatchType.SPECIAL_TOKEN
+        assert result[0].type == MismatchType.SPECIAL_TOKEN_COUNT
         assert result[0].segment_index == -1
         assert "segment count differs" in result[0].detail
 
@@ -243,7 +243,7 @@ class TestCompareSpecialToken:
         actual = text_ids + [sp] + text_ids
         result = env.comparator.compare_sequences(expected, actual)
         assert len(result) >= 1
-        assert result[0].type == MismatchType.SPECIAL_TOKEN
+        assert result[0].type == MismatchType.SPECIAL_TOKEN_COUNT
 
     def test_special_id_differs(self, env: TokenizerEnv):
         """Same structure, but one special token is swapped for another."""
@@ -256,7 +256,7 @@ class TestCompareSpecialToken:
         expected = [sp_a] + text_ids + [sp_a]
         actual = [sp_b] + text_ids + [sp_a]
         result = env.comparator.compare_sequences(expected, actual)
-        assert any(m.type == MismatchType.SPECIAL_TOKEN and m.segment_index == 0 for m in result)
+        assert any(m.type == MismatchType.SPECIAL_TOKEN_TYPE and m.segment_index == 0 for m in result)
 
 
 # ===========================================================================
@@ -481,3 +481,88 @@ class TestCompareMixed:
             + [sp2]
         )
         assert env.comparator.compare_sequences(seq, seq) == []
+
+
+# ===========================================================================
+# GLM 4.7 specific: <|user|> vs <|observation|> type mismatch is acceptable
+# ===========================================================================
+
+
+@pytest.fixture
+def glm47_env() -> TokenizerEnv:
+    return _build_env(_CONFIGS["glm47_flash"])
+
+
+class TestGlm47AcceptableTypeMismatch:
+    """GLM 4.7's <|user|> and <|observation|> are both assistant stop tokens.
+
+    When tool-call parsing fails, the model stops on <|observation|> (expecting
+    a tool response) but the re-tokenized expected sequence has <|user|>
+    (because a retry system message was inserted instead).  This is a
+    SPECIAL_TOKEN_TYPE mismatch — acceptable, not fatal.
+
+    The e2e test asserts only on SPECIAL_TOKEN_COUNT (segment structure) and
+    text/JSON content.  SPECIAL_TOKEN_TYPE mismatches are logged as warnings.
+    """
+
+    def test_user_vs_observation_is_type_mismatch(self, glm47_env: TokenizerEnv):
+        """Swapping <|user|> for <|observation|> at the same position → TYPE, not COUNT."""
+        env = glm47_env
+        user_id = env.token_id("<|user|>")
+        obs_id = env.token_id("<|observation|>")
+        assistant_id = env.token_id("<|assistant|>")
+        text_ids = env.encode("some content")
+
+        expected = [assistant_id] + text_ids + [user_id] + text_ids + [assistant_id]
+        actual = [assistant_id] + text_ids + [obs_id] + text_ids + [assistant_id]
+
+        result = env.comparator.compare_sequences(expected, actual)
+        assert len(result) == 1
+        assert result[0].type == MismatchType.SPECIAL_TOKEN_TYPE
+        assert result[0].segment_index == 2  # the swapped special token position
+
+    def test_equivalent_special_ids_suppresses_type_mismatch(self, glm47_env: TokenizerEnv):
+        """With equivalent_special_ids, <|user|>↔<|observation|> swap produces no mismatch."""
+        env = glm47_env
+        user_id = env.token_id("<|user|>")
+        obs_id = env.token_id("<|observation|>")
+        assistant_id = env.token_id("<|assistant|>")
+        text_ids = env.encode("some content")
+
+        expected = [assistant_id] + text_ids + [user_id] + text_ids + [assistant_id]
+        actual = [assistant_id] + text_ids + [obs_id] + text_ids + [assistant_id]
+
+        equiv = {user_id, obs_id}
+        result = env.comparator.compare_sequences(expected, actual, equivalent_special_ids=equiv)
+        assert result == []
+
+    def test_count_mismatch_still_fatal(self, glm47_env: TokenizerEnv):
+        """Extra or missing segments are SPECIAL_TOKEN_COUNT — always fatal."""
+        env = glm47_env
+        user_id = env.token_id("<|user|>")
+        assistant_id = env.token_id("<|assistant|>")
+        text_ids = env.encode("content")
+
+        expected = [assistant_id] + text_ids + [user_id]
+        actual = [assistant_id] + text_ids  # missing <|user|>
+
+        result = env.comparator.compare_sequences(expected, actual)
+        assert len(result) == 1
+        assert result[0].type == MismatchType.SPECIAL_TOKEN_COUNT
+
+    def test_text_mismatch_still_detected_alongside_type(self, glm47_env: TokenizerEnv):
+        """Text content mismatches are still reported even when type mismatch exists."""
+        env = glm47_env
+        user_id = env.token_id("<|user|>")
+        obs_id = env.token_id("<|observation|>")
+        assistant_id = env.token_id("<|assistant|>")
+
+        expected = [assistant_id] + env.encode("hello") + [user_id] + env.encode("world") + [assistant_id]
+        actual = [assistant_id] + env.encode("hello") + [obs_id] + env.encode("changed") + [assistant_id]
+
+        result = env.comparator.compare_sequences(expected, actual)
+        types = {m.type for m in result}
+        assert MismatchType.SPECIAL_TOKEN_TYPE in types
+        assert MismatchType.TEXT in types
+        # No COUNT mismatch — structure is aligned
+        assert MismatchType.SPECIAL_TOKEN_COUNT not in types

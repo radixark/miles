@@ -242,8 +242,6 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     trim_trailing_ids = additional_tokenizer.get_trim_trailing_ids()
 
     comparator = TokenSeqComparator(tokenizer)
-    # trim_trailing_ids doubles as equivalent_special_ids: for GLM 4.7,
-    # <|user|> and <|observation|> are interchangeable stop/start tokens.
     mismatches = comparator.compare_sequences(
         expected_ids,
         actual_ids,
@@ -251,11 +249,25 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
         equivalent_special_ids=trim_trailing_ids or None,
     )
 
-    special_mismatches = [m for m in mismatches if m.type == MismatchType.SPECIAL_TOKEN]
-    other_mismatches = [m for m in mismatches if m.type != MismatchType.SPECIAL_TOKEN]
+    count_mismatches = [m for m in mismatches if m.type == MismatchType.SPECIAL_TOKEN_COUNT]
+    type_mismatches = [m for m in mismatches if m.type == MismatchType.SPECIAL_TOKEN_TYPE]
+    other_mismatches = [
+        m for m in mismatches if m.type not in (MismatchType.SPECIAL_TOKEN_COUNT, MismatchType.SPECIAL_TOKEN_TYPE)
+    ]
+
+    # GLM 4.7: <|user|> and <|observation|> are both assistant stop tokens.
+    # When tool-call parsing fails, the model stops on <|observation|> but the
+    # re-tokenized expected has <|user|> (retry system message).  This is a
+    # SPECIAL_TOKEN_TYPE mismatch — acceptable for GLM 4.7 only.
+    # All other models must have zero type mismatches.
+    allow_type_mismatch = ADDITIONAL_TOKENIZER_TYPE == "glm47"
+
+    fatal_types = {MismatchType.SPECIAL_TOKEN_COUNT}
+    if not allow_type_mismatch:
+        fatal_types.add(MismatchType.SPECIAL_TOKEN_TYPE)
 
     for m in mismatches:
-        log_fn = logger.error if m.type == MismatchType.SPECIAL_TOKEN else logger.warning
+        log_fn = logger.error if m.type in fatal_types else logger.warning
         log_fn(
             "Mismatch [%s] segment=%d: expected=%r actual=%r detail=%s",
             m.type.value,
@@ -288,28 +300,32 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 )
 
     logger.info(
-        "Agent done: %d turns, %d tool_calls, %d mismatches (%d special, %d text/json), "
+        "Agent done: %d turns, %d tool_calls, %d mismatches "
+        "(%d count, %d type, %d text/json), "
         "%d expected tokens, %d actual tokens",
         turns_completed,
         total_tool_calls,
         len(mismatches),
-        len(special_mismatches),
+        len(count_mismatches),
+        len(type_mismatches),
         len(other_mismatches),
         len(expected_ids),
         len(actual_ids),
     )
 
+    fatal_mismatches = [m for m in mismatches if m.type in fatal_types]
     assert (
-        not special_mismatches
-    ), f"Found {len(special_mismatches)} SPECIAL_TOKEN mismatch(es) after {turns_completed} turns: " + "; ".join(
-        f"seg[{m.segment_index}] expected={m.expected_text!r} actual={m.actual_text!r} ({m.detail})"
-        for m in special_mismatches
+        not fatal_mismatches
+    ), f"Found {len(fatal_mismatches)} fatal mismatch(es) after {turns_completed} turns: " + "; ".join(
+        f"[{m.type.value}] seg[{m.segment_index}] expected={m.expected_text!r} actual={m.actual_text!r} ({m.detail})"
+        for m in fatal_mismatches
     )
 
     return {
         "turns_completed": turns_completed,
         "total_tool_calls": total_tool_calls,
         "total_mismatches": len(mismatches),
-        "special_token_mismatches": len(special_mismatches),
+        "special_token_count_mismatches": len(count_mismatches),
+        "special_token_type_mismatches": len(type_mismatches),
         "text_json_mismatches": len(other_mismatches),
     }
