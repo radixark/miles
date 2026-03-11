@@ -9,7 +9,6 @@ from collections.abc import Callable
 from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
-    assert_phase_path_contains,
     get_status,
     scenario_no_false_positive,
     scenario_transient_crash,
@@ -111,7 +110,7 @@ class TestRecoveryReset:
             timeout=FAST_TIMEOUT,
         )
         assert status.mode == ControllerMode.RECOVERY
-        assert status.recovery_phase is not None
+        assert status.recovery is not None
 
 
 class TestExceptionInRecovery:
@@ -167,17 +166,15 @@ class TestRepeatedCrash:
         # Step 2: crash during MONITORING → DIAGNOSING
         await env.injector.crash_training()
 
-        # Step 3: poll for DIAGNOSING in phase_history during the active recovery.
+        # Step 3: poll for StopTimeDiagnostics phase during the active recovery.
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "StopTimeDiagnosticsSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "StopTimeDiagnosticsSt":
                 break
             await asyncio.sleep(0.5)
         else:
-            raise TimeoutError(f"DIAGNOSING not observed in phase_history within {RECOVERY_TIMEOUT}s")
-
-        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt"])
+            raise TimeoutError(f"DIAGNOSING not observed within {RECOVERY_TIMEOUT}s")
 
 
 class TestConcurrentFaults:
@@ -243,17 +240,15 @@ class TestRestartFailed:
         # Step 2: crash again during monitoring (restart fails)
         await env.injector.crash_training()
 
-        # Step 3: poll for StopTimeDiagnostics
+        # Step 3: poll for StopTimeDiagnostics phase
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "StopTimeDiagnosticsSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "StopTimeDiagnosticsSt":
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError(f"StopTimeDiagnostics not observed within {RECOVERY_TIMEOUT}s")
-
-        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt"])
 
 
 class TestCrashDuringRecovery:
@@ -282,9 +277,10 @@ class TestCrashDuringRecovery:
             await asyncio.sleep(0.5)
 
         status = get_status(e2e_env.controller)
+        recovery_phase = status.recovery.phase if status.recovery else None
         assert status.mode == ControllerMode.MONITORING or (
-            status.phase_history and "NotifyHumansSt" in status.phase_history
-        ), f"Recovery did not converge: mode={status.mode}, phase={status.recovery_phase}"
+            status.recovery is not None and status.recovery.phase == "NotifyHumansSt"
+        ), f"Recovery did not converge: mode={status.mode}, phase={recovery_phase}"
 
     async def test_fault_during_monitoring_progress_serialized(
         self,
@@ -319,9 +315,10 @@ class TestCrashDuringRecovery:
             await asyncio.sleep(0.5)
 
         status = get_status(env.controller)
+        recovery_phase = status.recovery.phase if status.recovery else None
         assert (
             status.mode == ControllerMode.MONITORING
-        ), f"Did not converge: mode={status.mode}, phase={status.recovery_phase}"
+        ), f"Did not converge: mode={status.mode}, phase={recovery_phase}"
 
 
 class TestSequentialRecovery:
@@ -485,13 +482,11 @@ class TestRecoveryOverallTimeout:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumansSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError(f"Recovery overall timeout did not escalate to NotifyHumans within {RECOVERY_TIMEOUT}s")
-
-        assert_phase_path_contains(status, ["NotifyHumansSt"])
 
 
 class TestCooldownExpiry:
