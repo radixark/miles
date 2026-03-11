@@ -19,7 +19,7 @@ from tests.fast.utils.ft.conftest import (
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.state_machines.main import Recovering
+from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting
 from miles.utils.ft.controller.state_machines.restart import MonitoringProgress
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType

@@ -1,4 +1,4 @@
-"""Tests for main state machine handler classes."""
+"""Tests for subsystem state machine handler classes."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ from tests.fast.utils.ft.utils.metric_injectors import make_detector_context
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.main import (
+from miles.utils.ft.controller.state_machines.subsystem import (
     DetectingAnomaly,
-    MainContext,
+    SubsystemContext,
     Recovering,
     RestartingMainJob,
-    create_main_stepper,
+    create_subsystem_stepper,
 )
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestarting,
@@ -42,7 +42,7 @@ from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
 
 def _make_stepper() -> StateMachineStepper:
-    return create_main_stepper()
+    return create_subsystem_stepper()
 
 
 def _dummy_recovery_context_factory(trigger, recovery_start_time):
@@ -50,7 +50,7 @@ def _dummy_recovery_context_factory(trigger, recovery_start_time):
     return None
 
 
-def _make_main_context(
+def _make_subsystem_context(
     *,
     should_run_detectors: bool = True,
     detector_context: DetectorContext | None = None,
@@ -64,8 +64,8 @@ def _make_main_context(
     max_simultaneous_bad_nodes: int = 3,
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
     mini_wandb: MiniWandb | None = None,
-) -> MainContext:
-    return MainContext(
+) -> SubsystemContext:
+    return SubsystemContext(
         job_status=JobStatus.RUNNING,
         tick_count=1,
         should_run_detectors=should_run_detectors,
@@ -106,7 +106,7 @@ class TestDetectingAnomaly:
     @pytest.mark.asyncio
     async def test_no_detectors_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper(DetectingAnomaly(), _make_main_context())
+        result = await stepper(DetectingAnomaly(), _make_subsystem_context())
         assert result is None
 
     @pytest.mark.asyncio
@@ -114,7 +114,7 @@ class TestDetectingAnomaly:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(detectors=[AlwaysNoneDetector()]),
+            _make_subsystem_context(detectors=[AlwaysNoneDetector()]),
         )
         assert result is None
 
@@ -123,7 +123,7 @@ class TestDetectingAnomaly:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(detectors=[AlwaysEnterRecoveryDetector()]),
+            _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
         )
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, RealtimeChecks)
@@ -142,7 +142,7 @@ class TestDetectingAnomaly:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(detectors=[detector], notifier=notifier),
+            _make_subsystem_context(detectors=[detector], notifier=notifier),
         )
         assert result is None
         assert len(notifier.calls) == 1
@@ -156,7 +156,7 @@ class TestDetectingAnomaly:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[AlwaysEnterRecoveryDetector()],
                 cooldown=cooldown,
                 notifier=notifier,
@@ -170,7 +170,7 @@ class TestDetectingAnomaly:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[AlwaysEnterRecoveryDetector()],
                 should_run_detectors=False,
             ),
@@ -198,7 +198,7 @@ class TestTemplateMethodFiltering:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 rank_placement={0: "node-0"},
             ),
@@ -219,7 +219,7 @@ class TestTemplateMethodFiltering:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 rank_placement={0: "node-0"},
             ),
@@ -234,7 +234,7 @@ class TestTemplateMethodFiltering:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(detectors=[AlwaysEnterRecoveryDetector()]),
+            _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
         )
         assert isinstance(result, Recovering)
 
@@ -253,7 +253,7 @@ class TestTemplateMethodFiltering:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[inactive_detector, active_detector],
                 rank_placement={0: "node-0"},
             ),
@@ -277,7 +277,7 @@ class TestRecovering:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=RecoveryDone()),
                 should_run_detectors=False,
             ),
@@ -301,7 +301,7 @@ class TestRecovering:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=new_recovery),
                 should_run_detectors=False,
             ),
@@ -319,7 +319,7 @@ class TestRecovering:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=None),
                 should_run_detectors=False,
             ),
@@ -336,7 +336,7 @@ class TestRecovering:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 recovery_stepper=AsyncMock(side_effect=RuntimeError("boom")),
                 should_run_detectors=False,
             ),
@@ -351,7 +351,7 @@ class TestRecovering:
             side_effect=[RuntimeError("boom"), RecoveryDone()],
         )
         stepper = _make_stepper()
-        ctx = _make_main_context(
+        ctx = _make_subsystem_context(
             recovery_stepper=recovery_stepper,
             should_run_detectors=False,
         )
@@ -382,7 +382,7 @@ class TestRecovering:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=RecoveryDone()),
                 on_recovery_duration=durations.append,
                 should_run_detectors=False,
@@ -418,7 +418,7 @@ class TestRecovering:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 recovery_stepper=AsyncMock(return_value=None),
                 rank_placement={0: "node-old", 1: "node-new"},
@@ -455,7 +455,7 @@ class TestBadNodeCountSafeguard:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 notifier=notifier,
                 max_simultaneous_bad_nodes=3,
@@ -480,7 +480,7 @@ class TestBadNodeCountSafeguard:
         stepper = _make_stepper()
         result = await stepper(
             DetectingAnomaly(),
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 max_simultaneous_bad_nodes=3,
                 rank_placement={0: "node-1", 1: "node-2"},
@@ -518,7 +518,7 @@ class TestBadNodeCountSafeguard:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 recovery_stepper=AsyncMock(return_value=None),
                 notifier=notifier,
@@ -558,7 +558,7 @@ class TestBadNodeCountSafeguard:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 recovery_stepper=recovery_stepper,
                 max_simultaneous_bad_nodes=3,
@@ -596,7 +596,7 @@ class TestBadNodeCountSafeguard:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 detectors=[detector],
                 recovery_stepper=recovery_stepper,
                 max_simultaneous_bad_nodes=3,
@@ -628,7 +628,7 @@ class TestInvalidDetectorDecision:
         with pytest.raises(ValueError, match="has no trigger"):
             await stepper(
                 DetectingAnomaly(),
-                _make_main_context(detectors=[detector]),
+                _make_subsystem_context(detectors=[detector]),
             )
 
 
@@ -637,7 +637,7 @@ class TestStateMachineIntegration:
     async def test_full_detecting_to_recovering_to_detecting(self) -> None:
         """DetectingAnomaly -> Recovering -> RecoveryDone -> DetectingAnomaly in one step()."""
         stepper = _make_stepper()
-        ctx = _make_main_context(
+        ctx = _make_subsystem_context(
             detectors=[AlwaysEnterRecoveryDetector()],
             recovery_stepper=AsyncMock(return_value=RecoveryDone()),
         )
@@ -665,7 +665,7 @@ class TestRecoveryEscalated:
         )
         result = await stepper(
             state,
-            _make_main_context(
+            _make_subsystem_context(
                 recovery_stepper=AsyncMock(return_value=RecoveryEscalated()),
                 should_run_detectors=False,
             ),
@@ -684,7 +684,7 @@ class TestRestartingMainJobHandler:
         stepper = _make_stepper()
         result = await stepper(
             RestartingMainJob(),
-            _make_main_context(should_run_detectors=False),
+            _make_subsystem_context(should_run_detectors=False),
         )
         assert result is None
 
@@ -698,7 +698,7 @@ class TestRestartedMainJobHandler:
     @pytest.mark.asyncio
     async def test_creates_recovering_with_monitoring_progress(self) -> None:
         """RestartedMainJobHandler creates Recovering(EvictingAndRestarting(MonitoringProgress))."""
-        from miles.utils.ft.controller.state_machines.main.models import RestartedMainJob
+        from miles.utils.ft.controller.state_machines.subsystem.models import RestartedMainJob
 
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -707,7 +707,7 @@ class TestRestartedMainJobHandler:
         stepper = _make_stepper()
         result = await stepper(
             RestartedMainJob(),
-            _make_main_context(
+            _make_subsystem_context(
                 should_run_detectors=False,
                 mini_wandb=mini_wandb,
                 monitoring_config=MonitoringIterationProgressConfig(),
@@ -723,7 +723,7 @@ class TestRestartedMainJobHandler:
     @pytest.mark.asyncio
     async def test_sustained_alive_mode_uses_zero_base_iteration(self) -> None:
         """In sustained_alive mode, base_iteration is always 0."""
-        from miles.utils.ft.controller.state_machines.main.models import RestartedMainJob
+        from miles.utils.ft.controller.state_machines.subsystem.models import RestartedMainJob
 
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -732,7 +732,7 @@ class TestRestartedMainJobHandler:
         stepper = _make_stepper()
         result = await stepper(
             RestartedMainJob(),
-            _make_main_context(
+            _make_subsystem_context(
                 should_run_detectors=False,
                 mini_wandb=mini_wandb,
                 monitoring_config=MonitoringSustainedAliveConfig(),

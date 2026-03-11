@@ -11,7 +11,7 @@ from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageCheck
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
 from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
-from miles.utils.ft.controller.state_machines.main import Recovering
+from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.subsystem import SubsystemEntry

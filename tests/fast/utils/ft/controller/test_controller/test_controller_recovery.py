@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from tests.fast.utils.ft.conftest import AlwaysEnterRecoveryDetector, FixedDecisionDetector, make_test_controller
 
-from miles.utils.ft.controller.state_machines.main import Recovering
+from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 

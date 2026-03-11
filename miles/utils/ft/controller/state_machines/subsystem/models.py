@@ -15,29 +15,29 @@ from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 
 
-class MainState(FtBaseModel):
+class SubsystemState(FtBaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class DetectingAnomaly(MainState):
+class DetectingAnomaly(SubsystemState):
     pass
 
 
-class Recovering(MainState):
+class Recovering(SubsystemState):
     recovery: RecoveryState
     trigger: TriggerType
     recovery_start_time: datetime
 
 
-class RestartingMainJob(MainState):
+class RestartingMainJob(SubsystemState):
     """Signal from sub-SM to main SM: requesting main job restart."""
 
 
-class RestartedMainJob(MainState):
+class RestartedMainJob(SubsystemState):
     """Signal from main SM to sub-SM: main job restart completed."""
 
 
-class MainContext(FtBaseModel):
+class SubsystemContext(FtBaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     # per-tick

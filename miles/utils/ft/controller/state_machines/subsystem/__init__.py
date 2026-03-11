@@ -1,21 +1,21 @@
-from miles.utils.ft.controller.state_machines.main.handlers import (
+from miles.utils.ft.controller.state_machines.subsystem.handlers import (
     DetectingAnomalyHandler,
     RecoveringHandler,
     RestartedMainJobHandler,
     RestartingMainJobHandler,
 )
-from miles.utils.ft.controller.state_machines.main.models import (
+from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
-    MainContext,
-    MainState,
+    SubsystemContext,
+    SubsystemState,
     Recovering,
     RestartedMainJob,
     RestartingMainJob,
 )
-from miles.utils.ft.controller.state_machines.main.utils import get_known_bad_nodes, handle_notify_human
+from miles.utils.ft.controller.state_machines.subsystem.utils import get_known_bad_nodes, handle_notify_human
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
-_MAIN_HANDLER_MAP: dict[type, type] = {
+_SUBSYSTEM_HANDLER_MAP: dict[type, type] = {
     DetectingAnomaly: DetectingAnomalyHandler,
     Recovering: RecoveringHandler,
     RestartingMainJob: RestartingMainJobHandler,
@@ -23,22 +23,22 @@ _MAIN_HANDLER_MAP: dict[type, type] = {
 }
 
 
-def create_main_stepper() -> StateMachineStepper:
-    return StateMachineStepper(handler_map=_MAIN_HANDLER_MAP)
+def create_subsystem_stepper() -> StateMachineStepper:
+    return StateMachineStepper(handler_map=_SUBSYSTEM_HANDLER_MAP)
 
 
 __all__ = [
     "DetectingAnomaly",
     "DetectingAnomalyHandler",
-    "MainContext",
-    "MainState",
+    "SubsystemContext",
+    "SubsystemState",
     "Recovering",
     "RecoveringHandler",
     "RestartedMainJob",
     "RestartedMainJobHandler",
     "RestartingMainJob",
     "RestartingMainJobHandler",
-    "create_main_stepper",
+    "create_subsystem_stepper",
     "get_known_bad_nodes",
     "handle_notify_human",
 ]

@@ -43,7 +43,7 @@ class SubsystemEntry:
     """
 
     name: str
-    state_machine: StateMachine  # Generic params (MainState, MainContext) defined in M5
+    state_machine: StateMachine  # Generic params (SubsystemState, SubsystemContext) defined in M5
     actuator: SubsystemActuatorProtocol
     detectors: list[BaseFaultDetector] = field(default_factory=list)
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig = field(

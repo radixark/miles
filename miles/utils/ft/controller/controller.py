@@ -10,7 +10,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
 from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
-from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
+from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext, SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
@@ -72,7 +72,7 @@ class FtController:
         return self._node_metadata
 
     @property
-    def _training_state_machine(self) -> StateMachine[MainState, MainContext]:
+    def _training_state_machine(self) -> StateMachine[SubsystemState, SubsystemContext]:
         state = self._state_machine.state
         if not isinstance(state, NormalState):
             raise RuntimeError(f"Expected NormalState, got {type(state).__name__}")

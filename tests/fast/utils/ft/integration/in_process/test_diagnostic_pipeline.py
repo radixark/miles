@@ -18,7 +18,7 @@ from miles.utils.ft.controller.diagnostics.executors import (
     PerNodeClusterExecutor,
 )
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.state_machines.main import Recovering
+from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnostics
 
 _TYPE_TO_EXECUTOR: dict[str, ClusterExecutorProtocol] = {

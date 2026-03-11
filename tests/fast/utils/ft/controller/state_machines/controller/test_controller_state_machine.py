@@ -17,7 +17,7 @@ from miles.utils.ft.controller.state_machines.controller import (
     RestartingMainJobState,
     create_controller_stepper,
 )
-from miles.utils.ft.controller.state_machines.main.models import (
+from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
     RestartedMainJob,
     RestartingMainJob,

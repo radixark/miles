@@ -4,7 +4,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
 from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState, RestartingMainJobState
-from miles.utils.ft.controller.state_machines.main import MainContext, MainState, Recovering, get_known_bad_nodes
+from miles.utils.ft.controller.state_machines.subsystem import SubsystemContext, SubsystemState, Recovering, get_known_bad_nodes
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestarting,
     NotifyHumans,
@@ -21,7 +21,7 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
     return type(recovery).__name__
 
 
-def build_phase_history(state_history: list[MainState]) -> list[str]:
+def build_phase_history(state_history: list[SubsystemState]) -> list[str]:
     phases: list[str] = []
     for past_state in state_history:
         if isinstance(past_state, Recovering):
@@ -33,7 +33,7 @@ def build_phase_history(state_history: list[MainState]) -> list[str]:
 
 def _extract_training_sm(
     controller_state: ControllerState,
-) -> StateMachine[MainState, MainContext] | None:
+) -> StateMachine[SubsystemState, SubsystemContext] | None:
     if isinstance(controller_state, NormalState):
         training = controller_state.subsystems.get("training")
         if training is not None:

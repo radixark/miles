@@ -13,8 +13,8 @@ from tests.fast.utils.ft.conftest import (
     make_test_controller,
 )
 
-from miles.utils.ft.controller.state_machines.main import Recovering
-from miles.utils.ft.controller.state_machines.main.utils import run_detectors
+from miles.utils.ft.controller.state_machines.subsystem import Recovering
+from miles.utils.ft.controller.state_machines.subsystem.utils import run_detectors
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 _TEST_ACTIVE_NODE_IDS: set[str] = {"node-0", "node-1"}

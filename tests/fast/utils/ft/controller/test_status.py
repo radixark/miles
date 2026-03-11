@@ -11,7 +11,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
 from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
-from miles.utils.ft.controller.state_machines.main.models import DetectingAnomaly, MainState, Recovering
+from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomaly, SubsystemState, Recovering
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestarting,
     NotifyHumans,
@@ -73,11 +73,11 @@ class TestBuildPhaseHistory:
         assert build_phase_history([]) == []
 
     def test_non_recovering_states_excluded(self) -> None:
-        history: list[MainState] = [DetectingAnomaly(), DetectingAnomaly()]
+        history: list[SubsystemState] = [DetectingAnomaly(), DetectingAnomaly()]
         assert build_phase_history(history) == []
 
     def test_single_recovery_phase(self) -> None:
-        history: list[MainState] = [
+        history: list[SubsystemState] = [
             Recovering(
                 recovery=RealtimeChecks(),
                 trigger="crash",
@@ -87,7 +87,7 @@ class TestBuildPhaseHistory:
         assert build_phase_history(history) == ["RealtimeChecks"]
 
     def test_duplicate_consecutive_phases_deduplicated(self) -> None:
-        history: list[MainState] = [
+        history: list[SubsystemState] = [
             Recovering(
                 recovery=RealtimeChecks(),
                 trigger="crash",
@@ -102,7 +102,7 @@ class TestBuildPhaseHistory:
         assert build_phase_history(history) == ["RealtimeChecks"]
 
     def test_different_phases_preserved(self) -> None:
-        history: list[MainState] = [
+        history: list[SubsystemState] = [
             Recovering(
                 recovery=RealtimeChecks(),
                 trigger="crash",
@@ -126,7 +126,7 @@ class TestBuildPhaseHistory:
         ]
 
     def test_mixed_detecting_and_recovering(self) -> None:
-        history: list[MainState] = [
+        history: list[SubsystemState] = [
             DetectingAnomaly(),
             Recovering(
                 recovery=RealtimeChecks(),
@@ -152,10 +152,10 @@ class TestBuildPhaseHistory:
 
 
 def _make_controller_sm(
-    state: MainState,
-    state_history: list[MainState] | None = None,
+    state: SubsystemState,
+    state_history: list[SubsystemState] | None = None,
 ) -> StateMachine[ControllerState, ControllerContext]:
-    """Build a ControllerState SM wrapping a training MainState SM."""
+    """Build a ControllerState SM wrapping a training SubsystemState SM."""
     main_sm: StateMachine = StateMachine(
         initial_state=state,
         stepper=StateMachineStepper(handler_map={}),

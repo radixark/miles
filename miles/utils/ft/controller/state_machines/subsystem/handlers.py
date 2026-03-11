@@ -5,15 +5,15 @@ import math
 from datetime import datetime, timezone
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.main.models import (
+from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
-    MainContext,
-    MainState,
+    SubsystemContext,
+    SubsystemState,
     Recovering,
     RestartedMainJob,
     RestartingMainJob,
 )
-from miles.utils.ft.controller.state_machines.main.utils import (
+from miles.utils.ft.controller.state_machines.subsystem.utils import (
     collect_evictable_bad_nodes,
     get_known_bad_nodes,
     handle_notify_human,
@@ -35,8 +35,8 @@ from miles.utils.ft.utils.state_machine import StateHandler
 logger = logging.getLogger(__name__)
 
 
-class DetectingAnomalyHandler(StateHandler[DetectingAnomaly, MainContext]):
-    async def step(self, state: DetectingAnomaly, ctx: MainContext) -> MainState | None:
+class DetectingAnomalyHandler(StateHandler[DetectingAnomaly, SubsystemContext]):
+    async def step(self, state: DetectingAnomaly, ctx: SubsystemContext) -> SubsystemState | None:
         decision = await self._get_actionable_decision(ctx=ctx)
         if decision is None:
             return None
@@ -59,7 +59,7 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomaly, MainContext]):
             recovery_start_time=datetime.now(timezone.utc),
         )
 
-    async def _get_actionable_decision(self, *, ctx: MainContext) -> Decision | None:
+    async def _get_actionable_decision(self, *, ctx: SubsystemContext) -> Decision | None:
         """Run detectors and return a validated ENTER_RECOVERY decision, or None.
 
         Handles NONE, NOTIFY_HUMAN, and too-many-bad-nodes cases internally.
@@ -102,8 +102,8 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomaly, MainContext]):
         return decision
 
 
-class RecoveringHandler(StateHandler[Recovering, MainContext]):
-    async def step(self, state: Recovering, ctx: MainContext) -> MainState | None:
+class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
+    async def step(self, state: Recovering, ctx: SubsystemContext) -> SubsystemState | None:
         ret = await self._check_new_bad_nodes(state=state, ctx=ctx)
         if ret is not None:
             return ret
@@ -113,8 +113,8 @@ class RecoveringHandler(StateHandler[Recovering, MainContext]):
         self,
         *,
         state: Recovering,
-        ctx: MainContext,
-    ) -> MainState | None:
+        ctx: SubsystemContext,
+    ) -> SubsystemState | None:
         new_bad_nodes = collect_evictable_bad_nodes(
             detectors=ctx.detectors,
             tick_detector_context=ctx.detector_context,
@@ -145,8 +145,8 @@ class RecoveringHandler(StateHandler[Recovering, MainContext]):
         self,
         *,
         state: Recovering,
-        ctx: MainContext,
-    ) -> MainState | None:
+        ctx: SubsystemContext,
+    ) -> SubsystemState | None:
         try:
             recovery_ctx = ctx.recovery_context_factory(
                 state.trigger,
@@ -170,7 +170,7 @@ class RecoveringHandler(StateHandler[Recovering, MainContext]):
             recovery_start_time=state.recovery_start_time,
         )
 
-    def _report_recovery_duration(self, *, state: Recovering, ctx: MainContext) -> None:
+    def _report_recovery_duration(self, *, state: Recovering, ctx: SubsystemContext) -> None:
         if ctx.on_recovery_duration is not None:
             duration = (datetime.now(timezone.utc) - state.recovery_start_time).total_seconds()
             ctx.on_recovery_duration(duration)
@@ -179,13 +179,13 @@ class RecoveringHandler(StateHandler[Recovering, MainContext]):
 _WANDB_ITERATION_METRIC = "iteration"
 
 
-class RestartingMainJobHandler(StateHandler[RestartingMainJob, MainContext]):
-    async def step(self, state: RestartingMainJob, ctx: MainContext) -> MainState | None:
+class RestartingMainJobHandler(StateHandler[RestartingMainJob, SubsystemContext]):
+    async def step(self, state: RestartingMainJob, ctx: SubsystemContext) -> SubsystemState | None:
         return None
 
 
-class RestartedMainJobHandler(StateHandler[RestartedMainJob, MainContext]):
-    async def step(self, state: RestartedMainJob, ctx: MainContext) -> MainState | None:
+class RestartedMainJobHandler(StateHandler[RestartedMainJob, SubsystemContext]):
+    async def step(self, state: RestartedMainJob, ctx: SubsystemContext) -> SubsystemState | None:
         base = _get_base_iteration(ctx.mini_wandb) if isinstance(ctx.monitoring_config, MonitoringIterationProgressConfig) else 0
 
         return Recovering(

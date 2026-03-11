@@ -17,7 +17,7 @@ from miles.utils.ft.controller.state_machines.controller import (
     create_controller_stepper,
 )
 from miles.utils.ft.controller.state_machines.controller.models import ControllerState
-from miles.utils.ft.controller.state_machines.main import DetectingAnomaly, MainContext, MainState, create_main_stepper
+from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, SubsystemContext, SubsystemState, create_subsystem_stepper
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, SubsystemEntry
 from miles.utils.ft.controller.tick_loop import TickLoop
@@ -94,12 +94,12 @@ def create_ft_controller(
     )
 
     # --- Create SubsystemEntry ---
-    main_stepper = create_main_stepper()
+    subsystem_stepper = create_subsystem_stepper()
 
-    def _make_training_sub_sm() -> StateMachine[MainState, MainContext]:
+    def _make_training_sub_sm() -> StateMachine[SubsystemState, SubsystemContext]:
         return StateMachine(
             initial_state=DetectingAnomaly(),
-            stepper=main_stepper,
+            stepper=subsystem_stepper,
         )
 
     training_entry = SubsystemEntry(

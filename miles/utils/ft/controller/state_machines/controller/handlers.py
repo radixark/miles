@@ -11,7 +11,7 @@ from miles.utils.ft.controller.state_machines.controller.models import (
     NormalState,
     RestartingMainJobState,
 )
-from miles.utils.ft.controller.state_machines.main.models import MainContext, RestartedMainJob, RestartingMainJob
+from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext, RestartedMainJob, RestartingMainJob
 from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext
 from miles.utils.ft.controller.state_machines.restart.models import RestartContext
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
@@ -54,11 +54,11 @@ class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
         *,
         entry: SubsystemEntry,
         context: ControllerContext,
-    ) -> MainContext:
+    ) -> SubsystemContext:
         should_run = self._should_run_detectors(entry=entry, context=context)
         detector_ctx = self._build_detector_context(entry=entry, context=context) if should_run else None
 
-        return MainContext(
+        return SubsystemContext(
             job_status=context.job_status,
             tick_count=context.tick_count,
             should_run_detectors=should_run,

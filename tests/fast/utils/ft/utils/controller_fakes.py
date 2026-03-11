@@ -346,7 +346,7 @@ async def run_controller_briefly(harness: ControllerTestHarness, delay: float = 
 
 async def advance_until_recovery_complete(harness: ControllerTestHarness, max_ticks: int = 10) -> None:
     """Tick the controller until recovery is no longer in progress."""
-    from miles.utils.ft.controller.state_machines.main import Recovering
+    from miles.utils.ft.controller.state_machines.subsystem import Recovering
 
     for _ in range(max_ticks):
         if not isinstance(harness.controller._training_state_machine.state, Recovering):
