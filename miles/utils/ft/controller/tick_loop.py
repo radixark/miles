@@ -15,6 +15,7 @@ from miles.utils.ft.controller.state_machines.main import MainContext, MainState
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT, RecoveryContext
 from miles.utils.ft.controller.state_machines.restart import RestartContext
 from miles.utils.ft.controller.state_machines.utils import safe_notify
+from miles.utils.ft.controller.subsystem import MonitoringConfig
 from miles.utils.ft.controller.types import (
     ControllerMode,
     DiagnosticOrchestratorProtocol,
@@ -47,6 +48,7 @@ class TickLoop:
         restart_stepper: StateMachineStepper,
         restart_context: RestartContext | None,
         recovery_timeout_seconds: int,
+        monitoring_config: MonitoringConfig | None = None,
         controller_exporter: ControllerExporter | None = None,
         registration_grace_ticks: int = 5,
     ) -> None:
@@ -71,6 +73,7 @@ class TickLoop:
         self._restart_stepper = restart_stepper
         self._restart_context = restart_context
         self._recovery_timeout_seconds = recovery_timeout_seconds
+        self._monitoring_config = monitoring_config or MonitoringConfig(mode="iteration_progress")
 
         self._detector_crash_tracker = SlidingWindowCounter(window_seconds=1800, threshold=5)
         self._tick_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=5)
@@ -171,6 +174,8 @@ class TickLoop:
             recovery_context_factory=self._build_recovery_context,
             on_recovery_duration=self._on_recovery_duration,
             max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
+            monitoring_config=self._monitoring_config,
+            mini_wandb=self._mini_wandb,
         )
 
     def _build_detector_context(self, job_status: JobStatus) -> DetectorContext:

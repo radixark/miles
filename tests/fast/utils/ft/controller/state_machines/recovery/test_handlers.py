@@ -7,9 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
+
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
-from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.recovery import (
@@ -18,6 +19,7 @@ from miles.utils.ft.controller.state_machines.recovery import (
     RealtimeChecks,
     RecoveryContext,
     RecoveryDone,
+    RecoveryEscalated,
     StopTimeDiagnostics,
     create_recovery_stepper,
 )
@@ -26,10 +28,12 @@ from miles.utils.ft.controller.state_machines.restart import (
     MonitoringProgress,
     RestartContext,
     RestartDone,
+    RestartEscalated,
     RestartFailed,
     StoppingAndRestarting,
     create_restart_stepper,
 )
+from miles.utils.ft.controller.subsystem import MonitoringConfig
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
@@ -42,12 +46,27 @@ def _make_stepper(*, timeout_seconds: int = 1800) -> StateMachineStepper:
     return create_recovery_stepper()
 
 
+class _FakeActuator(SubsystemActuatorProtocol):
+    def __init__(self, main_job: FakeMainJob | None = None) -> None:
+        self._main_job = main_job or FakeMainJob()
+
+    async def stop(self) -> None:
+        pass
+
+    async def start(self) -> str:
+        return "actuator-run"
+
+    async def get_status(self) -> JobStatus:
+        return await self._main_job.get_job_status()
+
+
 def _make_restart_stepper_and_context(
     *,
     main_job: FakeMainJob | None = None,
     mini_wandb: MiniWandb | None = None,
     node_manager: FakeNodeManager | None = None,
     notifier: FakeNotifier | None = None,
+    has_level1_restart: bool = True,
 ) -> tuple[StateMachineStepper, RestartContext]:
     resolved_node_manager = node_manager or FakeNodeManager()
     resolved_main_job = main_job or FakeMainJob()
@@ -62,6 +81,9 @@ def _make_restart_stepper_and_context(
         on_new_run=None,
         monitoring_success_iterations=10,
         monitoring_timeout_seconds=600,
+        actuator=_FakeActuator(main_job=resolved_main_job),
+        monitoring_config=MonitoringConfig(mode="iteration_progress"),
+        has_level1_restart=has_level1_restart,
     )
     return stepper, ctx
 
@@ -218,6 +240,18 @@ class TestEvictingAndRestarting:
         result = await stepper(state, ctx)
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_restart_escalated_returns_recovery_escalated(self) -> None:
+        """RestartEscalated bubbles up to RecoveryEscalated."""
+        stepper = _make_stepper()
+        ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartEscalated()))
+        state = EvictingAndRestarting(
+            restart=StoppingAndRestarting(),
+            failed_next_state=StopTimeDiagnostics(),
+        )
+        result = await stepper(state, ctx)
+        assert isinstance(result, RecoveryEscalated)
+
 
 # ---------------------------------------------------------------------------
 # StopTimeDiagnostics
@@ -279,6 +313,12 @@ class TestTerminal:
     async def test_recovery_done_is_terminal(self) -> None:
         stepper = _make_stepper()
         result = await _step(stepper, RecoveryDone())
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_recovery_escalated_is_terminal(self) -> None:
+        stepper = _make_stepper()
+        result = await _step(stepper, RecoveryEscalated())
         assert result is None
 
 

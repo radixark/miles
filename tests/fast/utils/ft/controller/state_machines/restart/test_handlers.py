@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from tests.fast.utils.ft.utils.controller_fakes import (
@@ -14,19 +15,45 @@ from tests.fast.utils.ft.utils.controller_fakes import (
     failing_submit_job,
 )
 
-from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.restart import (
     Evicting,
     MonitoringProgress,
     RestartContext,
     RestartDone,
+    RestartEscalated,
     RestartFailed,
     StoppingAndRestarting,
     create_restart_stepper,
     iteration_progress,
 )
+from miles.utils.ft.controller.subsystem import MonitoringConfig
 from miles.utils.ft.utils.state_machine import StateMachineStepper
+
+
+class FakeActuator(SubsystemActuatorProtocol):
+    """In-memory actuator for Level 1 restart tests."""
+
+    def __init__(self, status_sequence: list[JobStatus] | None = None) -> None:
+        self._status_sequence = status_sequence or [JobStatus.RUNNING]
+        self._call_count: int = 0
+        self.stopped: bool = False
+        self.started: bool = False
+        self.start_run_id: str = "actuator-run-1"
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def start(self) -> str:
+        self.started = True
+        return self.start_run_id
+
+    async def get_status(self) -> JobStatus:
+        index = min(self._call_count, len(self._status_sequence) - 1)
+        status = self._status_sequence[index]
+        self._call_count += 1
+        return status
 
 
 def _make_stepper() -> StateMachineStepper:
@@ -43,16 +70,23 @@ def _make_context(
     monitoring_success_iterations: int = 10,
     monitoring_timeout_seconds: int = 600,
     node_metadata: dict[str, dict[str, str]] | None = None,
+    actuator: SubsystemActuatorProtocol | None = None,
+    monitoring_config: MonitoringConfig | None = None,
+    has_level1_restart: bool = True,
 ) -> RestartContext:
+    resolved_main_job = main_job or FakeMainJob()
     return RestartContext(
         node_manager=node_manager or FakeNodeManager(),
-        main_job=main_job or FakeMainJob(),
+        main_job=resolved_main_job,
         mini_wandb=mini_wandb or MiniWandb(),
         notifier=notifier,
         on_new_run=on_new_run,
         monitoring_success_iterations=monitoring_success_iterations,
         monitoring_timeout_seconds=monitoring_timeout_seconds,
         node_metadata=node_metadata or {},
+        actuator=actuator or FakeActuator(),
+        monitoring_config=monitoring_config or MonitoringConfig(mode="iteration_progress"),
+        has_level1_restart=has_level1_restart,
     )
 
 
@@ -181,10 +215,22 @@ class TestEvicting:
 
 class TestStoppingAndRestarting:
     @pytest.mark.asyncio
-    async def test_submit_phase_calls_stop_and_submit(self) -> None:
-        main_job = FakeMainJob()
+    async def test_level2_escalation_returns_restart_escalated(self) -> None:
+        """has_level1_restart=False -> immediate RestartEscalated."""
         stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job)
+        ctx = _make_context(has_level1_restart=False)
+
+        state = StoppingAndRestarting(bad_node_ids=["node-A"])
+        result = await stepper(state, ctx)
+
+        assert isinstance(result, RestartEscalated)
+        assert result.bad_node_ids == ["node-A"]
+
+    @pytest.mark.asyncio
+    async def test_level1_submit_calls_actuator_stop_and_start(self) -> None:
+        actuator = FakeActuator()
+        stepper = _make_stepper()
+        ctx = _make_context(actuator=actuator, has_level1_restart=True)
 
         state = StoppingAndRestarting(bad_node_ids=["node-A"])
         result = await stepper(state, ctx)
@@ -192,15 +238,26 @@ class TestStoppingAndRestarting:
         assert isinstance(result, StoppingAndRestarting)
         assert result.submitted is True
         assert result.submit_time is not None
-        assert main_job._stopped
-        assert main_job._submitted
+        assert actuator.stopped
+        assert actuator.started
 
     @pytest.mark.asyncio
-    async def test_submit_failure_returns_restart_failed(self) -> None:
-        main_job = FakeMainJob()
-        main_job.submit_job = failing_submit_job  # type: ignore[assignment]
+    async def test_level1_actuator_stop_failure_returns_restart_failed(self) -> None:
+        actuator = FakeActuator()
+        actuator.stop = AsyncMock(side_effect=RuntimeError("stop failed"))  # type: ignore[assignment]
         stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job)
+        ctx = _make_context(actuator=actuator, has_level1_restart=True)
+
+        state = StoppingAndRestarting()
+        result = await stepper(state, ctx)
+        assert isinstance(result, RestartFailed)
+
+    @pytest.mark.asyncio
+    async def test_level1_actuator_start_failure_returns_restart_failed(self) -> None:
+        actuator = FakeActuator()
+        actuator.start = AsyncMock(side_effect=RuntimeError("start failed"))  # type: ignore[assignment]
+        stepper = _make_stepper()
+        ctx = _make_context(actuator=actuator, has_level1_restart=True)
 
         state = StoppingAndRestarting()
         result = await stepper(state, ctx)
@@ -208,12 +265,12 @@ class TestStoppingAndRestarting:
 
     @pytest.mark.asyncio
     async def test_poll_running_transitions_to_monitoring(self) -> None:
-        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=100, metrics={"iteration": 50})
         stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job, mini_wandb=mini_wandb)
+        ctx = _make_context(actuator=actuator, mini_wandb=mini_wandb)
 
         state = StoppingAndRestarting(submitted=True, submit_time=datetime.now(timezone.utc))
         result = await stepper(state, ctx)
@@ -223,9 +280,9 @@ class TestStoppingAndRestarting:
 
     @pytest.mark.asyncio
     async def test_poll_failed_returns_restart_failed(self) -> None:
-        main_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
+        actuator = FakeActuator(status_sequence=[JobStatus.FAILED])
         stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job)
+        ctx = _make_context(actuator=actuator)
 
         state = StoppingAndRestarting(submitted=True, submit_time=datetime.now(timezone.utc))
         result = await stepper(state, ctx)
@@ -233,9 +290,9 @@ class TestStoppingAndRestarting:
 
     @pytest.mark.asyncio
     async def test_poll_pending_timeout_returns_restart_failed(self) -> None:
-        main_job = FakeMainJob(status_sequence=[JobStatus.PENDING])
+        actuator = FakeActuator(status_sequence=[JobStatus.PENDING])
         stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job)
+        ctx = _make_context(actuator=actuator)
 
         old_time = datetime.now(timezone.utc) - timedelta(seconds=400)
         state = StoppingAndRestarting(submitted=True, submit_time=old_time)
@@ -244,9 +301,9 @@ class TestStoppingAndRestarting:
 
     @pytest.mark.asyncio
     async def test_poll_pending_within_timeout_returns_none(self) -> None:
-        main_job = FakeMainJob(status_sequence=[JobStatus.PENDING])
+        actuator = FakeActuator(status_sequence=[JobStatus.PENDING])
         stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job)
+        ctx = _make_context(actuator=actuator)
 
         state = StoppingAndRestarting(submitted=True, submit_time=datetime.now(timezone.utc))
         result = await stepper(state, ctx)
@@ -255,28 +312,14 @@ class TestStoppingAndRestarting:
     @pytest.mark.asyncio
     async def test_on_new_run_callback_called(self) -> None:
         captured_run_ids: list[str] = []
-        main_job = FakeMainJob()
+        actuator = FakeActuator()
         stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job, on_new_run=captured_run_ids.append)
+        ctx = _make_context(actuator=actuator, on_new_run=captured_run_ids.append)
 
         state = StoppingAndRestarting(bad_node_ids=[])
         await stepper(state, ctx)
         assert len(captured_run_ids) == 1
-
-    @pytest.mark.asyncio
-    async def test_stop_job_exception_still_submits(self) -> None:
-        """After stop_job fails but job is already stopped, submit_job proceeds."""
-        main_job = FakeMainJob(status_sequence=[JobStatus.STOPPED])
-        main_job.stop_job = failing_stop_job  # type: ignore[assignment]
-        stepper = _make_stepper()
-        ctx = _make_context(main_job=main_job)
-
-        state = StoppingAndRestarting(bad_node_ids=["node-A"])
-        result = await stepper(state, ctx)
-
-        assert isinstance(result, StoppingAndRestarting)
-        assert result.submitted is True
-        assert main_job._submitted
+        assert captured_run_ids[0] == actuator.start_run_id
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +454,75 @@ class TestMonitoringProgress:
 # ---------------------------------------------------------------------------
 
 
+class TestSustainedAlive:
+    @pytest.mark.asyncio
+    async def test_sustained_alive_success(self) -> None:
+        """actuator.get_status()==RUNNING for alive_duration_seconds -> RestartDone."""
+        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        stepper = _make_stepper()
+        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=60)
+        ctx = _make_context(
+            actuator=actuator,
+            monitoring_config=config,
+            monitoring_timeout_seconds=600,
+        )
+
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        state = MonitoringProgress(start_time=old_time, base_iteration=0)
+        result = await stepper(state, ctx)
+        assert isinstance(result, RestartDone)
+
+    @pytest.mark.asyncio
+    async def test_sustained_alive_failed(self) -> None:
+        """actuator.get_status()==FAILED -> RestartFailed."""
+        actuator = FakeActuator(status_sequence=[JobStatus.FAILED])
+        stepper = _make_stepper()
+        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=60)
+        ctx = _make_context(actuator=actuator, monitoring_config=config)
+
+        state = MonitoringProgress(start_time=datetime.now(timezone.utc), base_iteration=0)
+        result = await stepper(state, ctx)
+        assert isinstance(result, RestartFailed)
+
+    @pytest.mark.asyncio
+    async def test_sustained_alive_timeout(self) -> None:
+        """actuator.get_status()==PENDING past monitoring_timeout_seconds -> RestartFailed."""
+        actuator = FakeActuator(status_sequence=[JobStatus.PENDING])
+        stepper = _make_stepper()
+        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=60)
+        ctx = _make_context(
+            actuator=actuator,
+            monitoring_config=config,
+            monitoring_timeout_seconds=60,
+        )
+
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        state = MonitoringProgress(start_time=old_time, base_iteration=0)
+        result = await stepper(state, ctx)
+        assert isinstance(result, RestartFailed)
+
+    @pytest.mark.asyncio
+    async def test_sustained_alive_in_progress_returns_none(self) -> None:
+        """Running but not yet alive_duration_seconds -> None."""
+        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        stepper = _make_stepper()
+        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=300)
+        ctx = _make_context(
+            actuator=actuator,
+            monitoring_config=config,
+            monitoring_timeout_seconds=600,
+        )
+
+        state = MonitoringProgress(start_time=datetime.now(timezone.utc), base_iteration=0)
+        result = await stepper(state, ctx)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Terminal states
+# ---------------------------------------------------------------------------
+
+
 class TestTerminalStates:
     @pytest.mark.asyncio
     async def test_restart_done_is_terminal(self) -> None:
@@ -426,6 +538,13 @@ class TestTerminalStates:
         result = await stepper(RestartFailed(), ctx)
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_restart_escalated_is_terminal(self) -> None:
+        stepper = _make_stepper()
+        ctx = _make_context()
+        result = await stepper(RestartEscalated(), ctx)
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # Full flow integration
@@ -434,17 +553,18 @@ class TestTerminalStates:
 
 class TestFullRestartFlow:
     @pytest.mark.asyncio
-    async def test_evict_stop_monitor_done(self) -> None:
-        """Evicting -> StoppingAndRestarting(submit) -> StoppingAndRestarting(poll) -> MonitoringProgress -> RestartDone."""
-        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+    async def test_level1_evict_stop_monitor_done(self) -> None:
+        """Level 1: Evicting -> StoppingAndRestarting(submit) -> poll -> MonitoringProgress -> RestartDone."""
+        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
         stepper = _make_stepper()
         ctx = _make_context(
-            main_job=main_job,
+            actuator=actuator,
             mini_wandb=mini_wandb,
             monitoring_success_iterations=5,
+            has_level1_restart=True,
         )
 
         # Step 1: Evicting -> StoppingAndRestarting
@@ -452,7 +572,7 @@ class TestFullRestartFlow:
         state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
 
-        # Step 2: Submit
+        # Step 2: Submit via actuator
         state = await stepper(state, ctx)
         assert isinstance(state, StoppingAndRestarting)
         assert state.submitted
@@ -468,17 +588,34 @@ class TestFullRestartFlow:
         assert isinstance(state, RestartDone)
 
     @pytest.mark.asyncio
-    async def test_direct_restart_no_eviction(self) -> None:
-        """When bad_node_ids is empty, caller starts at StoppingAndRestarting."""
-        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+    async def test_level2_evict_escalation(self) -> None:
+        """Level 2: Evicting -> StoppingAndRestarting -> RestartEscalated."""
+        stepper = _make_stepper()
+        ctx = _make_context(has_level1_restart=False)
+
+        # Step 1: Evicting -> StoppingAndRestarting
+        state = Evicting(bad_node_ids=["node-A"])
+        state = await stepper(state, ctx)
+        assert isinstance(state, StoppingAndRestarting)
+
+        # Step 2: Submit -> RestartEscalated (Level 2)
+        state = await stepper(state, ctx)
+        assert isinstance(state, RestartEscalated)
+        assert state.bad_node_ids == ["node-A"]
+
+    @pytest.mark.asyncio
+    async def test_level1_direct_restart_no_eviction(self) -> None:
+        """Level 1: When bad_node_ids is empty, caller starts at StoppingAndRestarting."""
+        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 0})
         stepper = _make_stepper()
         ctx = _make_context(
-            main_job=main_job,
+            actuator=actuator,
             mini_wandb=mini_wandb,
             monitoring_success_iterations=5,
+            has_level1_restart=True,
         )
 
         state = StoppingAndRestarting(bad_node_ids=[])

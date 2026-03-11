@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
@@ -13,6 +14,7 @@ from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import DetectingAnomaly, MainContext, MainState, create_main_stepper
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS, create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import RestartContext, create_restart_stepper
+from miles.utils.ft.controller.subsystem import MonitoringConfig
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
@@ -100,6 +102,7 @@ def create_ft_controller(
         restart_stepper=restart_stepper,
         restart_context=None,
         recovery_timeout_seconds=recovery_timeout_seconds,
+        monitoring_config=MonitoringConfig(mode="iteration_progress"),
         controller_exporter=controller_exporter,
         registration_grace_ticks=registration_grace_ticks,
     )
@@ -129,6 +132,7 @@ def create_ft_controller(
         controller_exporter=controller_exporter,
     )
 
+    monitoring_config = MonitoringConfig(mode="iteration_progress")
     restart_context = RestartContext(
         node_manager=node_manager,
         main_job=main_job,
@@ -138,6 +142,9 @@ def create_ft_controller(
         monitoring_success_iterations=monitoring_success_iterations,
         monitoring_timeout_seconds=monitoring_timeout_seconds,
         node_metadata=instance._node_metadata,
+        actuator=TrainingSubsystemActuator(main_job=main_job),
+        monitoring_config=monitoring_config,
+        has_level1_restart=False,
     )
     tick_loop._restart_context = restart_context
 
