@@ -18,10 +18,6 @@ _REGISTER_MAX_ATTEMPTS = 3
 _REGISTER_RETRY_DELAY = 2.0
 
 
-async def _default_engine_health_checker(engine: object) -> None:
-    await engine.health_generate.remote()  # type: ignore[attr-defined]
-
-
 def create_rollout_agent(
     rollout_manager: object,
     *,
@@ -30,7 +26,7 @@ def create_rollout_agent(
 ) -> FtRolloutAgent:
     agent = FtRolloutAgent(
         rollout_manager,
-        health_checker=_default_engine_health_checker,
+        health_checker=lambda engine: engine.health_generate.remote(),
         check_interval=check_interval,
     )
     _register_with_controller(agent=agent, ft_id=ft_id or get_ft_id())
