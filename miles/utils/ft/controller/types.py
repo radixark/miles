@@ -38,8 +38,7 @@ class ControllerStatus(FtBaseModel):
     tick_count: int
     active_run_id: str | None
     latest_iteration: int | None
-    training_subsystem_state: str | None
-    rollout_subsystem_states: dict[str, str] | None = None
+    subsystem_states: dict[str, str]
     recovery: RecoveryInfo | None
 
     @computed_field  # type: ignore[prop-decorator]
