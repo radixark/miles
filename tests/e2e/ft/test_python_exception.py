@@ -66,10 +66,10 @@ async def test_python_exception_auto_recovery(
     assert_phase_path_contains(
         final,
         [
-            "RealtimeChecks",
-            "StoppingAndRestarting",
-            "MonitoringProgress",
-            "RecoveryDone",
+            "RealtimeChecksSt",
+            "StoppingAndRestartingSt",
+            "MonitoringProgressSt",
+            "RecoveryDoneSt",
         ],
     )
 

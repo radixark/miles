@@ -34,7 +34,7 @@ def _now() -> datetime:
 
 class TestRecoveryPhaseName:
     def test_realtime_checks(self) -> None:
-        assert recovery_phase_name(RealtimeChecksSt()) == "RealtimeChecks"
+        assert recovery_phase_name(RealtimeChecksSt()) == "RealtimeChecksSt"
 
     def test_evicting_and_restarting_returns_evicting(self) -> None:
         state = EvictingAndRestartingSt(
@@ -51,13 +51,13 @@ class TestRecoveryPhaseName:
         assert recovery_phase_name(state) == "StoppingAndRestartingSt"
 
     def test_stop_time_diagnostics(self) -> None:
-        assert recovery_phase_name(StopTimeDiagnosticsSt()) == "StopTimeDiagnostics"
+        assert recovery_phase_name(StopTimeDiagnosticsSt()) == "StopTimeDiagnosticsSt"
 
     def test_notify_humans(self) -> None:
-        assert recovery_phase_name(NotifyHumansSt(state_before="test")) == "NotifyHumans"
+        assert recovery_phase_name(NotifyHumansSt(state_before="test")) == "NotifyHumansSt"
 
     def test_recovery_done(self) -> None:
-        assert recovery_phase_name(RecoveryDoneSt()) == "RecoveryDone"
+        assert recovery_phase_name(RecoveryDoneSt()) == "RecoveryDoneSt"
 
 
 # ===================================================================
@@ -86,10 +86,8 @@ class TestBuildControllerStatus:
         )
 
         assert status.mode == ControllerMode.MONITORING
-        assert status.recovery_phase is None
-        assert status.bad_nodes == []
+        assert status.recovery is None
         assert status.recovery_in_progress is False
-        assert status.bad_nodes_confirmed is False
 
     def test_recovery_mode_with_bad_nodes(self) -> None:
         recovery = EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-1"])
@@ -106,8 +104,9 @@ class TestBuildControllerStatus:
         )
 
         assert status.mode == ControllerMode.RECOVERY
-        assert status.recovery_phase == "EvictingSt"
-        assert status.bad_nodes == ["node-1"]
+        assert status.recovery is not None
+        assert status.recovery.phase == "EvictingSt"
+        assert status.recovery.bad_nodes == ["node-1"]
         assert status.recovery_in_progress is True
 
     def test_latest_iteration_none_when_no_data(self) -> None:
@@ -144,7 +143,8 @@ class TestBuildControllerStatus:
             tick_count=0,
         )
 
-        assert status.bad_nodes_confirmed is True
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes_confirmed is True
 
     def test_bad_nodes_confirmed_in_recovery_done(self) -> None:
         state = RecoveringSt(
@@ -159,9 +159,10 @@ class TestBuildControllerStatus:
             tick_count=0,
         )
 
-        assert status.bad_nodes_confirmed is True
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes_confirmed is True
 
-    def test_phase_history_always_none(self) -> None:
+    def test_training_subsystem_state_detecting_anomaly(self) -> None:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
@@ -169,7 +170,22 @@ class TestBuildControllerStatus:
             tick_count=0,
         )
 
-        assert status.phase_history is None
+        assert status.training_subsystem_state == "DetectingAnomalySt"
+
+    def test_training_subsystem_state_recovering(self) -> None:
+        state = RecoveringSt(
+            recovery=RealtimeChecksSt(),
+            trigger="crash",
+            recovery_start_time=_now(),
+        )
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(state),
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(),
+            tick_count=0,
+        )
+
+        assert status.training_subsystem_state == "RecoveringSt"
 
     def test_active_run_id_from_training_rank_roster(self) -> None:
         roster = TrainingRankRoster(run_id="run-42")

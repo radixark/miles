@@ -220,11 +220,11 @@ class TestEvictingAndRestarting:
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailedSt()))
         state = EvictingAndRestartingSt(
             restart=EvictingSt(),
-            failed_next_state=NotifyHumansSt(state_before="EvictingAndRestarting"),
+            failed_next_state=NotifyHumansSt(state_before="EvictingAndRestartingSt"),
         )
         result = await _step_last(stepper, state, ctx)
         assert isinstance(result, NotifyHumansSt)
-        assert result.state_before == "EvictingAndRestarting"
+        assert result.state_before == "EvictingAndRestartingSt"
 
     @pytest.mark.asyncio
     async def test_restart_in_progress_returns_updated_state(self) -> None:
@@ -278,7 +278,7 @@ class TestStopTimeDiagnostics:
         stepper = _make_stepper()
         result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
         assert isinstance(result, NotifyHumansSt)
-        assert result.state_before == "StopTimeDiagnostics"
+        assert result.state_before == "StopTimeDiagnosticsSt"
 
 
 # ---------------------------------------------------------------------------

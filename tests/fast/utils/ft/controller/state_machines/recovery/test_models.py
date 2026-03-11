@@ -31,8 +31,8 @@ class TestRecoveryStateConstruction:
         assert isinstance(state, RecoveryState)
 
     def test_notify_humans(self) -> None:
-        state = NotifyHumansSt(state_before="EvictingAndRestarting")
-        assert state.state_before == "EvictingAndRestarting"
+        state = NotifyHumansSt(state_before="EvictingAndRestartingSt")
+        assert state.state_before == "EvictingAndRestartingSt"
 
     def test_recovery_done(self) -> None:
         state = RecoveryDoneSt()

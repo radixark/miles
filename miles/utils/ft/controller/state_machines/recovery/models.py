@@ -46,7 +46,7 @@ class EvictingAndRestartingSt(RecoveryState):
     def evict_and_restart_final(cls, *, bad_node_ids: list[str]) -> EvictingAndRestartingSt:
         return cls(
             restart=EvictingSt(bad_node_ids=bad_node_ids),
-            failed_next_state=NotifyHumansSt(state_before="EvictingAndRestarting"),
+            failed_next_state=NotifyHumansSt(state_before="EvictingAndRestartingSt"),
         )
 
 

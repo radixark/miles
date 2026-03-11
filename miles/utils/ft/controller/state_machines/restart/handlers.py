@@ -232,7 +232,7 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
         return None
 
 
-class RestartingMainJobHandler(StateHandler[ExternalRestartingMainJobSt, RestartContext]):
+class ExternalRestartingMainJobHandler(StateHandler[ExternalRestartingMainJobSt, RestartContext]):
     async def step(
         self,
         state: ExternalRestartingMainJobSt,

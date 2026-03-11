@@ -1,7 +1,7 @@
 from miles.utils.ft.controller.state_machines.restart.handlers import (
     EvictingHandler,
     MonitoringProgressHandler,
-    RestartingMainJobHandler,
+    ExternalRestartingMainJobHandler,
     StoppingAndRestartingHandler,
     iteration_progress,
 )
@@ -24,7 +24,7 @@ _RESTART_HANDLER_MAP: dict[type, type] = {
     EvictingSt: EvictingHandler,
     StoppingAndRestartingSt: StoppingAndRestartingHandler,
     MonitoringProgressSt: MonitoringProgressHandler,
-    ExternalRestartingMainJobSt: RestartingMainJobHandler,
+    ExternalRestartingMainJobSt: ExternalRestartingMainJobHandler,
 }
 
 
@@ -45,7 +45,7 @@ __all__ = [
     "RestartDoneSt",
     "RestartFailedSt",
     "ExternalRestartingMainJobSt",
-    "RestartingMainJobHandler",
+    "ExternalRestartingMainJobHandler",
     "RestartState",
     "StoppingAndRestartingSt",
     "StoppingAndRestartingHandler",

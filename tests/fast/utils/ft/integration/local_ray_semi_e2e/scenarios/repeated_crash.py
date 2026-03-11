@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ray
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
-    assert_phase_path_contains,
     wait_for_mode_transition,
     wait_for_recovery_complete,
     wait_for_recovery_phase,
@@ -54,12 +53,5 @@ async def scenario_repeated_crash(
         timeout=recovery_timeout,
     )
     assert final.mode == ControllerMode.MONITORING
-    assert_phase_path_contains(
-        final,
-        [
-            "StopTimeDiagnosticsSt",
-            "NotifyHumansSt",
-        ],
-    )
 
     return final

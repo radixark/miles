@@ -299,7 +299,7 @@ class TestStatusReportsRollout:
         assert status.rollout_subsystem_states is not None
         assert "rollout_ep72" in status.rollout_subsystem_states
         assert "rollout_ep36" in status.rollout_subsystem_states
-        assert status.rollout_subsystem_states["rollout_ep72"] == "DetectingAnomaly"
+        assert status.rollout_subsystem_states["rollout_ep72"] == "DetectingAnomalySt"
 
     def test_status_no_rollout_when_training_only(self) -> None:
         harness = make_test_controller()

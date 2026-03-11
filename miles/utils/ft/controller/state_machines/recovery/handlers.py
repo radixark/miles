@@ -90,7 +90,7 @@ class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnosticsSt, RecoveryCon
             )
 
         logger.info("diagnosing_all_passed trigger=%s", ctx.trigger)
-        return NotifyHumansSt(state_before="StopTimeDiagnostics")
+        return NotifyHumansSt(state_before="StopTimeDiagnosticsSt")
 
 
 class NotifyHumansHandler(StateHandler[NotifyHumansSt, RecoveryContext]):
