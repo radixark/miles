@@ -60,13 +60,6 @@ def launch(
     configure_logger()
 
     entrypoint = shlex.join(ctx.args)
-
-    if entrypoint and "--placement-persist-path" not in entrypoint:
-        raise typer.BadParameter(
-            "FT mode requires --placement-persist-path in the training command. "
-            "Add e.g. --placement-persist-path /shared-storage/pg_snapshot.json"
-        )
-
     runtime_env = json.loads(runtime_env_json) if runtime_env_json else {}
 
     ft_id = ft_id or uuid4().hex[:8]
