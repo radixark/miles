@@ -104,15 +104,6 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
         trigger: TriggerType,
         recovery_start_time: datetime,
     ) -> RecoveryContext:
-        has_level1 = hasattr(entry.actuator, 'stop') and not isinstance(
-            entry.actuator, type
-        )
-        try:
-            from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
-            has_level1 = not isinstance(entry.actuator, TrainingSubsystemActuator)
-        except ImportError:
-            has_level1 = True
-
         restart_context = RestartContext(
             node_manager=context.node_manager,
             main_job=context.main_job,
@@ -121,7 +112,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             on_new_run=context.on_new_run,
             actuator=entry.actuator,
             monitoring_config=entry.monitoring_config,
-            has_level1_restart=has_level1,
+            has_level1_restart=entry.has_level1_restart,
         )
         return RecoveryContext(
             trigger=trigger,

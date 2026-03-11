@@ -45,6 +45,7 @@ class SubsystemEntry:
     name: str
     state_machine: StateMachine  # Generic params (SubsystemState, SubsystemContext) defined in M5
     actuator: SubsystemActuatorProtocol
+    has_level1_restart: bool = True
     detectors: list[BaseFaultDetector] = field(default_factory=list)
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig = field(
         default_factory=MonitoringIterationProgressConfig
