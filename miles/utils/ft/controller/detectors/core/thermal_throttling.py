@@ -29,7 +29,7 @@ class ThermalThrottlingDetector(BaseFaultDetector):
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
         hot_node_ids = _find_temperature_outlier_nodes(
             metric_store=ctx.metric_store,
-            rank_placement=ctx.rank_placement,
+            active_node_ids=ctx.active_node_ids,
             delta_threshold=self._config.temperature_delta_threshold,
         )
         if not hot_node_ids:
@@ -60,7 +60,7 @@ class ThermalThrottlingDetector(BaseFaultDetector):
 
 def _find_temperature_outlier_nodes(
     metric_store: MetricQueryProtocol,
-    rank_placement: dict[int, str],
+    active_node_ids: set[str],
     delta_threshold: float,
 ) -> list[str]:
     """Return all nodes whose hottest GPU exceeds the cluster-wide average
@@ -71,15 +71,14 @@ def _find_temperature_outlier_nodes(
     The cluster baseline is the mean of all individual GPU samples to
     avoid being skewed by outlier nodes.
     """
-    if not rank_placement:
+    if not active_node_ids:
         return []
 
     df = metric_store.query_latest(DCGM_FI_DEV_GPU_TEMP)
     if df is None or df.is_empty():
         return []
 
-    node_ids = set(rank_placement.values())
-    df = df.filter(pl.col("node_id").is_in(node_ids))
+    df = df.filter(pl.col("node_id").is_in(active_node_ids))
     if df.is_empty():
         return []
 
