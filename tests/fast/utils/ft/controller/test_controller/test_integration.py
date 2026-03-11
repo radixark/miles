@@ -80,7 +80,7 @@ class _RolloutTestHarness(NamedTuple):
     main_job: FakeMainJob
     node_manager: FakeNodeManager
     notifier: FakeNotifier
-    rm_handle: FakeRmHandle
+    reward_manager_handle: FakeRmHandle
     metric_store: MiniPrometheus
 
 
@@ -122,10 +122,10 @@ def _make_test_controller_with_rollout(
     controller.training_rank_roster.rank_placement[0] = "train-node-0"
     controller.training_rank_roster.rank_placement[1] = "train-node-1"
 
-    rm_handle = FakeRmHandle()
+    reward_manager_handle = FakeRmHandle()
 
     controller.register_rollout_subsystems(
-        rm_handle=rm_handle,
+        reward_manager_handle=reward_manager_handle,
         cell_ids=resolved_cell_ids,
     )
 
@@ -134,7 +134,7 @@ def _make_test_controller_with_rollout(
         main_job=main_job,
         node_manager=node_manager,
         notifier=notifier,
-        rm_handle=rm_handle,
+        reward_manager_handle=reward_manager_handle,
         metric_store=metric_store,
     )
 
@@ -190,11 +190,11 @@ class TestRegisterRolloutSubsystems:
             )
         )
 
-        rm_handle = FakeRmHandle()
+        reward_manager_handle = FakeRmHandle()
 
         with pytest.raises(RuntimeError, match="Cannot register rollout subsystems"):
             controller.register_rollout_subsystems(
-                rm_handle=rm_handle,
+                reward_manager_handle=reward_manager_handle,
                 cell_ids=["ep72"],
             )
 
@@ -309,10 +309,10 @@ class TestStatusReportsRollout:
 
 class TestBuildRolloutSubsystemConfig:
     def test_config_has_correct_monitoring_config(self) -> None:
-        rm_handle = FakeRmHandle()
+        reward_manager_handle = FakeRmHandle()
         config = _RolloutSubsystemConfig(
             cell_id="ep72",
-            rm_handle=rm_handle,
+            reward_manager_handle=reward_manager_handle,
             get_active_node_ids=lambda: {"n1", "n2"},
         )
         subsystem_config = _build_rollout_subsystem_config(config=config)
@@ -357,8 +357,8 @@ class TestFullLevel1RecoveryCycle:
         assert isinstance(state.subsystems["training"], DetectingAnomaly)
 
         assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
-        assert harness.rm_handle.stop_cell.call_count == 1
-        assert harness.rm_handle.start_cell.call_count == 1
+        assert harness.reward_manager_handle.stop_cell.call_count == 1
+        assert harness.reward_manager_handle.start_cell.call_count == 1
 
 
 class TestLevel1FailureEscalation:
@@ -376,7 +376,7 @@ class TestLevel1FailureEscalation:
             timeout_seconds=60,
         )
 
-        harness.rm_handle.get_cell_status = _FakeRemoteMethod(result=JobStatus.FAILED)
+        harness.reward_manager_handle.get_cell_status = _FakeRemoteMethod(result=JobStatus.FAILED)
 
         rollout_detector = _OneShotDecisionDetector(
             Decision(
@@ -458,8 +458,8 @@ class TestColocatedHardwareFault:
         assert "training" in final_state.subsystems
         assert "rollout_ep72" in final_state.subsystems
 
-        assert harness.rm_handle.stop_cell.call_count >= 1
-        assert harness.rm_handle.start_cell.call_count >= 1
+        assert harness.reward_manager_handle.stop_cell.call_count >= 1
+        assert harness.reward_manager_handle.start_cell.call_count >= 1
 
 
 class TestRolloutNumCellsValidation:
@@ -468,11 +468,11 @@ class TestRolloutNumCellsValidation:
         harness = make_test_controller(rollout_num_cells=2)
         controller = harness.controller
 
-        rm_handle = FakeRmHandle()
+        reward_manager_handle = FakeRmHandle()
 
         with pytest.raises(AssertionError, match="Expected 2 rollout cells, got 1"):
             controller.register_rollout_subsystems(
-                rm_handle=rm_handle,
+                reward_manager_handle=reward_manager_handle,
                 cell_ids=["ep72"],
             )
 
@@ -481,8 +481,8 @@ class TestRolloutNumCellsValidation:
         harness = make_test_controller(rollout_num_cells=1)
         controller = harness.controller
 
-        rm_handle = FakeRmHandle()
-        controller.register_rollout_subsystems(rm_handle=rm_handle)
+        reward_manager_handle = FakeRmHandle()
+        controller.register_rollout_subsystems(reward_manager_handle=reward_manager_handle)
 
         state = controller._state_machine.state
         assert isinstance(state, NormalState)

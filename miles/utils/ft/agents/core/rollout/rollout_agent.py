@@ -114,7 +114,7 @@ class FtRolloutAgent:
             return
         rollout_manager_handle = ray.get_runtime_context().current_actor
         await controller.register_rollout.remote(
-            rm_handle=rollout_manager_handle, metrics_address=self.address,
+            reward_manager_handle=rollout_manager_handle, metrics_address=self.address,
         )
         logger.info("registered_with_ft_controller ft_id=%s", ft_id)
 
