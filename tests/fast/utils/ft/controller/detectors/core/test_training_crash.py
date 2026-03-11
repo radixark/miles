@@ -1,6 +1,5 @@
 import pytest
 from tests.fast.utils.ft.utils import (
-    EMPTY_RANK_PLACEMENT,
     make_detector_context,
     make_fake_metric_store,
     make_fake_mini_wandb,
@@ -19,7 +18,7 @@ class TestTrainingCrashDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-            rank_placement=EMPTY_RANK_PLACEMENT,
+
             job_status=status,
         )
 
@@ -32,7 +31,7 @@ class TestTrainingCrashDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": 2.5}})
         detector = TrainingCrashDetector()
         ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, rank_placement=EMPTY_RANK_PLACEMENT, job_status=JobStatus.FAILED
+            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
         )
 
         decision = detector.evaluate(ctx)
@@ -46,7 +45,7 @@ class TestTrainingCrashDetector:
         wandb = make_fake_mini_wandb(steps={1: {"loss": bad_loss}})
         detector = TrainingCrashDetector()
         ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, rank_placement=EMPTY_RANK_PLACEMENT, job_status=JobStatus.FAILED
+            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
         )
 
         decision = detector.evaluate(ctx)
@@ -59,7 +58,7 @@ class TestTrainingCrashDetector:
         wandb = make_fake_mini_wandb()
         detector = TrainingCrashDetector()
         ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, rank_placement=EMPTY_RANK_PLACEMENT, job_status=JobStatus.FAILED
+            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
         )
 
         decision = detector.evaluate(ctx)
