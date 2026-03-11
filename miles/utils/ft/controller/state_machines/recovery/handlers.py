@@ -54,7 +54,7 @@ class EvictingAndRestartingHandler(StateHandler[EvictingAndRestarting, RecoveryC
         state: EvictingAndRestarting,
         ctx: RecoveryContext,
     ) -> RecoveryState | None:
-        new_restart = await ctx.restart_stepper(state.restart, ctx.restart_context)
+        new_restart = await ctx.restart_stepper.step_once(state.restart, ctx.restart_context)
         if new_restart is None:
             return None
         if isinstance(new_restart, RestartDone):
