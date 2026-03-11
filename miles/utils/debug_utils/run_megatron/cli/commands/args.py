@@ -61,6 +61,7 @@ class RunAndCompareArgs(CommonRunArgs):
         default=True,
         help="Compute and compare per-token logprobs between baseline and target",
     )
+    target_extra_args: str = _field(default="", help="Extra megatron args for target run only")
     diff_threshold: float | None = _field(default=None, help="Activation diff pass/fail threshold")
     logprob_threshold: float | None = _field(default=None, help="Logprob max abs diff threshold")
 

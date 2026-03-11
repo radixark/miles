@@ -50,6 +50,7 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
         target_output=target_output,
         replay_dir=replay_dir,
         common_fields=common_fields,
+        target_extra_args=args.target_extra_args,
         baseline_logprob_dir=baseline_logprob_dir,
         target_logprob_dir=target_logprob_dir,
     )
@@ -76,6 +77,7 @@ def _run_baseline_and_target(
     target_output: Path,
     replay_dir: Path | None,
     common_fields: dict[str, object],
+    target_extra_args: str,
     baseline_logprob_dir: Path | None,
     target_logprob_dir: Path | None,
 ) -> None:
@@ -96,10 +98,14 @@ def _run_baseline_and_target(
         )
     )
 
+    target_common_fields: dict[str, object] = dict(common_fields)
+    if target_extra_args:
+        target_common_fields["extra_args"] = f"{common_fields['extra_args']} {target_extra_args}".strip()
+
     print("[cli] Step 2/2: Target run", flush=True)
     run_impl(
         RunArgs(
-            **common_fields,
+            **target_common_fields,
             **dataclasses.asdict(target_config),
             output_dir=target_output,
             routing_replay_dump_path=None,
