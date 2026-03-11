@@ -19,6 +19,7 @@ from miles.utils.ft.controller.state_machines.main.models import NormalState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly
 from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
+from miles.utils.ft.agents.types import DiagnosticPipelineResult
 from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator
 from tests.fast.utils.ft.controller.test_controller.test_integration import (
     _FakeRemoteMethod,
@@ -105,6 +106,7 @@ class TestRolloutGpuXidRecovery:
         assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomaly)
 
         assert harness.node_manager.was_ever_marked_bad("rollout-0")
+        assert not harness.node_manager.was_ever_marked_bad("rollout-1")
         assert not harness.node_manager.was_ever_marked_bad("train-node-0")
         assert harness.rm_handle.stop_cell.call_count >= 1
         assert harness.rm_handle.start_cell.call_count >= 1
@@ -159,6 +161,8 @@ class TestRolloutCrashRecovery:
         assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
         assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomaly)
 
+        assert harness.node_manager.was_ever_marked_bad("rollout-0")
+        assert harness.node_manager.was_ever_marked_bad("rollout-1")
         assert harness.rm_handle.stop_cell.call_count >= 1
         assert harness.rm_handle.start_cell.call_count >= 1
         assert not harness.main_job._stopped
@@ -211,6 +215,11 @@ class TestColocatedNodeFault:
         assert isinstance(state, NormalState)
         assert "training" in state.subsystems
         assert "rollout_ep72" in state.subsystems
+
+        for name, entry in state.subsystems.items():
+            assert isinstance(entry.state_machine.state, DetectingAnomaly), (
+                f"{name} not in DetectingAnomaly after main-job restart"
+            )
 
         assert harness.node_manager.was_ever_marked_bad(shared_node)
         assert harness.main_job._stopped
@@ -268,6 +277,7 @@ class TestMultiCellIndependentFailures:
         # Step 2: Crash ep72 only
         _inject_crash_samples(store, "ep72", span_seconds=3.0)
         stop_before = harness.rm_handle.stop_cell.call_count
+        stop_args_before = len(harness.rm_handle.stop_cell.call_args)
 
         # Step 3: Tick → ep72 recovers, ep36 stays healthy
         await controller._tick()
@@ -278,10 +288,17 @@ class TestMultiCellIndependentFailures:
         assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomaly)
         assert harness.rm_handle.stop_cell.call_count > stop_before
 
+        ep72_stop_calls = [
+            args for args in harness.rm_handle.stop_cell.call_args[stop_args_before:]
+            if args[0] == "ep72"
+        ]
+        assert len(ep72_stop_calls) >= 1, "ep72 should have been targeted by stop_cell"
+
         # Step 4: Clear ep72 crash, crash ep36
         inject_rollout_cell_alive(store, "ep72", alive=True)
         _inject_crash_samples(store, "ep36", span_seconds=3.0)
         stop_before = harness.rm_handle.stop_cell.call_count
+        stop_args_before = len(harness.rm_handle.stop_cell.call_args)
 
         # Step 5: Tick → ep36 recovers
         await controller._tick()
@@ -291,6 +308,12 @@ class TestMultiCellIndependentFailures:
         assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomaly)
         assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
         assert harness.rm_handle.stop_cell.call_count > stop_before
+
+        ep36_stop_calls = [
+            args for args in harness.rm_handle.stop_cell.call_args[stop_args_before:]
+            if args[0] == "ep36"
+        ]
+        assert len(ep36_stop_calls) >= 1, "ep36 should have been targeted by stop_cell"
 
         assert not harness.main_job._stopped
 
@@ -302,12 +325,18 @@ class TestMultiCellIndependentFailures:
 
 class TestRolloutLevel1FailureNotifyHumans:
     """L1 restart repeatedly returns FAILED status → RestartFailed →
-    StopTimeDiagnostics → (empty findings) → NotifyHumans.  Notifier
-    receives a Recovery Alert and rollout returns to DetectingAnomaly."""
+    StopTimeDiagnostics → diagnostics find bad nodes →
+    EvictingAndRestarting(final=True) → still FAILED → NotifyHumans.
+    Notifier receives a Recovery Alert and rollout returns to DetectingAnomaly."""
 
     @pytest.mark.anyio
     async def test_level1_failure_runs_diagnostics_then_notifies_humans(self) -> None:
-        diag_orch = FakeDiagnosticOrchestrator()
+        diag_orch = FakeDiagnosticOrchestrator(
+            result=DiagnosticPipelineResult(
+                bad_node_ids=["rollout-0"],
+                reason="fake diagnostic found bad node",
+            ),
+        )
         harness = _make_test_controller_with_rollout(
             cell_node_ids={"ep72": {"rollout-0", "rollout-1"}},
             diagnostic_orchestrator=diag_orch,
@@ -335,7 +364,8 @@ class TestRolloutLevel1FailureNotifyHumans:
         _inject_crash_samples(store, "ep72", span_seconds=3.0)
 
         # Step 3: Tick → crash → L1 restart → FAILED → StopTimeDiagnostics
-        #   → diagnostics empty → NotifyHumans → RecoveryDone → DetectingAnomaly
+        #   → diagnostics find bad_node_ids → EvictingAndRestarting(final=True)
+        #   → Evicting → StoppingAndRestarting → still FAILED → NotifyHumans
         await controller._tick()
 
         # Step 4: Verify
@@ -343,8 +373,12 @@ class TestRolloutLevel1FailureNotifyHumans:
         assert isinstance(state, NormalState)
         assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
 
-        assert harness.rm_handle.stop_cell.call_count >= 1
-        assert harness.rm_handle.start_cell.call_count >= 1
+        assert harness.rm_handle.stop_cell.call_count >= 2, (
+            f"stop_cell should be called at least twice (first L1 + final retry), got {harness.rm_handle.stop_cell.call_count}"
+        )
+        assert harness.rm_handle.start_cell.call_count >= 2, (
+            f"start_cell should be called at least twice (first L1 + final retry), got {harness.rm_handle.start_cell.call_count}"
+        )
         assert diag_orch.call_count >= 1
 
         recovery_alerts = [

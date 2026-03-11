@@ -76,9 +76,11 @@ class _FakeRemoteMethod:
     def __init__(self, *, result: object = None) -> None:
         self._result = result
         self.call_count = 0
+        self.call_args: list[tuple[object, ...]] = []
 
     async def remote(self, *args: object, **kwargs: object) -> object:
         self.call_count += 1
+        self.call_args.append(args)
         return self._result
 
 
