@@ -24,7 +24,7 @@ class TestNamedActorCreation:
         name = ft_controller_actor_name("")
         _handle = FtControllerActor.options(name=name).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=1.0),
+            config=FtControllerConfig(platform="stub", tick_interval=1.0, rollout_num_cells=0),
         )
         try:
             discovered = ray.get_actor(name)
@@ -44,11 +44,11 @@ class TestFtIdIsolation:
 
         handle_a = FtControllerActor.options(name=name_a).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=1.0, ft_id="alpha"),
+            config=FtControllerConfig(platform="stub", tick_interval=1.0, ft_id="alpha", rollout_num_cells=0),
         )
         handle_b = FtControllerActor.options(name=name_b).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=1.0, ft_id="beta"),
+            config=FtControllerConfig(platform="stub", tick_interval=1.0, ft_id="beta", rollout_num_cells=0),
         )
         try:
             handle_a.submit_and_run.remote()
@@ -102,7 +102,7 @@ class TestDuplicateActorName:
         with pytest.raises(ValueError):
             FtControllerActor.options(name=name).remote(
                 builder=build_ft_controller,
-                config=FtControllerConfig(platform="stub"),
+                config=FtControllerConfig(platform="stub", rollout_num_cells=0),
             )
 
 
@@ -112,7 +112,7 @@ class TestShutdownReleasesName:
         name = ft_controller_actor_name("")
         handle = FtControllerActor.options(name=name).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=0.05),
+            config=FtControllerConfig(platform="stub", tick_interval=0.05, rollout_num_cells=0),
         )
 
         run_ref = handle.run.remote()
@@ -135,7 +135,7 @@ class TestShutdownReleasesName:
 
         handle2 = FtControllerActor.options(name=name).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=1.0),
+            config=FtControllerConfig(platform="stub", tick_interval=1.0, rollout_num_cells=0),
         )
         try:
             status = ray.get(handle2.get_status.remote(), timeout=5)
