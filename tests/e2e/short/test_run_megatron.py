@@ -6,6 +6,7 @@
 #   python test_run_megatron.py compare --mode <mode> --dump-dir <path>
 #                                                          Re-run comparator on existing dumps
 
+import dataclasses
 import sys
 import tempfile
 from pathlib import Path
@@ -17,7 +18,7 @@ if str(_MILES_ROOT) not in sys.path:
 
 import typer
 from tests.e2e.conftest_dumper import (
-    MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML,
+    MEGATRON_PATCHER_YAMLS,
     clear_proxy_env,
 )
 
@@ -30,25 +31,42 @@ app: typer.Typer = typer.Typer()
 HF_REPO: str = "fzyzcjy/Qwen3-30B-A3B-5layer"
 MODEL_NAME: str = "Qwen3-30B-A3B-5layer"
 MODEL_TYPE: str = "qwen3-30B-A3B-5layer"
-NUM_GPUS: int = 4
+NUM_GPUS: int = 8
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
-CONFIGS: dict[str, tuple[str, str]] = {
-    # (baseline_parallel_args, target_parallel_args)
-    "tp1_vs_tp2cp2": ("--tp 1", "--tp 2 --cp 2 --ep 1"),
-    "tp1_vs_tp2pp2": ("--tp 1", "--tp 2 --pp 2 --ep 1"),
+
+@dataclasses.dataclass(frozen=True)
+class _ModeConfig:
+    baseline_args: str
+    target_args: str
+    format: str = "bshd"
+    target_extra_megatron_args: str = ""
+
+
+CONFIGS: dict[str, _ModeConfig] = {
+    "tp1_vs_tp2pp2cp2": _ModeConfig(
+        baseline_args="--tp 1",
+        target_args="--tp 2 --pp 2 --cp 2 --ep 1",
+        format="bshd",
+        target_extra_megatron_args="--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2",
+    ),
+    "tp1_vs_tp2pp2cp2_thd": _ModeConfig(
+        baseline_args="--tp 1",
+        target_args="--tp 2 --pp 2 --cp 2 --ep 1",
+        format="thd",
+        target_extra_megatron_args="--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2",
+    ),
 }
 
 
-def _resolve_mode(mode: str) -> tuple[str, str, str]:
+def _resolve_mode(mode: str) -> tuple[str, _ModeConfig]:
     if mode not in CONFIGS:
         raise typer.BadParameter(f"Unknown mode {mode!r}, valid: {list(CONFIGS.keys())}")
-    baseline_args, target_args = CONFIGS[mode]
-    return mode, baseline_args, target_args
+    return mode, CONFIGS[mode]
 
 
-def _prepare(dump_dir: Path) -> Path:
+def _prepare(dump_dir: Path, config: _ModeConfig) -> Path:
     """Download model, convert checkpoint, write source patcher config."""
     exec_command("mkdir -p /root/models")
     exec_command(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
@@ -60,12 +78,7 @@ def _prepare(dump_dir: Path) -> Path:
     exec_command(f"rm -rf {dump_dir}")
 
     source_patcher_path: Path = _RUN_DIR / "megatron_source_patcher.yaml"
-    # Standalone megatron uses SBHD format by default — tensors are (S, B, H).
-    # Use BSHD YAML (dims='s b h') so the 's' dim uses simple ConcatParams.
-    # THD YAML (dims='t 1 h') would trigger CpThdConcatParams which requires
-    # thd_global_seq_lens — not recorded by standalone megatron.
-    # Strip ep/etp annotations — test_run_megatron configs use ep=1 (inactive axis)
-    yaml_content: str = MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML.replace(" ep:replicated", "").replace(" etp:replicated", "")
+    yaml_content: str = MEGATRON_PATCHER_YAMLS[config.format].replace(" ep:replicated", "").replace(" etp:replicated", "")
     source_patcher_path.write_text(yaml_content)
     return source_patcher_path
 
@@ -75,12 +88,21 @@ def run(
     mode: Annotated[str, typer.Option(help="Config mode: " + ", ".join(CONFIGS.keys()))],
 ) -> None:
     """Full pipeline: prepare + run baseline + run target + compare."""
-    _config_name, baseline_args, target_args = _resolve_mode(mode)
+    _config_name, config = _resolve_mode(mode)
     dump_dir: Path = _RUN_DIR / "dumps"
     print(f"Run directory: {_RUN_DIR}")
 
-    source_patcher_config: Path = _prepare(dump_dir=dump_dir)
+    source_patcher_config: Path = _prepare(dump_dir=dump_dir, config=config)
     clear_proxy_env()
+
+    extra_args_parts: list[str] = ["--attention-backend flash"]
+    if config.format == "thd":
+        extra_args_parts.append("--qkv-format thd")
+    extra_args: str = " ".join(extra_args_parts)
+
+    target_extra_args_part: str = ""
+    if config.target_extra_megatron_args:
+        target_extra_args_part = f"--target-extra-args '{config.target_extra_megatron_args}' "
 
     cmd: str = (
         f"python -m miles.utils.debug_utils.run_megatron run-and-compare "
@@ -88,8 +110,8 @@ def run(
         f"--hf-checkpoint /root/models/{MODEL_NAME} "
         f"--ref-load /root/{MODEL_NAME}_torch_dist "
         f"--output-base-dir {dump_dir} "
-        f"--baseline '{baseline_args}' "
-        f"--target '{target_args}' "
+        f"--baseline '{config.baseline_args}' "
+        f"--target '{config.target_args}' "
         f"--seq-length 128 "
         f"--batch-size 1 "
         f"--prompt-mode math "
@@ -98,7 +120,8 @@ def run(
         f"--dumper-filter 'layer_id is None or layer_id < 3' "
         f"--diff-threshold 0.002 "
         f"--logprob-threshold 0.06 "
-        f"--extra-args '--attention-backend flash'"
+        f"{target_extra_args_part}"
+        f"--extra-args '{extra_args}'"
     )
     exec_command(cmd)
 
@@ -109,11 +132,11 @@ def compare(
     dump_dir: Annotated[str, typer.Option(help="Path to existing dump base directory")],
 ) -> None:
     """Re-run comparator on existing dumps (no training)."""
-    _config_name, baseline_args, target_args = _resolve_mode(mode)
+    _config_name, config = _resolve_mode(mode)
     base: Path = Path(dump_dir)
 
-    baseline_dir_name: str = ParallelConfig.from_parsed_args(parse_parallel_args(baseline_args)).dir_name()
-    target_dir_name: str = ParallelConfig.from_parsed_args(parse_parallel_args(target_args)).dir_name()
+    baseline_dir_name: str = ParallelConfig.from_parsed_args(parse_parallel_args(config.baseline_args)).dir_name()
+    target_dir_name: str = ParallelConfig.from_parsed_args(parse_parallel_args(config.target_args)).dir_name()
 
     cmd: str = (
         f"python -m miles.utils.debug_utils.run_megatron compare "
