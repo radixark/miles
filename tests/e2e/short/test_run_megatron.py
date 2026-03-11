@@ -60,8 +60,10 @@ def _prepare(dump_dir: Path) -> Path:
     exec_command(f"rm -rf {dump_dir}")
 
     source_patcher_path: Path = _RUN_DIR / "megatron_source_patcher.yaml"
-    # Use BSHD config: standalone megatron with --qkv-format bshd doesn't
-    # record thd_global_seq_lens, so THD zigzag reorder would fail.
+    # Standalone megatron uses SBHD format by default — tensors are (S, B, H).
+    # Use BSHD YAML (dims='s b h') so the 's' dim uses simple ConcatParams.
+    # THD YAML (dims='t 1 h') would trigger CpThdConcatParams which requires
+    # thd_global_seq_lens — not recorded by standalone megatron.
     # Strip ep/etp annotations — test_run_megatron configs use ep=1 (inactive axis)
     yaml_content: str = MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML.replace(" ep:replicated", "").replace(" etp:replicated", "")
     source_patcher_path.write_text(yaml_content)
