@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
 from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
 from tests.fast.utils.ft.agents.core.rollout.conftest import MockRolloutCellAgent
-
-
-async def _engine_method_health_checker(engine: object) -> None:
-    await engine.health_check()  # type: ignore[attr-defined]
 
 
 class TestCheckHealth:
@@ -129,59 +124,6 @@ class TestConsecutiveChecksUpdateResult:
         assert result2.alive_engines == 2
         assert result2.dead_engine_indices == (2,)
         assert result2.checked_at >= result1.checked_at
-
-
-class _AliveEngine:
-    async def health_check(self) -> None:
-        pass
-
-
-class _SlowEngine:
-    async def health_check(self) -> None:
-        await asyncio.sleep(999)
-
-
-class _BrokenEngine:
-    async def health_check(self) -> None:
-        raise ConnectionError("engine crashed")
-
-
-class TestCheckSingleEngine:
-    """Tests the real _check_single_engine (not the mock override)."""
-
-    @pytest.mark.anyio
-    async def test_alive_engine_returns_true(self) -> None:
-        agent = RolloutCellAgent(
-            cell_id="a0", engines=[_AliveEngine()],
-            health_checker=_engine_method_health_checker,
-        )
-
-        result = await agent._check_single_engine(engine=_AliveEngine(), index=0)
-
-        assert result is True
-
-    @pytest.mark.anyio
-    async def test_timeout_returns_false(self) -> None:
-        agent = RolloutCellAgent(
-            cell_id="a0", engines=[_SlowEngine()],
-            health_checker=_engine_method_health_checker,
-            health_check_timeout=0.01,
-        )
-
-        result = await agent._check_single_engine(engine=_SlowEngine(), index=0)
-
-        assert result is False
-
-    @pytest.mark.anyio
-    async def test_exception_returns_false(self) -> None:
-        agent = RolloutCellAgent(
-            cell_id="a0", engines=[_BrokenEngine()],
-            health_checker=_engine_method_health_checker,
-        )
-
-        result = await agent._check_single_engine(engine=_BrokenEngine(), index=0)
-
-        assert result is False
 
 
 class TestUpdateEngines:

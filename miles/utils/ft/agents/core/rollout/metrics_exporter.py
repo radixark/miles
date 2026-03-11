@@ -4,7 +4,7 @@ import logging
 
 from prometheus_client import Gauge
 
-from miles.utils.ft.agents.core.rollout.rollout_cell_agent import CellHealthResult
+from miles.utils.ft.agents.core.rollout.health_checker import CellHealthResult
 from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE, ROLLOUT_ENGINE_ALIVE
 
