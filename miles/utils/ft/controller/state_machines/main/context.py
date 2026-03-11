@@ -19,7 +19,7 @@ from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 
 
-class ControllerContext(FtBaseModel):
+class MainContext(FtBaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     # Level 2 job management

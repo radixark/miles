@@ -9,8 +9,8 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
-from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
+from miles.utils.ft.controller.state_machines.main.context import MainContext
+from miles.utils.ft.controller.state_machines.main.models import MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
@@ -30,7 +30,7 @@ class TickLoop:
     def __init__(
         self,
         *,
-        state_machine: StateMachine[ControllerState, ControllerContext],
+        state_machine: StateMachine[MainState, MainContext],
         training_rank_roster: TrainingRankRoster,
         agents: dict[str, NodeAgentProtocol],
         main_job: MainJobProtocol,
@@ -110,8 +110,8 @@ class TickLoop:
     # Context factory
     # ------------------------------------------------------------------
 
-    def _build_controller_context(self, *, job_status: JobStatus) -> ControllerContext:
-        return ControllerContext(
+    def _build_controller_context(self, *, job_status: JobStatus) -> MainContext:
+        return MainContext(
             main_job=self._main_job,
             create_fresh_subsystems=self._create_fresh_subsystems,
             tick_count=self.tick_count,

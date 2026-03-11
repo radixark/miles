@@ -1,4 +1,4 @@
-"""Tests for the controller state machine (ControllerState + handlers)."""
+"""Tests for the controller state machine (MainState + handlers)."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrato
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.exporter import NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.controller import (
-    ControllerContext,
+from miles.utils.ft.controller.state_machines.main import (
+    MainContext,
     NormalState,
     RestartingMainJobState,
-    create_controller_stepper,
+    create_main_stepper,
 )
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
@@ -62,9 +62,9 @@ def _make_controller_context(
     *,
     main_job: FakeMainJob | None = None,
     fresh_subsystems: dict[str, SubsystemEntry] | None = None,
-) -> ControllerContext:
+) -> MainContext:
     resolved_main_job = main_job or FakeMainJob()
-    return ControllerContext(
+    return MainContext(
         main_job=resolved_main_job,
         create_fresh_subsystems=lambda: fresh_subsystems or {
             "training": _make_subsystem("training"),
@@ -98,7 +98,7 @@ class TestNormalOperation:
     @pytest.mark.asyncio
     async def test_all_subsystems_detecting_no_transition(self) -> None:
         """Two sub-SMs in DetectingAnomaly → NormalStateHandler steps them → no transition."""
-        stepper = create_controller_stepper()
+        stepper = create_main_stepper()
         subsystems = {
             "training": _make_subsystem("training"),
             "rollout_0": _make_subsystem("rollout_0"),
@@ -121,7 +121,7 @@ class TestSingleSubsystemEscalation:
     async def test_sub_sm_in_restarting_main_job_triggers_escalation(self) -> None:
         """One sub-SM in RestartingMainJob → stop+submit main job → RestartingMainJobState."""
         main_job = FakeMainJob()
-        stepper = create_controller_stepper()
+        stepper = create_main_stepper()
 
         sub_sm = _make_sub_sm()
         sub_sm.force_state(RestartingMainJob())
@@ -150,7 +150,7 @@ class TestJobRestartComplete:
     async def test_running_status_rebuilds_subsystems_and_signals_requestor(self) -> None:
         """RestartingMainJobState + RUNNING → create_fresh_subsystems → requestor force_state(RestartedMainJob)."""
         main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
-        stepper = create_controller_stepper()
+        stepper = create_main_stepper()
 
         fresh_training_sm = _make_sub_sm()
         fresh_rollout_sm = _make_sub_sm()
@@ -189,7 +189,7 @@ class TestMultiSubsystemOneEscalates:
     async def test_only_one_escalating_triggers_single_restart(self) -> None:
         """Two subsystems, only rollout_0 in RestartingMainJob → one job restart, both rebuilt."""
         main_job = FakeMainJob()
-        stepper = create_controller_stepper()
+        stepper = create_main_stepper()
 
         training_sm = _make_sub_sm()
         rollout_sm = _make_sub_sm()
@@ -227,7 +227,7 @@ class TestJobRestartPending:
     async def test_pending_status_returns_none(self) -> None:
         """RestartingMainJobState + PENDING → handler returns None, stay waiting."""
         main_job = FakeMainJob(status_sequence=[JobStatus.PENDING])
-        stepper = create_controller_stepper()
+        stepper = create_main_stepper()
 
         state = RestartingMainJobState(requestor_name="rollout_0")
         context = _make_controller_context(main_job=main_job)
@@ -240,7 +240,7 @@ class TestJobRestartPending:
     async def test_failed_status_rebuilds_for_retry(self) -> None:
         """RestartingMainJobState + FAILED → rebuild subsystems for retry."""
         main_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
-        stepper = create_controller_stepper()
+        stepper = create_main_stepper()
 
         state = RestartingMainJobState(requestor_name="rollout_0")
         context = _make_controller_context(main_job=main_job)

@@ -8,8 +8,8 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
-from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
+from miles.utils.ft.controller.state_machines.main.context import MainContext
+from miles.utils.ft.controller.state_machines.main.models import MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext, SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.tick_loop import TickLoop
@@ -24,7 +24,7 @@ class FtController:
         self,
         *,
         main_job: MainJobProtocol,
-        state_machine: StateMachine[ControllerState, ControllerContext],
+        state_machine: StateMachine[MainState, MainContext],
         training_rank_roster: TrainingRankRoster,
         mini_wandb: MiniWandb,
         scrape_target_manager: ScrapeTargetManagerProtocol | None,

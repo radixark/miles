@@ -10,12 +10,12 @@ from miles.utils.ft.adapters.impl.ray.controller_actor import _FtControllerActor
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNotifier
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
-from miles.utils.ft.controller.state_machines.controller.models import NormalState
+from miles.utils.ft.controller.state_machines.main.models import NormalState
 from miles.utils.ft.factories.controller import build_ft_controller
 
 
 def _get_training_detectors(ctrl):
-    """Extract detectors from the training SubsystemEntry inside ControllerState."""
+    """Extract detectors from the training SubsystemEntry inside MainState."""
     state = ctrl._state_machine.state
     assert isinstance(state, NormalState)
     return state.subsystems["training"].detectors

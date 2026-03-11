@@ -5,9 +5,9 @@ from datetime import datetime
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import DetectorContext
-from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
-from miles.utils.ft.controller.state_machines.controller.models import (
-    ControllerState,
+from miles.utils.ft.controller.state_machines.main.context import MainContext
+from miles.utils.ft.controller.state_machines.main.models import (
+    MainState,
     NormalState,
     RestartingMainJobState,
 )
@@ -24,17 +24,17 @@ from miles.utils.ft.utils.state_machine import StateHandler
 logger = logging.getLogger(__name__)
 
 
-class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
+class NormalStateHandler(StateHandler[NormalState, MainContext]):
     def __init__(self) -> None:
         self._restart_stepper = create_restart_stepper()
         self._recovery_stepper = create_recovery_stepper()
 
-    async def step(self, state: NormalState, context: ControllerContext) -> ControllerState | None:
+    async def step(self, state: NormalState, context: MainContext) -> MainState | None:
         # Step 1: Step all sub-SMs (skip those already requesting restart)
         for name, entry in state.subsystems.items():
             if isinstance(entry.state_machine.state, RestartingMainJob):
                 continue
-            sub_ctx = self._build_main_context(entry=entry, context=context)
+            sub_ctx = self._build_subsystem_context(entry=entry, context=context)
             await entry.state_machine.step(sub_ctx)
 
         # Step 2: Check if any sub-SM entered RestartingMainJob
@@ -49,11 +49,11 @@ class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
 
         return None
 
-    def _build_main_context(
+    def _build_subsystem_context(
         self,
         *,
         entry: SubsystemEntry,
-        context: ControllerContext,
+        context: MainContext,
     ) -> SubsystemContext:
         should_run = self._should_run_detectors(entry=entry, context=context)
         detector_ctx = self._build_detector_context(entry=entry, context=context) if should_run else None
@@ -84,7 +84,7 @@ class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
         self,
         *,
         entry: SubsystemEntry,
-        context: ControllerContext,
+        context: MainContext,
     ) -> DetectorContext:
         return DetectorContext(
             metric_store=context.metric_store,
@@ -97,7 +97,7 @@ class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
         self,
         *,
         entry: SubsystemEntry,
-        context: ControllerContext,
+        context: MainContext,
         trigger: TriggerType,
         recovery_start_time: datetime,
     ) -> RecoveryContext:
@@ -135,7 +135,7 @@ class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
         self,
         *,
         entry: SubsystemEntry,
-        context: ControllerContext,
+        context: MainContext,
     ) -> bool:
         active_nodes = entry.get_active_node_ids()
         if len(active_nodes) == 0:
@@ -147,10 +147,10 @@ class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
         return True
 
 
-class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, ControllerContext]):
+class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainContext]):
     async def step(
-        self, state: RestartingMainJobState, context: ControllerContext
-    ) -> ControllerState | None:
+        self, state: RestartingMainJobState, context: MainContext
+    ) -> MainState | None:
         status = await context.main_job.get_job_status()
 
         if status == JobStatus.RUNNING:

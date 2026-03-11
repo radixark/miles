@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
-from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState, RestartingMainJobState
+from miles.utils.ft.controller.state_machines.main.context import MainContext
+from miles.utils.ft.controller.state_machines.main.models import MainState, NormalState, RestartingMainJobState
 from miles.utils.ft.controller.state_machines.subsystem import SubsystemContext, SubsystemState, Recovering, get_known_bad_nodes
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestarting,
@@ -32,7 +32,7 @@ def build_phase_history(state_history: list[SubsystemState]) -> list[str]:
 
 
 def _extract_training_sm(
-    controller_state: ControllerState,
+    controller_state: MainState,
 ) -> StateMachine[SubsystemState, SubsystemContext] | None:
     if isinstance(controller_state, NormalState):
         training = controller_state.subsystems.get("training")
@@ -43,7 +43,7 @@ def _extract_training_sm(
 
 def build_controller_status(
     *,
-    controller_state_machine: StateMachine[ControllerState, ControllerContext],
+    controller_state_machine: StateMachine[MainState, MainContext],
     mini_wandb: MiniWandb,
     training_rank_roster: TrainingRankRoster,
     tick_count: int,

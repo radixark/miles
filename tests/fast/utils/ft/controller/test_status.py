@@ -9,8 +9,8 @@ from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
-from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
+from miles.utils.ft.controller.state_machines.main.context import MainContext
+from miles.utils.ft.controller.state_machines.main.models import MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomaly, SubsystemState, Recovering
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestarting,
@@ -154,8 +154,8 @@ class TestBuildPhaseHistory:
 def _make_controller_sm(
     state: SubsystemState,
     state_history: list[SubsystemState] | None = None,
-) -> StateMachine[ControllerState, ControllerContext]:
-    """Build a ControllerState SM wrapping a training SubsystemState SM."""
+) -> StateMachine[MainState, MainContext]:
+    """Build a MainState SM wrapping a training SubsystemState SM."""
     main_sm: StateMachine = StateMachine(
         initial_state=state,
         stepper=StateMachineStepper(handler_map={}),

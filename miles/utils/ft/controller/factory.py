@@ -11,12 +11,12 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.controller import (
-    ControllerContext,
+from miles.utils.ft.controller.state_machines.main import (
+    MainContext,
     NormalState,
-    create_controller_stepper,
+    create_main_stepper,
 )
-from miles.utils.ft.controller.state_machines.controller.models import ControllerState
+from miles.utils.ft.controller.state_machines.main.models import MainState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, SubsystemContext, SubsystemState, create_subsystem_stepper
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, SubsystemEntry
@@ -111,12 +111,12 @@ def create_ft_controller(
         get_active_node_ids=_get_active_training_nodes,
     )
 
-    # --- Create Controller SM ---
-    controller_stepper = create_controller_stepper()
+    # --- Create Main SM ---
+    main_stepper = create_main_stepper()
     initial_subsystems = {"training": training_entry}
-    controller_sm: StateMachine[ControllerState, ControllerContext] = StateMachine(
+    controller_sm: StateMachine[MainState, MainContext] = StateMachine(
         initial_state=NormalState(subsystems=initial_subsystems),
-        stepper=controller_stepper,
+        stepper=main_stepper,
     )
 
     # --- create_fresh_subsystems callback ---
