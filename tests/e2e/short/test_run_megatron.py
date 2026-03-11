@@ -45,6 +45,12 @@ class _ModeConfig:
 
 
 CONFIGS: dict[str, _ModeConfig] = {
+    "tp1_vs_tp2pp2": _ModeConfig(
+        baseline_args="--tp 1",
+        target_args="--tp 2 --pp 2",
+        format="bshd",
+        target_extra_megatron_args="--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2",
+    ),
     "tp1_vs_tp2pp2cp2": _ModeConfig(
         baseline_args="--tp 1",
         target_args="--tp 2 --pp 2 --cp 2 --ep 1",
