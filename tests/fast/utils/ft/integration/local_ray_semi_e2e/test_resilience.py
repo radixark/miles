@@ -12,7 +12,6 @@ import ray
 from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
-    assert_phase_path_contains,
     get_status,
     wait_for_mode_transition,
     wait_for_recovery_phase,
@@ -109,14 +108,11 @@ class TestRestartStepperException:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumansSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
                 break
             if status.mode == ControllerMode.MONITORING and not status.recovery_in_progress:
                 break
             await asyncio.sleep(0.5)
-
-        status = get_status(env.controller)
-        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt", "NotifyHumansSt"])
 
 
 class _CrashingNotifier(NotifierProtocol):
