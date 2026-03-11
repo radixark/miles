@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from miles.utils.ft.agents.core.rollout.cell_agent import CellHealthResult
+from miles.utils.ft.agents.core.rollout.rollout_cell_agent import CellHealthResult
 from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
 

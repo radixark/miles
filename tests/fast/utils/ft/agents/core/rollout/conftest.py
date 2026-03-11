@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from miles.utils.ft.agents.core.rollout.cell_agent import RolloutCellAgent
+from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
 
 
 class MockRolloutCellAgent(RolloutCellAgent):

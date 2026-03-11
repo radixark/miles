@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from miles.utils.ft.agents.core.rollout.cell_agent import RolloutCellAgent
+from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
 from tests.fast.utils.ft.agents.core.rollout.conftest import MockRolloutCellAgent
 
 

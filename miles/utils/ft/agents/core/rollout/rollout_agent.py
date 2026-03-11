@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.agents.core.rollout.cell_agent import RolloutCellAgent
+from miles.utils.ft.agents.core.rollout.rollout_cell_agent import RolloutCellAgent
 from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 
 logger = logging.getLogger(__name__)
