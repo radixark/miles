@@ -188,56 +188,6 @@ class TestShutdownImmediately:
         await agent.shutdown()
 
 
-class TestUpdateCellEngines:
-    @pytest.mark.anyio
-    async def test_delegates_to_cell_update_engines(self) -> None:
-        agent, _ = _make_agent([True, True], check_interval=10.0)
-
-        try:
-            agent.update_cell_engines("default", ["new0", "new1", "new2"])
-
-            cell = agent.get_cell_agent("default")
-            assert cell.get_engine_count() == 3
-            assert cell.is_healthy() is False
-        finally:
-            await agent.shutdown()
-
-    @pytest.mark.anyio
-    async def test_raises_key_error_for_unknown_cell(self) -> None:
-        agent, _ = _make_agent([True], check_interval=10.0)
-
-        try:
-            with pytest.raises(KeyError):
-                agent.update_cell_engines("nonexistent", ["e0"])
-        finally:
-            await agent.shutdown()
-
-
-class TestPublicApi:
-    @pytest.mark.anyio
-    async def test_get_cell_ids(self) -> None:
-        cells = {
-            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True]),
-            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, True]),
-        }
-        agent = _make_multicell_agent(cells, check_interval=10.0)
-
-        try:
-            assert sorted(agent.get_cell_ids()) == ["a0", "a1"]
-        finally:
-            await agent.shutdown()
-
-    @pytest.mark.anyio
-    async def test_get_cell_agent(self) -> None:
-        cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True])
-        agent = _make_multicell_agent({"a0": cell}, check_interval=10.0)
-
-        try:
-            assert agent.get_cell_agent("a0") is cell
-        finally:
-            await agent.shutdown()
-
-
 class TestBuildCells:
     def test_builds_default_cell_from_rollout_manager(self) -> None:
         rollout_manager = MagicMock()
@@ -246,7 +196,7 @@ class TestBuildCells:
         cells = FtRolloutAgent._build_cells(rollout_manager, health_checker=AsyncMock())
 
         assert list(cells.keys()) == ["default"]
-        assert cells["default"].get_engine_count() == 3
+        assert len(cells["default"]._engines) == 3
 
     def test_cell_id_is_default(self) -> None:
         rollout_manager = MagicMock()

@@ -32,8 +32,6 @@ class RolloutCellAgent:
             engine_health_fn=health_checker,
             timeout=health_check_timeout,
         )
-        self._node_ids: set[str] = set()
-
     @property
     def cell_id(self) -> str:
         return self._cell_id
@@ -48,25 +46,3 @@ class RolloutCellAgent:
         """Based on the most recent check_health result. Returns False if never checked."""
         return self._health_checker.is_healthy()
 
-    # --- Node tracking ---
-
-    def get_node_ids(self) -> set[str]:
-        return set(self._node_ids)
-
-    def get_engine_count(self) -> int:
-        return len(self._engines)
-
-    def get_alive_engine_count(self) -> int:
-        last_result = self._health_checker.last_result
-        if last_result is None:
-            return 0
-        return last_result.alive_engines
-
-    def update_engines(self, engines: list[object]) -> None:
-        """Replace engine handles after recovery. Invalidates last result until next check."""
-        self._engines = list(engines)
-        self._health_checker.invalidate()
-
-    def set_node_ids(self, node_ids: set[str]) -> None:
-        """Called by FtRolloutAgent after startup."""
-        self._node_ids = set(node_ids)
