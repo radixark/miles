@@ -72,6 +72,9 @@ class TestRunIdUniqueness:
 
         for _ in range(50):
             await harness.controller._tick()
+            # Re-register ranks after _activate_run clears the roster
+            harness.controller.training_rank_roster.rank_placement[0] = "node-0"
+            harness.controller.training_rank_roster.rank_placement[1] = "node-1"
             if len(recorded_run_ids) >= 2:
                 break
 

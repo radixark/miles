@@ -19,6 +19,7 @@ from tests.fast.utils.ft.conftest import (
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.state_machines.main.models import NormalState, RestartingMainJobState
 from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting
 from miles.utils.ft.controller.state_machines.restart import MonitoringProgress
@@ -135,6 +136,7 @@ class TestCrashReattemptFailDiagnoseNotify:
 class TestGlobalTimeout:
     @pytest.mark.anyio
     async def test_global_timeout_triggers_notify(self) -> None:
+        """When the main job restart stays PENDING past the timeout, a notification is sent."""
         enter_recovery = AlwaysEnterRecoveryDetector(
             trigger=TriggerType.HANG,
             reason="hang detected",
@@ -144,22 +146,23 @@ class TestGlobalTimeout:
             status_sequence=[JobStatus.PENDING] * 100,
         )
 
-        # Step 1: enter recovery, reach StoppingAndRestarting(submitted) waiting on PENDING
+        # Step 1: enter recovery → escalates to RestartingMainJobState
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_state_machine.state, Recovering)
+        main_state = harness.controller._state_machine.state
+        assert isinstance(main_state, RestartingMainJobState)
 
-        # Step 2: inject old recovery_start_time to trigger global timeout
+        # Step 2: inject old start_time to trigger timeout
         _disable_detector(enter_recovery)
-        state = harness.controller._training_state_machine.state
-        assert isinstance(state, Recovering)
-        harness.controller._training_state_machine._state = Recovering(
-            recovery=state.recovery,
-            trigger=state.trigger,
-            recovery_start_time=datetime.now(timezone.utc) - timedelta(seconds=1801),
+        harness.controller._state_machine.force_state(
+            RestartingMainJobState(
+                requestor_name=main_state.requestor_name,
+                start_time=datetime.now(timezone.utc) - timedelta(seconds=1801),
+            )
         )
 
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
+        # After timeout, should return to NormalState
+        assert isinstance(harness.controller._state_machine.state, NormalState)
         assert harness.notifier is not None
         assert any("Recovery Alert" in call[0] for call in harness.notifier.calls)
 

@@ -119,8 +119,12 @@ class TestRecoveryPhaseHistoryRecorded:
 
         status = get_status(handle)
         assert status.phase_history is not None, "phase_history should be populated after recovery"
+        expected_phases = {
+            "RealtimeChecks", "StopTimeDiagnostics", "RecoveryDone",
+            "NotifyHumans", "MonitoringProgress", "Evicting", "StoppingAndRestarting",
+        }
         assert any(
-            p in {"RealtimeChecks", "StopTimeDiagnostics", "RecoveryDone", "NotifyHumans"}
+            p in expected_phases
             for p in status.phase_history
         ), f"phase_history should contain recovery phases, got: {status.phase_history}"
 
