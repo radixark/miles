@@ -61,8 +61,8 @@ def setup_session_routes(app, router: "MilesRouter"):
         request_body["logprobs"] = True
         request_body["return_prompt_token_ids"] = True
         request_body["return_meta_info"] = True
-        # Set this value to ensure stop token is not included in text to avoid breaking text based apply-only verification. Delete eos token from the message content.
-        # This will no changed the output token ids.
+        # Exclude stop token from message text so append-only text verification works.
+        # This does not affect the output token IDs.
         request_body["no_stop_trim"] = False
 
         # Try to inject pretokenized token IDs for prefix reuse.

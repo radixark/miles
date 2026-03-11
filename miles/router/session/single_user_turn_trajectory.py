@@ -98,14 +98,13 @@ class SingleUserTurnTrajectoryManager:
                 raise ValueError("session not found, register it first")
 
             if not session.token_ids:
-                # emptry trajectory, no pretokenized input available
+                # empty trajectory, no pretokenized input available
                 return None
 
             if not self._validate_message_structure(request_messages):
                 raise ValueError("invalid message structure: must contain exactly one user message")
 
             if not self._is_append_only(session.messages, request_messages):
-                # new messages are not append-only, includes new tool messages
                 raise ValueError(
                     "new messages are not append-only: only tool and system "
                     "messages may be appended after the stored prefix"
@@ -127,15 +126,10 @@ class SingleUserTurnTrajectoryManager:
     ) -> None:
         """Update the session's pretokenized state after a successful response.
 
-        Steps:
         1. **Validate prefix**: assert the previously stored token_ids are a
            prefix of ``prompt_token_ids + completion_token_ids``, confirming
            SGLang actually reused our pretokenized input.
-        2. **Sanity check (text-only)**: validate prefix relationships on
-           decoded token text. We intentionally avoid reconstructing assistant
-           text from structured messages/tool_calls because parser output can
-           be lossy for assistant messages.
-        3. **Store**: save ``prompt_token_ids + completion_token_ids`` as the
+        2. **Store**: save ``prompt_token_ids + completion_token_ids`` as the
            new token_ids for next turn's pretokenized reuse.
 
         Args:
@@ -154,7 +148,7 @@ class SingleUserTurnTrajectoryManager:
             all_token_ids = prompt_token_ids + completion_token_ids
             session.messages = list(request_messages) + [assistant_message]
 
-            # Step 1: Validate that SGLang reused our pretokenized prefix.
+            # Validate that SGLang reused our pretokenized prefix.
             prev = session.token_ids
             if prev:
                 assert all_token_ids[: len(prev)] == prev, (
@@ -164,33 +158,7 @@ class SingleUserTurnTrajectoryManager:
                     f"({len(all_token_ids)} tokens)"
                 )
 
-            # Step 2: Sanity check — compare decoded text against local template apply.
-            # We compare at the text level (not token level) because different
-            # tokenization paths can produce different token ID sequences for the
-            # same text.  Allow trailing whitespace difference: template rendering
-            # may include a trailing \n after <|im_end|> that the model's stop
-            # condition does not emit (SGLang has similar tolerance).
-            # if self.tokenizer is not None:
-            #     applied_text = apply_chat_template(
-            #         session.messages,
-            #         tokenizer=self.tokenizer,
-            #         tools=tools,
-            #         add_generation_prompt=False,
-            #         tokenize=False,
-            #     )
-            #     decoded_text = self.tokenizer.decode(all_token_ids)
-
-            #     if decoded_text != applied_text and decoded_text.rstrip() != applied_text.rstrip():
-            #         raise AssertionError(
-            #             f"decoded_text != applied_text:\n"
-            #             f"  decoded_text : {decoded_text!r}\n"
-            #             f"  applied_text : {applied_text!r}\n"
-            #             f"  prompt_decoded : {self.tokenizer.decode(prompt_token_ids)!r}\n"
-            #             f"  completion_decoded: {self.tokenizer.decode(completion_token_ids)!r}\n"
-            #             f"  messages: {session.messages}"
-            #         )
-
-            # Step 3: Store actual response tokens for next turn's pretokenized reuse.
+            # Store actual response tokens for next turn's pretokenized reuse.
             session.token_ids = all_token_ids
 
     @staticmethod
