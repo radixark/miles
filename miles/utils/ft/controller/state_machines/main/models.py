@@ -27,6 +27,14 @@ class Recovering(MainState):
     recovery_start_time: datetime
 
 
+class RestartingMainJob(MainState):
+    """Signal from sub-SM to main SM: requesting main job restart."""
+
+
+class RestartedMainJob(MainState):
+    """Signal from main SM to sub-SM: main job restart completed."""
+
+
 class MainContext(FtBaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 

@@ -1,5 +1,12 @@
 from miles.utils.ft.controller.state_machines.main.handlers import DetectingAnomalyHandler, RecoveringHandler
-from miles.utils.ft.controller.state_machines.main.models import DetectingAnomaly, MainContext, MainState, Recovering
+from miles.utils.ft.controller.state_machines.main.models import (
+    DetectingAnomaly,
+    MainContext,
+    MainState,
+    Recovering,
+    RestartedMainJob,
+    RestartingMainJob,
+)
 from miles.utils.ft.controller.state_machines.main.utils import get_known_bad_nodes, handle_notify_human
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
@@ -20,6 +27,8 @@ __all__ = [
     "MainState",
     "Recovering",
     "RecoveringHandler",
+    "RestartedMainJob",
+    "RestartingMainJob",
     "create_main_stepper",
     "get_known_bad_nodes",
     "handle_notify_human",
