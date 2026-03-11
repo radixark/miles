@@ -50,6 +50,7 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
         target_output=target_output,
         replay_dir=replay_dir,
         common_fields=common_fields,
+        baseline_extra_args=args.baseline_extra_args,
         target_extra_args=args.target_extra_args,
         baseline_logprob_dir=baseline_logprob_dir,
         target_logprob_dir=target_logprob_dir,
@@ -69,6 +70,14 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
     )
 
 
+def _append_extra_args(common_fields: dict[str, object], extra: str) -> dict[str, object]:
+    if not extra:
+        return common_fields
+    result: dict[str, object] = dict(common_fields)
+    result["extra_args"] = f"{common_fields['extra_args']} {extra}".strip()
+    return result
+
+
 def _run_baseline_and_target(
     *,
     baseline_config: ParallelConfig,
@@ -77,6 +86,7 @@ def _run_baseline_and_target(
     target_output: Path,
     replay_dir: Path | None,
     common_fields: dict[str, object],
+    baseline_extra_args: str,
     target_extra_args: str,
     baseline_logprob_dir: Path | None,
     target_logprob_dir: Path | None,
@@ -89,7 +99,7 @@ def _run_baseline_and_target(
     print("[cli] Step 1/2: Baseline run", flush=True)
     run_impl(
         RunArgs(
-            **common_fields,
+            **_append_extra_args(common_fields, baseline_extra_args),
             **dataclasses.asdict(baseline_config),
             output_dir=baseline_output,
             routing_replay_dump_path=replay_dir,
@@ -98,14 +108,10 @@ def _run_baseline_and_target(
         )
     )
 
-    target_common_fields: dict[str, object] = dict(common_fields)
-    if target_extra_args:
-        target_common_fields["extra_args"] = f"{common_fields['extra_args']} {target_extra_args}".strip()
-
     print("[cli] Step 2/2: Target run", flush=True)
     run_impl(
         RunArgs(
-            **target_common_fields,
+            **_append_extra_args(common_fields, target_extra_args),
             **dataclasses.asdict(target_config),
             output_dir=target_output,
             routing_replay_dump_path=None,
