@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
@@ -12,11 +14,38 @@ from miles.utils.ft.controller.state_machines.main.context import MainContext
 from miles.utils.ft.controller.state_machines.main.models import MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext, SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
+from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, SubsystemEntry
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _RolloutSubsystemConfig:
+    cell_id: str
+    rm_handle: object
+    get_active_node_ids: Callable[[], set[str]]
+
+
+def _build_rollout_subsystem_entry(*, name: str, config: _RolloutSubsystemConfig) -> SubsystemEntry:
+    from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
+    from miles.utils.ft.controller.detectors.chain import build_rollout_detectors, build_shared_hw_detectors
+    from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, create_subsystem_stepper
+
+    return SubsystemEntry(
+        name=name,
+        state_machine=StateMachine(
+            initial_state=DetectingAnomaly(),
+            stepper=create_subsystem_stepper(),
+        ),
+        actuator=RayRolloutActuator(rm_handle=config.rm_handle, cell_id=config.cell_id),
+        has_level1_restart=True,
+        detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=config.cell_id),
+        monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
+        get_active_node_ids=config.get_active_node_ids,
+    )
 
 
 class FtController:
@@ -48,6 +77,7 @@ class FtController:
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
         self._roster_cell: list[TrainingRankRoster] | None = None
+        self._rollout_configs: list[_RolloutSubsystemConfig] = []
         self._node_metadata: dict[str, dict[str, str]] = {}
         self._shutting_down: bool = False
 
@@ -101,6 +131,39 @@ class FtController:
             node_id,
             exporter_address,
             sorted(node_metadata) if node_metadata else "(none)",
+        )
+
+    def register_rollout_subsystems(
+        self,
+        *,
+        rm_handle: object,
+        ft_rollout_agent: object,
+    ) -> None:
+        cell_ids: list[str] = ft_rollout_agent.get_cell_ids()  # type: ignore[union-attr]
+        state = self._state_machine.state
+        if not isinstance(state, NormalState):
+            raise RuntimeError(
+                f"Cannot register rollout subsystems in {type(state).__name__}, expected NormalState"
+            )
+
+        new_subsystems = dict(state.subsystems)
+        for cell_id in cell_ids:
+            cell_agent = ft_rollout_agent.get_cell_agent(cell_id)  # type: ignore[union-attr]
+            config = _RolloutSubsystemConfig(
+                cell_id=cell_id,
+                rm_handle=rm_handle,
+                get_active_node_ids=cell_agent.get_node_ids,
+            )
+            self._rollout_configs.append(config)
+            name = f"rollout_{cell_id}"
+            entry = _build_rollout_subsystem_entry(name=name, config=config)
+            new_subsystems[name] = entry
+
+        self._state_machine.state = NormalState(subsystems=new_subsystems)
+        logger.info(
+            "rollout_subsystems_registered cell_ids=%s total_subsystems=%d",
+            cell_ids,
+            len(new_subsystems),
         )
 
     async def submit_initial_job(self) -> str:
