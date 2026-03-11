@@ -11,7 +11,9 @@ from miles.utils.ft.controller.state_machines.main.models import (
     NormalState,
     RestartingMainJobState,
 )
+from miles.utils.ft.controller.state_machines.subsystem import create_subsystem_stepper
 from miles.utils.ft.controller.state_machines.subsystem.models import (
+    DetectingAnomaly,
     SubsystemContext,
     SubsystemState,
     Recovering,
@@ -27,21 +29,20 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem import SubsystemEntry
+from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
 
 logger = logging.getLogger(__name__)
 
 
-def _find_restart_requestor(subsystems: dict[str, SubsystemEntry]) -> str | None:
-    for name, entry in subsystems.items():
-        sm_state = entry.state_machine.state
-        if not isinstance(sm_state, Recovering):
+def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
+    for name, sub_state in subsystems.items():
+        if not isinstance(sub_state, Recovering):
             continue
-        if not isinstance(sm_state.recovery, EvictingAndRestarting):
+        if not isinstance(sub_state.recovery, EvictingAndRestarting):
             continue
-        if isinstance(sm_state.recovery.restart, RestartingMainJobRestart) and not sm_state.recovery.restart.externally_fulfilled:
+        if isinstance(sub_state.recovery.restart, RestartingMainJobRestart) and not sub_state.recovery.restart.externally_fulfilled:
             return name
     return None
 
@@ -57,21 +58,34 @@ def _update_externally_fulfilled(frozen_state: SubsystemState) -> SubsystemState
     return frozen_state.model_copy(update={"recovery": new_recovery})
 
 
+def _build_fresh_subsystem_states(configs: dict[str, SubsystemConfig]) -> dict[str, SubsystemState]:
+    return {name: DetectingAnomaly() for name in configs}
+
+
 class NormalStateHandler(StateHandler[NormalState, MainContext]):
     def __init__(self) -> None:
         self._restart_stepper = create_restart_stepper()
         self._recovery_stepper = create_recovery_stepper()
+        self._subsystem_stepper = create_subsystem_stepper()
 
     async def step(self, state: NormalState, context: MainContext) -> MainState | None:
-        # Step 1: Step all sub-SMs
-        for name, entry in state.subsystems.items():
-            sub_ctx = self._build_subsystem_context(entry=entry, context=context)
-            await entry.state_machine.step(sub_ctx)
+        # Step 1: Step all subsystems (loop stepper until no more transitions)
+        new_subsystems: dict[str, SubsystemState] = {}
+        for name, sub_state in state.subsystems.items():
+            config = context.subsystem_configs[name]
+            sub_ctx = self._build_subsystem_context(config=config, context=context)
+            current = sub_state
+            while True:
+                next_state = await self._subsystem_stepper(current, sub_ctx)
+                if next_state is None:
+                    break
+                current = next_state
+            new_subsystems[name] = current
 
-        # Step 2: Peek into sub-SMs for RestartingMainJob(externally_fulfilled=False)
-        requestor = _find_restart_requestor(state.subsystems)
+        # Step 2: Check for RestartingMainJob(externally_fulfilled=False)
+        requestor = _find_restart_requestor(new_subsystems)
         if requestor is not None:
-            frozen_state = state.subsystems[requestor].state_machine.state
+            frozen_state = new_subsystems[requestor]
             logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
             await context.main_job.stop_job()
             run_id = await context.main_job.submit_job()
@@ -83,16 +97,19 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 requestor_frozen_state=frozen_state,
             )
 
+        if new_subsystems != state.subsystems:
+            return NormalState(subsystems=new_subsystems)
+
         return None
 
     def _build_subsystem_context(
         self,
         *,
-        entry: SubsystemEntry,
+        config: SubsystemConfig,
         context: MainContext,
     ) -> SubsystemContext:
-        should_run = self._should_run_detectors(entry=entry, context=context)
-        detector_ctx = self._build_detector_context(entry=entry, context=context) if should_run else None
+        should_run = self._should_run_detectors(config=config, context=context)
+        detector_ctx = self._build_detector_context(config=config, context=context) if should_run else None
 
         return SubsystemContext(
             job_status=context.job_status,
@@ -100,39 +117,39 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             should_run_detectors=should_run,
             detector_context=detector_ctx,
             notifier=context.notifier,
-            detectors=entry.detectors,
+            detectors=config.detectors,
             cooldown=context.cooldown,
             detector_crash_tracker=context.detector_crash_tracker,
             recovery_stepper=self._recovery_stepper,
             recovery_context_factory=lambda trigger, start_time: self._build_recovery_context(
-                entry=entry,
+                config=config,
                 context=context,
                 trigger=trigger,
                 recovery_start_time=start_time,
             ),
             on_recovery_duration=context.on_recovery_duration,
             max_simultaneous_bad_nodes=context.max_simultaneous_bad_nodes,
-            monitoring_config=entry.monitoring_config,
+            monitoring_config=config.monitoring_config,
             mini_wandb=context.mini_wandb,
         )
 
     def _build_detector_context(
         self,
         *,
-        entry: SubsystemEntry,
+        config: SubsystemConfig,
         context: MainContext,
     ) -> DetectorContext:
         return DetectorContext(
             metric_store=context.metric_store,
             mini_wandb=context.mini_wandb,
-            active_node_ids=entry.get_active_node_ids(),
+            active_node_ids=config.get_active_node_ids(),
             job_status=context.job_status,
         )
 
     def _build_recovery_context(
         self,
         *,
-        entry: SubsystemEntry,
+        config: SubsystemConfig,
         context: MainContext,
         trigger: TriggerType,
         recovery_start_time: datetime,
@@ -143,9 +160,9 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             mini_wandb=context.mini_wandb,
             notifier=context.notifier,
             on_new_run=context.on_new_run,
-            actuator=entry.actuator,
-            monitoring_config=entry.monitoring_config,
-            has_level1_restart=entry.has_level1_restart,
+            actuator=config.actuator,
+            monitoring_config=config.monitoring_config,
+            has_level1_restart=config.has_level1_restart,
         )
         return RecoveryContext(
             trigger=trigger,
@@ -161,10 +178,10 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
     def _should_run_detectors(
         self,
         *,
-        entry: SubsystemEntry,
+        config: SubsystemConfig,
         context: MainContext,
     ) -> bool:
-        active_nodes = entry.get_active_node_ids()
+        active_nodes = config.get_active_node_ids()
         if len(active_nodes) == 0:
             return False
 
@@ -181,11 +198,11 @@ class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainCon
         status = await context.main_job.get_job_status()
 
         if status == JobStatus.RUNNING:
-            fresh = context.create_fresh_subsystems()
-            if state.requestor_name in fresh:
+            fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
+            if state.requestor_name in fresh_states:
                 restored = _update_externally_fulfilled(state.requestor_frozen_state)
-                fresh[state.requestor_name].state_machine.force_state(restored)
-            return NormalState(subsystems=fresh)
+                fresh_states[state.requestor_name] = restored
+            return NormalState(subsystems=fresh_states)
 
         if status == JobStatus.FAILED:
             logger.warning("main_job_restart_failed subsystem=%s", state.requestor_name)
@@ -194,8 +211,8 @@ class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainCon
                 title="Recovery Alert",
                 content=f"Main job restart failed for subsystem '{state.requestor_name}'",
             )
-            fresh = context.create_fresh_subsystems()
-            return NormalState(subsystems=fresh)
+            fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
+            return NormalState(subsystems=fresh_states)
 
         # PENDING / STOPPED — check timeout
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
@@ -210,7 +227,7 @@ class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainCon
                 title="Recovery Alert",
                 content=f"Main job restart for '{state.requestor_name}' timed out after {int(elapsed)}s",
             )
-            fresh = context.create_fresh_subsystems()
-            return NormalState(subsystems=fresh)
+            fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
+            return NormalState(subsystems=fresh_states)
 
         return None
