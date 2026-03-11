@@ -192,7 +192,7 @@ class TestBuildControllerStatus:
         assert status.bad_nodes_confirmed is False
 
     def test_recovery_mode_with_bad_nodes(self) -> None:
-        recovery = EvictingAndRestarting.evict_and_restart(bad_node_ids=["node-1"])
+        recovery = EvictingAndRestarting.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-1"])
         state = Recovering(
             recovery=recovery,
             trigger="crash",

@@ -36,7 +36,7 @@ class EvictingAndRestarting(RecoveryState):
         )
 
     @classmethod
-    def evict_and_restart(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
+    def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
         return cls(
             restart=Evicting(bad_node_ids=bad_node_ids),
             failed_next_state=StopTimeDiagnostics(),

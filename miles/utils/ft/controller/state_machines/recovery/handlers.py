@@ -40,7 +40,7 @@ async def recovery_timeout_check(
 class RealtimeChecksHandler(StateHandler[RealtimeChecks, RecoveryContext]):
     async def step(self, state: RealtimeChecks, ctx: RecoveryContext) -> RecoveryState:
         if state.pre_identified_bad_nodes:
-            return EvictingAndRestarting.evict_and_restart(
+            return EvictingAndRestarting.evict_and_restart_next_stop_time_diag(
                 bad_node_ids=state.pre_identified_bad_nodes,
             )
 

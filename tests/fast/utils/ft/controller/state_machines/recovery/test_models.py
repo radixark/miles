@@ -55,7 +55,7 @@ class TestEvictingAndRestartingFactories:
         assert isinstance(state.failed_next_state, StopTimeDiagnostics)
 
     def test_evict_and_restart(self) -> None:
-        state = EvictingAndRestarting.evict_and_restart(bad_node_ids=["node-0", "node-1"])
+        state = EvictingAndRestarting.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-0", "node-1"])
 
         assert isinstance(state.restart, Evicting)
         assert state.restart.bad_node_ids == ["node-0", "node-1"]
