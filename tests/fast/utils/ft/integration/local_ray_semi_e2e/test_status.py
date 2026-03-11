@@ -216,7 +216,7 @@ class TestBadNodesDuringEviction:
         self,
         make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
-        """During eviction, status.bad_nodes includes the faulted node; cleared after recovery."""
+        """During eviction, recovery.bad_nodes includes the faulted node; cleared after recovery."""
         env = make_e2e_env(
             ft_id="e2ebn",
             nodes=[

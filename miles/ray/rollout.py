@@ -251,6 +251,10 @@ class RolloutManager:
 
           async def stop(self): ...
 
+        class ServerGroup:
+          cells: List[ServerCell]
+          # no `start`/`stop`/`recover`/... here.
+
         then here we just do `find_the_cell(cell_id).start()`
         and with the single-thread async lock we are not worried about racing condition
         """
