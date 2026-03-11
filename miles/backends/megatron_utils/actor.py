@@ -29,7 +29,7 @@ from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
-from ..training_utils.log_utils import log_perf_data, log_rollout_data
+from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
@@ -60,7 +60,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        if is_megatron_main_rank():
+        self._is_main_rank = is_megatron_main_rank()
+
+        if self._is_main_rank:
             init_tracking(args, primary=False)
 
         self.prof = TrainProfiler(args)
@@ -179,6 +181,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         print_memory("after offload model")
 
+        if self._is_main_rank and hasattr(self, "_last_rollout_id"):
+            log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
+
     @timer
     def wake_up(self) -> None:
         assert self.args.offload_train
@@ -291,6 +296,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
     def train(self, rollout_id: int, rollout_data_ref: Box) -> None:
+        self._last_rollout_id = rollout_id
         if self.args.offload_train:
             self.wake_up()
 

@@ -53,12 +53,17 @@ def setup_session_routes(app, router: "MilesRouter"):
         body = await request.body()
         request_body = json.loads(body) if body else {}
 
+        # Ensure SGLang returns token IDs and logprobs for TITO, regardless
+        # of whether the upstream agent (e.g. mini-swe-agent) requested them.
+        request_body.setdefault("logprobs", True)
+        request_body.setdefault("return_prompt_token_ids", True)
+        body = json.dumps(request_body).encode()
+
         result = await router._do_proxy(request, "v1/chat/completions", body=body)
 
         response = json.loads(result["response_body"])
 
         choice = response.get("choices", [{}])[0]
-        # messages = request_body["messages"] + [choice["message"]]
 
         if "logprobs" not in choice or "content" not in choice["logprobs"]:
             raise RuntimeError("logprobs must be in choice")
