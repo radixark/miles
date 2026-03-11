@@ -27,6 +27,7 @@ from miles.utils.ft.controller.types import (
     MetricStoreProtocol,
     ScrapeTargetManagerProtocol,
 )
+from miles.utils.ft.utils.box import Box
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine
 
@@ -72,11 +73,10 @@ def create_ft_controller(
     agents: dict[str, object] = {}
     training_rank_roster = TrainingRankRoster(scrape_target_manager=scrape_target_manager)
 
-    # Mutable cell so lambdas always read the current roster (updated by _activate_run)
-    roster_cell: list[TrainingRankRoster] = [training_rank_roster]
+    training_rank_roster_box = Box(training_rank_roster)
 
     def _get_active_training_nodes() -> set[str]:
-        return set(roster_cell[0].rank_placement.values())
+        return set(training_rank_roster_box.value.rank_placement.values())
 
     resolved_orchestrator: DiagnosticOrchestratorProtocol = diagnostic_orchestrator or DiagnosticOrchestrator(
         agents=agents,
@@ -152,7 +152,7 @@ def create_ft_controller(
         metric_store=metric_store,
         controller_exporter=controller_exporter,
     )
-    instance._roster_cell = roster_cell
+    instance._training_rank_roster_box = training_rank_roster_box
 
     # --- Create TickLoop ---
     tick_loop = TickLoop(

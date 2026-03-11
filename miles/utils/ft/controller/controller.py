@@ -16,6 +16,7 @@ from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, SubsystemEntry
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
+from miles.utils.ft.utils.box import Box
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ class FtController:
         self._metric_store = metric_store
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
-        self._roster_cell: list[TrainingRankRoster] | None = None
+        self._training_rank_roster_box: Box[TrainingRankRoster] | None = None
         self._rollout_configs: list[_RolloutSubsystemConfig] = []
         self._node_metadata: dict[str, dict[str, str]] = {}
         self._shutting_down: bool = False
@@ -213,8 +214,8 @@ class FtController:
             scrape_target_manager=self._scrape_target_manager,
         )
         self._tick_loop.training_rank_roster = self._training_rank_roster
-        if self._roster_cell is not None:
-            self._roster_cell[0] = self._training_rank_roster
+        if self._training_rank_roster_box is not None:
+            self._training_rank_roster_box.value = self._training_rank_roster
         self._mini_wandb.set_active_run_id(run_id)
         logger.info("run_activated run_id=%s", run_id)
 
