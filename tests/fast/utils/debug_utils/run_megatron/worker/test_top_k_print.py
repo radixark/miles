@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,7 +10,9 @@ import torch
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import (
     _decode_token,
     _get_dist_info,
+    _print_top_predictions_all_ranks,
     _print_top_predictions_for_rank,
+    print_top_k,
 )
 
 
@@ -107,3 +110,99 @@ class TestPrintTopPredictionsForRank:
         assert output.count("pos[") == 4
         # 2 batches × 2 positions × (1 input + 2 topk) = 12 decode calls
         assert mock_tok.decode.call_count == 12
+
+
+_TOP_K_MODULE = "miles.utils.debug_utils.run_megatron.worker.top_k_print"
+
+
+class TestPrintTopK:
+    @patch(f"{_TOP_K_MODULE}._print_top_predictions_all_ranks")
+    @patch(f"{_TOP_K_MODULE}.AutoTokenizer")
+    def test_loads_tokenizer_and_calls_print_all_ranks(
+        self,
+        mock_auto_tok: MagicMock,
+        mock_print_all: MagicMock,
+    ) -> None:
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.pad_token_id = 0
+        mock_auto_tok.from_pretrained.return_value = mock_tokenizer
+
+        logits = torch.randn(1, 2, 10)
+        input_ids = torch.tensor([[1, 2]])
+
+        print_top_k(
+            logits=logits,
+            input_ids=input_ids,
+            top_k=3,
+            tokenizer_path=Path("/fake/model"),
+        )
+
+        mock_auto_tok.from_pretrained.assert_called_once()
+        mock_print_all.assert_called_once()
+        call_kwargs = mock_print_all.call_args[1]
+        assert call_kwargs["pad_token_id"] == 0
+
+    @patch(f"{_TOP_K_MODULE}._print_top_predictions_all_ranks")
+    @patch(f"{_TOP_K_MODULE}.AutoTokenizer")
+    def test_pad_token_id_fallback_to_eos(
+        self,
+        mock_auto_tok: MagicMock,
+        mock_print_all: MagicMock,
+    ) -> None:
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.pad_token_id = None
+        mock_tokenizer.eos_token_id = 2
+        mock_auto_tok.from_pretrained.return_value = mock_tokenizer
+
+        print_top_k(
+            logits=torch.randn(1, 2, 10),
+            input_ids=torch.tensor([[1, 2]]),
+            top_k=3,
+            tokenizer_path=Path("/fake/model"),
+        )
+
+        call_kwargs = mock_print_all.call_args[1]
+        assert call_kwargs["pad_token_id"] == 2
+
+
+class TestPrintTopPredictionsAllRanks:
+    @patch(f"{_TOP_K_MODULE}._maybe_barrier")
+    @patch(f"{_TOP_K_MODULE}._get_dist_info", return_value=(0, 2))
+    @patch(f"{_TOP_K_MODULE}._print_top_predictions_for_rank")
+    def test_sequential_rank_printing(
+        self,
+        mock_print_rank: MagicMock,
+        mock_dist_info: MagicMock,
+        mock_barrier: MagicMock,
+    ) -> None:
+        """Current rank=0, world_size=2 → prints only for rank 0."""
+        _print_top_predictions_all_ranks(
+            logits=torch.randn(1, 2, 10),
+            input_ids=torch.tensor([[1, 2]]),
+            top_k=3,
+            tokenizer=MagicMock(),
+        )
+
+        assert mock_print_rank.call_count == 1
+        call_kwargs = mock_print_rank.call_args[1]
+        assert call_kwargs["rank"] == 0
+
+    @patch(f"{_TOP_K_MODULE}._maybe_barrier")
+    @patch(f"{_TOP_K_MODULE}._get_dist_info", return_value=(0, 1))
+    @patch(f"{_TOP_K_MODULE}._print_top_predictions_for_rank")
+    def test_single_rank_barrier_count(
+        self,
+        mock_print_rank: MagicMock,
+        mock_dist_info: MagicMock,
+        mock_barrier: MagicMock,
+    ) -> None:
+        """World_size=1 → barrier called world_size+1 times (loop + final)."""
+        _print_top_predictions_all_ranks(
+            logits=torch.randn(1, 2, 10),
+            input_ids=torch.tensor([[1, 2]]),
+            top_k=3,
+            tokenizer=MagicMock(),
+        )
+
+        # loop: 1 iteration × 1 barrier + 1 final barrier = 2
+        assert mock_barrier.call_count == 2
