@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import DetectorContext
-from miles.utils.ft.controller.state_machines.main.context import MainContext
 from miles.utils.ft.controller.state_machines.main.models import (
+    MainContext,
     MainState,
     NormalState,
     RestartingMainJobState,

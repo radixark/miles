@@ -10,8 +10,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.context import MainContext
-from miles.utils.ft.controller.state_machines.main.models import MainState, NormalState
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext, SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, SubsystemEntry

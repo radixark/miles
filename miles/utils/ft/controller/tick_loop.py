@@ -9,8 +9,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.context import MainContext
-from miles.utils.ft.controller.state_machines.main.models import MainState, NormalState
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
 from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify

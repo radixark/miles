@@ -1,9 +1,9 @@
-from miles.utils.ft.controller.state_machines.main.context import MainContext
 from miles.utils.ft.controller.state_machines.main.handlers import (
     NormalStateHandler,
     RestartingMainJobStateHandler,
 )
 from miles.utils.ft.controller.state_machines.main.models import (
+    MainContext,
     MainState,
     NormalState,
     RestartingMainJobState,
