@@ -13,7 +13,7 @@ from miles.utils.ft.controller.detectors.core.thermal_throttling import (
 )
 from miles.utils.ft.controller.types import ActionType, TriggerType
 
-_RANK_PLACEMENT = {0: "node-0", 1: "node-1"}
+_ACTIVE_NODE_IDS = {"node-0", "node-1"}
 
 
 class TestThermalThrottlingDetector:
@@ -26,7 +26,7 @@ class TestThermalThrottlingDetector:
             make_detector_context(
                 metric_store=store,
                 mini_wandb=wandb,
-                rank_placement=_RANK_PLACEMENT,
+                active_node_ids=_ACTIVE_NODE_IDS,
             )
         )
 
@@ -45,7 +45,7 @@ class TestThermalThrottlingDetector:
             make_detector_context(
                 metric_store=store,
                 mini_wandb=wandb,
-                rank_placement=_RANK_PLACEMENT,
+                active_node_ids=_ACTIVE_NODE_IDS,
             )
         )
 
@@ -71,7 +71,7 @@ class TestThermalThrottlingDetector:
             make_detector_context(
                 metric_store=store,
                 mini_wandb=wandb,
-                rank_placement=_RANK_PLACEMENT,
+                active_node_ids=_ACTIVE_NODE_IDS,
             )
         )
 
@@ -101,14 +101,14 @@ class TestThermalThrottlingDetector:
             make_detector_context(
                 metric_store=store,
                 mini_wandb=wandb,
-                rank_placement=_RANK_PLACEMENT,
+                active_node_ids=_ACTIVE_NODE_IDS,
             )
         )
 
         assert decision.action == ActionType.NONE
         assert "MFU is healthy" in decision.reason
 
-    def test_empty_rank_placement(self) -> None:
+    def test_empty_active_node_ids(self) -> None:
         store = make_fake_metric_store()
         wandb = make_fake_mini_wandb()
         detector = ThermalThrottlingDetector()
@@ -117,7 +117,7 @@ class TestThermalThrottlingDetector:
             make_detector_context(
                 metric_store=store,
                 mini_wandb=wandb,
-                rank_placement={},
+                active_node_ids=set(),
             )
         )
 
@@ -126,7 +126,7 @@ class TestThermalThrottlingDetector:
     def test_all_outlier_nodes_returned_when_multiple_exceed_threshold(self) -> None:
         """All nodes exceeding the delta threshold are reported, not just the hottest."""
         store = make_fake_metric_store()
-        rank_placement = {0: "node-0", 1: "node-1", 2: "node-2"}
+        active_node_ids = {"node-0", "node-1", "node-2"}
         for i in range(8):
             inject_gpu_temperature(store, node_id="node-0", gpu=str(i), celsius=60.0)
             inject_gpu_temperature(store, node_id="node-1", gpu=str(i), celsius=95.0)
@@ -145,7 +145,7 @@ class TestThermalThrottlingDetector:
             make_detector_context(
                 metric_store=store,
                 mini_wandb=wandb,
-                rank_placement=rank_placement,
+                active_node_ids=active_node_ids,
             )
         )
 
@@ -177,7 +177,7 @@ class TestThermalThrottlingDetector:
             make_detector_context(
                 metric_store=store,
                 mini_wandb=wandb,
-                rank_placement=_RANK_PLACEMENT,
+                active_node_ids=_ACTIVE_NODE_IDS,
             )
         )
 
