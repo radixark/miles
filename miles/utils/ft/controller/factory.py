@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
-from miles.utils.ft.controller.controller import FtController, _build_rollout_subsystem_entry
+from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -17,9 +17,9 @@ from miles.utils.ft.controller.state_machines.main import (
     create_main_stepper,
 )
 from miles.utils.ft.controller.state_machines.main.models import MainState
-from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, SubsystemContext, SubsystemState, create_subsystem_stepper
+from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, SubsystemEntry
+from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, SubsystemConfig
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
@@ -93,50 +93,22 @@ def create_ft_controller(
         timeout_seconds=monitoring_timeout_seconds,
     )
 
-    # --- Create SubsystemEntry ---
-    subsystem_stepper = create_subsystem_stepper()
-
-    def _make_training_sub_sm() -> StateMachine[SubsystemState, SubsystemContext]:
-        return StateMachine(
-            initial_state=DetectingAnomaly(),
-            stepper=subsystem_stepper,
-        )
-
-    training_entry = SubsystemEntry(
-        name="training",
-        state_machine=_make_training_sub_sm(),
+    # --- Create SubsystemConfig ---
+    training_config = SubsystemConfig(
         actuator=TrainingSubsystemActuator(main_job=main_job),
         has_level1_restart=False,
         detectors=resolved_detectors,
         monitoring_config=monitoring_config,
         get_active_node_ids=_get_active_training_nodes,
     )
+    subsystem_configs: dict[str, SubsystemConfig] = {"training": training_config}
 
     # --- Create Main SM ---
     main_stepper = create_main_stepper()
-    initial_subsystems = {"training": training_entry}
     controller_sm: StateMachine[MainState, MainContext] = StateMachine(
-        initial_state=NormalState(subsystems=initial_subsystems),
+        initial_state=NormalState(subsystems={"training": DetectingAnomaly()}),
         stepper=main_stepper,
     )
-
-    # --- create_fresh_subsystems callback ---
-    def create_fresh_subsystems() -> dict[str, SubsystemEntry]:
-        result: dict[str, SubsystemEntry] = {
-            "training": SubsystemEntry(
-                name="training",
-                state_machine=_make_training_sub_sm(),
-                actuator=TrainingSubsystemActuator(main_job=main_job),
-                has_level1_restart=False,
-                detectors=resolved_detectors,
-                monitoring_config=monitoring_config,
-                get_active_node_ids=_get_active_training_nodes,
-            ),
-        }
-        for rollout_config in instance._rollout_configs:
-            name = f"rollout_{rollout_config.cell_id}"
-            result[name] = _build_rollout_subsystem_entry(name=name, config=rollout_config)
-        return result
 
     # --- Create FtController ---
     instance = FtController(
@@ -167,7 +139,7 @@ def create_ft_controller(
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         diagnostic_orchestrator=resolved_orchestrator,
         recovery_timeout_seconds=recovery_timeout_seconds,
-        create_fresh_subsystems=create_fresh_subsystems,
+        subsystem_configs=subsystem_configs,
         on_new_run=instance._activate_run,
         rank_pids_provider=lambda node_id: training_rank_roster_box.value.get_rank_pids_for_node(node_id),
         on_recovery_duration=duration_cb,
