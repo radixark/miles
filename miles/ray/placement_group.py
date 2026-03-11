@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import ray
 
@@ -40,7 +41,8 @@ def create_placement_groups(args) -> dict[str, PlacementGroupSlice | None]:
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg_info = create_placement_group_info(num_gpus)
+    snapshot_path = Path(args.placement_persist_path) if getattr(args, "placement_persist_path", None) else None
+    pg_info = create_placement_group_info(num_gpus, snapshot_path=snapshot_path)
 
     return {
         "actor": pg_info[:],
