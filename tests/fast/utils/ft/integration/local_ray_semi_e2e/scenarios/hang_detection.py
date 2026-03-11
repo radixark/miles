@@ -74,9 +74,9 @@ async def scenario_hang_detection_and_recovery(
     assert_phase_path_contains(
         status,
         [
-            "RealtimeChecks",
-            "StoppingAndRestarting",
-            "MonitoringProgress",
+            "RealtimeChecksSt",
+            "StoppingAndRestartingSt",
+            "MonitoringProgressSt",
         ],
     )
 

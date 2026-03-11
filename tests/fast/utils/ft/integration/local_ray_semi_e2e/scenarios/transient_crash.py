@@ -58,9 +58,9 @@ async def scenario_transient_crash(
     assert_phase_path_contains(
         final,
         [
-            "RealtimeChecks",
-            "StoppingAndRestarting",
-            "MonitoringProgress",
+            "RealtimeChecksSt",
+            "StoppingAndRestartingSt",
+            "MonitoringProgressSt",
         ],
     )
 

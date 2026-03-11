@@ -111,7 +111,7 @@ class TestRecoveryPhaseHistoryRecorded:
             s = get_status(handle)
             if s.tick_count > 20:
                 return True
-            if s.phase_history and "RecoveryDone" in s.phase_history:
+            if s.phase_history and "RecoveryDoneSt" in s.phase_history:
                 return True
             return False
 
@@ -120,8 +120,8 @@ class TestRecoveryPhaseHistoryRecorded:
         status = get_status(handle)
         assert status.phase_history is not None, "phase_history should be populated after recovery"
         expected_phases = {
-            "RealtimeChecks", "StopTimeDiagnostics", "RecoveryDone",
-            "NotifyHumans", "MonitoringProgress", "Evicting", "StoppingAndRestarting",
+            "RealtimeChecksSt", "StopTimeDiagnosticsSt", "RecoveryDoneSt",
+            "NotifyHumansSt", "MonitoringProgressSt", "EvictingSt", "StoppingAndRestartingSt",
         }
         assert any(
             p in expected_phases

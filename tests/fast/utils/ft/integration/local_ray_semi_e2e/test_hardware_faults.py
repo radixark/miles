@@ -134,7 +134,7 @@ class TestFaultDuringRecovery:
 
         # Step 3: wait for recovery to complete with eviction
         final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
-        assert_phase_path_contains(final, ["Evicting"])
+        assert_phase_path_contains(final, ["EvictingSt"])
 
 
 class TestDynamicBadNodes:
@@ -240,7 +240,7 @@ class TestBadNodeMerging:
 
         # Step 3: wait for recovery to complete with eviction of both nodes
         final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
-        assert_phase_path_contains(final, ["Evicting"])
+        assert_phase_path_contains(final, ["EvictingSt"])
 
 
 class TestCrossFaultTypeThrottle:
@@ -520,7 +520,7 @@ class TestRealtimeChecksDiscovery:
             )
 
         assert status.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(status, ["Evicting"])
+        assert_phase_path_contains(status, ["EvictingSt"])
 
 
 class TestMaxBadNodesOneBoundary:

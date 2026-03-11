@@ -47,7 +47,7 @@ class TestDiagnosticEviction:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
@@ -59,8 +59,8 @@ class TestDiagnosticEviction:
         assert_phase_path_contains(
             final,
             [
-                "StopTimeDiagnostics",
-                "Evicting",
+                "StopTimeDiagnosticsSt",
+                "EvictingSt",
             ],
         )
 
@@ -91,15 +91,15 @@ class TestEvictionExcludedNodes:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
         # Step 2: crash during MONITORING → DIAGNOSING (fast) → recovery completes
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
-        assert_phase_path_contains(final, ["StopTimeDiagnostics"])
-        assert_phase_path_contains(final, ["Evicting"])
+        assert_phase_path_contains(final, ["StopTimeDiagnosticsSt"])
+        assert_phase_path_contains(final, ["EvictingSt"])
 
         assert env.node_manager.was_ever_marked_bad("e2eexcl-node-0")
         assert env.node_manager.was_ever_marked_bad("e2eexcl-node-1")
@@ -135,7 +135,7 @@ class TestPartialDiagnostic:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
@@ -143,8 +143,8 @@ class TestPartialDiagnostic:
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
         assert final.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(final, ["StopTimeDiagnostics"])
-        assert_phase_path_contains(final, ["Evicting"])
+        assert_phase_path_contains(final, ["StopTimeDiagnosticsSt"])
+        assert_phase_path_contains(final, ["EvictingSt"])
 
 
 class TestAllNodesEvicted:
@@ -169,7 +169,7 @@ class TestAllNodesEvicted:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
@@ -179,8 +179,8 @@ class TestAllNodesEvicted:
         assert_phase_path_contains(
             final,
             [
-                "StopTimeDiagnostics",
-                "Evicting",
+                "StopTimeDiagnosticsSt",
+                "EvictingSt",
             ],
         )
 
@@ -208,14 +208,14 @@ class TestEvictionNotification:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
         # Step 2: crash during MONITORING → DIAGNOSING → eviction
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
-        assert_phase_path_contains(final, ["Evicting"])
+        assert_phase_path_contains(final, ["EvictingSt"])
 
         # Step 3: verify notifier received calls
         calls = env.get_notifier_calls()
@@ -249,7 +249,7 @@ class TestEvictionEscalation:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
@@ -263,7 +263,7 @@ class TestEvictionEscalation:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "Evicting" in status.phase_history:
+            if status.phase_history and "EvictingSt" in status.phase_history:
                 break
             await asyncio.sleep(0.5)
         else:
@@ -272,7 +272,7 @@ class TestEvictionEscalation:
             )
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=RECOVERY_TIMEOUT,
         )
 
@@ -283,7 +283,7 @@ class TestEvictionEscalation:
         deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumans" in status.phase_history:
+            if status.phase_history and "NotifyHumansSt" in status.phase_history:
                 break
             if status.mode == ControllerMode.MONITORING and not status.recovery_in_progress:
                 break
@@ -291,7 +291,7 @@ class TestEvictionEscalation:
 
         status = get_status(env.controller)
         assert status.phase_history is not None
-        assert_phase_path_contains(status, ["NotifyHumans"])
+        assert_phase_path_contains(status, ["NotifyHumansSt"])
 
 
 class TestAllDiagnosticsPass:
@@ -317,7 +317,7 @@ class TestAllDiagnosticsPass:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
@@ -328,13 +328,13 @@ class TestAllDiagnosticsPass:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumans" in status.phase_history:
+            if status.phase_history and "NotifyHumansSt" in status.phase_history:
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError(f"All-pass diagnostics did not escalate to NotifyHumans within {RECOVERY_TIMEOUT}s")
 
-        assert_phase_path_contains(status, ["StopTimeDiagnostics", "NotifyHumans"])
+        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt", "NotifyHumansSt"])
 
         # Step 4: notifier should have received a notification
         calls = env.get_notifier_calls()
@@ -364,7 +364,7 @@ class TestNotificationContent:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
         await env.injector.crash_training()
@@ -372,7 +372,7 @@ class TestNotificationContent:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumans" in status.phase_history:
+            if status.phase_history and "NotifyHumansSt" in status.phase_history:
                 break
             await asyncio.sleep(0.5)
         else:
@@ -413,7 +413,7 @@ class TestUnmarkNodeReusable:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
         await env.injector.crash_training()

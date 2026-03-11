@@ -44,7 +44,7 @@ async def scenario_repeated_crash(
     await injector.crash_training()
     await wait_for_recovery_phase(
         handle=handle,
-        phase="StopTimeDiagnostics",
+        phase="StopTimeDiagnosticsSt",
         timeout=recovery_timeout,
     )
 
@@ -57,8 +57,8 @@ async def scenario_repeated_crash(
     assert_phase_path_contains(
         final,
         [
-            "StopTimeDiagnostics",
-            "NotifyHumans",
+            "StopTimeDiagnosticsSt",
+            "NotifyHumansSt",
         ],
     )
 

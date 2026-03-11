@@ -49,7 +49,7 @@ class TestMultiNode:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=RECOVERY_TIMEOUT,
         )
 
@@ -63,13 +63,13 @@ class TestMultiNode:
         deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "StopTimeDiagnostics" in status.phase_history:
+            if status.phase_history and "StopTimeDiagnosticsSt" in status.phase_history:
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError(f"DIAGNOSING not observed in phase_history within {LONG_RECOVERY_TIMEOUT}s")
 
-        assert_phase_path_contains(status, ["StopTimeDiagnostics"])
+        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt"])
 
 
 class TestConcurrentRegistration:

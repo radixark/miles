@@ -311,7 +311,7 @@ class TestEphemeralNicNoEviction:
         # Step 4: verify no eviction in phase_history
         if final.phase_history:
             assert (
-                "Evicting" not in final.phase_history
+                "EvictingSt" not in final.phase_history
             ), f"Ephemeral NIC should not evict, but got: {final.phase_history}"
 
 
@@ -359,4 +359,4 @@ class TestMajorityNicDown:
             timeout=LONG_RECOVERY_TIMEOUT,
         )
         assert final.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(final, ["Evicting"])
+        assert_phase_path_contains(final, ["EvictingSt"])

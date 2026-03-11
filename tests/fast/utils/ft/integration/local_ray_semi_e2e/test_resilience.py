@@ -98,7 +98,7 @@ class TestRestartStepperException:
         await env.injector.crash_training()
         await wait_for_recovery_phase(
             env.controller,
-            phase="MonitoringProgress",
+            phase="MonitoringProgressSt",
             timeout=FAST_TIMEOUT,
         )
 
@@ -109,14 +109,14 @@ class TestRestartStepperException:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumans" in status.phase_history:
+            if status.phase_history and "NotifyHumansSt" in status.phase_history:
                 break
             if status.mode == ControllerMode.MONITORING and not status.recovery_in_progress:
                 break
             await asyncio.sleep(0.5)
 
         status = get_status(env.controller)
-        assert_phase_path_contains(status, ["StopTimeDiagnostics", "NotifyHumans"])
+        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt", "NotifyHumansSt"])
 
 
 class _CrashingNotifier(NotifierProtocol):
