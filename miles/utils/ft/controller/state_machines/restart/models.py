@@ -5,8 +5,9 @@ from datetime import datetime
 
 from pydantic import ConfigDict
 
-from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
+from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.subsystem import MonitoringConfig
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 
@@ -37,6 +38,10 @@ class RestartFailed(RestartState):
     pass
 
 
+class RestartEscalated(RestartState):
+    """Subsystem does not support Level 1 restart; escalate to Level 2 (job restart)."""
+
+
 class RestartContext(FtBaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -48,3 +53,7 @@ class RestartContext(FtBaseModel):
     monitoring_success_iterations: int
     monitoring_timeout_seconds: int
     node_metadata: dict[str, dict[str, str]] = {}
+
+    actuator: SubsystemActuatorProtocol
+    monitoring_config: MonitoringConfig
+    has_level1_restart: bool

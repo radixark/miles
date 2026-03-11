@@ -11,6 +11,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringProgress,
     RestartContext,
     RestartDone,
+    RestartEscalated,
     RestartFailed,
     RestartState,
     StoppingAndRestarting,
@@ -100,12 +101,23 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
         state: StoppingAndRestarting,
         ctx: RestartContext,
     ) -> RestartState | None:
-        success = await stop_and_submit(
-            ctx.main_job,
-            on_new_run=ctx.on_new_run,
-        )
-        if not success:
+        if not ctx.has_level1_restart:
+            return RestartEscalated(bad_node_ids=state.bad_node_ids)
+
+        try:
+            await ctx.actuator.stop()
+        except Exception:
+            logger.error("actuator_stop_failed", exc_info=True)
             return RestartFailed(bad_node_ids=state.bad_node_ids)
+
+        try:
+            run_id = await ctx.actuator.start()
+        except Exception:
+            logger.error("actuator_start_failed", exc_info=True)
+            return RestartFailed(bad_node_ids=state.bad_node_ids)
+
+        if ctx.on_new_run is not None:
+            ctx.on_new_run(run_id)
 
         return StoppingAndRestarting(
             bad_node_ids=state.bad_node_ids,
@@ -119,7 +131,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
         state: StoppingAndRestarting,
         ctx: RestartContext,
     ) -> RestartState | None:
-        status = await ctx.main_job.get_job_status()
+        status = await ctx.actuator.get_status()
 
         if status == JobStatus.RUNNING:
             current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
@@ -149,6 +161,16 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
         state: MonitoringProgress,
         ctx: RestartContext,
     ) -> RestartState | None:
+        if ctx.monitoring_config.mode == "sustained_alive":
+            return await self._step_sustained_alive(state=state, ctx=ctx)
+        return await self._step_iteration_progress(state=state, ctx=ctx)
+
+    async def _step_iteration_progress(
+        self,
+        *,
+        state: MonitoringProgress,
+        ctx: RestartContext,
+    ) -> RestartState | None:
         status = await ctx.main_job.get_job_status()
 
         if status == JobStatus.FAILED:
@@ -168,6 +190,35 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
         if elapsed > ctx.monitoring_timeout_seconds:
             logger.warning("monitoring_timeout elapsed=%.0f", elapsed)
+            return RestartFailed(bad_node_ids=state.bad_node_ids)
+
+        return None
+
+    async def _step_sustained_alive(
+        self,
+        *,
+        state: MonitoringProgress,
+        ctx: RestartContext,
+    ) -> RestartState | None:
+        status = await ctx.actuator.get_status()
+
+        if status == JobStatus.FAILED:
+            logger.warning("sustained_alive_failed")
+            return RestartFailed(bad_node_ids=state.bad_node_ids)
+
+        if status == JobStatus.RUNNING:
+            elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
+            if elapsed >= ctx.monitoring_config.alive_duration_seconds:
+                logger.info(
+                    "sustained_alive_success elapsed=%.0f threshold=%d",
+                    elapsed,
+                    ctx.monitoring_config.alive_duration_seconds,
+                )
+                return RestartDone(bad_node_ids=state.bad_node_ids)
+
+        elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
+        if elapsed > ctx.monitoring_timeout_seconds:
+            logger.warning("sustained_alive_timeout elapsed=%.0f", elapsed)
             return RestartFailed(bad_node_ids=state.bad_node_ids)
 
         return None

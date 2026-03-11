@@ -7,7 +7,9 @@ from pydantic import ConfigDict
 
 from miles.utils.ft.adapters.types import JobStatus, NotifierProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext, RecoveryState
+from miles.utils.ft.controller.subsystem import MonitoringConfig
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
@@ -53,3 +55,5 @@ class MainContext(FtBaseModel):
     recovery_context_factory: Callable[[TriggerType, datetime], RecoveryContext]
     on_recovery_duration: Callable[[float], None] | None
     max_simultaneous_bad_nodes: int
+    monitoring_config: MonitoringConfig
+    mini_wandb: MiniWandb
