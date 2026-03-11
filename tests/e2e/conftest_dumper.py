@@ -112,7 +112,7 @@ patches:
       - match: "logits = self.gating(input)"
         append: "dumper.dump('moe_router_logits', logits, dims='s[cp:zigzag,sp] b num_experts # tp:replicated ep:replicated')"
       - match: "return probs, routing_map"
-        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='t[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
+        prepend: "dumper.dump('moe_topk_ids', routing_map.int().topk(k=self.topk, dim=-1).indices.sort(dim=-1).values, dims='s[cp:zigzag,sp] topk # tp:replicated ep:replicated')"
 
   # moe_expert_output disabled: see SOURCE_PATCHED_FIELDS comment
 """
