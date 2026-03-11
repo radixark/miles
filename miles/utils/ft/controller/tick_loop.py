@@ -14,7 +14,7 @@ from miles.utils.ft.utils.box import Box
 from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem import SubsystemEntry
+from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.types import (
     ControllerMode,
     DiagnosticOrchestratorProtocol,
@@ -42,7 +42,7 @@ class TickLoop:
         max_simultaneous_bad_nodes: int,
         diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
         recovery_timeout_seconds: int,
-        create_fresh_subsystems: Callable[[], dict[str, SubsystemEntry]],
+        subsystem_configs: dict[str, SubsystemConfig],
         on_new_run: Callable[[str], None] | None = None,
         rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
         on_recovery_duration: Callable[[float], None] | None = None,
@@ -63,7 +63,7 @@ class TickLoop:
         self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
         self._diagnostic_orchestrator = diagnostic_orchestrator
         self._recovery_timeout_seconds = recovery_timeout_seconds
-        self._create_fresh_subsystems = create_fresh_subsystems
+        self.subsystem_configs = subsystem_configs
         self._on_new_run = on_new_run
         self._rank_pids_provider = rank_pids_provider
         self._on_recovery_duration = on_recovery_duration
@@ -113,7 +113,7 @@ class TickLoop:
     def _build_controller_context(self, *, job_status: JobStatus) -> MainContext:
         return MainContext(
             main_job=self._main_job,
-            create_fresh_subsystems=self._create_fresh_subsystems,
+            subsystem_configs=self.subsystem_configs,
             tick_count=self.tick_count,
             job_status=job_status,
             metric_store=self._metric_store,
@@ -161,7 +161,5 @@ class TickLoop:
     def _extract_main_state(self) -> object:
         controller_state = self.state_machine.state
         if isinstance(controller_state, NormalState):
-            training = controller_state.subsystems.get("training")
-            if training is not None:
-                return training.state_machine.state
+            return controller_state.subsystems.get("training")
         return None
