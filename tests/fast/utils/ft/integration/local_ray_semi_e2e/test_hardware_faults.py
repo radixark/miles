@@ -23,7 +23,7 @@ from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
 from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
-from miles.utils.ft.controller.metric_names import (
+from miles.utils.ft.controller.metrics.metric_names import (
     GPU_AVAILABLE,
     NODE_FILESYSTEM_AVAIL_BYTES,
     XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,

@@ -551,7 +551,7 @@ class TestFalsePositiveGuard:
         """When >= max_simultaneous_bad_nodes report faults, no recovery is triggered."""
         from miles.utils.ft.agents.types import GaugeSample
         from miles.utils.ft.controller.detectors.chain import build_detector_chain
-        from miles.utils.ft.controller.metric_names import GPU_AVAILABLE
+        from miles.utils.ft.controller.metrics.metric_names import GPU_AVAILABLE
 
         env = make_e2e_env(
             ft_id="e2efpg",
