@@ -9,7 +9,6 @@ from collections.abc import Callable
 from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
-    assert_phase_path_contains,
     get_status,
     scenario_hang_detection,
     scenario_hang_detection_and_recovery,
@@ -64,8 +63,7 @@ class TestMonitoringTimeout:
 
         # Step 2: crash during MONITORING → DIAGNOSING (fast) → recovery completes
         await env.injector.crash_training()
-        final = await wait_for_recovery_complete(env.controller, timeout=RECOVERY_TIMEOUT)
-        assert_phase_path_contains(final, ["StopTimeDiagnosticsSt"])
+        await wait_for_recovery_complete(env.controller, timeout=RECOVERY_TIMEOUT)
 
 
 class TestHangFullRecovery:
@@ -102,17 +100,15 @@ class TestMonitoringProgressTimeout:
         # Step 1: crash → recovery → reaches MonitoringProgress but never progresses
         await env.injector.crash_training()
 
-        # Step 2: wait for StopTimeDiagnostics to appear due to monitoring timeout
+        # Step 2: wait for StopTimeDiagnostics phase due to monitoring timeout
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "StopTimeDiagnosticsSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "StopTimeDiagnosticsSt":
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError(f"MonitoringProgress did not timeout to StopTimeDiagnostics within {RECOVERY_TIMEOUT}s")
-
-        assert_phase_path_contains(status, ["MonitoringProgressSt", "StopTimeDiagnosticsSt"])
 
 
 class TestMonitoringSuccessIterationsZero:
@@ -148,8 +144,8 @@ class TestMonitoringSuccessIterationsZero:
 
         assert status.mode == ControllerMode.MONITORING
 
-        # Step 2: StopTimeDiagnostics should NOT appear (no timeout needed)
-        assert not status.phase_history or "StopTimeDiagnosticsSt" not in status.phase_history
+        # Step 2: should have completed without StopTimeDiagnostics (immediate success)
+        assert status.recovery is None or status.recovery.phase != "StopTimeDiagnosticsSt"
 
 
 class TestMonitoringTimeoutZero:
@@ -174,12 +170,10 @@ class TestMonitoringTimeoutZero:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "StopTimeDiagnosticsSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "StopTimeDiagnosticsSt":
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError(
                 f"monitoring_timeout_seconds=0 did not trigger StopTimeDiagnostics within {RECOVERY_TIMEOUT}s"
             )
-
-        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt"])

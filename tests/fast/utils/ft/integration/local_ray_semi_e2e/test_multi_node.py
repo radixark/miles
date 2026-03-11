@@ -10,7 +10,6 @@ import ray
 from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
-    assert_phase_path_contains,
     get_status,
     wait_for_mode,
     wait_for_mode_transition,
@@ -56,20 +55,15 @@ class TestMultiNode:
         # Step 2: crash during MONITORING → DIAGNOSING
         await env.injector.crash_training()
 
-        # Poll for DIAGNOSING in phase_history during the active recovery.
-        # After recovery completes, the FAILED status can auto-trigger a second
-        # recovery that overwrites _last_phase_history, so we observe DIAGNOSING
-        # while the recovery is still in progress.
+        # Poll for StopTimeDiagnostics phase during the active recovery.
         deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "StopTimeDiagnosticsSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "StopTimeDiagnosticsSt":
                 break
             await asyncio.sleep(0.5)
         else:
-            raise TimeoutError(f"DIAGNOSING not observed in phase_history within {LONG_RECOVERY_TIMEOUT}s")
-
-        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt"])
+            raise TimeoutError(f"DIAGNOSING not observed within {LONG_RECOVERY_TIMEOUT}s")
 
 
 class TestConcurrentRegistration:

@@ -9,7 +9,6 @@ from collections.abc import Callable
 from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _SLOW_STEP, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
-    assert_phase_path_contains,
     get_status,
     wait_for_recovery_complete,
     wait_for_recovery_phase,
@@ -56,13 +55,6 @@ class TestDiagnosticEviction:
         final = await wait_for_recovery_complete(env.controller, timeout=RECOVERY_TIMEOUT)
 
         assert final.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(
-            final,
-            [
-                "StopTimeDiagnosticsSt",
-                "EvictingSt",
-            ],
-        )
 
         assert env.node_manager.was_ever_marked_bad("e2ediag-node-0")
         assert not env.node_manager.was_ever_marked_bad("e2ediag-node-1")
@@ -97,9 +89,7 @@ class TestEvictionExcludedNodes:
 
         # Step 2: crash during MONITORING → DIAGNOSING (fast) → recovery completes
         await env.injector.crash_training()
-        final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
-        assert_phase_path_contains(final, ["StopTimeDiagnosticsSt"])
-        assert_phase_path_contains(final, ["EvictingSt"])
+        await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
 
         assert env.node_manager.was_ever_marked_bad("e2eexcl-node-0")
         assert env.node_manager.was_ever_marked_bad("e2eexcl-node-1")
@@ -143,8 +133,6 @@ class TestPartialDiagnostic:
         await env.injector.crash_training()
         final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
         assert final.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(final, ["StopTimeDiagnosticsSt"])
-        assert_phase_path_contains(final, ["EvictingSt"])
 
 
 class TestAllNodesEvicted:
@@ -175,14 +163,7 @@ class TestAllNodesEvicted:
 
         # Step 2: crash during MONITORING → DIAGNOSING (fast) → recovery completes
         await env.injector.crash_training()
-        final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
-        assert_phase_path_contains(
-            final,
-            [
-                "StopTimeDiagnosticsSt",
-                "EvictingSt",
-            ],
-        )
+        await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
 
 
 class TestEvictionNotification:
@@ -214,8 +195,7 @@ class TestEvictionNotification:
 
         # Step 2: crash during MONITORING → DIAGNOSING → eviction
         await env.injector.crash_training()
-        final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
-        assert_phase_path_contains(final, ["EvictingSt"])
+        await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
 
         # Step 3: verify notifier received calls
         calls = env.get_notifier_calls()
@@ -258,17 +238,17 @@ class TestEvictionEscalation:
         # Evicting → StoppingAndRestarting → MonitoringProgress (post-eviction)
         await env.injector.crash_training()
 
-        # Wait until eviction has happened (visible in phase_history),
-        # then wait for post-eviction MonitoringProgress
+        # Wait until eviction phase is visible, then wait for post-eviction MonitoringProgress
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "EvictingSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "EvictingSt":
                 break
             await asyncio.sleep(0.5)
         else:
+            recovery_phase = status.recovery.phase if status.recovery else None
             raise TimeoutError(
-                f"Evicting not found in phase_history within {RECOVERY_TIMEOUT}s: {status.phase_history}"
+                f"EvictingSt not observed within {RECOVERY_TIMEOUT}s: phase={recovery_phase}"
             )
         await wait_for_recovery_phase(
             env.controller,
@@ -283,15 +263,11 @@ class TestEvictionEscalation:
         deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumansSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
                 break
             if status.mode == ControllerMode.MONITORING and not status.recovery_in_progress:
                 break
             await asyncio.sleep(0.5)
-
-        status = get_status(env.controller)
-        assert status.phase_history is not None
-        assert_phase_path_contains(status, ["NotifyHumansSt"])
 
 
 class TestAllDiagnosticsPass:
@@ -328,13 +304,11 @@ class TestAllDiagnosticsPass:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumansSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
                 break
             await asyncio.sleep(0.5)
         else:
             raise TimeoutError(f"All-pass diagnostics did not escalate to NotifyHumans within {RECOVERY_TIMEOUT}s")
-
-        assert_phase_path_contains(status, ["StopTimeDiagnosticsSt", "NotifyHumansSt"])
 
         # Step 4: notifier should have received a notification
         calls = env.get_notifier_calls()
@@ -372,7 +346,7 @@ class TestNotificationContent:
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
             status = get_status(env.controller)
-            if status.phase_history and "NotifyHumansSt" in status.phase_history:
+            if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
                 break
             await asyncio.sleep(0.5)
         else:

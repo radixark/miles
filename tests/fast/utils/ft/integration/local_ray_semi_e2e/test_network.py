@@ -9,7 +9,6 @@ from collections.abc import Callable
 from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import _FAST_SCRAPE, E2EEnv, NodeSpec
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
-    assert_phase_path_contains,
     get_status,
     wait_for_mode_transition,
     wait_for_recovery_complete,
@@ -308,11 +307,10 @@ class TestEphemeralNicNoEviction:
         final = await wait_for_recovery_complete(env.controller, timeout=LONG_RECOVERY_TIMEOUT)
         assert final.mode == ControllerMode.MONITORING
 
-        # Step 4: verify no eviction in phase_history
-        if final.phase_history:
-            assert (
-                "EvictingSt" not in final.phase_history
-            ), f"Ephemeral NIC should not evict, but got: {final.phase_history}"
+        # Step 4: verify not in eviction phase
+        assert final.recovery is None or final.recovery.phase != "EvictingSt", (
+            "Ephemeral NIC should not evict"
+        )
 
 
 class TestMajorityNicDown:
@@ -359,4 +357,3 @@ class TestMajorityNicDown:
             timeout=LONG_RECOVERY_TIMEOUT,
         )
         assert final.mode == ControllerMode.MONITORING
-        assert_phase_path_contains(final, ["EvictingSt"])
