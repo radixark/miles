@@ -7,7 +7,7 @@ from miles.utils.ft.controller.types import ScrapeTargetManagerProtocol
 logger = logging.getLogger(__name__)
 
 
-class RankRoster:
+class TrainingRankRoster:
     """Tracks rank placement for a single training run."""
 
     def __init__(
