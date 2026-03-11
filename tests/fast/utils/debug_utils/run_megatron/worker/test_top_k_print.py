@@ -117,7 +117,7 @@ _TOP_K_MODULE = "miles.utils.debug_utils.run_megatron.worker.top_k_print"
 
 class TestPrintTopK:
     @patch(f"{_TOP_K_MODULE}._print_top_predictions_all_ranks")
-    @patch(f"{_TOP_K_MODULE}.AutoTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_loads_tokenizer_and_calls_print_all_ranks(
         self,
         mock_auto_tok: MagicMock,
@@ -143,7 +143,7 @@ class TestPrintTopK:
         assert call_kwargs["pad_token_id"] == 0
 
     @patch(f"{_TOP_K_MODULE}._print_top_predictions_all_ranks")
-    @patch(f"{_TOP_K_MODULE}.AutoTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_pad_token_id_fallback_to_eos(
         self,
         mock_auto_tok: MagicMock,
