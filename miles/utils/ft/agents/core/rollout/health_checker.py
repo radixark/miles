@@ -110,9 +110,6 @@ class RolloutCellHealthChecker:
     All engines in a cell form a single TP group; only engines[0] exposes
     an HTTP health endpoint, so we probe that one and consider the entire
     cell alive or dead based on its response.
-
-    Caches the most recent boolean result so that ``is_healthy`` can be
-    queried cheaply between checks.
     """
 
     def __init__(
@@ -125,24 +122,13 @@ class RolloutCellHealthChecker:
         self._cell_id = cell_id
         self._engine_health_fn = engine_health_fn
         self._timeout = timeout
-        self._last_healthy: bool | None = None
 
     async def check_health(self, *, engines: list[object]) -> bool:
         """Probe engines[0] and return True if healthy, False otherwise."""
         if not engines:
             raise ValueError("engines must not be empty")
 
-        healthy = await self._probe_engine(engine=engines[0])
-        self._last_healthy = healthy
-        return healthy
-
-    def is_healthy(self) -> bool:
-        """Based on the most recent check_health result. Returns False if never checked."""
-        return self._last_healthy is True
-
-    def invalidate(self) -> None:
-        """Clear cached result, forcing is_healthy() to return False until next check."""
-        self._last_healthy = None
+        return await self._probe_engine(engine=engines[0])
 
     async def _probe_engine(self, *, engine: object) -> bool:
         try:

@@ -141,18 +141,6 @@ class TestCellCheckHealth:
         assert result is False
 
     @pytest.mark.anyio
-    async def test_caches_result_for_is_healthy(self) -> None:
-        checker = RolloutCellHealthChecker(
-            cell_id="c0",
-            engine_health_fn=_engine_method_health_checker,
-        )
-        assert checker.is_healthy() is False
-
-        await checker.check_health(engines=[_AliveEngine()])
-
-        assert checker.is_healthy() is True
-
-    @pytest.mark.anyio
     async def test_empty_engines_raises(self) -> None:
         checker = RolloutCellHealthChecker(
             cell_id="empty",
@@ -161,21 +149,6 @@ class TestCellCheckHealth:
 
         with pytest.raises(ValueError, match="engines must not be empty"):
             await checker.check_health(engines=[])
-
-
-class TestInvalidate:
-    @pytest.mark.anyio
-    async def test_invalidate_clears_cached_result(self) -> None:
-        checker = RolloutCellHealthChecker(
-            cell_id="c0",
-            engine_health_fn=_engine_method_health_checker,
-        )
-        await checker.check_health(engines=[_AliveEngine()])
-        assert checker.is_healthy() is True
-
-        checker.invalidate()
-
-        assert checker.is_healthy() is False
 
 
 # ===========================================================================
