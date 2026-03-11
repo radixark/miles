@@ -200,15 +200,14 @@ class TestAgentManagement:
 
 class TestDefaultDiagnosticOrchestratorWiring:
     def test_default_orchestrator_has_rank_pids_provider(self) -> None:
-        controller = create_ft_controller(
+        bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(),
             metric_store=make_fake_metric_store(),
             mini_wandb=MiniWandb(),
-            rollout_num_cells=0,
         )
 
-        assert controller._tick_loop._on_new_run is not None
+        assert bundle.controller._tick_loop._on_new_run is not None
 
 
 class TestDefaultDiagnosticPipeline:

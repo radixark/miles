@@ -10,6 +10,7 @@ from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeManage
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.factory import create_ft_controller
+from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
@@ -209,6 +210,7 @@ class ControllerTestHarness(NamedTuple):
     mini_wandb: MiniWandb
     controller_exporter: ControllerExporter
     notifier: FakeNotifier | None
+    hub: SubsystemHub | None = None
 
 
 def make_test_controller(
@@ -223,7 +225,7 @@ def make_test_controller(
     registration_grace_ticks: int = 0,
     register_dummy_rank: bool = True,
     monitoring_success_iterations: int = 10,
-    rollout_num_cells: int = 0,
+    rollout_cell_ids: list[str] | None = None,
 ) -> ControllerTestHarness:
     """Construct a Controller and all its dependencies for testing.
 
@@ -249,12 +251,12 @@ def make_test_controller(
         max_count=recovery_cooldown_max_count,
     )
 
-    controller = create_ft_controller(
+    bundle = create_ft_controller(
         node_manager=node_manager,
         main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
-        rollout_num_cells=rollout_num_cells,
+        rollout_cell_ids=rollout_cell_ids,
         scrape_target_manager=metric_store,
         notifier=real_notifier,
         detectors=detectors,
@@ -265,6 +267,7 @@ def make_test_controller(
         registration_grace_ticks=registration_grace_ticks,
         monitoring_success_iterations=monitoring_success_iterations,
     )
+    controller = bundle.controller
 
     if register_dummy_rank:
         controller._activate_run("dummy-run")
@@ -279,6 +282,7 @@ def make_test_controller(
         mini_wandb=mini_wandb,
         controller_exporter=controller_exporter,
         notifier=real_notifier,
+        hub=bundle.hub,
     )
 
 

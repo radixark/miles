@@ -44,17 +44,16 @@ class TestControllerPrometheusMode:
         registry, exporter = make_test_exporter()
         prom_client = PrometheusClient(url="http://fake:9090")
 
-        controller = create_ft_controller(
+        bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(status_sequence=[JobStatus.RUNNING]),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
-            rollout_num_cells=0,
             controller_exporter=exporter,
         )
 
         with patch.object(httpx.Client, "get", return_value=_make_http_response(_make_prom_response())):
-            await controller._tick()
+            await bundle.controller._tick()
 
         assert get_sample_value(registry, mn.MAIN_JOB_STATUS) == 1.0
         assert get_sample_value(registry, mn.CONTROLLER_TICK_COUNT + "_total") == 1.0
@@ -65,17 +64,16 @@ class TestControllerPrometheusMode:
         _, exporter = make_test_exporter()
         prom_client = PrometheusClient(url="http://fake:9090")
 
-        controller = create_ft_controller(
+        bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(),
             metric_store=prom_client,
             mini_wandb=MiniWandb(),
-            rollout_num_cells=0,
             controller_exporter=exporter,
         )
 
-        controller._activate_run("run-1")
-        controller.training_rank_roster.register_training_rank(
+        bundle.controller._activate_run("run-1")
+        bundle.controller.training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=2,
@@ -84,24 +82,23 @@ class TestControllerPrometheusMode:
             pid=1,
         )
 
-        assert controller.training_rank_roster.rank_placement == {0: "node-0"}
+        assert bundle.controller.training_rank_roster.rank_placement == {0: "node-0"}
 
     @pytest.mark.anyio
     async def test_training_metrics_propagated_to_exporter(self) -> None:
         registry, exporter = make_test_exporter()
         mini_wandb = MiniWandb()
 
-        controller = create_ft_controller(
+        bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(),
             metric_store=PrometheusClient(url="http://fake:9090"),
             mini_wandb=mini_wandb,
-            rollout_num_cells=0,
             controller_exporter=exporter,
         )
 
-        controller._activate_run("run-1")
-        controller.training_rank_roster.register_training_rank(
+        bundle.controller._activate_run("run-1")
+        bundle.controller.training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=1,
@@ -109,14 +106,14 @@ class TestControllerPrometheusMode:
             exporter_address="http://node-0:9090",
             pid=1,
         )
-        controller.mini_wandb.log_step(
+        bundle.controller.mini_wandb.log_step(
             run_id="run-1",
             step=1,
             metrics={"loss": 2.5, "mfu": 0.42},
         )
 
         with patch.object(httpx.Client, "get", return_value=_make_http_response(_make_prom_response())):
-            await controller._tick()
+            await bundle.controller._tick()
 
         assert get_sample_value(registry, mn.TRAINING_LOSS_LATEST) == 2.5
         assert get_sample_value(registry, mn.TRAINING_MFU_LATEST) == 0.42

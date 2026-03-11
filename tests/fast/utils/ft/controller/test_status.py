@@ -162,7 +162,7 @@ class TestBuildControllerStatus:
         assert status.recovery is not None
         assert status.recovery.bad_nodes_confirmed is True
 
-    def test_training_subsystem_state_detecting_anomaly(self) -> None:
+    def test_subsystem_states_detecting_anomaly(self) -> None:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
@@ -170,9 +170,9 @@ class TestBuildControllerStatus:
             tick_count=0,
         )
 
-        assert status.training_subsystem_state == "DetectingAnomalySt"
+        assert status.subsystem_states["training"] == "DetectingAnomalySt"
 
-    def test_training_subsystem_state_recovering(self) -> None:
+    def test_subsystem_states_recovering(self) -> None:
         state = RecoveringSt(
             recovery=RealtimeChecksSt(),
             trigger="crash",
@@ -185,7 +185,7 @@ class TestBuildControllerStatus:
             tick_count=0,
         )
 
-        assert status.training_subsystem_state == "RecoveringSt"
+        assert status.subsystem_states["training"] == "RecoveringSt"
 
     def test_active_run_id_from_training_rank_roster(self) -> None:
         roster = TrainingRankRoster(run_id="run-42")

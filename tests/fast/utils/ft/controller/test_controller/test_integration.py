@@ -1,23 +1,23 @@
-"""Integration tests for M12: training + rollout subsystems in FtController."""
+"""Integration tests for training + rollout subsystems in FtController."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import NamedTuple
 
 import pytest
 from prometheus_client import CollectorRegistry
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.controller import FtController, _RolloutSubsystemConfig, _build_rollout_subsystem_config
+from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.main.models import NormalSt, RestartingMainJobSt
+from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
+from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from tests.fast.utils.ft.conftest import (
@@ -26,7 +26,6 @@ from tests.fast.utils.ft.conftest import (
     FakeNodeManager,
     FakeNotifier,
     FixedDecisionDetector,
-    make_test_controller,
 )
 
 
@@ -82,6 +81,7 @@ class _RolloutTestHarness(NamedTuple):
     notifier: FakeNotifier
     rollout_manager_handle: FakeRmHandle
     metric_store: MiniPrometheus
+    hub: SubsystemHub
 
 
 def _make_test_controller_with_rollout(
@@ -101,12 +101,12 @@ def _make_test_controller_with_rollout(
     controller_exporter = ControllerExporter(registry=CollectorRegistry())
     cooldown = SlidingWindowThrottle(window_minutes=30.0, max_count=3)
 
-    controller = create_ft_controller(
+    bundle = create_ft_controller(
         node_manager=node_manager,
         main_job=main_job,
         metric_store=metric_store,
         mini_wandb=mini_wandb,
-        rollout_num_cells=len(resolved_cell_ids),
+        rollout_cell_ids=resolved_cell_ids,
         scrape_target_manager=metric_store,
         notifier=notifier,
         detectors=training_detectors,
@@ -117,17 +117,15 @@ def _make_test_controller_with_rollout(
         registration_grace_ticks=0,
         monitoring_success_iterations=monitoring_success_iterations,
     )
+    controller = bundle.controller
+    hub = bundle.hub
 
     controller._activate_run("test-run")
     controller.training_rank_roster.rank_placement[0] = "train-node-0"
     controller.training_rank_roster.rank_placement[1] = "train-node-1"
 
     rollout_manager_handle = FakeRmHandle()
-
-    controller.register_rollout_subsystems(
-        rollout_manager_handle=rollout_manager_handle,
-        cell_ids=resolved_cell_ids,
-    )
+    hub.set_rollout_handle(rollout_manager_handle)
 
     return _RolloutTestHarness(
         controller=controller,
@@ -136,6 +134,7 @@ def _make_test_controller_with_rollout(
         notifier=notifier,
         rollout_manager_handle=rollout_manager_handle,
         metric_store=metric_store,
+        hub=hub,
     )
 
 
@@ -145,7 +144,7 @@ def _make_test_controller_with_rollout(
 
 
 class TestRegisterRolloutSubsystems:
-    def test_registration_adds_rollout_entries_to_normal_state(self) -> None:
+    def test_rollout_entries_present_in_normal_state(self) -> None:
         controller, *_ = _make_test_controller_with_rollout(
             cell_ids=["ep72", "ep36"],
         )
@@ -166,37 +165,10 @@ class TestRegisterRolloutSubsystems:
         training_config = controller._tick_loop.subsystem_configs["training"]
         assert training_config.restart_mode == RestartMode.MAIN_JOB
 
-    def test_rollout_configs_stored_on_controller(self) -> None:
-        controller, *_ = _make_test_controller_with_rollout(cell_ids=["ep72", "ep36"])
-        assert len(controller._rollout_configs) == 2
-        cell_ids = [c.cell_id for c in controller._rollout_configs]
-        assert "ep72" in cell_ids
-        assert "ep36" in cell_ids
-
     def test_rollout_active_node_ids_defaults_to_empty(self) -> None:
         controller, *_ = _make_test_controller_with_rollout()
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
         assert rollout_config.get_active_node_ids() == set()
-
-    def test_register_in_non_normal_state_raises_runtime_error(self) -> None:
-        harness = make_test_controller(rollout_num_cells=1)
-        controller = harness.controller
-
-        controller._state_machine.force_state(
-            RestartingMainJobSt(
-                requestor_name="training",
-                start_time=datetime.now(timezone.utc),
-                requestor_frozen_state=DetectingAnomalySt(),
-            )
-        )
-
-        rollout_manager_handle = FakeRmHandle()
-
-        with pytest.raises(RuntimeError, match="Cannot register rollout subsystems"):
-            controller.register_rollout_subsystems(
-                rollout_manager_handle=rollout_manager_handle,
-                cell_ids=["ep72"],
-            )
 
 
 class TestNormalOperationWithRollout:
@@ -258,8 +230,8 @@ class TestRolloutCrashRecovery:
 
 
 class TestSubsystemConfigsIncludeRollout:
-    def test_subsystem_configs_include_rollout_after_registration(self) -> None:
-        """After rollout registration, subsystem_configs contains both training + rollout."""
+    def test_subsystem_configs_include_rollout(self) -> None:
+        """After construction, subsystem_configs contains both training + rollout."""
         controller, *_ = _make_test_controller_with_rollout(
             cell_ids=["ep72", "ep36"],
         )
@@ -296,31 +268,17 @@ class TestStatusReportsRollout:
         )
 
         status = controller.get_status()
-        assert status.rollout_subsystem_states is not None
-        assert "rollout_ep72" in status.rollout_subsystem_states
-        assert "rollout_ep36" in status.rollout_subsystem_states
-        assert status.rollout_subsystem_states["rollout_ep72"] == "DetectingAnomalySt"
+        assert "rollout_ep72" in status.subsystem_states
+        assert "rollout_ep36" in status.subsystem_states
+        assert status.subsystem_states["rollout_ep72"] == "DetectingAnomalySt"
 
-    def test_status_no_rollout_when_training_only(self) -> None:
+    def test_status_training_only_has_no_rollout_keys(self) -> None:
+        from tests.fast.utils.ft.conftest import make_test_controller
+
         harness = make_test_controller()
         status = harness.controller.get_status()
-        assert status.rollout_subsystem_states is None
-
-
-class TestBuildRolloutSubsystemConfig:
-    def test_config_has_correct_monitoring_config(self) -> None:
-        rollout_manager_handle = FakeRmHandle()
-        config = _RolloutSubsystemConfig(
-            cell_id="ep72",
-            rollout_manager_handle=rollout_manager_handle,
-            get_active_node_ids=lambda: {"n1", "n2"},
-        )
-        subsystem_config = _build_rollout_subsystem_config(config=config)
-
-        assert subsystem_config.restart_mode == RestartMode.SUBSYSTEM
-        assert subsystem_config.get_active_node_ids() == {"n1", "n2"}
-        assert isinstance(subsystem_config.monitoring_config, MonitoringSustainedAliveConfig)
-        assert subsystem_config.monitoring_config.alive_duration_seconds == 180
+        rollout_keys = [k for k in status.subsystem_states if k.startswith("rollout_")]
+        assert rollout_keys == []
 
 
 class TestFullLevel1RecoveryCycle:
@@ -460,30 +418,3 @@ class TestColocatedHardwareFault:
 
         assert harness.rollout_manager_handle.stop_cell.call_count >= 1
         assert harness.rollout_manager_handle.start_cell.call_count >= 1
-
-
-class TestRolloutNumCellsValidation:
-    def test_register_mismatched_num_cells_raises(self) -> None:
-        """Declaring N rollout cells but registering M should fail."""
-        harness = make_test_controller(rollout_num_cells=2)
-        controller = harness.controller
-
-        rollout_manager_handle = FakeRmHandle()
-
-        with pytest.raises(AssertionError, match="Expected 2 rollout cells, got 1"):
-            controller.register_rollout_subsystems(
-                rollout_manager_handle=rollout_manager_handle,
-                cell_ids=["ep72"],
-            )
-
-    def test_register_default_cell_ids(self) -> None:
-        """When cell_ids=None, defaults to ['default']."""
-        harness = make_test_controller(rollout_num_cells=1)
-        controller = harness.controller
-
-        rollout_manager_handle = FakeRmHandle()
-        controller.register_rollout_subsystems(rollout_manager_handle=rollout_manager_handle)
-
-        state = controller._state_machine.state
-        assert isinstance(state, NormalSt)
-        assert "rollout_default" in state.subsystems
