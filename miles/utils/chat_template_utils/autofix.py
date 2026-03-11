@@ -21,6 +21,8 @@ _FIX_RULES: list[tuple[str, str]] = [
     ("*qwen3-next-*-thinking*", "qwen3_thinking_2507_and_next_fixed.jinja"),
     ("*qwen3-*b-thinking-2507*", "qwen3_thinking_2507_and_next_fixed.jinja"),
     ("*qwen3-[0-9]*", "qwen3_fixed.jinja"),
+    ("*glm*4.7*", "glm47_fixed.jinja"),
+    ("*glm*4-7*", "glm47_fixed.jinja"),
 ]
 
 

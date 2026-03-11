@@ -183,13 +183,18 @@ def apply_chat_template(
 
     def _render(td):
         if tokenizer is not None:
-            return tokenizer.apply_chat_template(
+            result = tokenizer.apply_chat_template(
                 messages,
                 tokenize=tokenize,
                 add_generation_prompt=add_generation_prompt,
                 tools=td,
                 **kwargs,
             )
+            if tokenize and not isinstance(result, list):
+                result = result["input_ids"]
+                if result and hasattr(result[0], "ids"):
+                    result = result[0].ids
+            return result
         return _render_jinja(chat_template, messages, add_generation_prompt, td, **kwargs)
 
     try:

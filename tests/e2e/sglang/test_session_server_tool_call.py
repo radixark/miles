@@ -20,7 +20,7 @@ import miles.utils.external_utils.command_utils as U
 # Model family registry
 # ---------------------------------------------------------------------------
 
-MODEL_FAMILY = os.environ.get("SESSION_TEST_MODEL_FAMILY", "qwen35")
+MODEL_FAMILY = os.environ.get("SESSION_TEST_MODEL_FAMILY", "qwen3")
 
 
 @dataclass(frozen=True)
@@ -28,13 +28,16 @@ class ModelConfig:
     model_name: str
     reasoning_parser: str
     tool_call_parser: str | None = None
+    additional_tokenizer: str = "default"
+    num_gpus: int = 1
 
 
 MODEL_REGISTRY: dict[str, ModelConfig] = {
     "qwen3": ModelConfig(
         model_name="Qwen/Qwen3-4B",
         reasoning_parser="qwen3",
-        tool_call_parser="qwen",
+        tool_call_parser="qwen25",
+        additional_tokenizer="qwen3",
     ),
     "qwen35": ModelConfig(
         model_name="Qwen/Qwen3.5-4B",
@@ -45,6 +48,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         model_name="zai-org/GLM-4.7-Flash",
         reasoning_parser="glm45",
         tool_call_parser="glm47",
+        additional_tokenizer="glm47",
+        num_gpus=4,
     ),
 }
 
@@ -60,9 +65,11 @@ def _get_config() -> ModelConfig:
 def prepare():
     cfg = _get_config()
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(
-        f"huggingface-cli download {cfg.model_name} " f"--local-dir /root/models/{cfg.model_name.split('/')[-1]}"
-    )
+    if MODEL_FAMILY == "glm47":
+        U.exec_command(
+            "pip install git+https://github.com/huggingface/transformers.git@33a8e68d4955c13cf6d6c629e76f12fc81974fc5"
+        )
+    U.exec_command(f"hf download {cfg.model_name} --local-dir /root/models/{cfg.model_name.split('/')[-1]}")
 
     prompts = [
         {
@@ -98,11 +105,11 @@ def execute():
         f"--prompt-data {PROMPT_DATA_PATH} "
         "--input-key messages "
         "--num-rollout 1 "
-        "--rollout-batch-size 16 "
+        "--rollout-batch-size 4 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.7 "
-        "--global-batch-size 64 "
+        "--global-batch-size 16 "
     )
 
     generate_args = (
@@ -112,9 +119,11 @@ def execute():
         "tests.e2e.sglang.session_tool_agent.run_agent "
     )
 
-    router_args = "--use-miles-router " "--chat-template-path autofix "
+    router_args = (
+        "--use-miles-router " "--chat-template-path autofix " f"--additional-tokenizer {cfg.additional_tokenizer} "
+    )
 
-    sglang_args = f"--rollout-num-gpus-per-engine 1 " f"--sglang-reasoning-parser {cfg.reasoning_parser} "
+    sglang_args = f"--rollout-num-gpus-per-engine {cfg.num_gpus} " f"--sglang-reasoning-parser {cfg.reasoning_parser} "
     if cfg.tool_call_parser:
         sglang_args += f"--sglang-tool-call-parser {cfg.tool_call_parser} "
     sglang_args += "--rm-type random "
@@ -122,7 +131,7 @@ def execute():
     infra_args = (
         "--debug-rollout-only "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 1 "
+        f"--actor-num-gpus-per-node {cfg.num_gpus} "
         "--colocate "
         "--train-backend fsdp "
     )
@@ -131,9 +140,13 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=1,
+        num_gpus_per_node=cfg.num_gpus,
         megatron_model_type=None,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+        extra_env_vars={
+            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+            "SGLANG_E2E_MODEL_PATH": local_model_dir,
+            "MILES_ADDITIONAL_TOKENIZER": cfg.additional_tokenizer,
+        },
     )
 
 
@@ -150,3 +163,5 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute()
+    if MODEL_FAMILY == "glm47":
+        U.exec_command("pip install transformers==4.57.1")

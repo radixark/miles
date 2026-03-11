@@ -1,8 +1,9 @@
 """Custom agent function for the session-server tool-call e2e test.
 
 Performs a multi-turn tool-calling conversation through the session proxy and
-verifies that the session's prompt_token_ids, when decoded, exactly match
-the text produced by locally applying the chat template to the same messages.
+verifies token-level correctness after all turns complete.  The full message
+history is re-tokenized locally and compared against the actual inference
+token IDs using ``TokenSeqComparator``.
 
 The agent is loaded at runtime by ``agentic_tool_call.generate`` via
 ``--custom-agent-function-path tests.e2e.sglang.session_tool_agent.run_agent``.
@@ -13,8 +14,16 @@ import os
 
 import httpx
 
-from miles.utils.chat_template_utils import apply_chat_template, try_get_fixed_chat_template
+from miles.utils.chat_template_utils import (
+    MismatchType,
+    TokenSeqComparator,
+    apply_chat_template,
+    get_additional_message_tokenizer,
+    try_get_fixed_chat_template,
+)
 from miles.utils.processing_utils import load_tokenizer
+
+ADDITIONAL_TOKENIZER_TYPE = os.environ.get("MILES_ADDITIONAL_TOKENIZER", "default")
 
 logger = logging.getLogger(__name__)
 
@@ -106,93 +115,13 @@ async def _chat(
     return data, prompt_ids
 
 
-def _verify_turn(
-    turn: int,
-    session_prompt_ids: list[int],
-    messages: list[dict],
-    prev_prompt_ids: list[int] | None,
-    tokenizer,
-) -> bool:
-    """Check TITO text match and prefix monotonicity. Returns True if text matched."""
-    # --- DEBUG: dump message trajectory ---
-    for i, msg in enumerate(messages):
-        role = msg.get("role", "?")
-        rc = msg.get("reasoning_content")
-        content = msg.get("content")
-        tc = "yes" if msg.get("tool_calls") else "no"
-        logger.info(
-            "Turn %d MSG[%d] role=%s reasoning_content=%r content=%r tool_calls=%s",
-            turn,
-            i,
-            role,
-            rc[:80] if isinstance(rc, str) and len(rc) > 80 else rc,
-            content[:80] if isinstance(content, str) and len(content) > 80 else content,
-            tc,
-        )
-
-    session_text = tokenizer.decode(session_prompt_ids)
-
-    expected_text = apply_chat_template(
-        messages,
-        tokenizer=tokenizer,
-        tools=TOOLS,
-        add_generation_prompt=True,
-        tokenize=False,
-    )
-
-    text_matched = session_text == expected_text
-
-    # --- DEBUG: always log the tail (generation prompt area) ---
-    logger.info(
-        "Turn %d TAIL COMPARE:\n" "  session_text[-80:] = %r\n" "  expected_text[-80:] = %r",
-        turn,
-        session_text[-80:],
-        expected_text[-80:],
-    )
-
-    if not text_matched:
-        first_char_diff = next(
-            (i for i, (a, b) in enumerate(zip(session_text, expected_text, strict=False)) if a != b),
-            min(len(session_text), len(expected_text)),
-        )
-        ctx_lo = max(0, first_char_diff - 80)
-        ctx_hi = min(max(len(session_text), len(expected_text)), first_char_diff + 80)
-        logger.warning(
-            "TITO TEXT MISMATCH on turn %d (non-fatal):\n"
-            "Session decoded length: %d chars (%d tokens)\n"
-            "Template rendered length: %d chars\n"
-            "First char diff at index %d\n"
-            "\n--- Session decoded text around diff ---\n%r\n"
-            "\n--- Template rendered text around diff ---\n%r\n"
-            "\n--- Session FULL text (last 500 chars) ---\n%r\n"
-            "\n--- Template FULL text (last 500 chars) ---\n%r",
-            turn,
-            len(session_text),
-            len(session_prompt_ids),
-            len(expected_text),
-            first_char_diff,
-            session_text[ctx_lo:ctx_hi],
-            expected_text[ctx_lo:ctx_hi],
-            session_text,
-            expected_text,
-        )
-
-    if prev_prompt_ids is not None:
-        n = len(prev_prompt_ids)
-        assert session_prompt_ids[:n] == prev_prompt_ids, (
-            f"Prefix token mismatch on turn {turn}: previous turn's prompt_ids "
-            f"({n} tokens) is not a prefix of this turn's "
-            f"({len(session_prompt_ids)} tokens)."
-        )
-
-    return text_matched
-
-
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
-    """Multi-turn tool-call agent that verifies session prompt correctness.
+    """Multi-turn tool-call agent that verifies token-level correctness.
 
-    On every turn, decodes the session's prompt_token_ids and compares with
-    locally rendered chat template text — they must be identical.
+    Runs the full agentic loop first, then after all turns complete,
+    re-tokenizes the entire message history and compares against the
+    actual inference token IDs using ``TokenSeqComparator``.
+    Asserts no ``MismatchType.SPECIAL_TOKEN`` mismatches.
     """
     messages = list(prompt)
 
@@ -201,24 +130,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     model_path = metadata.get("model_path", MODEL_NAME) if metadata else MODEL_NAME
     tokenizer = _load_tokenizer(model_path)
 
-    # --- DEBUG: confirm which chat template is loaded ---
-    _tmpl = getattr(tokenizer, "chat_template", None) or ""
-    _gen_prompt_sample = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "x"}], tokenize=False, add_generation_prompt=True
-    )
-    logger.info(
-        "TEMPLATE CHECK: model_path=%s, template_len=%d, gen_prompt_ending=%r",
-        model_path,
-        len(_tmpl),
-        _gen_prompt_sample[-60:],
-    )
-
     turns_completed = 0
     total_tool_calls = 0
-    prev_prompt_ids: list[int] | None = None
     consecutive_retries = 0
-    local_total = 0
-    local_mismatch = 0
+
+    # Accumulated across turns for final comparison.
+    last_prompt_ids: list[int] | None = None
+    last_completion_ids: list[int] | None = None
 
     async with httpx.AsyncClient(
         timeout=180, limits=httpx.Limits(max_connections=1000, max_keepalive_connections=100)
@@ -235,36 +153,22 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             )
             logger.info("%s: %d prompt tokens", label, len(session_ids))
 
-            text_matched = _verify_turn(
-                turn,
-                session_ids,
-                messages,
-                prev_prompt_ids,
-                tokenizer,
-            )
-            prev_prompt_ids = list(session_ids)
-            local_total += 1
-            if not text_matched:
-                local_mismatch += 1
-            logger.info(
-                "Turn %d verified: text_match=%s, prefix_ok=True (%d tokens)",
-                turn,
-                text_matched,
-                len(session_ids),
-            )
+            # Extract completion token IDs from output_token_logprobs.
+            meta_info = resp_data["choices"][0].get("meta_info", {})
+            output_logprobs = meta_info.get("output_token_logprobs", [])
+            completion_ids = [t[1] for t in output_logprobs]
+
+            last_prompt_ids = list(session_ids)
+            last_completion_ids = completion_ids
 
             turns_completed = turn
 
             assistant_msg = resp_data["choices"][0]["message"]
-
-            # --- DEBUG: dump assistant message fields ---
             logger.info(
-                "Turn %d ASSISTANT MSG: reasoning_content=%r, content=%r, " "tool_calls=%s, all_keys=%s",
+                "Turn %d: content=%r, tool_calls=%s",
                 turn,
-                assistant_msg.get("reasoning_content"),
-                assistant_msg.get("content"),
+                (assistant_msg.get("content") or "")[:80],
                 "present" if assistant_msg.get("tool_calls") else "absent",
-                list(assistant_msg.keys()),
             )
 
             messages.append(assistant_msg)
@@ -305,28 +209,107 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                     MAX_RETRIES,
                 )
 
+    # ------------------------------------------------------------------
+    # Post-loop verification: compare full token sequences
+    # ------------------------------------------------------------------
+
     MIN_TOOL_CALLS = 3
     if total_tool_calls < MIN_TOOL_CALLS:
         logger.warning(
-            "Only made %d successful tool call(s) in %d turn(s), "
-            "need >= %d for meaningful multi-turn prefix verification",
+            "Only made %d successful tool call(s) in %d turn(s), " "need >= %d for meaningful multi-turn verification",
             total_tool_calls,
             turns_completed,
             MIN_TOOL_CALLS,
         )
 
+    assert last_prompt_ids is not None, "No turns completed"
+    assert last_completion_ids is not None, "No completion tokens collected"
+
+    # Actual token IDs used in inference: prompt + completion.
+    actual_ids = last_prompt_ids + last_completion_ids
+
+    # Expected: re-tokenize the full message history (including last
+    # assistant response) without generation prompt.
+    expected_ids = apply_chat_template(
+        messages,
+        tokenizer=tokenizer,
+        tools=TOOLS,
+        add_generation_prompt=False,
+        tokenize=True,
+    )
+
+    additional_tokenizer = get_additional_message_tokenizer(tokenizer, tokenizer_type=ADDITIONAL_TOKENIZER_TYPE)
+    trim_trailing_ids = additional_tokenizer.get_trim_trailing_ids()
+
+    comparator = TokenSeqComparator(tokenizer)
+    # trim_trailing_ids doubles as equivalent_special_ids: for GLM 4.7,
+    # <|user|> and <|observation|> are interchangeable stop/start tokens.
+    mismatches = comparator.compare_sequences(
+        expected_ids,
+        actual_ids,
+        trim_trailing_ids=trim_trailing_ids,
+        equivalent_special_ids=trim_trailing_ids or None,
+    )
+
+    special_mismatches = [m for m in mismatches if m.type == MismatchType.SPECIAL_TOKEN]
+    other_mismatches = [m for m in mismatches if m.type != MismatchType.SPECIAL_TOKEN]
+
+    for m in mismatches:
+        log_fn = logger.error if m.type == MismatchType.SPECIAL_TOKEN else logger.warning
+        log_fn(
+            "Mismatch [%s] segment=%d: expected=%r actual=%r detail=%s",
+            m.type.value,
+            m.segment_index,
+            m.expected_text[:120],
+            m.actual_text[:120],
+            m.detail,
+        )
+        # Find first divergence point for detailed diff
+        e, a = m.expected_text, m.actual_text
+        for i, (ec, ac) in enumerate(zip(e, a, strict=False)):
+            if ec != ac:
+                ctx = 40
+                log_fn(
+                    "  first diff at char %d: expected=...%r... actual=...%r...",
+                    i,
+                    e[max(0, i - ctx) : i + ctx],
+                    a[max(0, i - ctx) : i + ctx],
+                )
+                break
+        else:
+            if len(e) != len(a):
+                shorter = min(len(e), len(a))
+                log_fn(
+                    "  length diff: expected=%d actual=%d, tail expected=%r actual=%r",
+                    len(e),
+                    len(a),
+                    e[shorter : shorter + 80],
+                    a[shorter : shorter + 80],
+                )
+
     logger.info(
-        "Agent done: %d turns, %d tool_calls, tito_mismatch=%d/%d",
+        "Agent done: %d turns, %d tool_calls, %d mismatches (%d special, %d text/json), "
+        "%d expected tokens, %d actual tokens",
         turns_completed,
         total_tool_calls,
-        local_mismatch,
-        local_total,
+        len(mismatches),
+        len(special_mismatches),
+        len(other_mismatches),
+        len(expected_ids),
+        len(actual_ids),
+    )
+
+    assert (
+        not special_mismatches
+    ), f"Found {len(special_mismatches)} SPECIAL_TOKEN mismatch(es) after {turns_completed} turns: " + "; ".join(
+        f"seg[{m.segment_index}] expected={m.expected_text!r} actual={m.actual_text!r} ({m.detail})"
+        for m in special_mismatches
     )
 
     return {
         "turns_completed": turns_completed,
         "total_tool_calls": total_tool_calls,
-        "tito_session_mismatch": 1 if local_mismatch > 0 else 0,
-        "tito_local_total": local_total,
-        "tito_local_mismatch": local_mismatch,
+        "total_mismatches": len(mismatches),
+        "special_token_mismatches": len(special_mismatches),
+        "text_json_mismatches": len(other_mismatches),
     }

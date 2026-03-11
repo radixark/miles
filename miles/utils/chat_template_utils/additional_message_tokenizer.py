@@ -46,20 +46,6 @@ def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def _build_dummy_tool_response() -> dict[str, Any]:
-    """Build a minimal dummy tool response."""
-    return {
-        "role": "tool",
-        "content": "",
-        "tool_call_id": "call0000",
-        "type": "function",
-        "function": {
-            "name": "dummy_func",
-            "arguments": {},
-        },
-    }
-
-
 # ---------------------------------------------------------------------------
 # ABC
 # ---------------------------------------------------------------------------
@@ -109,6 +95,21 @@ class AdditionalMessageTokenizer(ABC):
         system messages into user messages.
         """
         return all_messages
+
+    def get_trim_trailing_ids(self) -> set[int]:
+        """Token IDs to trim from sequence tails before comparison.
+
+        When comparing expected (full re-tokenization) vs actual (prompt +
+        completion) sequences, the two may differ at the boundaries:
+
+        - Qwen3: expected ends with ``\\n`` after ``<|im_end|>`` (template
+          artifact), actual does not.
+        - GLM 4.7: actual ends with ``<|user|>`` or ``<|observation|>``
+          (stop token reused as next-turn start), expected does not.
+
+        Returns an empty set by default (no trimming).
+        """
+        return set()
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,9 @@ class Qwen3AdditionalMessageTokenizer(DefaultAdditionalMessageTokenizer):
     concatenation with the stored prefix produces the correct sequence.
     """
 
+    def get_trim_trailing_ids(self) -> set[int]:
+        return {self.tokenizer.encode("\n", add_special_tokens=False)[-1]}
+
     def postprocess(
         self,
         incremental_ids: list[int],
@@ -202,20 +206,13 @@ class Qwen3AdditionalMessageTokenizer(DefaultAdditionalMessageTokenizer):
 # ---------------------------------------------------------------------------
 
 
-class GLM47AdditionalMessageTokenizer(AdditionalMessageTokenizer):
-    """GLM 4.7 specific incremental tokenizer.
+class GLM47AdditionalMessageTokenizer(DefaultAdditionalMessageTokenizer):
+    """GLM 4.7 variant: strips leading boundary token from incremental IDs.
 
-    Handles two GLM 4.7 quirks:
-
-    1. **Stop-token ambiguity**: ``<|user|>`` and ``<|observation|>`` are both
-       assistant stop tokens *and* next-message start tokens in the chat
-       template.  After computing the dummy-prefix diff, we strip these
-       boundary tokens from ``tokens_without`` when they don't match the
-       real pretokenized suffix.
-
-    2. **Mid-conversation system messages**: The GLM 4.7 template does not
-       support system messages after position 0.  ``preprocess_messages``
-       merges them into adjacent user messages.
+    ``<|user|>`` and ``<|observation|>`` are both assistant stop tokens *and*
+    next-message start tokens.  The completion already includes the stop token
+    at the end of ``pretokenized_token_ids``, so the corresponding start token
+    in ``incremental_ids`` must be stripped to avoid duplication.
     """
 
     def __init__(
@@ -228,96 +225,29 @@ class GLM47AdditionalMessageTokenizer(AdditionalMessageTokenizer):
         self._user_id: int = tokenizer.convert_tokens_to_ids("<|user|>")
         self._ambiguous_boundary_ids: set[int] = {self._observation_id, self._user_id}
 
-    # -- preprocess: merge mid-conversation system messages -----------------
+    def get_trim_trailing_ids(self) -> set[int]:
+        return set(self._ambiguous_boundary_ids)
 
-    def preprocess_messages(
+    def postprocess(
         self,
-        all_messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Merge mid-conversation system messages into user messages.
-
-        The first system message (position 0) is kept as-is.  Any later
-        system messages are prepended to the next user message's content.
-        If no subsequent user message exists, the system content is wrapped
-        in a standalone user message.
-        """
-        result: list[dict[str, Any]] = []
-        pending_system: list[str] = []
-        first_system_seen = False
-
-        for msg in all_messages:
-            if msg["role"] == "system":
-                if not first_system_seen:
-                    result.append(msg)
-                    first_system_seen = True
-                else:
-                    pending_system.append(msg["content"])
-            else:
-                if not first_system_seen:
-                    first_system_seen = True
-
-                if pending_system and msg["role"] == "user":
-                    merged = "\n\n".join(pending_system + [msg["content"]])
-                    result.append({**msg, "content": merged})
-                    pending_system = []
-                else:
-                    if pending_system:
-                        result.append({"role": "user", "content": "\n\n".join(pending_system)})
-                        pending_system = []
-                    result.append(msg)
-
-        if pending_system:
-            result.append({"role": "user", "content": "\n\n".join(pending_system)})
-
-        return result
-
-    # -- tokenize: boundary-aware dummy diff --------------------------------
-
-    def tokenize_additional(
-        self,
-        new_messages: list[dict[str, Any]],
+        incremental_ids: list[int],
+        tokens_without: list[int],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        new_messages = self.preprocess_messages(list(new_messages))
-
-        dummy_assistant = _build_dummy_assistant(new_messages)
-        # A dummy tool response anchors the boundary so that <|observation|>
-        # (used both as assistant stop token and tool-response start token)
-        # produces a stable prefix.
-        base_messages = [_DUMMY_USER, dummy_assistant, _build_dummy_tool_response()]
-
-        tokens_without = apply_chat_template(
-            base_messages,
-            tokenizer=self.tokenizer,
-            tokenize=True,
-            add_generation_prompt=False,
-            tools=tools,
-            **self.chat_template_kwargs,
-        )
-        tokens_with = apply_chat_template(
-            base_messages + list(new_messages),
-            tokenizer=self.tokenizer,
-            tokenize=True,
-            add_generation_prompt=True,
-            tools=tools,
-            **self.chat_template_kwargs,
-        )
-
-        # Strip ambiguous boundary tokens (<|user|>, <|observation|>) that the
-        # template appended to tokens_without but that do not appear at the
-        # end of the real pretokenized sequence.
-        strip_count = 0
+        # The assistant's completion already includes its stop token
+        # (<|user|> or <|observation|>) at the end of pretokenized_token_ids.
+        # Strip the leading boundary token from incremental_ids to avoid
+        # duplication — regardless of whether it's the same boundary token,
+        # since the stop token already marks the turn boundary.
         if (
-            tokens_without
+            incremental_ids
             and pretokenized_token_ids
-            and tokens_without[-1] in self._ambiguous_boundary_ids
-            and tokens_without[-1] != pretokenized_token_ids[-1]
+            and pretokenized_token_ids[-1] in self._ambiguous_boundary_ids
+            and incremental_ids[0] in self._ambiguous_boundary_ids
         ):
-            strip_count = 1
+            incremental_ids = incremental_ids[1:]
 
-        adjusted_len = len(tokens_without) - strip_count
-        return list(tokens_with[adjusted_len:])
+        return incremental_ids
 
 
 # ---------------------------------------------------------------------------
