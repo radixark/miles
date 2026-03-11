@@ -13,19 +13,19 @@ logger = logging.getLogger(__name__)
 class FtRolloutAgent:
     def __init__(
         self,
-        rm: object | None = None,
+        rollout_manager: object | None = None,
         *,
         cells: dict[str, RolloutCellAgent] | None = None,
         check_interval: float = 10.0,
     ) -> None:
-        if rm is not None:
-            self._rm = rm
-            self._cells = self._build_cells(rm)
+        if rollout_manager is not None:
+            self._rollout_manager = rollout_manager
+            self._cells = self._build_cells(rollout_manager)
         elif cells is not None:
-            self._rm = None
+            self._rollout_manager = None
             self._cells = cells
         else:
-            raise ValueError("Either rm or cells must be provided")
+            raise ValueError("Either rollout_manager or cells must be provided")
 
         self._check_interval = check_interval
         self._paused = False
@@ -33,7 +33,7 @@ class FtRolloutAgent:
 
         self._health_loop_task = asyncio.create_task(self._health_check_loop())
         self._register_task: asyncio.Task[None] | None = None
-        if rm is not None:
+        if rollout_manager is not None:
             self._register_task = asyncio.create_task(self._register_with_controller())
 
         logger.info(
@@ -42,10 +42,10 @@ class FtRolloutAgent:
         )
 
     @staticmethod
-    def _build_cells(rm: object) -> dict[str, RolloutCellAgent]:
+    def _build_cells(rollout_manager: object) -> dict[str, RolloutCellAgent]:
         return {"default": RolloutCellAgent(
             cell_id="default",
-            engines=list(rm.all_rollout_engines),  # type: ignore[attr-defined]
+            engines=list(rollout_manager.all_rollout_engines),  # type: ignore[attr-defined]
         )}
 
     @property
@@ -112,9 +112,9 @@ class FtRolloutAgent:
         except ValueError:
             logger.warning("ft_controller_not_found ft_id=%s", ft_id)
             return
-        rm_handle = ray.get_runtime_context().current_actor
+        rollout_manager_handle = ray.get_runtime_context().current_actor
         await controller.register_rollout.remote(
-            rm_handle=rm_handle, metrics_address=self.address,
+            rm_handle=rollout_manager_handle, metrics_address=self.address,
         )
         logger.info("registered_with_ft_controller ft_id=%s", ft_id)
 
@@ -131,22 +131,22 @@ class FtRolloutAgent:
         all_healthy = all(cell.is_healthy() for cell in self._cells.values())
         return JobStatus.RUNNING if all_healthy else JobStatus.FAILED
 
-    # --- Control plane: cell level (routes to RM when available) ---
+    # --- Control plane: cell level (routes to RolloutManager when available) ---
 
     async def stop_cell(self, cell_id: str) -> None:
-        if self._rm is not None:
-            await self._rm.stop_cell(cell_id)  # type: ignore[attr-defined]
+        if self._rollout_manager is not None:
+            await self._rollout_manager.stop_cell(cell_id)  # type: ignore[attr-defined]
         else:
             await self._cells[cell_id].stop()
 
     async def start_cell(self, cell_id: str) -> int:
-        if self._rm is not None:
-            return await self._rm.start_cell(cell_id)  # type: ignore[attr-defined]
+        if self._rollout_manager is not None:
+            return await self._rollout_manager.start_cell(cell_id)  # type: ignore[attr-defined]
         return await self._cells[cell_id].start()
 
     async def get_cell_status(self, cell_id: str) -> JobStatus:
-        if self._rm is not None:
-            return await self._rm.get_cell_status(cell_id)  # type: ignore[attr-defined]
+        if self._rollout_manager is not None:
+            return await self._rollout_manager.get_cell_status(cell_id)  # type: ignore[attr-defined]
         return JobStatus.RUNNING if self._cells[cell_id].is_healthy() else JobStatus.FAILED
 
     # --- Public API for M12 integration ---

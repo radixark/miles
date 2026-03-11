@@ -396,25 +396,25 @@ class TestPublicApi:
 
 
 class TestBuildCells:
-    def test_builds_default_cell_from_rm(self) -> None:
-        rm = MagicMock()
-        rm.all_rollout_engines = [MagicMock(), MagicMock(), MagicMock()]
+    def test_builds_default_cell_from_rollout_manager(self) -> None:
+        rollout_manager = MagicMock()
+        rollout_manager.all_rollout_engines = [MagicMock(), MagicMock(), MagicMock()]
 
-        cells = FtRolloutAgent._build_cells(rm)
+        cells = FtRolloutAgent._build_cells(rollout_manager)
 
         assert list(cells.keys()) == ["default"]
         assert cells["default"].get_engine_count() == 3
 
     def test_cell_id_is_default(self) -> None:
-        rm = MagicMock()
-        rm.all_rollout_engines = [MagicMock()]
+        rollout_manager = MagicMock()
+        rollout_manager.all_rollout_engines = [MagicMock()]
 
-        cells = FtRolloutAgent._build_cells(rm)
+        cells = FtRolloutAgent._build_cells(rollout_manager)
         assert cells["default"].cell_id == "default"
 
 
 class TestConstructorValidation:
     @pytest.mark.anyio
-    async def test_raises_when_neither_rm_nor_cells_provided(self) -> None:
-        with pytest.raises(ValueError, match="Either rm or cells must be provided"):
+    async def test_raises_when_neither_rollout_manager_nor_cells_provided(self) -> None:
+        with pytest.raises(ValueError, match="Either rollout_manager or cells must be provided"):
             FtRolloutAgent(check_interval=1.0)
