@@ -43,9 +43,7 @@ def _partial_resort_snapshots(
     Works for both same-PG refresh (bundles moved after node failure) and
     cross-PG restart (entirely new PG, old snapshots from backup).
     """
-    new_by_location: dict[tuple[str, str], BundleLocationSnapshot] = {
-        (s.node_ip, s.gpu_id): s for s in new_snapshots
-    }
+    new_by_location: dict[tuple[str, str], BundleLocationSnapshot] = {(s.node_ip, s.gpu_id): s for s in new_snapshots}
 
     result: list[BundleLocationSnapshot | None] = [None] * len(old_snapshots)
     used: set[tuple[str, str]] = set()
@@ -116,7 +114,8 @@ class PlacementGroupInfo:
         """Re-snapshot all bundles and partially re-sort only changed ranks."""
         new_snapshots = _snapshot_bundles(self.pg, num_bundles=len(self._bundle_location_snapshots))
         self._bundle_location_snapshots = _partial_resort_snapshots(
-            self._bundle_location_snapshots, new_snapshots,
+            self._bundle_location_snapshots,
+            new_snapshots,
         )
         if self._snapshot_path:
             _save_snapshots(self._snapshot_path, self._bundle_location_snapshots)
@@ -168,8 +167,7 @@ def _snapshot_bundles(pg: PlacementGroup, num_bundles: int) -> list[BundleLocati
         ray.kill(actor)
 
     return [
-        BundleLocationSnapshot(bundle_index=i, node_ip=results[i][0], gpu_id=results[i][1])
-        for i in range(num_bundles)
+        BundleLocationSnapshot(bundle_index=i, node_ip=results[i][0], gpu_id=results[i][1]) for i in range(num_bundles)
     ]
 
 
@@ -197,5 +195,7 @@ def create_placement_group_info(
         )
 
     return PlacementGroupInfo(
-        pg=pg, _bundle_location_snapshots=sorted_snapshots, _snapshot_path=snapshot_path,
+        pg=pg,
+        _bundle_location_snapshots=sorted_snapshots,
+        _snapshot_path=snapshot_path,
     )

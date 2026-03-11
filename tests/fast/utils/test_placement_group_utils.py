@@ -7,7 +7,6 @@ import pytest
 from miles.utils.placement_group_utils import (
     BundleLocationSnapshot,
     PlacementGroupInfo,
-    PlacementGroupSlice,
     _bundle_sort_key,
     _load_snapshots,
     _partial_resort_snapshots,
@@ -17,7 +16,6 @@ from miles.utils.placement_group_utils import (
 
 class _FakePlacementGroup:
     """Minimal stand-in for ray.util.placement_group.PlacementGroup."""
-    pass
 
 
 def _make_pg_info(snapshots: list[BundleLocationSnapshot]) -> PlacementGroupInfo:
@@ -367,9 +365,12 @@ class TestPartialResortSnapshotsCrossPg:
         ]
         result = _partial_resort_snapshots(old, new)
         assert [(s.node_ip, s.gpu_id) for s in result] == [
-            ("10.0.0.1", "0"), ("10.0.0.1", "1"),
-            ("10.0.0.2", "0"), ("10.0.0.2", "1"),
-            ("10.0.0.3", "0"), ("10.0.0.3", "1"),
+            ("10.0.0.1", "0"),
+            ("10.0.0.1", "1"),
+            ("10.0.0.2", "0"),
+            ("10.0.0.2", "1"),
+            ("10.0.0.3", "0"),
+            ("10.0.0.3", "1"),
         ]
         # bundle_indices come from the NEW PG
         assert [s.bundle_index for s in result] == [0, 1, 2, 3, 4, 5]
@@ -387,9 +388,12 @@ class TestPartialResortSnapshotsCrossPg:
         ]
         result = _partial_resort_snapshots(old, new)
         assert [(s.node_ip, s.gpu_id) for s in result] == [
-            ("10.0.0.1", "0"), ("10.0.0.1", "1"),
-            ("10.0.0.4", "0"), ("10.0.0.4", "1"),
-            ("10.0.0.3", "0"), ("10.0.0.3", "1"),
+            ("10.0.0.1", "0"),
+            ("10.0.0.1", "1"),
+            ("10.0.0.4", "0"),
+            ("10.0.0.4", "1"),
+            ("10.0.0.3", "0"),
+            ("10.0.0.3", "1"),
         ]
 
     def test_cross_pg_all_nodes_replaced(self) -> None:
