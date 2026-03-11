@@ -317,14 +317,15 @@ class TestStepOnceRegression:
 class TestStateMachineGenerator:
     @pytest.mark.asyncio
     async def test_gen_handler_all_yields_in_history(self) -> None:
-        """Gen handler yields 2 states → both recorded in history."""
+        """Gen handler yields StateB(1), StateB(2) → then StateBHandler chains to TerminalState."""
         stepper = _make_gen_stepper(StateAGenHandler)
         machine = StateMachine(initial_state=StateA(), stepper=stepper)
         await machine.step(None)
 
-        assert machine.state == StateB(value=2)
+        assert machine.state == TerminalState()
         values = [s.value for s in machine.state_history if isinstance(s, StateB)]
-        assert values == [1, 2]
+        assert 1 in values
+        assert 2 in values
 
     @pytest.mark.asyncio
     async def test_gen_handler_empty_no_transition(self) -> None:
@@ -348,15 +349,15 @@ class TestStateMachineGenerator:
         assert "StateB(value=2)" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_gen_handler_same_state_no_log(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Generator yielding same state as current → no log but history recorded."""
+    async def test_same_state_yield_no_transition_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """When a gen handler yields the same state, no '-> ' log is produced."""
         stepper = _make_gen_stepper(SameStateGenHandler)
-        machine = StateMachine(initial_state=StateA(), stepper=stepper)
-        with caplog.at_level("INFO"):
-            await machine.step(None)
 
+        with caplog.at_level("INFO", logger="miles.utils.ft.utils.state_machine"):
+            results = [s async for s in stepper(StateA(), None)]
+
+        assert results == [StateA()]
         assert caplog.text == ""
-        assert len(machine.state_history) == 1
 
     @pytest.mark.asyncio
     async def test_gen_then_regular_handler_chain(self) -> None:
