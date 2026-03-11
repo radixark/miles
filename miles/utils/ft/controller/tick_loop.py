@@ -10,7 +10,7 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
-from miles.utils.ft.controller.rank_roster import RankRoster
+from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import MainContext, MainState, Recovering
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT, RecoveryContext
 from miles.utils.ft.controller.state_machines.restart import RestartContext
@@ -32,7 +32,7 @@ class TickLoop:
         self,
         *,
         state_machine: StateMachine[MainState, MainContext],
-        rank_roster: RankRoster,
+        training_rank_roster: TrainingRankRoster,
         agents: dict[str, NodeAgentProtocol],
         main_job: MainJobProtocol,
         metric_store: MetricStoreProtocol,
@@ -51,7 +51,7 @@ class TickLoop:
         registration_grace_ticks: int = 5,
     ) -> None:
         self.state_machine = state_machine
-        self.rank_roster = rank_roster
+        self.training_rank_roster = training_rank_roster
         self.tick_count: int = 0
 
         self._agents = agents
@@ -85,9 +85,9 @@ class TickLoop:
         t0 = time.monotonic()
         job_status: JobStatus | None = None
         try:
-            self.rank_roster.warn_if_incomplete()
+            self.training_rank_roster.warn_if_incomplete()
             self._node_agent_coverage_checker.check(
-                training_node_ids=set(self.rank_roster.rank_placement.values()),
+                training_node_ids=set(self.training_rank_roster.rank_placement.values()),
                 registered_agent_node_ids=set(self._agents.keys()),
             )
             job_status = await self._main_job.get_job_status()
@@ -117,7 +117,7 @@ class TickLoop:
             self._update_exporter_metrics(job_status, tick_duration=tick_duration)
 
     def _should_run_detectors(self) -> bool:
-        if len(self.rank_roster.rank_placement) == 0:
+        if len(self.training_rank_roster.rank_placement) == 0:
             logger.info("skip_detectors_no_ranks tick=%d", self.tick_count)
             return False
 
@@ -148,7 +148,7 @@ class TickLoop:
             restart_context=self._restart_context,
             notifier=self._notifier,
             timeout_seconds=self._recovery_timeout_seconds,
-            rank_pids_provider=lambda node_id: self.rank_roster.get_rank_pids_for_node(node_id),
+            rank_pids_provider=lambda node_id: self.training_rank_roster.get_rank_pids_for_node(node_id),
         )
 
     def _build_main_context(
@@ -177,7 +177,7 @@ class TickLoop:
         return DetectorContext(
             metric_store=self._metric_store,
             mini_wandb=self._mini_wandb,
-            rank_placement=dict(self.rank_roster.rank_placement),
+            rank_placement=dict(self.training_rank_roster.rank_placement),
             job_status=job_status,
         )
 

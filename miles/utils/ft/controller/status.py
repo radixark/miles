@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.rank_roster import RankRoster
+from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import MainContext, MainState, Recovering, get_known_bad_nodes
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestarting,
@@ -33,7 +33,7 @@ def build_controller_status(
     *,
     state_machine: StateMachine[MainState, MainContext],
     mini_wandb: MiniWandb,
-    rank_roster: RankRoster,
+    training_rank_roster: TrainingRankRoster,
     tick_count: int,
 ) -> ControllerStatus:
     state = state_machine.state
@@ -59,7 +59,7 @@ def build_controller_status(
         recovery_phase=recovery_phase_str,
         phase_history=phase_history if phase_history else None,
         tick_count=tick_count,
-        active_run_id=rank_roster.run_id,
+        active_run_id=training_rank_roster.run_id,
         bad_nodes=bad_nodes,
         recovery_in_progress=isinstance(state, Recovering),
         bad_nodes_confirmed=bad_nodes_confirmed,

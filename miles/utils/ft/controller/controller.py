@@ -7,7 +7,7 @@ from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, No
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.rank_roster import RankRoster
+from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.tick_loop import TickLoop
@@ -23,7 +23,7 @@ class FtController:
         *,
         main_job: MainJobProtocol,
         state_machine: StateMachine[MainState, MainContext],
-        rank_roster: RankRoster,
+        training_rank_roster: TrainingRankRoster,
         mini_wandb: MiniWandb,
         scrape_target_manager: ScrapeTargetManagerProtocol | None,
         agents: dict[str, NodeAgentProtocol],
@@ -35,7 +35,7 @@ class FtController:
     ) -> None:
         self._main_job = main_job
         self._state_machine = state_machine
-        self._rank_roster = rank_roster
+        self._training_rank_roster = training_rank_roster
         self._mini_wandb = mini_wandb
         self._scrape_target_manager = scrape_target_manager
         self._agents = agents
@@ -53,8 +53,8 @@ class FtController:
     # ------------------------------------------------------------------
 
     @property
-    def rank_roster(self) -> RankRoster:
-        return self._rank_roster
+    def training_rank_roster(self) -> TrainingRankRoster:
+        return self._training_rank_roster
 
     @property
     def mini_wandb(self) -> MiniWandb:
@@ -115,7 +115,7 @@ class FtController:
         return build_controller_status(
             state_machine=self._state_machine,
             mini_wandb=self._mini_wandb,
-            rank_roster=self._rank_roster,
+            training_rank_roster=self._training_rank_roster,
             tick_count=self._tick_count,
         )
 
@@ -124,13 +124,13 @@ class FtController:
     # ------------------------------------------------------------------
 
     def _activate_run(self, run_id: str) -> None:
-        """Create a fresh RankRoster for the new run and switch MiniWandb."""
-        self._rank_roster.cleanup()
-        self._rank_roster = RankRoster(
+        """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
+        self._training_rank_roster.cleanup()
+        self._training_rank_roster = TrainingRankRoster(
             run_id=run_id,
             scrape_target_manager=self._scrape_target_manager,
         )
-        self._tick_loop.rank_roster = self._rank_roster
+        self._tick_loop.training_rank_roster = self._training_rank_roster
         self._mini_wandb.set_active_run_id(run_id)
         logger.info("run_activated run_id=%s", run_id)
 
