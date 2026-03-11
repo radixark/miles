@@ -144,7 +144,9 @@ class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
                 state.trigger,
                 state.recovery_start_time,
             )
-            new_recovery = await ctx.recovery_stepper.step_once(state.recovery, recovery_ctx)
+            new_recovery = None
+            async for new_recovery in ctx.recovery_stepper(state.recovery, recovery_ctx):
+                pass
         except Exception:
             logger.error("Recovery stepper raised exception", exc_info=True)
             new_recovery = NotifyHumans(state_before=type(state.recovery).__name__)

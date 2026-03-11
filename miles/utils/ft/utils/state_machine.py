@@ -80,10 +80,6 @@ class StateMachineStepper(Generic[StateT, ContextT]):
             if result is not None:
                 yield result
 
-    async def step_once(self, state: StateT, context: ContextT) -> StateT | None:
-        async for result in self(state, context):
-            return result
-        return None
 
 
 class StateMachine(Generic[StateT, ContextT]):

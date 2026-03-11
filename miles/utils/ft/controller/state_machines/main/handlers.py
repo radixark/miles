@@ -85,10 +85,12 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             sub_ctx = self._build_subsystem_context(config=config, context=context)
             current = sub_state
             while True:
-                next_state = await anext(self._subsystem_stepper(current, sub_ctx), None)
-                if next_state is None:
+                had_transition = False
+                async for next_state in self._subsystem_stepper(current, sub_ctx):
+                    current = next_state
+                    had_transition = True
+                if not had_transition:
                     break
-                current = next_state
             if current != sub_state:
                 curr_state = NormalState(subsystems={**curr_state.subsystems, name: current})
                 yield curr_state

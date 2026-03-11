@@ -113,6 +113,13 @@ def _make_gen_stepper(
     return StateMachineStepper(handler_map=handler_map, **kwargs)
 
 
+async def _step_last(stepper: StateMachineStepper, state, ctx):
+    result = None
+    async for result in stepper(state, ctx):
+        pass
+    return result
+
+
 # -- Tests: StateMachineStepper ------------------------------------------------
 
 
@@ -120,41 +127,41 @@ class TestStateMachineStepper:
     @pytest.mark.asyncio
     async def test_dispatch_to_correct_handler(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(StateA(), None)
+        result = await _step_last(stepper, StateA(), None)
         assert isinstance(result, StateB)
         assert result.value == 1
 
     @pytest.mark.asyncio
     async def test_terminal_state_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(TerminalState(), None)
+        result = await _step_last(stepper, TerminalState(), None)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_handler_returning_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(StateC(), None)
+        result = await _step_last(stepper, StateC(), None)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_unregistered_state_raises_type_error(self) -> None:
         stepper = _make_stepper()
         with pytest.raises(TypeError, match="has no handler for state type UnregisteredState"):
-            await stepper.step_once(UnregisteredState(), None)
+            await _step_last(stepper, UnregisteredState(), None)
 
     @pytest.mark.asyncio
     async def test_same_type_transition(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(StateB(value=1), None)
+        result = await _step_last(stepper, StateB(value=1), None)
         assert isinstance(result, StateB)
         assert result.value == 2
 
     @pytest.mark.asyncio
-    async def test_step_once_does_not_log(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Logging moved to StateMachine — step_once should not log."""
+    async def test_stepper_does_not_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Logging moved to StateMachine — stepper should not log."""
         stepper = _make_stepper()
         with caplog.at_level("INFO"):
-            await stepper.step_once(StateA(), None)
+            await _step_last(stepper, StateA(), None)
         assert caplog.text == ""
 
     @pytest.mark.asyncio
@@ -165,7 +172,7 @@ class TestStateMachineStepper:
             return TerminalState()
 
         stepper = _make_stepper(pre_dispatch=always_terminal)
-        result = await stepper.step_once(StateA(), None)
+        result = await _step_last(stepper, StateA(), None)
         assert isinstance(result, TerminalState)
 
     @pytest.mark.asyncio
@@ -176,7 +183,7 @@ class TestStateMachineStepper:
             return None
 
         stepper = _make_stepper(pre_dispatch=pass_through)
-        result = await stepper.step_once(StateA(), None)
+        result = await _step_last(stepper, StateA(), None)
         assert isinstance(result, StateB)
         assert result.value == 1
 
@@ -234,10 +241,10 @@ class TestStateMachineStepperGenerator:
         assert results == [StateB(value=1), StateB(value=2)]
 
     @pytest.mark.asyncio
-    async def test_gen_handler_step_once_returns_first(self) -> None:
+    async def test_gen_handler_step_last_returns_last(self) -> None:
         stepper = _make_gen_stepper(StateAGenHandler)
-        result = await stepper.step_once(StateA(), None)
-        assert result == StateB(value=1)
+        result = await _step_last(stepper, StateA(), None)
+        assert result == StateB(value=2)
 
     @pytest.mark.asyncio
     async def test_empty_gen_yields_nothing(self) -> None:
@@ -246,9 +253,9 @@ class TestStateMachineStepperGenerator:
         assert results == []
 
     @pytest.mark.asyncio
-    async def test_empty_gen_step_once_returns_none(self) -> None:
+    async def test_empty_gen_step_last_returns_none(self) -> None:
         stepper = _make_gen_stepper(EmptyGenHandler)
-        result = await stepper.step_once(StateA(), None)
+        result = await _step_last(stepper, StateA(), None)
         assert result is None
 
     @pytest.mark.asyncio
@@ -258,9 +265,9 @@ class TestStateMachineStepperGenerator:
         assert results == [StateB(value=42)]
 
     @pytest.mark.asyncio
-    async def test_single_yield_gen_step_once(self) -> None:
+    async def test_single_yield_gen_step_last(self) -> None:
         stepper = _make_gen_stepper(SingleYieldGenHandler)
-        result = await stepper.step_once(StateA(), None)
+        result = await _step_last(stepper, StateA(), None)
         assert result == StateB(value=42)
 
     @pytest.mark.asyncio
@@ -285,29 +292,29 @@ class TestStateMachineStepperGenerator:
     async def test_gen_handler_unregistered_raises(self) -> None:
         stepper = _make_gen_stepper(StateAGenHandler)
         with pytest.raises(TypeError, match="has no handler for state type"):
-            await stepper.step_once(UnregisteredState(), None)
+            await _step_last(stepper, UnregisteredState(), None)
 
 
-# -- Tests: step_once regression -----------------------------------------------
+# -- Tests: _step_last regression -----------------------------------------------
 
 
-class TestStepOnceRegression:
+class TestStepLastRegression:
     @pytest.mark.asyncio
-    async def test_step_once_regular_handler(self) -> None:
+    async def test_step_last_regular_handler(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(StateA(), None)
+        result = await _step_last(stepper, StateA(), None)
         assert result == StateB(value=1)
 
     @pytest.mark.asyncio
-    async def test_step_once_returns_none_on_no_transition(self) -> None:
+    async def test_step_last_returns_none_on_no_transition(self) -> None:
         stepper = _make_stepper()
-        result = await stepper.step_once(StateC(), None)
+        result = await _step_last(stepper, StateC(), None)
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_step_once_terminal_state(self) -> None:
+    async def test_step_last_terminal_state(self) -> None:
         stepper = _make_stepper(terminal_states=frozenset({TerminalState}))
-        result = await stepper.step_once(TerminalState(), None)
+        result = await _step_last(stepper, TerminalState(), None)
         assert result is None
 
 
