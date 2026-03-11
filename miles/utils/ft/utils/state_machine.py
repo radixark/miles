@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel
@@ -52,14 +53,15 @@ class StateMachineStepper(Generic[StateT, ContextT]):
         self._terminal_states = terminal_states
         self._pre_dispatch = pre_dispatch
 
-    async def __call__(self, state: StateT, context: ContextT) -> StateT | None:
+    async def __call__(self, state: StateT, context: ContextT) -> AsyncGenerator[StateT, None]:
         if type(state) in self._terminal_states:
-            return None
+            return
 
         if self._pre_dispatch is not None:
             result = await self._pre_dispatch(state, context)
             if result is not None:
-                return result
+                yield result
+                return
 
         handler = self._handlers.get(type(state))
         if handler is None:
@@ -67,14 +69,21 @@ class StateMachineStepper(Generic[StateT, ContextT]):
                 f"StateMachineStepper has no handler for state type "
                 f"{type(state).__name__}; register it in handler_map"
             )
-        result = await handler(state, context)
-        if result is not None and result != state:
-            logger.info(
-                "%r -> %r",
-                state,
-                result,
-            )
-        return result
+
+        raw = handler(state, context)
+        if inspect.isasyncgen(raw):
+            async for item in raw:
+                if item is not None:
+                    yield item
+        else:
+            result = await raw
+            if result is not None:
+                yield result
+
+    async def step_once(self, state: StateT, context: ContextT) -> StateT | None:
+        async for result in self(state, context):
+            return result
+        return None
 
 
 class StateMachine(Generic[StateT, ContextT]):
@@ -115,8 +124,12 @@ class StateMachine(Generic[StateT, ContextT]):
     async def step(self, context: ContextT) -> None:
         """Run stepper until no more transitions this tick."""
         while True:
-            new_state = await self._stepper(self._state, context)
-            if new_state is None:
+            had_transition = False
+            async for new_state in self._stepper(self._state, context):
+                if new_state != self._state:
+                    logger.info("%r -> %r", self._state, new_state)
+                self._state_history.append(new_state)
+                self._state = new_state
+                had_transition = True
+            if not had_transition:
                 break
-            self._state_history.append(new_state)
-            self._state = new_state
