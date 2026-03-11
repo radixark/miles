@@ -11,7 +11,7 @@ from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task,
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
-from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext, SubsystemState
+from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, SubsystemConfig
 from miles.utils.ft.controller.tick_loop import TickLoop
@@ -200,14 +200,14 @@ class FtController:
         return self._tick_loop.tick_count
 
     @property
-    def _training_state_machine(self) -> StateMachine[SubsystemState, SubsystemContext]:
+    def _training_subsystem_state(self) -> SubsystemState:
         state = self._state_machine.state
         if not isinstance(state, NormalState):
             raise RuntimeError(f"Expected NormalState, got {type(state).__name__}")
         training = state.subsystems.get("training")
         if training is None:
             raise RuntimeError("No 'training' subsystem in NormalState")
-        return training.state_machine
+        return training
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
