@@ -106,5 +106,7 @@ def _get_rollout_topk_from_response(args, output, sample, key):
     info = output["meta_info"].get(key)
     if info is None:
         return None
-    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
+    # Use .copy() because np.frombuffer returns a read-only array,
+    # which causes warnings/undefined behavior in torch.from_numpy later.
+    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32).copy()
     return x.reshape(len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
