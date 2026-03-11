@@ -38,6 +38,7 @@ class ControllerStatus(FtBaseModel):
     recovery_in_progress: bool
     bad_nodes_confirmed: bool
     latest_iteration: int | None
+    rollout_subsystem_states: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------

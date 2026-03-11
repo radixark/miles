@@ -41,6 +41,18 @@ def _extract_training_sm(
     return None
 
 
+def _extract_rollout_subsystem_states(
+    controller_state: MainState,
+) -> dict[str, str] | None:
+    if not isinstance(controller_state, NormalState):
+        return None
+    result: dict[str, str] = {}
+    for name, entry in controller_state.subsystems.items():
+        if name.startswith("rollout_"):
+            result[name] = type(entry.state_machine.state).__name__
+    return result if result else None
+
+
 def build_controller_status(
     *,
     controller_state_machine: StateMachine[MainState, MainContext],
@@ -51,6 +63,7 @@ def build_controller_status(
     controller_state = controller_state_machine.state
     iteration_val = mini_wandb.latest(metric_name="iteration")
     latest_iteration = int(iteration_val) if iteration_val is not None else None
+    rollout_states = _extract_rollout_subsystem_states(controller_state)
 
     # Extract training sub-SM state
     training_sm = _extract_training_sm(controller_state)
@@ -66,6 +79,7 @@ def build_controller_status(
             recovery_in_progress=True,
             bad_nodes_confirmed=False,
             latest_iteration=latest_iteration,
+            rollout_subsystem_states=rollout_states,
         )
 
     if training_sm is None:
@@ -79,6 +93,7 @@ def build_controller_status(
             recovery_in_progress=False,
             bad_nodes_confirmed=False,
             latest_iteration=latest_iteration,
+            rollout_subsystem_states=rollout_states,
         )
 
     state = training_sm.state
@@ -106,4 +121,5 @@ def build_controller_status(
         recovery_in_progress=isinstance(state, Recovering),
         bad_nodes_confirmed=bad_nodes_confirmed,
         latest_iteration=latest_iteration,
+        rollout_subsystem_states=rollout_states,
     )
