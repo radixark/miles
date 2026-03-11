@@ -372,6 +372,32 @@ class TestShutdownWithoutStart:
         await agent.shutdown()
 
 
+class TestUpdateCellEngines:
+    def test_delegates_to_cell_update_engines(self) -> None:
+        cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
+        agent = FtRolloutAgent(cells={"a0": cell}, check_interval=10.0)
+
+        try:
+            agent.update_cell_engines("a0", ["new0", "new1", "new2"])
+
+            assert cell.get_engine_count() == 3
+            assert cell.is_healthy() is False
+        finally:
+            agent._metrics_exporter.shutdown()
+
+    def test_raises_key_error_for_unknown_cell(self) -> None:
+        agent = FtRolloutAgent(
+            cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])},
+            check_interval=10.0,
+        )
+
+        try:
+            with pytest.raises(KeyError):
+                agent.update_cell_engines("nonexistent", ["e0"])
+        finally:
+            agent._metrics_exporter.shutdown()
+
+
 class TestPublicApi:
     def test_get_cell_ids(self) -> None:
         cells = {

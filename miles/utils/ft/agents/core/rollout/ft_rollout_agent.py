@@ -97,6 +97,9 @@ class FtRolloutAgent:
 
     # --- Public API for M12 integration ---
 
+    def update_cell_engines(self, cell_id: str, engines: list[object]) -> None:
+        self._cells[cell_id].update_engines(engines)
+
     def get_cell_ids(self) -> list[str]:
         return list(self._cells.keys())
 
