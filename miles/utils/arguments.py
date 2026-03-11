@@ -1750,9 +1750,6 @@ def miles_validate_args(args):
         args.offload_rollout = True
     del args.offload
 
-    if args.offload_train:
-        args.disable_grad_buffers_cpu_backup = True
-
     if args.debug_rollout_only:
         if args.colocate and (not args.rollout_num_gpus):
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
@@ -1788,6 +1785,9 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+
+    if args.offload_train:
+        args.disable_grad_buffers_cpu_backup = True
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
