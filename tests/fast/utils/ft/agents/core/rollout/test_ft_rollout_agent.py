@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,7 +28,6 @@ class TestHealthCheckLoopUpdatesMetrics:
             "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
         }
         agent = _make_agent(cells)
-        await agent.start()
 
         try:
             # Step 1: wait for at least one health check cycle
@@ -50,7 +49,6 @@ class TestPartialEngineDeathMetrics:
             "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, False, True]),
         }
         agent = _make_agent(cells)
-        await agent.start()
 
         try:
             await asyncio.sleep(0.15)
@@ -69,7 +67,6 @@ class TestPauseDoesNotProduceFalseUpdates:
     async def test_pause_preserves_last_metrics(self) -> None:
         cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
         agent = _make_agent({"a0": cell})
-        await agent.start()
 
         try:
             # Step 1: wait for initial healthy check
@@ -93,7 +90,6 @@ class TestResumeRestoresChecks:
     async def test_resume_updates_metrics_after_pause(self) -> None:
         cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
         agent = _make_agent({"a0": cell})
-        await agent.start()
 
         try:
             await asyncio.sleep(0.15)
@@ -121,7 +117,6 @@ class TestGetStatus:
             "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True]),
         }
         agent = _make_agent(cells)
-        await agent.start()
 
         try:
             await asyncio.sleep(0.15)
@@ -136,7 +131,6 @@ class TestGetStatus:
             "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
         }
         agent = _make_agent(cells)
-        await agent.start()
 
         try:
             await asyncio.sleep(0.15)
@@ -153,7 +147,6 @@ class TestGetCellStatusPerCellIsolation:
             "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
         }
         agent = _make_agent(cells)
-        await agent.start()
 
         try:
             await asyncio.sleep(0.15)
@@ -165,9 +158,8 @@ class TestGetCellStatusPerCellIsolation:
 
 class TestLifecycle:
     @pytest.mark.anyio
-    async def test_start_makes_address_available_and_shutdown_stops_loop(self) -> None:
+    async def test_address_available_immediately_and_shutdown_stops_loop(self) -> None:
         agent = _make_agent({"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])})
-        await agent.start()
 
         try:
             assert "http://localhost:" in agent.address
@@ -178,26 +170,6 @@ class TestLifecycle:
         assert agent._health_loop_task.done()
 
 
-class TestRegisterWithController:
-    @pytest.mark.anyio
-    async def test_calls_add_scrape_target_with_correct_address(self) -> None:
-        agent = _make_agent({"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])})
-
-        try:
-            controller_handle = MagicMock()
-            controller_handle.add_scrape_target = MagicMock()
-            controller_handle.add_scrape_target.remote = AsyncMock()
-
-            await agent.register_with_controller(controller_handle)
-
-            controller_handle.add_scrape_target.remote.assert_called_once_with(
-                target_id="rollout-ft-agent",
-                address=agent.address,
-            )
-        finally:
-            agent._metrics_exporter.shutdown()
-
-
 class TestHealthLoopSurvivesException:
     @pytest.mark.anyio
     async def test_exception_in_check_health_does_not_crash_loop(self) -> None:
@@ -205,7 +177,6 @@ class TestHealthLoopSurvivesException:
         healthy_cell = MockRolloutCellAgent(cell_id="healthy", engine_alive=[True])
         broken_cell = _BrokenCheckHealthCell(cell_id="broken")
         agent = _make_agent({"healthy": healthy_cell, "broken": broken_cell})
-        await agent.start()
 
         try:
             # Step 1: wait for multiple cycles
@@ -241,7 +212,7 @@ class TestStopCell:
         try:
             await agent.stop_cell("a0")
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
     @pytest.mark.anyio
     async def test_raises_key_error_for_unknown_cell(self) -> None:
@@ -254,7 +225,7 @@ class TestStopCell:
             with pytest.raises(KeyError):
                 await agent.stop_cell("nonexistent")
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
 
 class TestStartCell:
@@ -267,7 +238,7 @@ class TestStartCell:
             result = await agent.start_cell("a0")
             assert result == 2
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
     @pytest.mark.anyio
     async def test_raises_key_error_for_unknown_cell(self) -> None:
@@ -280,7 +251,7 @@ class TestStartCell:
             with pytest.raises(KeyError):
                 await agent.start_cell("nonexistent")
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
 
 class TestStopAll:
@@ -297,7 +268,7 @@ class TestStopAll:
             assert cells["a0"].stop_called
             assert cells["a1"].stop_called
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
 
 class _TrackingStopCell(MockRolloutCellAgent):
@@ -321,7 +292,7 @@ class TestRebuild:
             with pytest.raises(NotImplementedError):
                 await agent.rebuild()
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
 
 class TestGetStatusBeforeAnyHealthCheck:
@@ -336,7 +307,7 @@ class TestGetStatusBeforeAnyHealthCheck:
         try:
             assert await agent.get_status() == JobStatus.FAILED
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
 
 class TestMultiCellMetricsAreIndependent:
@@ -347,7 +318,6 @@ class TestMultiCellMetricsAreIndependent:
             "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
         }
         agent = _make_agent(cells)
-        await agent.start()
 
         try:
             await asyncio.sleep(0.15)
@@ -361,9 +331,9 @@ class TestMultiCellMetricsAreIndependent:
             await agent.shutdown()
 
 
-class TestShutdownWithoutStart:
+class TestShutdownImmediately:
     @pytest.mark.anyio
-    async def test_shutdown_without_start_is_safe(self) -> None:
+    async def test_shutdown_immediately_after_construction_is_safe(self) -> None:
         agent = FtRolloutAgent(
             cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])},
             check_interval=10.0,
@@ -373,7 +343,8 @@ class TestShutdownWithoutStart:
 
 
 class TestUpdateCellEngines:
-    def test_delegates_to_cell_update_engines(self) -> None:
+    @pytest.mark.anyio
+    async def test_delegates_to_cell_update_engines(self) -> None:
         cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
         agent = FtRolloutAgent(cells={"a0": cell}, check_interval=10.0)
 
@@ -383,9 +354,10 @@ class TestUpdateCellEngines:
             assert cell.get_engine_count() == 3
             assert cell.is_healthy() is False
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
-    def test_raises_key_error_for_unknown_cell(self) -> None:
+    @pytest.mark.anyio
+    async def test_raises_key_error_for_unknown_cell(self) -> None:
         agent = FtRolloutAgent(
             cells={"a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True])},
             check_interval=10.0,
@@ -395,11 +367,12 @@ class TestUpdateCellEngines:
             with pytest.raises(KeyError):
                 agent.update_cell_engines("nonexistent", ["e0"])
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
 
 class TestPublicApi:
-    def test_get_cell_ids(self) -> None:
+    @pytest.mark.anyio
+    async def test_get_cell_ids(self) -> None:
         cells = {
             "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True]),
             "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, True]),
@@ -409,13 +382,39 @@ class TestPublicApi:
         try:
             assert sorted(agent.get_cell_ids()) == ["a0", "a1"]
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
 
-    def test_get_cell_agent(self) -> None:
+    @pytest.mark.anyio
+    async def test_get_cell_agent(self) -> None:
         cell = MockRolloutCellAgent(cell_id="a0", engine_alive=[True])
         agent = FtRolloutAgent(cells={"a0": cell}, check_interval=10.0)
 
         try:
             assert agent.get_cell_agent("a0") is cell
         finally:
-            agent._metrics_exporter.shutdown()
+            await agent.shutdown()
+
+
+class TestBuildCells:
+    def test_builds_default_cell_from_rm(self) -> None:
+        rm = MagicMock()
+        rm.all_rollout_engines = [MagicMock(), MagicMock(), MagicMock()]
+
+        cells = FtRolloutAgent._build_cells(rm)
+
+        assert list(cells.keys()) == ["default"]
+        assert cells["default"].get_engine_count() == 3
+
+    def test_cell_id_is_default(self) -> None:
+        rm = MagicMock()
+        rm.all_rollout_engines = [MagicMock()]
+
+        cells = FtRolloutAgent._build_cells(rm)
+        assert cells["default"].cell_id == "default"
+
+
+class TestConstructorValidation:
+    @pytest.mark.anyio
+    async def test_raises_when_neither_rm_nor_cells_provided(self) -> None:
+        with pytest.raises(ValueError, match="Either rm or cells must be provided"):
+            FtRolloutAgent(check_interval=1.0)

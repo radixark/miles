@@ -35,34 +35,6 @@ from tests.fast.utils.ft.conftest import (
 # ---------------------------------------------------------------------------
 
 
-class FakeRolloutCellAgent:
-    """Mimics RolloutCellAgent for testing register_rollout_subsystems."""
-
-    def __init__(self, *, cell_id: str, node_ids: set[str]) -> None:
-        self._cell_id = cell_id
-        self._node_ids = node_ids
-
-    @property
-    def cell_id(self) -> str:
-        return self._cell_id
-
-    def get_node_ids(self) -> set[str]:
-        return set(self._node_ids)
-
-
-class FakeRolloutAgent:
-    """Mimics FtRolloutAgent for testing register_rollout_subsystems."""
-
-    def __init__(self, cells: dict[str, FakeRolloutCellAgent]) -> None:
-        self._cells = cells
-
-    def get_cell_ids(self) -> list[str]:
-        return list(self._cells.keys())
-
-    def get_cell_agent(self, cell_id: str) -> FakeRolloutCellAgent:
-        return self._cells[cell_id]
-
-
 class FakeRmHandle:
     """Fake Ray remote handle for RolloutManager."""
 
@@ -116,15 +88,10 @@ def _make_test_controller_with_rollout(
     *,
     training_detectors: list[BaseFaultDetector] | None = None,
     cell_ids: list[str] | None = None,
-    cell_node_ids: dict[str, set[str]] | None = None,
     monitoring_success_iterations: int = 10,
     diagnostic_orchestrator: object | None = None,
 ) -> _RolloutTestHarness:
     resolved_cell_ids = cell_ids or ["ep72"]
-    resolved_cell_nodes = cell_node_ids or {
-        cid: {f"rollout-node-{cid}-0", f"rollout-node-{cid}-1"}
-        for cid in resolved_cell_ids
-    }
 
     node_manager = FakeNodeManager()
     main_job = FakeMainJob()
@@ -156,15 +123,10 @@ def _make_test_controller_with_rollout(
     controller.training_rank_roster.rank_placement[1] = "train-node-1"
 
     rm_handle = FakeRmHandle()
-    cells = {
-        cid: FakeRolloutCellAgent(cell_id=cid, node_ids=resolved_cell_nodes[cid])
-        for cid in resolved_cell_ids
-    }
-    rollout_agent = FakeRolloutAgent(cells=cells)
 
     controller.register_rollout_subsystems(
         rm_handle=rm_handle,
-        ft_rollout_agent=rollout_agent,
+        cell_ids=resolved_cell_ids,
     )
 
     return _RolloutTestHarness(
@@ -211,12 +173,10 @@ class TestRegisterRolloutSubsystems:
         assert "ep72" in cell_ids
         assert "ep36" in cell_ids
 
-    def test_rollout_config_returns_configured_node_ids(self) -> None:
-        controller, *_ = _make_test_controller_with_rollout(
-            cell_node_ids={"ep72": {"node-r0", "node-r1", "node-r2"}},
-        )
+    def test_rollout_active_node_ids_defaults_to_empty(self) -> None:
+        controller, *_ = _make_test_controller_with_rollout()
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
-        assert rollout_config.get_active_node_ids() == {"node-r0", "node-r1", "node-r2"}
+        assert rollout_config.get_active_node_ids() == set()
 
     def test_register_in_non_normal_state_raises_runtime_error(self) -> None:
         harness = make_test_controller(rollout_num_cells=1)
@@ -231,20 +191,18 @@ class TestRegisterRolloutSubsystems:
         )
 
         rm_handle = FakeRmHandle()
-        cells = {"ep72": FakeRolloutCellAgent(cell_id="ep72", node_ids={"n1"})}
-        rollout_agent = FakeRolloutAgent(cells=cells)
 
         with pytest.raises(RuntimeError, match="Cannot register rollout subsystems"):
             controller.register_rollout_subsystems(
                 rm_handle=rm_handle,
-                ft_rollout_agent=rollout_agent,
+                cell_ids=["ep72"],
             )
 
 
 class TestNormalOperationWithRollout:
     @pytest.mark.anyio
     async def test_all_subsystems_healthy_stays_in_normal_state(self) -> None:
-        """Training + 2 rollout cells, no detectors fire → NormalState stays."""
+        """Training + 2 rollout cells, no detectors fire -> NormalState stays."""
         controller, *_ = _make_test_controller_with_rollout(
             cell_ids=["ep72", "ep36"],
         )
@@ -368,7 +326,7 @@ class TestBuildRolloutSubsystemConfig:
 class TestFullLevel1RecoveryCycle:
     @pytest.mark.anyio
     async def test_rollout_completes_full_recovery_and_returns_to_detecting_anomaly(self) -> None:
-        """Detect → RealtimeChecks → Evict → Stop+Start → Monitor(sustained_alive) → Done."""
+        """Detect -> RealtimeChecks -> Evict -> Stop+Start -> Monitor(sustained_alive) -> Done."""
         harness = _make_test_controller_with_rollout(
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
@@ -406,7 +364,7 @@ class TestFullLevel1RecoveryCycle:
 class TestLevel1FailureEscalation:
     @pytest.mark.anyio
     async def test_level1_restart_failure_escalates_to_notify_humans(self) -> None:
-        """L1 restart fails (FAILED status) → StopTimeDiagnostics → NotifyHumans → notifier called."""
+        """L1 restart fails (FAILED status) -> StopTimeDiagnostics -> NotifyHumans -> notifier called."""
         harness = _make_test_controller_with_rollout(
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
@@ -464,7 +422,6 @@ class TestColocatedHardwareFault:
 
         harness = _make_test_controller_with_rollout(
             training_detectors=[training_detector],
-            cell_node_ids={"ep72": {shared_node, "rollout-node-0"}},
             monitoring_success_iterations=0,
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
@@ -512,11 +469,21 @@ class TestRolloutNumCellsValidation:
         controller = harness.controller
 
         rm_handle = FakeRmHandle()
-        cells = {"ep72": FakeRolloutCellAgent(cell_id="ep72", node_ids={"n1"})}
-        rollout_agent = FakeRolloutAgent(cells=cells)
 
         with pytest.raises(AssertionError, match="Expected 2 rollout cells, got 1"):
             controller.register_rollout_subsystems(
                 rm_handle=rm_handle,
-                ft_rollout_agent=rollout_agent,
+                cell_ids=["ep72"],
             )
+
+    def test_register_default_cell_ids(self) -> None:
+        """When cell_ids=None, defaults to ['default']."""
+        harness = make_test_controller(rollout_num_cells=1)
+        controller = harness.controller
+
+        rm_handle = FakeRmHandle()
+        controller.register_rollout_subsystems(rm_handle=rm_handle)
+
+        state = controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert "rollout_default" in state.subsystems

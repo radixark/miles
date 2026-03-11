@@ -206,22 +206,36 @@ class TestFtControllerActorProxy:
         actor, harness = self._make_actor_with_harness()
 
         fake_rm_handle = MagicMock()
-        fake_engines = [MagicMock(), MagicMock()]
 
         await actor.register_rollout(
             rm_handle=fake_rm_handle,
-            engine_handles=fake_engines,
-            node_ids=["node-0", "node-1"],
+            metrics_address="http://localhost:9999",
+            cell_ids=["default"],
         )
 
         state = harness.controller._state_machine.state
         assert isinstance(state, NormalState)
         assert "rollout_default" in state.subsystems
 
-        assert hasattr(actor, "_ft_rollout_agent")
-        assert actor._ft_rollout_agent.get_cell_ids() == ["default"]
-        cell = actor._ft_rollout_agent.get_cell_agent("default")
-        assert cell.get_node_ids() == {"node-0", "node-1"}
-        assert cell.get_engine_count() == 2
+    @pytest.mark.anyio
+    async def test_register_rollout_adds_scrape_target(self) -> None:
+        actor, harness = self._make_actor_with_harness()
 
-        await actor._ft_rollout_agent.shutdown()
+        fake_rm_handle = MagicMock()
+        await actor.register_rollout(
+            rm_handle=fake_rm_handle,
+            metrics_address="http://localhost:9999",
+        )
+
+        assert "rollout-ft-agent" in harness.controller._metric_store._scrape_targets
+
+    @pytest.mark.anyio
+    async def test_register_rollout_without_metrics_address_skips_scrape(self) -> None:
+        actor, harness = self._make_actor_with_harness()
+
+        fake_rm_handle = MagicMock()
+        await actor.register_rollout(
+            rm_handle=fake_rm_handle,
+        )
+
+        assert "rollout-ft-agent" not in harness.controller._metric_store._scrape_targets

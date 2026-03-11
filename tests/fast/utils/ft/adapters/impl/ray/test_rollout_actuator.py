@@ -42,6 +42,17 @@ class TestRayRolloutActuator:
         assert result == "9"
         assert isinstance(result, str)
 
+    async def test_start_with_dict_result_extracts_count(self) -> None:
+        handle = FakeRmHandle()
+        handle.start_cell.remote = AsyncMock(
+            return_value={"engine_handles": ["e0", "e1"], "count": 2},
+        )
+        actuator = RayRolloutActuator(rm_handle=handle, cell_id="0")
+
+        result = await actuator.start()
+
+        assert result == "2"
+
     async def test_get_status_running(self) -> None:
         handle = FakeRmHandle()
         actuator = RayRolloutActuator(rm_handle=handle, cell_id="0")
@@ -87,43 +98,3 @@ class TestRayRolloutActuator:
         actuator = RayRolloutActuator(rm_handle=handle, cell_id="0")
         result = await actuator.get_status()
         assert result == status
-
-    async def test_start_with_ft_agent_updates_engines_and_returns_count(self) -> None:
-        handle = FakeRmHandle()
-        handle.start_cell.remote = AsyncMock(
-            return_value={"engine_handles": ["e0", "e1"], "count": 2},
-        )
-        ft_agent = MagicMock()
-        actuator = RayRolloutActuator(
-            rm_handle=handle, cell_id="0", ft_rollout_agent=ft_agent,
-        )
-
-        result = await actuator.start()
-
-        ft_agent.update_cell_engines.assert_called_once_with("0", ["e0", "e1"])
-        assert result == "2"
-
-    async def test_start_with_ft_agent_non_dict_result_no_update(self) -> None:
-        """When rm returns a plain int (legacy), ft_agent is not called."""
-        handle = FakeRmHandle()
-        handle.start_cell.remote = AsyncMock(return_value=5)
-        ft_agent = MagicMock()
-        actuator = RayRolloutActuator(
-            rm_handle=handle, cell_id="0", ft_rollout_agent=ft_agent,
-        )
-
-        result = await actuator.start()
-
-        ft_agent.update_cell_engines.assert_not_called()
-        assert result == "5"
-
-    async def test_start_without_ft_agent_returns_str(self) -> None:
-        handle = FakeRmHandle()
-        handle.start_cell.remote = AsyncMock(
-            return_value={"engine_handles": ["e0"], "count": 1},
-        )
-        actuator = RayRolloutActuator(rm_handle=handle, cell_id="0")
-
-        result = await actuator.start()
-
-        assert result == str({"engine_handles": ["e0"], "count": 1})
