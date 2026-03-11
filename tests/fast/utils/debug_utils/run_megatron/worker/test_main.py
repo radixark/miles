@@ -1,55 +1,87 @@
 """Unit tests for worker/main.py functions.
 
-main.py has heavy top-level imports (megatron, sglang, etc.) that are not
-available in the lightweight test environment.  We pre-populate sys.modules
-with MagicMock stubs so that importing main.py succeeds without those packages.
+main.py has heavy top-level imports (megatron.training.arguments, etc.)
+that aren't fully available in the lightweight test container.  We intercept
+the import by patching sys.modules for missing leaves *before* importing
+the module under test.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import torch
 
-# ---------------------------------------------------------------------------
-# Stub out heavy dependencies before importing the module under test.
-# ---------------------------------------------------------------------------
 
-_STUB_MODULES: list[str] = [
-    "megatron.core",
-    "megatron.core.enums",
-    "megatron.core.mpu",
-    "megatron.core.pipeline_parallel",
-    "megatron.training",
-    "megatron.training.arguments",
-    "megatron.training.training",
+def _ensure_module(dotted: str) -> ModuleType:
+    """Ensure *dotted* exists in sys.modules, creating stubs for any missing segments."""
+    parts = dotted.split(".")
+    for i in range(len(parts)):
+        partial = ".".join(parts[: i + 1])
+        if partial not in sys.modules:
+            sys.modules[partial] = ModuleType(partial)
+    return sys.modules[dotted]
+
+
+# Stub modules whose top-level imports in main.py would fail.
+_STUBS: dict[str, dict[str, Any]] = {
+    "megatron.training.arguments": {
+        "parse_args": MagicMock(),
+        "validate_args": MagicMock(),
+    },
+    "megatron.training.training": {
+        "get_model": MagicMock(),
+    },
+    "megatron.core.enums": {
+        "ModelType": MagicMock(),
+    },
+    "megatron.core.pipeline_parallel": {
+        "get_forward_backward_func": MagicMock(),
+    },
+    "megatron.core.mpu": MagicMock(),
+}
+
+for _mod_path, _attrs in _STUBS.items():
+    mod = _ensure_module(_mod_path)
+    if isinstance(_attrs, dict):
+        for attr_name, attr_val in _attrs.items():
+            if not hasattr(mod, attr_name):
+                setattr(mod, attr_name, attr_val)
+    else:
+        # Replace the whole module with a MagicMock
+        sys.modules[_mod_path] = _attrs
+
+# Also ensure miles.backends.megatron_utils sub-modules have their needed symbols
+for _sub in [
     "miles.backends.megatron_utils.arguments",
     "miles.backends.megatron_utils.checkpoint",
     "miles.backends.megatron_utils.initialize",
     "miles.backends.megatron_utils.model_provider",
-    "miles.utils.debug_utils.run_megatron.worker.replay",
-]
+]:
+    mod = _ensure_module(_sub)
+    # Provide any names imported by main.py from these modules
+    for name in [
+        "set_default_megatron_args",
+        "load_checkpoint",
+        "init",
+        "get_model_provider_func",
+    ]:
+        if not hasattr(mod, name):
+            setattr(mod, name, MagicMock())
 
-_original_modules: dict[str, ModuleType] = {}
-for _mod_name in _STUB_MODULES:
-    if _mod_name not in sys.modules:
-        stub = ModuleType(_mod_name)
-        # Some modules need specific attributes that are accessed at import time
-        if _mod_name == "megatron.core.enums":
-            stub.ModelType = MagicMock()  # type: ignore[attr-defined]
-        if _mod_name == "megatron.core.pipeline_parallel":
-            stub.get_forward_backward_func = MagicMock()  # type: ignore[attr-defined]
-        if _mod_name == "megatron.training.arguments":
-            stub.parse_args = MagicMock()  # type: ignore[attr-defined]
-            stub.validate_args = MagicMock()  # type: ignore[attr-defined]
-        if _mod_name == "megatron.training.training":
-            stub.get_model = MagicMock()  # type: ignore[attr-defined]
-        sys.modules[_mod_name] = stub
+# Replay module
+_ensure_module("miles.utils.debug_utils.run_megatron.worker.replay")
+for name in ["load_replay_data", "save_replay_data", "setup_replay_before_model"]:
+    mod = sys.modules["miles.utils.debug_utils.run_megatron.worker.replay"]
+    if not hasattr(mod, name):
+        setattr(mod, name, MagicMock())
 
 from miles.utils.debug_utils.run_megatron.worker.main import (  # noqa: E402
     _apply_source_patches,
