@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import ConfigDict
 
 from miles.utils.ft.controller.subsystem import SubsystemEntry
@@ -22,3 +24,4 @@ class RestartingMainJobState(MainState):
     """Waiting for the main job restart to complete."""
 
     requestor_name: str
+    start_time: datetime

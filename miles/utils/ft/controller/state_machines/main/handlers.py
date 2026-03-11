@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import DetectorContext
@@ -45,7 +45,10 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 run_id = await context.main_job.submit_job()
                 if context.on_new_run is not None:
                     context.on_new_run(run_id)
-                return RestartingMainJobState(requestor_name=name)
+                return RestartingMainJobState(
+                    requestor_name=name,
+                    start_time=datetime.now(timezone.utc),
+                )
 
         return None
 
@@ -160,9 +163,29 @@ class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainCon
             return NormalState(subsystems=fresh)
 
         if status == JobStatus.FAILED:
-            logger.warning("main job restart failed, rebuilding subsystems for retry")
+            logger.warning("main_job_restart_failed subsystem=%s", state.requestor_name)
+            await safe_notify(
+                context.notifier,
+                title="Recovery Alert",
+                content=f"Main job restart failed for subsystem '{state.requestor_name}'",
+            )
             fresh = context.create_fresh_subsystems()
             return NormalState(subsystems=fresh)
 
-        # PENDING / STOPPED — keep waiting
+        # PENDING / STOPPED — check timeout
+        elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
+        if elapsed > context.recovery_timeout_seconds:
+            logger.warning(
+                "main_job_restart_timeout subsystem=%s elapsed=%ds",
+                state.requestor_name,
+                int(elapsed),
+            )
+            await safe_notify(
+                context.notifier,
+                title="Recovery Alert",
+                content=f"Main job restart for '{state.requestor_name}' timed out after {int(elapsed)}s",
+            )
+            fresh = context.create_fresh_subsystems()
+            return NormalState(subsystems=fresh)
+
         return None
