@@ -6,6 +6,7 @@ import pytest
 
 from miles.utils.debug_utils.run_megatron.cli.commands.args import CommonRunArgs
 from miles.utils.debug_utils.run_megatron.cli.commands.run_and_compare import (
+    _append_extra_args,
     _run_baseline_and_target,
 )
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig
@@ -108,3 +109,70 @@ class TestRunAndCompare:
         assert baseline_args.routing_replay_load_path is None
         assert target_args.routing_replay_dump_path is None
         assert target_args.routing_replay_load_path is not None
+
+    @patch(
+        "miles.utils.debug_utils.run_megatron.cli.commands.run_and_compare.run_impl"
+    )
+    def test_logprob_dirs_wired_when_provided(self, mock_run: MagicMock) -> None:
+        _run_baseline_and_target(
+            baseline_config=ParallelConfig(tp=1),
+            target_config=ParallelConfig(tp=2),
+            baseline_output=Path("/tmp/baseline"),
+            target_output=Path("/tmp/target"),
+            replay_dir=None,
+            common_fields=_make_common_fields(),
+            baseline_extra_args="",
+            target_extra_args="",
+            baseline_logprob_dir=Path("/tmp/baseline/logprobs"),
+            target_logprob_dir=Path("/tmp/target/logprobs"),
+        )
+
+        baseline_args = mock_run.call_args_list[0][0][0]
+        target_args = mock_run.call_args_list[1][0][0]
+
+        assert baseline_args.logprob_output == Path("/tmp/baseline/logprobs")
+        assert target_args.logprob_output == Path("/tmp/target/logprobs")
+
+    @patch(
+        "miles.utils.debug_utils.run_megatron.cli.commands.run_and_compare.run_impl"
+    )
+    def test_extra_args_appended_to_baseline_and_target(self, mock_run: MagicMock) -> None:
+        _run_baseline_and_target(
+            baseline_config=ParallelConfig(tp=1),
+            target_config=ParallelConfig(tp=2),
+            baseline_output=Path("/tmp/baseline"),
+            target_output=Path("/tmp/target"),
+            replay_dir=None,
+            common_fields=_make_common_fields(),
+            baseline_extra_args="--baseline-flag",
+            target_extra_args="--target-flag",
+            baseline_logprob_dir=None,
+            target_logprob_dir=None,
+        )
+
+        baseline_args = mock_run.call_args_list[0][0][0]
+        target_args = mock_run.call_args_list[1][0][0]
+
+        assert "--baseline-flag" in baseline_args.extra_args
+        assert "--target-flag" in target_args.extra_args
+
+
+class TestAppendExtraArgs:
+    def test_appends_extra_to_existing_extra_args(self) -> None:
+        result = _append_extra_args(
+            _make_common_fields(extra_args="--foo"),
+            "--bar",
+        )
+        assert result["extra_args"] == "--foo --bar"
+
+    def test_empty_extra_preserves_original(self) -> None:
+        result = _append_extra_args(
+            _make_common_fields(extra_args="--foo"),
+            "",
+        )
+        assert result is _make_common_fields(extra_args="--foo") or result == _make_common_fields(extra_args="--foo")
+
+    def test_empty_both_returns_original(self) -> None:
+        common = _make_common_fields(extra_args="")
+        result = _append_extra_args(common, "")
+        assert result is common
