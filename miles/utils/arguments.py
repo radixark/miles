@@ -1877,6 +1877,11 @@ def miles_validate_args(args):
         if save_dir:
             args.placement_persist_path = os.path.join(save_dir, "pg_snapshot.json")
 
+    if getattr(args, "use_fault_tolerance", False):
+        assert getattr(args, "placement_persist_path", None) is not None, (
+            "--use-fault-tolerance requires --placement-persist-path (or --save to auto-derive it)"
+        )
+
     args.ft_components = _resolve_ft_components(args)
 
 
