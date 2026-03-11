@@ -44,7 +44,7 @@ def _make_diagnostic_test_env(
     for node_id, agent in agents.items():
         harness.controller.register_node_agent(node_id, agent)
 
-    harness.controller._state_machine._state = Recovering(
+    harness.controller._training_state_machine._state = Recovering(
         recovery=StopTimeDiagnostics(),
         trigger="crash",
         recovery_start_time=datetime.now(timezone.utc),
@@ -67,7 +67,7 @@ class TestDiagnosticPipelineWithBadNode:
 
         assert harness.node_manager.was_ever_marked_bad("node-1")
         assert not harness.node_manager.was_ever_marked_bad("node-0")
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
 
 
 class TestDiagnosticPipelineAllPass:
@@ -83,7 +83,7 @@ class TestDiagnosticPipelineAllPass:
         # StopTimeDiagnostics → all pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")
@@ -103,7 +103,7 @@ class TestDiagnosticPipelineEmptyPipeline:
         # Empty pipeline → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
 
@@ -142,7 +142,7 @@ class TestDiagnosticPipelineInterMachine:
         # All pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")

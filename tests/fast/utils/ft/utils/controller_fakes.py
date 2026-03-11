@@ -349,7 +349,7 @@ async def advance_until_recovery_complete(harness: ControllerTestHarness, max_ti
     from miles.utils.ft.controller.state_machines.main import Recovering
 
     for _ in range(max_ticks):
-        if not isinstance(harness.controller._state_machine.state, Recovering):
+        if not isinstance(harness.controller._training_state_machine.state, Recovering):
             return
         await harness.controller._tick()
-    assert not isinstance(harness.controller._state_machine.state, Recovering)
+    assert not isinstance(harness.controller._training_state_machine.state, Recovering)

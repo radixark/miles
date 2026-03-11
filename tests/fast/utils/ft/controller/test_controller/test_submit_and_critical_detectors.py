@@ -58,7 +58,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, crashing])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
         assert crashing.call_count > 0
 
     @pytest.mark.anyio
@@ -76,7 +76,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, notify_detector])
 
         await harness.controller._tick()
-        state = harness.controller._state_machine.state
+        state = harness.controller._training_state_machine.state
         assert isinstance(state, Recovering)
         assert notify_detector.call_count > 0
 
@@ -94,7 +94,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, empty_detector])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
         assert empty_detector.call_count > 0
 
 
@@ -116,7 +116,7 @@ class TestRecoveryCompletionMetrics:
 
         # Step 1: enter recovery → progresses to MonitoringProgress
         await harness.controller._tick()
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
 
         # Step 2: inject training progress so MonitoringProgress succeeds
         run_id = harness.controller.training_rank_roster.run_id
@@ -124,7 +124,7 @@ class TestRecoveryCompletionMetrics:
 
         # Step 3: tick completes recovery → back to DetectingAnomaly
         await harness.controller._tick()
-        assert isinstance(harness.controller._state_machine.state, DetectingAnomaly)
+        assert isinstance(harness.controller._training_state_machine.state, DetectingAnomaly)
 
         value = get_sample_value(
             registry,

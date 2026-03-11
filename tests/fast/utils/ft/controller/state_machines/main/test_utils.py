@@ -18,7 +18,7 @@ def _make_detector_context() -> DetectorContext:
     return DetectorContext(
         metric_store=MagicMock(),
         mini_wandb=MagicMock(),
-        rank_placement={0: "node-0"},
+        active_node_ids={"node-0"},
         job_status=JobStatus.RUNNING,
     )
 

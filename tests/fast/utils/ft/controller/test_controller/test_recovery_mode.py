@@ -19,11 +19,11 @@ class TestEnterRecovery:
     async def test_creates_recovery_state(self) -> None:
         detector = AlwaysEnterRecoveryDetector()
         harness = make_test_controller(detectors=[detector])
-        assert not isinstance(harness.controller._state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
 
         await harness.controller._tick()
 
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
 
     @pytest.mark.anyio
     async def test_recovery_mode_runs_all_detectors(self) -> None:
@@ -54,7 +54,7 @@ class TestEnterRecovery:
         harness = make_test_controller(detectors=[enter_recovery, hw_detector])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
         assert hw_detector.call_count > 0
         assert harness.node_manager.was_ever_marked_bad("node-0")
 

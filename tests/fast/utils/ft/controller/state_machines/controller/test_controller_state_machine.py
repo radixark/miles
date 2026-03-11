@@ -5,9 +5,12 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob
+from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
+from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.metrics.exporter import NullControllerExporter
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.controller import (
     ControllerContext,
     NormalState,
@@ -20,6 +23,8 @@ from miles.utils.ft.controller.state_machines.main.models import (
     RestartingMainJob,
 )
 from miles.utils.ft.controller.subsystem import SubsystemEntry
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
+from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
 
@@ -58,11 +63,29 @@ def _make_controller_context(
     main_job: FakeMainJob | None = None,
     fresh_subsystems: dict[str, SubsystemEntry] | None = None,
 ) -> ControllerContext:
+    resolved_main_job = main_job or FakeMainJob()
     return ControllerContext(
-        main_job=main_job or FakeMainJob(),
+        main_job=resolved_main_job,
         create_fresh_subsystems=lambda: fresh_subsystems or {
             "training": _make_subsystem("training"),
         },
+        tick_count=10,
+        job_status=JobStatus.RUNNING,
+        metric_store=MiniPrometheus(config=MiniPrometheusConfig()),
+        mini_wandb=MiniWandb(),
+        agents={},
+        notifier=FakeNotifier(),
+        node_manager=FakeNodeManager(),
+        diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+        cooldown=SlidingWindowThrottle(window_minutes=30.0, max_count=3),
+        detector_crash_tracker=SlidingWindowCounter(window_seconds=1800, threshold=5),
+        recovery_timeout_seconds=1800,
+        max_simultaneous_bad_nodes=3,
+        on_new_run=None,
+        rank_pids_provider=None,
+        controller_exporter=NullControllerExporter(),
+        on_recovery_duration=None,
+        registration_grace_ticks=5,
     )
 
 

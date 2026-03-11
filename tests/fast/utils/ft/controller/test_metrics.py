@@ -131,7 +131,7 @@ class TestQueryOnlyProtocol:
         ctx = DetectorContext(
             metric_store=store,
             mini_wandb=_FakeMiniWandb(),
-            rank_placement={0: "node-0"},
+            active_node_ids={"node-0"},
             job_status=JobStatus.RUNNING,
         )
         assert ctx.metric_store is store

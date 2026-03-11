@@ -21,7 +21,7 @@ from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetecto
 from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT, NODE_NETWORK_UP
 from miles.utils.ft.controller.types import ActionType
 
-_RANK_PLACEMENT: dict[int, str] = {0: "node-0", 1: "node-1"}
+_ACTIVE_NODE_IDS: set[str] = {"node-0", "node-1"}
 
 
 class TestDetectorChainIntegration:
@@ -46,7 +46,7 @@ class TestDetectorChainIntegration:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=wandb,
-            rank_placement=_RANK_PLACEMENT,
+            active_node_ids=_ACTIVE_NODE_IDS,
             job_status=JobStatus.RUNNING,
         )
         chain = build_detector_chain()
@@ -64,7 +64,7 @@ class TestDetectorChainIntegration:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=wandb,
-            rank_placement=_RANK_PLACEMENT,
+            active_node_ids=_ACTIVE_NODE_IDS,
             job_status=JobStatus.FAILED,
         )
         chain = build_detector_chain()
@@ -119,7 +119,7 @@ class TestDetectorChainIntegration:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=wandb,
-            rank_placement=_RANK_PLACEMENT,
+            active_node_ids=_ACTIVE_NODE_IDS,
             job_status=JobStatus.RUNNING,
         )
         chain = build_detector_chain()
@@ -140,7 +140,7 @@ class TestDetectorChainIntegration:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=wandb,
-            rank_placement=_RANK_PLACEMENT,
+            active_node_ids=_ACTIVE_NODE_IDS,
             job_status=JobStatus.FAILED,
         )
         chain = build_detector_chain()

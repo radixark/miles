@@ -43,7 +43,7 @@ class TestDynamicBadNodeInjection:
         # Step 1: single tick enters recovery and progresses through the full
         # recovery flow (state machine loops within one tick with instant fakes)
         await harness.controller._tick()
-        state = harness.controller._state_machine.state
+        state = harness.controller._training_state_machine.state
         assert isinstance(state, Recovering)
 
         # Step 2: verify both initial and injected nodes were evicted

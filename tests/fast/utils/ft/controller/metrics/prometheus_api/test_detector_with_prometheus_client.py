@@ -122,7 +122,7 @@ class TestHangDetectorWithPrometheusClient:
             ctx = DetectorContext(
                 metric_store=client,
                 mini_wandb=MiniWandb(),
-                rank_placement={0: "node-0"},
+                active_node_ids={"node-0"},
                 job_status=JobStatus.RUNNING,
             )
 
@@ -150,7 +150,7 @@ class TestHangDetectorWithPrometheusClient:
             ctx = DetectorContext(
                 metric_store=client,
                 mini_wandb=MiniWandb(),
-                rank_placement={0: "node-0"},
+                active_node_ids={"node-0"},
                 job_status=JobStatus.RUNNING,
             )
 

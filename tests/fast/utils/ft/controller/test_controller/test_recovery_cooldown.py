@@ -10,7 +10,7 @@ from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 def _force_recovery_complete(harness) -> None:
     """Force the machine back to DetectingAnomaly and re-register a rank
     so that detectors will fire on the next tick."""
-    harness.controller._state_machine._state = DetectingAnomaly()
+    harness.controller._training_state_machine._state = DetectingAnomaly()
     harness.controller._activate_run("recovery-done")
     harness.controller.training_rank_roster.rank_placement[0] = "node-0"
 
@@ -26,17 +26,17 @@ class TestRecoveryCooldown:
 
         # Step 1: first recovery
         await harness.controller._tick()
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
         _force_recovery_complete(harness)
 
         # Step 2: second recovery
         await harness.controller._tick()
-        assert isinstance(harness.controller._state_machine.state, Recovering)
+        assert isinstance(harness.controller._training_state_machine.state, Recovering)
         _force_recovery_complete(harness)
 
         # Step 3: third attempt throttled
         await harness.controller._tick()
-        assert not isinstance(harness.controller._state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) == 1
         title, content, severity = harness.notifier.calls[0]
@@ -63,7 +63,7 @@ class TestRecoveryCooldown:
             reason="hang",
         )
         await harness.controller._tick()
-        assert not isinstance(harness.controller._state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
 
     @pytest.mark.anyio
     async def test_recovery_within_cooldown_window_counted(self) -> None:
@@ -77,6 +77,6 @@ class TestRecoveryCooldown:
         _force_recovery_complete(harness)
 
         await harness.controller._tick()
-        assert not isinstance(harness.controller._state_machine.state, Recovering)
+        assert not isinstance(harness.controller._training_state_machine.state, Recovering)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) == 1

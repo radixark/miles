@@ -10,7 +10,15 @@ from miles.utils.ft.adapters.impl.ray.controller_actor import _FtControllerActor
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNotifier
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
+from miles.utils.ft.controller.state_machines.controller.models import NormalState
 from miles.utils.ft.factories.controller import build_ft_controller
+
+
+def _get_training_detectors(ctrl):
+    """Extract detectors from the training SubsystemEntry inside ControllerState."""
+    state = ctrl._state_machine.state
+    assert isinstance(state, NormalState)
+    return state.subsystems["training"].detectors
 
 
 class TestBuildFtController:
@@ -21,7 +29,7 @@ class TestBuildFtController:
     def test_stub_platform_has_full_detector_chain(self) -> None:
         ctrl = build_ft_controller(platform="stub", start_exporter=False)
         expected_count = len(build_detector_chain())
-        assert len(ctrl._tick_loop._detectors) == expected_count
+        assert len(_get_training_detectors(ctrl)) == expected_count
 
     def test_stub_platform_has_stub_notifier(self) -> None:
         ctrl = build_ft_controller(platform="stub", start_exporter=False)
@@ -80,7 +88,7 @@ class TestBuildFtController:
     def test_detector_chain_types_match(self) -> None:
         ctrl = build_ft_controller(platform="stub", start_exporter=False)
         expected_chain = build_detector_chain()
-        actual_types = [type(d).__name__ for d in ctrl._tick_loop._detectors]
+        actual_types = [type(d).__name__ for d in _get_training_detectors(ctrl)]
         expected_types = [type(d).__name__ for d in expected_chain]
         assert actual_types == expected_types
 
