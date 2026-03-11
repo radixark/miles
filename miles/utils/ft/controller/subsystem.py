@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Annotated, Literal, Union
 
 from pydantic import Field
@@ -9,7 +9,6 @@ from pydantic import Field
 from miles.utils.ft.adapters.types import SubsystemActuatorProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.utils.base_model import FtBaseModel
-from miles.utils.ft.utils.state_machine import StateMachine
 
 
 class MonitoringIterationProgressConfig(FtBaseModel):
@@ -35,15 +34,9 @@ MonitoringConfig = Annotated[
 
 
 @dataclass
-class SubsystemEntry:
-    """Complete definition of a single subsystem.
+class SubsystemConfig:
+    """Static configuration for a single subsystem (no runtime state)."""
 
-    Each subsystem has its own state machine, actuator, detectors, and monitoring config.
-    In training-only mode, the dict contains a single "training" entry.
-    """
-
-    name: str
-    state_machine: StateMachine  # Generic params (SubsystemState, SubsystemContext) defined in M5
     actuator: SubsystemActuatorProtocol
     has_level1_restart: bool = True
     detectors: list[BaseFaultDetector] = field(default_factory=list)
