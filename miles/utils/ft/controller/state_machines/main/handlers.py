@@ -79,9 +79,8 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
         del state
 
         for name in curr_state.subsystems:
-            config = context.subsystem_configs[name]
             sub_ctx = build_subsystem_context(
-                config=config,
+                config=context.subsystem_configs[name],
                 context=context,
                 recovery_stepper=self._recovery_stepper,
                 restart_stepper=self._restart_stepper,
