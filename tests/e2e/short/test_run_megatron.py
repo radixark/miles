@@ -51,12 +51,16 @@ CONFIGS: dict[str, _ModeConfig] = {
         format="bshd",
         target_extra_megatron_args="--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2",
     ),
-    "tp1_vs_tp2pp2cp2_thd": _ModeConfig(
-        baseline_args="--tp 1",
-        target_args="--tp 2 --pp 2 --cp 2 --ep 1",
-        format="thd",
-        target_extra_megatron_args="--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2",
-    ),
+    # TODO: THD mode not yet supported — standalone worker (batch.py) hardcodes
+    # qkv_format="bshd" and does not construct PackedSeqParams. Enabling THD
+    # requires reworking CP slicing, qkv_format passthrough, and PackedSeqParams
+    # construction in the worker.
+    # "tp1_vs_tp2pp2cp2_thd": _ModeConfig(
+    #     baseline_args="--tp 1",
+    #     target_args="--tp 2 --pp 2 --cp 2 --ep 1",
+    #     format="thd",
+    #     target_extra_megatron_args="--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2",
+    # ),
 }
 
 
@@ -95,10 +99,7 @@ def run(
     source_patcher_config: Path = _prepare(dump_dir=dump_dir, config=config)
     clear_proxy_env()
 
-    extra_args_parts: list[str] = ["--attention-backend flash"]
-    if config.format == "thd":
-        extra_args_parts.append("--qkv-format thd")
-    extra_args: str = " ".join(extra_args_parts)
+    extra_args: str = "--attention-backend flash"
 
     target_extra_args_part: str = ""
     if config.target_extra_megatron_args:
