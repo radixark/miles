@@ -17,7 +17,7 @@ from miles.utils.debug_utils.run_megatron.logprob_comparator import (
 def _make_rank_json(
     entries_by_batch: list[list[dict]],
 ) -> str:
-    return json.dumps({"entries": entries_by_batch})
+    return json.dumps({"logprob_entries": entries_by_batch})
 
 
 def _write_rank_file(
