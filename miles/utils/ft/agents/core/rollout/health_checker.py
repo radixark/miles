@@ -82,7 +82,6 @@ class RolloutCellHealthChecker:
         return self._last_result
 
     async def _check_single_engine(self, *, engine: object, index: int) -> bool:
-        """Check whether a single engine is alive via the injected health function."""
         try:
             await asyncio.wait_for(
                 self._engine_health_fn(engine),
