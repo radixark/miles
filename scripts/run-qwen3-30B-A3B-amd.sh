@@ -33,7 +33,11 @@ export MODEL_DIR DATA_DIR
 if [ "$GPU_VENDOR" = "amd" ]; then
     export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"}
     export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"}
-    NUM_GPUS=$(echo ${HIP_VISIBLE_DEVICES} | tr ',' '\n' | wc -l)
+    if [ -z "${HIP_VISIBLE_DEVICES}" ]; then
+        NUM_GPUS=0
+    else
+        NUM_GPUS=$(echo "${HIP_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
+    fi
     HAS_NVLINK=0
 else
     NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
