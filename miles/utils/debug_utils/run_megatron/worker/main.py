@@ -78,7 +78,9 @@ def main() -> None:
         batch=batch,
     )
 
-    if script.logprob_output is not None and captured_logits is not None:
+    is_last_pp_stage: bool = mpu.is_pipeline_last_stage()
+
+    if script.logprob_output is not None and captured_logits is not None and is_last_pp_stage:
         compute_and_save_output_info(
             logits=captured_logits,
             labels=batch["labels"],
@@ -86,7 +88,7 @@ def main() -> None:
             output_dir=script.logprob_output,
         )
 
-    if script.top_k > 0 and captured_logits is not None:
+    if script.top_k > 0 and captured_logits is not None and is_last_pp_stage:
         print_top_k(
             logits=captured_logits,
             input_ids=batch["input_ids"],
