@@ -196,6 +196,164 @@ class TestRegisterWithController:
             await agent.shutdown()
 
 
+class TestHealthLoopSurvivesException:
+    @pytest.mark.anyio
+    async def test_exception_in_check_health_does_not_crash_loop(self) -> None:
+        """If one atom's check_health raises, the loop continues checking other atoms."""
+        healthy_atom = MockRolloutAtomAgent(atom_id="healthy", engine_alive=[True])
+        broken_atom = _BrokenCheckHealthAtom(atom_id="broken")
+        agent = _make_agent({"healthy": healthy_atom, "broken": broken_atom})
+        await agent.start()
+
+        try:
+            # Step 1: wait for multiple cycles
+            await asyncio.sleep(0.15)
+
+            # Step 2: healthy atom's metrics should still be updated
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "healthy"}) == 1.0
+
+            # Step 3: broken atom should have no metrics (never successfully checked)
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "broken"}) is None
+
+            # Step 4: loop is still running
+            assert not agent._health_loop_task.done()
+        finally:
+            await agent.shutdown()
+
+
+class _BrokenCheckHealthAtom(MockRolloutAtomAgent):
+    def __init__(self, *, atom_id: str) -> None:
+        super().__init__(atom_id=atom_id, engine_alive=[True])
+
+    async def check_health(self) -> object:
+        raise RuntimeError("simulated check_health failure")
+
+
+class TestStopAtom:
+    @pytest.mark.anyio
+    async def test_delegates_to_atom(self) -> None:
+        atom = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])
+        agent = FtRolloutAgent(atoms={"a0": atom}, check_interval=10.0, metrics_port=0)
+
+        await agent.stop_atom("a0")
+
+    @pytest.mark.anyio
+    async def test_raises_key_error_for_unknown_atom(self) -> None:
+        agent = FtRolloutAgent(
+            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            check_interval=10.0,
+            metrics_port=0,
+        )
+
+        with pytest.raises(KeyError):
+            await agent.stop_atom("nonexistent")
+
+
+class TestStartAtom:
+    @pytest.mark.anyio
+    async def test_delegates_to_atom_and_returns_count(self) -> None:
+        atom = MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, False, True])
+        agent = FtRolloutAgent(atoms={"a0": atom}, check_interval=10.0, metrics_port=0)
+
+        result = await agent.start_atom("a0")
+
+        assert result == 2
+
+    @pytest.mark.anyio
+    async def test_raises_key_error_for_unknown_atom(self) -> None:
+        agent = FtRolloutAgent(
+            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            check_interval=10.0,
+            metrics_port=0,
+        )
+
+        with pytest.raises(KeyError):
+            await agent.start_atom("nonexistent")
+
+
+class TestStopAll:
+    @pytest.mark.anyio
+    async def test_calls_stop_on_every_atom(self) -> None:
+        atoms = {
+            "a0": _TrackingStopAtom(atom_id="a0", engine_alive=[True]),
+            "a1": _TrackingStopAtom(atom_id="a1", engine_alive=[True, True]),
+        }
+        agent = FtRolloutAgent(atoms=atoms, check_interval=10.0, metrics_port=0)
+
+        await agent.stop_all()
+
+        assert atoms["a0"].stop_called
+        assert atoms["a1"].stop_called
+
+
+class _TrackingStopAtom(MockRolloutAtomAgent):
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.stop_called = False
+
+    async def stop(self) -> None:
+        self.stop_called = True
+
+
+class TestRebuild:
+    @pytest.mark.anyio
+    async def test_raises_not_implemented(self) -> None:
+        agent = FtRolloutAgent(
+            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            check_interval=10.0,
+            metrics_port=0,
+        )
+
+        with pytest.raises(NotImplementedError):
+            await agent.rebuild()
+
+
+class TestGetStatusBeforeAnyHealthCheck:
+    @pytest.mark.anyio
+    async def test_returns_failed_when_no_check_has_run(self) -> None:
+        """Before any health check, is_healthy() returns False, so get_status should be FAILED."""
+        agent = FtRolloutAgent(
+            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True])},
+            check_interval=10.0,
+            metrics_port=0,
+        )
+
+        assert await agent.get_status() == JobStatus.FAILED
+
+
+class TestMultiAtomMetricsAreIndependent:
+    @pytest.mark.anyio
+    async def test_per_atom_metrics_reflect_individual_health(self) -> None:
+        atoms = {
+            "a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True, True]),
+            "a1": MockRolloutAtomAgent(atom_id="a1", engine_alive=[True, False]),
+        }
+        agent = _make_agent(atoms)
+        await agent.start()
+
+        try:
+            await asyncio.sleep(0.15)
+
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a1"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a1", "engine_index": "0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a1", "engine_index": "1"}) == 0.0
+        finally:
+            await agent.shutdown()
+
+
+class TestShutdownWithoutStart:
+    @pytest.mark.anyio
+    async def test_shutdown_without_start_is_safe(self) -> None:
+        agent = FtRolloutAgent(
+            atoms={"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])},
+            check_interval=10.0,
+            metrics_port=0,
+        )
+
+        await agent.shutdown()
+
+
 class TestPublicApi:
     def test_get_atom_ids(self) -> None:
         atoms = {

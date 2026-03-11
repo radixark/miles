@@ -56,3 +56,18 @@ class TestShutdownCleanup:
         async with httpx.AsyncClient() as client:
             with pytest.raises(httpx.ConnectError):
                 await client.get(f"{address}/metrics")
+
+    @pytest.mark.anyio
+    async def test_shutdown_without_start_is_safe(self) -> None:
+        server = MetricsServer(registry=CollectorRegistry(), port=0)
+
+        await server.shutdown()
+
+    @pytest.mark.anyio
+    async def test_address_raises_after_shutdown(self) -> None:
+        server = MetricsServer(registry=CollectorRegistry(), port=0)
+        await server.start()
+        await server.shutdown()
+
+        with pytest.raises(RuntimeError, match="not started"):
+            _ = server.address
