@@ -41,7 +41,7 @@ class TestNetworkAlertDetector:
         decision = detector.evaluate(
             make_detector_context(
                 metric_store=store,
-                rank_placement={0: "node-0"},
+                active_node_ids={"node-0"},
             )
         )
 
