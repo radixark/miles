@@ -13,8 +13,8 @@ class TestNodeAgentCoverageChecker:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=3)
 
         with caplog.at_level(logging.WARNING):
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
         assert "without node agent" not in caplog.text
 
@@ -24,7 +24,7 @@ class TestNodeAgentCoverageChecker:
 
         with caplog.at_level(logging.WARNING):
             for _ in range(3):
-                checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
+                checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
         assert "without node agent" in caplog.text
         assert "n1" in caplog.text
@@ -35,7 +35,7 @@ class TestNodeAgentCoverageChecker:
 
         with caplog.at_level(logging.WARNING):
             for _ in range(5):
-                checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
+                checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
         warning_count = caplog.text.count("without node agent")
         assert warning_count == 1
@@ -45,9 +45,9 @@ class TestNodeAgentCoverageChecker:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
 
         with caplog.at_level(logging.INFO):
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids={"n1"})
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids={"n1"})
 
         assert "coverage restored" in caplog.text
 
@@ -56,11 +56,11 @@ class TestNodeAgentCoverageChecker:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
 
         with caplog.at_level(logging.WARNING):
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids={"n1"})
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
-            checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids={"n1"})
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
         warning_count = caplog.text.count("without node agent")
         assert warning_count == 2
@@ -70,8 +70,8 @@ class TestNodeAgentCoverageChecker:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
 
         with caplog.at_level(logging.WARNING):
-            checker.check(training_node_ids={"n1", "n2"}, registered_agent_node_ids={"n2"})
-            checker.check(training_node_ids={"n1", "n2"}, registered_agent_node_ids={"n2"})
+            checker.check(subsystem_node_ids={"n1", "n2"}, registered_agent_node_ids={"n2"})
+            checker.check(subsystem_node_ids={"n1", "n2"}, registered_agent_node_ids={"n2"})
 
         warning_lines = [r.message for r in caplog.records if "without node agent" in r.message]
         assert len(warning_lines) == 1
@@ -81,6 +81,6 @@ class TestNodeAgentCoverageChecker:
         """Nodes that leave the training set are not checked or warned about."""
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
 
-        checker.check(training_node_ids={"n1"}, registered_agent_node_ids=set())
-        checker.check(training_node_ids=set(), registered_agent_node_ids=set())
-        checker.check(training_node_ids=set(), registered_agent_node_ids=set())
+        checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        checker.check(subsystem_node_ids=set(), registered_agent_node_ids=set())
+        checker.check(subsystem_node_ids=set(), registered_agent_node_ids=set())
