@@ -1,22 +1,62 @@
+"""Unit tests for worker/main.py functions.
+
+main.py has heavy top-level imports (megatron, sglang, etc.) that are not
+available in the lightweight test environment.  We pre-populate sys.modules
+with MagicMock stubs so that importing main.py succeeds without those packages.
+"""
+
 from __future__ import annotations
 
 import argparse
 import os
-from functools import partial
+import sys
 from pathlib import Path
-from typing import Any
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
-import pytest
 import torch
 
-from miles.utils.debug_utils.run_megatron.worker.main import (
+# ---------------------------------------------------------------------------
+# Stub out heavy dependencies before importing the module under test.
+# ---------------------------------------------------------------------------
+
+_STUB_MODULES: list[str] = [
+    "megatron.core",
+    "megatron.core.enums",
+    "megatron.core.mpu",
+    "megatron.core.pipeline_parallel",
+    "megatron.training",
+    "megatron.training.arguments",
+    "megatron.training.training",
+    "miles.backends.megatron_utils.arguments",
+    "miles.backends.megatron_utils.checkpoint",
+    "miles.backends.megatron_utils.initialize",
+    "miles.backends.megatron_utils.model_provider",
+    "miles.utils.debug_utils.run_megatron.worker.replay",
+]
+
+_original_modules: dict[str, ModuleType] = {}
+for _mod_name in _STUB_MODULES:
+    if _mod_name not in sys.modules:
+        stub = ModuleType(_mod_name)
+        # Some modules need specific attributes that are accessed at import time
+        if _mod_name == "megatron.core.enums":
+            stub.ModelType = MagicMock()  # type: ignore[attr-defined]
+        if _mod_name == "megatron.core.pipeline_parallel":
+            stub.get_forward_backward_func = MagicMock()  # type: ignore[attr-defined]
+        if _mod_name == "megatron.training.arguments":
+            stub.parse_args = MagicMock()  # type: ignore[attr-defined]
+            stub.validate_args = MagicMock()  # type: ignore[attr-defined]
+        if _mod_name == "megatron.training.training":
+            stub.get_model = MagicMock()  # type: ignore[attr-defined]
+        sys.modules[_mod_name] = stub
+
+from miles.utils.debug_utils.run_megatron.worker.main import (  # noqa: E402
     _apply_source_patches,
     _finalize_dumper,
     _parse_args,
     _run_forward_backward,
 )
-
 
 _MODULE = "miles.utils.debug_utils.run_megatron.worker.main"
 
