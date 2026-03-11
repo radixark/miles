@@ -31,6 +31,7 @@ class FtRolloutAgent:
             self.address, len(self._cells),
         )
 
+    # TODO this is surely incorrect. need to know real cells when rollout.py is refactored
     @staticmethod
     def _build_cells(
         rollout_manager: object,
