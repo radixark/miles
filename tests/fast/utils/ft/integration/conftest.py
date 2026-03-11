@@ -22,7 +22,13 @@ LONG_RECOVERY_TIMEOUT = 120.0 * _TIMEOUT_SCALE
 
 
 def _init_local_ray() -> str:
-    """Start a local Ray cluster with dashboard. Returns the dashboard URL."""
+    """Start a local Ray cluster with dashboard. Returns the dashboard URL.
+
+    Uses ``ray start`` CLI instead of ``ray.init(address="local")`` because
+    ``ray.init`` does not expose ``--dashboard-agent-listen-port``.  In
+    ``--net=host`` containers the default ports (GCS 6379, agent 52365) are
+    often already taken by another container, so we let the OS pick free ports.
+    """
     if ray.is_initialized():
         ray.shutdown()
     subprocess.run(["ray", "stop", "--force"], capture_output=True)
@@ -31,18 +37,22 @@ def _init_local_ray() -> str:
     if ray_tmp.exists():
         shutil.rmtree(ray_tmp, ignore_errors=True)
 
-    # In --net=host containers the default dashboard-agent port (52365) is
-    # often already taken by another container.  Let the OS pick a free port.
-    os.environ.setdefault("RAY_DASHBOARD_AGENT_LISTEN_PORT", "0")
-
-    ctx = ray.init(
-        address="local",
-        num_cpus=32,
-        num_gpus=0,
-        include_dashboard=True,
-        dashboard_host="127.0.0.1",
-        dashboard_port=0,
+    subprocess.run(
+        [
+            "ray", "start", "--head",
+            "--port=0",
+            "--num-cpus=32",
+            "--num-gpus=0",
+            "--include-dashboard=true",
+            "--dashboard-host=127.0.0.1",
+            "--dashboard-port=0",
+            "--dashboard-agent-listen-port=0",
+        ],
+        check=True,
+        capture_output=True,
     )
+
+    ctx = ray.init(address="auto")
     url = f"http://{ctx.dashboard_url}"
     _wait_for_dashboard_agent(url)
     return url
@@ -54,6 +64,7 @@ def _ray_session() -> Generator[str, None, None]:
     url = _init_local_ray()
     yield url
     ray.shutdown()
+    subprocess.run(["ray", "stop", "--force"], capture_output=True)
 
 
 @pytest.fixture(scope="session")
