@@ -41,21 +41,27 @@ class RolloutCellHealthChecker:
         self._last_result: CellHealthResult | None = None
 
     async def check_health(self, *, engines: list[object]) -> CellHealthResult:
-        """Run health check on all engines concurrently, return aggregated result."""
-        results = await asyncio.gather(
-            *(self._check_single_engine(engine=engine, index=i)
-              for i, engine in enumerate(engines))
-        )
+        """Run health check against engines[0] and treat the whole cell accordingly.
 
-        alive_count = sum(results)
-        dead_indices = tuple(i for i, ok in enumerate(results) if not ok)
+        All engines in a cell form a single TP group; only engines[0] exposes
+        an HTTP health endpoint, so we probe that one and consider the entire
+        cell alive or dead based on its response.
+        """
+        if not engines:
+            raise ValueError("engines must not be empty")
+
+        healthy = await self._check_single_engine(engine=engines[0], index=0)
+
+        total = len(engines)
+        alive_count = total if healthy else 0
+        dead_indices = () if healthy else tuple(range(total))
 
         result = CellHealthResult(
             cell_id=self._cell_id,
-            total_engines=len(engines),
+            total_engines=total,
             alive_engines=alive_count,
             dead_engine_indices=dead_indices,
-            is_healthy=(alive_count == len(engines)),
+            is_healthy=healthy,
             checked_at=time.time(),
         )
         self._last_result = result

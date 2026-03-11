@@ -92,18 +92,19 @@ class TestCheckHealth:
         assert result.cell_id == "c0"
 
     @pytest.mark.anyio
-    async def test_one_dead_returns_unhealthy(self) -> None:
+    async def test_dead_engine0_returns_all_dead(self) -> None:
+        """Only engines[0] is probed; if it's dead the whole cell is dead."""
         checker = RolloutCellHealthChecker(
             cell_id="c1",
             engine_health_fn=_engine_method_health_checker,
         )
-        engines: list[object] = [_AliveEngine(), _BrokenEngine(), _AliveEngine()]
+        engines: list[object] = [_BrokenEngine(), _AliveEngine(), _AliveEngine()]
 
         result = await checker.check_health(engines=engines)
 
         assert result.is_healthy is False
-        assert result.alive_engines == 2
-        assert result.dead_engine_indices == (1,)
+        assert result.alive_engines == 0
+        assert result.dead_engine_indices == (0, 1, 2)
 
     @pytest.mark.anyio
     async def test_caches_last_result(self) -> None:
@@ -119,16 +120,14 @@ class TestCheckHealth:
         assert checker.is_healthy() is True
 
     @pytest.mark.anyio
-    async def test_empty_engines_returns_healthy(self) -> None:
+    async def test_empty_engines_raises(self) -> None:
         checker = RolloutCellHealthChecker(
             cell_id="empty",
             engine_health_fn=_engine_method_health_checker,
         )
 
-        result = await checker.check_health(engines=[])
-
-        assert result.is_healthy is True
-        assert result.total_engines == 0
+        with pytest.raises(ValueError, match="engines must not be empty"):
+            await checker.check_health(engines=[])
 
 
 # ---------------------------------------------------------------------------
