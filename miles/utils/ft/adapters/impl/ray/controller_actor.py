@@ -87,6 +87,27 @@ class _FtControllerActorCls:
     def get_status(self) -> object:
         return self._ctrl.get_status()
 
+    async def register_rollout(
+        self,
+        rm_handle: object,
+        engine_handles: list[object],
+        node_ids: list[str],
+    ) -> None:
+        from miles.utils.ft.agents.core.rollout.cell_agent import RolloutCellAgent
+        from miles.utils.ft.agents.core.rollout.ft_rollout_agent import FtRolloutAgent
+
+        cell_id = "default"
+        cell_agent = RolloutCellAgent(cell_id=cell_id, engines=engine_handles)
+        cell_agent.set_node_ids(set(node_ids))
+
+        self._ft_rollout_agent = FtRolloutAgent(cells={cell_id: cell_agent})
+        await self._ft_rollout_agent.start()
+
+        self._ctrl.register_rollout_subsystems(
+            rm_handle=rm_handle, ft_rollout_agent=self._ft_rollout_agent,
+        )
+        self._ctrl.add_scrape_target("rollout-ft-agent", self._ft_rollout_agent.address)
+
 
 FtControllerActor = ray.remote(
     num_gpus=0,

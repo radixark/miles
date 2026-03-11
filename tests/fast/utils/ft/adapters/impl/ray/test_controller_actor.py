@@ -198,3 +198,28 @@ class TestFtControllerActorProxy:
         await actor.shutdown()
 
         assert harness.controller._shutting_down is True
+
+    @pytest.mark.anyio
+    async def test_register_rollout_creates_subsystem(self) -> None:
+        actor, harness = self._make_actor_with_harness()
+
+        fake_rm_handle = MagicMock()
+        fake_engines = [MagicMock(), MagicMock()]
+
+        await actor.register_rollout(
+            rm_handle=fake_rm_handle,
+            engine_handles=fake_engines,
+            node_ids=["node-0", "node-1"],
+        )
+
+        state = harness.controller._state_machine.state
+        assert isinstance(state, NormalState)
+        assert "rollout_default" in state.subsystems
+
+        assert hasattr(actor, "_ft_rollout_agent")
+        assert actor._ft_rollout_agent.get_cell_ids() == ["default"]
+        cell = actor._ft_rollout_agent.get_cell_agent("default")
+        assert cell.get_node_ids() == {"node-0", "node-1"}
+        assert cell.get_engine_count() == 2
+
+        await actor._ft_rollout_agent.shutdown()
