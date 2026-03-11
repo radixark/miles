@@ -244,10 +244,7 @@ class RolloutManager:
         raise NotImplementedError("M12: engine start not yet implemented")
 
     def get_cell_status(self, cell_id: str):
-        from miles.utils.ft.adapters.types import JobStatus
-
-        all_alive = all(e is not None for e in self.all_rollout_engines)
-        return JobStatus.RUNNING if all_alive else JobStatus.FAILED
+        raise NotImplementedError("M12: cell status not yet implemented")
 
     def clear_num_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights
