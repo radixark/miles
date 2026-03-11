@@ -2,46 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
-from dataclasses import dataclass
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
-from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, RestartMode, SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
-from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
-from miles.utils.ft.utils.box import Box
+from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class _RolloutSubsystemConfig:
-    cell_id: str
-    rollout_manager_handle: object
-    get_active_node_ids: Callable[[], set[str]]
-
-
-def _build_rollout_subsystem_config(*, config: _RolloutSubsystemConfig) -> SubsystemConfig:
-    from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
-    from miles.utils.ft.controller.detectors.chain import build_rollout_detectors, build_shared_hw_detectors
-
-    return SubsystemConfig(
-        actuator=RayRolloutActuator(
-            rollout_manager_handle=config.rollout_manager_handle,
-            cell_id=config.cell_id,
-        ),
-        restart_mode=RestartMode.SUBSYSTEM,
-        detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=config.cell_id),
-        monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
-        get_active_node_ids=config.get_active_node_ids,
-    )
 
 
 class FtController:
@@ -50,31 +24,26 @@ class FtController:
         *,
         main_job: MainJobProtocol,
         state_machine: StateMachine[MainState, MainContext],
-        training_rank_roster_box: Box[TrainingRankRoster],
+        hub: SubsystemHub,
         mini_wandb: MiniWandb,
-        scrape_target_manager: ScrapeTargetManagerProtocol | None,
         agents: dict[str, NodeAgentProtocol],
         tick_interval: float,
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
         metric_store: MetricStoreProtocol,
-        rollout_num_cells: int,
         controller_exporter: ControllerExporter | None = None,
     ) -> None:
         self._main_job = main_job
         self._state_machine = state_machine
-        self._training_rank_roster_box = training_rank_roster_box
+        self._hub = hub
         self._mini_wandb = mini_wandb
-        self._scrape_target_manager = scrape_target_manager
         self._agents = agents
         self._tick_interval = tick_interval
         self._tick_loop = tick_loop
         self._notifier = notifier
         self._metric_store = metric_store
-        self._rollout_num_cells = rollout_num_cells
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
-        self._rollout_configs: list[_RolloutSubsystemConfig] = []
         self._node_metadata: dict[str, dict[str, str]] = {}
         self._shutting_down: bool = False
 
@@ -84,7 +53,7 @@ class FtController:
 
     @property
     def training_rank_roster(self) -> TrainingRankRoster:
-        return self._training_rank_roster_box.value
+        return self._hub.training_rank_roster
 
     @property
     def mini_wandb(self) -> MiniWandb:
@@ -95,11 +64,7 @@ class FtController:
         return self._node_metadata
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
-        if self._scrape_target_manager is not None:
-            self._scrape_target_manager.add_scrape_target(
-                target_id=target_id,
-                address=address,
-            )
+        self._hub.add_scrape_target(target_id=target_id, address=address)
 
     def register_node_agent(
         self,
@@ -111,58 +76,13 @@ class FtController:
         self._agents[node_id] = agent
         if node_metadata:
             self._node_metadata[node_id] = node_metadata
-        if exporter_address and self._scrape_target_manager is not None:
-            self._scrape_target_manager.add_scrape_target(
-                target_id=node_id,
-                address=exporter_address,
-            )
+        if exporter_address:
+            self._hub.add_scrape_target(target_id=node_id, address=exporter_address)
         logger.info(
             "agent_registered node_id=%s exporter=%s metadata_keys=%s",
             node_id,
             exporter_address,
             sorted(node_metadata) if node_metadata else "(none)",
-        )
-
-    def register_rollout_subsystems(
-        self,
-        *,
-        rollout_manager_handle: object,
-        cell_ids: list[str] | None = None,
-    ) -> None:
-        from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt
-
-        if cell_ids is None:
-            cell_ids = ["default"]
-
-        assert len(cell_ids) == self._rollout_num_cells, (
-            f"Expected {self._rollout_num_cells} rollout cells, got {len(cell_ids)}"
-        )
-
-        state = self._state_machine.state
-        if not isinstance(state, NormalSt):
-            raise RuntimeError(
-                f"Cannot register rollout subsystems in {type(state).__name__}, expected NormalState"
-            )
-
-        new_subsystem_states = dict(state.subsystems)
-        for cell_id in cell_ids:
-            rollout_config = _RolloutSubsystemConfig(
-                cell_id=cell_id,
-                rollout_manager_handle=rollout_manager_handle,
-                get_active_node_ids=lambda: set(),
-            )
-            self._rollout_configs.append(rollout_config)
-
-            name = f"rollout_{cell_id}"
-            subsystem_config = _build_rollout_subsystem_config(config=rollout_config)
-            self._tick_loop.subsystem_configs[name] = subsystem_config
-            new_subsystem_states[name] = DetectingAnomalySt()
-
-        self._state_machine.force_state(NormalSt(subsystems=new_subsystem_states))
-        logger.info(
-            "rollout_subsystems_registered cell_ids=%s total_subsystems=%d",
-            cell_ids,
-            len(new_subsystem_states),
         )
 
     async def submit_initial_job(self) -> str:
@@ -190,7 +110,7 @@ class FtController:
         return build_controller_status(
             controller_state_machine=self._state_machine,
             mini_wandb=self._mini_wandb,
-            training_rank_roster=self._training_rank_roster_box.value,
+            training_rank_roster=self._hub.training_rank_roster,
             tick_count=self._tick_count,
         )
 
@@ -204,13 +124,8 @@ class FtController:
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
-        self._training_rank_roster_box.value.cleanup()
-        self._training_rank_roster_box.value = TrainingRankRoster(
-            run_id=run_id,
-            scrape_target_manager=self._scrape_target_manager,
-        )
+        self._hub.activate_run(run_id)
         self._mini_wandb.set_active_run_id(run_id)
-        logger.info("run_activated run_id=%s", run_id)
 
     async def _tick(self) -> None:
         await self._tick_loop.tick()

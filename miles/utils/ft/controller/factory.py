@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
@@ -19,7 +20,13 @@ from miles.utils.ft.controller.state_machines.main import (
 from miles.utils.ft.controller.state_machines.main.models import MainState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, RestartMode, SubsystemConfig
+from miles.utils.ft.controller.subsystem import (
+    MonitoringIterationProgressConfig,
+    MonitoringSustainedAliveConfig,
+    RestartMode,
+    SubsystemConfig,
+)
+from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
@@ -32,6 +39,11 @@ from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
+
+
+class FtControllerBundle(NamedTuple):
+    controller: FtController
+    hub: SubsystemHub
 
 
 @dataclass
@@ -55,7 +67,7 @@ def create_ft_controller(
     metric_store: MetricStoreProtocol,
     mini_wandb: MiniWandb,
     *,
-    rollout_num_cells: int,
+    rollout_cell_ids: list[str] | None = None,
     scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
     notifier: NotifierProtocol | None = None,
     detectors: list[BaseFaultDetector] | None = None,
@@ -68,14 +80,20 @@ def create_ft_controller(
     monitoring_success_iterations: int = 10,
     monitoring_timeout_seconds: int = 600,
     recovery_timeout_seconds: int = RECOVERY_TIMEOUT_SECONDS,
-) -> FtController:
+) -> FtControllerBundle:
+    from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
+    from miles.utils.ft.controller.detectors.chain import build_rollout_detectors, build_shared_hw_detectors
     from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
     from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
     agents: dict[str, object] = {}
     training_rank_roster = TrainingRankRoster(scrape_target_manager=scrape_target_manager)
-
     training_rank_roster_box = Box(training_rank_roster)
+
+    hub = SubsystemHub(
+        training_rank_roster_box=training_rank_roster_box,
+        scrape_target_manager=scrape_target_manager,
+    )
 
     def _get_active_training_nodes() -> set[str]:
         return set(training_rank_roster_box.value.rank_placement.values())
@@ -95,7 +113,7 @@ def create_ft_controller(
         timeout_seconds=monitoring_timeout_seconds,
     )
 
-    # --- Create SubsystemConfig ---
+    # --- Training SubsystemConfig ---
     training_config = SubsystemConfig(
         actuator=TrainingSubsystemActuator(main_job=main_job),
         restart_mode=RestartMode.MAIN_JOB,
@@ -105,10 +123,24 @@ def create_ft_controller(
     )
     subsystem_configs: dict[str, SubsystemConfig] = {"training": training_config}
 
-    # --- Create Main SM ---
+    # --- Rollout SubsystemConfigs ---
+    for cell_id in (rollout_cell_ids or []):
+        name = f"rollout_{cell_id}"
+        subsystem_configs[name] = SubsystemConfig(
+            actuator=RayRolloutActuator(
+                get_handle=lambda: hub.rollout_manager_handle,
+                cell_id=cell_id,
+            ),
+            restart_mode=RestartMode.SUBSYSTEM,
+            detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id),
+            monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
+        )
+
+    # --- Create Main SM (includes all subsystems from the start) ---
+    initial_subsystem_states = {name: DetectingAnomalySt() for name in subsystem_configs}
     main_stepper = create_main_stepper()
     controller_sm: StateMachine[MainState, MainContext] = StateMachine(
-        initial_state=NormalSt(subsystems={"training": DetectingAnomalySt()}),
+        initial_state=NormalSt(subsystems=initial_subsystem_states),
         stepper=main_stepper,
     )
 
@@ -116,16 +148,14 @@ def create_ft_controller(
     instance = FtController(
         main_job=main_job,
         state_machine=controller_sm,
-        training_rank_roster_box=training_rank_roster_box,
+        hub=hub,
         mini_wandb=mini_wandb,
-        scrape_target_manager=scrape_target_manager,
         agents=agents,  # type: ignore[arg-type]
         tick_interval=tick_interval,
         tick_loop=None,  # type: ignore[arg-type]  # set below
         notifier=notifier,
         metric_store=metric_store,
         controller_exporter=controller_exporter,
-        rollout_num_cells=rollout_num_cells,
     )
 
     # --- Create TickLoop ---
@@ -151,16 +181,4 @@ def create_ft_controller(
     )
     instance._tick_loop = tick_loop
 
-    platform_deps = PlatformDeps(
-        node_manager=node_manager,
-        main_job=main_job,
-        metric_store=metric_store,
-        mini_wandb=mini_wandb,
-        notifier=notifier,
-        diagnostic_orchestrator=resolved_orchestrator,
-        controller_exporter=controller_exporter,
-        on_new_run=instance._activate_run,
-        rank_pids_provider=lambda node_id: training_rank_roster_box.value.get_rank_pids_for_node(node_id),
-    )
-
-    return instance
+    return FtControllerBundle(controller=instance, hub=hub)
