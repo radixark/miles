@@ -139,3 +139,54 @@ class TestRolloutCrashDetector:
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == TriggerType.CRASH
+
+    def test_boundary_at_exactly_80_percent_threshold_passes(self) -> None:
+        """time_span == threshold * 0.8 should NOT be rejected as insufficient."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # threshold=50.0 → 80% boundary = 40.0s
+        # Inject 5 samples spanning exactly 40s (all dead)
+        for i in range(5):
+            inject_rollout_cell_alive(
+                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=40 - i * 10)
+            )
+
+        detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=50.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0", "node-1"},
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.bad_node_ids == ["node-0", "node-1"]
+
+    def test_different_cell_ids_are_isolated(self) -> None:
+        """Dead data for cell '0' must not affect detector for cell '1'."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # Cell "0": persistently dead for 70s
+        for i in range(8):
+            inject_rollout_cell_alive(
+                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
+            )
+
+        # Cell "1": alive
+        inject_rollout_cell_alive(store, cell_id="1", alive=True)
+
+        detector_0 = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
+        detector_1 = RolloutCrashDetector(cell_id="1", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0"},
+        )
+
+        decision_0 = detector_0.evaluate(ctx)
+        decision_1 = detector_1.evaluate(ctx)
+
+        assert decision_0.action == ActionType.ENTER_RECOVERY
+        assert decision_1.action == ActionType.NONE
+        assert "cell alive" in decision_1.reason
