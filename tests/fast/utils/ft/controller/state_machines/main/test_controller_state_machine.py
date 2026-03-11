@@ -9,7 +9,7 @@ import pytest
 from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
-from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.exporter import NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main import (
@@ -52,7 +52,7 @@ def _make_frozen_recovering_state() -> Recovering:
 
 
 def _make_subsystem_config() -> SubsystemConfig:
-    return SubsystemConfig(actuator=AsyncMock())
+    return SubsystemConfig(actuator=AsyncMock(spec=SubsystemActuatorProtocol))
 
 
 def _make_controller_context(
