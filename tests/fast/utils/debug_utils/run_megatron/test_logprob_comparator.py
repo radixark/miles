@@ -94,6 +94,32 @@ class TestLoadAndMerge:
         result = _load_and_merge(tmp_path)
         assert result == {}
 
+    def test_multi_rank_different_positions_merge_cp_scenario(self, tmp_path: Path) -> None:
+        """CP zigzag: rank 0 has positions [0,1,6,7], rank 1 has [2,3,4,5] → merged has all 8."""
+        _write_rank_file(tmp_path, rank=0, entries_by_batch=[
+            [
+                _entry(0, 100, -1.0),
+                _entry(1, 101, -1.1),
+                _entry(6, 106, -1.6),
+                _entry(7, 107, -1.7),
+            ],
+        ])
+        _write_rank_file(tmp_path, rank=1, entries_by_batch=[
+            [
+                _entry(2, 102, -1.2),
+                _entry(3, 103, -1.3),
+                _entry(4, 104, -1.4),
+                _entry(5, 105, -1.5),
+            ],
+        ])
+        result = _load_and_merge(tmp_path)
+
+        assert len(result) == 8
+        for pos in range(8):
+            assert (0, pos) in result
+            assert result[(0, pos)].token_id == 100 + pos
+            assert result[(0, pos)].logprob == pytest.approx(-1.0 - pos * 0.1)
+
 
 class TestComputeComparison:
     def _make_entries(
