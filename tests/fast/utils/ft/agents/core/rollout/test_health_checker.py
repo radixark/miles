@@ -5,8 +5,8 @@ import asyncio
 import pytest
 
 from miles.utils.ft.agents.core.rollout.health_checker import (
-    RolloutCellHealthChecker,
     RolloutHealthChecker,
+    _probe_cell,
 )
 
 
@@ -24,7 +24,7 @@ class _MockEngine:
             raise ConnectionError("engine dead")
 
 
-async def _engine_method_health_checker(engine: object) -> None:
+async def _engine_health_fn(engine: object) -> None:
     await engine.health_check()  # type: ignore[attr-defined]
 
 
@@ -47,13 +47,12 @@ class _ReportCollector:
 def _make_checker(
     engines_by_cell: dict[str, list[_MockEngine]],
     *,
-    report_fn: _ReportCollector | None = None,
     check_interval: float = 0.05,
 ) -> tuple[RolloutHealthChecker, _ReportCollector]:
-    collector = report_fn or _ReportCollector()
+    collector = _ReportCollector()
     checker = RolloutHealthChecker(
         cells={cid: (lambda es=es: es) for cid, es in engines_by_cell.items()},
-        engine_health_fn=_engine_method_health_checker,
+        engine_health_fn=_engine_health_fn,
         report_fn=collector,
         check_interval=check_interval,
     )
@@ -61,13 +60,8 @@ def _make_checker(
 
 
 # ===========================================================================
-# RolloutCellHealthChecker (low-level, per-cell)
+# _probe_cell
 # ===========================================================================
-
-
-class _AliveEngine:
-    async def health_check(self) -> None:
-        pass
 
 
 class _SlowEngine:
@@ -80,75 +74,61 @@ class _BrokenEngine:
         raise ConnectionError("engine crashed")
 
 
-class TestProbeEngine:
+class TestProbeCell:
     @pytest.mark.anyio
     async def test_alive_engine_returns_true(self) -> None:
-        checker = RolloutCellHealthChecker(
+        result = await _probe_cell(
+            engines=[_MockEngine(True)],
+            engine_health_fn=_engine_health_fn,
             cell_id="a0",
-            engine_health_fn=_engine_method_health_checker,
+            timeout=10.0,
         )
-
-        result = await checker._probe_engine(engine=_AliveEngine())
 
         assert result is True
 
     @pytest.mark.anyio
     async def test_timeout_returns_false(self) -> None:
-        checker = RolloutCellHealthChecker(
+        result = await _probe_cell(
+            engines=[_SlowEngine()],
+            engine_health_fn=_engine_health_fn,
             cell_id="a0",
-            engine_health_fn=_engine_method_health_checker,
             timeout=0.01,
         )
-
-        result = await checker._probe_engine(engine=_SlowEngine())
 
         assert result is False
 
     @pytest.mark.anyio
     async def test_exception_returns_false(self) -> None:
-        checker = RolloutCellHealthChecker(
+        result = await _probe_cell(
+            engines=[_BrokenEngine()],
+            engine_health_fn=_engine_health_fn,
             cell_id="a0",
-            engine_health_fn=_engine_method_health_checker,
+            timeout=10.0,
         )
-
-        result = await checker._probe_engine(engine=_BrokenEngine())
 
         assert result is False
 
-
-class TestCellCheckHealth:
     @pytest.mark.anyio
-    async def test_all_alive_returns_true(self) -> None:
-        checker = RolloutCellHealthChecker(
-            cell_id="c0",
-            engine_health_fn=_engine_method_health_checker,
-        )
-
-        result = await checker.check_health(engines=[_AliveEngine(), _AliveEngine()])
-
-        assert result is True
-
-    @pytest.mark.anyio
-    async def test_dead_engine0_returns_false(self) -> None:
+    async def test_probes_only_engine0(self) -> None:
         """Only engines[0] is probed; if it's dead the whole cell is dead."""
-        checker = RolloutCellHealthChecker(
+        result = await _probe_cell(
+            engines=[_BrokenEngine(), _MockEngine(True)],
+            engine_health_fn=_engine_health_fn,
             cell_id="c1",
-            engine_health_fn=_engine_method_health_checker,
+            timeout=10.0,
         )
-
-        result = await checker.check_health(engines=[_BrokenEngine(), _AliveEngine()])
 
         assert result is False
 
     @pytest.mark.anyio
     async def test_empty_engines_raises(self) -> None:
-        checker = RolloutCellHealthChecker(
-            cell_id="empty",
-            engine_health_fn=_engine_method_health_checker,
-        )
-
         with pytest.raises(ValueError, match="engines must not be empty"):
-            await checker.check_health(engines=[])
+            await _probe_cell(
+                engines=[],
+                engine_health_fn=_engine_health_fn,
+                cell_id="empty",
+                timeout=10.0,
+            )
 
 
 # ===========================================================================
@@ -243,7 +223,7 @@ class TestLoopSurvivesException:
                 "healthy": lambda: [_MockEngine(True)],
                 "broken": _exploding_engines,
             },
-            engine_health_fn=_engine_method_health_checker,
+            engine_health_fn=_engine_health_fn,
             report_fn=collector,
             check_interval=0.05,
         )
