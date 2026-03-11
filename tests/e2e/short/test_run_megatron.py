@@ -94,7 +94,7 @@ def run(
         f"--sp "
         f"--source-patcher-config {source_patcher_config} "
         f"--dumper-filter 'layer_id is None or layer_id < 3' "
-        f"--extra-args '--attention-backend flash --qkv-format bshd'"
+        f"--extra-args '--attention-backend flash'"
     )
     exec_command(cmd)
 
