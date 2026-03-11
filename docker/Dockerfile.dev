@@ -15,7 +15,7 @@ ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
-ARG MEGATRON_BRANCH=save_grad_mem_miles_main
+ARG MEGATRON_BRANCH=miles-main
 
 ARG ENABLE_CUDA_13=0
 
