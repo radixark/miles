@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.agents.core.rollout.ft_rollout_agent import FtRolloutAgent
+from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
 from tests.fast.utils.ft.agents.core.rollout.conftest import MockRolloutCellAgent
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
 
