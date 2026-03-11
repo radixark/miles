@@ -219,7 +219,7 @@ class TestRegisterRolloutSubsystems:
         assert rollout_config.get_active_node_ids() == {"node-r0", "node-r1", "node-r2"}
 
     def test_register_in_non_normal_state_raises_runtime_error(self) -> None:
-        harness = make_test_controller()
+        harness = make_test_controller(rollout_num_cells=1)
         controller = harness.controller
 
         controller._state_machine.force_state(
