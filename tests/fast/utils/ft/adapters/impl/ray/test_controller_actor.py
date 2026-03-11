@@ -83,18 +83,19 @@ class TestBuildFtController:
             platform="stub",
             metric_store_backend="prometheus",
             start_exporter=False,
+            rollout_num_cells=0,
         )
         assert ctrl._scrape_target_manager is None
 
     def test_detector_chain_types_match(self) -> None:
-        ctrl = build_ft_controller(platform="stub", start_exporter=False)
+        ctrl = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
         expected_chain = build_detector_chain()
         actual_types = [type(d).__name__ for d in _get_training_detectors(ctrl)]
         expected_types = [type(d).__name__ for d in expected_chain]
         assert actual_types == expected_types
 
     def test_controller_exporter_registered_as_scrape_target(self) -> None:
-        ctrl = build_ft_controller(platform="stub", start_exporter=False)
+        ctrl = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
         assert isinstance(ctrl._metric_store, MiniPrometheus)
         assert "controller" in ctrl._metric_store._scrape_targets
 
