@@ -87,11 +87,11 @@ async def wait_for_recovery_phase(
     timeout: float = 120.0,
     poll_interval: float = 0.5,
 ) -> ControllerStatus:
-    """Poll until recovery_phase matches the target phase (state class name)."""
+    """Poll until recovery.phase matches the target phase (state class name)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = get_status(handle)
-        if status.recovery_phase == phase:
+        if status.recovery is not None and status.recovery.phase == phase:
             return status
         await asyncio.sleep(poll_interval)
     raise TimeoutError(f"Recovery phase did not reach {phase} within {timeout}s")
@@ -109,19 +109,3 @@ async def wait_for_recovery_complete(
         timeout=timeout,
         poll_interval=poll_interval,
     )
-
-
-def assert_phase_path_contains(
-    status: ControllerStatus,
-    required: list[str],
-) -> None:
-    """Assert that phase_history contains the required phases as an ordered subsequence."""
-    history = status.phase_history
-    assert history is not None, "phase_history is None — was recovery never entered?"
-
-    idx = 0
-    for phase in history:
-        if idx < len(required) and phase == required[idx]:
-            idx += 1
-
-    assert idx == len(required), f"Expected phase path to contain {required} in order, " f"but got history {history}"

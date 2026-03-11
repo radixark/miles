@@ -14,7 +14,6 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.hang_detection
 )
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.no_false_positive import scenario_no_false_positive
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
-    assert_phase_path_contains,
     get_status,
     wait_for_mode,
     wait_for_mode_transition,
@@ -26,7 +25,6 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.repeated_crash
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.transient_crash import scenario_transient_crash
 
 __all__ = [
-    "assert_phase_path_contains",
     "get_status",
     "scenario_hang_detection",
     "scenario_hang_detection_and_recovery",
