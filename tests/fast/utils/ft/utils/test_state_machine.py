@@ -1,11 +1,13 @@
-"""Tests for StateMachineStepper and StateMachine base classes."""
+"""Tests for StateMachineStepper, StateMachine, and run_stepper_to_convergence."""
 
 from __future__ import annotations
+
+import logging
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
+from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper, run_stepper_to_convergence
 
 
 # -- Dummy states for testing --------------------------------------------------
@@ -87,6 +89,20 @@ class SameStateGenHandler:
 
     async def step(self, state: StateA, _context: None):
         yield StateA()
+
+
+class OscillatingAHandler:
+    """A → B(0), creating an A-B-A-B... cycle that never converges."""
+
+    async def step(self, state: StateA, _context: None) -> DummyState:
+        return StateB(value=0)
+
+
+class OscillatingBHandler:
+    """B → A, creating an A-B-A-B... cycle that never converges."""
+
+    async def step(self, state: StateB, _context: None) -> DummyState:
+        return StateA()
 
 
 HANDLER_MAP: dict[type, type] = {
@@ -389,3 +405,136 @@ class TestStateMachineGenerator:
         history_types = [type(s).__name__ for s in machine.state_history]
         assert "StateB" in history_types
         assert "TerminalState" in history_types
+
+
+# -- Helpers for run_stepper_to_convergence tests ------------------------------
+
+
+def _make_oscillating_stepper() -> StateMachineStepper[DummyState, None]:
+    """A→B→A→B→... never converges."""
+    return StateMachineStepper(handler_map={
+        StateA: OscillatingAHandler,
+        StateB: OscillatingBHandler,
+    })
+
+
+def _make_null_stepper() -> StateMachineStepper[DummyState, None]:
+    """StateA always returns None — no transition."""
+
+    class _NullHandler:
+        async def step(self, state: StateA, _ctx: None) -> None:
+            return None
+
+    return StateMachineStepper(handler_map={StateA: _NullHandler})
+
+
+# -- Tests: run_stepper_to_convergence -----------------------------------------
+
+
+class TestRunStepperToConvergenceNoTransition:
+    @pytest.mark.asyncio
+    async def test_handler_returns_none_yields_nothing(self) -> None:
+        results = [s async for s in run_stepper_to_convergence(_make_null_stepper(), StateA(), None)]
+        assert results == []
+
+
+class TestRunStepperToConvergenceChain:
+    @pytest.mark.asyncio
+    async def test_full_chain_yields_all_intermediates(self) -> None:
+        """A→B(1)→B(2)→B(3)→Terminal: 4 stepper dispatches, 4 yields."""
+        stepper = _make_stepper()
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+
+        assert len(results) == 4
+        assert results[0] == StateB(value=1)
+        assert results[1] == StateB(value=2)
+        assert results[2] == StateB(value=3)
+        assert results[3] == TerminalState()
+
+    @pytest.mark.asyncio
+    async def test_starting_mid_chain_converges(self) -> None:
+        """B(2)→B(3)→Terminal: start from middle of chain."""
+        stepper = _make_stepper()
+        results = [s async for s in run_stepper_to_convergence(stepper, StateB(value=2), None)]
+
+        assert results == [StateB(value=3), TerminalState()]
+
+    @pytest.mark.asyncio
+    async def test_starting_at_terminal_yields_nothing(self) -> None:
+        stepper = _make_stepper(terminal_states=frozenset({TerminalState}))
+        results = [s async for s in run_stepper_to_convergence(stepper, TerminalState(), None)]
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_yields_are_in_transition_order(self) -> None:
+        stepper = _make_stepper()
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+
+        state_b_values = [s.value for s in results if isinstance(s, StateB)]
+        assert state_b_values == sorted(state_b_values)
+
+
+class TestRunStepperToConvergenceGenerator:
+    @pytest.mark.asyncio
+    async def test_gen_handler_yields_all_intermediate_states(self) -> None:
+        """Gen handler yields B(1), B(2) in one step; then B handler chains to Terminal."""
+        stepper = _make_gen_stepper(StateAGenHandler)
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+
+        assert results[0] == StateB(value=1)
+        assert results[1] == StateB(value=2)
+        assert results[-1] == TerminalState()
+
+    @pytest.mark.asyncio
+    async def test_gen_handler_both_yields_visible(self) -> None:
+        """Both yields from the gen handler appear — not just the last."""
+        stepper = _make_gen_stepper(StateAGenHandler)
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+
+        values = [s.value for s in results if isinstance(s, StateB)]
+        assert 1 in values
+        assert 2 in values
+
+
+class TestRunStepperToConvergenceMaxIterations:
+    @pytest.mark.asyncio
+    async def test_oscillating_stops_at_max_iterations(self) -> None:
+        """A→B→A→B→... should stop at max_iterations."""
+        stepper = _make_oscillating_stepper()
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=5)]
+
+        assert len(results) == 5
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        stepper = _make_oscillating_stepper()
+        with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
+            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=3)]
+
+        assert "hit max iterations (3)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_normal_convergence_no_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        stepper = _make_stepper()
+        with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
+            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+
+        assert "hit max iterations" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_one_yields_single_dispatch(self) -> None:
+        """max_iterations=1 allows exactly one stepper dispatch."""
+        stepper = _make_stepper()
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=1)]
+
+        assert len(results) == 1
+        assert results[0] == StateB(value=1)
+
+    @pytest.mark.asyncio
+    async def test_oscillating_yields_alternate_states(self) -> None:
+        """Verify the oscillating pattern: A→B(0)→A→B(0)→A."""
+        stepper = _make_oscillating_stepper()
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=4)]
+
+        types = [type(s).__name__ for s in results]
+        assert types == ["StateB", "StateA", "StateB", "StateA"]
