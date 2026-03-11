@@ -9,6 +9,7 @@ from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfi
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.restart.models import (
     Evicting,
+    ExternalExecutionResult,
     MonitoringProgress,
     RestartContext,
     RestartDone,
@@ -237,13 +238,17 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJob, RestartContext]):
         state: RestartingMainJob,
         ctx: RestartContext,
     ) -> RestartState | None:
-        if not state.externally_fulfilled:
+        if state.external_execution_result is None:
             return None
 
-        current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
-        base = int(current_iter) if current_iter is not None and math.isfinite(current_iter) else 0
-        return MonitoringProgress(
-            bad_node_ids=state.bad_node_ids,
-            start_time=datetime.now(timezone.utc),
-            base_iteration=base,
-        )
+        if state.external_execution_result == ExternalExecutionResult.SUCCEEDED:
+            current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
+            base = int(current_iter) if current_iter is not None and math.isfinite(current_iter) else 0
+            return MonitoringProgress(
+                bad_node_ids=state.bad_node_ids,
+                start_time=datetime.now(timezone.utc),
+                base_iteration=base,
+            )
+
+        # FAILED or TIMEOUT
+        return RestartFailed(bad_node_ids=state.bad_node_ids)

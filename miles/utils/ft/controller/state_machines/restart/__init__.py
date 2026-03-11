@@ -7,6 +7,7 @@ from miles.utils.ft.controller.state_machines.restart.handlers import (
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
     Evicting,
+    ExternalExecutionResult,
     MonitoringProgress,
     RestartContext,
     RestartDone,
@@ -37,6 +38,7 @@ def create_restart_stepper() -> StateMachineStepper:
 __all__ = [
     "Evicting",
     "EvictingHandler",
+    "ExternalExecutionResult",
     "MonitoringProgress",
     "MonitoringProgressHandler",
     "RestartContext",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from enum import Enum
 
 from pydantic import ConfigDict
 
@@ -9,6 +10,12 @@ from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+
+class ExternalExecutionResult(Enum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
 
 
 class RestartState(FtBaseModel):
@@ -41,7 +48,7 @@ class RestartFailed(RestartState):
 class RestartingMainJob(RestartState):
     """restart_mode is MAIN_JOB; wait for external main job restart."""
 
-    externally_fulfilled: bool = False
+    external_execution_result: ExternalExecutionResult | None = None
 
 
 class RestartContext(FtBaseModel):

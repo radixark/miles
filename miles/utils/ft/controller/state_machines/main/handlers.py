@@ -23,12 +23,12 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryContext,
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
+    ExternalExecutionResult,
     RestartContext,
     RestartingMainJob as RestartingMainJobRestart,
 )
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
-from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
@@ -41,14 +41,17 @@ def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None
         match sub_state:
             case Recovering(
                 recovery=EvictingAndRestarting(
-                    restart=RestartingMainJobRestart(externally_fulfilled=False)
+                    restart=RestartingMainJobRestart(external_execution_result=None)
                 )
             ):
                 return name
     return None
 
 
-def _update_externally_fulfilled(frozen_state: SubsystemState) -> SubsystemState:
+def _update_external_execution_result(
+    frozen_state: SubsystemState,
+    result: ExternalExecutionResult,
+) -> SubsystemState:
     match frozen_state:
         case Recovering(
             recovery=EvictingAndRestarting(
@@ -57,11 +60,11 @@ def _update_externally_fulfilled(frozen_state: SubsystemState) -> SubsystemState
         ):
             return frozen_state.model_copy(update={"recovery":
                 recovery.model_copy(update={"restart":
-                    restart.model_copy(update={"externally_fulfilled": True})
+                    restart.model_copy(update={"external_execution_result": result})
                 })
             })
         case _:
-            raise AssertionError(f"Unexpected state for _update_externally_fulfilled: {frozen_state}")
+            raise AssertionError(f"Unexpected state for _update_external_execution_result: {frozen_state}")
 
 
 def _build_fresh_subsystem_states(configs: dict[str, SubsystemConfig]) -> dict[str, SubsystemState]:
@@ -199,38 +202,22 @@ class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainCon
         self, state: RestartingMainJobState, context: MainContext
     ) -> MainState | None:
         status = await context.main_job.get_job_status()
+        execution_result: ExternalExecutionResult | None = None
 
         if status == JobStatus.RUNNING:
-            fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
-            if state.requestor_name in fresh_states:
-                restored = _update_externally_fulfilled(state.requestor_frozen_state)
-                fresh_states[state.requestor_name] = restored
-            return NormalState(subsystems=fresh_states)
+            execution_result = ExternalExecutionResult.SUCCEEDED
+        elif status == JobStatus.FAILED:
+            execution_result = ExternalExecutionResult.FAILED
+        else:
+            elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
+            if elapsed > context.recovery_timeout_seconds:
+                execution_result = ExternalExecutionResult.TIMEOUT
 
-        if status == JobStatus.FAILED:
-            logger.warning("main_job_restart_failed subsystem=%s", state.requestor_name)
-            await safe_notify(
-                context.notifier,
-                title="Recovery Alert",
-                content=f"Main job restart failed for subsystem '{state.requestor_name}'",
-            )
-            fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
-            return NormalState(subsystems=fresh_states)
+        if execution_result is None:
+            return None
 
-        # PENDING / STOPPED — check timeout
-        elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
-        if elapsed > context.recovery_timeout_seconds:
-            logger.warning(
-                "main_job_restart_timeout subsystem=%s elapsed=%ds",
-                state.requestor_name,
-                int(elapsed),
-            )
-            await safe_notify(
-                context.notifier,
-                title="Recovery Alert",
-                content=f"Main job restart for '{state.requestor_name}' timed out after {int(elapsed)}s",
-            )
-            fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
-            return NormalState(subsystems=fresh_states)
-
-        return None
+        fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
+        if state.requestor_name in fresh_states:
+            restored = _update_external_execution_result(state.requestor_frozen_state, execution_result)
+            fresh_states[state.requestor_name] = restored
+        return NormalState(subsystems=fresh_states)
