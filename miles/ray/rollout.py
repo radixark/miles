@@ -92,10 +92,15 @@ class RolloutManager:
 
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
-        if "rollout" in self.args.ft_components:
+        self._full_ft_mode = (
+            "rollout" in self.args.ft_components and "train" in self.args.ft_components
+        )
+        if "rollout" in self.args.ft_components and not self._full_ft_mode:
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()
-            self._ci_fault_injection_pending = self.args.ci_test
+        self._ci_fault_injection_pending = (
+            self.args.ci_test and "rollout" in self.args.ft_components
+        )
 
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -212,18 +217,71 @@ class RolloutManager:
         if self.rollout_id == -1:
             return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
-        self.pg.refresh()
+        if not self._full_ft_mode:
+            self.pg.refresh()
 
-        dead_indices = [i for i, engine in enumerate(self.all_rollout_engines) if engine is None]
-        self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
-        logger.info(f"Recovered {self.num_new_engines} dead rollout engines")
-        assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
-        if self.args.offload_rollout and dead_indices:
-            new_engines = [self.all_rollout_engines[i] for i in dead_indices]
-            ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
-            ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
+            dead_indices = [i for i, engine in enumerate(self.all_rollout_engines) if engine is None]
+            self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
+            logger.info(f"Recovered {self.num_new_engines} dead rollout engines")
+            assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
+            if self.args.offload_rollout and dead_indices:
+                new_engines = [self.all_rollout_engines[i] for i in dead_indices]
+                ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
+                ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
 
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
+
+    # --- FT Controller integration (full FT mode) ---
+
+    def stop_cell(self, cell_id: str) -> None:
+        """FT controller calls this to stop all engines before recovery rebuild."""
+        self.health_monitoring_pause()
+        for i, engine in enumerate(self.all_rollout_engines):
+            if engine is not None:
+                try:
+                    ray.get(engine.shutdown.remote())
+                    ray.kill(engine)
+                except Exception:
+                    logger.warning("stop_cell: failed to kill engine %d", i, exc_info=True)
+                self.all_rollout_engines[i] = None
+
+    def start_cell(self, cell_id: str) -> dict:
+        """FT controller calls this to restart engines after recovery. Returns new handles."""
+        self.pg.refresh()
+        self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
+        if self.args.offload_rollout and self.num_new_engines > 0:
+            new_engines = [e for e in self.all_rollout_engines if e is not None][-self.num_new_engines:]
+            ray.get([e.release_memory_occupation.remote() for e in new_engines])
+            ray.get([e.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for e in new_engines])
+        return {"engine_handles": list(self.all_rollout_engines), "count": self.num_new_engines}
+
+    def get_cell_status(self, cell_id: str):
+        from miles.utils.ft.adapters.types import JobStatus
+
+        all_alive = all(e is not None for e in self.all_rollout_engines)
+        return JobStatus.RUNNING if all_alive else JobStatus.FAILED
+
+    def register_with_ft_controller(self, self_handle: object) -> None:
+        """Register this RolloutManager with the FT controller for health monitoring."""
+        from miles.utils.ft.adapters.types import ft_controller_actor_name
+        from miles.utils.ft.utils.env import get_ft_id
+
+        ft_id = get_ft_id()
+        if not ft_id:
+            return
+        try:
+            controller = ray.get_actor(ft_controller_actor_name(ft_id))
+        except ValueError:
+            logger.warning("FT controller not found, skipping rollout registration")
+            return
+        ray.get(controller.register_rollout.remote(
+            rm_handle=self_handle,
+            engine_handles=list(self.all_rollout_engines),
+            node_ids=[],
+        ))
+        logger.info("registered_with_ft_controller ft_id=%s", ft_id)
+
+    # --- End FT Controller integration ---
 
     def clear_num_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights
