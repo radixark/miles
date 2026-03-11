@@ -8,7 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 import polars as pl
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
 from miles.utils.ft.utils.base_model import FtBaseModel
@@ -28,17 +28,29 @@ class ControllerMode(str, Enum):
     RECOVERY = "recovery"
 
 
+class RecoveryInfo(FtBaseModel):
+    phase: str
+    bad_nodes: list[str]
+    bad_nodes_confirmed: bool
+
+
 class ControllerStatus(FtBaseModel):
-    mode: ControllerMode
-    recovery_phase: str | None
-    phase_history: list[str] | None
     tick_count: int
     active_run_id: str | None
-    bad_nodes: list[str]
-    recovery_in_progress: bool
-    bad_nodes_confirmed: bool
     latest_iteration: int | None
+    training_subsystem_state: str | None
     rollout_subsystem_states: dict[str, str] | None = None
+    recovery: RecoveryInfo | None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def mode(self) -> ControllerMode:
+        return ControllerMode.RECOVERY if self.recovery is not None else ControllerMode.MONITORING
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def recovery_in_progress(self) -> bool:
+        return self.recovery is not None
 
 
 # ---------------------------------------------------------------------------
