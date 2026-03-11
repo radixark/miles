@@ -20,8 +20,7 @@ if str(_MILES_ROOT) not in sys.path:
 
 import typer
 from tests.e2e.conftest_dumper import (
-    MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML,
-    MEGATRON_SOURCE_PATCHER_CONFIG_YAML,
+    MEGATRON_PATCHER_YAMLS,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
     SOURCE_PATCHED_FIELDS,
     check_dump_dir,
@@ -90,9 +89,7 @@ def prepare(dump_dir: str, mode: str) -> None:
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
     U.exec_command(f"rm -rf {dump_dir}")
 
-    megatron_yaml: str = (
-        MEGATRON_SOURCE_PATCHER_CONFIG_BSHD_YAML if mode.endswith("_bshd") else MEGATRON_SOURCE_PATCHER_CONFIG_YAML
-    )
+    megatron_yaml: str = MEGATRON_PATCHER_YAMLS["bshd" if mode.endswith("_bshd") else "thd"]
     Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(megatron_yaml)
     Path(SGLANG_SOURCE_PATCHER_CONFIG_PATH).write_text(SGLANG_SOURCE_PATCHER_CONFIG_YAML)
 
