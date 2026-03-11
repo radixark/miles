@@ -79,58 +79,41 @@ class TestStateMachineStepper:
     @pytest.mark.asyncio
     async def test_dispatch_to_correct_handler(self) -> None:
         stepper = _make_stepper()
-        result = await stepper(StateA(), None)
+        result = await stepper.step_once(StateA(), None)
         assert isinstance(result, StateB)
         assert result.value == 1
 
     @pytest.mark.asyncio
     async def test_terminal_state_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper(TerminalState(), None)
+        result = await stepper.step_once(TerminalState(), None)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_handler_returning_none(self) -> None:
         stepper = _make_stepper()
-        result = await stepper(StateC(), None)
+        result = await stepper.step_once(StateC(), None)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_unregistered_state_raises_type_error(self) -> None:
         stepper = _make_stepper()
         with pytest.raises(TypeError, match="has no handler for state type UnregisteredState"):
-            await stepper(UnregisteredState(), None)
+            await stepper.step_once(UnregisteredState(), None)
 
     @pytest.mark.asyncio
     async def test_same_type_transition(self) -> None:
         stepper = _make_stepper()
-        result = await stepper(StateB(value=1), None)
+        result = await stepper.step_once(StateB(value=1), None)
         assert isinstance(result, StateB)
         assert result.value == 2
 
     @pytest.mark.asyncio
-    async def test_transition_logging(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_step_once_does_not_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Logging moved to StateMachine — step_once should not log."""
         stepper = _make_stepper()
         with caplog.at_level("INFO"):
-            await stepper(StateA(), None)
-        assert "StateA()" in caplog.text
-        assert "StateB(value=1)" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_same_type_transition_logs_when_data_changes(self, caplog: pytest.LogCaptureFixture) -> None:
-        """StateB(value=1) -> StateB(value=2) should still be logged."""
-        stepper = _make_stepper()
-        with caplog.at_level("INFO"):
-            await stepper(StateB(value=1), None)
-        assert "StateB(value=1)" in caplog.text
-        assert "StateB(value=2)" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_same_state_no_log(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Handler returning None (no transition) should not log."""
-        stepper = _make_stepper()
-        with caplog.at_level("INFO"):
-            await stepper(StateC(), None)
+            await stepper.step_once(StateA(), None)
         assert caplog.text == ""
 
     @pytest.mark.asyncio
@@ -141,7 +124,7 @@ class TestStateMachineStepper:
             return TerminalState()
 
         stepper = _make_stepper(pre_dispatch=always_terminal)
-        result = await stepper(StateA(), None)
+        result = await stepper.step_once(StateA(), None)
         assert isinstance(result, TerminalState)
 
     @pytest.mark.asyncio
@@ -152,7 +135,7 @@ class TestStateMachineStepper:
             return None
 
         stepper = _make_stepper(pre_dispatch=pass_through)
-        result = await stepper(StateA(), None)
+        result = await stepper.step_once(StateA(), None)
         assert isinstance(result, StateB)
         assert result.value == 1
 

@@ -107,7 +107,7 @@ class TestNormalOperation:
             },
         )
 
-        result = await stepper(state, context)
+        result = await stepper.step_once(state, context)
 
         assert result is None
 
@@ -135,7 +135,7 @@ class TestSingleSubsystemEscalation:
             subsystem_configs={"rollout_0": _make_subsystem_config()},
         )
 
-        result = await stepper(state, context)
+        result = await stepper.step_once(state, context)
 
         assert isinstance(result, RestartingMainJobState)
         assert result.requestor_name == "rollout_0"
@@ -170,7 +170,7 @@ class TestJobRestartComplete:
             },
         )
 
-        result = await stepper(state, context)
+        result = await stepper.step_once(state, context)
 
         assert isinstance(result, NormalState)
         assert set(result.subsystems.keys()) == {"training", "rollout_0"}
@@ -212,7 +212,7 @@ class TestMultiSubsystemOneEscalates:
             },
         )
 
-        result = await stepper(state, context)
+        result = await stepper.step_once(state, context)
 
         assert isinstance(result, RestartingMainJobState)
         assert result.requestor_name == "rollout_0"
@@ -239,7 +239,7 @@ class TestJobRestartPending:
         )
         context = _make_controller_context(main_job=main_job)
 
-        result = await stepper(state, context)
+        result = await stepper.step_once(state, context)
 
         assert result is None
 
@@ -257,6 +257,6 @@ class TestJobRestartPending:
         )
         context = _make_controller_context(main_job=main_job)
 
-        result = await stepper(state, context)
+        result = await stepper.step_once(state, context)
 
         assert isinstance(result, NormalState)
