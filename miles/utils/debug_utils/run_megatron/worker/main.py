@@ -55,6 +55,9 @@ def main() -> None:
     setup_replay_before_model(script)
     model: list[Any] = _build_and_load_model(args, script)
 
+    for m in model:
+        dumper.register_non_intrusive_dumper(m)
+
     load_replay_data(script, rank=rank, sequence_parallel=getattr(args, "sequence_parallel", False))
 
     token_ids: list[int] = json.loads(script.token_ids_file.read_text())
