@@ -21,7 +21,8 @@ RECOVERY_TIMEOUT = 60.0 * _TIMEOUT_SCALE
 LONG_RECOVERY_TIMEOUT = 120.0 * _TIMEOUT_SCALE
 
 
-def _init_local_ray(*, include_dashboard: bool) -> tuple[ray.runtime_env.RuntimeContext, str | None]:
+def _init_local_ray() -> str:
+    """Start a local Ray cluster with dashboard. Returns the dashboard URL."""
     if ray.is_initialized():
         ray.shutdown()
     subprocess.run(["ray", "stop", "--force"], capture_output=True)
@@ -29,55 +30,63 @@ def _init_local_ray(*, include_dashboard: bool) -> tuple[ray.runtime_env.Runtime
     ray_tmp = Path("/tmp/ray")
     if ray_tmp.exists():
         shutil.rmtree(ray_tmp, ignore_errors=True)
-    kwargs: dict[str, object] = dict(
+    ctx = ray.init(
         address="local",
         num_cpus=32,
         num_gpus=0,
-        include_dashboard=include_dashboard,
+        include_dashboard=True,
+        dashboard_host="127.0.0.1",
+        dashboard_port=0,
     )
-    if include_dashboard:
-        kwargs.update(dashboard_host="127.0.0.1", dashboard_port=0)
-    ctx = ray.init(**kwargs)
-    dashboard_url = f"http://{ctx.dashboard_url}" if include_dashboard and ctx.dashboard_url else None
-    return ctx, dashboard_url
-
-
-@pytest.fixture(scope="module")
-def local_ray() -> Generator[None, None, None]:
-    _init_local_ray(include_dashboard=False)
-    yield
-    ray.shutdown()
-
-
-@pytest.fixture(scope="module")
-def local_ray_with_dashboard() -> Generator[str, None, None]:
-    _, url = _init_local_ray(include_dashboard=True)
-    assert url is not None
+    url = f"http://{ctx.dashboard_url}"
     _wait_for_dashboard_agent(url)
+    return url
+
+
+@pytest.fixture(scope="session")
+def _ray_session() -> Generator[str, None, None]:
+    """Session-scoped Ray cluster shared by all integration tests."""
+    url = _init_local_ray()
     yield url
     ray.shutdown()
 
 
-def _wait_for_dashboard_agent(dashboard_url: str, timeout: float = 30.0) -> None:
+@pytest.fixture(scope="session")
+def local_ray(_ray_session: str) -> Generator[None, None, None]:
+    yield
+
+
+@pytest.fixture(scope="session")
+def local_ray_with_dashboard(_ray_session: str) -> Generator[str, None, None]:
+    yield _ray_session
+
+
+_DASHBOARD_AGENT_TIMEOUT = 90.0
+
+
+def _wait_for_dashboard_agent(dashboard_url: str, timeout: float = _DASHBOARD_AGENT_TIMEOUT) -> None:
     """Wait until the Ray dashboard job agent can accept job submissions.
 
     Submits a trivial probe job to verify end-to-end readiness.
-    Skips the test module if the agent never becomes ready.
     """
     from ray.job_submission import JobSubmissionClient
 
     client = JobSubmissionClient(address=dashboard_url)
     deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
             job_id = client.submit_job(entrypoint='python -c "1"')
             client.stop_job(job_id)
             logger.info("Dashboard agent ready after probe job %s", job_id)
             return
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             logger.debug("Dashboard agent not ready yet", exc_info=True)
         time.sleep(2.0)
-    pytest.skip(f"Ray dashboard agent not ready after {timeout}s")
+    raise RuntimeError(
+        f"Ray dashboard agent not ready after {timeout}s: {last_error}"
+    )
 
 
 def _kill_named_actor(name: str) -> None:
