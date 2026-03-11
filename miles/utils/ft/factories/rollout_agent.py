@@ -21,7 +21,7 @@ _REGISTER_RETRY_DELAY = 2.0
 def create_rollout_agent(
     rollout_manager: object,
     *,
-    check_interval: float = 10.0,
+    check_interval: float = 30.0,
     ft_id: str = "",
 ) -> FtRolloutAgent:
     agent = FtRolloutAgent(
