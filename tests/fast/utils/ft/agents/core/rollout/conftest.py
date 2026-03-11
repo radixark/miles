@@ -7,6 +7,16 @@ async def _noop_health_checker(engine: object) -> None:
     pass
 
 
+class MockEngine:
+    def __init__(self, alive: bool = True) -> None:
+        self.alive = alive
+
+
+async def mock_health_checker(engine: object) -> None:
+    if not engine.alive:  # type: ignore[attr-defined]
+        raise ConnectionError("engine dead")
+
+
 class MockRolloutCellAgent(RolloutCellAgent):
     """Overrides _check_single_engine to avoid real health check calls."""
 

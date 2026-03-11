@@ -13,22 +13,13 @@ logger = logging.getLogger(__name__)
 class FtRolloutAgent:
     def __init__(
         self,
-        rollout_manager: object | None = None,
+        rollout_manager: object,
         *,
-        cells: dict[str, RolloutCellAgent] | None = None,
-        health_checker: EngineHealthChecker | None = None,
+        health_checker: EngineHealthChecker,
         check_interval: float = 10.0,
     ) -> None:
-        if rollout_manager is not None:
-            if health_checker is None:
-                raise ValueError("health_checker is required when rollout_manager is provided")
-            self._rollout_manager = rollout_manager
-            self._cells = self._build_cells(rollout_manager, health_checker=health_checker)
-        elif cells is not None:
-            self._rollout_manager = None
-            self._cells = cells
-        else:
-            raise ValueError("Either rollout_manager or cells must be provided")
+        self._rollout_manager = rollout_manager
+        self._cells = self._build_cells(rollout_manager, health_checker=health_checker)
 
         self._check_interval = check_interval
         self._paused = False
@@ -112,20 +103,13 @@ class FtRolloutAgent:
     # --- Control plane: cell level (routes to RolloutManager when available) ---
 
     async def stop_cell(self, cell_id: str) -> None:
-        if self._rollout_manager is not None:
-            await self._rollout_manager.stop_cell(cell_id)  # type: ignore[attr-defined]
-        else:
-            await self._cells[cell_id].stop()
+        await self._rollout_manager.stop_cell(cell_id)  # type: ignore[attr-defined]
 
     async def start_cell(self, cell_id: str) -> int:
-        if self._rollout_manager is not None:
-            return await self._rollout_manager.start_cell(cell_id)  # type: ignore[attr-defined]
-        return await self._cells[cell_id].start()
+        return await self._rollout_manager.start_cell(cell_id)  # type: ignore[attr-defined]
 
     async def get_cell_status(self, cell_id: str) -> JobStatus:
-        if self._rollout_manager is not None:
-            return await self._rollout_manager.get_cell_status(cell_id)  # type: ignore[attr-defined]
-        return JobStatus.RUNNING if self._cells[cell_id].is_healthy() else JobStatus.FAILED
+        return await self._rollout_manager.get_cell_status(cell_id)  # type: ignore[attr-defined]
 
     # --- Public API for M12 integration ---
 
