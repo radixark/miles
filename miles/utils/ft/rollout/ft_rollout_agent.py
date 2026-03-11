@@ -70,25 +70,29 @@ class FtRolloutAgent:
     async def _health_check_loop(self) -> None:
         while True:
             if not self._paused:
-                for atom in self._atoms.values():
-                    try:
-                        result = await atom.check_health()
-                        self._update_metrics(result)
-                    except Exception:
-                        logger.warning(
-                            "health_check_failed atom_id=%s", atom.atom_id, exc_info=True
-                        )
+                await asyncio.gather(
+                    *(self._check_one_atom(atom) for atom in self._atoms.values())
+                )
             await asyncio.sleep(self._check_interval)
+
+    async def _check_one_atom(self, atom: RolloutAtomAgent) -> None:
+        try:
+            result = await atom.check_health()
+            self._update_metrics(result)
+        except Exception:
+            logger.warning(
+                "health_check_failed atom_id=%s", atom.atom_id, exc_info=True
+            )
 
     def _update_metrics(self, result: AtomHealthResult) -> None:
         self._atom_alive.labels(atom_id=result.atom_id).set(
             1.0 if result.is_healthy else 0.0
         )
-        alive_set = set(range(result.total_engines)) - set(result.dead_engine_indices)
+        dead_set = set(result.dead_engine_indices)
         for i in range(result.total_engines):
             self._engine_alive.labels(
                 atom_id=result.atom_id, engine_index=str(i)
-            ).set(1.0 if i in alive_set else 0.0)
+            ).set(0.0 if i in dead_set else 1.0)
 
     def pause(self) -> None:
         self._paused = True

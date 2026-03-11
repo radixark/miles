@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import aiohttp
+import httpx
 import pytest
 from prometheus_client import CollectorRegistry, Gauge
 
@@ -17,11 +17,10 @@ class TestMetricsServerStartAndServe:
         await server.start()
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{server.address}/metrics") as resp:
-                    assert resp.status == 200
-                    body = await resp.text()
-                    assert "test_metric 42.0" in body
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{server.address}/metrics")
+                assert resp.status_code == 200
+                assert "test_metric 42.0" in resp.text
         finally:
             await server.shutdown()
 
@@ -54,7 +53,6 @@ class TestShutdownCleanup:
         address = server.address
         await server.shutdown()
 
-        async with aiohttp.ClientSession() as session:
-            with pytest.raises(aiohttp.ClientConnectorError):
-                async with session.get(f"{address}/metrics"):
-                    pass
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(httpx.ConnectError):
+                await client.get(f"{address}/metrics")

@@ -38,6 +38,8 @@ class MetricsServer:
     async def shutdown(self) -> None:
         if self._runner is not None:
             await self._runner.cleanup()
+            self._runner = None
+            self._actual_port = None
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         output = generate_latest(self._registry)

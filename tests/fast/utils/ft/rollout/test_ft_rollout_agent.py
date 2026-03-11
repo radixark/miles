@@ -4,11 +4,11 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from prometheus_client import CollectorRegistry
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.rollout.ft_rollout_agent import FtRolloutAgent
 from tests.fast.utils.ft.rollout.conftest import MockRolloutAtomAgent
+from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
 
 
 def _make_agent(
@@ -22,16 +22,6 @@ def _make_agent(
     )
 
 
-def _read_gauge(registry: CollectorRegistry, name: str, labels: dict[str, str]) -> float | None:
-    """Read a gauge value from a CollectorRegistry by metric name and labels."""
-    for metric in registry.collect():
-        if metric.name == name:
-            for sample in metric.samples:
-                if sample.name == name and sample.labels == labels:
-                    return sample.value
-    return None
-
-
 class TestHealthCheckLoopUpdatesMetrics:
     @pytest.mark.anyio
     async def test_metrics_reflect_healthy_state(self) -> None:
@@ -41,15 +31,16 @@ class TestHealthCheckLoopUpdatesMetrics:
         agent = _make_agent(atoms)
         await agent.start()
 
-        # Step 1: wait for at least one health check cycle
-        await asyncio.sleep(0.15)
+        try:
+            # Step 1: wait for at least one health check cycle
+            await asyncio.sleep(0.15)
 
-        # Step 2: verify metrics
-        assert _read_gauge(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
-        assert _read_gauge(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "0"}) == 1.0
-        assert _read_gauge(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "1"}) == 1.0
-
-        await agent.shutdown()
+            # Step 2: verify metrics
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "1"}) == 1.0
+        finally:
+            await agent.shutdown()
 
 
 class TestPartialEngineDeathMetrics:
@@ -61,14 +52,15 @@ class TestPartialEngineDeathMetrics:
         agent = _make_agent(atoms)
         await agent.start()
 
-        await asyncio.sleep(0.15)
+        try:
+            await asyncio.sleep(0.15)
 
-        assert _read_gauge(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 0.0
-        assert _read_gauge(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "0"}) == 1.0
-        assert _read_gauge(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "1"}) == 0.0
-        assert _read_gauge(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "2"}) == 1.0
-
-        await agent.shutdown()
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "0"}) == 1.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "1"}) == 0.0
+            assert get_sample_value(agent._registry, "rollout_engine_alive", {"atom_id": "a0", "engine_index": "2"}) == 1.0
+        finally:
+            await agent.shutdown()
 
 
 class TestPauseDoesNotProduceFalseUpdates:
@@ -78,19 +70,20 @@ class TestPauseDoesNotProduceFalseUpdates:
         agent = _make_agent({"a0": atom})
         await agent.start()
 
-        # Step 1: wait for initial healthy check
-        await asyncio.sleep(0.15)
-        assert _read_gauge(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
+        try:
+            # Step 1: wait for initial healthy check
+            await asyncio.sleep(0.15)
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
 
-        # Step 2: pause, then kill an engine
-        agent.pause()
-        atom._engine_alive[1] = False
+            # Step 2: pause, then kill an engine
+            agent.pause()
+            atom._engine_alive[1] = False
 
-        # Step 3: wait another cycle — metrics should NOT update
-        await asyncio.sleep(0.15)
-        assert _read_gauge(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
-
-        await agent.shutdown()
+            # Step 3: wait another cycle — metrics should NOT update
+            await asyncio.sleep(0.15)
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 1.0
+        finally:
+            await agent.shutdown()
 
 
 class TestResumeRestoresChecks:
@@ -100,20 +93,21 @@ class TestResumeRestoresChecks:
         agent = _make_agent({"a0": atom})
         await agent.start()
 
-        await asyncio.sleep(0.15)
+        try:
+            await asyncio.sleep(0.15)
 
-        # Step 1: pause and kill engine
-        agent.pause()
-        atom._engine_alive[0] = False
-        await asyncio.sleep(0.15)
+            # Step 1: pause and kill engine
+            agent.pause()
+            atom._engine_alive[0] = False
+            await asyncio.sleep(0.15)
 
-        # Step 2: resume — metrics should update
-        agent.resume()
-        await asyncio.sleep(0.15)
+            # Step 2: resume — metrics should update
+            agent.resume()
+            await asyncio.sleep(0.15)
 
-        assert _read_gauge(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 0.0
-
-        await agent.shutdown()
+            assert get_sample_value(agent._registry, "rollout_atom_alive", {"atom_id": "a0"}) == 0.0
+        finally:
+            await agent.shutdown()
 
 
 class TestGetStatus:
@@ -125,11 +119,12 @@ class TestGetStatus:
         }
         agent = _make_agent(atoms)
         await agent.start()
-        await asyncio.sleep(0.15)
 
-        assert await agent.get_status() == JobStatus.RUNNING
-
-        await agent.shutdown()
+        try:
+            await asyncio.sleep(0.15)
+            assert await agent.get_status() == JobStatus.RUNNING
+        finally:
+            await agent.shutdown()
 
     @pytest.mark.anyio
     async def test_any_dead_returns_failed(self) -> None:
@@ -139,11 +134,12 @@ class TestGetStatus:
         }
         agent = _make_agent(atoms)
         await agent.start()
-        await asyncio.sleep(0.15)
 
-        assert await agent.get_status() == JobStatus.FAILED
-
-        await agent.shutdown()
+        try:
+            await asyncio.sleep(0.15)
+            assert await agent.get_status() == JobStatus.FAILED
+        finally:
+            await agent.shutdown()
 
 
 class TestGetAtomStatusPerAtomIsolation:
@@ -155,12 +151,13 @@ class TestGetAtomStatusPerAtomIsolation:
         }
         agent = _make_agent(atoms)
         await agent.start()
-        await asyncio.sleep(0.15)
 
-        assert await agent.get_atom_status("a0") == JobStatus.RUNNING
-        assert await agent.get_atom_status("a1") == JobStatus.FAILED
-
-        await agent.shutdown()
+        try:
+            await asyncio.sleep(0.15)
+            assert await agent.get_atom_status("a0") == JobStatus.RUNNING
+            assert await agent.get_atom_status("a1") == JobStatus.FAILED
+        finally:
+            await agent.shutdown()
 
 
 class TestLifecycle:
@@ -169,9 +166,10 @@ class TestLifecycle:
         agent = _make_agent({"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])})
         await agent.start()
 
-        assert "http://localhost:" in agent.address
-
-        await agent.shutdown()
+        try:
+            assert "http://localhost:" in agent.address
+        finally:
+            await agent.shutdown()
 
         assert agent._health_loop_task is not None
         assert agent._health_loop_task.done()
@@ -183,18 +181,19 @@ class TestRegisterWithController:
         agent = _make_agent({"a0": MockRolloutAtomAgent(atom_id="a0", engine_alive=[True])})
         await agent.start()
 
-        controller_handle = MagicMock()
-        controller_handle.add_scrape_target = MagicMock()
-        controller_handle.add_scrape_target.remote = AsyncMock()
+        try:
+            controller_handle = MagicMock()
+            controller_handle.add_scrape_target = MagicMock()
+            controller_handle.add_scrape_target.remote = AsyncMock()
 
-        await agent.register_with_controller(controller_handle)
+            await agent.register_with_controller(controller_handle)
 
-        controller_handle.add_scrape_target.remote.assert_called_once_with(
-            target_id="rollout-ft-agent",
-            address=agent.address,
-        )
-
-        await agent.shutdown()
+            controller_handle.add_scrape_target.remote.assert_called_once_with(
+                target_id="rollout-ft-agent",
+                address=agent.address,
+            )
+        finally:
+            await agent.shutdown()
 
 
 class TestPublicApi:
