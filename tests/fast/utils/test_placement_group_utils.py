@@ -271,9 +271,10 @@ class TestPartialResortSnapshots:
             BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.5", gpu_id="1"),
         ]
 
-    def test_gpu_id_change_without_node_change_not_treated_as_changed(self) -> None:
-        """gpu_id change on the same node_ip is NOT a node replacement."""
+    def test_gpu_id_change_on_same_node_treated_as_changed(self) -> None:
+        """gpu_id change on the same node_ip IS treated as a change (location key includes gpu_id)."""
         old = _make_six_bundle_snapshots()
+        # node 10.0.0.1: gpu 0→5, gpu 1→6
         new = [
             BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="5"),
             BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="6"),
@@ -283,7 +284,11 @@ class TestPartialResortSnapshots:
             BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
         ]
         result = _partial_resort_snapshots(old, new)
-        assert result == old
+        # ranks 0,1 unmatched (old gpu 0,1 not in new), ranks 2-5 matched
+        # unmatched new: (10.0.0.1, 5) and (10.0.0.1, 6), sorted → (5, 6)
+        assert result[0] == BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="5")
+        assert result[1] == BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="6")
+        assert result[2:] == old[2:]
 
     def test_single_rank_change(self) -> None:
         """Only one bundle changes node -> only that rank is updated."""
@@ -326,7 +331,7 @@ class TestPartialResortSnapshots:
         ]
 
     def test_new_snapshots_order_irrelevant(self) -> None:
-        """new_snapshots order doesn't matter — lookup is by bundle_index."""
+        """new_snapshots order doesn't matter — lookup is by (node_ip, gpu_id)."""
         old = _make_six_bundle_snapshots()
         new_forward = [
             BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
