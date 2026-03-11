@@ -85,7 +85,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 recovery_stepper=self._recovery_stepper,
                 restart_stepper=self._restart_stepper,
             )
-            old_sub_state = state.subsystems[name]
+            old_sub_state = curr_state.subsystems[name]
             async for new_sub_state in self._subsystem_stepper(old_sub_state, sub_ctx):
                 curr_state = NormalState(subsystems={**curr_state.subsystems, name: new_sub_state})
                 yield curr_state
