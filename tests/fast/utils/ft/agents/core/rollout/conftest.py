@@ -33,9 +33,10 @@ class MockRolloutCellAgent(RolloutCellAgent):
     """Uses _MockHealthChecker to avoid real health check calls."""
 
     def __init__(self, *, cell_id: str, engine_alive: list[bool]) -> None:
+        num_engines = len(engine_alive)
         super().__init__(
             cell_id=cell_id,
-            engines=list(range(len(engine_alive))),
+            get_engines=lambda: list(range(num_engines)),
             health_checker=_noop_health_checker,
         )
         mock = _MockHealthChecker(cell_id=cell_id, engine_alive=engine_alive)

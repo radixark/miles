@@ -31,7 +31,6 @@ class FtRolloutAgent:
             self.address, len(self._cells),
         )
 
-    # TODO this is surely incorrect. need to know real cells when rollout.py is refactored
     @staticmethod
     def _build_cells(
         rollout_manager: object,
@@ -40,7 +39,7 @@ class FtRolloutAgent:
     ) -> dict[str, RolloutCellAgent]:
         return {"default": RolloutCellAgent(
             cell_id="default",
-            engines=list(rollout_manager.all_rollout_engines),  # type: ignore[attr-defined]
+            get_engines=lambda: list(rollout_manager.all_rollout_engines),  # type: ignore[attr-defined]
             health_checker=health_checker,
         )}
 

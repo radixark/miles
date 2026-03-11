@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from miles.utils.ft.adapters.types import EngineHealthChecker
 from miles.utils.ft.agents.core.rollout.health_checker import CellHealthResult, RolloutCellHealthChecker
@@ -21,12 +22,12 @@ class RolloutCellAgent:
         self,
         *,
         cell_id: str,
-        engines: list[object],
+        get_engines: Callable[[], list[object]],
         health_checker: EngineHealthChecker,
         health_check_timeout: float = 10.0,
     ) -> None:
         self._cell_id = cell_id
-        self._engines = list(engines)
+        self._get_engines = get_engines
         self._health_checker = RolloutCellHealthChecker(
             cell_id=cell_id,
             engine_health_fn=health_checker,
@@ -41,5 +42,5 @@ class RolloutCellAgent:
 
     async def check_health(self) -> CellHealthResult:
         """Run health check on all engines concurrently, return aggregated result."""
-        return await self._health_checker.check_health(engines=self._engines)
+        return await self._health_checker.check_health(engines=self._get_engines())
 

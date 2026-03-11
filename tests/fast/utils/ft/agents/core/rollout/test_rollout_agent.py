@@ -196,7 +196,7 @@ class TestBuildCells:
         cells = FtRolloutAgent._build_cells(rollout_manager, health_checker=AsyncMock())
 
         assert list(cells.keys()) == ["default"]
-        assert len(cells["default"]._engines) == 3
+        assert len(cells["default"]._get_engines()) == 3
 
     def test_cell_id_is_default(self) -> None:
         rollout_manager = MagicMock()
