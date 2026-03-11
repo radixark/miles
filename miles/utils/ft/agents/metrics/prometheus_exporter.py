@@ -6,6 +6,7 @@ from typing import TypeVar
 from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
 
 from miles.utils.ft.agents.types import CounterSample, GaugeSample, _MetricSampleBase
+from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,8 @@ class PrometheusExporter:
         return self._registry
 
     def get_address(self) -> str:
-        return f"http://localhost:{self.port}"
+        _hostname, ip = get_host_info()
+        return f"http://{ip}:{self.port}"
 
     def shutdown(self) -> None:
         self._httpd.shutdown()

@@ -121,8 +121,10 @@ class TestGetOrCreateCache:
 
 
 class TestLifecycle:
-    def test_get_address(self, exporter: PrometheusExporter) -> None:
-        assert exporter.get_address().startswith("http://localhost:")
+    def test_get_address_contains_real_ip(self, exporter: PrometheusExporter) -> None:
+        address = exporter.get_address()
+        assert address.startswith("http://")
+        assert ":" in address.rsplit(":", 1)[-1]
 
     def test_shutdown(self, exporter: PrometheusExporter) -> None:
         exporter.shutdown()
