@@ -90,7 +90,7 @@ class RolloutCellHealthChecker:
             )
             return True
         except Exception:
-            logger.debug(
+            logger.info(
                 "engine_health_check_failed cell_id=%s index=%d",
                 self._cell_id, index, exc_info=True,
             )
