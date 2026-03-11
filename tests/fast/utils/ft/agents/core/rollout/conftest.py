@@ -19,25 +19,23 @@ async def mock_health_checker(engine: object) -> None:
 
 
 class _MockHealthChecker(RolloutCellHealthChecker):
-    """Override _check_single_engine with configurable engine_alive."""
+    """Override _probe_engine so the first engine's liveness is configurable."""
 
-    def __init__(self, *, cell_id: str, engine_alive: list[bool]) -> None:
+    def __init__(self, *, cell_id: str, healthy: bool) -> None:
         super().__init__(cell_id=cell_id, engine_health_fn=_noop_health_checker, timeout=10.0)
-        self.engine_alive = list(engine_alive)
+        self.healthy = healthy
 
-    async def _check_single_engine(self, *, engine: object, index: int) -> bool:
-        return self.engine_alive[index]
+    async def _probe_engine(self, *, engine: object) -> bool:
+        return self.healthy
 
 
 class MockRolloutCellAgent(RolloutCellAgent):
     """Uses _MockHealthChecker to avoid real health check calls."""
 
-    def __init__(self, *, cell_id: str, engine_alive: list[bool]) -> None:
-        num_engines = len(engine_alive)
+    def __init__(self, *, cell_id: str, healthy: bool = True) -> None:
         super().__init__(
             cell_id=cell_id,
-            get_engines=lambda: list(range(num_engines)),
+            get_engines=lambda: [object()],
             health_checker=_noop_health_checker,
         )
-        mock = _MockHealthChecker(cell_id=cell_id, engine_alive=engine_alive)
-        self._health_checker = mock
+        self._health_checker = _MockHealthChecker(cell_id=cell_id, healthy=healthy)

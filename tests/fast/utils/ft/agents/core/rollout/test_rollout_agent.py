@@ -41,28 +41,24 @@ class TestHealthCheckLoopUpdatesMetrics:
             # Step 1: wait for at least one health check cycle
             await asyncio.sleep(0.15)
 
-            # Step 2: verify metrics
+            # Step 2: verify cell-level metric
             registry = agent._metrics_exporter.registry
             assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "default"}) == 1.0
-            assert get_sample_value(registry, "rollout_engine_alive", {"cell_id": "default", "engine_index": "0"}) == 1.0
-            assert get_sample_value(registry, "rollout_engine_alive", {"cell_id": "default", "engine_index": "1"}) == 1.0
         finally:
             await agent.shutdown()
 
 
-class TestPartialEngineDeathMetrics:
+class TestUnhealthyCellMetrics:
     @pytest.mark.anyio
-    async def test_dead_engine_reflected_in_metrics(self) -> None:
-        agent, _ = _make_agent([True, False, True])
+    async def test_dead_engine0_reflected_in_cell_metric(self) -> None:
+        """Production only probes engines[0]; if dead the cell is unhealthy."""
+        agent, _ = _make_agent([False, True, True])
 
         try:
             await asyncio.sleep(0.15)
 
             registry = agent._metrics_exporter.registry
             assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "default"}) == 0.0
-            assert get_sample_value(registry, "rollout_engine_alive", {"cell_id": "default", "engine_index": "0"}) == 1.0
-            assert get_sample_value(registry, "rollout_engine_alive", {"cell_id": "default", "engine_index": "1"}) == 0.0
-            assert get_sample_value(registry, "rollout_engine_alive", {"cell_id": "default", "engine_index": "2"}) == 1.0
         finally:
             await agent.shutdown()
 
@@ -78,9 +74,9 @@ class TestPauseDoesNotProduceFalseUpdates:
             registry = agent._metrics_exporter.registry
             assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "default"}) == 1.0
 
-            # Step 2: pause, then kill an engine
+            # Step 2: pause, then kill the probed engine
             agent.pause()
-            engines[1].alive = False
+            engines[0].alive = False
 
             # Step 3: wait another cycle — metrics should NOT update
             await asyncio.sleep(0.15)
@@ -97,7 +93,7 @@ class TestResumeRestoresChecks:
         try:
             await asyncio.sleep(0.15)
 
-            # Step 1: pause and kill engine
+            # Step 1: pause and kill probed engine
             agent.pause()
             engines[0].alive = False
             await asyncio.sleep(0.15)
@@ -130,7 +126,7 @@ class TestHealthLoopSurvivesException:
     @pytest.mark.anyio
     async def test_exception_in_check_health_does_not_crash_loop(self) -> None:
         """If one cell's check_health raises, the loop continues checking other cells."""
-        healthy_cell = MockRolloutCellAgent(cell_id="healthy", engine_alive=[True])
+        healthy_cell = MockRolloutCellAgent(cell_id="healthy", healthy=True)
         broken_cell = _BrokenCheckHealthCell(cell_id="broken")
         agent = _make_multicell_agent({"healthy": healthy_cell, "broken": broken_cell})
 
@@ -153,9 +149,9 @@ class TestHealthLoopSurvivesException:
 
 class _BrokenCheckHealthCell(MockRolloutCellAgent):
     def __init__(self, *, cell_id: str) -> None:
-        super().__init__(cell_id=cell_id, engine_alive=[True])
+        super().__init__(cell_id=cell_id, healthy=True)
 
-    async def check_health(self) -> object:
+    async def check_health(self) -> bool:
         raise RuntimeError("simulated check_health failure")
 
 
@@ -163,8 +159,8 @@ class TestMultiCellMetricsAreIndependent:
     @pytest.mark.anyio
     async def test_per_cell_metrics_reflect_individual_health(self) -> None:
         cells = {
-            "a0": MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True]),
-            "a1": MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False]),
+            "a0": MockRolloutCellAgent(cell_id="a0", healthy=True),
+            "a1": MockRolloutCellAgent(cell_id="a1", healthy=False),
         }
         agent = _make_multicell_agent(cells)
 
@@ -174,8 +170,6 @@ class TestMultiCellMetricsAreIndependent:
             registry = agent._metrics_exporter.registry
             assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "a0"}) == 1.0
             assert get_sample_value(registry, "rollout_cell_alive", {"cell_id": "a1"}) == 0.0
-            assert get_sample_value(registry, "rollout_engine_alive", {"cell_id": "a1", "engine_index": "0"}) == 1.0
-            assert get_sample_value(registry, "rollout_engine_alive", {"cell_id": "a1", "engine_index": "1"}) == 0.0
         finally:
             await agent.shutdown()
 

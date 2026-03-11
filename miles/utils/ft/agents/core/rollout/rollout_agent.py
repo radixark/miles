@@ -71,8 +71,8 @@ class FtRolloutAgent:
 
     async def _check_one_cell(self, cell: RolloutCellAgent) -> None:
         try:
-            result = await cell.check_health()
-            self._metrics_exporter.update(result)
+            is_healthy = await cell.check_health()
+            self._metrics_exporter.update(cell_id=cell.cell_id, is_healthy=is_healthy)
         except Exception:
             logger.warning(
                 "health_check_failed cell_id=%s", cell.cell_id, exc_info=True

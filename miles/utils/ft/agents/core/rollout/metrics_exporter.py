@@ -4,9 +4,8 @@ import logging
 
 from prometheus_client import Gauge
 
-from miles.utils.ft.agents.core.rollout.health_checker import CellHealthResult
 from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
-from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE, ROLLOUT_ENGINE_ALIVE
+from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE
 
 logger = logging.getLogger(__name__)
 
@@ -14,22 +13,16 @@ logger = logging.getLogger(__name__)
 class RolloutMetricsExporter:
     """Prometheus metric exporter for rollout health checks.
 
-    Exposes per-cell and per-engine alive gauges via an HTTP exporter that
-    the FtController can scrape.  Owns the PrometheusExporter lifecycle.
+    Exposes a per-cell alive gauge via an HTTP exporter that the
+    FtController can scrape.  Owns the PrometheusExporter lifecycle.
     """
 
     def __init__(self) -> None:
         self._exporter = PrometheusExporter()
 
-        self._engine_alive = Gauge(
-            ROLLOUT_ENGINE_ALIVE,
-            "1=alive, 0=dead",
-            labelnames=["cell_id", "engine_index"],
-            registry=self._exporter.registry,
-        )
         self._cell_alive = Gauge(
             ROLLOUT_CELL_ALIVE,
-            "1=all engines alive, 0=any dead",
+            "1=cell alive, 0=cell dead",
             labelnames=["cell_id"],
             registry=self._exporter.registry,
         )
@@ -42,16 +35,8 @@ class RolloutMetricsExporter:
     def address(self) -> str:
         return self._exporter.get_address()
 
-    def update(self, result: CellHealthResult) -> None:
-        self._cell_alive.labels(cell_id=result.cell_id).set(
-            float(result.is_healthy)
-        )
-
-        dead_set = set(result.dead_engine_indices)
-        for i in range(result.total_engines):
-            self._engine_alive.labels(
-                cell_id=result.cell_id, engine_index=str(i)
-            ).set(float(i not in dead_set))
+    def update(self, *, cell_id: str, is_healthy: bool) -> None:
+        self._cell_alive.labels(cell_id=cell_id).set(float(is_healthy))
 
     def shutdown(self) -> None:
         self._exporter.shutdown()

@@ -55,4 +55,3 @@ CONTROLLER_LAST_TICK_TIMESTAMP = "miles_ft_controller_last_tick_timestamp"
 
 # Rollout health (FtRolloutAgent)
 ROLLOUT_CELL_ALIVE = "rollout_cell_alive"
-ROLLOUT_ENGINE_ALIVE = "rollout_engine_alive"

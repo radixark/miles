@@ -27,13 +27,11 @@ class _BrokenEngine:
 
 
 # ---------------------------------------------------------------------------
-# _check_single_engine (migrated from test_rollout_cell_agent.py)
+# _probe_engine
 # ---------------------------------------------------------------------------
 
 
-class TestCheckSingleEngine:
-    """Tests the real _check_single_engine."""
-
+class TestProbeEngine:
     @pytest.mark.anyio
     async def test_alive_engine_returns_true(self) -> None:
         checker = RolloutCellHealthChecker(
@@ -41,7 +39,7 @@ class TestCheckSingleEngine:
             engine_health_fn=_engine_method_health_checker,
         )
 
-        result = await checker._check_single_engine(engine=_AliveEngine(), index=0)
+        result = await checker._probe_engine(engine=_AliveEngine())
 
         assert result is True
 
@@ -53,7 +51,7 @@ class TestCheckSingleEngine:
             timeout=0.01,
         )
 
-        result = await checker._check_single_engine(engine=_SlowEngine(), index=0)
+        result = await checker._probe_engine(engine=_SlowEngine())
 
         assert result is False
 
@@ -64,59 +62,50 @@ class TestCheckSingleEngine:
             engine_health_fn=_engine_method_health_checker,
         )
 
-        result = await checker._check_single_engine(engine=_BrokenEngine(), index=0)
+        result = await checker._probe_engine(engine=_BrokenEngine())
 
         assert result is False
 
 
 # ---------------------------------------------------------------------------
-# check_health (aggregation)
+# check_health
 # ---------------------------------------------------------------------------
 
 
 class TestCheckHealth:
     @pytest.mark.anyio
-    async def test_all_alive_returns_healthy(self) -> None:
+    async def test_all_alive_returns_true(self) -> None:
         checker = RolloutCellHealthChecker(
             cell_id="c0",
             engine_health_fn=_engine_method_health_checker,
         )
-        engines: list[object] = [_AliveEngine(), _AliveEngine()]
 
-        result = await checker.check_health(engines=engines)
+        result = await checker.check_health(engines=[_AliveEngine(), _AliveEngine()])
 
-        assert result.is_healthy is True
-        assert result.alive_engines == 2
-        assert result.total_engines == 2
-        assert result.dead_engine_indices == ()
-        assert result.cell_id == "c0"
+        assert result is True
 
     @pytest.mark.anyio
-    async def test_dead_engine0_returns_all_dead(self) -> None:
+    async def test_dead_engine0_returns_false(self) -> None:
         """Only engines[0] is probed; if it's dead the whole cell is dead."""
         checker = RolloutCellHealthChecker(
             cell_id="c1",
             engine_health_fn=_engine_method_health_checker,
         )
-        engines: list[object] = [_BrokenEngine(), _AliveEngine(), _AliveEngine()]
 
-        result = await checker.check_health(engines=engines)
+        result = await checker.check_health(engines=[_BrokenEngine(), _AliveEngine()])
 
-        assert result.is_healthy is False
-        assert result.alive_engines == 0
-        assert result.dead_engine_indices == (0, 1, 2)
+        assert result is False
 
     @pytest.mark.anyio
-    async def test_caches_last_result(self) -> None:
+    async def test_caches_result_for_is_healthy(self) -> None:
         checker = RolloutCellHealthChecker(
             cell_id="c0",
             engine_health_fn=_engine_method_health_checker,
         )
-        assert checker.last_result is None
+        assert checker.is_healthy() is False
 
-        result = await checker.check_health(engines=[_AliveEngine()])
+        await checker.check_health(engines=[_AliveEngine()])
 
-        assert checker.last_result is result
         assert checker.is_healthy() is True
 
     @pytest.mark.anyio
@@ -148,4 +137,3 @@ class TestInvalidate:
         checker.invalidate()
 
         assert checker.is_healthy() is False
-        assert checker.last_result is None

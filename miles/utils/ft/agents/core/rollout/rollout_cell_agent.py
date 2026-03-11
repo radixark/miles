@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 
 from miles.utils.ft.adapters.types import EngineHealthChecker
-from miles.utils.ft.agents.core.rollout.health_checker import CellHealthResult, RolloutCellHealthChecker
+from miles.utils.ft.agents.core.rollout.health_checker import RolloutCellHealthChecker
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class RolloutCellAgent:
 
     # --- Health ---
 
-    async def check_health(self) -> CellHealthResult:
-        """Run health check on all engines concurrently, return aggregated result."""
+    async def check_health(self) -> bool:
+        """Probe the cell's engines and return True if healthy."""
         return await self._health_checker.check_health(engines=self._get_engines())
 

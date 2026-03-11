@@ -7,71 +7,37 @@ from tests.fast.utils.ft.agents.core.rollout.conftest import MockRolloutCellAgen
 
 class TestCheckHealth:
     @pytest.mark.anyio
-    async def test_all_engines_alive_returns_healthy(self) -> None:
-        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True, True])
+    async def test_healthy_cell_returns_true(self) -> None:
+        agent = MockRolloutCellAgent(cell_id="a0", healthy=True)
 
         result = await agent.check_health()
 
-        assert result.is_healthy is True
-        assert result.alive_engines == 3
-        assert result.total_engines == 3
-        assert result.dead_engine_indices == ()
-        assert result.cell_id == "a0"
+        assert result is True
 
     @pytest.mark.anyio
-    async def test_one_engine_dead_returns_unhealthy(self) -> None:
-        agent = MockRolloutCellAgent(cell_id="a1", engine_alive=[True, False, True])
+    async def test_unhealthy_cell_returns_false(self) -> None:
+        agent = MockRolloutCellAgent(cell_id="a1", healthy=False)
 
         result = await agent.check_health()
 
-        assert result.is_healthy is False
-        assert result.alive_engines == 2
-        assert result.dead_engine_indices == (1,)
-
-    @pytest.mark.anyio
-    async def test_empty_engines_returns_healthy(self) -> None:
-        """Empty fault domain has zero engines, so 0==0 → healthy."""
-        agent = MockRolloutCellAgent(cell_id="empty", engine_alive=[])
-
-        result = await agent.check_health()
-
-        assert result.is_healthy is True
-        assert result.total_engines == 0
-        assert result.alive_engines == 0
-        assert result.dead_engine_indices == ()
-
-    @pytest.mark.anyio
-    async def test_all_engines_dead_returns_unhealthy(self) -> None:
-        agent = MockRolloutCellAgent(cell_id="a2", engine_alive=[False, False, False])
-
-        result = await agent.check_health()
-
-        assert result.is_healthy is False
-        assert result.alive_engines == 0
-        assert result.dead_engine_indices == (0, 1, 2)
+        assert result is False
 
 
-class TestConsecutiveChecksUpdateResult:
+class TestConsecutiveChecks:
     @pytest.mark.anyio
     async def test_result_updates_after_state_change(self) -> None:
-        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True, True])
+        agent = MockRolloutCellAgent(cell_id="a0", healthy=True)
 
-        # Step 1: all alive
-        result1 = await agent.check_health()
-        assert result1.is_healthy is True
+        # Step 1: healthy
+        assert await agent.check_health() is True
 
-        # Step 2: simulate engine 2 dying
-        agent._health_checker.engine_alive[2] = False
-        result2 = await agent.check_health()
-
-        assert result2.is_healthy is False
-        assert result2.alive_engines == 2
-        assert result2.dead_engine_indices == (2,)
-        assert result2.checked_at >= result1.checked_at
+        # Step 2: simulate cell becoming unhealthy
+        agent._health_checker.healthy = False
+        assert await agent.check_health() is False
 
 
 class TestCellId:
     def test_cell_id_property(self) -> None:
-        agent = MockRolloutCellAgent(cell_id="my-cell", engine_alive=[True])
+        agent = MockRolloutCellAgent(cell_id="my-cell")
 
         assert agent.cell_id == "my-cell"
