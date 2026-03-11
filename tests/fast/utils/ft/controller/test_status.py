@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from unittest.mock import MagicMock
 
 from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.state_machines.controller.context import ControllerContext
+from miles.utils.ft.controller.state_machines.controller.models import ControllerState, NormalState
 from miles.utils.ft.controller.state_machines.main.models import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestarting,
@@ -18,6 +21,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
 )
 from miles.utils.ft.controller.state_machines.restart.models import Evicting, StoppingAndRestarting
 from miles.utils.ft.controller.status import build_controller_status, build_phase_history, recovery_phase_name
+from miles.utils.ft.controller.subsystem import SubsystemEntry
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
@@ -147,24 +151,35 @@ class TestBuildPhaseHistory:
 # ===================================================================
 
 
-def _make_state_machine(
+def _make_controller_sm(
     state: MainState,
     state_history: list[MainState] | None = None,
-) -> StateMachine:
-    sm = StateMachine(
+) -> StateMachine[ControllerState, ControllerContext]:
+    """Build a ControllerState SM wrapping a training MainState SM."""
+    main_sm: StateMachine = StateMachine(
         initial_state=state,
         stepper=StateMachineStepper(handler_map={}),
     )
     if state_history:
         for s in state_history:
-            sm._state_history.append(s)
-    return sm
+            main_sm._state_history.append(s)
+
+    training_entry = SubsystemEntry(
+        name="training",
+        state_machine=main_sm,
+        actuator=MagicMock(),
+    )
+    controller_state = NormalState(subsystems={"training": training_entry})
+    return StateMachine(
+        initial_state=controller_state,
+        stepper=StateMachineStepper(handler_map={}),
+    )
 
 
 class TestBuildControllerStatus:
     def test_monitoring_mode(self) -> None:
         status = build_controller_status(
-            state_machine=_make_state_machine(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=5,
@@ -184,7 +199,7 @@ class TestBuildControllerStatus:
             recovery_start_time=_now(),
         )
         status = build_controller_status(
-            state_machine=_make_state_machine(state),
+            controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=10,
@@ -197,7 +212,7 @@ class TestBuildControllerStatus:
 
     def test_latest_iteration_none_when_no_data(self) -> None:
         status = build_controller_status(
-            state_machine=_make_state_machine(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -208,7 +223,7 @@ class TestBuildControllerStatus:
     def test_latest_iteration_from_mini_wandb(self) -> None:
         wandb = make_fake_mini_wandb(steps={10: {"iteration": 42.0}})
         status = build_controller_status(
-            state_machine=_make_state_machine(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
             mini_wandb=wandb,
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -223,7 +238,7 @@ class TestBuildControllerStatus:
             recovery_start_time=_now(),
         )
         status = build_controller_status(
-            state_machine=_make_state_machine(state),
+            controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -238,7 +253,7 @@ class TestBuildControllerStatus:
             recovery_start_time=_now(),
         )
         status = build_controller_status(
-            state_machine=_make_state_machine(state),
+            controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -254,7 +269,7 @@ class TestBuildControllerStatus:
         )
         current = DetectingAnomaly()
         status = build_controller_status(
-            state_machine=_make_state_machine(current, state_history=[past]),
+            controller_state_machine=_make_controller_sm(current, state_history=[past]),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=5,
@@ -264,7 +279,7 @@ class TestBuildControllerStatus:
 
     def test_phase_history_none_when_empty(self) -> None:
         status = build_controller_status(
-            state_machine=_make_state_machine(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -275,7 +290,7 @@ class TestBuildControllerStatus:
     def test_active_run_id_from_training_rank_roster(self) -> None:
         roster = TrainingRankRoster(run_id="run-42")
         status = build_controller_status(
-            state_machine=_make_state_machine(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
             training_rank_roster=roster,
             tick_count=0,

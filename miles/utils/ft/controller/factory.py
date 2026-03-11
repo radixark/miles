@@ -19,7 +19,7 @@ from miles.utils.ft.controller.state_machines.controller import (
 from miles.utils.ft.controller.state_machines.controller.models import ControllerState
 from miles.utils.ft.controller.state_machines.main import DetectingAnomaly, MainContext, MainState, create_main_stepper
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
-from miles.utils.ft.controller.subsystem import MonitoringConfig, SubsystemEntry
+from miles.utils.ft.controller.subsystem import IterationProgressConfig, SubsystemEntry
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
@@ -72,6 +72,12 @@ def create_ft_controller(
     agents: dict[str, object] = {}
     training_rank_roster = TrainingRankRoster(scrape_target_manager=scrape_target_manager)
 
+    # Mutable cell so lambdas always read the current roster (updated by _activate_run)
+    roster_cell: list[TrainingRankRoster] = [training_rank_roster]
+
+    def _get_active_training_nodes() -> set[str]:
+        return set(roster_cell[0].rank_placement.values())
+
     resolved_orchestrator: DiagnosticOrchestratorProtocol = diagnostic_orchestrator or DiagnosticOrchestrator(
         agents=agents,
         pipeline=list(build_all_cluster_executors().values()),
@@ -82,8 +88,7 @@ def create_ft_controller(
     cooldown = recovery_cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3)
     resolved_detectors = detectors or []
 
-    monitoring_config = MonitoringConfig(
-        mode="iteration_progress",
+    monitoring_config = IterationProgressConfig(
         success_iterations=monitoring_success_iterations,
         timeout_seconds=monitoring_timeout_seconds,
     )
@@ -103,7 +108,7 @@ def create_ft_controller(
         actuator=TrainingSubsystemActuator(main_job=main_job),
         detectors=resolved_detectors,
         monitoring_config=monitoring_config,
-        get_active_node_ids=lambda: set(training_rank_roster.rank_placement.values()),
+        get_active_node_ids=_get_active_training_nodes,
     )
 
     # --- Create Controller SM ---
@@ -123,7 +128,7 @@ def create_ft_controller(
                 actuator=TrainingSubsystemActuator(main_job=main_job),
                 detectors=resolved_detectors,
                 monitoring_config=monitoring_config,
-                get_active_node_ids=lambda: set(training_rank_roster.rank_placement.values()),
+                get_active_node_ids=_get_active_training_nodes,
             ),
         }
 
@@ -141,6 +146,7 @@ def create_ft_controller(
         metric_store=metric_store,
         controller_exporter=controller_exporter,
     )
+    instance._roster_cell = roster_cell
 
     # --- Create TickLoop ---
     tick_loop = TickLoop(
