@@ -85,7 +85,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             sub_ctx = self._build_subsystem_context(config=config, context=context)
             current = sub_state
             while True:
-                next_state = await self._subsystem_stepper.step_once(current, sub_ctx)
+                next_state = await anext(self._subsystem_stepper(current, sub_ctx), None)
                 if next_state is None:
                     break
                 current = next_state
@@ -94,19 +94,30 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 yield curr_state
 
         # Step 2: Check for RestartingMainJob(external_execution_result=None)
-        requestor = _find_restart_requestor(curr_state.subsystems)
-        if requestor is not None:
-            frozen_state = curr_state.subsystems[requestor]
-            logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
-            await context.main_job.stop_job()
-            run_id = await context.main_job.submit_job()
-            if context.on_new_run is not None:
-                context.on_new_run(run_id)
-            yield RestartingMainJobState(
-                requestor_name=requestor,
-                start_time=datetime.now(timezone.utc),
-                requestor_frozen_state=frozen_state,
-            )
+        escalation = await self._check_main_job_restart(curr_state, context)
+        if escalation is not None:
+            yield escalation
+
+    async def _check_main_job_restart(
+        self,
+        state: NormalState,
+        context: MainContext,
+    ) -> RestartingMainJobState | None:
+        requestor = _find_restart_requestor(state.subsystems)
+        if requestor is None:
+            return None
+
+        frozen_state = state.subsystems[requestor]
+        logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
+        await context.main_job.stop_job()
+        run_id = await context.main_job.submit_job()
+        if context.on_new_run is not None:
+            context.on_new_run(run_id)
+        return RestartingMainJobState(
+            requestor_name=requestor,
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=frozen_state,
+        )
 
     def _build_subsystem_context(
         self,
