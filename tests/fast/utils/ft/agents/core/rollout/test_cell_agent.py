@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from miles.utils.ft.rollout.cell_agent import RolloutCellAgent
-from tests.fast.utils.ft.rollout.conftest import MockRolloutCellAgent
+from miles.utils.ft.agents.core.rollout.cell_agent import RolloutCellAgent
+from tests.fast.utils.ft.agents.core.rollout.conftest import MockRolloutCellAgent
 
 
 class TestCheckHealth:

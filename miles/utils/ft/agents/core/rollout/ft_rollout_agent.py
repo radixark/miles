@@ -3,12 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from prometheus_client import CollectorRegistry, Gauge
-
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE, ROLLOUT_ENGINE_ALIVE
-from miles.utils.ft.rollout.cell_agent import CellHealthResult, RolloutCellAgent
-from miles.utils.ft.rollout.metrics_server import MetricsServer
+from miles.utils.ft.agents.core.rollout.cell_agent import RolloutCellAgent
+from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 
 logger = logging.getLogger(__name__)
 
@@ -19,40 +16,21 @@ class FtRolloutAgent:
         *,
         cells: dict[str, RolloutCellAgent],
         check_interval: float = 10.0,
-        metrics_port: int = 0,
     ) -> None:
         self._cells = cells
         self._check_interval = check_interval
         self._paused = False
         self._health_loop_task: asyncio.Task[None] | None = None
 
-        self._registry = CollectorRegistry()
-        self._engine_alive = Gauge(
-            ROLLOUT_ENGINE_ALIVE,
-            "1=alive, 0=dead",
-            labelnames=["cell_id", "engine_index"],
-            registry=self._registry,
-        )
-        self._cell_alive = Gauge(
-            ROLLOUT_CELL_ALIVE,
-            "1=all engines alive, 0=any dead",
-            labelnames=["cell_id"],
-            registry=self._registry,
-        )
-
-        self._metrics_server = MetricsServer(
-            registry=self._registry,
-            port=metrics_port,
-        )
+        self._metrics_exporter = RolloutMetricsExporter()
 
     @property
     def address(self) -> str:
-        return self._metrics_server.address
+        return self._metrics_exporter.address
 
     # --- Lifecycle ---
 
     async def start(self) -> None:
-        await self._metrics_server.start()
         self._health_loop_task = asyncio.create_task(self._health_check_loop())
         logger.info("ft_rollout_agent_started address=%s cells=%d", self.address, len(self._cells))
 
@@ -63,7 +41,7 @@ class FtRolloutAgent:
                 await self._health_loop_task
             except asyncio.CancelledError:
                 pass
-        await self._metrics_server.shutdown()
+        self._metrics_exporter.shutdown()
         logger.info("ft_rollout_agent_shutdown")
 
     # --- Health check loop ---
@@ -79,21 +57,11 @@ class FtRolloutAgent:
     async def _check_one_cell(self, cell: RolloutCellAgent) -> None:
         try:
             result = await cell.check_health()
-            self._update_metrics(result)
+            self._metrics_exporter.update(result)
         except Exception:
             logger.warning(
                 "health_check_failed cell_id=%s", cell.cell_id, exc_info=True
             )
-
-    def _update_metrics(self, result: CellHealthResult) -> None:
-        self._cell_alive.labels(cell_id=result.cell_id).set(
-            1.0 if result.is_healthy else 0.0
-        )
-        dead_set = set(result.dead_engine_indices)
-        for i in range(result.total_engines):
-            self._engine_alive.labels(
-                cell_id=result.cell_id, engine_index=str(i)
-            ).set(0.0 if i in dead_set else 1.0)
 
     def pause(self) -> None:
         self._paused = True
@@ -136,8 +104,4 @@ class FtRolloutAgent:
         return self._cells[cell_id]
 
     async def register_with_controller(self, controller_handle: object) -> None:
-        await controller_handle.add_scrape_target.remote(  # type: ignore[attr-defined]
-            target_id="rollout-ft-agent",
-            address=self.address,
-        )
-        logger.info("registered_with_controller address=%s", self.address)
+        await self._metrics_exporter.register_with_controller(controller_handle)
