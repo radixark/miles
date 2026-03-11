@@ -17,7 +17,7 @@ from miles.utils.ft.controller.state_machines.restart.models import RestartConte
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem import SubsystemEntry
+from miles.utils.ft.controller.subsystem import IterationProgressConfig, SubsystemEntry
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
 
@@ -116,7 +116,11 @@ class NormalStateHandler(StateHandler[NormalState, ControllerContext]):
             mini_wandb=context.mini_wandb,
             notifier=context.notifier,
             on_new_run=context.on_new_run,
-            monitoring_success_iterations=entry.monitoring_config.success_iterations,
+            monitoring_success_iterations=(
+                entry.monitoring_config.success_iterations
+                if isinstance(entry.monitoring_config, IterationProgressConfig)
+                else 0
+            ),
             monitoring_timeout_seconds=entry.monitoring_config.timeout_seconds,
             actuator=entry.actuator,
             monitoring_config=entry.monitoring_config,

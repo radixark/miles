@@ -7,7 +7,7 @@ from pydantic import ConfigDict
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.subsystem import MonitoringConfig
+from miles.utils.ft.controller.subsystem import IterationProgressConfig, SustainedAliveConfig
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 
@@ -55,5 +55,5 @@ class RestartContext(FtBaseModel):
     node_metadata: dict[str, dict[str, str]] = {}
 
     actuator: SubsystemActuatorProtocol
-    monitoring_config: MonitoringConfig
+    monitoring_config: IterationProgressConfig | SustainedAliveConfig
     has_level1_restart: bool

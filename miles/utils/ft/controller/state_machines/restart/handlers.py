@@ -5,6 +5,7 @@ import math
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.subsystem import SustainedAliveConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.restart.models import (
     Evicting,
@@ -161,7 +162,7 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
         state: MonitoringProgress,
         ctx: RestartContext,
     ) -> RestartState | None:
-        if ctx.monitoring_config.mode == "sustained_alive":
+        if isinstance(ctx.monitoring_config, SustainedAliveConfig):
             return await self._step_sustained_alive(state=state, ctx=ctx)
         return await self._step_iteration_progress(state=state, ctx=ctx)
 
