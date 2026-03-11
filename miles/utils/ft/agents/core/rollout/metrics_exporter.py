@@ -44,14 +44,14 @@ class RolloutMetricsExporter:
 
     def update(self, result: CellHealthResult) -> None:
         self._cell_alive.labels(cell_id=result.cell_id).set(
-            1.0 if result.is_healthy else 0.0
+            float(result.is_healthy)
         )
 
         dead_set = set(result.dead_engine_indices)
         for i in range(result.total_engines):
             self._engine_alive.labels(
                 cell_id=result.cell_id, engine_index=str(i)
-            ).set(0.0 if i in dead_set else 1.0)
+            ).set(float(i not in dead_set))
 
     def shutdown(self) -> None:
         self._exporter.shutdown()
