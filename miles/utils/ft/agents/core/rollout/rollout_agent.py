@@ -19,6 +19,7 @@ class FtRolloutAgent:
     ) -> None:
         self._metrics_exporter = RolloutMetricsExporter()
         self._health_checker = RolloutHealthChecker(
+            # TODO: will have many cells
             cells={"default": lambda: list(rollout_manager.all_rollout_engines)},  # type: ignore[attr-defined]
             engine_health_fn=health_checker,
             report_fn=self._metrics_exporter.update,
