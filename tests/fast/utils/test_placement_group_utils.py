@@ -348,6 +348,89 @@ class TestPartialResortSnapshots:
         assert _partial_resort_snapshots(old, new_forward) == _partial_resort_snapshots(old, new_reversed)
 
 
+    def test_shuffled_old_snapshots_preserves_surviving_positions(self) -> None:
+        """Old snapshots in non-sorted order (post previous partial-resort). Surviving bundles keep positions."""
+        old = [
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.2", gpu_id="1"),
+        ]
+        # Node 10.0.0.2 replaced by 10.0.0.9; nodes 1 and 3 survive
+        new = [
+            BundleLocationSnapshot(bundle_index=10, node_ip="10.0.0.3", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=11, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=12, node_ip="10.0.0.9", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=13, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=14, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=15, node_ip="10.0.0.9", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        # Surviving positions: rank 0 (10.0.0.3, "1"), rank 1 (10.0.0.1, "0"),
+        # rank 3 (10.0.0.1, "1"), rank 4 (10.0.0.3, "0")
+        assert (result[0].node_ip, result[0].gpu_id) == ("10.0.0.3", "1")
+        assert (result[1].node_ip, result[1].gpu_id) == ("10.0.0.1", "0")
+        assert (result[3].node_ip, result[3].gpu_id) == ("10.0.0.1", "1")
+        assert (result[4].node_ip, result[4].gpu_id) == ("10.0.0.3", "0")
+        # Vacated ranks 2, 5 filled with new node sorted: (10.0.0.9, "0"), (10.0.0.9, "1")
+        assert (result[2].node_ip, result[2].gpu_id) == ("10.0.0.9", "0")
+        assert (result[5].node_ip, result[5].gpu_id) == ("10.0.0.9", "1")
+
+    def test_shuffled_old_snapshots_all_survive(self) -> None:
+        """Old snapshots in reverse order, all nodes survive → every rank preserved."""
+        old = list(reversed(_make_six_bundle_snapshots()))
+        new_same_locations = [
+            BundleLocationSnapshot(bundle_index=10 + i, node_ip=old[i].node_ip, gpu_id=old[i].gpu_id)
+            for i in range(len(old))
+        ]
+        result = _partial_resort_snapshots(old, new_same_locations)
+        assert [(s.node_ip, s.gpu_id) for s in result] == [(s.node_ip, s.gpu_id) for s in old]
+
+    def test_two_of_four_nodes_changed(self) -> None:
+        """8 bundles across 4 nodes. Nodes 2,3 replaced; nodes 1,4 survive."""
+        old = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.2", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=6, node_ip="10.0.0.4", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=7, node_ip="10.0.0.4", gpu_id="1"),
+        ]
+        # Nodes 2→5, 3→6; nodes 1,4 survive
+        new = [
+            BundleLocationSnapshot(bundle_index=10, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=11, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=12, node_ip="10.0.0.5", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=13, node_ip="10.0.0.5", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=14, node_ip="10.0.0.6", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=15, node_ip="10.0.0.6", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=16, node_ip="10.0.0.4", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=17, node_ip="10.0.0.4", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        # Surviving ranks: 0,1 (node 1) and 6,7 (node 4)
+        assert (result[0].node_ip, result[0].gpu_id) == ("10.0.0.1", "0")
+        assert (result[1].node_ip, result[1].gpu_id) == ("10.0.0.1", "1")
+        assert (result[6].node_ip, result[6].gpu_id) == ("10.0.0.4", "0")
+        assert (result[7].node_ip, result[7].gpu_id) == ("10.0.0.4", "1")
+
+        # Vacated ranks 2,3,4,5 filled with new nodes sorted:
+        # (10.0.0.5, "0"), (10.0.0.5, "1"), (10.0.0.6, "0"), (10.0.0.6, "1")
+        changed = [(result[i].node_ip, result[i].gpu_id) for i in range(2, 6)]
+        assert changed == [
+            ("10.0.0.5", "0"),
+            ("10.0.0.5", "1"),
+            ("10.0.0.6", "0"),
+            ("10.0.0.6", "1"),
+        ]
+
+
 class TestPartialResortSnapshotsCrossPg:
     """Tests for cross-PG restart scenario (old snapshots from backup file)."""
 
@@ -449,3 +532,33 @@ class TestSnapshotPersistence:
         _save_snapshots(path, _make_six_bundle_snapshots())
         assert not path.with_suffix(".tmp").exists()
         assert path.exists()
+
+    def test_post_init_saves_when_path_and_snapshots_provided(self, tmp_path: Path) -> None:
+        """PlacementGroupInfo.__post_init__ auto-saves snapshots to disk."""
+        path = tmp_path / "auto_save.json"
+        snapshots = _make_six_bundle_snapshots()
+        PlacementGroupInfo(
+            pg=_FakePlacementGroup(),
+            _bundle_location_snapshots=snapshots,
+            _snapshot_path=path,
+        )
+        loaded = _load_snapshots(path)
+        assert loaded == snapshots
+
+    def test_post_init_skips_save_when_no_path(self) -> None:
+        """No snapshot_path → no file written (no error either)."""
+        PlacementGroupInfo(
+            pg=_FakePlacementGroup(),
+            _bundle_location_snapshots=_make_six_bundle_snapshots(),
+            _snapshot_path=None,
+        )
+
+    def test_post_init_skips_save_when_empty_snapshots(self, tmp_path: Path) -> None:
+        """Empty snapshot list + path → no file written."""
+        path = tmp_path / "should_not_exist.json"
+        PlacementGroupInfo(
+            pg=_FakePlacementGroup(),
+            _bundle_location_snapshots=[],
+            _snapshot_path=path,
+        )
+        assert not path.exists()
