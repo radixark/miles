@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -37,7 +38,7 @@ def _init_local_ray() -> str:
     if ray_tmp.exists():
         shutil.rmtree(ray_tmp, ignore_errors=True)
 
-    subprocess.run(
+    result = subprocess.run(
         [
             "ray", "start", "--head",
             "--port=0",
@@ -50,21 +51,34 @@ def _init_local_ray() -> str:
         ],
         check=True,
         capture_output=True,
+        text=True,
     )
 
-    ctx = ray.init(address="auto")
+    match = re.search(r"--address='([^']+)'", result.stdout)
+    if not match:
+        raise RuntimeError(f"Could not parse GCS address from ray start output:\n{result.stdout}")
+    gcs_address = match.group(1)
+
+    ctx = ray.init(address=gcs_address)
     url = f"http://{ctx.dashboard_url}"
     _wait_for_dashboard_agent(url)
     return url
+
+
+def _stop_ray() -> None:
+    if ray.is_initialized():
+        ray.shutdown()
+    subprocess.run(["ray", "stop", "--force"], capture_output=True)
 
 
 @pytest.fixture(scope="session")
 def _ray_session() -> Generator[str, None, None]:
     """Session-scoped Ray cluster shared by all integration tests."""
     url = _init_local_ray()
-    yield url
-    ray.shutdown()
-    subprocess.run(["ray", "stop", "--force"], capture_output=True)
+    try:
+        yield url
+    finally:
+        _stop_ray()
 
 
 @pytest.fixture(scope="session")
