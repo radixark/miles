@@ -104,8 +104,10 @@ async def _step_last(stepper, state, ctx):
 def _mock_stepper_yielding(value: object):
     """Create a fake stepper (async generator) that yields a single value, or nothing if None."""
     async def _stepper(state: object, ctx: object):
+        _stepper.call_count += 1
         if value is not None:
             yield value
+    _stepper.call_count = 0
     return _stepper
 
 
@@ -600,7 +602,7 @@ class TestBadNodeCountSafeguard:
             ),
         )
         assert result is None
-        recovery_stepper.assert_awaited_once()
+        assert recovery_stepper.call_count == 1
 
     @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_below_threshold_continues_recovery(self) -> None:
