@@ -87,16 +87,15 @@ def create_ft_controller(
     from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
     agents: dict[str, object] = {}
-    training_rank_roster = TrainingRankRoster(scrape_target_manager=scrape_target_manager)
-    training_rank_roster_box = Box(training_rank_roster)
+    training_rank_roster_box: Box[TrainingRankRoster | None] = Box(None)
 
     hub = SubsystemHub(
         training_rank_roster_box=training_rank_roster_box,
-        scrape_target_manager=scrape_target_manager,
     )
 
     def _get_active_training_nodes() -> set[str]:
-        return set(training_rank_roster_box.value.rank_placement.values())
+        roster = training_rank_roster_box.value
+        return set(roster.rank_placement.values()) if roster is not None else set()
 
     resolved_orchestrator: DiagnosticOrchestratorProtocol = diagnostic_orchestrator or DiagnosticOrchestrator(
         agents=agents,
@@ -155,6 +154,7 @@ def create_ft_controller(
         tick_loop=None,  # type: ignore[arg-type]  # set below
         notifier=notifier,
         metric_store=metric_store,
+        scrape_target_manager=scrape_target_manager,
         controller_exporter=controller_exporter,
     )
 
@@ -174,7 +174,7 @@ def create_ft_controller(
         recovery_timeout_seconds=recovery_timeout_seconds,
         subsystem_configs=subsystem_configs,
         on_new_run=instance._activate_run,
-        rank_pids_provider=lambda node_id: training_rank_roster_box.value.get_rank_pids_for_node(node_id),
+        rank_pids_provider=lambda node_id: training_rank_roster_box.value.get_rank_pids_for_node(node_id) if training_rank_roster_box.value is not None else {},
         on_recovery_duration=duration_cb,
         controller_exporter=controller_exporter,
         registration_grace_ticks=registration_grace_ticks,

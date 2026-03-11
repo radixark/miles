@@ -12,7 +12,7 @@ from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol
+from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ class FtController:
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
         metric_store: MetricStoreProtocol,
+        scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
         controller_exporter: ControllerExporter | None = None,
     ) -> None:
         self._main_job = main_job
@@ -42,6 +43,7 @@ class FtController:
         self._tick_loop = tick_loop
         self._notifier = notifier
         self._metric_store = metric_store
+        self._scrape_target_manager = scrape_target_manager
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
         self._node_metadata: dict[str, dict[str, str]] = {}
@@ -64,7 +66,11 @@ class FtController:
         return self._node_metadata
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
-        self._hub.add_scrape_target(target_id=target_id, address=address)
+        if self._scrape_target_manager is not None:
+            self._scrape_target_manager.add_scrape_target(
+                target_id=target_id,
+                address=address,
+            )
 
     def register_node_agent(
         self,
@@ -77,7 +83,7 @@ class FtController:
         if node_metadata:
             self._node_metadata[node_id] = node_metadata
         if exporter_address:
-            self._hub.add_scrape_target(target_id=node_id, address=exporter_address)
+            self.add_scrape_target(target_id=node_id, address=exporter_address)
         logger.info(
             "agent_registered node_id=%s exporter=%s metadata_keys=%s",
             node_id,
@@ -110,7 +116,7 @@ class FtController:
         return build_controller_status(
             controller_state_machine=self._state_machine,
             mini_wandb=self._mini_wandb,
-            training_rank_roster=self._hub.training_rank_roster,
+            training_rank_roster=self._hub.training_rank_roster_box.value,
             tick_count=self._tick_count,
         )
 
@@ -124,8 +130,15 @@ class FtController:
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
-        self._hub.activate_run(run_id)
+        old_roster = self._hub.training_rank_roster_box.value
+        if old_roster is not None:
+            old_roster.cleanup()
+        self._hub.training_rank_roster_box.value = TrainingRankRoster(
+            run_id=run_id,
+            scrape_target_manager=self._scrape_target_manager,
+        )
         self._mini_wandb.set_active_run_id(run_id)
+        logger.info("run_activated run_id=%s", run_id)
 
     async def _tick(self) -> None:
         await self._tick_loop.tick()

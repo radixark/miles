@@ -76,7 +76,7 @@ class TestBuildFtController:
             start_exporter=False,
             rollout_num_cells=0,
         )
-        assert bundle.hub._scrape_target_manager is not None
+        assert bundle.controller._scrape_target_manager is not None
 
     def test_prometheus_backend_no_scrape_target_manager(self) -> None:
         bundle = build_ft_controller(
@@ -85,7 +85,7 @@ class TestBuildFtController:
             start_exporter=False,
             rollout_num_cells=0,
         )
-        assert bundle.hub._scrape_target_manager is None
+        assert bundle.controller._scrape_target_manager is None
 
     def test_detector_chain_types_match(self) -> None:
         bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
@@ -154,6 +154,7 @@ class TestFtControllerActorProxy:
         harness = make_test_controller()
         actor = _FtControllerActorCls.__new__(_FtControllerActorCls)
         actor._ctrl = harness.controller
+        actor._hub = harness.hub
         return actor, harness
 
     @pytest.mark.anyio

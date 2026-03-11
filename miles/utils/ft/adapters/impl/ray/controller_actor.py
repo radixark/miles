@@ -84,7 +84,7 @@ class _FtControllerActorCls:
         )
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
-        self._hub.add_scrape_target(target_id=target_id, address=address)
+        self._ctrl.add_scrape_target(target_id=target_id, address=address)
 
     def get_status(self) -> object:
         return self._ctrl.get_status()
@@ -96,7 +96,7 @@ class _FtControllerActorCls:
     ) -> None:
         self._hub.set_rollout_handle(rollout_manager_handle)
         if metrics_address:
-            self._hub.add_scrape_target("rollout-ft-agent", metrics_address)
+            self._ctrl.add_scrape_target("rollout-ft-agent", metrics_address)
 
 
 FtControllerActor = ray.remote(

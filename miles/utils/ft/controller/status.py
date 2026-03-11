@@ -46,7 +46,7 @@ def build_controller_status(
     *,
     controller_state_machine: StateMachine[MainState, MainContext],
     mini_wandb: MiniWandb,
-    training_rank_roster: TrainingRankRoster,
+    training_rank_roster: TrainingRankRoster | None,
     tick_count: int,
 ) -> ControllerStatus:
     controller_state = controller_state_machine.state
@@ -72,7 +72,7 @@ def build_controller_status(
 
     return ControllerStatus(
         tick_count=tick_count,
-        active_run_id=training_rank_roster.run_id,
+        active_run_id=training_rank_roster.run_id if training_rank_roster is not None else None,
         latest_iteration=latest_iteration,
         subsystem_states=subsystem_states,
         recovery=recovery,

@@ -31,7 +31,7 @@ class TickLoop:
         self,
         *,
         state_machine: StateMachine[MainState, MainContext],
-        training_rank_roster_box: Box[TrainingRankRoster],
+        training_rank_roster_box: Box[TrainingRankRoster | None],
         agents: dict[str, NodeAgentProtocol],
         main_job: MainJobProtocol,
         metric_store: MetricStoreProtocol,
@@ -83,11 +83,13 @@ class TickLoop:
         t0 = time.monotonic()
         job_status: JobStatus | None = None
         try:
-            self._training_rank_roster_box.value.warn_if_incomplete()
-            self._node_agent_coverage_checker.check(
-                subsystem_node_ids=set(self._training_rank_roster_box.value.rank_placement.values()),
-                registered_agent_node_ids=set(self._agents.keys()),
-            )
+            roster = self._training_rank_roster_box.value
+            if roster is not None:
+                roster.warn_if_incomplete()
+                self._node_agent_coverage_checker.check(
+                    subsystem_node_ids=set(roster.rank_placement.values()),
+                    registered_agent_node_ids=set(self._agents.keys()),
+                )
             job_status = await self._main_job.get_job_status()
 
             context = self._build_controller_context(job_status=job_status)
