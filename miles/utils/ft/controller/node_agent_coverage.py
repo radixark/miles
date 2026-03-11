@@ -30,11 +30,11 @@ class NodeAgentCoverageChecker:
 
     def check(
         self,
-        training_node_ids: set[str],
+        subsystem_node_ids: set[str],
         registered_agent_node_ids: set[str],
     ) -> None:
-        uncovered = training_node_ids - registered_agent_node_ids
-        covered = training_node_ids & registered_agent_node_ids
+        uncovered = subsystem_node_ids - registered_agent_node_ids
+        covered = subsystem_node_ids & registered_agent_node_ids
 
         for node_id in covered:
             counter = self._counters.pop(node_id, None)
