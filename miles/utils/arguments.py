@@ -168,6 +168,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--keep-gradient-buffers-on-cpu",
+                action="store_true",
+                default=False,
+                help=(
+                    "Applies to `megatron` training backend only. "
+                    "When set, gradient buffers are backed up to CPU during offload_train "
+                    "(default torch_memory_saver behavior). When not set (default), gradient "
+                    "buffers are released directly on GPU without CPU backup."
+                ),
+            )
+            parser.add_argument(
                 "--megatron-to-hf-mode",
                 choices=["raw", "bridge"],
                 default="raw",
@@ -1749,6 +1760,9 @@ def miles_validate_args(args):
         args.offload_train = True
         args.offload_rollout = True
     del args.offload
+
+    if args.offload_train:
+        args.disable_grad_buffers_cpu_backup = True
 
     if args.debug_rollout_only:
         if args.colocate and (not args.rollout_num_gpus):
