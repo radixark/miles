@@ -97,7 +97,7 @@ class UpdateWeightFromDistributed(UpdateWeightFromRemote):
         buffer_size = 0
         converted_named_tensors = []
         # non expert params
-        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_pp_src_rank else None
+        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
         for name, param in named_params_and_buffers(self.args, self.model):
             if ".experts." in name:
@@ -151,7 +151,7 @@ class UpdateWeightFromDistributed(UpdateWeightFromRemote):
         Returns updated bytes on source, None on non-source.
         """
         param = all_gather_param(self.args, name, param)
-        if not self._is_pp_src_rank:
+        if not self._is_source:
             return
 
         param_size = param.numel() * param.element_size()
@@ -214,7 +214,7 @@ class UpdateWeightFromDistributed(UpdateWeightFromRemote):
             handle.wait()
 
         named_tensors.clear()
-        if not self._is_pp_src_rank:
+        if not self._is_source:
             return
 
         all_gathered_params = sum(all_gathered_params, [])
