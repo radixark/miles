@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pytest
 from tests.fast.utils.ft.conftest import ControllerTestHarness, make_fake_agents, make_test_controller
-from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_state
+from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state, set_training_subsystem_state
 
 from miles.utils.ft.adapters.types import ClusterExecutorProtocol, JobStatus
 from miles.utils.ft.controller.diagnostics.executors import (
@@ -68,7 +68,7 @@ class TestDiagnosticPipelineWithBadNode:
 
         assert harness.node_manager.was_ever_marked_bad("node-1")
         assert not harness.node_manager.was_ever_marked_bad("node-0")
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
 
 class TestDiagnosticPipelineAllPass:
@@ -84,7 +84,7 @@ class TestDiagnosticPipelineAllPass:
         # StopTimeDiagnostics → all pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")
@@ -104,7 +104,7 @@ class TestDiagnosticPipelineEmptyPipeline:
         # Empty pipeline → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
 
@@ -143,7 +143,7 @@ class TestDiagnosticPipelineInterMachine:
         # All pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")

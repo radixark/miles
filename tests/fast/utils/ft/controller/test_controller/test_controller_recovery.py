@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from tests.fast.utils.ft.conftest import AlwaysEnterRecoveryDetector, FixedDecisionDetector, make_test_controller
+from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state
 
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
@@ -43,7 +44,7 @@ class TestDynamicBadNodeInjection:
         # Step 1: single tick enters recovery and progresses through the full
         # recovery flow (state machine loops within one tick with instant fakes)
         await harness.controller._tick()
-        state = harness.controller._training_subsystem_state
+        state = get_training_subsystem_state(harness.controller)
         assert isinstance(state, RecoveringSt)
 
         # Step 2: verify both initial and injected nodes were evicted

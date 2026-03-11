@@ -16,6 +16,7 @@ from tests.fast.utils.ft.conftest import (
     make_test_controller,
     make_test_exporter,
 )
+from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
@@ -94,15 +95,15 @@ class TestCrashReattemptSuccess:
 
         # Step 1: first tick chains through recovery to MonitoringProgress
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
-        assert _is_monitoring_progress(harness.controller._training_subsystem_state)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
+        assert _is_monitoring_progress(get_training_subsystem_state(harness.controller))
 
         # Step 2: inject iteration progress, disable detector to prevent re-entry
         _disable_detector(enter_recovery)
         _inject_iteration_data(harness)
 
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
 
 # -------------------------------------------------------------------
@@ -183,14 +184,14 @@ class TestRecoveryCompleteBackToMonitoring:
         )
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         initial_detector_count = enter_recovery.call_count
 
         # Step 2: complete recovery with iteration data, detector disabled
         _disable_detector(enter_recovery)
         _inject_iteration_data(harness)
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
         # Step 3: re-enable detector and verify it runs after recovery
         enter_recovery._decision = Decision(
@@ -231,6 +232,6 @@ class TestExporterModeGauge:
         _inject_iteration_data(harness)
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert get_sample_value(registry, mn.CONTROLLER_MODE) == 0.0
         assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE) == 0.0

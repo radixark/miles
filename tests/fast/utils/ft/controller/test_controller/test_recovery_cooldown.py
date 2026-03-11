@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from tests.fast.utils.ft.conftest import AlwaysEnterRecoveryDetector, make_test_controller
+from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state
 
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
@@ -27,17 +28,17 @@ class TestRecoveryCooldown:
 
         # Step 1: first recovery
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         _force_recovery_complete(harness)
 
         # Step 2: second recovery
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         _force_recovery_complete(harness)
 
         # Step 3: third attempt throttled
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) == 1
         title, content, severity = harness.notifier.calls[0]
@@ -64,7 +65,7 @@ class TestRecoveryCooldown:
             reason="hang",
         )
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
     @pytest.mark.anyio
     async def test_recovery_within_cooldown_window_counted(self) -> None:
@@ -78,6 +79,6 @@ class TestRecoveryCooldown:
         _force_recovery_complete(harness)
 
         await harness.controller._tick()
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) == 1

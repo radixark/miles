@@ -10,6 +10,7 @@ from tests.fast.utils.ft.conftest import (
     make_test_controller,
     make_test_exporter,
 )
+from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
@@ -58,7 +59,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, crashing])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert crashing.call_count > 0
 
     @pytest.mark.anyio
@@ -76,7 +77,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, notify_detector])
 
         await harness.controller._tick()
-        state = harness.controller._training_subsystem_state
+        state = get_training_subsystem_state(harness.controller)
         assert isinstance(state, RecoveringSt)
         assert notify_detector.call_count > 0
 
@@ -94,7 +95,7 @@ class TestDetectorExceptionIsolation:
         harness = make_test_controller(detectors=[enter_recovery, empty_detector])
 
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert empty_detector.call_count > 0
 
 
@@ -116,7 +117,7 @@ class TestRecoveryCompletionMetrics:
 
         # Step 1: enter recovery → progresses to MonitoringProgress
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
         # Step 2: inject training progress so MonitoringProgress succeeds
         run_id = harness.controller.training_rank_roster.run_id
@@ -124,7 +125,7 @@ class TestRecoveryCompletionMetrics:
 
         # Step 3: tick completes recovery → back to DetectingAnomaly
         await harness.controller._tick()
-        assert isinstance(harness.controller._training_subsystem_state, DetectingAnomalySt)
+        assert isinstance(get_training_subsystem_state(harness.controller), DetectingAnomalySt)
 
         value = get_sample_value(
             registry,

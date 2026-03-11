@@ -14,6 +14,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
@@ -346,10 +347,22 @@ async def run_controller_briefly(harness: ControllerTestHarness, delay: float = 
     await task
 
 
+def get_training_subsystem_state(controller: FtController) -> SubsystemState:
+    """Read the training subsystem state from the controller's main state machine."""
+    from miles.utils.ft.controller.state_machines.main.models import NormalSt
+
+    state = controller._state_machine.state
+    if not isinstance(state, NormalSt):
+        raise RuntimeError(f"Expected NormalState, got {type(state).__name__}")
+    training = state.subsystems.get("training")
+    if training is None:
+        raise RuntimeError("No 'training' subsystem in NormalState")
+    return training
+
+
 def set_training_subsystem_state(controller: FtController, new_state: object) -> None:
     """Directly set the training subsystem state on the controller's main state machine."""
     from miles.utils.ft.controller.state_machines.main.models import NormalSt
-    from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 
     main_state = controller._state_machine.state
     assert isinstance(main_state, NormalSt)
@@ -363,7 +376,7 @@ async def advance_until_recovery_complete(harness: ControllerTestHarness, max_ti
     from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 
     for _ in range(max_ticks):
-        if not isinstance(harness.controller._training_subsystem_state, RecoveringSt):
+        if not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt):
             return
         await harness.controller._tick()
-    assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+    assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)

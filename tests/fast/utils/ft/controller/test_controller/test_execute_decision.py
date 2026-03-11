@@ -12,6 +12,7 @@ from tests.fast.utils.ft.conftest import (
     make_detector_context,
     make_test_controller,
 )
+from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state
 
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.subsystem.utils import run_detectors
@@ -149,7 +150,7 @@ class TestAllDetectorsCrashSilentPass:
 
         assert not harness.node_manager._bad_nodes
         assert not harness.main_job._stopped
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
 
 class TestExecuteDecision:
@@ -163,7 +164,7 @@ class TestExecuteDecision:
         assert not harness.node_manager._bad_nodes
         assert not harness.main_job._stopped
         assert not harness.main_job._submitted
-        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
+        assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
     @pytest.mark.anyio
     async def test_mark_bad_and_restart_does_not_raise(self) -> None:
