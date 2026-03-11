@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.ft.rollout.atom_agent import AtomHealthResult, RolloutAtomAgent
 from tests.fast.utils.ft.rollout.conftest import MockRolloutAtomAgent
 
 
@@ -16,7 +15,7 @@ class TestCheckHealth:
         assert result.is_healthy is True
         assert result.alive_engines == 3
         assert result.total_engines == 3
-        assert result.dead_engine_indices == []
+        assert result.dead_engine_indices == ()
         assert result.atom_id == "a0"
 
     @pytest.mark.anyio
@@ -27,7 +26,7 @@ class TestCheckHealth:
 
         assert result.is_healthy is False
         assert result.alive_engines == 2
-        assert result.dead_engine_indices == [1]
+        assert result.dead_engine_indices == (1,)
 
     @pytest.mark.anyio
     async def test_all_engines_dead_returns_unhealthy(self) -> None:
@@ -37,7 +36,7 @@ class TestCheckHealth:
 
         assert result.is_healthy is False
         assert result.alive_engines == 0
-        assert result.dead_engine_indices == [0, 1, 2]
+        assert result.dead_engine_indices == (0, 1, 2)
 
 
 class TestIsHealthy:
@@ -108,5 +107,5 @@ class TestConsecutiveChecksUpdateResult:
 
         assert result2.is_healthy is False
         assert result2.alive_engines == 2
-        assert result2.dead_engine_indices == [2]
+        assert result2.dead_engine_indices == (2,)
         assert result2.checked_at >= result1.checked_at

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ class AtomHealthResult:
     atom_id: str
     total_engines: int
     alive_engines: int
-    dead_engine_indices: list[int]
+    dead_engine_indices: tuple[int, ...]
     is_healthy: bool
     checked_at: float
 
@@ -46,16 +47,14 @@ class RolloutAtomAgent:
     # --- Health ---
 
     async def check_health(self) -> AtomHealthResult:
-        """Run health check on all engines, return aggregated result."""
-        alive_count = 0
-        dead_indices: list[int] = []
+        """Run health check on all engines concurrently, return aggregated result."""
+        results = await asyncio.gather(
+            *(self._check_single_engine(engine=engine, index=i)
+              for i, engine in enumerate(self._engines))
+        )
 
-        for i, engine in enumerate(self._engines):
-            ok = await self._check_single_engine(engine=engine, index=i)
-            if ok:
-                alive_count += 1
-            else:
-                dead_indices.append(i)
+        alive_count = sum(results)
+        dead_indices = tuple(i for i, ok in enumerate(results) if not ok)
 
         result = AtomHealthResult(
             atom_id=self._atom_id,
@@ -81,7 +80,10 @@ class RolloutAtomAgent:
         Tests override via MockRolloutAtomAgent subclass.
         """
         try:
-            await engine.health_check.remote()  # type: ignore[attr-defined]
+            await asyncio.wait_for(
+                engine.health_check.remote(),  # type: ignore[attr-defined]
+                timeout=self._health_check_timeout,
+            )
             return True
         except Exception:
             logger.debug(
