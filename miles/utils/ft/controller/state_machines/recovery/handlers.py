@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 from miles.utils.ft.adapters.types import ClusterExecutorProtocol
 from miles.utils.ft.controller.diagnostics.executors import StackTraceClusterExecutor
 from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestarting,
-    NotifyHumans,
-    RealtimeChecks,
+    EvictingAndRestartingSt,
+    NotifyHumansSt,
+    RealtimeChecksSt,
     RecoveryContext,
-    RecoveryDone,
+    RecoveryDoneSt,
     RecoveryState,
-    StopTimeDiagnostics,
+    StopTimeDiagnosticsSt,
 )
 from miles.utils.ft.controller.state_machines.restart.models import RestartDoneSt, RestartFailedSt
 from miles.utils.ft.controller.state_machines.utils import safe_notify
@@ -27,8 +27,8 @@ async def recovery_timeout_check(
     ctx: RecoveryContext,
 ) -> RecoveryState | None:
     elapsed = (datetime.now(timezone.utc) - ctx.recovery_start_time).total_seconds()
-    if elapsed > ctx.timeout_seconds and not isinstance(state, (NotifyHumans, RecoveryDone)):
-        return NotifyHumans(state_before=type(state).__name__)
+    if elapsed > ctx.timeout_seconds and not isinstance(state, (NotifyHumansSt, RecoveryDoneSt)):
+        return NotifyHumansSt(state_before=type(state).__name__)
     return None
 
 
@@ -37,21 +37,21 @@ async def recovery_timeout_check(
 # ---------------------------------------------------------------------------
 
 
-class RealtimeChecksHandler(StateHandler[RealtimeChecks, RecoveryContext]):
-    async def step(self, state: RealtimeChecks, ctx: RecoveryContext) -> RecoveryState:
+class RealtimeChecksHandler(StateHandler[RealtimeChecksSt, RecoveryContext]):
+    async def step(self, state: RealtimeChecksSt, ctx: RecoveryContext) -> RecoveryState:
         if state.pre_identified_bad_nodes:
-            return EvictingAndRestarting.evict_and_restart_next_stop_time_diag(
+            return EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(
                 bad_node_ids=state.pre_identified_bad_nodes,
             )
 
         logger.info("realtime_checks_clean trigger=%s", ctx.trigger)
-        return EvictingAndRestarting.direct_restart()
+        return EvictingAndRestartingSt.direct_restart()
 
 
-class EvictingAndRestartingHandler(StateHandler[EvictingAndRestarting, RecoveryContext]):
+class EvictingAndRestartingHandler(StateHandler[EvictingAndRestartingSt, RecoveryContext]):
     async def step(
         self,
-        state: EvictingAndRestarting,
+        state: EvictingAndRestartingSt,
         ctx: RecoveryContext,
     ) -> RecoveryState | None:
         new_restart = None
@@ -60,19 +60,19 @@ class EvictingAndRestartingHandler(StateHandler[EvictingAndRestarting, RecoveryC
         if new_restart is None:
             return None
         if isinstance(new_restart, RestartDoneSt):
-            return RecoveryDone()
+            return RecoveryDoneSt()
         if isinstance(new_restart, RestartFailedSt):
             return state.failed_next_state
-        return EvictingAndRestarting(
+        return EvictingAndRestartingSt(
             restart=new_restart,
             failed_next_state=state.failed_next_state,
         )
 
 
-class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnostics, RecoveryContext]):
+class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnosticsSt, RecoveryContext]):
     async def step(
         self,
-        state: StopTimeDiagnostics,
+        state: StopTimeDiagnosticsSt,
         ctx: RecoveryContext,
     ) -> RecoveryState:
         pre_executors: list[ClusterExecutorProtocol] = []
@@ -85,19 +85,19 @@ class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnostics, RecoveryConte
 
         if result.bad_node_ids:
             logger.info("diagnosing_found_bad_nodes bad_nodes=%s", result.bad_node_ids)
-            return EvictingAndRestarting.evict_and_restart_final(
+            return EvictingAndRestartingSt.evict_and_restart_final(
                 bad_node_ids=result.bad_node_ids,
             )
 
         logger.info("diagnosing_all_passed trigger=%s", ctx.trigger)
-        return NotifyHumans(state_before="StopTimeDiagnostics")
+        return NotifyHumansSt(state_before="StopTimeDiagnostics")
 
 
-class NotifyHumansHandler(StateHandler[NotifyHumans, RecoveryContext]):
-    async def step(self, state: NotifyHumans, ctx: RecoveryContext) -> RecoveryState:
+class NotifyHumansHandler(StateHandler[NotifyHumansSt, RecoveryContext]):
+    async def step(self, state: NotifyHumansSt, ctx: RecoveryContext) -> RecoveryState:
         message = (
             f"Recovery requires human intervention. " f"trigger={ctx.trigger} " f"state_before={state.state_before}"
         )
         logger.warning("recovery_notify reason=%s", message)
         await safe_notify(ctx.notifier, title="Recovery Alert", content=message)
-        return RecoveryDone()
+        return RecoveryDoneSt()

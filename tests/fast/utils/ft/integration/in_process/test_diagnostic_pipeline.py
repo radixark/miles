@@ -19,8 +19,8 @@ from miles.utils.ft.controller.diagnostics.executors import (
     PerNodeClusterExecutor,
 )
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.state_machines.subsystem import Recovering
-from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnostics
+from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
+from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
 
 _TYPE_TO_EXECUTOR: dict[str, ClusterExecutorProtocol] = {
     "gpu": GpuClusterExecutor(),
@@ -45,8 +45,8 @@ def _make_diagnostic_test_env(
     for node_id, agent in agents.items():
         harness.controller.register_node_agent(node_id, agent)
 
-    set_training_subsystem_state(harness.controller, Recovering(
-        recovery=StopTimeDiagnostics(),
+    set_training_subsystem_state(harness.controller, RecoveringSt(
+        recovery=StopTimeDiagnosticsSt(),
         trigger="crash",
         recovery_start_time=datetime.now(timezone.utc),
     ))
@@ -68,7 +68,7 @@ class TestDiagnosticPipelineWithBadNode:
 
         assert harness.node_manager.was_ever_marked_bad("node-1")
         assert not harness.node_manager.was_ever_marked_bad("node-0")
-        assert isinstance(harness.controller._training_subsystem_state, Recovering)
+        assert isinstance(harness.controller._training_subsystem_state, RecoveringSt)
 
 
 class TestDiagnosticPipelineAllPass:
@@ -84,7 +84,7 @@ class TestDiagnosticPipelineAllPass:
         # StopTimeDiagnostics → all pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_subsystem_state, Recovering)
+        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")
@@ -104,7 +104,7 @@ class TestDiagnosticPipelineEmptyPipeline:
         # Empty pipeline → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_subsystem_state, Recovering)
+        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
 
@@ -143,7 +143,7 @@ class TestDiagnosticPipelineInterMachine:
         # All pass → NotifyHumans → RecoveryDone → DetectingAnomaly
         await harness.controller._tick()
 
-        assert not isinstance(harness.controller._training_subsystem_state, Recovering)
+        assert not isinstance(harness.controller._training_subsystem_state, RecoveringSt)
         assert harness.notifier is not None
         assert len(harness.notifier.calls) >= 1
         assert not harness.node_manager.was_ever_marked_bad("node-0")

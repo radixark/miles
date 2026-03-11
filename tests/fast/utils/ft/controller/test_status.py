@@ -8,14 +8,14 @@ from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
-from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomaly, SubsystemState, Recovering
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
+from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, SubsystemState, RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestarting,
-    NotifyHumans,
-    RealtimeChecks,
-    RecoveryDone,
-    StopTimeDiagnostics,
+    EvictingAndRestartingSt,
+    NotifyHumansSt,
+    RealtimeChecksSt,
+    RecoveryDoneSt,
+    StopTimeDiagnosticsSt,
 )
 from miles.utils.ft.controller.state_machines.restart.models import EvictingSt, StoppingAndRestartingSt
 from miles.utils.ft.controller.status import build_controller_status, recovery_phase_name
@@ -34,30 +34,30 @@ def _now() -> datetime:
 
 class TestRecoveryPhaseName:
     def test_realtime_checks(self) -> None:
-        assert recovery_phase_name(RealtimeChecks()) == "RealtimeChecks"
+        assert recovery_phase_name(RealtimeChecksSt()) == "RealtimeChecks"
 
     def test_evicting_and_restarting_returns_evicting(self) -> None:
-        state = EvictingAndRestarting(
+        state = EvictingAndRestartingSt(
             restart=EvictingSt(bad_node_ids=["node-0"]),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
         assert recovery_phase_name(state) == "EvictingSt"
 
     def test_evicting_and_restarting_returns_stopping_and_restarting(self) -> None:
-        state = EvictingAndRestarting(
+        state = EvictingAndRestartingSt(
             restart=StoppingAndRestartingSt(bad_node_ids=[]),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
         assert recovery_phase_name(state) == "StoppingAndRestartingSt"
 
     def test_stop_time_diagnostics(self) -> None:
-        assert recovery_phase_name(StopTimeDiagnostics()) == "StopTimeDiagnostics"
+        assert recovery_phase_name(StopTimeDiagnosticsSt()) == "StopTimeDiagnostics"
 
     def test_notify_humans(self) -> None:
-        assert recovery_phase_name(NotifyHumans(state_before="test")) == "NotifyHumans"
+        assert recovery_phase_name(NotifyHumansSt(state_before="test")) == "NotifyHumans"
 
     def test_recovery_done(self) -> None:
-        assert recovery_phase_name(RecoveryDone()) == "RecoveryDone"
+        assert recovery_phase_name(RecoveryDoneSt()) == "RecoveryDone"
 
 
 # ===================================================================
@@ -69,7 +69,7 @@ def _make_controller_sm(
     state: SubsystemState,
 ) -> StateMachine[MainState, MainContext]:
     """Build a MainState SM wrapping a training SubsystemState directly."""
-    controller_state = NormalState(subsystems={"training": state})
+    controller_state = NormalSt(subsystems={"training": state})
     return StateMachine(
         initial_state=controller_state,
         stepper=StateMachineStepper(handler_map={}),
@@ -79,7 +79,7 @@ def _make_controller_sm(
 class TestBuildControllerStatus:
     def test_monitoring_mode(self) -> None:
         status = build_controller_status(
-            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=5,
@@ -92,8 +92,8 @@ class TestBuildControllerStatus:
         assert status.bad_nodes_confirmed is False
 
     def test_recovery_mode_with_bad_nodes(self) -> None:
-        recovery = EvictingAndRestarting.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-1"])
-        state = Recovering(
+        recovery = EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-1"])
+        state = RecoveringSt(
             recovery=recovery,
             trigger="crash",
             recovery_start_time=_now(),
@@ -112,7 +112,7 @@ class TestBuildControllerStatus:
 
     def test_latest_iteration_none_when_no_data(self) -> None:
         status = build_controller_status(
-            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -123,7 +123,7 @@ class TestBuildControllerStatus:
     def test_latest_iteration_from_mini_wandb(self) -> None:
         wandb = make_fake_mini_wandb(steps={10: {"iteration": 42.0}})
         status = build_controller_status(
-            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=wandb,
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -132,8 +132,8 @@ class TestBuildControllerStatus:
         assert status.latest_iteration == 42
 
     def test_bad_nodes_confirmed_in_notify_humans(self) -> None:
-        state = Recovering(
-            recovery=NotifyHumans(state_before="test"),
+        state = RecoveringSt(
+            recovery=NotifyHumansSt(state_before="test"),
             trigger="crash",
             recovery_start_time=_now(),
         )
@@ -147,8 +147,8 @@ class TestBuildControllerStatus:
         assert status.bad_nodes_confirmed is True
 
     def test_bad_nodes_confirmed_in_recovery_done(self) -> None:
-        state = Recovering(
-            recovery=RecoveryDone(),
+        state = RecoveringSt(
+            recovery=RecoveryDoneSt(),
             trigger="crash",
             recovery_start_time=_now(),
         )
@@ -163,7 +163,7 @@ class TestBuildControllerStatus:
 
     def test_phase_history_always_none(self) -> None:
         status = build_controller_status(
-            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
             training_rank_roster=TrainingRankRoster(),
             tick_count=0,
@@ -174,7 +174,7 @@ class TestBuildControllerStatus:
     def test_active_run_id_from_training_rank_roster(self) -> None:
         roster = TrainingRankRoster(run_id="run-42")
         status = build_controller_status(
-            controller_state_machine=_make_controller_sm(DetectingAnomaly()),
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
             training_rank_roster=roster,
             tick_count=0,

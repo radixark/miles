@@ -8,17 +8,17 @@ from miles.utils.ft.controller.state_machines.main.context_factories import buil
 from miles.utils.ft.controller.state_machines.main.models import (
     MainContext,
     MainState,
-    NormalState,
-    RestartingMainJobState,
+    NormalSt,
+    RestartingMainJobSt,
 )
 from miles.utils.ft.controller.state_machines.subsystem import create_subsystem_stepper
 from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomaly,
+    DetectingAnomalySt,
     SubsystemState,
-    Recovering,
+    RecoveringSt,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestarting,
+    EvictingAndRestartingSt,
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
     for name, sub_state in subsystems.items():
         match sub_state:
-            case Recovering(
-                recovery=EvictingAndRestarting(
+            case RecoveringSt(
+                recovery=EvictingAndRestartingSt(
                     restart=ExternalRestartingMainJobSt(external_execution_result=None)
                 )
             ):
@@ -49,8 +49,8 @@ def _update_external_execution_result(
     result: ExternalExecutionResult,
 ) -> SubsystemState:
     match frozen_state:
-        case Recovering(
-            recovery=EvictingAndRestarting(
+        case RecoveringSt(
+            recovery=EvictingAndRestartingSt(
                 restart=ExternalRestartingMainJobSt() as restart
             ) as recovery
         ):
@@ -64,16 +64,16 @@ def _update_external_execution_result(
 
 
 def _build_fresh_subsystem_states(configs: dict[str, SubsystemConfig]) -> dict[str, SubsystemState]:
-    return {name: DetectingAnomaly() for name in configs}
+    return {name: DetectingAnomalySt() for name in configs}
 
 
-class NormalStateHandler(StateHandler[NormalState, MainContext]):
+class NormalHandler(StateHandler[NormalSt, MainContext]):
     def __init__(self) -> None:
         self._restart_stepper = create_restart_stepper()
         self._recovery_stepper = create_recovery_stepper()
         self._subsystem_stepper = create_subsystem_stepper()
 
-    async def step(self, state: NormalState, context: MainContext):  # type: ignore[override]
+    async def step(self, state: NormalSt, context: MainContext):  # type: ignore[override]
         # Step 1: Step all subsystems to convergence
         curr_state = state
         del state
@@ -87,7 +87,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
             )
             old_sub_state = curr_state.subsystems[name]
             async for new_sub_state in run_stepper_to_convergence(self._subsystem_stepper, old_sub_state, sub_ctx):
-                curr_state = NormalState(subsystems={**curr_state.subsystems, name: new_sub_state})
+                curr_state = NormalSt(subsystems={**curr_state.subsystems, name: new_sub_state})
                 yield curr_state
 
         # Step 2: Check for RestartingMainJob(external_execution_result=None)
@@ -96,9 +96,9 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
 
     async def _check_main_job_restart(
         self,
-        state: NormalState,
+        state: NormalSt,
         context: MainContext,
-    ) -> RestartingMainJobState | None:
+    ) -> RestartingMainJobSt | None:
         requestor = _find_restart_requestor(state.subsystems)
         if requestor is None:
             return None
@@ -112,16 +112,16 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
         if context.on_new_run is not None:
             context.on_new_run(run_id)
 
-        return RestartingMainJobState(
+        return RestartingMainJobSt(
             requestor_name=requestor,
             start_time=datetime.now(timezone.utc),
             requestor_frozen_state=frozen_state,
         )
 
 
-class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainContext]):
+class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
     async def step(
-        self, state: RestartingMainJobState, context: MainContext
+        self, state: RestartingMainJobSt, context: MainContext
     ) -> MainState | None:
         status = await context.main_job.get_job_status()
         execution_result: ExternalExecutionResult | None = None
@@ -142,4 +142,4 @@ class RestartingMainJobStateHandler(StateHandler[RestartingMainJobState, MainCon
         if state.requestor_name in fresh_states:
             restored = _update_external_execution_result(state.requestor_frozen_state, execution_result)
             fresh_states[state.requestor_name] = restored
-        return NormalState(subsystems=fresh_states)
+        return NormalSt(subsystems=fresh_states)

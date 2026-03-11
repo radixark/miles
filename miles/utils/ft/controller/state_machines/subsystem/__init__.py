@@ -3,17 +3,17 @@ from miles.utils.ft.controller.state_machines.subsystem.handlers import (
     RecoveringHandler,
 )
 from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomaly,
+    DetectingAnomalySt,
     SubsystemContext,
     SubsystemState,
-    Recovering,
+    RecoveringSt,
 )
 from miles.utils.ft.controller.state_machines.subsystem.utils import get_known_bad_nodes, handle_notify_human
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 _SUBSYSTEM_HANDLER_MAP: dict[type, type] = {
-    DetectingAnomaly: DetectingAnomalyHandler,
-    Recovering: RecoveringHandler,
+    DetectingAnomalySt: DetectingAnomalyHandler,
+    RecoveringSt: RecoveringHandler,
 }
 
 
@@ -22,11 +22,11 @@ def create_subsystem_stepper() -> StateMachineStepper:
 
 
 __all__ = [
-    "DetectingAnomaly",
+    "DetectingAnomalySt",
     "DetectingAnomalyHandler",
     "SubsystemContext",
     "SubsystemState",
-    "Recovering",
+    "RecoveringSt",
     "RecoveringHandler",
     "create_subsystem_stepper",
     "get_known_bad_nodes",

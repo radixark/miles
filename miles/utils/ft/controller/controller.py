@@ -10,7 +10,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig, RestartMode, SubsystemConfig
@@ -130,7 +130,7 @@ class FtController:
         reward_manager_handle: object,
         cell_ids: list[str] | None = None,
     ) -> None:
-        from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomaly
+        from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt
 
         if cell_ids is None:
             cell_ids = ["default"]
@@ -140,7 +140,7 @@ class FtController:
         )
 
         state = self._state_machine.state
-        if not isinstance(state, NormalState):
+        if not isinstance(state, NormalSt):
             raise RuntimeError(
                 f"Cannot register rollout subsystems in {type(state).__name__}, expected NormalState"
             )
@@ -157,9 +157,9 @@ class FtController:
             name = f"rollout_{cell_id}"
             subsystem_config = _build_rollout_subsystem_config(config=rollout_config)
             self._tick_loop.subsystem_configs[name] = subsystem_config
-            new_subsystem_states[name] = DetectingAnomaly()
+            new_subsystem_states[name] = DetectingAnomalySt()
 
-        self._state_machine.force_state(NormalState(subsystems=new_subsystem_states))
+        self._state_machine.force_state(NormalSt(subsystems=new_subsystem_states))
         logger.info(
             "rollout_subsystems_registered cell_ids=%s total_subsystems=%d",
             cell_ids,
@@ -206,7 +206,7 @@ class FtController:
     @property
     def _training_subsystem_state(self) -> SubsystemState:
         state = self._state_machine.state
-        if not isinstance(state, NormalState):
+        if not isinstance(state, NormalSt):
             raise RuntimeError(f"Expected NormalState, got {type(state).__name__}")
         training = state.subsystems.get("training")
         if training is None:

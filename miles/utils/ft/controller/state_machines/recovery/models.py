@@ -20,54 +20,54 @@ class RecoveryState(FtBaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class RealtimeChecks(RecoveryState):
+class RealtimeChecksSt(RecoveryState):
     pre_identified_bad_nodes: list[str] = []
 
 
-class EvictingAndRestarting(RecoveryState):
+class EvictingAndRestartingSt(RecoveryState):
     restart: RestartState
     failed_next_state: RecoveryState
 
     @classmethod
-    def direct_restart(cls) -> EvictingAndRestarting:
+    def direct_restart(cls) -> EvictingAndRestartingSt:
         return cls(
             restart=StoppingAndRestartingSt(bad_node_ids=[]),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
 
     @classmethod
-    def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
+    def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: list[str]) -> EvictingAndRestartingSt:
         return cls(
             restart=EvictingSt(bad_node_ids=bad_node_ids),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
 
     @classmethod
-    def evict_and_restart_final(cls, *, bad_node_ids: list[str]) -> EvictingAndRestarting:
+    def evict_and_restart_final(cls, *, bad_node_ids: list[str]) -> EvictingAndRestartingSt:
         return cls(
             restart=EvictingSt(bad_node_ids=bad_node_ids),
-            failed_next_state=NotifyHumans(state_before="EvictingAndRestarting"),
+            failed_next_state=NotifyHumansSt(state_before="EvictingAndRestarting"),
         )
 
 
-class StopTimeDiagnostics(RecoveryState):
+class StopTimeDiagnosticsSt(RecoveryState):
     pass
 
 
-class NotifyHumans(RecoveryState):
+class NotifyHumansSt(RecoveryState):
     state_before: str
 
 
-class RecoveryDone(RecoveryState):
+class RecoveryDoneSt(RecoveryState):
     pass
 
 
 RECOVERY_STATE_TO_INT: dict[type[RecoveryState], int] = {
-    RealtimeChecks: 1,
-    EvictingAndRestarting: 2,
-    StopTimeDiagnostics: 4,
-    NotifyHumans: 5,
-    RecoveryDone: 6,
+    RealtimeChecksSt: 1,
+    EvictingAndRestartingSt: 2,
+    StopTimeDiagnosticsSt: 4,
+    NotifyHumansSt: 5,
+    RecoveryDoneSt: 6,
 }
 
 

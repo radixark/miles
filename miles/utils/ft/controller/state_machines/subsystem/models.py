@@ -19,11 +19,11 @@ class SubsystemState(FtBaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class DetectingAnomaly(SubsystemState):
+class DetectingAnomalySt(SubsystemState):
     pass
 
 
-class Recovering(SubsystemState):
+class RecoveringSt(SubsystemState):
     recovery: RecoveryState
     trigger: TriggerType
     recovery_start_time: datetime

@@ -11,12 +11,12 @@ from miles.utils.ft.controller.state_machines.main.handlers import (
     _update_external_execution_result,
 )
 from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomaly,
-    Recovering,
+    DetectingAnomalySt,
+    RecoveringSt,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestarting,
-    StopTimeDiagnostics,
+    EvictingAndRestartingSt,
+    StopTimeDiagnosticsSt,
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
     EvictingSt,
@@ -30,35 +30,35 @@ from miles.utils.ft.controller.types import TriggerType
 def _make_recovering_with_main_job_restart(
     *,
     external_execution_result: ExternalExecutionResult | None = None,
-) -> Recovering:
-    return Recovering(
-        recovery=EvictingAndRestarting(
+) -> RecoveringSt:
+    return RecoveringSt(
+        recovery=EvictingAndRestartingSt(
             restart=ExternalRestartingMainJobSt(external_execution_result=external_execution_result),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         ),
         trigger=TriggerType.CRASH,
         recovery_start_time=datetime.now(timezone.utc),
     )
 
 
-def _make_recovering_with_evicting() -> Recovering:
+def _make_recovering_with_evicting() -> RecoveringSt:
     """Recovering whose restart is Evicting, not ExternalRestartingMainJobSt."""
-    return Recovering(
-        recovery=EvictingAndRestarting(
+    return RecoveringSt(
+        recovery=EvictingAndRestartingSt(
             restart=EvictingSt(bad_node_ids=["node-1"]),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         ),
         trigger=TriggerType.HANG,
         recovery_start_time=datetime.now(timezone.utc),
     )
 
 
-def _make_recovering_with_stopping_and_restarting() -> Recovering:
+def _make_recovering_with_stopping_and_restarting() -> RecoveringSt:
     """Recovering whose restart is StoppingAndRestarting, not ExternalRestartingMainJobSt."""
-    return Recovering(
-        recovery=EvictingAndRestarting(
+    return RecoveringSt(
+        recovery=EvictingAndRestartingSt(
             restart=StoppingAndRestartingSt(bad_node_ids=[]),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         ),
         trigger=TriggerType.CRASH,
         recovery_start_time=datetime.now(timezone.utc),
@@ -82,8 +82,8 @@ class TestFindRestartRequestor:
 
     def test_returns_none_when_all_detecting_anomaly(self) -> None:
         subsystems = {
-            "gpu": DetectingAnomaly(),
-            "net": DetectingAnomaly(),
+            "gpu": DetectingAnomalySt(),
+            "net": DetectingAnomalySt(),
         }
         assert _find_restart_requestor(subsystems) is None
 
@@ -111,7 +111,7 @@ class TestFindRestartRequestor:
     def test_returns_first_matching_among_multiple_subsystems(self) -> None:
         """When multiple subsystems have unfulfilled restarts, return one of them."""
         subsystems = {
-            "detecting": DetectingAnomaly(),
+            "detecting": DetectingAnomalySt(),
             "fulfilled": _make_recovering_with_main_job_restart(
                 external_execution_result=ExternalExecutionResult.SUCCEEDED,
             ),
@@ -123,7 +123,7 @@ class TestFindRestartRequestor:
     def test_skips_non_matching_and_finds_matching(self) -> None:
         """Mixed subsystem states — only the unfulfilled RestartingMainJob matches."""
         subsystems = {
-            "a": DetectingAnomaly(),
+            "a": DetectingAnomalySt(),
             "b": _make_recovering_with_evicting(),
             "c": _make_recovering_with_main_job_restart(),
         }
@@ -141,8 +141,8 @@ class TestUpdateExternalExecutionResult:
 
         result = _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
-        assert isinstance(result, Recovering)
-        assert isinstance(result.recovery, EvictingAndRestarting)
+        assert isinstance(result, RecoveringSt)
+        assert isinstance(result.recovery, EvictingAndRestartingSt)
         assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
 
@@ -151,10 +151,10 @@ class TestUpdateExternalExecutionResult:
 
         result = _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
-        assert isinstance(result, Recovering)
+        assert isinstance(result, RecoveringSt)
         assert result.trigger == state.trigger
         assert result.recovery_start_time == state.recovery_start_time
-        assert isinstance(result.recovery, EvictingAndRestarting)
+        assert isinstance(result.recovery, EvictingAndRestartingSt)
         assert result.recovery.failed_next_state == state.recovery.failed_next_state
         assert result.recovery.restart.bad_node_ids == state.recovery.restart.bad_node_ids
 
@@ -164,7 +164,7 @@ class TestUpdateExternalExecutionResult:
 
         _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
-        assert isinstance(state.recovery, EvictingAndRestarting)
+        assert isinstance(state.recovery, EvictingAndRestartingSt)
         assert isinstance(state.recovery.restart, ExternalRestartingMainJobSt)
         assert state.recovery.restart.external_execution_result is None
 
@@ -173,14 +173,14 @@ class TestUpdateExternalExecutionResult:
 
         result = _update_external_execution_result(state, ExternalExecutionResult.FAILED)
 
-        assert isinstance(result, Recovering)
-        assert isinstance(result.recovery, EvictingAndRestarting)
+        assert isinstance(result, RecoveringSt)
+        assert isinstance(result.recovery, EvictingAndRestartingSt)
         assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
 
     def test_raises_on_detecting_anomaly_state(self) -> None:
         with pytest.raises(AssertionError, match="Unexpected state"):
-            _update_external_execution_result(DetectingAnomaly(), ExternalExecutionResult.SUCCEEDED)
+            _update_external_execution_result(DetectingAnomalySt(), ExternalExecutionResult.SUCCEEDED)
 
     def test_raises_on_recovering_with_non_matching_restart(self) -> None:
         """Recovering → EvictingAndRestarting but restart is Evicting, not RestartingMainJob."""
@@ -189,12 +189,12 @@ class TestUpdateExternalExecutionResult:
             _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
     def test_preserves_bad_node_ids(self) -> None:
-        state = Recovering(
-            recovery=EvictingAndRestarting(
+        state = RecoveringSt(
+            recovery=EvictingAndRestartingSt(
                 restart=ExternalRestartingMainJobSt(
                     bad_node_ids=["node-0", "node-1"],
                 ),
-                failed_next_state=StopTimeDiagnostics(),
+                failed_next_state=StopTimeDiagnosticsSt(),
             ),
             trigger=TriggerType.NAN_LOSS,
             recovery_start_time=datetime.now(timezone.utc),
@@ -202,8 +202,8 @@ class TestUpdateExternalExecutionResult:
 
         result = _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
-        assert isinstance(result, Recovering)
-        assert isinstance(result.recovery, EvictingAndRestarting)
+        assert isinstance(result, RecoveringSt)
+        assert isinstance(result.recovery, EvictingAndRestartingSt)
         assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
         assert result.recovery.restart.bad_node_ids == ["node-0", "node-1"]

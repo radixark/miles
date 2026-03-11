@@ -1,18 +1,18 @@
 from miles.utils.ft.controller.state_machines.main.handlers import (
-    NormalStateHandler,
-    RestartingMainJobStateHandler,
+    NormalHandler,
+    RestartingMainJobHandler,
 )
 from miles.utils.ft.controller.state_machines.main.models import (
     MainContext,
     MainState,
-    NormalState,
-    RestartingMainJobState,
+    NormalSt,
+    RestartingMainJobSt,
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 _MAIN_HANDLER_MAP: dict[type, type] = {
-    NormalState: NormalStateHandler,
-    RestartingMainJobState: RestartingMainJobStateHandler,
+    NormalSt: NormalHandler,
+    RestartingMainJobSt: RestartingMainJobHandler,
 }
 
 
@@ -23,9 +23,9 @@ def create_main_stepper() -> StateMachineStepper[MainState, MainContext]:
 __all__ = [
     "MainContext",
     "MainState",
-    "NormalState",
-    "NormalStateHandler",
-    "RestartingMainJobState",
-    "RestartingMainJobStateHandler",
+    "NormalSt",
+    "NormalHandler",
+    "RestartingMainJobSt",
+    "RestartingMainJobHandler",
     "create_main_stepper",
 ]

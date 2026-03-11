@@ -25,13 +25,13 @@ class MainState(FtBaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class NormalState(MainState):
+class NormalSt(MainState):
     """All subsystems running normally; step each sub-SM every tick."""
 
     subsystems: dict[str, SubsystemState]
 
 
-class RestartingMainJobState(MainState):
+class RestartingMainJobSt(MainState):
     """Waiting for the main job restart to complete."""
 
     requestor_name: str

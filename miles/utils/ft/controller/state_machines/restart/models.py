@@ -23,29 +23,29 @@ class RestartState(FtBaseModel):
     bad_node_ids: list[str] = []
 
 
-class Evicting(RestartState):
+class EvictingSt(RestartState):
     pass
 
 
-class StoppingAndRestarting(RestartState):
+class StoppingAndRestartingSt(RestartState):
     submitted: bool = False
     submit_time: datetime | None = None
 
 
-class MonitoringProgress(RestartState):
+class MonitoringProgressSt(RestartState):
     start_time: datetime
     base_iteration: int
 
 
-class RestartDone(RestartState):
+class RestartDoneSt(RestartState):
     pass
 
 
-class RestartFailed(RestartState):
+class RestartFailedSt(RestartState):
     pass
 
 
-class RestartingMainJob(RestartState):
+class ExternalRestartingMainJobSt(RestartState):
     """restart_mode is MAIN_JOB; wait for external main job restart."""
 
     external_execution_result: ExternalExecutionResult | None = None

@@ -14,16 +14,16 @@ from miles.utils.ft.controller.metrics.exporter import NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main import (
     MainContext,
-    NormalState,
-    RestartingMainJobState,
+    NormalSt,
+    RestartingMainJobSt,
     create_main_stepper,
 )
 from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomaly,
-    Recovering,
+    DetectingAnomalySt,
+    RecoveringSt,
     SubsystemState,
 )
-from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestarting, StopTimeDiagnostics
+from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestartingSt, StopTimeDiagnosticsSt
 from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
     ExternalRestartingMainJobSt,
@@ -39,12 +39,12 @@ from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWin
 # ---------------------------------------------------------------------------
 
 
-def _make_frozen_recovering_state() -> Recovering:
+def _make_frozen_recovering_state() -> RecoveringSt:
     """Create a Recovering state matching what NormalStateHandler would freeze."""
-    return Recovering(
-        recovery=EvictingAndRestarting(
+    return RecoveringSt(
+        recovery=EvictingAndRestartingSt(
             restart=ExternalRestartingMainJobSt(),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         ),
         trigger=TriggerType.CRASH,
         recovery_start_time=datetime.now(timezone.utc),
@@ -104,10 +104,10 @@ class TestNormalOperation:
         """Two subsystems in DetectingAnomaly → NormalStateHandler steps them → no transition."""
         stepper = create_main_stepper()
         subsystems: dict[str, SubsystemState] = {
-            "training": DetectingAnomaly(),
-            "rollout_0": DetectingAnomaly(),
+            "training": DetectingAnomalySt(),
+            "rollout_0": DetectingAnomalySt(),
         }
-        state = NormalState(subsystems=subsystems)
+        state = NormalSt(subsystems=subsystems)
         context = _make_controller_context(
             subsystem_configs={
                 "training": _make_subsystem_config(),
@@ -137,7 +137,7 @@ class TestSingleSubsystemEscalation:
         subsystems: dict[str, SubsystemState] = {
             "rollout_0": nested_state,
         }
-        state = NormalState(subsystems=subsystems)
+        state = NormalSt(subsystems=subsystems)
         context = _make_controller_context(
             main_job=main_job,
             subsystem_configs={"rollout_0": _make_subsystem_config()},
@@ -145,9 +145,9 @@ class TestSingleSubsystemEscalation:
 
         result = await _step_last(stepper, state, context)
 
-        assert isinstance(result, RestartingMainJobState)
+        assert isinstance(result, RestartingMainJobSt)
         assert result.requestor_name == "rollout_0"
-        assert isinstance(result.requestor_frozen_state, Recovering)
+        assert isinstance(result.requestor_frozen_state, RecoveringSt)
         assert main_job._stopped
         assert main_job._submitted
 
@@ -165,7 +165,7 @@ class TestJobRestartComplete:
         stepper = create_main_stepper()
 
         frozen = _make_frozen_recovering_state()
-        state = RestartingMainJobState(
+        state = RestartingMainJobSt(
             requestor_name="rollout_0",
             start_time=datetime.now(timezone.utc),
             requestor_frozen_state=frozen,
@@ -180,17 +180,17 @@ class TestJobRestartComplete:
 
         result = await _step_last(stepper, state, context)
 
-        assert isinstance(result, NormalState)
+        assert isinstance(result, NormalSt)
         assert set(result.subsystems.keys()) == {"training", "rollout_0"}
 
         # Requestor gets restored frozen state with external_execution_result=SUCCEEDED
         requestor_state = result.subsystems["rollout_0"]
-        assert isinstance(requestor_state, Recovering)
-        assert isinstance(requestor_state.recovery, EvictingAndRestarting)
+        assert isinstance(requestor_state, RecoveringSt)
+        assert isinstance(requestor_state.recovery, EvictingAndRestartingSt)
         assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
         assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
 
-        assert isinstance(result.subsystems["training"], DetectingAnomaly)
+        assert isinstance(result.subsystems["training"], DetectingAnomalySt)
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +207,10 @@ class TestMultiSubsystemOneEscalates:
 
         nested_state = _make_frozen_recovering_state()
         subsystems: dict[str, SubsystemState] = {
-            "training": DetectingAnomaly(),
+            "training": DetectingAnomalySt(),
             "rollout_0": nested_state,
         }
-        state = NormalState(subsystems=subsystems)
+        state = NormalSt(subsystems=subsystems)
 
         context = _make_controller_context(
             main_job=main_job,
@@ -222,7 +222,7 @@ class TestMultiSubsystemOneEscalates:
 
         result = await _step_last(stepper, state, context)
 
-        assert isinstance(result, RestartingMainJobState)
+        assert isinstance(result, RestartingMainJobSt)
         assert result.requestor_name == "rollout_0"
         assert main_job._submit_call_count == 1
 
@@ -240,7 +240,7 @@ class TestJobRestartPending:
         stepper = create_main_stepper()
 
         frozen = _make_frozen_recovering_state()
-        state = RestartingMainJobState(
+        state = RestartingMainJobSt(
             requestor_name="rollout_0",
             start_time=datetime.now(timezone.utc),
             requestor_frozen_state=frozen,
@@ -258,7 +258,7 @@ class TestJobRestartPending:
         stepper = create_main_stepper()
 
         frozen = _make_frozen_recovering_state()
-        state = RestartingMainJobState(
+        state = RestartingMainJobSt(
             requestor_name="rollout_0",
             start_time=datetime.now(timezone.utc),
             requestor_frozen_state=frozen,
@@ -273,10 +273,10 @@ class TestJobRestartPending:
 
         result = await _step_last(stepper, state, context)
 
-        assert isinstance(result, NormalState)
+        assert isinstance(result, NormalSt)
         requestor_state = result.subsystems["rollout_0"]
-        assert isinstance(requestor_state, Recovering)
-        assert isinstance(requestor_state.recovery, EvictingAndRestarting)
+        assert isinstance(requestor_state, RecoveringSt)
+        assert isinstance(requestor_state.recovery, EvictingAndRestartingSt)
         assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
         assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
 
@@ -289,7 +289,7 @@ class TestJobRestartPending:
         stepper = create_main_stepper()
 
         frozen = _make_frozen_recovering_state()
-        state = RestartingMainJobState(
+        state = RestartingMainJobSt(
             requestor_name="rollout_0",
             start_time=datetime.now(timezone.utc) - timedelta(seconds=3600),
             requestor_frozen_state=frozen,
@@ -304,9 +304,9 @@ class TestJobRestartPending:
 
         result = await _step_last(stepper, state, context)
 
-        assert isinstance(result, NormalState)
+        assert isinstance(result, NormalSt)
         requestor_state = result.subsystems["rollout_0"]
-        assert isinstance(requestor_state, Recovering)
-        assert isinstance(requestor_state.recovery, EvictingAndRestarting)
+        assert isinstance(requestor_state, RecoveringSt)
+        assert isinstance(requestor_state.recovery, EvictingAndRestartingSt)
         assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
         assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.TIMEOUT

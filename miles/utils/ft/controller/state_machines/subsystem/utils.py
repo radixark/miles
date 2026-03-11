@@ -6,8 +6,8 @@ from collections.abc import Iterator
 from miles.utils.ft.adapters.types import NotifierProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestarting,
-    RealtimeChecks,
+    EvictingAndRestartingSt,
+    RealtimeChecksSt,
     RecoveryState,
 )
 from miles.utils.ft.controller.state_machines.utils import safe_notify
@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_known_bad_nodes(recovery_state: RecoveryState) -> list[str]:
-    if isinstance(recovery_state, EvictingAndRestarting):
+    if isinstance(recovery_state, EvictingAndRestartingSt):
         return recovery_state.restart.bad_node_ids
-    if isinstance(recovery_state, RealtimeChecks):
+    if isinstance(recovery_state, RealtimeChecksSt):
         return recovery_state.pre_identified_bad_nodes
     return []
 

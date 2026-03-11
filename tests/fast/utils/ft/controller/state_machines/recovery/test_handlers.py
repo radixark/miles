@@ -14,12 +14,12 @@ from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.recovery import (
-    EvictingAndRestarting,
-    NotifyHumans,
-    RealtimeChecks,
+    EvictingAndRestartingSt,
+    NotifyHumansSt,
+    RealtimeChecksSt,
     RecoveryContext,
-    RecoveryDone,
-    StopTimeDiagnostics,
+    RecoveryDoneSt,
+    StopTimeDiagnosticsSt,
     create_recovery_stepper,
 )
 from miles.utils.ft.controller.state_machines.restart import (
@@ -162,16 +162,16 @@ class TestRealtimeChecks:
     @pytest.mark.asyncio
     async def test_no_pre_identified_goes_to_direct_restart(self) -> None:
         stepper = _make_stepper()
-        result = await _step(stepper, RealtimeChecks())
-        assert isinstance(result, EvictingAndRestarting)
+        result = await _step(stepper, RealtimeChecksSt())
+        assert isinstance(result, EvictingAndRestartingSt)
         assert isinstance(result.restart, StoppingAndRestartingSt)
-        assert isinstance(result.failed_next_state, StopTimeDiagnostics)
+        assert isinstance(result.failed_next_state, StopTimeDiagnosticsSt)
 
     @pytest.mark.asyncio
     async def test_pre_identified_bad_nodes_go_to_evicting(self) -> None:
         stepper = _make_stepper()
-        result = await _step(stepper, RealtimeChecks(pre_identified_bad_nodes=["node-X"]))
-        assert isinstance(result, EvictingAndRestarting)
+        result = await _step(stepper, RealtimeChecksSt(pre_identified_bad_nodes=["node-X"]))
+        assert isinstance(result, EvictingAndRestartingSt)
         assert isinstance(result.restart, EvictingSt)
         assert result.restart.bad_node_ids == ["node-X"]
 
@@ -180,9 +180,9 @@ class TestRealtimeChecks:
         stepper = _make_stepper()
         result = await _step(
             stepper,
-            RealtimeChecks(pre_identified_bad_nodes=["node-A", "node-B", "node-C"]),
+            RealtimeChecksSt(pre_identified_bad_nodes=["node-A", "node-B", "node-C"]),
         )
-        assert isinstance(result, EvictingAndRestarting)
+        assert isinstance(result, EvictingAndRestartingSt)
         assert result.restart.bad_node_ids == ["node-A", "node-B", "node-C"]
 
 
@@ -196,34 +196,34 @@ class TestEvictingAndRestarting:
     async def test_restart_done_returns_recovery_done(self) -> None:
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartDoneSt()))
-        state = EvictingAndRestarting(
+        state = EvictingAndRestartingSt(
             restart=EvictingSt(bad_node_ids=["n"]),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
         result = await _step_last(stepper, state, ctx)
-        assert isinstance(result, RecoveryDone)
+        assert isinstance(result, RecoveryDoneSt)
 
     @pytest.mark.asyncio
     async def test_restart_failed_returns_failed_next_state(self) -> None:
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailedSt()))
-        state = EvictingAndRestarting(
+        state = EvictingAndRestartingSt(
             restart=EvictingSt(),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
         result = await _step_last(stepper, state, ctx)
-        assert isinstance(result, StopTimeDiagnostics)
+        assert isinstance(result, StopTimeDiagnosticsSt)
 
     @pytest.mark.asyncio
     async def test_restart_failed_with_notify_next_state(self) -> None:
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailedSt()))
-        state = EvictingAndRestarting(
+        state = EvictingAndRestartingSt(
             restart=EvictingSt(),
-            failed_next_state=NotifyHumans(state_before="EvictingAndRestarting"),
+            failed_next_state=NotifyHumansSt(state_before="EvictingAndRestarting"),
         )
         result = await _step_last(stepper, state, ctx)
-        assert isinstance(result, NotifyHumans)
+        assert isinstance(result, NotifyHumansSt)
         assert result.state_before == "EvictingAndRestarting"
 
     @pytest.mark.asyncio
@@ -231,22 +231,22 @@ class TestEvictingAndRestarting:
         new_restart = StoppingAndRestartingSt(bad_node_ids=["n"], submitted=True)
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(new_restart))
-        state = EvictingAndRestarting(
+        state = EvictingAndRestartingSt(
             restart=EvictingSt(bad_node_ids=["n"]),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
         result = await _step_last(stepper, state, ctx)
-        assert isinstance(result, EvictingAndRestarting)
+        assert isinstance(result, EvictingAndRestartingSt)
         assert result.restart == new_restart
-        assert isinstance(result.failed_next_state, StopTimeDiagnostics)
+        assert isinstance(result.failed_next_state, StopTimeDiagnosticsSt)
 
     @pytest.mark.asyncio
     async def test_restart_none_returns_none(self) -> None:
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(None))
-        state = EvictingAndRestarting(
+        state = EvictingAndRestartingSt(
             restart=StoppingAndRestartingSt(submitted=True),
-            failed_next_state=StopTimeDiagnostics(),
+            failed_next_state=StopTimeDiagnosticsSt(),
         )
         result = await _step_last(stepper, state, ctx)
         assert result is None
@@ -265,10 +265,10 @@ class TestStopTimeDiagnostics:
             result=DiagnosticPipelineResult(bad_node_ids=["node-B"], reason="gpu fail"),
         )
         stepper = _make_stepper()
-        result = await _step(stepper, StopTimeDiagnostics(), diagnostic_orchestrator=diag)
-        assert isinstance(result, EvictingAndRestarting)
+        result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
+        assert isinstance(result, EvictingAndRestartingSt)
         assert result.restart.bad_node_ids == ["node-B"]
-        assert isinstance(result.failed_next_state, NotifyHumans)
+        assert isinstance(result.failed_next_state, NotifyHumansSt)
 
     @pytest.mark.asyncio
     async def test_no_bad_nodes_goes_to_notify(self) -> None:
@@ -276,8 +276,8 @@ class TestStopTimeDiagnostics:
             result=DiagnosticPipelineResult(bad_node_ids=[], reason="all passed"),
         )
         stepper = _make_stepper()
-        result = await _step(stepper, StopTimeDiagnostics(), diagnostic_orchestrator=diag)
-        assert isinstance(result, NotifyHumans)
+        result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
+        assert isinstance(result, NotifyHumansSt)
         assert result.state_before == "StopTimeDiagnostics"
 
 
@@ -291,16 +291,16 @@ class TestNotifyHumans:
     async def test_notify_returns_recovery_done(self) -> None:
         notifier = FakeNotifier()
         stepper = _make_stepper()
-        result = await _step(stepper, NotifyHumans(state_before="Test"), notifier=notifier)
-        assert isinstance(result, RecoveryDone)
+        result = await _step(stepper, NotifyHumansSt(state_before="Test"), notifier=notifier)
+        assert isinstance(result, RecoveryDoneSt)
         assert len(notifier.calls) == 1
         assert "human intervention" in notifier.calls[0][1].lower()
 
     @pytest.mark.asyncio
     async def test_notify_humans_with_none_notifier_does_not_crash(self) -> None:
         stepper = _make_stepper()
-        result = await _step(stepper, NotifyHumans(state_before="Test"), notifier=None)
-        assert isinstance(result, RecoveryDone)
+        result = await _step(stepper, NotifyHumansSt(state_before="Test"), notifier=None)
+        assert isinstance(result, RecoveryDoneSt)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +312,7 @@ class TestTerminal:
     @pytest.mark.asyncio
     async def test_recovery_done_is_terminal(self) -> None:
         stepper = _make_stepper()
-        result = await _step(stepper, RecoveryDone())
+        result = await _step(stepper, RecoveryDoneSt())
         assert result is None
 
 
@@ -332,8 +332,8 @@ class TestGlobalTimeout:
             recovery_start_time=old_time,
             timeout_seconds=60,
         )
-        result = await _step_last(stepper, RealtimeChecks(), ctx)
-        assert isinstance(result, NotifyHumans)
+        result = await _step_last(stepper, RealtimeChecksSt(), ctx)
+        assert isinstance(result, NotifyHumansSt)
 
     @pytest.mark.asyncio
     async def test_timeout_does_not_affect_notify_state(self) -> None:
@@ -344,9 +344,9 @@ class TestGlobalTimeout:
             recovery_start_time=old_time,
             timeout_seconds=60,
         )
-        state = NotifyHumans(state_before="Test")
+        state = NotifyHumansSt(state_before="Test")
         result = await _step_last(stepper, state, ctx)
-        assert isinstance(result, RecoveryDone)
+        assert isinstance(result, RecoveryDoneSt)
 
     @pytest.mark.asyncio
     async def test_timeout_does_not_affect_done_state(self) -> None:
@@ -357,7 +357,7 @@ class TestGlobalTimeout:
             recovery_start_time=old_time,
             timeout_seconds=60,
         )
-        result = await _step_last(stepper, RecoveryDone(), ctx)
+        result = await _step_last(stepper, RecoveryDoneSt(), ctx)
         assert result is None
 
 
@@ -386,25 +386,25 @@ class TestFullRecoveryFlow:
         )
 
         # Step 1: RealtimeChecks (no pre-identified) -> EvictingAndRestarting (direct restart)
-        state = await _step_last(stepper, RealtimeChecks(), ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        state = await _step_last(stepper, RealtimeChecksSt(), ctx)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
 
         # Step 2: submit
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
         assert state.restart.submitted
 
         # Step 3: poll -> MonitoringProgress
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, MonitoringProgressSt)
 
         # Step 4: monitoring success
         mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 200})
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, RecoveryDone)
+        assert isinstance(state, RecoveryDoneSt)
 
     @pytest.mark.anyio
     async def test_fault_evict_restart_full_flow(self) -> None:
@@ -430,33 +430,33 @@ class TestFullRecoveryFlow:
         )
 
         # Step 1: RealtimeChecks with pre-identified bad nodes -> EvictingAndRestarting
-        state = await _step_last(stepper, RealtimeChecks(pre_identified_bad_nodes=["node-X"]), ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        state = await _step_last(stepper, RealtimeChecksSt(pre_identified_bad_nodes=["node-X"]), ctx)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, EvictingSt)
         assert state.restart.bad_node_ids == ["node-X"]
-        assert isinstance(state.failed_next_state, StopTimeDiagnostics)
+        assert isinstance(state.failed_next_state, StopTimeDiagnosticsSt)
 
         # Step 2: Evicting -> mark node bad -> StoppingAndRestarting
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
         assert node_manager.is_node_bad("node-X")
 
         # Step 3: submit
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
         assert state.restart.submitted
 
         # Step 4: poll -> RUNNING -> MonitoringProgress
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, MonitoringProgressSt)
 
         # Step 5: monitoring success
         mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 200})
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, RecoveryDone)
+        assert isinstance(state, RecoveryDoneSt)
 
     @pytest.mark.anyio
     async def test_direct_restart_fail_escalation_full_flow(self) -> None:
@@ -484,24 +484,24 @@ class TestFullRecoveryFlow:
         )
 
         # Step 1: RealtimeChecks (no pre-identified) -> EvictingAndRestarting (direct restart)
-        state = await _step_last(stepper, RealtimeChecks(), ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        state = await _step_last(stepper, RealtimeChecksSt(), ctx)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
 
         # Step 2: submit
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
         assert state.restart.submitted
 
         # Step 3: poll -> FAILED -> RestartFailed -> StopTimeDiagnostics
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, StopTimeDiagnostics)
+        assert isinstance(state, StopTimeDiagnosticsSt)
 
         # Step 4: diagnostics find bad nodes -> EvictingAndRestarting (notify on fail)
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
-        assert isinstance(state.failed_next_state, NotifyHumans)
+        assert isinstance(state, EvictingAndRestartingSt)
+        assert isinstance(state.failed_next_state, NotifyHumansSt)
         assert state.restart.bad_node_ids == ["node-B"]
         assert diag.call_count == 1
 
@@ -510,30 +510,30 @@ class TestFullRecoveryFlow:
 
         # Step 5: Evicting -> mark node bad -> StoppingAndRestarting
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
         assert node_manager.is_node_bad("node-B")
 
         # Step 6: submit
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, StoppingAndRestartingSt)
         assert state.restart.submitted
 
         # Step 7: poll -> RUNNING -> MonitoringProgress
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, EvictingAndRestarting)
+        assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, MonitoringProgressSt)
 
         # Step 8: monitoring success
         mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 200})
         state = await _step_last(stepper, state, ctx)
-        assert isinstance(state, RecoveryDone)
+        assert isinstance(state, RecoveryDoneSt)
 
     @pytest.mark.asyncio
     async def test_notify_humans_then_done(self) -> None:
         """NotifyHumans -> RecoveryDone."""
         notifier = FakeNotifier()
         stepper = _make_stepper()
-        result = await _step(stepper, NotifyHumans(state_before="Test"), notifier=notifier)
-        assert isinstance(result, RecoveryDone)
+        result = await _step(stepper, NotifyHumansSt(state_before="Test"), notifier=notifier)
+        assert isinstance(result, RecoveryDoneSt)

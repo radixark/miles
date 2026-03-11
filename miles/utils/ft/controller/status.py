@@ -4,12 +4,12 @@ from dataclasses import dataclass
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState, RestartingMainJobState
-from miles.utils.ft.controller.state_machines.subsystem import SubsystemState, Recovering, get_known_bad_nodes
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
+from miles.utils.ft.controller.state_machines.subsystem import SubsystemState, RecoveringSt, get_known_bad_nodes
 from miles.utils.ft.controller.state_machines.recovery import (
-    EvictingAndRestarting,
-    NotifyHumans,
-    RecoveryDone,
+    EvictingAndRestartingSt,
+    NotifyHumansSt,
+    RecoveryDoneSt,
     RecoveryState,
 )
 from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
@@ -47,7 +47,7 @@ def build_controller_status(
     rollout_states = _extract_rollout_subsystem_states(controller_state)
 
     match controller_state:
-        case RestartingMainJobState():
+        case RestartingMainJobSt():
             info = _RecoveryInfo(
                 mode=ControllerMode.RECOVERY,
                 recovery_phase="RestartingMainJob",
@@ -55,10 +55,10 @@ def build_controller_status(
                 recovery_in_progress=True,
                 bad_nodes_confirmed=False,
             )
-        case NormalState(subsystems=subs):
+        case NormalSt(subsystems=subs):
             training_state = subs.get("training")
             match training_state:
-                case Recovering(recovery=recovery):
+                case RecoveringSt(recovery=recovery):
                     info = _classify_recovery(recovery)
                 case _:
                     info = _MONITORING_INFO
@@ -82,7 +82,7 @@ def build_controller_status(
 def _classify_recovery(recovery: RecoveryState) -> _RecoveryInfo:
     bad_nodes = sorted(get_known_bad_nodes(recovery))
     match recovery:
-        case NotifyHumans() | RecoveryDone():
+        case NotifyHumansSt() | RecoveryDoneSt():
             bad_nodes_confirmed = True
         case _:
             bad_nodes_confirmed = bool(bad_nodes)
@@ -98,7 +98,7 @@ def _classify_recovery(recovery: RecoveryState) -> _RecoveryInfo:
 
 def recovery_phase_name(recovery: RecoveryState) -> str:
     match recovery:
-        case EvictingAndRestarting(restart=restart):
+        case EvictingAndRestartingSt(restart=restart):
             return type(restart).__name__
         case _:
             return type(recovery).__name__
@@ -107,7 +107,7 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
 def _extract_rollout_subsystem_states(
     controller_state: MainState,
 ) -> dict[str, str] | None:
-    if not isinstance(controller_state, NormalState):
+    if not isinstance(controller_state, NormalSt):
         return None
     result: dict[str, str] = {}
     for name, sub_state in controller_state.subsystems.items():

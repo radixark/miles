@@ -15,8 +15,8 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.chain import build_shared_hw_detectors
 from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
-from miles.utils.ft.controller.state_machines.main.models import NormalState
-from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly
+from miles.utils.ft.controller.state_machines.main.models import NormalSt
+from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
@@ -37,7 +37,7 @@ from tests.fast.utils.ft.utils.metric_injectors import (
 def _override_rollout_monitoring(harness: _RolloutTestHarness, *, cell_ids: list[str] | None = None) -> None:
     """Set alive_duration_seconds=0 on rollout entries so tests don't wait 180s."""
     state = harness.controller._state_machine.state  # type: ignore[union-attr]
-    assert isinstance(state, NormalState)
+    assert isinstance(state, NormalSt)
     resolved = cell_ids or ["ep72"]
     for cell_id in resolved:
         entry = state.subsystems[f"rollout_{cell_id}"]
@@ -89,8 +89,8 @@ class TestRolloutGpuXidRecovery:
         for _ in range(3):
             await controller._tick()
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomalySt)
 
         # Step 3: Inject GPU XID + unavailable on rollout-0
         inject_critical_xid(store, "rollout-0")
@@ -101,9 +101,9 @@ class TestRolloutGpuXidRecovery:
 
         # Step 5: Verify
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
-        assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomalySt)
+        assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomalySt)
 
         assert harness.node_manager.was_ever_marked_bad("rollout-0")
         assert not harness.node_manager.was_ever_marked_bad("rollout-1")
@@ -132,7 +132,7 @@ class TestRolloutCrashRecovery:
         store = harness.metric_store
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         rollout_entry = state.subsystems["rollout_ep72"]
         rollout_entry.detectors = [
             RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),
@@ -147,7 +147,7 @@ class TestRolloutCrashRecovery:
         for _ in range(3):
             await controller._tick()
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
 
         # Step 2: Inject sustained dead cell (spanning 3s > threshold=2s)
         _inject_crash_samples(store, "ep72", span_seconds=3.0)
@@ -157,9 +157,9 @@ class TestRolloutCrashRecovery:
 
         # Step 4: Verify
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
-        assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomalySt)
+        assert isinstance(state.subsystems["training"].state_machine.state, DetectingAnomalySt)
 
         assert harness.node_manager.was_ever_marked_bad("rollout-0")
         assert harness.node_manager.was_ever_marked_bad("rollout-1")
@@ -200,7 +200,7 @@ class TestColocatedNodeFault:
 
         await controller._tick()
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
 
         # Step 2: Inject GPU XID on the shared node
         inject_critical_xid(store, shared_node)
@@ -212,12 +212,12 @@ class TestColocatedNodeFault:
 
         # Step 4: Verify
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         assert "training" in state.subsystems
         assert "rollout_ep72" in state.subsystems
 
         for name, entry in state.subsystems.items():
-            assert isinstance(entry.state_machine.state, DetectingAnomaly), (
+            assert isinstance(entry.state_machine.state, DetectingAnomalySt), (
                 f"{name} not in DetectingAnomaly after main-job restart"
             )
 
@@ -255,7 +255,7 @@ class TestMultiCellIndependentFailures:
         )
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         for cell_id in ["ep72", "ep36"]:
             entry = state.subsystems[f"rollout_{cell_id}"]
             entry.detectors = [
@@ -283,9 +283,9 @@ class TestMultiCellIndependentFailures:
         await controller._tick()
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
-        assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomalySt)
+        assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomalySt)
         assert harness.reward_manager_handle.stop_cell.call_count > stop_before
 
         ep72_stop_calls = [
@@ -304,9 +304,9 @@ class TestMultiCellIndependentFailures:
         await controller._tick()
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomaly)
-        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep36"].state_machine.state, DetectingAnomalySt)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomalySt)
         assert harness.reward_manager_handle.stop_cell.call_count > stop_before
 
         ep36_stop_calls = [
@@ -345,7 +345,7 @@ class TestRolloutLevel1FailureNotifyHumans:
         store = harness.metric_store
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         rollout_entry = state.subsystems["rollout_ep72"]
         rollout_entry.detectors = [
             RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),
@@ -370,8 +370,8 @@ class TestRolloutLevel1FailureNotifyHumans:
 
         # Step 4: Verify
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep72"].state_machine.state, DetectingAnomalySt)
 
         assert harness.reward_manager_handle.stop_cell.call_count >= 2, (
             f"stop_cell should be called at least twice (first L1 + final retry), got {harness.reward_manager_handle.stop_cell.call_count}"

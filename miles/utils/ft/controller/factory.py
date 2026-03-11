@@ -13,11 +13,11 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import (
     MainContext,
-    NormalState,
+    NormalSt,
     create_main_stepper,
 )
 from miles.utils.ft.controller.state_machines.main.models import MainState
-from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly
+from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, RestartMode, SubsystemConfig
 from miles.utils.ft.controller.tick_loop import TickLoop
@@ -108,7 +108,7 @@ def create_ft_controller(
     # --- Create Main SM ---
     main_stepper = create_main_stepper()
     controller_sm: StateMachine[MainState, MainContext] = StateMachine(
-        initial_state=NormalState(subsystems={"training": DetectingAnomaly()}),
+        initial_state=NormalSt(subsystems={"training": DetectingAnomalySt()}),
         stepper=main_stepper,
     )
 

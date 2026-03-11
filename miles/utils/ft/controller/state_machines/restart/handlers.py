@@ -8,15 +8,15 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.restart.models import (
-    Evicting,
+    EvictingSt,
     ExternalExecutionResult,
-    MonitoringProgress,
+    MonitoringProgressSt,
     RestartContext,
-    RestartDone,
-    RestartFailed,
-    RestartingMainJob,
+    RestartDoneSt,
+    RestartFailedSt,
+    ExternalRestartingMainJobSt,
     RestartState,
-    StoppingAndRestarting,
+    StoppingAndRestartingSt,
 )
 from miles.utils.ft.controller.state_machines.restart.utils import (
     get_already_bad_nodes,
@@ -32,7 +32,7 @@ _WANDB_ITERATION_METRIC = "iteration"
 _PENDING_TIMEOUT_SECONDS: int = 300
 
 
-def iteration_progress(state: MonitoringProgress, mini_wandb: MiniWandb) -> int:
+def iteration_progress(state: MonitoringProgressSt, mini_wandb: MiniWandb) -> int:
     current_iteration = mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
     if current_iteration is None or not math.isfinite(current_iteration):
         return 0
@@ -52,8 +52,8 @@ def iteration_progress(state: MonitoringProgress, mini_wandb: MiniWandb) -> int:
 # ---------------------------------------------------------------------------
 
 
-class EvictingHandler(StateHandler[Evicting, RestartContext]):
-    async def step(self, state: Evicting, ctx: RestartContext) -> RestartState:
+class EvictingHandler(StateHandler[EvictingSt, RestartContext]):
+    async def step(self, state: EvictingSt, ctx: RestartContext) -> RestartState:
         try:
             already_bad = await get_already_bad_nodes(ctx.node_manager)
         except Exception:
@@ -75,7 +75,7 @@ class EvictingHandler(StateHandler[Evicting, RestartContext]):
                 node_metadata=metadata,
             )
             if not result.ok:
-                return RestartFailed(bad_node_ids=state.bad_node_ids)
+                return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         await safe_notify(
             ctx.notifier,
@@ -84,13 +84,13 @@ class EvictingHandler(StateHandler[Evicting, RestartContext]):
             severity="warning",
         )
 
-        return StoppingAndRestarting(bad_node_ids=state.bad_node_ids)
+        return StoppingAndRestartingSt(bad_node_ids=state.bad_node_ids)
 
 
-class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartContext]):
+class StoppingAndRestartingHandler(StateHandler[StoppingAndRestartingSt, RestartContext]):
     async def step(
         self,
-        state: StoppingAndRestarting,
+        state: StoppingAndRestartingSt,
         ctx: RestartContext,
     ) -> RestartState | None:
         if not state.submitted:
@@ -100,28 +100,28 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
     async def _submit(
         self,
         *,
-        state: StoppingAndRestarting,
+        state: StoppingAndRestartingSt,
         ctx: RestartContext,
     ) -> RestartState | None:
         if ctx.restart_mode == RestartMode.MAIN_JOB:
-            return RestartingMainJob(bad_node_ids=state.bad_node_ids)
+            return ExternalRestartingMainJobSt(bad_node_ids=state.bad_node_ids)
 
         try:
             await ctx.actuator.stop()
         except Exception:
             logger.error("actuator_stop_failed", exc_info=True)
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         try:
             run_id = await ctx.actuator.start()
         except Exception:
             logger.error("actuator_start_failed", exc_info=True)
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         if ctx.on_new_run is not None:
             ctx.on_new_run(run_id)
 
-        return StoppingAndRestarting(
+        return StoppingAndRestartingSt(
             bad_node_ids=state.bad_node_ids,
             submitted=True,
             submit_time=datetime.now(timezone.utc),
@@ -130,7 +130,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
     async def _poll(
         self,
         *,
-        state: StoppingAndRestarting,
+        state: StoppingAndRestartingSt,
         ctx: RestartContext,
     ) -> RestartState | None:
         status = await ctx.actuator.get_status()
@@ -138,7 +138,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
         if status == JobStatus.RUNNING:
             current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
             base = int(current_iter) if current_iter is not None and math.isfinite(current_iter) else 0
-            return MonitoringProgress(
+            return MonitoringProgressSt(
                 bad_node_ids=state.bad_node_ids,
                 start_time=datetime.now(timezone.utc),
                 base_iteration=base,
@@ -146,21 +146,21 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestarting, RestartCo
 
         if status == JobStatus.FAILED:
             logger.warning("restart_job_immediately_failed")
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         if state.submit_time is not None:
             elapsed = (datetime.now(timezone.utc) - state.submit_time).total_seconds()
             if elapsed > _PENDING_TIMEOUT_SECONDS:
                 logger.warning("restart_pending_timeout elapsed=%.0f", elapsed)
-                return RestartFailed(bad_node_ids=state.bad_node_ids)
+                return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         return None
 
 
-class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]):
+class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContext]):
     async def step(
         self,
-        state: MonitoringProgress,
+        state: MonitoringProgressSt,
         ctx: RestartContext,
     ) -> RestartState | None:
         if isinstance(ctx.monitoring_config, MonitoringSustainedAliveConfig):
@@ -170,14 +170,14 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
     async def _step_iteration_progress(
         self,
         *,
-        state: MonitoringProgress,
+        state: MonitoringProgressSt,
         ctx: RestartContext,
     ) -> RestartState | None:
         status = await ctx.main_job.get_job_status()
 
         if status == JobStatus.FAILED:
             logger.warning("monitoring_training_failed")
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         assert isinstance(ctx.monitoring_config, MonitoringIterationProgressConfig)
         config = ctx.monitoring_config
@@ -190,19 +190,19 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
                 progress,
                 config.success_iterations,
             )
-            return RestartDone(bad_node_ids=state.bad_node_ids)
+            return RestartDoneSt(bad_node_ids=state.bad_node_ids)
 
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
         if elapsed > config.timeout_seconds:
             logger.warning("monitoring_timeout elapsed=%.0f", elapsed)
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         return None
 
     async def _step_sustained_alive(
         self,
         *,
-        state: MonitoringProgress,
+        state: MonitoringProgressSt,
         ctx: RestartContext,
     ) -> RestartState | None:
         assert isinstance(ctx.monitoring_config, MonitoringSustainedAliveConfig)
@@ -212,7 +212,7 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
 
         if status == JobStatus.FAILED:
             logger.warning("sustained_alive_failed")
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         if status == JobStatus.RUNNING:
             elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
@@ -222,20 +222,20 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgress, RestartContext]
                     elapsed,
                     config.alive_duration_seconds,
                 )
-                return RestartDone(bad_node_ids=state.bad_node_ids)
+                return RestartDoneSt(bad_node_ids=state.bad_node_ids)
 
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
         if elapsed > config.timeout_seconds:
             logger.warning("sustained_alive_timeout elapsed=%.0f", elapsed)
-            return RestartFailed(bad_node_ids=state.bad_node_ids)
+            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         return None
 
 
-class RestartingMainJobHandler(StateHandler[RestartingMainJob, RestartContext]):
+class RestartingMainJobHandler(StateHandler[ExternalRestartingMainJobSt, RestartContext]):
     async def step(
         self,
-        state: RestartingMainJob,
+        state: ExternalRestartingMainJobSt,
         ctx: RestartContext,
     ) -> RestartState | None:
         if state.external_execution_result is None:
@@ -244,11 +244,11 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJob, RestartContext]):
         if state.external_execution_result == ExternalExecutionResult.SUCCEEDED:
             current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
             base = int(current_iter) if current_iter is not None and math.isfinite(current_iter) else 0
-            return MonitoringProgress(
+            return MonitoringProgressSt(
                 bad_node_ids=state.bad_node_ids,
                 start_time=datetime.now(timezone.utc),
                 base_iteration=base,
             )
 
         # FAILED or TIMEOUT
-        return RestartFailed(bad_node_ids=state.bad_node_ids)
+        return RestartFailedSt(bad_node_ids=state.bad_node_ids)

@@ -7,13 +7,13 @@ from miles.utils.ft.controller.state_machines.recovery.handlers import (
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
     RECOVERY_STATE_TO_INT,
-    EvictingAndRestarting,
-    NotifyHumans,
-    RealtimeChecks,
+    EvictingAndRestartingSt,
+    NotifyHumansSt,
+    RealtimeChecksSt,
     RecoveryContext,
-    RecoveryDone,
+    RecoveryDoneSt,
     RecoveryState,
-    StopTimeDiagnostics,
+    StopTimeDiagnosticsSt,
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
@@ -22,34 +22,34 @@ RECOVERY_TIMEOUT_SECONDS: int = 1800
 RecoveryContext.model_rebuild()
 
 _RECOVERY_HANDLER_MAP: dict[type, type] = {
-    RealtimeChecks: RealtimeChecksHandler,
-    EvictingAndRestarting: EvictingAndRestartingHandler,
-    StopTimeDiagnostics: StopTimeDiagnosticsHandler,
-    NotifyHumans: NotifyHumansHandler,
+    RealtimeChecksSt: RealtimeChecksHandler,
+    EvictingAndRestartingSt: EvictingAndRestartingHandler,
+    StopTimeDiagnosticsSt: StopTimeDiagnosticsHandler,
+    NotifyHumansSt: NotifyHumansHandler,
 }
 
 
 def create_recovery_stepper() -> StateMachineStepper:
     return StateMachineStepper(
         handler_map=_RECOVERY_HANDLER_MAP,
-        terminal_states=frozenset({RecoveryDone}),
+        terminal_states=frozenset({RecoveryDoneSt}),
         pre_dispatch=recovery_timeout_check,
     )
 
 
 __all__ = [
-    "EvictingAndRestarting",
+    "EvictingAndRestartingSt",
     "EvictingAndRestartingHandler",
-    "NotifyHumans",
+    "NotifyHumansSt",
     "NotifyHumansHandler",
     "RECOVERY_TIMEOUT_SECONDS",
     "RECOVERY_STATE_TO_INT",
-    "RealtimeChecks",
+    "RealtimeChecksSt",
     "RealtimeChecksHandler",
     "RecoveryContext",
-    "RecoveryDone",
+    "RecoveryDoneSt",
     "RecoveryState",
-    "StopTimeDiagnostics",
+    "StopTimeDiagnosticsSt",
     "StopTimeDiagnosticsHandler",
     "create_recovery_stepper",
     "recovery_timeout_check",

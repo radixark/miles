@@ -15,8 +15,8 @@ from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.main.models import NormalState, RestartingMainJobState
-from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomaly, Recovering
+from miles.utils.ft.controller.state_machines.main.models import NormalSt, RestartingMainJobSt
+from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
@@ -150,7 +150,7 @@ class TestRegisterRolloutSubsystems:
             cell_ids=["ep72", "ep36"],
         )
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         assert "training" in state.subsystems
         assert "rollout_ep72" in state.subsystems
         assert "rollout_ep36" in state.subsystems
@@ -183,10 +183,10 @@ class TestRegisterRolloutSubsystems:
         controller = harness.controller
 
         controller._state_machine.force_state(
-            RestartingMainJobState(
+            RestartingMainJobSt(
                 requestor_name="training",
                 start_time=datetime.now(timezone.utc),
-                requestor_frozen_state=DetectingAnomaly(),
+                requestor_frozen_state=DetectingAnomalySt(),
             )
         )
 
@@ -211,7 +211,7 @@ class TestNormalOperationWithRollout:
             await controller._tick()
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         assert "training" in state.subsystems
         assert "rollout_ep72" in state.subsystems
         assert "rollout_ep36" in state.subsystems
@@ -221,10 +221,10 @@ class TestNormalOperationWithRollout:
         controller, *_ = _make_test_controller_with_rollout()
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
 
         for name, sub_state in state.subsystems.items():
-            assert isinstance(sub_state, DetectingAnomaly), (
+            assert isinstance(sub_state, DetectingAnomalySt), (
                 f"Expected DetectingAnomaly for {name}, got {type(sub_state).__name__}"
             )
 
@@ -250,9 +250,9 @@ class TestRolloutCrashRecovery:
         await controller._tick()
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         rollout_state = state.subsystems["rollout_ep72"]
-        assert isinstance(rollout_state, Recovering), (
+        assert isinstance(rollout_state, RecoveringSt), (
             f"Expected Recovering, got {type(rollout_state).__name__}"
         )
 
@@ -352,9 +352,9 @@ class TestFullLevel1RecoveryCycle:
         await controller._tick()
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomaly)
-        assert isinstance(state.subsystems["training"], DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomalySt)
+        assert isinstance(state.subsystems["training"], DetectingAnomalySt)
 
         assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
         assert harness.reward_manager_handle.stop_cell.call_count == 1
@@ -392,8 +392,8 @@ class TestLevel1FailureEscalation:
         await controller._tick()
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
-        assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomaly)
+        assert isinstance(state, NormalSt)
+        assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomalySt)
         assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
 
         recovery_alerts = [
@@ -454,7 +454,7 @@ class TestColocatedHardwareFault:
         assert harness.main_job._submitted is True
 
         final_state = controller._state_machine.state
-        assert isinstance(final_state, NormalState)
+        assert isinstance(final_state, NormalSt)
         assert "training" in final_state.subsystems
         assert "rollout_ep72" in final_state.subsystems
 
@@ -485,5 +485,5 @@ class TestRolloutNumCellsValidation:
         controller.register_rollout_subsystems(reward_manager_handle=reward_manager_handle)
 
         state = controller._state_machine.state
-        assert isinstance(state, NormalState)
+        assert isinstance(state, NormalSt)
         assert "rollout_default" in state.subsystems

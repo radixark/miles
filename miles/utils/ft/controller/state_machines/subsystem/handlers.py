@@ -4,10 +4,10 @@ import logging
 from datetime import datetime, timezone
 
 from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomaly,
+    DetectingAnomalySt,
     SubsystemContext,
     SubsystemState,
-    Recovering,
+    RecoveringSt,
 )
 from miles.utils.ft.controller.state_machines.subsystem.utils import (
     collect_evictable_bad_nodes,
@@ -17,9 +17,9 @@ from miles.utils.ft.controller.state_machines.subsystem.utils import (
     run_detectors,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
-    NotifyHumans,
-    RealtimeChecks,
-    RecoveryDone,
+    NotifyHumansSt,
+    RealtimeChecksSt,
+    RecoveryDoneSt,
 )
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
@@ -27,8 +27,8 @@ from miles.utils.ft.utils.state_machine import StateHandler
 logger = logging.getLogger(__name__)
 
 
-class DetectingAnomalyHandler(StateHandler[DetectingAnomaly, SubsystemContext]):
-    async def step(self, state: DetectingAnomaly, ctx: SubsystemContext) -> SubsystemState | None:
+class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]):
+    async def step(self, state: DetectingAnomalySt, ctx: SubsystemContext) -> SubsystemState | None:
         decision = await self._get_actionable_decision(ctx=ctx)
         if decision is None:
             return None
@@ -45,8 +45,8 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomaly, SubsystemContext]):
             )
             return None
 
-        return Recovering(
-            recovery=RealtimeChecks(pre_identified_bad_nodes=decision.bad_node_ids),
+        return RecoveringSt(
+            recovery=RealtimeChecksSt(pre_identified_bad_nodes=decision.bad_node_ids),
             trigger=decision.trigger,
             recovery_start_time=datetime.now(timezone.utc),
         )
@@ -94,8 +94,8 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomaly, SubsystemContext]):
         return decision
 
 
-class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
-    async def step(self, state: Recovering, ctx: SubsystemContext) -> SubsystemState | None:
+class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
+    async def step(self, state: RecoveringSt, ctx: SubsystemContext) -> SubsystemState | None:
         ret = await self._check_new_bad_nodes(state=state, ctx=ctx)
         if ret is not None:
             return ret
@@ -104,7 +104,7 @@ class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
     async def _check_new_bad_nodes(
         self,
         *,
-        state: Recovering,
+        state: RecoveringSt,
         ctx: SubsystemContext,
     ) -> SubsystemState | None:
         new_bad_nodes = collect_evictable_bad_nodes(
@@ -126,8 +126,8 @@ class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
         truly_new = new_bad_nodes - known_bad
         if truly_new:
             all_bad = sorted(known_bad | new_bad_nodes)
-            return Recovering(
-                recovery=RealtimeChecks(pre_identified_bad_nodes=all_bad),
+            return RecoveringSt(
+                recovery=RealtimeChecksSt(pre_identified_bad_nodes=all_bad),
                 trigger=state.trigger,
                 recovery_start_time=datetime.now(timezone.utc),
             )
@@ -136,7 +136,7 @@ class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
     async def _advance_recovery(
         self,
         *,
-        state: Recovering,
+        state: RecoveringSt,
         ctx: SubsystemContext,
     ) -> SubsystemState | None:
         try:
@@ -149,20 +149,20 @@ class RecoveringHandler(StateHandler[Recovering, SubsystemContext]):
                 pass
         except Exception:
             logger.error("Recovery stepper raised exception", exc_info=True)
-            new_recovery = NotifyHumans(state_before=type(state.recovery).__name__)
+            new_recovery = NotifyHumansSt(state_before=type(state.recovery).__name__)
 
         if new_recovery is None:
             return None
-        if isinstance(new_recovery, RecoveryDone):
+        if isinstance(new_recovery, RecoveryDoneSt):
             self._report_recovery_duration(state=state, ctx=ctx)
-            return DetectingAnomaly()
-        return Recovering(
+            return DetectingAnomalySt()
+        return RecoveringSt(
             recovery=new_recovery,
             trigger=state.trigger,
             recovery_start_time=state.recovery_start_time,
         )
 
-    def _report_recovery_duration(self, *, state: Recovering, ctx: SubsystemContext) -> None:
+    def _report_recovery_duration(self, *, state: RecoveringSt, ctx: SubsystemContext) -> None:
         if ctx.on_recovery_duration is not None:
             duration = (datetime.now(timezone.utc) - state.recovery_start_time).total_seconds()
             ctx.on_recovery_duration(duration)

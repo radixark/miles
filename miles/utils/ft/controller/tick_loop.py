@@ -9,9 +9,9 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
 from miles.utils.ft.utils.box import Box
-from miles.utils.ft.controller.state_machines.subsystem import Recovering
+from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.subsystem import SubsystemConfig
@@ -145,9 +145,9 @@ class TickLoop:
             return
 
         main_state = self._extract_main_state()
-        is_recovery = isinstance(main_state, Recovering)
+        is_recovery = isinstance(main_state, RecoveringSt)
         phase_int = 0
-        if is_recovery and isinstance(main_state, Recovering):
+        if is_recovery and isinstance(main_state, RecoveringSt):
             phase_int = RECOVERY_STATE_TO_INT.get(type(main_state.recovery), 0)
 
         self._controller_exporter.update_from_state(
@@ -160,6 +160,6 @@ class TickLoop:
 
     def _extract_main_state(self) -> object:
         controller_state = self.state_machine.state
-        if isinstance(controller_state, NormalState):
+        if isinstance(controller_state, NormalSt):
             return controller_state.subsystems.get("training")
         return None
