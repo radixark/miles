@@ -28,7 +28,7 @@ from miles.utils.ft.controller.state_machines.restart import (
     create_restart_stepper,
     iteration_progress,
 )
-from miles.utils.ft.controller.subsystem import MonitoringConfig
+from miles.utils.ft.controller.subsystem import IterationProgressConfig, SustainedAliveConfig
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
@@ -71,7 +71,7 @@ def _make_context(
     monitoring_timeout_seconds: int = 600,
     node_metadata: dict[str, dict[str, str]] | None = None,
     actuator: SubsystemActuatorProtocol | None = None,
-    monitoring_config: MonitoringConfig | None = None,
+    monitoring_config: IterationProgressConfig | SustainedAliveConfig | None = None,
     has_level1_restart: bool = True,
 ) -> RestartContext:
     resolved_main_job = main_job or FakeMainJob()
@@ -85,7 +85,7 @@ def _make_context(
         monitoring_timeout_seconds=monitoring_timeout_seconds,
         node_metadata=node_metadata or {},
         actuator=actuator or FakeActuator(),
-        monitoring_config=monitoring_config or MonitoringConfig(mode="iteration_progress"),
+        monitoring_config=monitoring_config or IterationProgressConfig(),
         has_level1_restart=has_level1_restart,
     )
 
@@ -460,7 +460,7 @@ class TestSustainedAlive:
         """actuator.get_status()==RUNNING for alive_duration_seconds -> RestartDone."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         stepper = _make_stepper()
-        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=60)
+        config = SustainedAliveConfig(alive_duration_seconds=60)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
@@ -477,7 +477,7 @@ class TestSustainedAlive:
         """actuator.get_status()==FAILED -> RestartFailed."""
         actuator = FakeActuator(status_sequence=[JobStatus.FAILED])
         stepper = _make_stepper()
-        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=60)
+        config = SustainedAliveConfig(alive_duration_seconds=60)
         ctx = _make_context(actuator=actuator, monitoring_config=config)
 
         state = MonitoringProgress(start_time=datetime.now(timezone.utc), base_iteration=0)
@@ -489,7 +489,7 @@ class TestSustainedAlive:
         """actuator.get_status()==PENDING past monitoring_timeout_seconds -> RestartFailed."""
         actuator = FakeActuator(status_sequence=[JobStatus.PENDING])
         stepper = _make_stepper()
-        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=60)
+        config = SustainedAliveConfig(alive_duration_seconds=60)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
@@ -506,7 +506,7 @@ class TestSustainedAlive:
         """Running but not yet alive_duration_seconds -> None."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         stepper = _make_stepper()
-        config = MonitoringConfig(mode="sustained_alive", alive_duration_seconds=300)
+        config = SustainedAliveConfig(alive_duration_seconds=300)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
