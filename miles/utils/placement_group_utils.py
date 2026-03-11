@@ -92,6 +92,10 @@ class PlacementGroupInfo:
     _bundle_location_snapshots: list[BundleLocationSnapshot] = field(default_factory=list)
     _snapshot_path: Path | None = field(default=None, repr=False)
 
+    def __post_init__(self) -> None:
+        if self._snapshot_path and self._bundle_location_snapshots:
+            _save_snapshots(self._snapshot_path, self._bundle_location_snapshots)
+
     @property
     def reordered_bundle_indices(self) -> list[int]:
         return [b.bundle_index for b in self._bundle_location_snapshots]
@@ -191,9 +195,6 @@ def create_placement_group_info(
             f"  bundle {rank:4}, actual_bundle_index: {snapshot.bundle_index:4}, "
             f"node: {snapshot.node_ip}, gpu: {snapshot.gpu_id}"
         )
-
-    if snapshot_path:
-        _save_snapshots(snapshot_path, sorted_snapshots)
 
     return PlacementGroupInfo(
         pg=pg, _bundle_location_snapshots=sorted_snapshots, _snapshot_path=snapshot_path,
