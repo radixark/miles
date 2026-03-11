@@ -85,7 +85,7 @@ def _make_subsystem_context(
         detectors=detectors or [],
         cooldown=cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3),
         detector_crash_tracker=SlidingWindowCounter(window_seconds=1800, threshold=5),
-        recovery_stepper=recovery_stepper or AsyncMock(return_value=None),
+        recovery_stepper=recovery_stepper or _mock_stepper_yielding(None),
         recovery_context_factory=recovery_context_factory or _dummy_recovery_context_factory,
         on_recovery_duration=on_recovery_duration,
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
@@ -99,6 +99,36 @@ async def _step_last(stepper, state, ctx):
     async for result in stepper(state, ctx):
         pass
     return result
+
+
+def _mock_stepper_yielding(value: object):
+    """Create a fake stepper (async generator) that yields a single value, or nothing if None."""
+    async def _stepper(state: object, ctx: object):
+        if value is not None:
+            yield value
+    return _stepper
+
+
+def _mock_stepper_raising(exc: BaseException):
+    """Create a fake stepper (async generator) that raises an exception."""
+    async def _stepper(state: object, ctx: object):
+        raise exc
+        yield  # unreachable but makes this an async generator
+    return _stepper
+
+
+def _mock_stepper_sequence(effects: list):
+    """Create a fake stepper that yields/raises from a sequence of effects (one per call)."""
+    idx = [0]
+    async def _stepper(state: object, ctx: object):
+        i = min(idx[0], len(effects) - 1)
+        idx[0] += 1
+        effect = effects[i]
+        if isinstance(effect, BaseException):
+            raise effect
+        if effect is not None:
+            yield effect
+    return _stepper
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +312,7 @@ class TestRecovering:
         result = await _step_last(stepper,
             state,
             _make_subsystem_context(
-                recovery_stepper=AsyncMock(return_value=RecoveryDone()),
+                recovery_stepper=_mock_stepper_yielding(RecoveryDone()),
                 should_run_detectors=False,
             ),
         )
@@ -306,7 +336,7 @@ class TestRecovering:
         result = await _step_last(stepper,
             state,
             _make_subsystem_context(
-                recovery_stepper=AsyncMock(return_value=new_recovery),
+                recovery_stepper=_mock_stepper_yielding(new_recovery),
                 should_run_detectors=False,
             ),
         )
@@ -324,7 +354,7 @@ class TestRecovering:
         result = await _step_last(stepper,
             state,
             _make_subsystem_context(
-                recovery_stepper=AsyncMock(return_value=None),
+                recovery_stepper=_mock_stepper_yielding(None),
                 should_run_detectors=False,
             ),
         )
@@ -341,7 +371,7 @@ class TestRecovering:
         result = await _step_last(stepper,
             state,
             _make_subsystem_context(
-                recovery_stepper=AsyncMock(side_effect=RuntimeError("boom")),
+                recovery_stepper=_mock_stepper_raising(RuntimeError("boom")),
                 should_run_detectors=False,
             ),
         )
@@ -351,8 +381,8 @@ class TestRecovering:
     @pytest.mark.anyio
     async def test_recovery_exception_forces_notify_then_done_then_detecting(self) -> None:
         """Exception -> NotifyHumans -> RecoveryDone -> DetectingAnomaly full chain."""
-        recovery_stepper = AsyncMock(
-            side_effect=[RuntimeError("boom"), RecoveryDone()],
+        recovery_stepper = _mock_stepper_sequence(
+            [RuntimeError("boom"), RecoveryDone()],
         )
         stepper = _make_stepper()
         ctx = _make_subsystem_context(
@@ -387,7 +417,7 @@ class TestRecovering:
         result = await _step_last(stepper,
             state,
             _make_subsystem_context(
-                recovery_stepper=AsyncMock(return_value=RecoveryDone()),
+                recovery_stepper=_mock_stepper_yielding(RecoveryDone()),
                 on_recovery_duration=durations.append,
                 should_run_detectors=False,
             ),
@@ -424,7 +454,7 @@ class TestRecovering:
             state,
             _make_subsystem_context(
                 detectors=[detector],
-                recovery_stepper=AsyncMock(return_value=None),
+                recovery_stepper=_mock_stepper_yielding(None),
                 rank_placement={0: "node-old", 1: "node-new"},
             ),
         )
@@ -524,7 +554,7 @@ class TestBadNodeCountSafeguard:
             state,
             _make_subsystem_context(
                 detectors=[detector],
-                recovery_stepper=AsyncMock(return_value=None),
+                recovery_stepper=_mock_stepper_yielding(None),
                 notifier=notifier,
                 max_simultaneous_bad_nodes=3,
                 rank_placement={0: "node-old", 1: "node-a", 2: "node-b", 3: "node-c"},
@@ -540,7 +570,7 @@ class TestBadNodeCountSafeguard:
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting, StopTimeDiagnostics
         from miles.utils.ft.controller.state_machines.restart import Evicting
 
-        recovery_stepper = AsyncMock(return_value=None)
+        recovery_stepper = _mock_stepper_yielding(None)
 
         detector = FixedDecisionDetector(
             Decision(
@@ -578,7 +608,7 @@ class TestBadNodeCountSafeguard:
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting, StopTimeDiagnostics
         from miles.utils.ft.controller.state_machines.restart import Evicting
 
-        recovery_stepper = AsyncMock(return_value=None)
+        recovery_stepper = _mock_stepper_yielding(None)
 
         detector = FixedDecisionDetector(
             Decision(
@@ -643,7 +673,7 @@ class TestStateMachineIntegration:
         stepper = _make_stepper()
         ctx = _make_subsystem_context(
             detectors=[AlwaysEnterRecoveryDetector()],
-            recovery_stepper=AsyncMock(return_value=RecoveryDone()),
+            recovery_stepper=_mock_stepper_yielding(RecoveryDone()),
         )
         machine = StateMachine(initial_state=DetectingAnomaly(), stepper=stepper)
 

@@ -145,6 +145,14 @@ async def _step_last(stepper, state, ctx):
     return result
 
 
+def _mock_stepper_yielding(value: object):
+    """Create a fake stepper (async generator) that yields a single value, or nothing if None."""
+    async def _stepper(state: object, ctx: object):
+        if value is not None:
+            yield value
+    return _stepper
+
+
 # ---------------------------------------------------------------------------
 # RealtimeChecks
 # ---------------------------------------------------------------------------
@@ -187,7 +195,7 @@ class TestEvictingAndRestarting:
     @pytest.mark.asyncio
     async def test_restart_done_returns_recovery_done(self) -> None:
         stepper = _make_stepper()
-        ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartDone()))
+        ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartDone()))
         state = EvictingAndRestarting(
             restart=Evicting(bad_node_ids=["n"]),
             failed_next_state=StopTimeDiagnostics(),
@@ -198,7 +206,7 @@ class TestEvictingAndRestarting:
     @pytest.mark.asyncio
     async def test_restart_failed_returns_failed_next_state(self) -> None:
         stepper = _make_stepper()
-        ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartFailed()))
+        ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailed()))
         state = EvictingAndRestarting(
             restart=Evicting(),
             failed_next_state=StopTimeDiagnostics(),
@@ -209,7 +217,7 @@ class TestEvictingAndRestarting:
     @pytest.mark.asyncio
     async def test_restart_failed_with_notify_next_state(self) -> None:
         stepper = _make_stepper()
-        ctx = _make_ctx(restart_stepper=AsyncMock(return_value=RestartFailed()))
+        ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailed()))
         state = EvictingAndRestarting(
             restart=Evicting(),
             failed_next_state=NotifyHumans(state_before="EvictingAndRestarting"),
@@ -222,7 +230,7 @@ class TestEvictingAndRestarting:
     async def test_restart_in_progress_returns_updated_state(self) -> None:
         new_restart = StoppingAndRestarting(bad_node_ids=["n"], submitted=True)
         stepper = _make_stepper()
-        ctx = _make_ctx(restart_stepper=AsyncMock(return_value=new_restart))
+        ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(new_restart))
         state = EvictingAndRestarting(
             restart=Evicting(bad_node_ids=["n"]),
             failed_next_state=StopTimeDiagnostics(),
@@ -235,7 +243,7 @@ class TestEvictingAndRestarting:
     @pytest.mark.asyncio
     async def test_restart_none_returns_none(self) -> None:
         stepper = _make_stepper()
-        ctx = _make_ctx(restart_stepper=AsyncMock(return_value=None))
+        ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(None))
         state = EvictingAndRestarting(
             restart=StoppingAndRestarting(submitted=True),
             failed_next_state=StopTimeDiagnostics(),
