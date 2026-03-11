@@ -161,7 +161,7 @@ class FtController:
             self._tick_loop.subsystem_configs[name] = subsystem_config
             new_subsystem_states[name] = DetectingAnomaly()
 
-        self._state_machine.state = NormalState(subsystems=new_subsystem_states)
+        self._state_machine.force_state(NormalState(subsystems=new_subsystem_states))
         logger.info(
             "rollout_subsystems_registered cell_ids=%s total_subsystems=%d",
             cell_ids,
