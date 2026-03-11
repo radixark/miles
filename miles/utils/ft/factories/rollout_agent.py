@@ -41,7 +41,7 @@ def _register_with_controller(*, agent: FtRolloutAgent, ft_id: str) -> None:
     def _do_register() -> None:
         ray.get(
             controller.register_rollout.remote(
-                reward_manager_handle=self_handle,
+                rollout_manager_handle=self_handle,
                 metrics_address=agent.address,
             ),
             timeout=REGISTER_TIMEOUT_SECONDS,

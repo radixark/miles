@@ -89,12 +89,12 @@ class _FtControllerActorCls:
 
     async def register_rollout(
         self,
-        reward_manager_handle: object,
+        rollout_manager_handle: object,
         metrics_address: str = "",
         cell_ids: list[str] | None = None,
     ) -> None:
         self._ctrl.register_rollout_subsystems(
-            reward_manager_handle=reward_manager_handle, cell_ids=cell_ids,
+            rollout_manager_handle=rollout_manager_handle, cell_ids=cell_ids,
         )
         if metrics_address:
             self._ctrl.add_scrape_target("rollout-ft-agent", metrics_address)

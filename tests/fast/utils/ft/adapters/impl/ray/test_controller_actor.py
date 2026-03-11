@@ -205,10 +205,10 @@ class TestFtControllerActorProxy:
     async def test_register_rollout_creates_subsystem(self) -> None:
         actor, harness = self._make_actor_with_harness()
 
-        fake_reward_manager_handle = MagicMock()
+        fake_rollout_manager_handle = MagicMock()
 
         await actor.register_rollout(
-            reward_manager_handle=fake_reward_manager_handle,
+            rollout_manager_handle=fake_rollout_manager_handle,
             metrics_address="http://localhost:9999",
             cell_ids=["default"],
         )
@@ -221,9 +221,9 @@ class TestFtControllerActorProxy:
     async def test_register_rollout_adds_scrape_target(self) -> None:
         actor, harness = self._make_actor_with_harness()
 
-        fake_reward_manager_handle = MagicMock()
+        fake_rollout_manager_handle = MagicMock()
         await actor.register_rollout(
-            reward_manager_handle=fake_reward_manager_handle,
+            rollout_manager_handle=fake_rollout_manager_handle,
             metrics_address="http://localhost:9999",
         )
 
@@ -233,9 +233,9 @@ class TestFtControllerActorProxy:
     async def test_register_rollout_without_metrics_address_skips_scrape(self) -> None:
         actor, harness = self._make_actor_with_harness()
 
-        fake_reward_manager_handle = MagicMock()
+        fake_rollout_manager_handle = MagicMock()
         await actor.register_rollout(
-            reward_manager_handle=fake_reward_manager_handle,
+            rollout_manager_handle=fake_rollout_manager_handle,
         )
 
         assert "rollout-ft-agent" not in harness.controller._metric_store._scrape_targets

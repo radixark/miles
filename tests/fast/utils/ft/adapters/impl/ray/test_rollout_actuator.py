@@ -30,13 +30,13 @@ class FakeRmHandle:
 class TestRayRolloutActuator:
     async def test_stop_calls_correct_cell(self) -> None:
         handle = FakeRmHandle()
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
         await actuator.stop()
         handle.stop_cell.remote.assert_awaited_once_with("0")
 
     async def test_start_returns_str(self) -> None:
         handle = FakeRmHandle()
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
         result = await actuator.start()
         handle.start_cell.remote.assert_awaited_once_with("0")
         assert result == "9"
@@ -47,7 +47,7 @@ class TestRayRolloutActuator:
         handle.start_cell.remote = AsyncMock(
             return_value={"engine_handles": ["e0", "e1"], "count": 2},
         )
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
 
         result = await actuator.start()
 
@@ -55,7 +55,7 @@ class TestRayRolloutActuator:
 
     async def test_get_status_running(self) -> None:
         handle = FakeRmHandle()
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
         status = await actuator.get_status()
         assert status == JobStatus.RUNNING
         handle.get_cell_status.remote.assert_awaited_once_with("0")
@@ -63,14 +63,14 @@ class TestRayRolloutActuator:
     async def test_get_status_failed(self) -> None:
         handle = FakeRmHandle()
         handle.get_cell_status.remote = AsyncMock(return_value=JobStatus.FAILED)
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="1")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="1")
         status = await actuator.get_status()
         assert status == JobStatus.FAILED
 
     async def test_different_cell_ids_isolated(self) -> None:
         handle = FakeRmHandle()
-        act_0 = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
-        act_1 = RayRolloutActuator(reward_manager_handle=handle, cell_id="1")
+        act_0 = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
+        act_1 = RayRolloutActuator(rollout_manager_handle=handle, cell_id="1")
         await act_0.stop()
         await act_1.stop()
         calls = handle.stop_cell.remote.await_args_list
@@ -80,14 +80,14 @@ class TestRayRolloutActuator:
     async def test_stop_propagates_remote_exception(self) -> None:
         handle = FakeRmHandle()
         handle.stop_cell.remote = AsyncMock(side_effect=RuntimeError("actor dead"))
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
         with pytest.raises(RuntimeError):
             await actuator.stop()
 
     async def test_start_propagates_remote_exception(self) -> None:
         handle = FakeRmHandle()
         handle.start_cell.remote = AsyncMock(side_effect=RuntimeError("actor dead"))
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
         with pytest.raises(RuntimeError):
             await actuator.start()
 
@@ -95,6 +95,6 @@ class TestRayRolloutActuator:
     async def test_get_status_all_statuses(self, status: JobStatus) -> None:
         handle = FakeRmHandle()
         handle.get_cell_status.remote = AsyncMock(return_value=status)
-        actuator = RayRolloutActuator(reward_manager_handle=handle, cell_id="0")
+        actuator = RayRolloutActuator(rollout_manager_handle=handle, cell_id="0")
         result = await actuator.get_status()
         assert result == status

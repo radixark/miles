@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class _RolloutSubsystemConfig:
     cell_id: str
-    reward_manager_handle: object
+    rollout_manager_handle: object
     get_active_node_ids: Callable[[], set[str]]
 
 
@@ -35,7 +35,7 @@ def _build_rollout_subsystem_config(*, config: _RolloutSubsystemConfig) -> Subsy
 
     return SubsystemConfig(
         actuator=RayRolloutActuator(
-            reward_manager_handle=config.reward_manager_handle,
+            rollout_manager_handle=config.rollout_manager_handle,
             cell_id=config.cell_id,
         ),
         restart_mode=RestartMode.SUBSYSTEM,
@@ -127,7 +127,7 @@ class FtController:
     def register_rollout_subsystems(
         self,
         *,
-        reward_manager_handle: object,
+        rollout_manager_handle: object,
         cell_ids: list[str] | None = None,
     ) -> None:
         from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt
@@ -149,7 +149,7 @@ class FtController:
         for cell_id in cell_ids:
             rollout_config = _RolloutSubsystemConfig(
                 cell_id=cell_id,
-                reward_manager_handle=reward_manager_handle,
+                rollout_manager_handle=rollout_manager_handle,
                 get_active_node_ids=lambda: set(),
             )
             self._rollout_configs.append(rollout_config)
