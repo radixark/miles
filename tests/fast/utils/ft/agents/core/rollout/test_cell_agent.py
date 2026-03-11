@@ -177,6 +177,35 @@ class TestCheckSingleEngine:
         assert result is False
 
 
+class TestUpdateEngines:
+    def test_replaces_engines_and_invalidates_result(self) -> None:
+        agent = RolloutCellAgent(cell_id="a0", engines=["e0", "e1"])
+
+        agent.update_engines(["e2", "e3", "e4"])
+
+        assert agent.get_engine_count() == 3
+        assert agent.is_healthy() is False
+
+    @pytest.mark.anyio
+    async def test_invalidates_previous_healthy_result(self) -> None:
+        agent = MockRolloutCellAgent(cell_id="a0", engine_alive=[True, True])
+        await agent.check_health()
+        assert agent.is_healthy() is True
+
+        agent.update_engines(["new0", "new1"])
+
+        assert agent.is_healthy() is False
+
+    def test_stores_defensive_copy(self) -> None:
+        engines: list[object] = ["e0", "e1"]
+        agent = RolloutCellAgent(cell_id="a0", engines=[])
+        agent.update_engines(engines)
+
+        engines.append("e2")
+
+        assert agent.get_engine_count() == 2
+
+
 class TestCellId:
     def test_cell_id_property(self) -> None:
         agent = MockRolloutCellAgent(cell_id="my-cell", engine_alive=[True])

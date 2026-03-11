@@ -115,6 +115,11 @@ class RolloutCellAgent:
             return 0
         return self._last_result.alive_engines
 
+    def update_engines(self, engines: list[object]) -> None:
+        """Replace engine handles after recovery. Invalidates last result until next check."""
+        self._engines = list(engines)
+        self._last_result = None
+
     def set_node_ids(self, node_ids: set[str]) -> None:
         """Called by FtRolloutAgent after startup or rebuild."""
         self._node_ids = set(node_ids)
