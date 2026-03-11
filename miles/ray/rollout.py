@@ -235,16 +235,17 @@ class RolloutManager:
 
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
-    # --- FT Controller integration (full FT mode) ---
-
+    # NOTE: it will be `async def`
     def stop_cell(self, cell_id: str) -> None:
-        raise NotImplementedError("M12: engine stop not yet implemented")
+        raise NotImplementedError("engine stop not yet implemented")
 
+    # NOTE: it will be `async def`
     def start_cell(self, cell_id: str) -> int:
-        raise NotImplementedError("M12: engine start not yet implemented")
+        raise NotImplementedError("engine start not yet implemented")
 
+    # NOTE: it will be `async def`
     def get_cell_status(self, cell_id: str):
-        raise NotImplementedError("M12: cell status not yet implemented")
+        raise NotImplementedError("cell status not yet implemented")
 
     def clear_num_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights
