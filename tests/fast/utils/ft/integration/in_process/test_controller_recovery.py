@@ -157,6 +157,7 @@ class TestGlobalTimeout:
             RestartingMainJobState(
                 requestor_name=main_state.requestor_name,
                 start_time=datetime.now(timezone.utc) - timedelta(seconds=1801),
+                requestor_frozen_state=main_state.requestor_frozen_state,
             )
         )
 

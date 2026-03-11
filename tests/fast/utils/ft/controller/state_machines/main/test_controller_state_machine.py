@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,11 +20,15 @@ from miles.utils.ft.controller.state_machines.main import (
 )
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomaly,
-    RestartedMainJob,
-    RestartingMainJob,
+    Recovering,
+)
+from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestarting, StopTimeDiagnostics
+from miles.utils.ft.controller.state_machines.restart.models import (
+    RestartingMainJob as RestartingMainJobRestart,
 )
 from miles.utils.ft.controller.subsystem import SubsystemEntry
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
+from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
@@ -40,6 +45,18 @@ def _noop_stepper() -> StateMachineStepper:
             DetectingAnomaly: type("_NoopHandler", (), {"step": AsyncMock(return_value=None)}),
         },
         terminal_states=frozenset({RestartingMainJob, RestartedMainJob}),
+    )
+
+
+def _make_frozen_recovering_state() -> Recovering:
+    """Create a Recovering state matching what NormalStateHandler would freeze."""
+    return Recovering(
+        recovery=EvictingAndRestarting(
+            restart=RestartingMainJobRestart(externally_fulfilled=False),
+            failed_next_state=StopTimeDiagnostics(),
+        ),
+        trigger=TriggerType.CRASH,
+        recovery_start_time=datetime.now(timezone.utc),
     )
 
 
@@ -159,7 +176,12 @@ class TestJobRestartComplete:
             "rollout_0": _make_subsystem("rollout_0", state_machine=fresh_rollout_sm),
         }
 
-        state = RestartingMainJobState(requestor_name="rollout_0")
+        frozen = _make_frozen_recovering_state()
+        state = RestartingMainJobState(
+            requestor_name="rollout_0",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=frozen,
+        )
         context = _make_controller_context(
             main_job=main_job,
             fresh_subsystems=fresh_subsystems,
@@ -169,9 +191,10 @@ class TestJobRestartComplete:
 
         assert isinstance(result, NormalState)
         assert set(result.subsystems.keys()) == {"training", "rollout_0"}
+        # Requestor gets restored frozen state (with externally_fulfilled=True)
         assert isinstance(
             result.subsystems["rollout_0"].state_machine.state,
-            RestartedMainJob,
+            Recovering,
         )
         assert isinstance(
             result.subsystems["training"].state_machine.state,
@@ -229,7 +252,12 @@ class TestJobRestartPending:
         main_job = FakeMainJob(status_sequence=[JobStatus.PENDING])
         stepper = create_main_stepper()
 
-        state = RestartingMainJobState(requestor_name="rollout_0")
+        frozen = _make_frozen_recovering_state()
+        state = RestartingMainJobState(
+            requestor_name="rollout_0",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=frozen,
+        )
         context = _make_controller_context(main_job=main_job)
 
         result = await stepper(state, context)
@@ -238,11 +266,16 @@ class TestJobRestartPending:
 
     @pytest.mark.asyncio
     async def test_failed_status_rebuilds_for_retry(self) -> None:
-        """RestartingMainJobState + FAILED → rebuild subsystems for retry."""
+        """RestartingMainJobState + FAILED → rebuild subsystems, notify."""
         main_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
         stepper = create_main_stepper()
 
-        state = RestartingMainJobState(requestor_name="rollout_0")
+        frozen = _make_frozen_recovering_state()
+        state = RestartingMainJobState(
+            requestor_name="rollout_0",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=frozen,
+        )
         context = _make_controller_context(main_job=main_job)
 
         result = await stepper(state, context)
