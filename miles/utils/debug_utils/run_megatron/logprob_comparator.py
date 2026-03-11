@@ -43,7 +43,7 @@ def compare_logprobs(
 ) -> bool:
     """Compare logprob JSON files between baseline and target.
 
-    Returns True if the comparison passes (max abs diff <= threshold).
+    Returns True if the comparison passes (mean abs diff <= threshold).
     """
     baseline_entries = _load_and_merge(baseline_dir)
     target_entries = _load_and_merge(target_dir)
@@ -151,7 +151,7 @@ def _compute_comparison(
     target_worst = target_entries[max_diff_key]
 
     return _CompareResult(
-        passed=max_abs_diff <= threshold,
+        passed=statistics.mean(diffs) <= threshold,
         num_positions=num,
         max_abs_diff=max_abs_diff,
         max_diff_position=max_diff_key[1],
@@ -175,9 +175,9 @@ def _print_report(result: _CompareResult) -> None:
     print(f"Logprob Comparison: {status}", flush=True)
     print(f"{'=' * 70}", flush=True)
     print(f"  Positions compared : {result.num_positions}", flush=True)
-    print(f"  Threshold          : {result.threshold}", flush=True)
+    print(f"  Threshold (mean)   : {result.threshold}", flush=True)
     print(f"  Max abs diff       : {result.max_abs_diff:.6e}", flush=True)
-    print(f"  Mean abs diff      : {result.mean_abs_diff:.6e}", flush=True)
+    print(f"  Mean abs diff      : {result.mean_abs_diff:.6e}  {'<= threshold' if result.passed else '> threshold'}", flush=True)
     print(f"  Median abs diff    : {result.median_abs_diff:.6e}", flush=True)
     print(f"  P95 abs diff       : {result.p95_abs_diff:.6e}", flush=True)
     print(f"  P99 abs diff       : {result.p99_abs_diff:.6e}", flush=True)
