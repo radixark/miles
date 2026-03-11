@@ -100,7 +100,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        if args.offload_train and not args.keep_gradient_buffers_on_cpu:
+        if args.offload_train:
             args.grad_mem_alloc_context = partial(
                 torch_memory_saver.region,
                 tag="grad_buffer",
