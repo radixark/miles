@@ -152,7 +152,7 @@ class TestNanLossTriggersRecovery:
         name = ft_controller_actor_name("nan-det")
         handle = FtControllerActor.options(name=name).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=0.05, ft_id="nan-det"),
+            config=FtControllerConfig(platform="stub", tick_interval=0.05, ft_id="nan-det", rollout_num_cells=0),
             node_manager_override=FakeNodeManager(),
             main_job_override=StubMainJob(),
             notifier_override=None,
@@ -215,7 +215,7 @@ class TestHangDetectionFullPath:
         name = ft_controller_actor_name("hang-det")
         handle = FtControllerActor.options(name=name).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="hang-det"),
+            config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="hang-det", rollout_num_cells=0),
             node_manager_override=FakeNodeManager(),
             main_job_override=StubMainJob(),
             notifier_override=None,
@@ -296,7 +296,7 @@ class TestRegisterNodeAgentSerialization:
         name = ft_controller_actor_name("m5-agent")
         handle = FtControllerActor.options(name=name).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="m5-agent"),
+            config=FtControllerConfig(platform="stub", tick_interval=0.1, ft_id="m5-agent", rollout_num_cells=0),
         )
 
         try:

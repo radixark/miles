@@ -75,7 +75,7 @@ class TestControllerTimeoutBehavior:
         name = ft_controller_actor_name("timeout-test")
         handle = FtControllerActor.options(name=name).remote(
             builder=build_ft_controller,
-            config=FtControllerConfig(platform="stub", ft_id="timeout-test"),
+            config=FtControllerConfig(platform="stub", ft_id="timeout-test", rollout_num_cells=0),
         )
         ray.get(handle.get_status.remote(), timeout=5)
 

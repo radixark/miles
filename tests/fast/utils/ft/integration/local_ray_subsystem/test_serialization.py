@@ -73,6 +73,7 @@ class TestConfigSerialization:
             platform="stub",
             tick_interval=0.1,
             ft_id="config-test",
+            rollout_num_cells=0,
         )
         handle = FtControllerActor.options(name=name).remote(builder=build_ft_controller, config=config)
         try:
