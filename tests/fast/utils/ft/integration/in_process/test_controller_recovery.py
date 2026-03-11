@@ -40,7 +40,7 @@ def _disable_detector(detector: FixedDecisionDetector) -> None:
 
 
 def _inject_iteration_data(harness: object, count: int = 10) -> None:
-    active_run_id = harness.controller._training_rank_roster.run_id
+    active_run_id = harness.controller.training_rank_roster.run_id
     for i in range(1, count + 1):
         harness.mini_wandb.log_step(
             run_id=active_run_id,

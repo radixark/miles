@@ -82,7 +82,7 @@ class TestControllerPrometheusMode:
             pid=1,
         )
 
-        assert controller._training_rank_roster.rank_placement == {0: "node-0"}
+        assert controller.training_rank_roster.rank_placement == {0: "node-0"}
 
     @pytest.mark.anyio
     async def test_training_metrics_propagated_to_exporter(self) -> None:

@@ -168,7 +168,7 @@ class TestFtControllerActorProxy:
             pid=1,
         )
 
-        assert harness.controller._training_rank_roster.rank_placement == {0: "node-0"}
+        assert harness.controller.training_rank_roster.rank_placement == {0: "node-0"}
 
     @pytest.mark.anyio
     async def test_log_step_writes_to_mini_wandb(self) -> None:

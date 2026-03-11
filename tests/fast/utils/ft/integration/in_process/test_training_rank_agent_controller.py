@@ -69,7 +69,7 @@ class TestRegisterRankPlacement:
             pid=1,
         )
 
-        assert harness.controller._training_rank_roster.rank_placement == {0: "node-0", 1: "node-1"}
+        assert harness.controller.training_rank_roster.rank_placement == {0: "node-0", 1: "node-1"}
 
 
 class TestScrapeTargetRegistration:

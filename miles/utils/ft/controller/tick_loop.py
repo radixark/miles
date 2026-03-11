@@ -10,6 +10,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalState
+from miles.utils.ft.utils.box import Box
 from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
@@ -30,7 +31,7 @@ class TickLoop:
         self,
         *,
         state_machine: StateMachine[MainState, MainContext],
-        training_rank_roster: TrainingRankRoster,
+        training_rank_roster_box: Box[TrainingRankRoster],
         agents: dict[str, NodeAgentProtocol],
         main_job: MainJobProtocol,
         metric_store: MetricStoreProtocol,
@@ -49,7 +50,7 @@ class TickLoop:
         registration_grace_ticks: int = 5,
     ) -> None:
         self.state_machine = state_machine
-        self.training_rank_roster = training_rank_roster
+        self._training_rank_roster_box = training_rank_roster_box
         self.tick_count: int = 0
 
         self._agents = agents
@@ -82,9 +83,9 @@ class TickLoop:
         t0 = time.monotonic()
         job_status: JobStatus | None = None
         try:
-            self.training_rank_roster.warn_if_incomplete()
+            self._training_rank_roster_box.value.warn_if_incomplete()
             self._node_agent_coverage_checker.check(
-                subsystem_node_ids=set(self.training_rank_roster.rank_placement.values()),
+                subsystem_node_ids=set(self._training_rank_roster_box.value.rank_placement.values()),
                 registered_agent_node_ids=set(self._agents.keys()),
             )
             job_status = await self._main_job.get_job_status()

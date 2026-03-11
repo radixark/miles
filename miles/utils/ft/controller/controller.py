@@ -27,6 +27,7 @@ class _RolloutSubsystemConfig:
     cell_id: str
     rm_handle: object
     get_active_node_ids: Callable[[], set[str]]
+    ft_rollout_agent: object | None = None
 
 
 def _build_rollout_subsystem_entry(*, name: str, config: _RolloutSubsystemConfig) -> SubsystemEntry:
@@ -40,7 +41,11 @@ def _build_rollout_subsystem_entry(*, name: str, config: _RolloutSubsystemConfig
             initial_state=DetectingAnomaly(),
             stepper=create_subsystem_stepper(),
         ),
-        actuator=RayRolloutActuator(rm_handle=config.rm_handle, cell_id=config.cell_id),
+        actuator=RayRolloutActuator(
+            rm_handle=config.rm_handle,
+            cell_id=config.cell_id,
+            ft_rollout_agent=config.ft_rollout_agent,
+        ),
         has_level1_restart=True,
         detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=config.cell_id),
         monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
@@ -54,7 +59,7 @@ class FtController:
         *,
         main_job: MainJobProtocol,
         state_machine: StateMachine[MainState, MainContext],
-        training_rank_roster: TrainingRankRoster,
+        training_rank_roster_box: Box[TrainingRankRoster],
         mini_wandb: MiniWandb,
         scrape_target_manager: ScrapeTargetManagerProtocol | None,
         agents: dict[str, NodeAgentProtocol],
@@ -66,7 +71,7 @@ class FtController:
     ) -> None:
         self._main_job = main_job
         self._state_machine = state_machine
-        self._training_rank_roster = training_rank_roster
+        self._training_rank_roster_box = training_rank_roster_box
         self._mini_wandb = mini_wandb
         self._scrape_target_manager = scrape_target_manager
         self._agents = agents
@@ -76,7 +81,6 @@ class FtController:
         self._metric_store = metric_store
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
-        self._training_rank_roster_box: Box[TrainingRankRoster] | None = None
         self._rollout_configs: list[_RolloutSubsystemConfig] = []
         self._node_metadata: dict[str, dict[str, str]] = {}
         self._shutting_down: bool = False
@@ -87,7 +91,7 @@ class FtController:
 
     @property
     def training_rank_roster(self) -> TrainingRankRoster:
-        return self._training_rank_roster
+        return self._training_rank_roster_box.value
 
     @property
     def mini_wandb(self) -> MiniWandb:
@@ -146,6 +150,7 @@ class FtController:
                 cell_id=cell_id,
                 rm_handle=rm_handle,
                 get_active_node_ids=cell_agent.get_node_ids,
+                ft_rollout_agent=ft_rollout_agent,
             )
             self._rollout_configs.append(config)
             name = f"rollout_{cell_id}"
@@ -184,7 +189,7 @@ class FtController:
         return build_controller_status(
             controller_state_machine=self._state_machine,
             mini_wandb=self._mini_wandb,
-            training_rank_roster=self._training_rank_roster,
+            training_rank_roster=self._training_rank_roster_box.value,
             tick_count=self._tick_count,
         )
 
@@ -208,14 +213,11 @@ class FtController:
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
-        self._training_rank_roster.cleanup()
-        self._training_rank_roster = TrainingRankRoster(
+        self._training_rank_roster_box.value.cleanup()
+        self._training_rank_roster_box.value = TrainingRankRoster(
             run_id=run_id,
             scrape_target_manager=self._scrape_target_manager,
         )
-        self._tick_loop.training_rank_roster = self._training_rank_roster
-        if self._training_rank_roster_box is not None:
-            self._training_rank_roster_box.value = self._training_rank_roster
         self._mini_wandb.set_active_run_id(run_id)
         logger.info("run_activated run_id=%s", run_id)
 

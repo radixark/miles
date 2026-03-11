@@ -142,7 +142,7 @@ def create_ft_controller(
     instance = FtController(
         main_job=main_job,
         state_machine=controller_sm,
-        training_rank_roster=training_rank_roster,
+        training_rank_roster_box=training_rank_roster_box,
         mini_wandb=mini_wandb,
         scrape_target_manager=scrape_target_manager,
         agents=agents,  # type: ignore[arg-type]
@@ -152,12 +152,11 @@ def create_ft_controller(
         metric_store=metric_store,
         controller_exporter=controller_exporter,
     )
-    instance._training_rank_roster_box = training_rank_roster_box
 
     # --- Create TickLoop ---
     tick_loop = TickLoop(
         state_machine=controller_sm,
-        training_rank_roster=training_rank_roster,
+        training_rank_roster_box=training_rank_roster_box,
         agents=agents,  # type: ignore[arg-type]
         main_job=main_job,
         metric_store=metric_store,
@@ -170,7 +169,7 @@ def create_ft_controller(
         recovery_timeout_seconds=recovery_timeout_seconds,
         create_fresh_subsystems=create_fresh_subsystems,
         on_new_run=instance._activate_run,
-        rank_pids_provider=lambda node_id: instance._training_rank_roster.get_rank_pids_for_node(node_id),
+        rank_pids_provider=lambda node_id: training_rank_roster_box.value.get_rank_pids_for_node(node_id),
         on_recovery_duration=duration_cb,
         controller_exporter=controller_exporter,
         registration_grace_ticks=registration_grace_ticks,
@@ -186,7 +185,7 @@ def create_ft_controller(
         diagnostic_orchestrator=resolved_orchestrator,
         controller_exporter=controller_exporter,
         on_new_run=instance._activate_run,
-        rank_pids_provider=lambda node_id: instance._training_rank_roster.get_rank_pids_for_node(node_id),
+        rank_pids_provider=lambda node_id: training_rank_roster_box.value.get_rank_pids_for_node(node_id),
     )
 
     return instance
