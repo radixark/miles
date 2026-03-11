@@ -27,7 +27,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.subsystem import SubsystemConfig
-from miles.utils.ft.utils.state_machine import StateHandler
+from miles.utils.ft.utils.state_machine import StateHandler, run_stepper_to_convergence
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
         self._subsystem_stepper = create_subsystem_stepper()
 
     async def step(self, state: NormalState, context: MainContext):  # type: ignore[override]
-        # Step 1: Step all subsystems (loop stepper until no more transitions)
+        # Step 1: Step all subsystems to convergence
         curr_state = state
         for name, sub_state in state.subsystems.items():
             config = context.subsystem_configs[name]
@@ -84,15 +84,9 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
                 recovery_stepper=self._recovery_stepper,
                 restart_stepper=self._restart_stepper,
             )
-            current = sub_state
-            while True:
-                previous = current
-                async for next_state in self._subsystem_stepper(current, sub_ctx):
-                    current = next_state
-                if current is previous or current == previous:
-                    break
-            if current != sub_state:
-                curr_state = NormalState(subsystems={**curr_state.subsystems, name: current})
+            converged = await run_stepper_to_convergence(self._subsystem_stepper, sub_state, sub_ctx)
+            if converged != sub_state:
+                curr_state = NormalState(subsystems={**curr_state.subsystems, name: converged})
                 yield curr_state
 
         # Step 2: Check for RestartingMainJob(external_execution_result=None)

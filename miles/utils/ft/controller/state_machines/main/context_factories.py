@@ -19,8 +19,9 @@ def build_subsystem_context(
     recovery_stepper: StateMachineStepper,
     restart_stepper: StateMachineStepper,
 ) -> SubsystemContext:
-    should_run = _should_run_detectors(config=config, context=context)
-    detector_ctx = _build_detector_context(config=config, context=context) if should_run else None
+    active_node_ids = config.get_active_node_ids()
+    should_run = _should_run_detectors(active_node_ids=active_node_ids, context=context)
+    detector_ctx = _build_detector_context(active_node_ids=active_node_ids, context=context) if should_run else None
 
     return SubsystemContext(
         job_status=context.job_status,
@@ -48,11 +49,10 @@ def build_subsystem_context(
 
 def _should_run_detectors(
     *,
-    config: SubsystemConfig,
+    active_node_ids: set[str],
     context: MainContext,
 ) -> bool:
-    active_nodes = config.get_active_node_ids()
-    if len(active_nodes) == 0:
+    if len(active_node_ids) == 0:
         return False
 
     if context.tick_count <= context.registration_grace_ticks:
@@ -63,13 +63,13 @@ def _should_run_detectors(
 
 def _build_detector_context(
     *,
-    config: SubsystemConfig,
+    active_node_ids: set[str],
     context: MainContext,
 ) -> DetectorContext:
     return DetectorContext(
         metric_store=context.metric_store,
         mini_wandb=context.mini_wandb,
-        active_node_ids=config.get_active_node_ids(),
+        active_node_ids=active_node_ids,
         job_status=context.job_status,
     )
 
