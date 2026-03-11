@@ -131,10 +131,7 @@ class TestBuildNotifier:
 class TestLauncherSubmitAndRun:
     def test_inline_mode_calls_submit_and_run(self) -> None:
         with _patch_build_and_run() as (mock_actor_cls, mock_ray):
-            result = runner.invoke(app, [
-                "launch", "--platform", "stub", "--",
-                "python3", "train.py", "--placement-persist-path", "/tmp/pg.json",
-            ])
+            result = runner.invoke(app, ["launch", "--platform", "stub", "--", "python3", "train.py"])
 
         assert result.exit_code == 0, result.output
         mock_ray.get.assert_called_once()
@@ -152,8 +149,6 @@ class TestLauncherSubmitAndRun:
                     "train.py",
                     "--lr",
                     "0.001",
-                    "--placement-persist-path",
-                    "/tmp/pg.json",
                 ],
             )
 
@@ -178,8 +173,6 @@ class TestLauncherSubmitAndRun:
                     "--",
                     "python3",
                     "train.py",
-                    "--placement-persist-path",
-                    "/tmp/pg.json",
                 ],
             )
 
@@ -203,8 +196,6 @@ class TestLauncherSubmitAndRun:
                     "--",
                     "python3",
                     "train.py",
-                    "--placement-persist-path",
-                    "/tmp/pg.json",
                 ],
             )
 
@@ -227,8 +218,6 @@ class TestLauncherSubmitAndRun:
                     "--",
                     "python3",
                     "train.py",
-                    "--placement-persist-path",
-                    "/tmp/pg.json",
                 ],
             )
 
@@ -250,8 +239,6 @@ class TestLauncherInvalidInput:
                 "--",
                 "python3",
                 "train.py",
-                "--placement-persist-path",
-                "/tmp/pg.json",
             ],
         )
         assert result.exit_code != 0
@@ -265,25 +252,11 @@ class TestLauncherInvalidInput:
         assert config.entrypoint == ""
 
 
-    def test_missing_placement_persist_path_fails(self) -> None:
-        """Entrypoint without --placement-persist-path should fail."""
-        with _patch_build_and_run():
-            result = runner.invoke(app, [
-                "launch", "--platform", "stub", "--", "python3", "train.py",
-            ])
-
-        assert result.exit_code != 0
-        assert "placement-persist-path" in result.output
-
-
 class TestLauncherWiring:
     def test_main_creates_actor_with_config(self) -> None:
         """Verify launcher creates FtControllerActor with a valid config."""
         with _patch_build_and_run() as (mock_actor_cls, _):
-            result = runner.invoke(app, [
-                "launch", "--platform", "stub", "--",
-                "python3", "train.py", "--placement-persist-path", "/tmp/pg.json",
-            ])
+            result = runner.invoke(app, ["launch", "--platform", "stub", "--", "python3", "train.py"])
 
         assert result.exit_code == 0, result.output
         mock_actor_cls.options.assert_called_once()
