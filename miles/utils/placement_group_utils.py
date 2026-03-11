@@ -90,6 +90,7 @@ def _load_snapshots(path: Path) -> list[BundleLocationSnapshot] | None:
 class PlacementGroupInfo:
     pg: PlacementGroup
     _bundle_location_snapshots: list[BundleLocationSnapshot] = field(default_factory=list)
+    _snapshot_path: Path | None = field(default=None, repr=False)
 
     @property
     def reordered_bundle_indices(self) -> list[int]:
@@ -113,6 +114,8 @@ class PlacementGroupInfo:
         self._bundle_location_snapshots = _partial_resort_snapshots(
             self._bundle_location_snapshots, new_snapshots,
         )
+        if self._snapshot_path:
+            _save_snapshots(self._snapshot_path, self._bundle_location_snapshots)
 
 
 @dataclass
