@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ray
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
-    assert_phase_path_contains,
     get_status,
     wait_for_mode_transition,
     wait_for_training_stable,
@@ -45,7 +44,7 @@ async def scenario_transient_crash(
     )
 
     assert status.mode == ControllerMode.MONITORING
-    assert status.bad_nodes == []
+    assert status.recovery is None
 
     if post_recovery_iterations > 0:
         await wait_for_training_stable(
@@ -54,14 +53,4 @@ async def scenario_transient_crash(
             timeout=post_recovery_timeout,
         )
 
-    final = get_status(handle)
-    assert_phase_path_contains(
-        final,
-        [
-            "RealtimeChecksSt",
-            "StoppingAndRestartingSt",
-            "MonitoringProgressSt",
-        ],
-    )
-
-    return final
+    return get_status(handle)

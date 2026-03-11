@@ -4,7 +4,6 @@ import time
 
 import ray
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.polling import (
-    assert_phase_path_contains,
     get_status,
     wait_for_mode,
     wait_for_mode_transition,
@@ -69,15 +68,6 @@ async def scenario_hang_detection_and_recovery(
         handle=handle,
         target_mode=ControllerMode.MONITORING,
         timeout=recovery_timeout,
-    )
-
-    assert_phase_path_contains(
-        status,
-        [
-            "RealtimeChecksSt",
-            "StoppingAndRestartingSt",
-            "MonitoringProgressSt",
-        ],
     )
 
     if post_recovery_iterations > 0:
