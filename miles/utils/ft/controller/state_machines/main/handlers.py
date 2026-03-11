@@ -74,39 +74,36 @@ class NormalStateHandler(StateHandler[NormalState, MainContext]):
         self._recovery_stepper = create_recovery_stepper()
         self._subsystem_stepper = create_subsystem_stepper()
 
-    async def step(self, state: NormalState, context: MainContext) -> MainState | None:
+    async def step(self, state: NormalState, context: MainContext):  # type: ignore[override]
         # Step 1: Step all subsystems (loop stepper until no more transitions)
-        new_subsystems: dict[str, SubsystemState] = {}
+        curr_state = state
         for name, sub_state in state.subsystems.items():
             config = context.subsystem_configs[name]
             sub_ctx = self._build_subsystem_context(config=config, context=context)
             current = sub_state
             while True:
-                next_state = await self._subsystem_stepper(current, sub_ctx)
+                next_state = await self._subsystem_stepper.step_once(current, sub_ctx)
                 if next_state is None:
                     break
                 current = next_state
-            new_subsystems[name] = current
+            if current != sub_state:
+                curr_state = NormalState(subsystems={**curr_state.subsystems, name: current})
+                yield curr_state
 
         # Step 2: Check for RestartingMainJob(externally_fulfilled=False)
-        requestor = _find_restart_requestor(new_subsystems)
+        requestor = _find_restart_requestor(curr_state.subsystems)
         if requestor is not None:
-            frozen_state = new_subsystems[requestor]
+            frozen_state = curr_state.subsystems[requestor]
             logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
             await context.main_job.stop_job()
             run_id = await context.main_job.submit_job()
             if context.on_new_run is not None:
                 context.on_new_run(run_id)
-            return RestartingMainJobState(
+            yield RestartingMainJobState(
                 requestor_name=requestor,
                 start_time=datetime.now(timezone.utc),
                 requestor_frozen_state=frozen_state,
             )
-
-        if new_subsystems != state.subsystems:
-            return NormalState(subsystems=new_subsystems)
-
-        return None
 
     def _build_subsystem_context(
         self,
