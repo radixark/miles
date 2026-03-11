@@ -30,8 +30,8 @@ class RolloutHealthChecker:
         cells: dict[str, Callable[[], list[object]]],
         engine_health_fn: EngineHealthChecker,
         report_fn: Callable[..., None],
-        check_interval: float = 10.0,
-        timeout: float = 10.0,
+        check_interval: float = 30.0,
+        timeout: float = 30.0,
     ) -> None:
         self._engine_health_fn = engine_health_fn
         self._timeout = timeout
