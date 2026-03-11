@@ -323,10 +323,10 @@ class TestRecovering:
     @pytest.mark.asyncio
     async def test_recovery_in_progress_stays_recovering(self) -> None:
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting, StopTimeDiagnostics
-        from miles.utils.ft.controller.state_machines.restart import StoppingAndRestarting
+        from miles.utils.ft.controller.state_machines.restart import StoppingAndRestartingSt
 
         new_recovery = EvictingAndRestarting(
-            restart=StoppingAndRestarting(),
+            restart=StoppingAndRestartingSt(),
             failed_next_state=StopTimeDiagnostics(),
         )
         stepper = _make_stepper()
@@ -432,7 +432,7 @@ class TestRecovering:
     async def test_dynamic_bad_nodes_resets_recovery(self) -> None:
         """Detector finds new bad nodes during recovery -> restart recovery with merged bad_node_ids."""
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting, StopTimeDiagnostics
-        from miles.utils.ft.controller.state_machines.restart import Evicting
+        from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
             Decision(
@@ -446,7 +446,7 @@ class TestRecovering:
         stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
-                restart=Evicting(bad_node_ids=["node-old"]),
+                restart=EvictingSt(bad_node_ids=["node-old"]),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH.value,
@@ -530,7 +530,7 @@ class TestBadNodeCountSafeguard:
     async def test_too_many_dynamic_bad_nodes_continues_recovery(self) -> None:
         """Detectors report >= threshold new bad nodes during recovery -> NOTIFY_HUMAN but keep recovering."""
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting, StopTimeDiagnostics
-        from miles.utils.ft.controller.state_machines.restart import Evicting
+        from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         notifier = FakeNotifier()
 
@@ -546,7 +546,7 @@ class TestBadNodeCountSafeguard:
         stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
-                restart=Evicting(bad_node_ids=["node-old"]),
+                restart=EvictingSt(bad_node_ids=["node-old"]),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,
@@ -570,7 +570,7 @@ class TestBadNodeCountSafeguard:
     async def test_already_known_bad_nodes_do_not_restart_recovery(self) -> None:
         """Detector re-reports nodes already being handled -> no recovery restart."""
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting, StopTimeDiagnostics
-        from miles.utils.ft.controller.state_machines.restart import Evicting
+        from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         recovery_stepper = _mock_stepper_yielding(None)
 
@@ -586,7 +586,7 @@ class TestBadNodeCountSafeguard:
         stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
-                restart=Evicting(bad_node_ids=["node-old"]),
+                restart=EvictingSt(bad_node_ids=["node-old"]),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,
@@ -608,7 +608,7 @@ class TestBadNodeCountSafeguard:
     async def test_dynamic_bad_nodes_below_threshold_continues_recovery(self) -> None:
         """One new bad node during recovery (with 2 existing) -> normal merge, continues."""
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting, StopTimeDiagnostics
-        from miles.utils.ft.controller.state_machines.restart import Evicting
+        from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         recovery_stepper = _mock_stepper_yielding(None)
 
@@ -624,7 +624,7 @@ class TestBadNodeCountSafeguard:
         stepper = _make_stepper()
         state = Recovering(
             recovery=EvictingAndRestarting(
-                restart=Evicting(bad_node_ids=["node-old-1", "node-old-2"]),
+                restart=EvictingSt(bad_node_ids=["node-old-1", "node-old-2"]),
                 failed_next_state=StopTimeDiagnostics(),
             ),
             trigger=TriggerType.CRASH,

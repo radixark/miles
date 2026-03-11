@@ -26,7 +26,7 @@ from miles.utils.ft.controller.state_machines.subsystem.models import (
 from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestarting, StopTimeDiagnostics
 from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
-    RestartingMainJob as RestartingMainJobRestart,
+    ExternalRestartingMainJobSt,
 )
 from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
@@ -43,7 +43,7 @@ def _make_frozen_recovering_state() -> Recovering:
     """Create a Recovering state matching what NormalStateHandler would freeze."""
     return Recovering(
         recovery=EvictingAndRestarting(
-            restart=RestartingMainJobRestart(),
+            restart=ExternalRestartingMainJobSt(),
             failed_next_state=StopTimeDiagnostics(),
         ),
         trigger=TriggerType.CRASH,
@@ -187,7 +187,7 @@ class TestJobRestartComplete:
         requestor_state = result.subsystems["rollout_0"]
         assert isinstance(requestor_state, Recovering)
         assert isinstance(requestor_state.recovery, EvictingAndRestarting)
-        assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
+        assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
         assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
 
         assert isinstance(result.subsystems["training"], DetectingAnomaly)
@@ -277,7 +277,7 @@ class TestJobRestartPending:
         requestor_state = result.subsystems["rollout_0"]
         assert isinstance(requestor_state, Recovering)
         assert isinstance(requestor_state.recovery, EvictingAndRestarting)
-        assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
+        assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
         assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
 
     @pytest.mark.asyncio
@@ -308,5 +308,5 @@ class TestJobRestartPending:
         requestor_state = result.subsystems["rollout_0"]
         assert isinstance(requestor_state, Recovering)
         assert isinstance(requestor_state.recovery, EvictingAndRestarting)
-        assert isinstance(requestor_state.recovery.restart, RestartingMainJobRestart)
+        assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
         assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.TIMEOUT

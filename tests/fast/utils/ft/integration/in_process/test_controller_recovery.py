@@ -22,7 +22,7 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.state_machines.main.models import NormalState, RestartingMainJobState
 from miles.utils.ft.controller.state_machines.subsystem import Recovering
 from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestarting
-from miles.utils.ft.controller.state_machines.restart import MonitoringProgress
+from miles.utils.ft.controller.state_machines.restart import MonitoringProgressSt
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 
@@ -31,7 +31,7 @@ def _is_monitoring_progress(state: object) -> bool:
         return False
     recovery = state.recovery
     if isinstance(recovery, EvictingAndRestarting):
-        return isinstance(recovery.restart, MonitoringProgress)
+        return isinstance(recovery.restart, MonitoringProgressSt)
     return False
 
 

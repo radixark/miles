@@ -19,10 +19,10 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     StopTimeDiagnostics,
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
-    Evicting,
+    EvictingSt,
     ExternalExecutionResult,
-    RestartingMainJob as RestartingMainJobRestart,
-    StoppingAndRestarting,
+    ExternalRestartingMainJobSt,
+    StoppingAndRestartingSt,
 )
 from miles.utils.ft.controller.types import TriggerType
 
@@ -33,7 +33,7 @@ def _make_recovering_with_main_job_restart(
 ) -> Recovering:
     return Recovering(
         recovery=EvictingAndRestarting(
-            restart=RestartingMainJobRestart(external_execution_result=external_execution_result),
+            restart=ExternalRestartingMainJobSt(external_execution_result=external_execution_result),
             failed_next_state=StopTimeDiagnostics(),
         ),
         trigger=TriggerType.CRASH,
@@ -42,10 +42,10 @@ def _make_recovering_with_main_job_restart(
 
 
 def _make_recovering_with_evicting() -> Recovering:
-    """Recovering whose restart is Evicting, not RestartingMainJobRestart."""
+    """Recovering whose restart is Evicting, not ExternalRestartingMainJobSt."""
     return Recovering(
         recovery=EvictingAndRestarting(
-            restart=Evicting(bad_node_ids=["node-1"]),
+            restart=EvictingSt(bad_node_ids=["node-1"]),
             failed_next_state=StopTimeDiagnostics(),
         ),
         trigger=TriggerType.HANG,
@@ -54,10 +54,10 @@ def _make_recovering_with_evicting() -> Recovering:
 
 
 def _make_recovering_with_stopping_and_restarting() -> Recovering:
-    """Recovering whose restart is StoppingAndRestarting, not RestartingMainJobRestart."""
+    """Recovering whose restart is StoppingAndRestarting, not ExternalRestartingMainJobSt."""
     return Recovering(
         recovery=EvictingAndRestarting(
-            restart=StoppingAndRestarting(bad_node_ids=[]),
+            restart=StoppingAndRestartingSt(bad_node_ids=[]),
             failed_next_state=StopTimeDiagnostics(),
         ),
         trigger=TriggerType.CRASH,
@@ -143,7 +143,7 @@ class TestUpdateExternalExecutionResult:
 
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, EvictingAndRestarting)
-        assert isinstance(result.recovery.restart, RestartingMainJobRestart)
+        assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
 
     def test_preserves_other_fields(self) -> None:
@@ -165,7 +165,7 @@ class TestUpdateExternalExecutionResult:
         _update_external_execution_result(state, ExternalExecutionResult.SUCCEEDED)
 
         assert isinstance(state.recovery, EvictingAndRestarting)
-        assert isinstance(state.recovery.restart, RestartingMainJobRestart)
+        assert isinstance(state.recovery.restart, ExternalRestartingMainJobSt)
         assert state.recovery.restart.external_execution_result is None
 
     def test_sets_failed_result(self) -> None:
@@ -175,7 +175,7 @@ class TestUpdateExternalExecutionResult:
 
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, EvictingAndRestarting)
-        assert isinstance(result.recovery.restart, RestartingMainJobRestart)
+        assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
 
     def test_raises_on_detecting_anomaly_state(self) -> None:
@@ -191,7 +191,7 @@ class TestUpdateExternalExecutionResult:
     def test_preserves_bad_node_ids(self) -> None:
         state = Recovering(
             recovery=EvictingAndRestarting(
-                restart=RestartingMainJobRestart(
+                restart=ExternalRestartingMainJobSt(
                     bad_node_ids=["node-0", "node-1"],
                 ),
                 failed_next_state=StopTimeDiagnostics(),
@@ -204,6 +204,6 @@ class TestUpdateExternalExecutionResult:
 
         assert isinstance(result, Recovering)
         assert isinstance(result.recovery, EvictingAndRestarting)
-        assert isinstance(result.recovery.restart, RestartingMainJobRestart)
+        assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
         assert result.recovery.restart.bad_node_ids == ["node-0", "node-1"]

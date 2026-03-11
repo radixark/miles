@@ -14,7 +14,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryState,
     StopTimeDiagnostics,
 )
-from miles.utils.ft.controller.state_machines.restart.models import Evicting, StoppingAndRestarting
+from miles.utils.ft.controller.state_machines.restart.models import EvictingSt, StoppingAndRestartingSt
 
 
 class TestRecoveryStateConstruction:
@@ -50,21 +50,21 @@ class TestEvictingAndRestartingFactories:
     def test_direct_restart(self) -> None:
         state = EvictingAndRestarting.direct_restart()
 
-        assert isinstance(state.restart, StoppingAndRestarting)
+        assert isinstance(state.restart, StoppingAndRestartingSt)
         assert state.restart.bad_node_ids == []
         assert isinstance(state.failed_next_state, StopTimeDiagnostics)
 
     def test_evict_and_restart(self) -> None:
         state = EvictingAndRestarting.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-0", "node-1"])
 
-        assert isinstance(state.restart, Evicting)
+        assert isinstance(state.restart, EvictingSt)
         assert state.restart.bad_node_ids == ["node-0", "node-1"]
         assert isinstance(state.failed_next_state, StopTimeDiagnostics)
 
     def test_evict_and_restart_final(self) -> None:
         state = EvictingAndRestarting.evict_and_restart_final(bad_node_ids=["node-0"])
 
-        assert isinstance(state.restart, Evicting)
+        assert isinstance(state.restart, EvictingSt)
         assert isinstance(state.failed_next_state, NotifyHumans)
 
 

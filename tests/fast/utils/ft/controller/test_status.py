@@ -17,7 +17,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryDone,
     StopTimeDiagnostics,
 )
-from miles.utils.ft.controller.state_machines.restart.models import Evicting, StoppingAndRestarting
+from miles.utils.ft.controller.state_machines.restart.models import EvictingSt, StoppingAndRestartingSt
 from miles.utils.ft.controller.status import build_controller_status, recovery_phase_name
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
@@ -38,17 +38,17 @@ class TestRecoveryPhaseName:
 
     def test_evicting_and_restarting_returns_evicting(self) -> None:
         state = EvictingAndRestarting(
-            restart=Evicting(bad_node_ids=["node-0"]),
+            restart=EvictingSt(bad_node_ids=["node-0"]),
             failed_next_state=StopTimeDiagnostics(),
         )
-        assert recovery_phase_name(state) == "Evicting"
+        assert recovery_phase_name(state) == "EvictingSt"
 
     def test_evicting_and_restarting_returns_stopping_and_restarting(self) -> None:
         state = EvictingAndRestarting(
-            restart=StoppingAndRestarting(bad_node_ids=[]),
+            restart=StoppingAndRestartingSt(bad_node_ids=[]),
             failed_next_state=StopTimeDiagnostics(),
         )
-        assert recovery_phase_name(state) == "StoppingAndRestarting"
+        assert recovery_phase_name(state) == "StoppingAndRestartingSt"
 
     def test_stop_time_diagnostics(self) -> None:
         assert recovery_phase_name(StopTimeDiagnostics()) == "StopTimeDiagnostics"
@@ -106,7 +106,7 @@ class TestBuildControllerStatus:
         )
 
         assert status.mode == ControllerMode.RECOVERY
-        assert status.recovery_phase == "Evicting"
+        assert status.recovery_phase == "EvictingSt"
         assert status.bad_nodes == ["node-1"]
         assert status.recovery_in_progress is True
 
