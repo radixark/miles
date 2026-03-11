@@ -7,7 +7,7 @@ from datetime import datetime
 from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.rank_roster import RankRoster
+from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import DetectingAnomaly, MainState, Recovering
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestarting,
@@ -166,7 +166,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=5,
         )
 
@@ -186,7 +186,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(state),
             mini_wandb=MiniWandb(),
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=10,
         )
 
@@ -199,7 +199,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=0,
         )
 
@@ -210,7 +210,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(DetectingAnomaly()),
             mini_wandb=wandb,
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=0,
         )
 
@@ -225,7 +225,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(state),
             mini_wandb=MiniWandb(),
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=0,
         )
 
@@ -240,7 +240,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(state),
             mini_wandb=MiniWandb(),
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=0,
         )
 
@@ -256,7 +256,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(current, state_history=[past]),
             mini_wandb=MiniWandb(),
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=5,
         )
 
@@ -266,18 +266,18 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             state_machine=_make_state_machine(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
-            rank_roster=RankRoster(),
+            training_rank_roster=TrainingRankRoster(),
             tick_count=0,
         )
 
         assert status.phase_history is None
 
-    def test_active_run_id_from_rank_roster(self) -> None:
-        roster = RankRoster(run_id="run-42")
+    def test_active_run_id_from_training_rank_roster(self) -> None:
+        roster = TrainingRankRoster(run_id="run-42")
         status = build_controller_status(
             state_machine=_make_state_machine(DetectingAnomaly()),
             mini_wandb=MiniWandb(),
-            rank_roster=roster,
+            training_rank_roster=roster,
             tick_count=0,
         )
 

@@ -39,7 +39,7 @@ def _disable_detector(detector: FixedDecisionDetector) -> None:
 
 
 def _inject_iteration_data(harness: object, count: int = 10) -> None:
-    active_run_id = harness.controller._rank_roster.run_id
+    active_run_id = harness.controller._training_rank_roster.run_id
     for i in range(1, count + 1):
         harness.mini_wandb.log_step(
             run_id=active_run_id,
@@ -194,7 +194,7 @@ class TestRecoveryCompleteBackToMonitoring:
             trigger=TriggerType.CRASH,
             reason="test recovery again",
         )
-        harness.controller.rank_roster.rank_placement[0] = "node-0"
+        harness.controller.training_rank_roster.rank_placement[0] = "node-0"
         await harness.controller._tick()
         assert enter_recovery.call_count > initial_detector_count
 

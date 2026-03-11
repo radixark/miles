@@ -27,7 +27,7 @@ class TestRegistrationGuardNoRanks:
             registration_grace_ticks=0,
         )
         harness.controller._activate_run("run-1")
-        harness.controller._rank_roster.register_training_rank(
+        harness.controller._training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=1,
@@ -50,7 +50,7 @@ class TestRegistrationGraceTicks:
             registration_grace_ticks=3,
         )
         harness.controller._activate_run("run-1")
-        harness.controller._rank_roster.register_training_rank(
+        harness.controller._training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=1,
@@ -72,7 +72,7 @@ class TestRegistrationGraceTicks:
             registration_grace_ticks=2,
         )
         harness.controller._activate_run("run-1")
-        harness.controller._rank_roster.register_training_rank(
+        harness.controller._training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=1,

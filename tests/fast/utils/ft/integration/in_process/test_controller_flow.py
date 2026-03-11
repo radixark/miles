@@ -23,7 +23,7 @@ class TestRegisterRankLogStepQuery:
         run_id = "integ-run-1"
 
         harness.controller._activate_run(run_id)
-        harness.controller.rank_roster.register_training_rank(
+        harness.controller.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=0,
             world_size=4,
@@ -31,7 +31,7 @@ class TestRegisterRankLogStepQuery:
             exporter_address="http://node-0:9090",
             pid=1,
         )
-        harness.controller.rank_roster.register_training_rank(
+        harness.controller.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=1,
             world_size=4,
@@ -62,7 +62,7 @@ class TestRunIdIsolation:
         harness = make_test_controller()
 
         harness.controller._activate_run("run-1")
-        harness.controller.rank_roster.register_training_rank(
+        harness.controller.training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=2,
@@ -78,7 +78,7 @@ class TestRunIdIsolation:
         assert harness.mini_wandb.latest(metric_name="loss") == 2.0
 
         harness.controller._activate_run("run-2")
-        harness.controller.rank_roster.register_training_rank(
+        harness.controller.training_rank_roster.register_training_rank(
             run_id="run-2",
             rank=0,
             world_size=2,
@@ -88,15 +88,15 @@ class TestRunIdIsolation:
         )
 
         assert harness.mini_wandb.latest(metric_name="loss") is None
-        assert harness.controller._rank_roster.run_id == "run-2"
-        assert harness.controller._rank_roster.rank_placement == {0: "node-0"}
+        assert harness.controller._training_rank_roster.run_id == "run-2"
+        assert harness.controller._training_rank_roster.rank_placement == {0: "node-0"}
 
     @pytest.mark.anyio
     async def test_stale_log_step_after_run_switch_is_discarded(self) -> None:
         harness = make_test_controller()
 
         harness.controller._activate_run("run-1")
-        harness.controller.rank_roster.register_training_rank(
+        harness.controller.training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=2,
@@ -111,7 +111,7 @@ class TestRunIdIsolation:
         )
 
         harness.controller._activate_run("run-2")
-        harness.controller.rank_roster.register_training_rank(
+        harness.controller.training_rank_roster.register_training_rank(
             run_id="run-2",
             rank=0,
             world_size=2,

@@ -12,7 +12,7 @@ def _force_recovery_complete(harness) -> None:
     so that detectors will fire on the next tick."""
     harness.controller._state_machine._state = DetectingAnomaly()
     harness.controller._activate_run("recovery-done")
-    harness.controller.rank_roster.rank_placement[0] = "node-0"
+    harness.controller.training_rank_roster.rank_placement[0] = "node-0"
 
 
 class TestRecoveryCooldown:

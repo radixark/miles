@@ -1,10 +1,10 @@
-"""Tests for RankRoster."""
+"""Tests for TrainingRankRoster."""
 
 from __future__ import annotations
 
 import pytest
 
-from miles.utils.ft.controller.rank_roster import RankRoster
+from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 
 
 class _FakeScrapeTargetManager:
@@ -24,8 +24,8 @@ def _make_registry(
     *,
     run_id: str | None = "run-1",
     scrape_target_manager: _FakeScrapeTargetManager | None = None,
-) -> RankRoster:
-    return RankRoster(
+) -> TrainingRankRoster:
+    return TrainingRankRoster(
         run_id=run_id,
         scrape_target_manager=scrape_target_manager,
     )

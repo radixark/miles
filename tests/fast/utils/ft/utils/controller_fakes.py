@@ -265,8 +265,8 @@ def make_test_controller(
 
     if register_dummy_rank:
         controller._activate_run("dummy-run")
-        controller.rank_roster.rank_placement[0] = "node-0"
-        controller.rank_roster.rank_placement[1] = "node-1"
+        controller.training_rank_roster.rank_placement[0] = "node-0"
+        controller.training_rank_roster.rank_placement[1] = "node-1"
 
     return ControllerTestHarness(
         controller=controller,
