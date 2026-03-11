@@ -97,12 +97,10 @@ class RolloutManager:
         if self._full_ft_mode:
             from miles.utils.ft.agents.core.rollout.ft_rollout_agent import FtRolloutAgent
             self._ft_agent = FtRolloutAgent(self)
-        elif "rollout" in getattr(self.args, "ft_components", frozenset()):
+        elif "rollout" in self.args.ft_components:
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()
-        self._ci_fault_injection_pending = (
-            self.args.ci_test and "rollout" in getattr(self.args, "ft_components", frozenset())
-        )
+            self._ci_fault_injection_pending = self.args.ci_test
 
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -125,13 +123,11 @@ class RolloutManager:
             except Exception as e:
                 logger.warning(f"CI Fault Injection failed: {e}")
 
-    async def dispose(self):
+    def dispose(self):
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         if self._health_monitor is not None:
             self._health_monitor.stop()
-        if self._ft_agent is not None:
-            await self._ft_agent.shutdown()
 
     # TODO maybe rename "rollout_engines" and "all_rollout_engines" later
     @property
@@ -204,13 +200,13 @@ class RolloutManager:
     def health_monitoring_pause(self):
         if self._ft_agent is not None:
             self._ft_agent.pause()
-        if self._health_monitor is not None:
+        elif self._health_monitor is not None:
             self._health_monitor.pause()
 
     def health_monitoring_resume(self):
         if self._ft_agent is not None:
             self._ft_agent.resume()
-        if self._health_monitor is not None:
+        elif self._health_monitor is not None:
             self._health_monitor.resume()
 
     def onload_weights(self):
@@ -242,26 +238,10 @@ class RolloutManager:
     # --- FT Controller integration (full FT mode) ---
 
     def stop_cell(self, cell_id: str) -> None:
-        """FT controller calls this to stop all engines before recovery rebuild."""
-        self.health_monitoring_pause()
-        for i, engine in enumerate(self.all_rollout_engines):
-            if engine is not None:
-                try:
-                    ray.get(engine.shutdown.remote())
-                    ray.kill(engine)
-                except Exception:
-                    logger.warning("stop_cell: failed to kill engine %d", i, exc_info=True)
-                self.all_rollout_engines[i] = None
+        raise NotImplementedError("M12: engine stop not yet implemented")
 
-    def start_cell(self, cell_id: str) -> dict:
-        """FT controller calls this to restart engines after recovery. Returns new handles."""
-        self.pg.refresh()
-        self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
-        if self.args.offload_rollout and self.num_new_engines > 0:
-            new_engines = [e for e in self.all_rollout_engines if e is not None][-self.num_new_engines:]
-            ray.get([e.release_memory_occupation.remote() for e in new_engines])
-            ray.get([e.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for e in new_engines])
-        return {"engine_handles": list(self.all_rollout_engines), "count": self.num_new_engines}
+    def start_cell(self, cell_id: str) -> int:
+        raise NotImplementedError("M12: engine start not yet implemented")
 
     def get_cell_status(self, cell_id: str):
         from miles.utils.ft.adapters.types import JobStatus
