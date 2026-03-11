@@ -124,7 +124,7 @@ class TestPrintTopK:
         mock_print_all: MagicMock,
     ) -> None:
         mock_tokenizer = MagicMock()
-        mock_tokenizer.pad_token_id = 0
+        mock_tokenizer.pad_token_id = 5
         mock_auto_tok.from_pretrained.return_value = mock_tokenizer
 
         logits = torch.randn(1, 2, 10)
@@ -140,7 +140,7 @@ class TestPrintTopK:
         mock_auto_tok.from_pretrained.assert_called_once()
         mock_print_all.assert_called_once()
         call_kwargs = mock_print_all.call_args[1]
-        assert call_kwargs["pad_token_id"] == 0
+        assert call_kwargs["pad_token_id"] == 5
 
     @patch(f"{_TOP_K_MODULE}._print_top_predictions_all_ranks")
     @patch("transformers.AutoTokenizer")
