@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
-from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.controller import FtController, _build_rollout_subsystem_entry
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -122,7 +122,7 @@ def create_ft_controller(
 
     # --- create_fresh_subsystems callback ---
     def create_fresh_subsystems() -> dict[str, SubsystemEntry]:
-        return {
+        result: dict[str, SubsystemEntry] = {
             "training": SubsystemEntry(
                 name="training",
                 state_machine=_make_training_sub_sm(),
@@ -133,6 +133,10 @@ def create_ft_controller(
                 get_active_node_ids=_get_active_training_nodes,
             ),
         }
+        for rollout_config in instance._rollout_configs:
+            name = f"rollout_{rollout_config.cell_id}"
+            result[name] = _build_rollout_subsystem_entry(name=name, config=rollout_config)
+        return result
 
     # --- Create FtController ---
     instance = FtController(
