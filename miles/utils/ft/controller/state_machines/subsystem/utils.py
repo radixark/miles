@@ -89,6 +89,10 @@ def _run_detectors_raw(
         try:
             yield detector.evaluate(ctx)
         except Exception:
+            # Intentionally skip this detector (no Decision yielded) — a single
+            # crash should not block other detectors or trigger recovery.
+            # Observability: logger.error (per-crash traceback) + crash_tracker
+            # accumulation → one-shot NOTIFY_HUMAN when threshold is reached.
             logger.error(
                 "detector_evaluate_failed detector=%s",
                 type(detector).__name__,
