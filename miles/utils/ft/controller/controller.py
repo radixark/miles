@@ -116,12 +116,12 @@ class FtController:
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
         old_roster = self._subsystem_hub.training_rank_roster_box.value
-        if old_roster is not None:
-            old_roster.cleanup()
         self._subsystem_hub.training_rank_roster_box.value = TrainingRankRoster(
             run_id=run_id,
             scrape_target_manager=self._scrape_target_manager,
         )
+        if old_roster is not None:
+            old_roster.cleanup()
         self._metric_store.mini_wandb.set_active_run_id(run_id)
         logger.info("run_activated run_id=%s", run_id)
 
