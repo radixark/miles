@@ -23,7 +23,7 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
 def _classify_recovery(recovery: RecoveryState) -> RecoveryInfo:
     bad_nodes = sorted(get_known_bad_nodes(recovery))
     match recovery:
-        case NotifyHumansSt() | RecoveryDoneSt():
+        case RecoveryDoneSt():
             bad_nodes_confirmed = True
         case _:
             bad_nodes_confirmed = bool(bad_nodes)

@@ -130,7 +130,12 @@ class TestBuildControllerStatus:
 
         assert status.latest_iteration == 42
 
-    def test_bad_nodes_confirmed_in_notify_humans(self) -> None:
+    def test_bad_nodes_not_confirmed_in_notify_humans(self) -> None:
+        """Previously NotifyHumansSt set bad_nodes_confirmed=True, but
+        NotifyHumansSt can be reached without confirming bad nodes (e.g.
+        diagnostic pipeline found no fault). Only RecoveryDoneSt truly
+        confirms the nodes were bad.
+        """
         state = RecoveringSt(
             recovery=NotifyHumansSt(state_before="test"),
             trigger="crash",
@@ -144,7 +149,7 @@ class TestBuildControllerStatus:
         )
 
         assert status.recovery is not None
-        assert status.recovery.bad_nodes_confirmed is True
+        assert status.recovery.bad_nodes_confirmed is False
 
     def test_bad_nodes_confirmed_in_recovery_done(self) -> None:
         state = RecoveringSt(
