@@ -224,3 +224,27 @@ class TestParseRangeTimestampType:
         data = {"status": "success", "data": {"resultType": "matrix", "result": []}}
         result = parse_range_response(data)
         assert result["timestamp"].dtype == pl.Datetime("us", "UTC")
+
+    def test_total_seconds_works_on_parsed_timestamps(self) -> None:
+        """Downstream code (e.g. RolloutCrashDetector) calls
+        (max - min).total_seconds() on the timestamp column. This must
+        not raise — previously timestamps were float, causing AttributeError."""
+        data = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"__name__": "m"},
+                        "values": [
+                            [1700000000.0, "0"],
+                            [1700000120.0, "0"],
+                        ],
+                    },
+                ],
+            },
+        }
+        result = parse_range_response(data)
+
+        time_span = (result["timestamp"].max() - result["timestamp"].min()).total_seconds()
+        assert time_span == pytest.approx(120.0)
