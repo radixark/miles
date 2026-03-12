@@ -215,6 +215,45 @@ class TestGetCurrentPhaseEdgeCases:
         assert "unknown" in decision.reason.lower()
 
 
+class TestHangDetectorSingleSampleFalsePositive:
+    def test_single_heartbeat_sample_does_not_trigger_hang(self) -> None:
+        """With only 1 heartbeat sample, changes() returns 0 but that does not
+        mean the heartbeat is stalled — there is simply insufficient data.
+        Previously this would trigger ENTER_RECOVERY (false positive)."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+
+    def test_two_samples_same_value_does_trigger_hang(self) -> None:
+        """With 2+ samples showing the same value, hang should be detected."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+
+
 class TestHangDetectorMultipleRank0Series:
     def test_hang_detected_when_one_rank0_series_stalled(self) -> None:
         """H-7: when multiple rank-0 series exist (e.g. stale + current),

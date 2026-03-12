@@ -79,12 +79,26 @@ class HangDetector(BaseFaultDetector):
         metric_store: TimeSeriesQueryProtocol,
         window_minutes: int,
     ) -> float | None:
+        window = timedelta(minutes=window_minutes)
+
         df = metric_store.changes(
             AGENT_HEARTBEAT,
-            window=timedelta(minutes=window_minutes),
+            window=window,
             label_filters={"rank": "0"},
         )
         if df is None or df.is_empty():
             return None
 
-        return df["value"].min()
+        min_changes = df["value"].min()
+        if min_changes == 0:
+            count_df = metric_store.count_over_time(
+                AGENT_HEARTBEAT,
+                window=window,
+                label_filters={"rank": "0"},
+            )
+            if count_df is not None and not count_df.is_empty():
+                min_count = count_df["value"].min()
+                if min_count < 2:
+                    return None
+
+        return min_changes
