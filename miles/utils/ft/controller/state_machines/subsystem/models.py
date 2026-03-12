@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
 
 from pydantic import ConfigDict
@@ -42,7 +42,7 @@ class SubsystemContext(FtBaseModel):
     detectors: list[BaseFaultDetector]
     cooldown: SlidingWindowThrottle
     detector_crash_tracker: SlidingWindowCounter
-    recovery_stepper: Callable[..., Awaitable[RecoveryState | None]]
+    recovery_stepper: Callable[..., AsyncGenerator[RecoveryState, None]]
     recovery_context_factory: Callable[[TriggerType, datetime], RecoveryContext]
     on_recovery_duration: Callable[[float], None] | None
     max_simultaneous_bad_nodes: int

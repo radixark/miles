@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
 
 from pydantic import ConfigDict
@@ -80,7 +80,7 @@ class RecoveryContext(FtBaseModel):
 
     # deps
     diagnostic_orchestrator: DiagnosticOrchestratorProtocol
-    restart_stepper: Callable[[RestartState, RestartContext], Awaitable[RestartState | None]]
+    restart_stepper: Callable[[RestartState, RestartContext], AsyncGenerator[RestartState, None]]
     restart_context: RestartContext
     notifier: NotifierProtocol | None
     timeout_seconds: int
