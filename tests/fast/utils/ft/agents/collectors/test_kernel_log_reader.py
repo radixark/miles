@@ -86,6 +86,29 @@ class TestDmesgSubprocessReader:
 
         assert lines == []
 
+    def test_nonzero_returncode_still_advances_time(self) -> None:
+        """H-5: dmesg failure used to leave _last_dmesg_time stale, causing
+        the next successful call to re-read the same time window and
+        double-count XIDs. Now time always advances."""
+        reader = DmesgSubprocessReader()
+        time_before = reader._last_dmesg_time
+
+        mock_fail = MagicMock(returncode=1, stdout="", stderr="permission denied")
+        with patch("subprocess.run", return_value=mock_fail):
+            reader.read_new_lines()
+
+        time_after_fail = reader._last_dmesg_time
+        assert time_after_fail > time_before
+
+        mock_ok = MagicMock(returncode=0, stdout="line 1\n")
+        with patch("subprocess.run", return_value=mock_ok) as mock_run:
+            lines = reader.read_new_lines()
+
+        assert lines == ["line 1"]
+        call_args = mock_run.call_args[0][0]
+        since_arg = call_args[2]
+        assert time_after_fail.strftime("%H:%M:%S") in since_arg
+
     def test_returns_empty_on_timeout(self) -> None:
         reader = DmesgSubprocessReader()
 

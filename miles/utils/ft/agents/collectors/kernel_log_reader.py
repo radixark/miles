@@ -72,8 +72,9 @@ class DmesgSubprocessReader:
             text=True,
             timeout=5,
         )
+        self._last_dmesg_time = new_time
+
         if result.returncode == 0:
-            self._last_dmesg_time = new_time
             if result.stdout:
                 return result.stdout.strip().splitlines()
         else:
