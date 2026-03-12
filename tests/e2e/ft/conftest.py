@@ -22,8 +22,6 @@ from uuid import uuid4
 import pytest
 import ray
 from ray.job_submission import JobSubmissionClient
-from tests.fast.utils.ft.integration.local_ray_semi_e2e import scenarios as _scenarios
-
 from miles.utils.external_utils.command_utils import get_bool_env_var
 from tests.e2e.ft.utils import clear_all_bad_node_markers
 
@@ -404,9 +402,6 @@ async def wait_for_training_stable(
         poll_interval=poll_interval,
         description=f"training_stable(need={n_iterations})",
     )
-
-
-wait_for_recovery_phase = _scenarios.wait_for_recovery_phase
 
 
 async def wait_for_mode_transition(
