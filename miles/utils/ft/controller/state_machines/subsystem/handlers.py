@@ -36,6 +36,8 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             await handle_notify_human(
                 decision=Decision(
                     action=ActionType.NOTIFY_HUMAN,
+                    # NOTE: notify reason strings here are operator-facing hints only. Exact
+                    # wording is intentionally non-contractual and should not drive refactors.
                     reason=f"Recovery cooldown throttled for {decision.trigger}",
                     trigger=decision.trigger,
                 ),
