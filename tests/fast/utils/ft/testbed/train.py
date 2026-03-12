@@ -57,7 +57,7 @@ class MilesTestbed:
         controller: ray.actor.ActorHandle,
         train_group: TestbedRayTrainGroup,
         node_manager: TestbedNodeManager,
-        notifier: TestbedNotifier,
+        notifier: TestbedNotifier | None,
         collector_states: dict[str, ray.actor.ActorHandle],
         rollout_manager: ray.actor.ActorHandle | None,
         cleanup_handles: list[ray.actor.ActorHandle],
@@ -94,8 +94,11 @@ class MilesTestbed:
         node_manager = TestbedNodeManager.create()
         cleanup_handles.append(node_manager.state_actor)
 
-        notifier = TestbedNotifier.create()
-        cleanup_handles.append(notifier.state_actor)
+        notifier: TestbedNotifier | None = None
+        if config.notifier_override is None:
+            notifier = TestbedNotifier.create()
+            cleanup_handles.append(notifier.state_actor)
+        resolved_notifier = config.notifier_override if config.notifier_override is not None else notifier
 
         # Step 3: Prepare collector state actors (before node agents)
         collector_states: dict[str, ray.actor.ActorHandle] = {}
@@ -132,7 +135,7 @@ class MilesTestbed:
             ),
             main_job_override=main_job,
             node_manager_override=node_manager,
-            notifier_override=notifier,
+            notifier_override=resolved_notifier,
             detectors_override=detectors,
             diagnostic_orchestrator_override=FakeDiagnosticOrchestrator(),
             start_exporter=True,
@@ -147,6 +150,12 @@ class MilesTestbed:
             controller_kwargs["rollout_alive_threshold_seconds_override"] = config.rollout_alive_threshold_seconds
         if config.rollout_monitoring_alive_duration_seconds is not None:
             controller_kwargs["rollout_monitoring_alive_duration_seconds_override"] = config.rollout_monitoring_alive_duration_seconds
+        if config.registration_grace_ticks is not None:
+            controller_kwargs["registration_grace_ticks_override"] = config.registration_grace_ticks
+        if config.max_simultaneous_bad_nodes is not None:
+            controller_kwargs["max_simultaneous_bad_nodes_override"] = config.max_simultaneous_bad_nodes
+        if config.recovery_timeout_seconds is not None:
+            controller_kwargs["recovery_timeout_seconds_override"] = config.recovery_timeout_seconds
 
         controller_name = ft_controller_actor_name(ft_id)
         controller = FtControllerActor.options(name=controller_name).remote(**controller_kwargs)
@@ -374,6 +383,8 @@ class MilesTestbed:
 
     @property
     def notifications(self) -> list[tuple[str, str, str]]:
+        if self._notifier is None:
+            raise RuntimeError("No TestbedNotifier; notifier_override was used")
         return self._notifier.calls
 
     @property

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
+
+if TYPE_CHECKING:
+    from miles.utils.ft.adapters.types import NotifierProtocol
 
 
 @dataclass
@@ -31,3 +35,8 @@ class TestbedConfig:
     monitoring_timeout_seconds: int | None = None
     rollout_alive_threshold_seconds: float | None = None
     rollout_monitoring_alive_duration_seconds: float | None = None
+
+    registration_grace_ticks: int | None = None
+    max_simultaneous_bad_nodes: int | None = None
+    recovery_timeout_seconds: int | None = None
+    notifier_override: NotifierProtocol | None = None
