@@ -6,6 +6,7 @@ maybe_create factory.  Exporter-level tests live in
 test_training_rank_exporter.py.
 """
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -59,14 +60,18 @@ class TestFtTrainingRankAgentRegisterRank:
             finally:
                 agent.shutdown()
 
-    def test_register_training_rank_all_attempts_fail_no_exception(self) -> None:
+    def test_register_training_rank_all_attempts_fail_logs_warning(self, caplog: Any) -> None:
+        """H-4: when all registration retries are exhausted, a warning must
+        be logged (previously the failure was completely silent)."""
         mock_client = MagicMock()
         mock_client.register_training_rank.side_effect = RuntimeError("always fails")
 
         with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}), patch("time.sleep"):
-            agent = FtTrainingRankAgent(rank=2, world_size=4, controller_client=mock_client)
+            with caplog.at_level(logging.WARNING):
+                agent = FtTrainingRankAgent(rank=2, world_size=4, controller_client=mock_client)
             try:
                 assert mock_client.register_training_rank.call_count == 3
+                assert any("registration failed" in r.message for r in caplog.records if r.levelno >= logging.WARNING)
             finally:
                 agent.shutdown()
 

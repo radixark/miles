@@ -114,3 +114,11 @@ class FtTrainingRankAgent:
         )
         if result.ok:
             logger.info("Rank %d registered successfully", self._rank)
+        else:
+            logger.warning(
+                "Rank %d registration failed after %d retries: %s",
+                self._rank,
+                self._REGISTER_MAX_ATTEMPTS,
+                result.exception,
+                exc_info=result.exception,
+            )
