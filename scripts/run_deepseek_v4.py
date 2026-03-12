@@ -26,7 +26,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/local_data"
     save_dir: str = "/root/models"
-    megatron_path: str = "/host_home/primary_synced/megatron-sunrise"
+    megatron_path: str = "/workspace/Megatron-LM"
     enable_r3: bool = True
     enable_rir: bool = False
     test_pp_single_node: bool = False
@@ -115,7 +115,7 @@ def _prepare_cp(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
-    print("running on {args.num_nodes} nodes")
+    print(f"running on {args.num_nodes} nodes")
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
