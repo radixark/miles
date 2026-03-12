@@ -39,11 +39,12 @@ def build_training_rank_agent(
     world_size: int,
     ft_id: str = "",
     enabled: bool = True,
+    node_id: str | None = None,
 ) -> FtTrainingRankAgent | None:
     if not enabled:
         return None
     client = RayControllerClient(ft_id=ft_id or get_ft_id())
-    return FtTrainingRankAgent(rank=rank, world_size=world_size, controller_client=client)
+    return FtTrainingRankAgent(rank=rank, world_size=world_size, controller_client=client, node_id=node_id)
 
 
 def _ensure_ray_actor_on_node(

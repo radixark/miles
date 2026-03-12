@@ -32,12 +32,13 @@ class FtTrainingRankAgent:
         rank: int,
         world_size: int,
         controller_client: ControllerClientProtocol | None = None,
+        node_id: str | None = None,
     ) -> None:
         self._rank = rank
         self._world_size = world_size
         self._controller_client = controller_client
         self._run_id: str = get_training_run_id()
-        self._node_id: str = socket.gethostname()
+        self._node_id: str = node_id or socket.gethostname()
 
         self._metric_exporter = TrainingRankExporter(rank=rank, node_id=self._node_id)
 
@@ -55,10 +56,11 @@ class FtTrainingRankAgent:
         world_size: int,
         enabled: bool = True,
         controller_client: ControllerClientProtocol | None = None,
+        node_id: str | None = None,
     ) -> FtTrainingRankAgent | None:
         if not enabled:
             return None
-        return cls(rank=rank, world_size=world_size, controller_client=controller_client)
+        return cls(rank=rank, world_size=world_size, controller_client=controller_client, node_id=node_id)
 
     # ------------------------------------------------------------------
     # Public API — delegated to TrainingRankExporter
