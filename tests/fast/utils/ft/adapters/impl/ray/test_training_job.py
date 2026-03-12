@@ -503,36 +503,29 @@ class TestStateLockSerialization:
     async def test_get_status_waits_for_stop_to_complete(self) -> None:
         """get_status() called during stop() waits for stop to finish,
         then returns STOPPED (because _job_id was cleared)."""
+        import threading
+
         job, mock_client = _make_job(poll_interval_seconds=0)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
 
-        stop_entered = asyncio.Event()
-        stop_proceed = asyncio.Event()
-
-        import threading
+        stop_entered = threading.Event()
+        stop_proceed = threading.Event()
 
         def gated_stop(job_id: str) -> None:
             stop_entered.set()
-            evt = threading.Event()
-
-            def _schedule_signal() -> None:
-                async def _signal() -> None:
-                    await stop_proceed.wait()
-                    evt.set()
-                asyncio.ensure_future(_signal())
-
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(_schedule_signal)
-            evt.wait(timeout=5)
+            stop_proceed.wait(timeout=5)
 
         mock_client.stop_job.side_effect = gated_stop
         mock_client.get_job_status.return_value = "STOPPED"
 
         stop_task = asyncio.create_task(job.stop(timeout_seconds=10))
 
-        await stop_entered.wait()
+        # Wait for stop to enter the gated section (running in a thread)
+        while not stop_entered.is_set():
+            await asyncio.sleep(0.01)
 
+        # get_status should be blocked by the lock while stop holds it
         status_task = asyncio.create_task(job.get_status())
         await asyncio.sleep(0.05)
         assert not status_task.done()
