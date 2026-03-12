@@ -496,6 +496,25 @@ class MilesTestbed:
     def controller(self) -> ray.actor.ActorHandle:
         return self._controller
 
+    @property
+    def train_group(self) -> TestbedRayTrainGroup:
+        return self._train_group
+
+    @property
+    def collector_states(self) -> dict[str, ray.actor.ActorHandle]:
+        return self._collector_states
+
+    @property
+    def node_agents(self) -> dict[str, str]:
+        """node_id → actor_name mapping for direct actor access."""
+        from miles.utils.ft.adapters.types import ft_node_agent_actor_name
+        return {
+            node_config.node_id: ft_node_agent_actor_name(self._ft_id, node_config.node_id)
+            for node_config in (
+                list(self._config.training_nodes) + list(self._config.rollout_nodes)
+            )
+        }
+
 
 def _build_node_mapping(
     config: TestbedConfig,
