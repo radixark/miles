@@ -38,6 +38,10 @@ class BaseFaultDetector(ABC):
 
     def evaluate(self, ctx: DetectorContext) -> Decision:
         decision = self._evaluate_raw(ctx)
+        if not ctx.active_node_ids:
+            if decision.bad_node_ids:
+                logger.info("detector_skipped_no_active_nodes detector=%s", type(self).__name__)
+            return Decision.no_fault(reason=f"no active nodes ({type(self).__name__})")
         if decision.bad_node_ids and ctx.active_node_ids:
             filtered = _filter_node_ids_by_active(decision.bad_node_ids, ctx.active_node_ids)
             if not filtered:

@@ -107,3 +107,30 @@ class TestBaseFaultDetectorEvaluate:
         result = detector.evaluate(ctx)
         assert result.action == ActionType.NONE
         assert result.reason == "all clear"
+
+    def test_empty_active_node_ids_with_bad_nodes_returns_no_fault(self) -> None:
+        """When active_node_ids is empty, bad_node_ids should not pass through
+        unfiltered. Previously the filter condition `if bad_node_ids and active_node_ids`
+        was False when active_node_ids was empty, returning the raw decision."""
+        decision = Decision(
+            action=ActionType.ENTER_RECOVERY,
+            bad_node_ids=["n1", "n2"],
+            reason="fault",
+            trigger=TriggerType.HARDWARE,
+        )
+        detector = _StubDetector(decision=decision)
+        ctx = make_detector_context(active_node_ids=set())
+
+        result = detector.evaluate(ctx)
+        assert result.action == ActionType.NONE
+        assert "no active nodes" in result.reason
+
+    def test_empty_active_node_ids_without_bad_nodes_returns_no_fault(self) -> None:
+        """Even a no-fault decision should return no_fault when no active nodes."""
+        decision = Decision.no_fault(reason="all clear")
+        detector = _StubDetector(decision=decision)
+        ctx = make_detector_context(active_node_ids=set())
+
+        result = detector.evaluate(ctx)
+        assert result.action == ActionType.NONE
+        assert "no active nodes" in result.reason
