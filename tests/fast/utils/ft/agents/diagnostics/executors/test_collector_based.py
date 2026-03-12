@@ -27,6 +27,15 @@ class _FakeCollector(BaseCollector):
         return self._metrics
 
 
+class _SlowCollector(BaseCollector):
+    collect_interval: float = 999.0
+
+    def _collect_sync(self) -> list[MetricSample]:
+        import time
+        time.sleep(10)
+        return []
+
+
 class _CrashingCollector(BaseCollector):
     collect_interval: float = 10.0
 
@@ -100,6 +109,24 @@ class TestCollectorBasedNodeExecutor:
         result = asyncio.run(executor.run(node_id="node-0"))
 
         assert result.passed is True
+
+
+class TestCollectorBasedTimeout:
+    def test_caller_timeout_is_respected(self) -> None:
+        """Previously timeout_seconds was accepted but ignored — the collector
+        used its own internal timeout (collect_interval * 2). Now the caller's
+        timeout_seconds is enforced via asyncio.wait_for."""
+        collector = _SlowCollector()
+        executor = CollectorBasedNodeExecutor(
+            diagnostic_type="test",
+            collector=collector,
+            evaluator=_always_pass_evaluator,
+        )
+
+        result = asyncio.run(executor.run(node_id="node-0", timeout_seconds=1))
+
+        assert result.passed is False
+        assert "timed out" in result.details
 
 
 class TestCollectorBasedHasNoControllerImports:
