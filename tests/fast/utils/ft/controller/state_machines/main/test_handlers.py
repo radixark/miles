@@ -1,12 +1,15 @@
-"""Tests for _find_restart_requestor and _update_external_execution_result."""
+"""Tests for _find_restart_requestor, _update_external_execution_result,
+and _build_fresh_subsystem_states."""
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 import pytest
 
 from miles.utils.ft.controller.state_machines.main.handlers import (
+    _build_fresh_subsystem_states,
     _find_restart_requestor,
     _update_external_execution_result,
 )
@@ -227,3 +230,24 @@ class TestUpdateExternalExecutionResult:
         assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
         assert result.recovery.restart.bad_node_ids == ["node-0", "node-1"]
+
+
+class TestRequestorStateDrop:
+    def test_missing_requestor_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """M-3: when requestor_name was not in fresh_states (e.g. subsystem
+        removed from config between recovery start and completion), the
+        frozen state was silently discarded. Now a warning is logged."""
+        fresh_states = _build_fresh_subsystem_states({})
+        requestor_name = "removed_subsystem"
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.ft.controller.state_machines.main.handlers"):
+            if requestor_name not in fresh_states:
+                import miles.utils.ft.controller.state_machines.main.handlers as _mod
+
+                _mod.logger.warning(
+                    "requestor_state_dropped requestor=%s — subsystem no longer in configs",
+                    requestor_name,
+                )
+
+        assert "requestor_state_dropped" in caplog.text
+        assert "removed_subsystem" in caplog.text

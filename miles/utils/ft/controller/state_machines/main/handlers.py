@@ -158,4 +158,9 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
         if state.requestor_name in fresh_states:
             restored = _update_external_execution_result(state.requestor_frozen_state, execution_result)
             fresh_states[state.requestor_name] = restored
+        else:
+            logger.warning(
+                "requestor_state_dropped requestor=%s — subsystem no longer in configs",
+                state.requestor_name,
+            )
         return NormalSt(subsystems=fresh_states)
