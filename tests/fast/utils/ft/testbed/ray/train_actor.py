@@ -110,7 +110,7 @@ class TestbedTrainRayActor:
     async def _all_peers_alive(self) -> bool:
         for peer in self._peers:
             try:
-                ray.get(peer.ping.remote(), timeout=2.0)
+                await asyncio.wait_for(peer.ping.remote(), timeout=2.0)
             except Exception:
                 return False
         return True

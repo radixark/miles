@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 
@@ -106,7 +107,7 @@ class TestbedRayTrainGroup:
             return False
         for worker in self._workers:
             try:
-                ray.get(worker.ping.remote(), timeout=2.0)
+                await asyncio.wait_for(worker.ping.remote(), timeout=2.0)
             except Exception:
                 return False
         return True
