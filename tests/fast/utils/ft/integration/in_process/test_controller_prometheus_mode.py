@@ -73,7 +73,7 @@ class TestControllerPrometheusMode:
         )
 
         bundle.controller._activate_run("run-1")
-        bundle.controller.training_rank_roster.register_training_rank(
+        bundle.subsystem_hub.training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=2,
@@ -82,7 +82,7 @@ class TestControllerPrometheusMode:
             pid=1,
         )
 
-        assert bundle.controller.training_rank_roster.rank_placement == {0: "node-0"}
+        assert bundle.subsystem_hub.training_rank_roster.rank_placement == {0: "node-0"}
 
     @pytest.mark.anyio
     async def test_training_metrics_propagated_to_exporter(self) -> None:
@@ -98,7 +98,7 @@ class TestControllerPrometheusMode:
         )
 
         bundle.controller._activate_run("run-1")
-        bundle.controller.training_rank_roster.register_training_rank(
+        bundle.subsystem_hub.training_rank_roster.register_training_rank(
             run_id="run-1",
             rank=0,
             world_size=1,

@@ -38,8 +38,8 @@ class TestDynamicBadNodeInjection:
             register_dummy_rank=False,
         )
         harness.controller._activate_run("test-run")
-        harness.controller.training_rank_roster.rank_placement[0] = "node-A"
-        harness.controller.training_rank_roster.rank_placement[1] = "node-B"
+        harness.subsystem_hub.training_rank_roster.rank_placement[0] = "node-A"
+        harness.subsystem_hub.training_rank_roster.rank_placement[1] = "node-B"
 
         # Step 1: single tick enters recovery and progresses through the full
         # recovery flow (state machine loops within one tick with instant fakes)
@@ -74,8 +74,8 @@ class TestRunIdUniqueness:
         for _ in range(50):
             await harness.controller._tick()
             # Re-register ranks after _activate_run clears the roster
-            harness.controller.training_rank_roster.rank_placement[0] = "node-0"
-            harness.controller.training_rank_roster.rank_placement[1] = "node-1"
+            harness.subsystem_hub.training_rank_roster.rank_placement[0] = "node-0"
+            harness.subsystem_hub.training_rank_roster.rank_placement[1] = "node-1"
             if len(recorded_run_ids) >= 2:
                 break
 

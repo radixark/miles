@@ -14,7 +14,7 @@ def _force_recovery_complete(harness) -> None:
     from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_state
     set_training_subsystem_state(harness.controller, DetectingAnomalySt())
     harness.controller._activate_run("recovery-done")
-    harness.controller.training_rank_roster.rank_placement[0] = "node-0"
+    harness.subsystem_hub.training_rank_roster.rank_placement[0] = "node-0"
 
 
 class TestRecoveryCooldown:

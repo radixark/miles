@@ -121,8 +121,8 @@ def _make_test_controller_with_rollout(
     subsystem_hub = bundle.subsystem_hub
 
     controller._activate_run("test-run")
-    controller.training_rank_roster.rank_placement[0] = "train-node-0"
-    controller.training_rank_roster.rank_placement[1] = "train-node-1"
+    subsystem_hub.training_rank_roster.rank_placement[0] = "train-node-0"
+    subsystem_hub.training_rank_roster.rank_placement[1] = "train-node-1"
 
     rollout_manager_handle = FakeRmHandle()
     subsystem_hub.set_rollout_handle(rollout_manager_handle)
@@ -388,8 +388,8 @@ class TestColocatedHardwareFault:
         )
         controller = harness.controller
 
-        controller.training_rank_roster.rank_placement[0] = shared_node
-        controller.training_rank_roster.rank_placement[1] = "train-node-1"
+        harness.subsystem_hub.training_rank_roster.rank_placement[0] = shared_node
+        harness.subsystem_hub.training_rank_roster.rank_placement[1] = "train-node-1"
 
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
         rollout_config.monitoring_config = MonitoringSustainedAliveConfig(

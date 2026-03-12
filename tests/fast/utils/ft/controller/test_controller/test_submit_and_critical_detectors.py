@@ -120,7 +120,7 @@ class TestRecoveryCompletionMetrics:
         assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
 
         # Step 2: inject training progress so MonitoringProgress succeeds
-        run_id = harness.controller.training_rank_roster.run_id
+        run_id = harness.subsystem_hub.training_rank_roster.run_id
         harness.mini_wandb.log_step(run_id=run_id, step=10, metrics={"iteration": 10})
 
         # Step 3: tick completes recovery → back to DetectingAnomaly

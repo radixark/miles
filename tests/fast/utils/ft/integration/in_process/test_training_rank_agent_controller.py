@@ -26,7 +26,7 @@ class TestStepToLogStepFlow:
         run_id = "integ-megatron-1"
 
         harness.controller._activate_run(run_id)
-        harness.controller.training_rank_roster.register_training_rank(
+        harness.subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=0,
             world_size=4,
@@ -52,7 +52,7 @@ class TestRegisterRankPlacement:
         run_id = "integ-megatron-2"
 
         harness.controller._activate_run(run_id)
-        harness.controller.training_rank_roster.register_training_rank(
+        harness.subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=0,
             world_size=4,
@@ -60,7 +60,7 @@ class TestRegisterRankPlacement:
             exporter_address="http://node-0:9090",
             pid=1,
         )
-        harness.controller.training_rank_roster.register_training_rank(
+        harness.subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=1,
             world_size=4,
@@ -69,7 +69,7 @@ class TestRegisterRankPlacement:
             pid=1,
         )
 
-        assert harness.controller.training_rank_roster.rank_placement == {0: "node-0", 1: "node-1"}
+        assert harness.subsystem_hub.training_rank_roster.rank_placement == {0: "node-0", 1: "node-1"}
 
 
 class TestScrapeTargetRegistration:
@@ -82,7 +82,7 @@ class TestScrapeTargetRegistration:
             exporter_address = agent.get_exporter_address()
 
             harness.controller._activate_run(run_id)
-            harness.controller.training_rank_roster.register_training_rank(
+            harness.subsystem_hub.training_rank_roster.register_training_rank(
                 run_id=run_id,
                 rank=0,
                 world_size=4,
@@ -106,7 +106,7 @@ class TestHeartbeatScrape:
             exporter_address = agent.get_exporter_address()
 
             harness.controller._activate_run(run_id)
-            harness.controller.training_rank_roster.register_training_rank(
+            harness.subsystem_hub.training_rank_roster.register_training_rank(
                 run_id=run_id,
                 rank=0,
                 world_size=4,
@@ -137,7 +137,7 @@ class TestRunIdClear:
         run_id_2 = "integ-megatron-run-2"
 
         harness.controller._activate_run(run_id_1)
-        harness.controller.training_rank_roster.register_training_rank(
+        harness.subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id_1,
             rank=0,
             world_size=2,
@@ -153,7 +153,7 @@ class TestRunIdClear:
         assert harness.mini_wandb.latest(metric_name="loss") == 2.0
 
         harness.controller._activate_run(run_id_2)
-        harness.controller.training_rank_roster.register_training_rank(
+        harness.subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id_2,
             rank=0,
             world_size=2,

@@ -185,8 +185,8 @@ class TestColocatedNodeFault:
         controller = harness.controller
         store = harness.metric_store
 
-        controller.training_rank_roster.rank_placement[0] = shared_node
-        controller.training_rank_roster.rank_placement[1] = "train-only-1"
+        harness.subsystem_hub.training_rank_roster.rank_placement[0] = shared_node
+        harness.subsystem_hub.training_rank_roster.rank_placement[1] = "train-only-1"
         harness.subsystem_hub.set_rollout_node_ids("ep72", {shared_node, "rollout-only-1"})
         _override_rollout_monitoring(harness)
 
