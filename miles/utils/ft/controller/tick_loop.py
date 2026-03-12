@@ -13,7 +13,7 @@ from miles.utils.ft.controller.subsystem_hub import SubsystemSpec, TrainingRankR
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
 from miles.utils.ft.utils.box import Box
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
-from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
+from miles.utils.ft.controller.status import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,

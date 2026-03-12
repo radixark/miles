@@ -18,6 +18,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryDoneSt,
     StopTimeDiagnosticsSt,
 )
+from miles.utils.ft.controller.state_machines.recovery.transitions import evict_and_restart_next_stop_time_diag
 from miles.utils.ft.controller.state_machines.restart.models import EvictingSt, StoppingAndRestartingSt
 from miles.utils.ft.controller.status import build_controller_status, recovery_phase_name
 from miles.utils.ft.controller.types import ControllerMode
@@ -91,7 +92,7 @@ class TestBuildControllerStatus:
         assert status.recovery_in_progress is False
 
     def test_recovery_mode_with_bad_nodes(self) -> None:
-        recovery = EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(bad_node_ids=("node-1",))
+        recovery = evict_and_restart_next_stop_time_diag(bad_node_ids=("node-1",))
         state = RecoveringSt(
             recovery=recovery,
             trigger="crash",

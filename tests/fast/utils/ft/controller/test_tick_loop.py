@@ -18,7 +18,8 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agents.registry import NodeAgentRegistry
 from miles.utils.ft.controller.state_machines.main.models import MainState, NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
-from miles.utils.ft.controller.state_machines.recovery.models import RECOVERY_STATE_TO_INT, RealtimeChecksSt
+from miles.utils.ft.controller.state_machines.recovery.models import RealtimeChecksSt
+from miles.utils.ft.controller.status import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.tick_loop import TickDeps, TickLoop
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.box import Box

@@ -7,11 +7,22 @@ from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestartingSt,
     NotifyHumansSt,
+    RealtimeChecksSt,
     RecoveryDoneSt,
     RecoveryState,
+    StopTimeDiagnosticsSt,
 )
 from miles.utils.ft.controller.types import ControllerStatus, RecoveryInfo
 from miles.utils.ft.utils.state_machine import StateMachine
+
+
+RECOVERY_STATE_TO_INT: dict[type[RecoveryState], int] = {
+    RealtimeChecksSt: 1,
+    EvictingAndRestartingSt: 2,
+    StopTimeDiagnosticsSt: 3,
+    NotifyHumansSt: 4,
+    RecoveryDoneSt: 5,
+}
 
 
 def recovery_phase_name(recovery: RecoveryState) -> str:
