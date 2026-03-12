@@ -428,7 +428,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             inference_context, None, hidden_states, self.config, packed_seq_params
         )
         # TODO: support apply_rope_fusion
-        rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq_params=packed_seq_params)
+        rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq_params is not None)
 
         cu_seqlens_q = packed_seq_params.cu_seqlens_q
         cu_seqlens_kv = packed_seq_params.cu_seqlens_kv
