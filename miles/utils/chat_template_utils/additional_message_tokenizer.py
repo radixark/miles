@@ -95,16 +95,6 @@ class AdditionalMessageTokenizer(ABC):
         """
         return False
 
-    def strip_trailing_stop_token(self, token_ids: list[int]) -> list[int]:
-        """Strip model stop token from end of token IDs if present.
-
-        Convenience wrapper around :meth:`should_strip_trailing_stop_token`.
-        Used in ``sessions.py`` to strip before storing ``session.token_ids``.
-        """
-        if self.should_strip_trailing_stop_token(token_ids):
-            return token_ids[:-1]
-        return token_ids
-
     def get_trim_trailing_ids(self) -> set[int]:
         """Token IDs to trim from sequence tails before comparison.
 

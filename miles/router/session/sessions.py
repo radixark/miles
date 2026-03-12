@@ -131,7 +131,8 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         # Strip trailing stop token so pretokenized + incremental matches
         # full template rendering on the next turn.
-        completion_token_ids = additional_tokenizer.strip_trailing_stop_token(completion_token_ids)
+        if additional_tokenizer.should_strip_trailing_stop_token(completion_token_ids):
+            completion_token_ids = completion_token_ids[:-1]
 
         manager.update_pretokenized_state(
             session_id,
