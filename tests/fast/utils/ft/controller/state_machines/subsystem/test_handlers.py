@@ -448,6 +448,46 @@ class TestRecovering:
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-old", "node-new"}
 
     @pytest.mark.asyncio
+    async def test_new_bad_nodes_during_eviction_restarts_from_realtime_checks(self) -> None:
+        """When new bad nodes appear mid-eviction, recovery restarts from
+        RealtimeChecksSt with the merged set. This is intentional: partial
+        eviction may be based on incomplete fault information, so re-entering
+        RealtimeChecks ensures the full set goes through the pipeline."""
+        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.restart import EvictingSt
+
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["node-new"],
+                reason="new fault during eviction",
+                trigger=TriggerType.HARDWARE,
+            )
+        )
+
+        stepper = _make_stepper()
+        state = RecoveringSt(
+            recovery=EvictingAndRestartingSt(
+                restart=EvictingSt(bad_node_ids=["node-old"]),
+                failed_next_state=StopTimeDiagnosticsSt(),
+            ),
+            trigger=TriggerType.CRASH.value,
+            recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=["node-old"],
+        )
+        result = await _step_last(stepper,
+            state,
+            _make_subsystem_context(
+                detectors=[detector],
+                recovery_stepper=_mock_stepper_yielding(None),
+                rank_placement={0: "node-old", 1: "node-new"},
+            ),
+        )
+        assert isinstance(result, RecoveringSt)
+        assert isinstance(result.recovery, RealtimeChecksSt)
+        assert set(result.known_bad_node_ids) == {"node-old", "node-new"}
+
+    @pytest.mark.asyncio
     async def test_cascading_bad_node_preserves_original_recovery_start_time(self) -> None:
         """Previously _check_new_bad_nodes used datetime.now() as the new
         recovery_start_time, resetting the global timeout clock. This meant

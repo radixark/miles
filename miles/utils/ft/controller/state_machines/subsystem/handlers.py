@@ -130,6 +130,11 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
         known_bad = set(state.known_bad_node_ids)
         truly_new = new_bad_nodes - known_bad
         if truly_new:
+            # Restart recovery from RealtimeChecksSt with the combined bad-node
+            # set. This intentionally discards in-progress diagnostics/eviction:
+            # the new bad nodes change the fault scope, so previous partial work
+            # may be based on incomplete information. Re-entering RealtimeChecks
+            # ensures the full set goes through the evict→restart→monitor pipeline.
             all_bad = sorted(known_bad | new_bad_nodes)
             return RecoveringSt(
                 recovery=RealtimeChecksSt(pre_identified_bad_nodes=all_bad),
