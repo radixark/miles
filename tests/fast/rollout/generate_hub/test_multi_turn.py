@@ -127,12 +127,17 @@ def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_param
     return run_generate(env, sample, sampling_params, variant=variant)
 
 
-def expected_request(input_ids: list[int], sampling_params: dict | None = None) -> dict:
+def expected_request(
+    input_ids: list[int],
+    sampling_params: dict | None = None,
+    *,
+    return_routed_experts: bool = False,
+) -> dict:
     return {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
-        "return_routed_experts": False,
+        "return_routed_experts": return_routed_experts,
     }
 
 
@@ -148,6 +153,14 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "no_stop_trim": False,
         **extra,
     }
+
+
+_SESSION_PRETOKENIZED_KEYS = {"pretokenized_token_ids", "pretokenized_num_message", "additional_tokenizer"}
+
+
+def _strip_pretokenized(requests: list[dict]) -> list[dict]:
+    """Strip session-injected pretokenized fields for deterministic comparison."""
+    return [{k: v for k, v in r.items() if k not in _SESSION_PRETOKENIZED_KEYS} for r in requests]
 
 
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
@@ -199,7 +212,7 @@ class TestBasicMultiTurn:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         if is_agentic_variant(variant):
-            assert result.requests == [
+            assert _strip_pretokenized(result.requests) == [
                 expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN),
                 expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT),
             ]
@@ -461,7 +474,7 @@ class TestThreeTurn:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         if is_agentic_variant(variant):
-            assert result.requests == [
+            assert _strip_pretokenized(result.requests) == [
                 expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN),
                 expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT),
                 expected_openai_request(S.OPENAI_MESSAGES_THIRD_TURN_FROM_CLIENT),
@@ -539,9 +552,6 @@ class TestRoutedExpertsMultiTurn:
         indirect=True,
     )
     def test_two_turns_routed_experts(self, variant, generation_env):
-        if is_agentic_variant(variant):
-            pytest.skip("TODO: implement")
-
         S = TwoTurnStub
         num_layers, moe_router_topk = 2, 4
         generation_env.args.num_layers = num_layers
@@ -575,7 +585,26 @@ class TestRoutedExpertsMultiTurn:
         generation_env.mock_server.process_fn = process_fn
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT), DEFAULT_SAMPLING_PARAMS)
 
+        if is_agentic_variant(variant):
+            assert len(result.requests) == 2
+            assert result.requests[0]["messages"] == S.OPENAI_MESSAGES_FIRST_TURN
+            assert result.requests[1]["messages"] == S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT
+            for req in result.requests:
+                assert req["logprobs"] is True
+                assert req["return_prompt_token_ids"] is True
+                assert req["return_meta_info"] is True
+                assert req["no_stop_trim"] is False
+                assert req["return_routed_experts"] is True
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS, return_routed_experts=True),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS, return_routed_experts=True),
+            ]
+
         sample = result.sample[-1] if isinstance(result.sample, list) else result.sample
+        expected_second_turn_log_probs = [-1 / 128 * i for i in range(token_len(S.SECOND_RESPONSE))]
+        assert sample.rollout_log_probs is not None
+        assert sample.rollout_log_probs[-len(expected_second_turn_log_probs) :] == expected_second_turn_log_probs
         assert sample.rollout_routed_experts is not None
         assert sample.rollout_routed_experts.shape == second_routed_experts.shape
         np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)

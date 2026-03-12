@@ -222,6 +222,7 @@ class MockSGLangServer:
                     "meta_info": {
                         "output_token_logprobs": output_token_logprobs,
                         "completion_tokens": len(output_ids),
+                        **process_result.meta_info.to_dict(),
                     },
                 }
             ],
