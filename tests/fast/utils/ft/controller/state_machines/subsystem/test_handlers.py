@@ -207,6 +207,36 @@ class TestDetectingAnomaly:
         assert len(notifier.calls) == 1
 
     @pytest.mark.asyncio
+    async def test_throttled_recovery_does_not_consume_cooldown(self) -> None:
+        """Previously cooldown.record() was called before is_throttled(),
+        so even throttled attempts consumed a cooldown slot. With max_count=2,
+        only 1 actual recovery would succeed because the 2nd slot was wasted
+        on a throttled attempt. Now record() is called only when recovery
+        actually proceeds."""
+        cooldown = SlidingWindowThrottle(window_minutes=30.0, max_count=2)
+        cooldown.record()
+        assert cooldown.is_throttled() is False
+
+        notifier = FakeNotifier()
+        cooldown_before_throttle = SlidingWindowThrottle(window_minutes=30.0, max_count=2)
+        cooldown_before_throttle.record()
+        cooldown_before_throttle.record()
+        assert cooldown_before_throttle.is_throttled() is True
+
+        stepper = _make_stepper()
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
+                detectors=[AlwaysEnterRecoveryDetector()],
+                cooldown=cooldown_before_throttle,
+                notifier=notifier,
+            ),
+        )
+        assert result is None
+        assert len(notifier.calls) == 1
+
+    @pytest.mark.asyncio
     async def test_skip_detectors_returns_none(self) -> None:
         stepper = _make_stepper()
         result = await _step_last(stepper,

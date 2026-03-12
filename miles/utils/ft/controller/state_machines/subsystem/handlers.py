@@ -31,7 +31,6 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
         if decision is None:
             return None
 
-        ctx.cooldown.record()
         if ctx.cooldown.is_throttled():
             await handle_notify_human(
                 decision=Decision(
@@ -45,6 +44,7 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             )
             return None
 
+        ctx.cooldown.record()
         return RecoveringSt(
             recovery=RealtimeChecksSt(pre_identified_bad_nodes=decision.bad_node_ids),
             trigger=decision.trigger,
