@@ -429,10 +429,14 @@ class MilesTestbed:
     ) -> ControllerStatus:
         """Wait for mode to leave target, then return when it reaches target again."""
         deadline = time.monotonic() + timeout
+        last_logged_mode: ControllerMode | None = None
 
         while time.monotonic() < deadline:
             try:
                 status = await self.get_status()
+                if status.mode != last_logged_mode:
+                    logger.info("wait_for_mode_transition: phase=leave current=%s target=%s", status.mode, target_mode)
+                    last_logged_mode = status.mode
                 if status.mode != target_mode:
                     break
             except Exception:
@@ -442,14 +446,22 @@ class MilesTestbed:
         while time.monotonic() < deadline:
             try:
                 status = await self.get_status()
+                if status.mode != last_logged_mode:
+                    logger.info(
+                        "wait_for_mode_transition: phase=return current=%s target=%s subsystems=%s",
+                        status.mode, target_mode, status.subsystem_states,
+                    )
+                    last_logged_mode = status.mode
                 if status.mode == target_mode:
                     return status
             except Exception:
                 logger.debug("wait_for_mode_transition: status check failed", exc_info=True)
             await asyncio.sleep(0.3)
 
+        last_status = await self.get_status()
         raise TimeoutError(
-            f"Mode transition to {target_mode} did not complete within {timeout}s"
+            f"Mode transition to {target_mode} did not complete within {timeout}s. "
+            f"Last mode={last_status.mode} subsystems={last_status.subsystem_states}"
         )
 
     async def wait_for_all_subsystems_detecting(
