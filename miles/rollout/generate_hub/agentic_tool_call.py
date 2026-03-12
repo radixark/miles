@@ -83,8 +83,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             samples = samples[-1]
         samples.metadata.update(session_metadata)
     else:
-        if samples:
-            samples[-1].metadata.update(session_metadata)
+        samples[-1].metadata.update(session_metadata)
     return GenerateFnOutput(samples=samples)
 
 

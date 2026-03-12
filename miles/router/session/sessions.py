@@ -8,8 +8,7 @@ from fastapi.responses import JSONResponse, Response
 
 from miles.router.session.session_types import GetSessionResponse, SessionRecord
 from miles.router.session.single_user_turn_trajectory import SingleUserTurnTrajectoryManager
-from miles.utils.chat_template_utils import apply_chat_template, get_additional_message_tokenizer
-from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
+from miles.utils.chat_template_utils import get_additional_message_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 
 if TYPE_CHECKING:
@@ -34,9 +33,7 @@ def setup_session_routes(app, router: "MilesRouter"):
         tokenizer_type=getattr(router.args, "additional_tokenizer", "default"),
     )
 
-    manager = SingleUserTurnTrajectoryManager(router.args, tokenizer)
-    comparator = TokenSeqComparator(tokenizer)
-    trim_trailing_ids = additional_tokenizer.get_trim_trailing_ids() or None
+    manager = SingleUserTurnTrajectoryManager(router.args, tokenizer, additional_tokenizer=additional_tokenizer)
 
     @app.post("/sessions")
     async def create_session():
@@ -45,34 +42,13 @@ def setup_session_routes(app, router: "MilesRouter"):
 
     @app.get("/sessions/{session_id}")
     async def get_session(session_id: str):
-        session = manager.get_session_by_id(session_id)
-        if session is None:
+        records = manager.get_session_records_by_id(session_id)
+        if records is None:
             return JSONResponse(status_code=404, content={"error": "session not found"})
-
-        metadata: dict = {}
-        if session.token_ids and session.messages and session.records:
-            try:
-                tools = session.records[-1].request.get("tools")
-                expected_ids = apply_chat_template(
-                    session.messages,
-                    tokenizer=tokenizer,
-                    tools=tools,
-                    add_generation_prompt=False,
-                    tokenize=True,
-                )
-                mismatches = comparator.compare_sequences(
-                    expected_ids,
-                    session.token_ids,
-                    trim_trailing_ids=trim_trailing_ids,
-                )
-                metadata["tito_session_mismatch"] = [m.to_dict() for m in mismatches]
-            except Exception:
-                logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
-
         return GetSessionResponse(
             session_id=session_id,
-            records=session.records,
-            metadata=metadata,
+            records=records,
+            metadata=manager.compute_session_metadata(session_id),
         )
 
     @app.delete("/sessions/{session_id}")

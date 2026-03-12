@@ -6,6 +6,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from miles.router.session.session_types import SessionRecord
+from miles.utils.chat_template_utils import apply_chat_template
+from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +65,15 @@ class SingleUserTurnTrajectoryManager:
     appended. This allows reusing pretokenized_token_ids across turns.
     """
 
-    def __init__(self, args, tokenizer: Any):
+    def __init__(self, args, tokenizer: Any, *, additional_tokenizer=None):
         self.sessions: dict[str, SingleUserTurnTrajectory] = {}
         self.args = args
         self.tokenizer = tokenizer
         self._lock = threading.RLock()
+        self._comparator = TokenSeqComparator(tokenizer) if tokenizer else None
+        self._trim_trailing_ids = (
+            (additional_tokenizer.get_trim_trailing_ids() or None) if additional_tokenizer else None
+        )
 
     def create_session(self) -> str:
         with self._lock:
@@ -82,9 +88,31 @@ class SingleUserTurnTrajectoryManager:
                 return None
             return session.records
 
-    def get_session_by_id(self, session_id: str) -> SingleUserTurnTrajectory | None:
+    def compute_session_metadata(self, session_id: str) -> dict:
+        if self._comparator is None:
+            return {}
         with self._lock:
-            return self.sessions.get(session_id)
+            session = self.sessions.get(session_id)
+            if session is None or not session.token_ids:
+                return {}
+            try:
+                tools = session.records[-1].request.get("tools")
+                expected_ids = apply_chat_template(
+                    session.messages,
+                    tokenizer=self.tokenizer,
+                    tools=tools,
+                    add_generation_prompt=False,
+                    tokenize=True,
+                )
+                mismatches = self._comparator.compare_sequences(
+                    expected_ids,
+                    session.token_ids,
+                    trim_trailing_ids=self._trim_trailing_ids,
+                )
+                return {"tito_session_mismatch": [m.to_dict() for m in mismatches]}
+            except Exception:
+                logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
+                return {}
 
     def delete_session_by_id(self, session_id: str) -> bool | None:
         with self._lock:
