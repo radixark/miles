@@ -590,6 +590,7 @@ class TestToAsyncGen:
     async def test_async_gen_empty(self) -> None:
         async def gen():
             return
+            yield  # noqa: RUF027 — makes this an async generator, not a coroutine
 
         results = [x async for x in _to_async_gen(gen())]
         assert results == []
