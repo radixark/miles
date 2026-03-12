@@ -52,3 +52,67 @@ class TestFtControllerConfig:
     def test_scrape_interval_seconds_rejects_negative(self) -> None:
         with pytest.raises(ValidationError, match="scrape_interval_seconds"):
             FtControllerConfig(rollout_num_cells=0, scrape_interval_seconds=-1.0)
+
+
+class TestStateMachineConfigFields:
+    """These parameters were previously only available as factory defaults,
+    so operators could not tune them at launch time."""
+
+    def test_state_machine_params_have_sensible_defaults(self) -> None:
+        config = FtControllerConfig(rollout_num_cells=0)
+
+        assert config.recovery_cooldown_window_minutes == 30.0
+        assert config.recovery_cooldown_max_count == 3
+        assert config.registration_grace_ticks == 5
+        assert config.max_simultaneous_bad_nodes == 3
+        assert config.monitoring_success_iterations == 10
+        assert config.monitoring_timeout_seconds == 600
+        assert config.recovery_timeout_seconds == 3600
+        assert config.rollout_alive_threshold_seconds is None
+        assert config.rollout_monitoring_alive_duration_seconds is None
+
+    def test_state_machine_params_accept_custom_values(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=0,
+            recovery_cooldown_window_minutes=60.0,
+            recovery_cooldown_max_count=5,
+            registration_grace_ticks=10,
+            max_simultaneous_bad_nodes=2,
+            monitoring_success_iterations=20,
+            monitoring_timeout_seconds=1200,
+            recovery_timeout_seconds=7200,
+            rollout_alive_threshold_seconds=30.0,
+            rollout_monitoring_alive_duration_seconds=300.0,
+        )
+
+        assert config.recovery_cooldown_window_minutes == 60.0
+        assert config.recovery_cooldown_max_count == 5
+        assert config.registration_grace_ticks == 10
+        assert config.max_simultaneous_bad_nodes == 2
+        assert config.monitoring_success_iterations == 20
+        assert config.monitoring_timeout_seconds == 1200
+        assert config.recovery_timeout_seconds == 7200
+        assert config.rollout_alive_threshold_seconds == 30.0
+        assert config.rollout_monitoring_alive_duration_seconds == 300.0
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "recovery_cooldown_max_count",
+            "registration_grace_ticks",
+            "max_simultaneous_bad_nodes",
+            "monitoring_success_iterations",
+        ],
+    )
+    def test_int_params_reject_zero(self, field_name: str) -> None:
+        with pytest.raises(ValidationError, match="must be >= 1"):
+            FtControllerConfig(rollout_num_cells=0, **{field_name: 0})
+
+    def test_recovery_cooldown_window_rejects_zero(self) -> None:
+        with pytest.raises(ValidationError, match="recovery_cooldown_window_minutes"):
+            FtControllerConfig(rollout_num_cells=0, recovery_cooldown_window_minutes=0)
+
+    @pytest.mark.parametrize("field_name", ["monitoring_timeout_seconds", "recovery_timeout_seconds"])
+    def test_timeout_params_reject_zero(self, field_name: str) -> None:
+        with pytest.raises(ValidationError, match="must be > 0"):
+            FtControllerConfig(rollout_num_cells=0, **{field_name: 0})

@@ -322,7 +322,17 @@ def build_ft_controller(
         rollout_cell_ids=rollout_cell_ids,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator_override,
+        recovery_cooldown_window_minutes=config.recovery_cooldown_window_minutes,
+        recovery_cooldown_max_count=config.recovery_cooldown_max_count,
+        registration_grace_ticks=config.registration_grace_ticks,
+        max_simultaneous_bad_nodes=config.max_simultaneous_bad_nodes,
+        monitoring_success_iterations=config.monitoring_success_iterations,
+        monitoring_timeout_seconds=config.monitoring_timeout_seconds,
+        recovery_timeout_seconds=config.recovery_timeout_seconds,
+        rollout_alive_threshold_seconds=config.rollout_alive_threshold_seconds,
+        rollout_monitoring_alive_duration_seconds=config.rollout_monitoring_alive_duration_seconds,
     )
+
     if recovery_cooldown_override is not None:
         assemble_kwargs["recovery_cooldown_window_minutes"] = recovery_cooldown_override.window_minutes
         assemble_kwargs["recovery_cooldown_max_count"] = recovery_cooldown_override.max_count

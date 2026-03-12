@@ -1,9 +1,12 @@
-"""Tests for controller/factory.py — rank_pids_provider lambda safety."""
+"""Tests for controller/factory.py — rank_pids_provider lambda safety and config wiring."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from miles.utils.ft.adapters.config import FtControllerConfig
+from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
+from miles.utils.ft.factories.controller import build_ft_controller
 from miles.utils.ft.utils.box import Box
 
 
@@ -37,3 +40,40 @@ class TestRankPidsProviderTOCTOU:
 
         box.value = None
         assert provider("node-1") == {}
+
+
+class TestBuildFtControllerStateMachineParams:
+    """State machine parameters were hardcoded in the factory and not read
+    from FtControllerConfig, so CLI values had no effect."""
+
+    def test_config_state_machine_params_reach_assemble(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=0,
+            recovery_cooldown_window_minutes=60.0,
+            recovery_cooldown_max_count=5,
+            registration_grace_ticks=10,
+            max_simultaneous_bad_nodes=2,
+            monitoring_success_iterations=20,
+            monitoring_timeout_seconds=1200,
+            recovery_timeout_seconds=7200,
+        )
+
+        with patch(
+            "miles.utils.ft.factories.controller.assemble_ft_controller"
+        ) as mock_assemble:
+            mock_assemble.return_value = MagicMock()
+            build_ft_controller(
+                config=config,
+                start_exporter=False,
+                node_manager_override=StubNodeManager(),
+                main_job_override=StubMainJob(),
+            )
+
+        kwargs = mock_assemble.call_args.kwargs
+        assert kwargs["recovery_cooldown_window_minutes"] == 60.0
+        assert kwargs["recovery_cooldown_max_count"] == 5
+        assert kwargs["registration_grace_ticks"] == 10
+        assert kwargs["max_simultaneous_bad_nodes"] == 2
+        assert kwargs["monitoring_success_iterations"] == 20
+        assert kwargs["monitoring_timeout_seconds"] == 1200
+        assert kwargs["recovery_timeout_seconds"] == 7200

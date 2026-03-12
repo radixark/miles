@@ -259,6 +259,59 @@ class TestLauncherScrapeInterval:
         assert config.scrape_interval_seconds == 10.0
 
 
+class TestLauncherStateMachineParams:
+    """State machine parameters were hardcoded in the factory with no CLI
+    entry, so operators could not tune recovery behavior at launch time."""
+
+    def test_state_machine_params_passed_to_config(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(
+                app,
+                [
+                    "launch",
+                    "--platform", "stub",
+                    "--recovery-cooldown-window-minutes", "60",
+                    "--recovery-cooldown-max-count", "5",
+                    "--registration-grace-ticks", "10",
+                    "--max-simultaneous-bad-nodes", "2",
+                    "--monitoring-success-iterations", "20",
+                    "--monitoring-timeout-seconds", "1200",
+                    "--recovery-timeout-seconds", "7200",
+                    "--rollout-alive-threshold-seconds", "30",
+                    "--rollout-monitoring-alive-duration-seconds", "300",
+                    "--", "python3", "train.py",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.recovery_cooldown_window_minutes == 60.0
+        assert config.recovery_cooldown_max_count == 5
+        assert config.registration_grace_ticks == 10
+        assert config.max_simultaneous_bad_nodes == 2
+        assert config.monitoring_success_iterations == 20
+        assert config.monitoring_timeout_seconds == 1200
+        assert config.recovery_timeout_seconds == 7200
+        assert config.rollout_alive_threshold_seconds == 30.0
+        assert config.rollout_monitoring_alive_duration_seconds == 300.0
+
+    def test_state_machine_params_use_defaults_when_omitted(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(app, ["launch", "--platform", "stub", "--", "python3", "train.py"])
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.recovery_cooldown_window_minutes == 30.0
+        assert config.recovery_cooldown_max_count == 3
+        assert config.registration_grace_ticks == 5
+        assert config.max_simultaneous_bad_nodes == 3
+        assert config.monitoring_success_iterations == 10
+        assert config.monitoring_timeout_seconds == 600
+        assert config.recovery_timeout_seconds == 3600
+        assert config.rollout_alive_threshold_seconds is None
+        assert config.rollout_monitoring_alive_duration_seconds is None
+
+
 class TestLauncherInvalidInput:
     def test_invalid_runtime_env_json_fails(self) -> None:
         result = runner.invoke(

@@ -49,6 +49,33 @@ def launch(
     scrape_interval_seconds: Annotated[
         float, typer.Option(help="Metric scrape interval in seconds (mini backend)")
     ] = 10.0,
+    recovery_cooldown_window_minutes: Annotated[
+        float, typer.Option(help="Recovery cooldown sliding window in minutes")
+    ] = 30.0,
+    recovery_cooldown_max_count: Annotated[
+        int, typer.Option(help="Max recoveries allowed within cooldown window")
+    ] = 3,
+    registration_grace_ticks: Annotated[
+        int, typer.Option(help="Grace ticks before requiring node registration")
+    ] = 5,
+    max_simultaneous_bad_nodes: Annotated[
+        int, typer.Option(help="Max simultaneous bad nodes before aborting")
+    ] = 3,
+    monitoring_success_iterations: Annotated[
+        int, typer.Option(help="Consecutive healthy iterations to confirm recovery")
+    ] = 10,
+    monitoring_timeout_seconds: Annotated[
+        int, typer.Option(help="Timeout for post-recovery monitoring phase")
+    ] = 600,
+    recovery_timeout_seconds: Annotated[
+        int, typer.Option(help="Timeout for the entire recovery process")
+    ] = 3600,
+    rollout_alive_threshold_seconds: Annotated[
+        float | None, typer.Option(help="Rollout alive threshold in seconds (None = default)")
+    ] = None,
+    rollout_monitoring_alive_duration_seconds: Annotated[
+        float | None, typer.Option(help="Rollout monitoring alive duration in seconds (None = default)")
+    ] = None,
     detector_config_json: Annotated[
         str, typer.Option(help="Detector config JSON string or @filepath (default: all detectors with defaults)")
     ] = "",
@@ -85,6 +112,15 @@ def launch(
         notify_webhook_url=notify_webhook_url,
         notify_platform=notify_platform,
         scrape_interval_seconds=scrape_interval_seconds,
+        recovery_cooldown_window_minutes=recovery_cooldown_window_minutes,
+        recovery_cooldown_max_count=recovery_cooldown_max_count,
+        registration_grace_ticks=registration_grace_ticks,
+        max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
+        monitoring_success_iterations=monitoring_success_iterations,
+        monitoring_timeout_seconds=monitoring_timeout_seconds,
+        recovery_timeout_seconds=recovery_timeout_seconds,
+        rollout_alive_threshold_seconds=rollout_alive_threshold_seconds,
+        rollout_monitoring_alive_duration_seconds=rollout_monitoring_alive_duration_seconds,
         detector_config=detector_config,
     )
 
