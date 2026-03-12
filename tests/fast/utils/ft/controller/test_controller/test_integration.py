@@ -127,6 +127,9 @@ def _make_test_controller_with_rollout(
     rollout_manager_handle = FakeRmHandle()
     hub.set_rollout_handle(rollout_manager_handle)
 
+    for cid in resolved_cell_ids:
+        hub.set_rollout_node_ids(cid, {f"rollout-node-{cid}-0", f"rollout-node-{cid}-1"})
+
     return _RolloutTestHarness(
         controller=controller,
         main_job=main_job,
@@ -165,10 +168,10 @@ class TestRegisterRolloutSubsystems:
         training_config = controller._tick_loop.subsystem_configs["training"]
         assert training_config.restart_mode == RestartMode.MAIN_JOB
 
-    def test_rollout_active_node_ids_defaults_to_empty(self) -> None:
-        controller, *_ = _make_test_controller_with_rollout()
-        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
-        assert rollout_config.get_active_node_ids() == set()
+    def test_rollout_active_node_ids_returns_registered_nodes(self) -> None:
+        harness = _make_test_controller_with_rollout()
+        rollout_config = harness.controller._tick_loop.subsystem_configs["rollout_ep72"]
+        assert rollout_config.get_active_node_ids() == {"rollout-node-ep72-0", "rollout-node-ep72-1"}
 
 
 class TestNormalOperationWithRollout:
@@ -393,6 +396,8 @@ class TestColocatedHardwareFault:
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
+
+        harness.hub.set_rollout_node_ids("ep72", {shared_node, "rollout-node-ep72-0"})
 
         rollout_detector = _OneShotDecisionDetector(
             Decision(

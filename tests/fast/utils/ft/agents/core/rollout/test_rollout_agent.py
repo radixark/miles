@@ -59,7 +59,8 @@ class TestLifecycle:
         agent, _ = _make_agent([True])
 
         try:
-            assert "http://localhost:" in agent.address
+            assert agent.address.startswith("http://")
+            assert int(agent.address.rsplit(":", 1)[-1]) > 0
         finally:
             await agent.shutdown()
 

@@ -124,7 +124,8 @@ class TestLifecycle:
     def test_get_address_contains_real_ip(self, exporter: PrometheusExporter) -> None:
         address = exporter.get_address()
         assert address.startswith("http://")
-        assert ":" in address.rsplit(":", 1)[-1]
+        port_str = address.rsplit(":", 1)[-1]
+        assert port_str.isdigit() and int(port_str) > 0
 
     def test_shutdown(self, exporter: PrometheusExporter) -> None:
         exporter.shutdown()

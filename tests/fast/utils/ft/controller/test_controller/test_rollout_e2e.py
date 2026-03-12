@@ -77,6 +77,7 @@ class TestRolloutGpuXidRecovery:
         controller = harness.controller
         store = harness.metric_store
         _override_rollout_monitoring(harness)
+        harness.hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
 
         # Step 1: Inject healthy metrics for all nodes
         for node_id in ["train-node-0", "train-node-1", "rollout-0", "rollout-1"]:
@@ -127,6 +128,7 @@ class TestRolloutCrashRecovery:
         controller = harness.controller
         store = harness.metric_store
 
+        harness.hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
         rollout_config.detectors = [
             RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),
@@ -185,6 +187,7 @@ class TestColocatedNodeFault:
 
         controller.training_rank_roster.rank_placement[0] = shared_node
         controller.training_rank_roster.rank_placement[1] = "train-only-1"
+        harness.hub.set_rollout_node_ids("ep72", {shared_node, "rollout-only-1"})
         _override_rollout_monitoring(harness)
 
         # Step 1: Inject healthy metrics for all nodes
@@ -238,6 +241,9 @@ class TestMultiCellIndependentFailures:
         )
         controller = harness.controller
         store = harness.metric_store
+
+        harness.hub.set_rollout_node_ids("ep72", {"rollout-ep72-0", "rollout-ep72-1"})
+        harness.hub.set_rollout_node_ids("ep36", {"rollout-ep36-0", "rollout-ep36-1"})
 
         controller._tick_loop._cooldown = SlidingWindowThrottle(
             window_minutes=30.0, max_count=10,
@@ -330,6 +336,7 @@ class TestRolloutLevel1FailureNotifyHumans:
         controller = harness.controller
         store = harness.metric_store
 
+        harness.hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
         rollout_config.detectors = [
             RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),

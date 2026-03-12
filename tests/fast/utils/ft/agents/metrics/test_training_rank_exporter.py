@@ -47,8 +47,8 @@ class TestTrainingRankExporterExporter:
     @pytest.mark.anyio
     async def test_exporter_address_has_port(self, metric_exporter: TrainingRankExporter) -> None:
         address = metric_exporter.get_exporter_address()
-        assert address.startswith("http://localhost:")
-        port = int(address.split(":")[-1])
+        assert address.startswith("http://")
+        port = int(address.rsplit(":", 1)[-1])
         assert port > 0
 
     @pytest.mark.anyio

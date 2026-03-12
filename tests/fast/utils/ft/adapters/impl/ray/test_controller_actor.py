@@ -203,7 +203,7 @@ class TestFtControllerActorProxy:
         assert harness.controller._shutting_down is True
 
     @pytest.mark.anyio
-    async def test_register_rollout_creates_subsystem(self) -> None:
+    async def test_register_rollout_stores_handle(self) -> None:
         actor, harness = self._make_actor_with_harness()
 
         fake_rollout_manager_handle = MagicMock()
@@ -211,12 +211,9 @@ class TestFtControllerActorProxy:
         await actor.register_rollout(
             rollout_manager_handle=fake_rollout_manager_handle,
             metrics_address="http://localhost:9999",
-            cell_ids=["default"],
         )
 
-        state = harness.controller._state_machine.state
-        assert isinstance(state, NormalSt)
-        assert "rollout_default" in state.subsystems
+        assert harness.hub._rollout_manager_handle is fake_rollout_manager_handle
 
     @pytest.mark.anyio
     async def test_register_rollout_adds_scrape_target(self) -> None:

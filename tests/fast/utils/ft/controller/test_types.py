@@ -159,34 +159,43 @@ class TestDecisionUniqueNodeIds:
 
 
 class TestControllerStatus:
-    def test_construction(self) -> None:
+    def test_construction_monitoring(self) -> None:
         status = ControllerStatus(
-            mode=ControllerMode.MONITORING,
-            recovery_phase=None,
-            phase_history=None,
             tick_count=5,
             active_run_id="run-1",
-            bad_nodes=[],
-            recovery_in_progress=False,
-            bad_nodes_confirmed=False,
             latest_iteration=100,
+            subsystem_states={"training": "DetectingAnomalySt"},
+            recovery=None,
         )
 
         assert status.mode == ControllerMode.MONITORING
         assert status.tick_count == 5
+        assert status.recovery_in_progress is False
+
+    def test_construction_recovery(self) -> None:
+        from miles.utils.ft.controller.types import RecoveryInfo
+
+        recovery = RecoveryInfo(phase="reattempting", bad_nodes=["node-0"], bad_nodes_confirmed=False)
+        status = ControllerStatus(
+            tick_count=10,
+            active_run_id="run-2",
+            latest_iteration=50,
+            subsystem_states={"training": "RecoveringSt"},
+            recovery=recovery,
+        )
+
+        assert status.mode == ControllerMode.RECOVERY
+        assert status.recovery_in_progress is True
+        assert status.recovery.bad_nodes == ["node-0"]
 
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
             ControllerStatus(
-                mode=ControllerMode.MONITORING,
-                recovery_phase=None,
-                phase_history=None,
                 tick_count=0,
                 active_run_id=None,
-                bad_nodes=[],
-                recovery_in_progress=False,
-                bad_nodes_confirmed=False,
                 latest_iteration=None,
+                subsystem_states={},
+                recovery=None,
                 bogus_field="x",  # type: ignore[call-arg]
             )
 

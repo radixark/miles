@@ -31,8 +31,8 @@ class TestAddress:
         exporter = RolloutMetricsExporter()
 
         try:
-            assert "http://localhost:" in exporter.address
-            port = int(exporter.address.split(":")[-1])
+            assert exporter.address.startswith("http://")
+            port = int(exporter.address.rsplit(":", 1)[-1])
             assert port > 0
         finally:
             exporter.shutdown()

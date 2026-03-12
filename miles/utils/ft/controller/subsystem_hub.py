@@ -26,6 +26,7 @@ class SubsystemHub:
     ) -> None:
         self._training_rank_roster_box = training_rank_roster_box
         self._rollout_manager_handle: object | None = None
+        self._rollout_node_ids: dict[str, set[str]] = {}
 
     @property
     def training_rank_roster(self) -> TrainingRankRoster:
@@ -45,3 +46,10 @@ class SubsystemHub:
     def set_rollout_handle(self, handle: object) -> None:
         self._rollout_manager_handle = handle
         logger.info("rollout_handle_set")
+
+    def set_rollout_node_ids(self, cell_id: str, node_ids: set[str]) -> None:
+        self._rollout_node_ids[cell_id] = node_ids
+        logger.info("rollout_node_ids_set cell_id=%s nodes=%s", cell_id, sorted(node_ids))
+
+    def get_rollout_node_ids(self, cell_id: str) -> set[str]:
+        return self._rollout_node_ids.get(cell_id, set())

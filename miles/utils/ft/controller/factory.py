@@ -125,6 +125,7 @@ def create_ft_controller(
     # --- Rollout SubsystemConfigs ---
     for cell_id in (rollout_cell_ids or []):
         name = f"rollout_{cell_id}"
+        _cid = cell_id  # capture for closure
         subsystem_configs[name] = SubsystemConfig(
             actuator=RayRolloutActuator(
                 get_handle=lambda: hub.rollout_manager_handle,
@@ -133,6 +134,7 @@ def create_ft_controller(
             restart_mode=RestartMode.SUBSYSTEM,
             detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id),
             monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
+            get_active_node_ids=lambda _c=_cid: hub.get_rollout_node_ids(_c),
         )
 
     # --- Create Main SM (includes all subsystems from the start) ---
