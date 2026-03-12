@@ -17,8 +17,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
-from miles.utils.ft.controller.subsystem import RestartMode
-from miles.utils.ft.controller.subsystem_hub import SubsystemHub
+from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemHub
 from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from tests.fast.utils.ft.conftest import (

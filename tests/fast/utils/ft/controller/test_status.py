@@ -7,7 +7,7 @@ from datetime import datetime
 from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
 from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, SubsystemState, RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery.models import (

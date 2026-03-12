@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
-from miles.utils.ft.controller.subsystem import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
 
 
 class TestMonitoringIterationProgressConfig:

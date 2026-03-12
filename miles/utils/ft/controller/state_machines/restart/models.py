@@ -8,7 +8,7 @@ from typing import Annotated, Literal, Union
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
-from miles.utils.ft.controller.subsystem import RestartMode
+from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
 

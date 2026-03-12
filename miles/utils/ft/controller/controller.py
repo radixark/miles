@@ -8,9 +8,8 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullC
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
-from miles.utils.ft.controller.subsystem_hub import SubsystemHub
+from miles.utils.ft.controller.subsystem_hub import SubsystemHub, TrainingRankRoster
 from miles.utils.ft.controller.tick_loop import TickLoop
-from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.types import ControllerStatus, MetricStore, NullScrapeTargetManager, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 

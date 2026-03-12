@@ -7,13 +7,12 @@ from collections.abc import Callable
 from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
-from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
 from miles.utils.ft.utils.box import Box
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.types import (
     ControllerMode,
     DiagnosticOrchestratorProtocol,

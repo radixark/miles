@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
 
 
 class _FakeScrapeTargetManager:

@@ -7,7 +7,7 @@ from miles.utils.ft.controller.state_machines.main.models import MainContext
 from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext
 from miles.utils.ft.controller.state_machines.restart.models import RestartContext
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext
-from miles.utils.ft.controller.subsystem import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 

@@ -28,7 +28,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
     ExternalRestartingMainJobSt,
 )
-from miles.utils.ft.controller.subsystem import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle

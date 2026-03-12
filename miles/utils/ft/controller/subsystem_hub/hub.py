@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.subsystem_hub.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.utils.box import Box
 
 logger = logging.getLogger(__name__)
