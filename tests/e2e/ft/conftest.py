@@ -10,12 +10,14 @@ Required environment variables:
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 import signal
 import threading
 import time
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -660,3 +662,125 @@ class E2eFaultInjector:
         pid = await wait_for_sglang_pid(injector, timeout=60.0, poll_interval=3.0)
         ray.get(injector.kill_process.remote(pid=pid, sig=signal.SIGKILL))
         logger.info("crash_rollout_on_node node=%s pid=%d", node_id, pid)
+
+
+# ---------------------------------------------------------------------------
+# Fixture: make_training_fault (factory for E2eFaultInjector)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def make_training_fault(
+    fault_injector: FaultInjectorFactory,
+) -> Callable[..., E2eFaultInjector]:
+    """Factory fixture for creating E2eFaultInjector targeting a training node."""
+
+    def _make(target_node: str, **kwargs: object) -> E2eFaultInjector:
+        return E2eFaultInjector(
+            injector_handle=fault_injector.deploy_to(node_id=target_node),
+            target_node=target_node,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    return _make
+
+
+# ---------------------------------------------------------------------------
+# Helper: rollout target discovery
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RolloutTarget:
+    """Discovered rollout node with its injector and subsystem name."""
+
+    node_id: str
+    injector: ray.actor.ActorHandle
+    subsystem_name: str
+
+
+def discover_rollout_target(
+    handle: ray.actor.ActorHandle,
+    factory: FaultInjectorFactory,
+) -> RolloutTarget:
+    """Find one rollout node + its subsystem name. Returns RolloutTarget."""
+    status = get_status(handle)
+    rollout_subsystems = [n for n in status.subsystem_states if n.startswith("rollout_")]
+    assert rollout_subsystems, f"No rollout subsystems found in {status.subsystem_states}"
+
+    node_id, injector = find_rollout_node(factory)
+    logger.info("discover_rollout_target node=%s subsystem=%s", node_id, rollout_subsystems[0])
+
+    return RolloutTarget(
+        node_id=node_id,
+        injector=injector,
+        subsystem_name=rollout_subsystems[0],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helper: repeated sglang killing callbacks
+# ---------------------------------------------------------------------------
+
+
+async def _keep_killing_sglang(
+    injector: ray.actor.ActorHandle,
+    node_id: str,
+    stop_event: asyncio.Event,
+    kill_interval: float = 5.0,
+) -> None:
+    """Background coroutine that repeatedly kills sglang on a node until stopped."""
+    while not stop_event.is_set():
+        try:
+            procs = ray.get(injector.find_sglang_processes.remote(), timeout=10)
+            for proc in procs:
+                try:
+                    ray.get(injector.kill_process.remote(pid=proc["pid"], sig=signal.SIGKILL), timeout=5)
+                    logger.info("repeated_kill sglang pid=%d node=%s", proc["pid"], node_id)
+                except Exception:
+                    logger.debug("repeated_kill_failed pid=%d", proc["pid"], exc_info=True)
+        except Exception:
+            logger.debug("repeated_kill_scan_failed node=%s", node_id, exc_info=True)
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=kill_interval)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+
+def make_repeated_kill_callbacks(
+    injector: ray.actor.ActorHandle,
+    node_id: str,
+    check_eviction_fn: Callable[[], asyncio.coroutines] | None = None,
+    kill_interval: float = 5.0,
+) -> tuple[
+    Callable[[], asyncio.coroutines],
+    Callable[[], asyncio.coroutines],
+    Callable[[], asyncio.coroutines] | None,
+]:
+    """Build start/stop/check-eviction callbacks for scenario_rollout_repeated_crash.
+
+    Returns (start_killing_fn, stop_killing_fn, check_eviction_fn).
+    """
+    stop_event = asyncio.Event()
+    kill_task: asyncio.Task[None] | None = None
+
+    async def _start_killing() -> asyncio.Task[None]:
+        nonlocal kill_task
+        kill_task = asyncio.create_task(
+            _keep_killing_sglang(
+                injector=injector,
+                node_id=node_id,
+                stop_event=stop_event,
+                kill_interval=kill_interval,
+            )
+        )
+        return kill_task
+
+    async def _stop_killing() -> None:
+        stop_event.set()
+        if kill_task is not None:
+            await kill_task
+
+    return _start_killing, _stop_killing, check_eviction_fn
