@@ -188,9 +188,9 @@ def _build_platform_components(
     platform: str,
     ray_address: str,
     entrypoint: str,
+    ft_id: str,
+    k8s_label_prefix: str,
     runtime_env: dict[str, Any] | None = None,
-    ft_id: str = "",
-    k8s_label_prefix: str = "",
 ) -> tuple[StubNodeManager | K8sNodeManager, StubMainJob | RayMainJob]:
     if platform == "stub":
         return StubNodeManager(), StubMainJob()

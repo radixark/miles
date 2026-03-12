@@ -118,6 +118,8 @@ class TestBuildPlatformComponentsK8sRay:
                 platform="k8s-ray",
                 ray_address="http://ray:8265",
                 entrypoint="python train.py",
+                ft_id="test",
+                k8s_label_prefix="",
             )
 
         mock_k8s.assert_called_once_with(label_prefix="", namespace="test-ns")

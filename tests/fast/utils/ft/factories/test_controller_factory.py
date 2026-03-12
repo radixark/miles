@@ -110,4 +110,4 @@ class TestBuildPlatformComponentsUnknown:
         from miles.utils.ft.factories.controller import _build_platform_components
 
         with pytest.raises(ValueError, match="Unknown platform"):
-            _build_platform_components(platform="docker", ray_address="", entrypoint="")
+            _build_platform_components(platform="docker", ray_address="", entrypoint="", ft_id="test", k8s_label_prefix="")
