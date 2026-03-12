@@ -10,6 +10,20 @@ from miles.utils.ft.controller.state_machines.main.models import (
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb as _MiniWandb
+from miles.utils.ft.controller.state_machines.restart.models import (
+    MonitoringIterationProgressConfig as _MonitoringIterationProgressConfig,
+    MonitoringSustainedAliveConfig as _MonitoringSustainedAliveConfig,
+)
+
+MainContext.model_rebuild(
+    _types_namespace={
+        "MiniWandb": _MiniWandb,
+        "MonitoringIterationProgressConfig": _MonitoringIterationProgressConfig,
+        "MonitoringSustainedAliveConfig": _MonitoringSustainedAliveConfig,
+    },
+)
+
 _MAIN_HANDLER_MAP: dict[type, type] = {
     NormalSt: NormalHandler,
     RestartingMainJobSt: RestartingMainJobHandler,
