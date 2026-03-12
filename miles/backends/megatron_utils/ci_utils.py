@@ -159,15 +159,14 @@ def check_mtp_only_grad(model: Sequence[DDP], step_id: int) -> None:
 
 
 def check_peak_gpu_memory_after_load(args) -> None:
-    """Assert that peak GPU memory stays below threshold when --low-memory-resume is active.
-
-    With --low-memory-resume, optimizer states are allocated on CPU during checkpoint loading,
-    reducing peak GPU memory. Threshold 20 GB is the midpoint between measured values:
-    ~16.9 GB (with optimization) vs ~22.4 GB (without) on Qwen3-4B / 8xH200.
-    """
+    """Assert that peak GPU memory stays below threshold when --low-memory-resume is active."""
     if not args.ci_test or not getattr(args, "low_memory_resume", False):
         return
 
+    hf_ckpt = getattr(args, "hf_checkpoint", "") or ""
+    assert "Qwen3-4B" in hf_ckpt, f"Peak GPU memory CI check only supports Qwen3-4B, got {hf_ckpt}"
+
+    # Threshold 20 GB is midpoint between ~16.9 GB (with) and ~22.4 GB (without) on 8xH200.
     peak_gpu_gb = torch.cuda.max_memory_allocated() / (1024**3)
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     logger.info(f"[CI low-memory-resume] Rank {rank} peak GPU memory: {peak_gpu_gb:.2f} GB")
