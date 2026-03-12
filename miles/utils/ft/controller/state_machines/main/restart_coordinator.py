@@ -150,7 +150,7 @@ async def resolve_main_job_restart(
 
     if status == JobStatus.RUNNING:
         execution_result = ExternalExecutionResult.SUCCEEDED
-    elif status == JobStatus.FAILED:
+    elif status in (JobStatus.FAILED, JobStatus.STOPPED):
         execution_result = ExternalExecutionResult.FAILED
     else:
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()

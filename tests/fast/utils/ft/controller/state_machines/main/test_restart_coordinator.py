@@ -217,10 +217,33 @@ class TestResolveMainJobRestart:
         assert training.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
 
     @pytest.mark.anyio
+    async def test_stopped_returns_normal_with_failed(self) -> None:
+        """STOPPED status should be treated as FAILED immediately, not wait
+        for timeout. Previously STOPPED fell through to the timeout branch,
+        causing the controller to block for hundreds of seconds on a job
+        that would never become RUNNING."""
+        main_job = FakeMainJob(status_sequence=[JobStatus.STOPPED])
+        shared = _make_shared_deps(main_job=main_job)
+        context = _make_context(shared=shared)
+        state = RestartingMainJobSt(
+            requestor_name="training",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=_make_requestor_state(),
+        )
+
+        result = await resolve_main_job_restart(state=state, context=context)
+
+        assert isinstance(result, NormalSt)
+        training = result.subsystems["training"]
+        assert isinstance(training, RecoveringSt)
+        assert isinstance(training.recovery.restart, ExternalRestartingMainJobSt)
+        assert training.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
+
+    @pytest.mark.anyio
     async def test_timeout_returns_normal_with_timeout(self) -> None:
         """When the restart exceeds recovery_timeout_seconds, the requestor
         receives TIMEOUT."""
-        main_job = FakeMainJob(status_sequence=[JobStatus.STOPPED])
+        main_job = FakeMainJob(status_sequence=[JobStatus.PENDING])
         shared = _make_shared_deps(main_job=main_job, recovery_timeout_seconds=60)
         context = _make_context(shared=shared)
         state = RestartingMainJobSt(
@@ -241,7 +264,7 @@ class TestResolveMainJobRestart:
     async def test_pending_returns_none(self) -> None:
         """While the job is not yet running/failed and timeout not exceeded,
         returns None (no transition yet)."""
-        main_job = FakeMainJob(status_sequence=[JobStatus.STOPPED])
+        main_job = FakeMainJob(status_sequence=[JobStatus.PENDING])
         shared = _make_shared_deps(main_job=main_job, recovery_timeout_seconds=3600)
         context = _make_context(shared=shared)
         state = RestartingMainJobSt(
