@@ -362,6 +362,19 @@ class TestStopJob:
 
         mock_client.stop_job.assert_called_once_with("job-1")
 
+    @pytest.mark.anyio
+    async def test_small_caller_timeout_caps_rpc_timeout(self) -> None:
+        """Previously the stop_job RPC used a hardcoded 30s timeout regardless
+        of the caller's timeout_seconds. When the caller passed a small value
+        (e.g. 5s), the RPC could still block for 30s. Now min(hardcoded, caller)
+        is used."""
+        mock_client = MagicMock()
+        mock_client.get_job_status.return_value = "STOPPED"
+
+        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=5, poll_interval=0)
+
+        mock_client.stop_job.assert_called_once_with("job-1")
+
 
 class _FakeJobDetails:
     """Minimal stand-in for ray.job_submission.JobDetails."""

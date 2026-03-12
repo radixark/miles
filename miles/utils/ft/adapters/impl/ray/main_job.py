@@ -187,9 +187,10 @@ async def _stop_job(
 ) -> None:
     """Stop a single Ray job and poll until it reaches terminal status."""
     start = time.monotonic()
+    rpc_timeout = min(_STOP_JOB_TIMEOUT_SECONDS, timeout_seconds)
     await asyncio.wait_for(
         asyncio.to_thread(client.stop_job, job_id),
-        timeout=_STOP_JOB_TIMEOUT_SECONDS,
+        timeout=rpc_timeout,
     )
     logger.info("stop_job_requested job_id=%s", job_id)
 
