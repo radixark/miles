@@ -638,8 +638,13 @@ def _compute_server_args(
         kwargs["remote_instance_weight_loader_start_seed_via_transfer_engine"] = True
 
     unused_keys = set(kwargs.keys())
+    is_follower = seed_instance_ip is not None and seed_instance_service_port is not None
     for attr in dataclasses.fields(ServerArgs):
         if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
+            continue
+        # model_loader_extra_config is only for DefaultModelLoader (seed);
+        # RemoteInstanceModelLoader (follower) rejects it.
+        if is_follower and attr.name == "model_loader_extra_config":
             continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
