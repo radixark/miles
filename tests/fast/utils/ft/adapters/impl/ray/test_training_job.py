@@ -510,23 +510,21 @@ class TestStateLockSerialization:
         stop_entered = asyncio.Event()
         stop_proceed = asyncio.Event()
 
-        original_stop = mock_client.stop_job
+        import threading
 
         def gated_stop(job_id: str) -> None:
             stop_entered.set()
-            # Block in a sync function; asyncio.to_thread will run this in a thread
-            import threading
             evt = threading.Event()
 
-            async def _signal() -> None:
-                await stop_proceed.wait()
-                evt.set()
+            def _schedule_signal() -> None:
+                async def _signal() -> None:
+                    await stop_proceed.wait()
+                    evt.set()
+                asyncio.ensure_future(_signal())
 
-            asyncio.get_event_loop().call_soon_threadsafe(
-                lambda: asyncio.ensure_future(_signal())
-            )
+            loop = asyncio.get_event_loop()
+            loop.call_soon_threadsafe(_schedule_signal)
             evt.wait(timeout=5)
-            return original_stop(job_id)
 
         mock_client.stop_job.side_effect = gated_stop
         mock_client.get_job_status.return_value = "STOPPED"
@@ -535,9 +533,8 @@ class TestStateLockSerialization:
 
         await stop_entered.wait()
 
-        # get_status is blocked by the lock while stop holds it
         status_task = asyncio.create_task(job.get_status())
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
         assert not status_task.done()
 
         stop_proceed.set()
