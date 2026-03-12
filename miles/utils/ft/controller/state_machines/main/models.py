@@ -16,7 +16,7 @@ from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemS
 from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
-from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
+from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 
 class MainState(FtBaseModel):
@@ -54,7 +54,6 @@ class MainContext(FtBaseModel):
     notifier: NotifierProtocol | None
     node_manager: NodeManagerProtocol
     diagnostic_orchestrator: DiagnosticOrchestratorProtocol
-    cooldown: SlidingWindowThrottle
     detector_crash_tracker: SlidingWindowCounter
     recovery_timeout_seconds: int
     max_simultaneous_bad_nodes: int

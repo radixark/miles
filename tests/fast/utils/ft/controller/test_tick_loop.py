@@ -16,7 +16,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import RECOVERY_ST
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.box import Box
-from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
+from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNotifier
 
@@ -48,7 +48,6 @@ def _make_tick_loop(
         ),
         notifier=notifier,
         node_manager=MagicMock(),
-        cooldown=SlidingWindowThrottle(window_minutes=30, max_count=3),
         max_simultaneous_bad_nodes=2,
         diagnostic_orchestrator=MagicMock(),
         recovery_timeout_seconds=600,

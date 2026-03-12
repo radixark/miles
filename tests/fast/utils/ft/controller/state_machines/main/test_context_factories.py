@@ -18,7 +18,7 @@ from miles.utils.ft.controller.state_machines.main.models import MainContext
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
 from miles.utils.ft.controller.subsystem_hub.config import RestartMode, SubsystemConfig
 from miles.utils.ft.controller.types import MetricStore, TriggerType
-from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
+from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
@@ -44,7 +44,6 @@ def _make_main_context(
         notifier=FakeNotifier(),
         node_manager=FakeNodeManager(),
         diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
-        cooldown=SlidingWindowThrottle(window_minutes=30, max_count=3),
         detector_crash_tracker=SlidingWindowCounter(window_seconds=300, threshold=5),
         recovery_timeout_seconds=600,
         max_simultaneous_bad_nodes=2,
@@ -101,6 +100,39 @@ class TestShouldRunDetectors:
 
 
 class TestBuildSubsystemContext:
+    def test_per_subsystem_cooldown_isolation(self) -> None:
+        """Cooldown was shared across all subsystems, so a rollout recovery
+        counted toward training's cooldown limit and vice versa. Now each
+        subsystem gets its own cooldown from SubsystemConfig."""
+        from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
+
+        ctx = _make_main_context(tick_count=10)
+        cooldown_a = SlidingWindowThrottle(window_minutes=30, max_count=3)
+        cooldown_b = SlidingWindowThrottle(window_minutes=30, max_count=3)
+        config_a = SubsystemConfig(
+            actuator=MagicMock(),
+            cooldown=cooldown_a,
+            get_active_node_ids=lambda: {"node-0"},
+        )
+        config_b = SubsystemConfig(
+            actuator=MagicMock(),
+            cooldown=cooldown_b,
+            get_active_node_ids=lambda: {"node-1"},
+        )
+
+        result_a = build_subsystem_context(
+            config=config_a, context=ctx,
+            recovery_stepper=AsyncMock(), restart_stepper=AsyncMock(),
+        )
+        result_b = build_subsystem_context(
+            config=config_b, context=ctx,
+            recovery_stepper=AsyncMock(), restart_stepper=AsyncMock(),
+        )
+
+        assert result_a.cooldown is cooldown_a
+        assert result_b.cooldown is cooldown_b
+        assert result_a.cooldown is not result_b.cooldown
+
     def test_wires_all_fields_correctly(self) -> None:
         ctx = _make_main_context(tick_count=10)
         actuator = MagicMock()
@@ -201,7 +233,6 @@ class TestBuildRecoveryContext:
             notifier=FakeNotifier(),
             node_manager=FakeNodeManager(),
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
-            cooldown=SlidingWindowThrottle(window_minutes=30, max_count=3),
             detector_crash_tracker=SlidingWindowCounter(window_seconds=300, threshold=5),
             recovery_timeout_seconds=600,
             max_simultaneous_bad_nodes=2,

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from miles.utils.ft.adapters.types import SubsystemActuatorProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 if TYPE_CHECKING:
     from miles.utils.ft.controller.state_machines.restart.models import (
@@ -36,4 +37,5 @@ class SubsystemConfig:
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig = field(
         default_factory=_default_monitoring_config
     )
+    cooldown: SlidingWindowThrottle = field(default_factory=lambda: SlidingWindowThrottle(window_minutes=30.0, max_count=3))
     get_active_node_ids: Callable[[], set[str]] = field(default_factory=lambda: lambda: set())

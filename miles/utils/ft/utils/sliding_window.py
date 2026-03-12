@@ -68,6 +68,8 @@ class SlidingWindowThrottle:
     """
 
     def __init__(self, window_minutes: float, max_count: int) -> None:
+        self.window_minutes = window_minutes
+        self.max_count = max_count
         self._counter = SlidingWindowCounter(
             window_seconds=window_minutes * 60,
             threshold=max_count,

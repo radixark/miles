@@ -147,7 +147,8 @@ def build_ft_controller(
         diagnostic_orchestrator=diagnostic_orchestrator_override,
     )
     if recovery_cooldown_override is not None:
-        create_kwargs["recovery_cooldown"] = recovery_cooldown_override
+        create_kwargs["recovery_cooldown_window_minutes"] = recovery_cooldown_override.window_minutes
+        create_kwargs["recovery_cooldown_max_count"] = recovery_cooldown_override.max_count
     if registration_grace_ticks_override is not None:
         create_kwargs["registration_grace_ticks"] = registration_grace_ticks_override
     if max_simultaneous_bad_nodes_override is not None:

@@ -19,7 +19,7 @@ from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalyS
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
 from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemHub
 from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
-from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
+
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticOrchestrator,
     FakeMainJob,
@@ -111,8 +111,6 @@ def _make_test_controller_with_rollout(
     metric_store = MetricStore(time_series_store=time_series_store, mini_wandb=mini_wandb)
     notifier = FakeNotifier()
     controller_exporter = ControllerExporter(registry=CollectorRegistry())
-    cooldown = SlidingWindowThrottle(window_minutes=30.0, max_count=3)
-
     bundle = create_ft_controller(
         node_manager=node_manager,
         main_job=main_job,
@@ -124,7 +122,8 @@ def _make_test_controller_with_rollout(
         tick_interval=0.01,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator,
-        recovery_cooldown=cooldown,
+        recovery_cooldown_window_minutes=30.0,
+        recovery_cooldown_max_count=3,
         registration_grace_ticks=0,
         monitoring_success_iterations=monitoring_success_iterations,
     )

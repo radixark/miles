@@ -30,7 +30,7 @@ def build_subsystem_context(
         detector_context=detector_ctx,
         notifier=context.notifier,
         detectors=config.detectors,
-        cooldown=context.cooldown,
+        cooldown=config.cooldown,
         detector_crash_tracker=context.detector_crash_tracker,
         recovery_stepper=recovery_stepper,
         recovery_context_factory=lambda trigger, start_time: _build_recovery_context(

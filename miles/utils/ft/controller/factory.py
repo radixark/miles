@@ -52,7 +52,8 @@ def create_ft_controller(
     tick_interval: float = 30.0,
     controller_exporter: ControllerExporter | None = None,
     diagnostic_orchestrator: DiagnosticOrchestratorProtocol | None = None,
-    recovery_cooldown: SlidingWindowThrottle | None = None,
+    recovery_cooldown_window_minutes: float = 30.0,
+    recovery_cooldown_max_count: int = 3,
     registration_grace_ticks: int = 5,
     max_simultaneous_bad_nodes: int = 3,
     monitoring_success_iterations: int = 10,
@@ -84,7 +85,6 @@ def create_ft_controller(
 
     resolved_exporter = controller_exporter or NullControllerExporter()
     duration_cb = resolved_exporter.observe_recovery_duration
-    cooldown = recovery_cooldown or SlidingWindowThrottle(window_minutes=30.0, max_count=3)
     resolved_detectors = detectors or []
 
     monitoring_config = MonitoringIterationProgressConfig(
@@ -92,12 +92,22 @@ def create_ft_controller(
         timeout_seconds=monitoring_timeout_seconds,
     )
 
+    _cooldown_window_minutes = recovery_cooldown_window_minutes
+    _cooldown_max_count = recovery_cooldown_max_count
+
+    def _make_cooldown() -> SlidingWindowThrottle:
+        return SlidingWindowThrottle(
+            window_minutes=_cooldown_window_minutes,
+            max_count=_cooldown_max_count,
+        )
+
     # --- Training SubsystemConfig ---
     training_config = SubsystemConfig(
         actuator=TrainingSubsystemActuator(main_job=main_job),
         restart_mode=RestartMode.MAIN_JOB,
         detectors=resolved_detectors,
         monitoring_config=monitoring_config,
+        cooldown=_make_cooldown(),
         get_active_node_ids=_get_active_training_nodes,
     )
     subsystem_configs: dict[str, SubsystemConfig] = {"training": training_config}
@@ -119,6 +129,7 @@ def create_ft_controller(
             restart_mode=RestartMode.SUBSYSTEM,
             detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id, **rollout_det_kwargs),
             monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=rollout_alive_dur),
+            cooldown=_make_cooldown(),
             get_active_node_ids=lambda _c=_cid: subsystem_hub.get_rollout_node_ids(_c),
         )
 
@@ -153,7 +164,6 @@ def create_ft_controller(
         metric_store=metric_store,
         notifier=notifier,
         node_manager=node_manager,
-        cooldown=cooldown,
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         diagnostic_orchestrator=resolved_orchestrator,
         recovery_timeout_seconds=recovery_timeout_seconds,

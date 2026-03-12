@@ -31,7 +31,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import MetricStore, TriggerType
-from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
+from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,6 @@ def _make_controller_context(
         notifier=notifier or FakeNotifier(),
         node_manager=FakeNodeManager(),
         diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
-        cooldown=SlidingWindowThrottle(window_minutes=30.0, max_count=3),
         detector_crash_tracker=SlidingWindowCounter(window_seconds=1800, threshold=5),
         recovery_timeout_seconds=1800,
         max_simultaneous_bad_nodes=3,

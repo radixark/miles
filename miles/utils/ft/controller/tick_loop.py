@@ -17,7 +17,7 @@ from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
     MetricStore,
 )
-from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
+from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,6 @@ class TickLoop:
         metric_store: MetricStore,
         notifier: NotifierProtocol | None,
         node_manager: NodeManagerProtocol,
-        cooldown: SlidingWindowThrottle,
         max_simultaneous_bad_nodes: int,
         diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
         recovery_timeout_seconds: int,
@@ -55,7 +54,6 @@ class TickLoop:
         self._metric_store = metric_store
         self._notifier = notifier
         self._node_manager = node_manager
-        self._cooldown = cooldown
         self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
         self._diagnostic_orchestrator = diagnostic_orchestrator
         self._recovery_timeout_seconds = recovery_timeout_seconds
@@ -124,7 +122,6 @@ class TickLoop:
             notifier=self._notifier,
             node_manager=self._node_manager,
             diagnostic_orchestrator=self._diagnostic_orchestrator,
-            cooldown=self._cooldown,
             detector_crash_tracker=self._detector_crash_tracker,
             recovery_timeout_seconds=self._recovery_timeout_seconds,
             max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,

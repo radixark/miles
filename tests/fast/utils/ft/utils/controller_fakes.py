@@ -17,7 +17,7 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, Mi
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
-from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
+
 
 # ---------------------------------------------------------------------------
 # Platform fakes
@@ -244,11 +244,6 @@ def make_test_controller(
     if controller_exporter is None:
         controller_exporter = ControllerExporter(registry=CollectorRegistry())
 
-    recovery_cooldown = SlidingWindowThrottle(
-        window_minutes=recovery_cooldown_minutes,
-        max_count=recovery_cooldown_max_count,
-    )
-
     bundle = create_ft_controller(
         node_manager=node_manager,
         main_job=main_job,
@@ -260,7 +255,8 @@ def make_test_controller(
         tick_interval=tick_interval,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator,
-        recovery_cooldown=recovery_cooldown,
+        recovery_cooldown_window_minutes=recovery_cooldown_minutes,
+        recovery_cooldown_max_count=recovery_cooldown_max_count,
         registration_grace_ticks=registration_grace_ticks,
         monitoring_success_iterations=monitoring_success_iterations,
     )
