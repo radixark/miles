@@ -196,7 +196,11 @@ class TestCollectEvictableBadNodes:
         assert result == set()
 
     def test_accumulates_bad_nodes_across_multiple_enter_recovery(self) -> None:
-        ctx = _make_detector_context()
+        ctx = DetectorContext(
+            metric_store=MagicMock(),
+            active_node_ids={"node-0", "node-1", "node-2"},
+            job_status=JobStatus.RUNNING,
+        )
         result = collect_evictable_bad_nodes(
             detectors=[
                 _RecoveryDetectorWithNodes(["node-0"]),

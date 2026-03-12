@@ -433,6 +433,7 @@ class TestRecovering:
             ),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=["node-old"],
         )
         result = await _step_last(stepper,
             state,
