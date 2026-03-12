@@ -297,6 +297,28 @@ class TestDiagnosticOrchestratorInterMachine:
         assert r1 == [("node-0", "node-1"), ("node-2", "node-3")]
         assert r2 == [("node-1", "node-2"), ("node-3", "node-0")]
 
+    # P2 item 19: degenerate pairing cases
+    def test_pairing_exactly_two_nodes(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+
+        r1, r2 = _generate_round_pairs(["node-0", "node-1"])
+        assert r1 == [("node-0", "node-1")]
+        assert r2 == [("node-1", "node-0")]
+
+    def test_pairing_exactly_one_node(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+
+        r1, r2 = _generate_round_pairs(["node-0"])
+        assert r1 == []
+        assert r2 == []
+
+    def test_pairing_three_nodes_odd(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+
+        r1, r2 = _generate_round_pairs(["node-0", "node-1", "node-2"])
+        assert r1 == [("node-0", "node-1")]
+        assert r2 == [("node-1", "node-2")]
+
     def test_inter_machine_port_assignment(self) -> None:
         from miles.utils.ft.agents.diagnostics.executors.nccl import DEFAULT_NCCL_MASTER_PORT
 

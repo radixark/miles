@@ -156,6 +156,63 @@ class TestHangDetector:
         assert decision.action == ActionType.NONE
 
 
+# ---------------------------------------------------------------------------
+# P2 item 16: _get_current_phase() edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGetCurrentPhaseEdgeCases:
+    def test_no_metric_data_returns_noop(self) -> None:
+        """_get_current_phase() returns PHASE_TRAINING (default) when no data → short-circuit."""
+        store = make_fake_metric_store()
+        detector = HangDetector()
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+        assert decision.action == ActionType.NONE
+
+    def test_heartbeat_exists_but_phase_missing(self) -> None:
+        """Heartbeat metric exists but phase metric missing → defaults to training phase."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert "training" in decision.reason
+
+    def test_unknown_phase_value_returns_noop(self) -> None:
+        """Phase metric with unknown value (not training/checkpoint) → skip hang check."""
+        store = make_fake_metric_store()
+        inject_training_phase(store, phase=99.0)
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+        assert decision.action == ActionType.NONE
+        assert "unknown" in decision.reason.lower()
+
+
 class TestHangDetectorValidation:
     @pytest.mark.parametrize(
         "kwargs,match",

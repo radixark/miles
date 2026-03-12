@@ -65,3 +65,51 @@ class TestTrainingCrashDetector:
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.trigger == "crash"
+
+
+# ---------------------------------------------------------------------------
+# P2 item 15: _determine_trigger() branching isolation
+# ---------------------------------------------------------------------------
+
+
+class TestDetermineTrigger:
+    """Isolate _determine_trigger() branching (P2 item 15)."""
+
+    def test_job_failed_with_nan_loss_returns_nan_loss_trigger(self) -> None:
+        """Job FAILED + NaN loss → TriggerType.NAN_LOSS (prioritized over CRASH)."""
+        store = make_fake_metric_store()
+        wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})
+        detector = TrainingCrashDetector()
+        ctx = make_detector_context(
+            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.trigger == "nan_loss"
+
+    def test_job_failed_without_nan_loss_returns_crash_trigger(self) -> None:
+        """Job FAILED + no NaN → TriggerType.CRASH."""
+        store = make_fake_metric_store()
+        wandb = make_fake_mini_wandb(steps={1: {"loss": 2.5}})
+        detector = TrainingCrashDetector()
+        ctx = make_detector_context(
+            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.trigger == "crash"
+
+    def test_job_running_with_nan_loss_returns_noop(self) -> None:
+        """Job RUNNING + NaN loss → NONE (crash detector only fires on FAILED)."""
+        store = make_fake_metric_store()
+        wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})
+        detector = TrainingCrashDetector()
+        ctx = make_detector_context(
+            metric_store=store, mini_wandb=wandb, job_status=JobStatus.RUNNING
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE

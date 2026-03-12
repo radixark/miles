@@ -157,6 +157,31 @@ class TestMiniWandbPerRunIsolation:
         assert wandb.latest(metric_name="loss") == 1.0
 
 
+# ---------------------------------------------------------------------------
+# P2 item 17: latest() edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestLatestEdgeCases:
+    def test_nonexistent_metric_returns_none(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(run_id="run-1", step=1, metrics={"loss": 1.0})
+        assert wandb.latest(metric_name="nonexistent") is None
+
+    def test_after_set_active_run_but_before_log_step(self) -> None:
+        """set_active_run_id() called but no log_step yet → None."""
+        wandb = MiniWandb()
+        wandb.set_active_run_id("run-1")
+        assert wandb.latest(metric_name="loss") is None
+
+    def test_metric_in_some_steps_but_not_latest(self) -> None:
+        """Metric present in step 1 but not step 2 → latest still returns step 1 value."""
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(run_id="run-1", step=1, metrics={"loss": 3.0, "mfu": 0.5})
+        wandb.log_step(run_id="run-1", step=2, metrics={"loss": 2.0})
+        assert wandb.latest(metric_name="mfu") == 0.5
+
+
 class TestMiniWandbStepMonotonicity:
     def test_out_of_order_step_discarded(self) -> None:
         wandb = MiniWandb(active_run_id="run-1")
