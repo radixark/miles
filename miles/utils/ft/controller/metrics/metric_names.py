@@ -24,7 +24,6 @@ XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL = "miles_ft_xid_non_auto_recoverable_count_
 KERNEL_EVENT_COUNT = "miles_ft_kernel_event_count"
 
 # Training heartbeat (FtTrainingRankAgent)
-TRAINING_ITERATION = "miles_ft_training_iteration"
 AGENT_HEARTBEAT = "miles_ft_agent_heartbeat"
 TRAINING_PHASE = "miles_ft_training_phase"
 

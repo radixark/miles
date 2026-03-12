@@ -95,23 +95,3 @@ def build_node_agent(
     )
 
 
-def launch_node_agent_actor(
-    node_id: str,
-    ft_id: str = "",
-    actor_name: str = "",
-    metadata_provider: AgentMetadataProvider | None = None,
-    **kwargs: Any,
-) -> Any:
-    """Create and return a named FtNodeAgentActor with builder injection."""
-    from miles.utils.ft.adapters.impl.k8s_metadata_provider import K8sMetadataProvider
-    from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
-
-    resolved_provider = metadata_provider or K8sMetadataProvider()
-
-    return FtNodeAgentActor.options(name=actor_name).remote(
-        builder=build_node_agent,
-        node_id=node_id,
-        ft_id=ft_id,
-        metadata_provider=resolved_provider,
-        **kwargs,
-    )

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
@@ -44,21 +42,6 @@ logger = logging.getLogger(__name__)
 class FtControllerBundle(NamedTuple):
     controller: FtController
     subsystem_hub: SubsystemHub
-
-
-@dataclass
-class PlatformDeps:
-    """Bundles platform-level dependencies shared across action handlers."""
-
-    node_manager: NodeManagerProtocol
-    main_job: MainJobProtocol
-    metric_store: MetricQueryProtocol
-    mini_wandb: MiniWandb
-    notifier: NotifierProtocol | None
-    diagnostic_orchestrator: DiagnosticOrchestratorProtocol
-    controller_exporter: ControllerExporter | None
-    on_new_run: Callable[[str], None] | None = field(default=None)
-    rank_pids_provider: Callable[[str], dict[int, int]] | None = field(default=None)
 
 
 def create_ft_controller(

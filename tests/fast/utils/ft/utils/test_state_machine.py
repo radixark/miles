@@ -244,12 +244,6 @@ class TestStateMachine:
         types = [type(s).__name__ for s in machine.state_history]
         assert types == ["StateB", "StateB", "StateB", "TerminalState"]
 
-    @pytest.mark.asyncio
-    async def test_stepper_property(self) -> None:
-        stepper = _make_stepper()
-        machine = StateMachine(initial_state=StateA(), stepper=stepper)
-        assert machine.stepper is stepper
-
 
 # -- Tests: StateMachineStepper — generator support ----------------------------
 

@@ -141,15 +141,6 @@ class StateMachine(Generic[StateT, ContextT]):
     def state_history(self) -> deque[StateT]:
         return self._state_history
 
-    @property
-    def stepper(self) -> StateMachineStepper[StateT, ContextT]:
-        return self._stepper
-
-    def force_state(self, new_state: StateT) -> None:
-        """Externally inject a state (used by main SM to signal sub-SMs)."""
-        self._state_history.append(new_state)
-        self._state = new_state
-
     async def step(self, context: ContextT) -> None:
         """Run stepper until no more transitions this tick."""
         while True:

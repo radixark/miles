@@ -41,7 +41,7 @@ def _disable_detector(detector: FixedDecisionDetector) -> None:
 
 
 def _inject_iteration_data(harness: object, count: int = 10) -> None:
-    active_run_id = harness.controller.training_rank_roster.run_id
+    active_run_id = harness.subsystem_hub.training_rank_roster.run_id
     for i in range(1, count + 1):
         harness.mini_wandb.log_step(
             run_id=active_run_id,
@@ -154,13 +154,14 @@ class TestGlobalTimeout:
 
         # Step 2: inject old start_time to trigger timeout
         _disable_detector(enter_recovery)
-        harness.controller._state_machine.force_state(
-            RestartingMainJobSt(
-                requestor_name=main_state.requestor_name,
-                start_time=datetime.now(timezone.utc) - timedelta(seconds=1801),
-                requestor_frozen_state=main_state.requestor_frozen_state,
-            )
+        injected = RestartingMainJobSt(
+            requestor_name=main_state.requestor_name,
+            start_time=datetime.now(timezone.utc) - timedelta(seconds=1801),
+            requestor_frozen_state=main_state.requestor_frozen_state,
         )
+        sm = harness.controller._state_machine
+        sm._state = injected
+        sm._state_history.append(injected)
 
         await harness.controller._tick()
         # After timeout, should return to NormalState
@@ -199,7 +200,7 @@ class TestRecoveryCompleteBackToMonitoring:
             trigger=TriggerType.CRASH,
             reason="test recovery again",
         )
-        harness.controller.training_rank_roster.rank_placement[0] = "node-0"
+        harness.subsystem_hub.training_rank_roster.rank_placement[0] = "node-0"
         await harness.controller._tick()
         assert enter_recovery.call_count > initial_detector_count
 
