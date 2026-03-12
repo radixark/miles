@@ -71,7 +71,9 @@ class TestStackTraceNodeExecutorSinglePid:
 
 
 class TestStackTraceNodeExecutorMultiplePids:
-    async def test_partial_failure_still_passes(self) -> None:
+    async def test_partial_failure_marks_not_passed(self) -> None:
+        """Partial PID failure was treated as pass (only all_failed → not passed).
+        Now any failure marks passed=False with failure metadata."""
         good_proc = make_mock_subprocess(stdout=SAMPLE_PYSPY_JSON)
         bad_proc = make_mock_subprocess(
             stdout=b"",
@@ -90,7 +92,10 @@ class TestStackTraceNodeExecutorMultiplePids:
             diag = StackTraceNodeExecutor()
             result = await diag.run(node_id="node-0", pids=[100, 200])
 
-        assert result.passed is True
+        assert result.passed is False
+        assert result.metadata is not None
+        assert result.metadata["failed_pids"] == 1
+        assert result.metadata["total_pids"] == 2
         threads = json.loads(result.details)
         assert len(threads) == 1
 

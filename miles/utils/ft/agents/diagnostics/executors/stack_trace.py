@@ -68,12 +68,12 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
             if not success:
                 failures += 1
 
-        all_failed = failures == len(pids)
         return DiagnosticResult(
             diagnostic_type=self.diagnostic_type,
             node_id=node_id,
-            passed=not all_failed,
+            passed=(failures == 0),
             details=json.dumps([t.model_dump() for t in all_threads]),
+            metadata={"failed_pids": failures, "total_pids": len(pids)} if failures > 0 else None,
         )
 
     async def _dump_pid(self, pid: int, timeout_seconds: int) -> list[PySpyThread]:
