@@ -111,6 +111,14 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         if requestor is None:
             return None
 
+        for name, sub_state in state.subsystems.items():
+            if name != requestor and isinstance(sub_state, RecoveringSt):
+                logger.warning(
+                    "subsystem_recovery_discarded name=%s phase=%s",
+                    name,
+                    type(sub_state.recovery).__name__,
+                )
+
         frozen_state = state.subsystems[requestor]
 
         logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)

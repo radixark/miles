@@ -229,6 +229,59 @@ class TestMultiSubsystemOneEscalates:
 
 
 # ---------------------------------------------------------------------------
+# Scenario 4b: Non-requestor recovery discarded
+# ---------------------------------------------------------------------------
+
+
+class TestNonRequestorRecoveryDiscarded:
+    @pytest.mark.asyncio
+    async def test_logs_warning_for_non_requestor_in_recovery(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Previously, when one subsystem triggered a main job restart, all
+        other subsystems' recovery states were silently discarded. Now a
+        warning is logged for each non-requestor subsystem that was in
+        recovery so operators can investigate potential cascading issues.
+        """
+        import logging
+
+        main_job = FakeMainJob()
+        stepper = create_main_stepper()
+
+        requestor_state = _make_frozen_recovering_state()
+        bystander_state = RecoveringSt(
+            recovery=EvictingAndRestartingSt(
+                restart=ExternalRestartingMainJobSt(
+                    external_execution_result=ExternalExecutionResult.SUCCEEDED,
+                ),
+                failed_next_state=StopTimeDiagnosticsSt(),
+            ),
+            trigger=TriggerType.HANG,
+            recovery_start_time=datetime.now(timezone.utc),
+        )
+
+        subsystems: dict[str, SubsystemState] = {
+            "training": bystander_state,
+            "rollout_0": requestor_state,
+        }
+        state = NormalSt(subsystems=subsystems)
+        context = _make_controller_context(
+            main_job=main_job,
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
+        )
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.ft.controller.state_machines.main.handlers"):
+            await _step_last(stepper, state, context)
+
+        assert "subsystem_recovery_discarded" in caplog.text
+        assert "training" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Scenario 5: Job restart pending — keep waiting
 # ---------------------------------------------------------------------------
 
