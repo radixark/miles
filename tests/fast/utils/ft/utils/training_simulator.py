@@ -361,3 +361,61 @@ class RemoteControlledNodeManager(NodeManagerProtocol):
 
     def was_ever_marked_bad(self, node_id: str) -> bool:
         return ray.get(self._state.was_ever_marked_bad.remote(node_id))
+
+
+@ray.remote(num_cpus=0, num_gpus=0)
+class FakeRolloutManagerActor:
+    """Fake rollout manager for local_ray tests.
+
+    Implements start_cell/stop_cell/get_cell_status for RayRolloutActuator,
+    and serves rollout_cell_alive metrics via Prometheus HTTP endpoint for
+    MiniPrometheus to scrape.
+    """
+
+    def __init__(self, cell_ids: list[str]) -> None:
+        import socket
+
+        from prometheus_client import CollectorRegistry, Gauge
+        from prometheus_client import start_http_server as start_prom_http_server
+
+        self._registry = CollectorRegistry()
+        self._gauge = Gauge(
+            "rollout_cell_alive",
+            "1=cell alive, 0=cell dead",
+            ["cell_id"],
+            registry=self._registry,
+        )
+        self._cell_status: dict[str, str] = {}
+
+        for cell_id in cell_ids:
+            self._gauge.labels(cell_id=cell_id).set(1.0)
+            self._cell_status[cell_id] = JobStatus.RUNNING.value
+
+        sock = socket.socket()
+        sock.bind(("", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        start_prom_http_server(port=port, registry=self._registry)
+        self._address = f"http://127.0.0.1:{port}"
+
+    def get_metrics_address(self) -> str:
+        return self._address
+
+    def start_cell(self, cell_id: str) -> str:
+        self._cell_status[cell_id] = JobStatus.RUNNING.value
+        self._gauge.labels(cell_id=cell_id).set(1.0)
+        return f"rollout-{cell_id}"
+
+    def stop_cell(self, cell_id: str) -> None:
+        self._cell_status[cell_id] = JobStatus.STOPPED.value
+
+    def get_cell_status(self, cell_id: str) -> JobStatus:
+        return JobStatus(self._cell_status.get(cell_id, JobStatus.RUNNING.value))
+
+    def set_cell_alive(self, cell_id: str, alive: bool) -> None:
+        """Test helper: control the rollout_cell_alive metric."""
+        self._gauge.labels(cell_id=cell_id).set(float(alive))
+
+    def set_cell_status(self, cell_id: str, status: str) -> None:
+        """Test helper: control what get_cell_status returns."""
+        self._cell_status[cell_id] = status

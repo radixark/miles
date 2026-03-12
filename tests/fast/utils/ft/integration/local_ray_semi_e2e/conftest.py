@@ -14,6 +14,7 @@ from tests.fast.utils.ft.utils.diagnostic_fakes import StubDiagnostic
 from tests.fast.utils.ft.utils.fault_injection import LocalRayFaultInjector
 from tests.fast.utils.ft.utils.training_simulator import (
     CollectorStateActor,
+    FakeRolloutManagerActor,
     NodeManagerStateActor,
     NotifierStateActor,
     RemoteControlledCollector,
@@ -70,6 +71,9 @@ class E2EEnv:
     collector_states: dict[str, ray.actor.ActorHandle] = field(default_factory=dict)
     node_manager: RemoteControlledNodeManager | None = None
     notifier_state: ray.actor.ActorHandle | None = None
+    rollout_manager: ray.actor.ActorHandle | None = None
+    rollout_node_to_cell: dict[str, str] = field(default_factory=dict)
+    rollout_cell_ids: list[str] = field(default_factory=list)
     _cleanup_names: list[str] = field(default_factory=list)
     _cleanup_handles: list[ray.actor.ActorHandle] = field(default_factory=list)
 
@@ -173,6 +177,10 @@ def _build_e2e_env(
     recovery_timeout_seconds: int | None = None,
     monitoring_timeout_seconds: int | None = None,
     monitoring_success_iterations: int | None = None,
+    rollout_num_cells: int = 0,
+    rollout_node_ids: dict[str, set[str]] | None = None,
+    rollout_alive_threshold_seconds: float | None = None,
+    rollout_monitoring_alive_duration_seconds: float | None = None,
 ) -> E2EEnv:
     if nodes is None:
         nodes = [NodeSpec(node_id=f"{ft_id}-node-0")]
@@ -198,7 +206,7 @@ def _build_e2e_env(
             tick_interval=tick_interval,
             ft_id=ft_id,
             scrape_interval_seconds=scrape_interval_seconds,
-            rollout_num_cells=0,
+            rollout_num_cells=rollout_num_cells,
         ),
         main_job_override=main_job,
         node_manager_override=node_manager,
@@ -218,25 +226,71 @@ def _build_e2e_env(
         controller_kwargs["monitoring_timeout_seconds_override"] = monitoring_timeout_seconds
     if monitoring_success_iterations is not None:
         controller_kwargs["monitoring_success_iterations_override"] = monitoring_success_iterations
+    if rollout_alive_threshold_seconds is not None:
+        controller_kwargs["rollout_alive_threshold_seconds_override"] = rollout_alive_threshold_seconds
+    if rollout_monitoring_alive_duration_seconds is not None:
+        controller_kwargs["rollout_monitoring_alive_duration_seconds_override"] = rollout_monitoring_alive_duration_seconds
 
     controller_name = ft_controller_actor_name(ft_id)
     controller = FtControllerActor.options(name=controller_name).remote(**controller_kwargs)
     controller.submit_and_run.remote()
     poll_for_run_id(controller)
 
+    # Step: compute rollout cell IDs
+    if rollout_num_cells == 0:
+        cell_ids: list[str] = []
+    elif rollout_num_cells == 1:
+        cell_ids = ["default"]
+    else:
+        cell_ids = [str(i) for i in range(rollout_num_cells)]
+
+    # Step: setup rollout manager and register with controller
+    rollout_manager_actor: ray.actor.ActorHandle | None = None
+    node_to_cell: dict[str, str] = {}
+
+    if cell_ids:
+        rollout_manager_actor = FakeRolloutManagerActor.remote(cell_ids)
+        metrics_address: str = ray.get(
+            rollout_manager_actor.get_metrics_address.remote(), timeout=5,
+        )
+        ray.get(
+            controller.register_rollout.remote(rollout_manager_actor, metrics_address),
+            timeout=10,
+        )
+
+        resolved_rollout_node_ids = rollout_node_ids or {
+            cell_id: {f"{ft_id}-rollout-{cell_id}"}
+            for cell_id in cell_ids
+        }
+        for cell_id, nids in resolved_rollout_node_ids.items():
+            ray.get(controller.set_rollout_node_ids.remote(cell_id, nids), timeout=5)
+
+        for cell_id, nids in resolved_rollout_node_ids.items():
+            for nid in nids:
+                node_to_cell[nid] = cell_id
+
     env = E2EEnv(
         controller=controller,
         state_actor=state_actor,
-        injector=LocalRayFaultInjector(state_actor=state_actor),
+        injector=LocalRayFaultInjector(
+            state_actor=state_actor,
+            rollout_manager=rollout_manager_actor,
+            rollout_node_to_cell=node_to_cell,
+        ),
         ft_id=ft_id,
         node_manager=node_manager,
         notifier_state=notifier_state_actor,
+        rollout_manager=rollout_manager_actor,
+        rollout_node_to_cell=node_to_cell,
+        rollout_cell_ids=cell_ids,
     )
     env._cleanup_names.append(controller_name)
     env._cleanup_handles.append(state_actor)
     env._cleanup_handles.append(nm_state_actor)
     if notifier_state_actor is not None:
         env._cleanup_handles.append(notifier_state_actor)
+    if rollout_manager_actor is not None:
+        env._cleanup_handles.append(rollout_manager_actor)
 
     # Step: start node agents
     rank_offset = 0
@@ -364,6 +418,38 @@ def e2e_hang_env(local_ray: None) -> Generator[E2EEnv, None, None]:
         ft_id="e2ehng",
         nodes=[NodeSpec(node_id="e2ehng-node-0")],
         detectors=[FastHangDetector(timeout_seconds=3.0)],
+    )
+    yield env
+    env.cleanup()
+
+
+@pytest.fixture
+def e2e_rollout_env(local_ray: None) -> Generator[E2EEnv, None, None]:
+    """1 rollout cell (default) + 1 training node, fast detection thresholds."""
+    env = _build_e2e_env(
+        ft_id="e2ero",
+        nodes=[NodeSpec(node_id="e2ero-node-0")],
+        detectors=[TrainingCrashDetector()],
+        scrape_interval_seconds=_FAST_SCRAPE,
+        rollout_num_cells=1,
+        rollout_alive_threshold_seconds=2.0,
+        rollout_monitoring_alive_duration_seconds=0,
+    )
+    yield env
+    env.cleanup()
+
+
+@pytest.fixture
+def e2e_multi_cell_rollout_env(local_ray: None) -> Generator[E2EEnv, None, None]:
+    """3 rollout cells + 1 training node, fast detection thresholds."""
+    env = _build_e2e_env(
+        ft_id="e2emc",
+        nodes=[NodeSpec(node_id="e2emc-node-0")],
+        detectors=[TrainingCrashDetector()],
+        scrape_interval_seconds=_FAST_SCRAPE,
+        rollout_num_cells=3,
+        rollout_alive_threshold_seconds=2.0,
+        rollout_monitoring_alive_duration_seconds=0,
     )
     yield env
     env.cleanup()

@@ -100,6 +100,9 @@ class _FtControllerActorCls:
         if metrics_address:
             self._ctrl.add_scrape_target("rollout-ft-agent", metrics_address)
 
+    def set_rollout_node_ids(self, cell_id: str, node_ids: set[str]) -> None:
+        self._subsystem_hub.set_rollout_node_ids(cell_id, node_ids)
+
 
 FtControllerActor = ray.remote(
     num_gpus=0,

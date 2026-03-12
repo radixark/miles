@@ -49,11 +49,20 @@ class LocalRayFaultInjector:
     """Fault injector for local_ray tests.
 
     Controls training state via TrainingStateActor to simulate crashes/hangs
-    without actual process kills.
+    without actual process kills. For rollout faults, delegates to
+    FakeRolloutManagerActor to toggle rollout_cell_alive metrics.
     """
 
-    def __init__(self, state_actor: ray.actor.ActorHandle) -> None:
+    def __init__(
+        self,
+        state_actor: ray.actor.ActorHandle,
+        *,
+        rollout_manager: ray.actor.ActorHandle | None = None,
+        rollout_node_to_cell: dict[str, str] | None = None,
+    ) -> None:
         self._state = state_actor
+        self._rollout_manager = rollout_manager
+        self._rollout_node_to_cell = rollout_node_to_cell or {}
 
     async def crash_training(self) -> None:
         await self._state.set_status.remote(JobStatus.FAILED.value)
@@ -82,3 +91,11 @@ class LocalRayFaultInjector:
 
     async def inject_python_exception(self) -> None:
         await self._state.set_status.remote(JobStatus.FAILED.value)
+
+    async def crash_rollout_on_node(self, node_id: str) -> None:
+        cell_id = self._rollout_node_to_cell.get(node_id)
+        if cell_id is None:
+            raise KeyError(f"No rollout cell mapped to node {node_id}")
+        if self._rollout_manager is None:
+            raise RuntimeError("No rollout manager; build env with rollout_num_cells > 0")
+        await self._rollout_manager.set_cell_alive.remote(cell_id, False)
