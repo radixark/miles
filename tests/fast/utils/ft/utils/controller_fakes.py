@@ -9,7 +9,7 @@ from prometheus_client import CollectorRegistry
 from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.factory import create_ft_controller
+from miles.utils.ft.factories.controller import assemble_ft_controller
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT
@@ -244,7 +244,7 @@ def make_test_controller(
     if controller_exporter is None:
         controller_exporter = ControllerExporter(registry=CollectorRegistry())
 
-    bundle = create_ft_controller(
+    bundle = assemble_ft_controller(
         node_manager=node_manager,
         main_job=main_job,
         metric_store=metric_store,

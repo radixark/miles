@@ -10,7 +10,7 @@ from prometheus_client import CollectorRegistry
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.factory import create_ft_controller
+from miles.utils.ft.factories.controller import assemble_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -111,7 +111,7 @@ def _make_test_controller_with_rollout(
     metric_store = MetricStore(time_series_store=time_series_store, mini_wandb=mini_wandb)
     notifier = FakeNotifier()
     controller_exporter = ControllerExporter(registry=CollectorRegistry())
-    bundle = create_ft_controller(
+    bundle = assemble_ft_controller(
         node_manager=node_manager,
         main_job=main_job,
         metric_store=metric_store,

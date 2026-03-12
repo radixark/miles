@@ -105,6 +105,41 @@ class TestBuildFtControllerNotifier:
         assert isinstance(bundle.controller._notifier, LarkWebhookNotifier)
 
 
+class TestUnifiedFactory:
+    """The controller assembly used to be split across two factory layers
+    (controller/factory.py with create_ft_controller and
+    factories/controller.py with build_ft_controller). Now unified into
+    a single factories/controller.py with assemble_ft_controller (core)
+    and build_ft_controller (config-driven).
+    """
+
+    def test_controller_factory_module_deleted(self) -> None:
+        """controller/factory.py should no longer exist."""
+        import importlib
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("miles.utils.ft.controller.factory")
+
+    def test_assemble_ft_controller_builds_working_controller(self) -> None:
+        """assemble_ft_controller is the direct-component entry point."""
+        from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
+        from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
+        from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+        from miles.utils.ft.controller.types import MetricStore
+        from miles.utils.ft.factories.controller import assemble_ft_controller
+
+        bundle = assemble_ft_controller(
+            node_manager=StubNodeManager(),
+            main_job=StubMainJob(),
+            metric_store=MetricStore(
+                time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
+                mini_wandb=MiniWandb(),
+            ),
+        )
+        assert isinstance(bundle.controller, FtController)
+        assert bundle.subsystem_hub is not None
+
+
 class TestBuildPlatformComponentsUnknown:
     def test_unknown_platform_raises_value_error(self) -> None:
         from miles.utils.ft.factories.controller import _build_platform_components

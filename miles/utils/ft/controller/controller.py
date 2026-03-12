@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from typing import NamedTuple
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
@@ -23,6 +24,11 @@ from miles.utils.ft.utils.box import Box
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
+
+
+class FtControllerBundle(NamedTuple):
+    controller: FtController
+    subsystem_hub: SubsystemHub
 
 
 class FtController:
