@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -267,7 +268,7 @@ class SharedDeps:
         "recovery_timeout_seconds", "max_simultaneous_bad_nodes",
         "on_main_job_new_run", "rank_pids_provider", "controller_exporter",
         "on_recovery_duration", "registration_grace_ticks",
-        "on_convergence_failure",
+        "on_convergence_failure", "restart_lock",
     )
 
     def __init__(
@@ -288,6 +289,7 @@ class SharedDeps:
         on_recovery_duration: Callable[[float], None] | None,
         registration_grace_ticks: int,
         on_convergence_failure: Callable[[object, int], None] | None = None,
+        restart_lock: asyncio.Lock | None = None,
     ) -> None:
         self.main_job = main_job
         self.subsystem_specs = subsystem_specs
@@ -304,3 +306,4 @@ class SharedDeps:
         self.on_recovery_duration = on_recovery_duration
         self.registration_grace_ticks = registration_grace_ticks
         self.on_convergence_failure = on_convergence_failure
+        self.restart_lock = restart_lock

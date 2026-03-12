@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -64,6 +65,7 @@ class TickLoop:
         self._run_start_tick: int = 0
         self._registration_grace_ticks = registration_grace_ticks
 
+        self._restart_lock = asyncio.Lock()
         self._detector_crash_tracker = SlidingWindowCounter(window_seconds=1800, threshold=5)
         self._tick_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=5)
         self._convergence_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=3)
@@ -146,6 +148,7 @@ class TickLoop:
             on_recovery_duration=deps.on_recovery_duration,
             registration_grace_ticks=self._registration_grace_ticks,
             on_convergence_failure=self._on_convergence_failure,
+            restart_lock=self._restart_lock,
         )
         return MainContext(
             shared=shared,

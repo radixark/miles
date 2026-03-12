@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
@@ -88,3 +89,4 @@ class RestartContext(FtBaseModel):
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig
     restart_mode: RestartMode
     pending_timeout_seconds: int = 300
+    restart_lock: asyncio.Lock | None = None

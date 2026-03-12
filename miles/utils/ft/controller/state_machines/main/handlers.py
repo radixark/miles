@@ -102,6 +102,7 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
             job=context.shared.main_job,
             on_main_job_new_run=context.shared.on_main_job_new_run,
             restart_mode=RestartMode.MAIN_JOB,
+            restart_lock=context.shared.restart_lock,
         )
         if not success:
             await safe_notify(

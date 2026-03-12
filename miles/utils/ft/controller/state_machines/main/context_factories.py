@@ -92,6 +92,7 @@ def _build_recovery_context(
         actuator=spec.runtime.actuator,
         monitoring_config=spec.config.monitoring_config,
         restart_mode=spec.config.restart_mode,
+        restart_lock=context.shared.restart_lock,
     )
     return RecoveryContext(
         trigger=trigger,

@@ -231,3 +231,60 @@ class TestStopAndSubmit:
         result = await stop_and_submit(main_job)
 
         assert result is False
+
+
+class TestRestartLockSerialization:
+    """restart_lock serializes concurrent stop_and_submit calls.
+
+    Without the lock, two concurrent callers could interleave their
+    stop→start sequences: both stop, then both start, resulting in
+    a ghost job that the controller no longer tracks.
+    """
+
+    @pytest.mark.anyio
+    async def test_concurrent_calls_are_serialized(self) -> None:
+        """Two concurrent stop_and_submit with the same lock run sequentially."""
+        lock = asyncio.Lock()
+        execution_log: list[str] = []
+
+        class SlowJob(FakeMainJob):
+            async def stop(self, timeout_seconds: int = 300) -> None:
+                execution_log.append("stop_start")
+                await asyncio.sleep(0.05)
+                execution_log.append("stop_end")
+                await super().stop(timeout_seconds=timeout_seconds)
+
+            async def start(self) -> str:
+                execution_log.append("start_start")
+                run_id = await super().start()
+                execution_log.append("start_end")
+                return run_id
+
+        job = SlowJob()
+
+        task1 = asyncio.create_task(stop_and_submit(job, restart_lock=lock))
+        task2 = asyncio.create_task(stop_and_submit(job, restart_lock=lock))
+        results = await asyncio.gather(task1, task2)
+
+        # One must succeed, the other may fail (double submit guard) or succeed
+        assert any(r is True for r in results)
+
+        # The stop→start pairs must not interleave.
+        # With proper serialization: stop_start, stop_end, start_start, start_end,
+        # then second caller's sequence follows entirely after.
+        stop_starts = [i for i, e in enumerate(execution_log) if e == "stop_start"]
+        start_ends = [i for i, e in enumerate(execution_log) if e == "start_end"]
+        assert len(stop_starts) >= 1
+        assert len(start_ends) >= 1
+        # First caller's start_end must come before second caller's stop_start
+        if len(stop_starts) >= 2:
+            assert start_ends[0] < stop_starts[1]
+
+    @pytest.mark.anyio
+    async def test_no_lock_allows_normal_execution(self) -> None:
+        """When restart_lock is None, stop_and_submit still works normally."""
+        main_job = FakeMainJob()
+
+        result = await stop_and_submit(main_job, restart_lock=None)
+
+        assert result is True

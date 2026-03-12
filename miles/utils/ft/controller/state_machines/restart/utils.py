@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 
@@ -14,8 +15,33 @@ async def stop_and_submit(
     job: StoppableJobProtocol,
     on_main_job_new_run: Callable[[str], None] | None = None,
     restart_mode: RestartMode = RestartMode.MAIN_JOB,
+    restart_lock: asyncio.Lock | None = None,
 ) -> bool:
-    """Stop job, submit new job, notify caller of new run_id. Returns True on success."""
+    """Stop job, submit new job, notify caller of new run_id. Returns True on success.
+
+    When *restart_lock* is provided the entire stop-then-start sequence is
+    executed under the lock, preventing concurrent restart attempts from
+    interleaving and causing double-submit or ghost jobs.
+    """
+    if restart_lock is not None:
+        async with restart_lock:
+            return await _stop_and_submit_locked(
+                job=job,
+                on_main_job_new_run=on_main_job_new_run,
+                restart_mode=restart_mode,
+            )
+    return await _stop_and_submit_locked(
+        job=job,
+        on_main_job_new_run=on_main_job_new_run,
+        restart_mode=restart_mode,
+    )
+
+
+async def _stop_and_submit_locked(
+    job: StoppableJobProtocol,
+    on_main_job_new_run: Callable[[str], None] | None = None,
+    restart_mode: RestartMode = RestartMode.MAIN_JOB,
+) -> bool:
     stop_result = await retry_async(
         job.stop,
         description="stop_job",
