@@ -31,7 +31,10 @@ class TestRegistrationFailurePropagates:
         )
 
         with patch("miles.utils.ft.adapters.impl.ray.node_agent_actor.ray") as mock_ray:
-            mock_ray.get_actor.side_effect = RuntimeError("controller not found")
+            mock_controller = MagicMock()
+            mock_ray.get_actor.return_value = mock_controller
+            mock_ray.get_runtime_context.return_value.current_actor = MagicMock()
+            mock_ray.get.side_effect = RuntimeError("connection refused")
 
             with pytest.raises(RuntimeError, match="Failed to register node agent"):
                 actor._register_with_controller()
