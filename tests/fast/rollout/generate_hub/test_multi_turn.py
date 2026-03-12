@@ -120,6 +120,10 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             rollout_log_probs=[],
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
+        # tito_session_mismatch is populated by the session server's token
+        # comparison — dynamic content that depends on mock alignment, so
+        # exclude it from the structural sample comparison.
+        actual_partial.metadata.pop("tito_session_mismatch", None)
         assert actual_partial == expected_item.partial_sample
 
 
@@ -637,6 +641,18 @@ class TestAgentMetadata:
             for key, value in _AGENT_METADATA.items():
                 assert key in s.metadata, f"metadata should contain key '{key}'"
                 assert s.metadata[key] == value, f"metadata['{key}'] should be {value}, got {s.metadata[key]}"
+
+    def test_tito_session_mismatch_present_in_metadata(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+        sample = result.sample if not isinstance(result.sample, list) else result.sample[-1]
+        assert "tito_session_mismatch" in sample.metadata, "tito_session_mismatch should be present in sample metadata"
+        mismatches = sample.metadata["tito_session_mismatch"]
+        assert isinstance(mismatches, list)
+        for m in mismatches:
+            assert {"type", "segment_index", "expected_text", "actual_text", "detail"} == set(m.keys())
 
     def test_agent_returns_none_metadata_unchanged(self, variant, generation_env):
         generation_env.mock_server.process_fn = TwoTurnStub.process_fn

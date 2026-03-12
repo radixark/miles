@@ -82,6 +82,10 @@ class SingleUserTurnTrajectoryManager:
                 return None
             return session.records
 
+    def get_session_by_id(self, session_id: str) -> SingleUserTurnTrajectory | None:
+        with self._lock:
+            return self.sessions.get(session_id)
+
     def delete_session_by_id(self, session_id: str) -> bool | None:
         with self._lock:
             session = self.sessions.pop(session_id, None)

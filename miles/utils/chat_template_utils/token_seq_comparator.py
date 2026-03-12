@@ -44,6 +44,15 @@ class Mismatch:
     actual_text: str
     detail: str = ""
 
+    def to_dict(self) -> dict:
+        return {
+            "type": self.type.value,
+            "segment_index": self.segment_index,
+            "expected_text": self.expected_text,
+            "actual_text": self.actual_text,
+            "detail": self.detail,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Calculator

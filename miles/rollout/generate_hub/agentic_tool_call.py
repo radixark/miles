@@ -57,7 +57,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         metadata=input.sample.metadata,
     )
 
-    records = await tracer.collect_records()
+    records, session_metadata = await tracer.collect_records()
 
     if not records:
         logger.warning("No model calls recorded for sample")
@@ -81,6 +81,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 len(samples) - 1,
             )
             samples = samples[-1]
+        samples.metadata.update(session_metadata)
+    else:
+        if samples:
+            samples[-1].metadata.update(session_metadata)
     return GenerateFnOutput(samples=samples)
 
 
@@ -105,14 +109,6 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
             if dst not in request_kwargs:
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
-
-    # return_prompt_token_ids: get prompt token IDs without computing logprobs (zero cost, cache-safe)
-    # logprobs: populates response_token_ids + logprobs on each choice
-    # NOTE: do NOT set logprob_start_len=0, that would destroy SGLang's prefix cache.
-    request_kwargs["return_prompt_token_ids"] = True
-    request_kwargs["logprobs"] = True
-    request_kwargs["no_stop_trim"] = False
-    request_kwargs["return_meta_info"] = True
 
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys
