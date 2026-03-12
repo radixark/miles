@@ -11,6 +11,7 @@ class DiskSpaceLowDetector(BaseFaultDetector):
 
         return Decision(
             action=ActionType.NOTIFY_HUMAN,
+            bad_node_ids=[f.node_id for f in faults],
             reason="; ".join(f.reason for f in faults),
             trigger=TriggerType.MISC,
         )

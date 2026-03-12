@@ -5,7 +5,10 @@ from miles.utils.ft.controller.types import ActionType
 
 
 class TestDiskSpaceLowDetector:
-    def test_disk_space_low_returns_notify_human(self) -> None:
+    def test_disk_space_low_returns_notify_human_with_node_ids(self) -> None:
+        """M-2: bad_node_ids was previously empty even when faults had
+        node_id. Operators had to parse the reason string to find affected
+        nodes. Now bad_node_ids is populated from faults."""
         store = make_fake_metric_store()
         inject_disk_fault(store, node_id="node-0", available_bytes=500e6)
         detector = DiskSpaceLowDetector()
@@ -14,7 +17,7 @@ class TestDiskSpaceLowDetector:
 
         assert decision.action == ActionType.NOTIFY_HUMAN
         assert "disk space low" in decision.reason
-        assert decision.bad_node_ids == []
+        assert "node-0" in decision.bad_node_ids
 
     def test_disk_space_sufficient_returns_none(self) -> None:
         store = make_fake_metric_store()
