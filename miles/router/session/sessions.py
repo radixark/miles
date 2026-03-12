@@ -67,6 +67,8 @@ def setup_session_routes(app, router: "MilesRouter"):
         request_body["logprobs"] = True
         request_body["return_prompt_token_ids"] = True
         request_body["return_meta_info"] = True
+        if getattr(router.args, "use_rollout_routing_replay", False):
+            request_body["return_routed_experts"] = True
         # Exclude stop token from message text so append-only text verification works.
         # This does not affect the output token IDs.
         request_body["no_stop_trim"] = False
