@@ -13,15 +13,15 @@ import polars as pl
 from pydantic import Field, computed_field, model_validator
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
-from miles.utils.ft.controller.metrics.exporter import ControllerExporter
-from miles.utils.ft.controller.subsystem_hub.config import SubsystemSpec
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult
-from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 if TYPE_CHECKING:
     from miles.utils.ft.adapters.types import ClusterExecutorProtocol
+    from miles.utils.ft.controller.metrics.exporter import ControllerExporter
     from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb, StepValue, TimedStepValue
+    from miles.utils.ft.controller.subsystem_hub.config import SubsystemSpec
+    from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 
 # ---------------------------------------------------------------------------
@@ -245,26 +245,54 @@ class MetricStore:
     mini_wandb: MiniWandb
 
 
-@dataclass
 class SharedDeps:
     """Stable dependencies that do not change tick-to-tick.
 
     MainContext used to carry ~18 flat fields mixing stable deps with
     per-tick data. SharedDeps groups the stable portion so MainContext
     only holds per-tick fields plus this container.
+
+    Not a @dataclass to avoid Pydantic resolving its field annotations
+    (which would cause circular imports).
     """
 
-    main_job: MainJobProtocol
-    subsystem_specs: dict[str, SubsystemSpec]
-    metric_store: MetricStore
-    notifier: NotifierProtocol | None
-    node_manager: NodeManagerProtocol
-    diagnostic_orchestrator: DiagnosticOrchestratorProtocol
-    detector_crash_tracker: SlidingWindowCounter
-    recovery_timeout_seconds: int
-    max_simultaneous_bad_nodes: int
-    on_main_job_new_run: Callable[[str], None] | None
-    rank_pids_provider: Callable[[str], dict[int, int]] | None
-    controller_exporter: ControllerExporter | None
-    on_recovery_duration: Callable[[float], None] | None
-    registration_grace_ticks: int
+    __slots__ = (
+        "main_job", "subsystem_specs", "metric_store", "notifier",
+        "node_manager", "diagnostic_orchestrator", "detector_crash_tracker",
+        "recovery_timeout_seconds", "max_simultaneous_bad_nodes",
+        "on_main_job_new_run", "rank_pids_provider", "controller_exporter",
+        "on_recovery_duration", "registration_grace_ticks",
+    )
+
+    def __init__(
+        self,
+        *,
+        main_job: MainJobProtocol,
+        subsystem_specs: dict[str, SubsystemSpec],
+        metric_store: MetricStore,
+        notifier: NotifierProtocol | None,
+        node_manager: NodeManagerProtocol,
+        diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
+        detector_crash_tracker: SlidingWindowCounter,
+        recovery_timeout_seconds: int,
+        max_simultaneous_bad_nodes: int,
+        on_main_job_new_run: Callable[[str], None] | None,
+        rank_pids_provider: Callable[[str], dict[int, int]] | None,
+        controller_exporter: ControllerExporter | None,
+        on_recovery_duration: Callable[[float], None] | None,
+        registration_grace_ticks: int,
+    ) -> None:
+        self.main_job = main_job
+        self.subsystem_specs = subsystem_specs
+        self.metric_store = metric_store
+        self.notifier = notifier
+        self.node_manager = node_manager
+        self.diagnostic_orchestrator = diagnostic_orchestrator
+        self.detector_crash_tracker = detector_crash_tracker
+        self.recovery_timeout_seconds = recovery_timeout_seconds
+        self.max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
+        self.on_main_job_new_run = on_main_job_new_run
+        self.rank_pids_provider = rank_pids_provider
+        self.controller_exporter = controller_exporter
+        self.on_recovery_duration = on_recovery_duration
+        self.registration_grace_ticks = registration_grace_ticks
