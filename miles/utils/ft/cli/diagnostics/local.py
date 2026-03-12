@@ -24,7 +24,7 @@ def local(
     json_output: Annotated[bool, typer.Option("--json", help="Output results as JSON")] = False,
 ) -> None:
     """Run diagnostic checks on the local node."""
-    mount_paths = [Path(m.strip()) for m in disk_mounts.split(",")]
+    mount_paths = [Path(m.strip()) for m in disk_mounts.split(",") if m.strip()]
     xid_since = datetime.now(timezone.utc) - timedelta(minutes=xid_since_minutes)
     diagnostics = build_all_diagnostics(
         num_gpus=num_gpus,
