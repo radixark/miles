@@ -137,15 +137,20 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+        megatron_path="/workspace/Megatron-LM",
     )
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
     # TODO also use typer
+
     prepare()
+
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
+
     execute("save" if not args.async_save else "async_save")
+
     latest_step = _get_latest_checkpointed_iteration()
     execute("load", ckpt_step=latest_step)
