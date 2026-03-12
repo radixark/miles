@@ -153,13 +153,15 @@ class TestRolloutCrashRecovery:
         await controller._tick()
 
         # Step 4: Verify
+        # RolloutCrashDetector returns bad_node_ids=[] by design (software
+        # crash, not hardware fault), so no nodes are marked bad
         state = controller._state_machine.state
         assert isinstance(state, NormalSt)
         assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomalySt)
         assert isinstance(state.subsystems["training"], DetectingAnomalySt)
 
-        assert harness.node_manager.was_ever_marked_bad("rollout-0")
-        assert harness.node_manager.was_ever_marked_bad("rollout-1")
+        assert not harness.node_manager.was_ever_marked_bad("rollout-0")
+        assert not harness.node_manager.was_ever_marked_bad("rollout-1")
         assert harness.rollout_manager_handle.stop_cell.call_count >= 1
         assert harness.rollout_manager_handle.start_cell.call_count >= 1
         assert not harness.main_job._stopped
