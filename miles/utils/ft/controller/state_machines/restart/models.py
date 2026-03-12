@@ -43,7 +43,7 @@ class ExternalExecutionResult(Enum):
 
 class RestartState(FtBaseModel):
     model_config = ConfigDict(frozen=True)
-    bad_node_ids: list[str] = []
+    bad_node_ids: tuple[str, ...] = ()
 
 
 class EvictingSt(RestartState):
@@ -82,7 +82,7 @@ class RestartContext(FtBaseModel):
     metric_store: MetricStore
     notifier: NotifierProtocol | None
     on_main_job_new_run: Callable[[str], None] | None
-    node_metadata: dict[str, dict[str, str]] = {}
+    node_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     actuator: SubsystemActuatorProtocol
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig

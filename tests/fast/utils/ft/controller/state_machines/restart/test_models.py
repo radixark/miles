@@ -20,11 +20,11 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 class TestRestartStateConstruction:
     def test_evicting(self) -> None:
         state = EvictingSt(bad_node_ids=["node-0"])
-        assert state.bad_node_ids == ["node-0"]
+        assert state.bad_node_ids == ("node-0",)
 
     def test_evicting_default_bad_nodes(self) -> None:
         state = EvictingSt()
-        assert state.bad_node_ids == []
+        assert state.bad_node_ids == ()
 
     def test_stopping_and_restarting_defaults(self) -> None:
         state = StoppingAndRestartingSt()

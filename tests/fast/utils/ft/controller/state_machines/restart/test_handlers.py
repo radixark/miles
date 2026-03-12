@@ -116,7 +116,7 @@ class TestEvicting:
         result = await _step_last(stepper, state, ctx)
 
         assert isinstance(result, StoppingAndRestartingSt)
-        assert result.bad_node_ids == ["node-A"]
+        assert result.bad_node_ids == ("node-A",)
         assert node_manager.is_node_bad("node-A")
 
     @pytest.mark.asyncio
@@ -140,7 +140,7 @@ class TestEvicting:
         state = EvictingSt(bad_node_ids=["node-A"])
         result = await _step_last(stepper, state, ctx)
         assert isinstance(result, RestartFailedSt)
-        assert result.bad_node_ids == ["node-A"]
+        assert result.bad_node_ids == ("node-A",)
 
     @pytest.mark.asyncio
     async def test_mark_node_bad_called_unconditionally(self) -> None:
@@ -186,7 +186,7 @@ class TestEvicting:
         result = await _step_last(stepper, state, ctx)
 
         assert isinstance(result, StoppingAndRestartingSt)
-        assert result.bad_node_ids == ["node-A", "node-B"]
+        assert result.bad_node_ids == ("node-A", "node-B")
 
     @pytest.mark.asyncio
     async def test_metadata_passed_to_mark_node_bad(self) -> None:
@@ -234,7 +234,7 @@ class TestStoppingAndRestarting:
         result = await _step_last(stepper, state, ctx)
 
         assert isinstance(result, ExternalRestartingMainJobSt)
-        assert result.bad_node_ids == ["node-A"]
+        assert result.bad_node_ids == ("node-A",)
         assert result.external_execution_result is None
 
     @pytest.mark.asyncio
@@ -360,7 +360,7 @@ class TestMonitoringProgress:
         )
         result = await _step_last(stepper, state, ctx)
         assert isinstance(result, RestartDoneSt)
-        assert result.bad_node_ids == ["node-A"]
+        assert result.bad_node_ids == ("node-A",)
 
     @pytest.mark.asyncio
     async def test_monitoring_job_failed(self) -> None:
@@ -647,7 +647,7 @@ class TestRestartingMainJob:
 
         assert isinstance(result, MonitoringProgressSt)
         assert result.base_iteration == 42
-        assert result.bad_node_ids == ["node-A"]
+        assert result.bad_node_ids == ("node-A",)
 
     @pytest.mark.asyncio
     async def test_succeeded_no_wandb_data_uses_zero_base(self) -> None:
@@ -674,7 +674,7 @@ class TestRestartingMainJob:
         result = await _step_last(stepper, state, ctx)
 
         assert isinstance(result, RestartFailedSt)
-        assert result.bad_node_ids == ["node-A"]
+        assert result.bad_node_ids == ("node-A",)
 
     @pytest.mark.asyncio
     async def test_timeout_returns_restart_failed(self) -> None:
@@ -689,7 +689,7 @@ class TestRestartingMainJob:
         result = await _step_last(stepper, state, ctx)
 
         assert isinstance(result, RestartFailedSt)
-        assert result.bad_node_ids == ["node-B"]
+        assert result.bad_node_ids == ("node-B",)
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +747,7 @@ class TestFullRestartFlow:
         # Step 2: Submit -> RestartingMainJob (MAIN_JOB mode, waiting for external result)
         state = await _step_last(stepper, state, ctx)
         assert isinstance(state, ExternalRestartingMainJobSt)
-        assert state.bad_node_ids == ["node-A"]
+        assert state.bad_node_ids == ("node-A",)
         assert state.external_execution_result is None
 
     @pytest.mark.asyncio

@@ -26,7 +26,7 @@ class RecoveringSt(SubsystemState):
     recovery: RecoveryState
     trigger: TriggerType
     recovery_start_time: datetime
-    known_bad_node_ids: list[str] = []
+    known_bad_node_ids: tuple[str, ...] = ()
 
 
 class SubsystemContext(FtBaseModel):

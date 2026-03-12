@@ -21,7 +21,7 @@ class RecoveryState(FtBaseModel):
 
 
 class RealtimeChecksSt(RecoveryState):
-    pre_identified_bad_nodes: list[str] = []
+    pre_identified_bad_nodes: tuple[str, ...] = ()
 
 
 class EvictingAndRestartingSt(RecoveryState):
@@ -31,19 +31,19 @@ class EvictingAndRestartingSt(RecoveryState):
     @classmethod
     def direct_restart(cls) -> EvictingAndRestartingSt:
         return cls(
-            restart=StoppingAndRestartingSt(bad_node_ids=[]),
+            restart=StoppingAndRestartingSt(),
             failed_next_state=StopTimeDiagnosticsSt(),
         )
 
     @classmethod
-    def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: list[str]) -> EvictingAndRestartingSt:
+    def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: tuple[str, ...]) -> EvictingAndRestartingSt:
         return cls(
             restart=EvictingSt(bad_node_ids=bad_node_ids),
             failed_next_state=StopTimeDiagnosticsSt(),
         )
 
     @classmethod
-    def evict_and_restart_final(cls, *, bad_node_ids: list[str]) -> EvictingAndRestartingSt:
+    def evict_and_restart_final(cls, *, bad_node_ids: tuple[str, ...]) -> EvictingAndRestartingSt:
         return cls(
             restart=EvictingSt(bad_node_ids=bad_node_ids),
             failed_next_state=NotifyHumansSt(state_before="EvictingAndRestartingSt", reason="final_restart_failed"),

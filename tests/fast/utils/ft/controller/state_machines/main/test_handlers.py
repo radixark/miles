@@ -229,7 +229,7 @@ class TestUpdateExternalExecutionResult:
         assert isinstance(result.recovery, EvictingAndRestartingSt)
         assert isinstance(result.recovery.restart, ExternalRestartingMainJobSt)
         assert result.recovery.restart.external_execution_result == ExternalExecutionResult.SUCCEEDED
-        assert result.recovery.restart.bad_node_ids == ["node-0", "node-1"]
+        assert result.recovery.restart.bad_node_ids == ("node-0", "node-1")
 
 
 class TestRequestorStateDrop:

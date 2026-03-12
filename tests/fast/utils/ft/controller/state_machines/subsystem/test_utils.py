@@ -256,7 +256,7 @@ class TestKnownBadNodeIds:
             recovery_start_time=datetime.now(timezone.utc),
             known_bad_node_ids=["node-0", "node-1"],
         )
-        assert state.known_bad_node_ids == ["node-0", "node-1"]
+        assert state.known_bad_node_ids == ("node-0", "node-1")
 
     def test_known_bad_node_ids_defaults_to_empty(self) -> None:
         from miles.utils.ft.controller.state_machines.recovery.models import NotifyHumansSt
@@ -266,4 +266,4 @@ class TestKnownBadNodeIds:
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
         )
-        assert state.known_bad_node_ids == []
+        assert state.known_bad_node_ids == ()

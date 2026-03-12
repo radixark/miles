@@ -267,7 +267,7 @@ class TestTemplateMethodFiltering:
                                   )
         assert isinstance(result, RecoveringSt)
         assert isinstance(result.recovery, RealtimeChecksSt)
-        assert result.recovery.pre_identified_bad_nodes == ["node-0"]
+        assert result.recovery.pre_identified_bad_nodes == ("node-0",)
 
     @pytest.mark.asyncio
     async def test_detector_without_bad_node_ids_still_triggers_recovery(self) -> None:

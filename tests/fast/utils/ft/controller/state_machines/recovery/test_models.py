@@ -20,11 +20,11 @@ from miles.utils.ft.controller.state_machines.restart.models import EvictingSt, 
 class TestRecoveryStateConstruction:
     def test_realtime_checks_default(self) -> None:
         state = RealtimeChecksSt()
-        assert state.pre_identified_bad_nodes == []
+        assert state.pre_identified_bad_nodes == ()
 
     def test_realtime_checks_with_bad_nodes(self) -> None:
         state = RealtimeChecksSt(pre_identified_bad_nodes=["node-0", "node-1"])
-        assert state.pre_identified_bad_nodes == ["node-0", "node-1"]
+        assert state.pre_identified_bad_nodes == ("node-0", "node-1")
 
     def test_stop_time_diagnostics(self) -> None:
         state = StopTimeDiagnosticsSt()
@@ -51,18 +51,18 @@ class TestEvictingAndRestartingFactories:
         state = EvictingAndRestartingSt.direct_restart()
 
         assert isinstance(state.restart, StoppingAndRestartingSt)
-        assert state.restart.bad_node_ids == []
+        assert state.restart.bad_node_ids == ()
         assert isinstance(state.failed_next_state, StopTimeDiagnosticsSt)
 
     def test_evict_and_restart(self) -> None:
-        state = EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-0", "node-1"])
+        state = EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(bad_node_ids=("node-0", "node-1"))
 
         assert isinstance(state.restart, EvictingSt)
-        assert state.restart.bad_node_ids == ["node-0", "node-1"]
+        assert state.restart.bad_node_ids == ("node-0", "node-1")
         assert isinstance(state.failed_next_state, StopTimeDiagnosticsSt)
 
     def test_evict_and_restart_final(self) -> None:
-        state = EvictingAndRestartingSt.evict_and_restart_final(bad_node_ids=["node-0"])
+        state = EvictingAndRestartingSt.evict_and_restart_final(bad_node_ids=("node-0",))
 
         assert isinstance(state.restart, EvictingSt)
         assert isinstance(state.failed_next_state, NotifyHumansSt)

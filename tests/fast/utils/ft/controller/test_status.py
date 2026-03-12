@@ -91,7 +91,7 @@ class TestBuildControllerStatus:
         assert status.recovery_in_progress is False
 
     def test_recovery_mode_with_bad_nodes(self) -> None:
-        recovery = EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(bad_node_ids=["node-1"])
+        recovery = EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(bad_node_ids=("node-1",))
         state = RecoveringSt(
             recovery=recovery,
             trigger="crash",

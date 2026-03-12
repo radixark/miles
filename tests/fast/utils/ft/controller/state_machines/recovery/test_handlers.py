@@ -178,7 +178,7 @@ class TestRealtimeChecks:
         result = await _step(stepper, RealtimeChecksSt(pre_identified_bad_nodes=["node-X"]))
         assert isinstance(result, EvictingAndRestartingSt)
         assert isinstance(result.restart, EvictingSt)
-        assert result.restart.bad_node_ids == ["node-X"]
+        assert result.restart.bad_node_ids == ("node-X",)
 
     @pytest.mark.asyncio
     async def test_multiple_pre_identified_bad_nodes_all_evicted(self) -> None:
@@ -188,7 +188,7 @@ class TestRealtimeChecks:
             RealtimeChecksSt(pre_identified_bad_nodes=["node-A", "node-B", "node-C"]),
         )
         assert isinstance(result, EvictingAndRestartingSt)
-        assert result.restart.bad_node_ids == ["node-A", "node-B", "node-C"]
+        assert result.restart.bad_node_ids == ("node-A", "node-B", "node-C")
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ class TestStopTimeDiagnostics:
         stepper = _make_stepper()
         result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
         assert isinstance(result, EvictingAndRestartingSt)
-        assert result.restart.bad_node_ids == ["node-B"]
+        assert result.restart.bad_node_ids == ("node-B",)
         assert isinstance(result.failed_next_state, NotifyHumansSt)
 
     @pytest.mark.asyncio
@@ -438,7 +438,7 @@ class TestFullRecoveryFlow:
         state = await _step_last(stepper, RealtimeChecksSt(pre_identified_bad_nodes=["node-X"]), ctx)
         assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.restart, EvictingSt)
-        assert state.restart.bad_node_ids == ["node-X"]
+        assert state.restart.bad_node_ids == ("node-X",)
         assert isinstance(state.failed_next_state, StopTimeDiagnosticsSt)
 
         # Step 2: Evicting -> mark node bad -> StoppingAndRestarting
@@ -507,7 +507,7 @@ class TestFullRecoveryFlow:
         state = await _step_last(stepper, state, ctx)
         assert isinstance(state, EvictingAndRestartingSt)
         assert isinstance(state.failed_next_state, NotifyHumansSt)
-        assert state.restart.bad_node_ids == ["node-B"]
+        assert state.restart.bad_node_ids == ("node-B",)
         assert diag.call_count == 1
 
         # Switch training job to succeed for the eviction restart path
@@ -589,7 +589,7 @@ class TestNotifyHumansReasonField:
         reason='final_restart_failed' on its failed_next_state."""
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailedSt()))
-        state = EvictingAndRestartingSt.evict_and_restart_final(bad_node_ids=["node-X"])
+        state = EvictingAndRestartingSt.evict_and_restart_final(bad_node_ids=("node-X",))
         result = await _step_last(stepper, state, ctx)
         assert isinstance(result, NotifyHumansSt)
         assert result.reason == "final_restart_failed"

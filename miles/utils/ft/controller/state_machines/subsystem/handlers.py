@@ -135,7 +135,7 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             # the new bad nodes change the fault scope, so previous partial work
             # may be based on incomplete information. Re-entering RealtimeChecks
             # ensures the full set goes through the evict→restart→monitor pipeline.
-            all_bad = sorted(known_bad | new_bad_nodes)
+            all_bad = tuple(sorted(known_bad | new_bad_nodes))
             return RecoveringSt(
                 recovery=RealtimeChecksSt(pre_identified_bad_nodes=all_bad),
                 trigger=state.trigger,

@@ -36,3 +36,43 @@ class TestSubsystemStateFrozen:
 
         with pytest.raises(ValidationError):
             state.model_config = {}  # type: ignore[misc]
+
+
+class TestImmutableDefaults:
+    """State model fields that hold collections must use immutable types
+    (tuple, frozenset) rather than mutable defaults (list, set, dict) to
+    prevent accidental mutation of shared default instances."""
+
+    def test_known_bad_node_ids_is_tuple(self) -> None:
+        from datetime import datetime, timezone
+
+        state = RecoveringSt(
+            recovery=RealtimeChecksSt(),
+            trigger=TriggerType.CRASH,
+            recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=["a", "b"],
+        )
+        assert isinstance(state.known_bad_node_ids, tuple)
+        assert state.known_bad_node_ids == ("a", "b")
+
+    def test_known_bad_node_ids_default_is_empty_tuple(self) -> None:
+        from datetime import datetime, timezone
+
+        state = RecoveringSt(
+            recovery=RealtimeChecksSt(),
+            trigger=TriggerType.CRASH,
+            recovery_start_time=datetime.now(timezone.utc),
+        )
+        assert state.known_bad_node_ids == ()
+
+    def test_pre_identified_bad_nodes_is_tuple(self) -> None:
+        state = RealtimeChecksSt(pre_identified_bad_nodes=["x", "y"])
+        assert isinstance(state.pre_identified_bad_nodes, tuple)
+        assert state.pre_identified_bad_nodes == ("x", "y")
+
+    def test_bad_node_ids_is_tuple(self) -> None:
+        from miles.utils.ft.controller.state_machines.restart.models import EvictingSt
+
+        state = EvictingSt(bad_node_ids=["a"])
+        assert isinstance(state.bad_node_ids, tuple)
+        assert state.bad_node_ids == ("a",)
