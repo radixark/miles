@@ -29,7 +29,12 @@ from ..training_utils.log_utils import aggregate_forward_results, aggregate_trai
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
-from .ci_utils import check_model_hashes, check_peak_gpu_memory_after_load, compute_model_hashes_by_layer, save_model_hashes
+from .ci_utils import (
+    check_model_hashes,
+    check_peak_gpu_memory_after_load,
+    compute_model_hashes_by_layer,
+    save_model_hashes,
+)
 from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func

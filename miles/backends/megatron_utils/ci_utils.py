@@ -168,7 +168,7 @@ def check_peak_gpu_memory_after_load(args) -> None:
     if not args.ci_test or not getattr(args, "low_memory_resume", False):
         return
 
-    peak_gpu_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+    peak_gpu_gb = torch.cuda.max_memory_allocated() / (1024**3)
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     logger.info(f"[CI low-memory-resume] Rank {rank} peak GPU memory: {peak_gpu_gb:.2f} GB")
 
