@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -49,13 +50,16 @@ class K8sNodeManager(NodeManagerProtocol):
         self._namespace = namespace
         self._reverse_map: dict[str, str] = {}
         self._affinity_validated: bool = False
+        self._init_lock = asyncio.Lock()
 
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
         await self._ensure_ray_cluster_name()
 
         if not self._affinity_validated:
-            await self.assert_worker_node_affinity()
-            self._affinity_validated = True
+            async with self._init_lock:
+                if not self._affinity_validated:
+                    await self.assert_worker_node_affinity()
+                    self._affinity_validated = True
 
         k8s_name = node_id
         if node_metadata and "k8s_node_name" in node_metadata:
@@ -146,33 +150,37 @@ class K8sNodeManager(NodeManagerProtocol):
         if self._ray_cluster_name:
             return self._ray_cluster_name
 
-        pod_name = os.environ.get("K8S_POD_NAME", "")
-        if not pod_name:
-            raise RuntimeError("K8S_POD_NAME env var not set. " "Configure Kubernetes Downward API in pod spec.")
+        async with self._init_lock:
+            if self._ray_cluster_name:
+                return self._ray_cluster_name
 
-        core_v1 = await self._ensure_client()
-        pod = await retry_async_or_raise(
-            lambda: core_v1.read_namespaced_pod(
-                name=pod_name,
-                namespace=self._namespace,
-            ),
-            description=f"read_pod({pod_name})",
-            max_retries=_K8S_API_MAX_RETRIES,
-            per_call_timeout=_K8S_API_TIMEOUT_SECONDS,
-            backoff_base=_K8S_API_BACKOFF_BASE,
-        )
-        labels = pod.metadata.labels or {}
-        cluster_name = labels.get("ray.io/cluster", "")
-        if not cluster_name:
-            raise RuntimeError(f"Pod {pod_name} missing ray.io/cluster label. " "Not running in a RayCluster?")
+            pod_name = os.environ.get("K8S_POD_NAME", "")
+            if not pod_name:
+                raise RuntimeError("K8S_POD_NAME env var not set. " "Configure Kubernetes Downward API in pod spec.")
 
-        self._ray_cluster_name = cluster_name
-        logger.info(
-            "auto_detected ray_cluster_name=%s from pod=%s",
-            cluster_name,
-            pod_name,
-        )
-        return cluster_name
+            core_v1 = await self._ensure_client()
+            pod = await retry_async_or_raise(
+                lambda: core_v1.read_namespaced_pod(
+                    name=pod_name,
+                    namespace=self._namespace,
+                ),
+                description=f"read_pod({pod_name})",
+                max_retries=_K8S_API_MAX_RETRIES,
+                per_call_timeout=_K8S_API_TIMEOUT_SECONDS,
+                backoff_base=_K8S_API_BACKOFF_BASE,
+            )
+            labels = pod.metadata.labels or {}
+            cluster_name = labels.get("ray.io/cluster", "")
+            if not cluster_name:
+                raise RuntimeError(f"Pod {pod_name} missing ray.io/cluster label. " "Not running in a RayCluster?")
+
+            self._ray_cluster_name = cluster_name
+            logger.info(
+                "auto_detected ray_cluster_name=%s from pod=%s",
+                cluster_name,
+                pod_name,
+            )
+            return cluster_name
 
     async def _delete_ray_worker_pod_on_node(self, node_id: str) -> None:
         core_v1 = await self._ensure_client()
@@ -219,16 +227,20 @@ class K8sNodeManager(NodeManagerProtocol):
         if self._core_v1 is not None:
             return self._core_v1
 
-        if self._api_client is None:
-            try:
-                k8s_config.load_incluster_config()
-            except k8s_config.ConfigException:
-                await k8s_config.load_kube_config()
+        async with self._init_lock:
+            if self._core_v1 is not None:
+                return self._core_v1
 
-            self._api_client = ApiClient()
+            if self._api_client is None:
+                try:
+                    k8s_config.load_incluster_config()
+                except k8s_config.ConfigException:
+                    await k8s_config.load_kube_config()
 
-        self._core_v1 = CoreV1Api(self._api_client)
-        return self._core_v1
+                self._api_client = ApiClient()
+
+            self._core_v1 = CoreV1Api(self._api_client)
+            return self._core_v1
 
     async def _patch_node_labels(
         self,

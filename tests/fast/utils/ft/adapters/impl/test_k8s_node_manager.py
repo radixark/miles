@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -356,3 +357,87 @@ class TestAutoDetectRayClusterName:
 
         assert first == second == "cached-cluster"
         assert mock_core_v1.read_namespaced_pod.await_count == 1
+
+
+class TestInitLockPreventsDuplicateWork:
+    """_ensure_ray_cluster_name, _ensure_client, and the affinity check had
+    check-then-act races: two concurrent mark_node_bad calls could both see
+    empty state, both execute the K8s API query, and the first ApiClient would
+    leak. Fix: asyncio.Lock with double-checked locking in all three paths."""
+
+    @pytest.mark.anyio
+    async def test_concurrent_ensure_ray_cluster_name_calls_api_once(self) -> None:
+        """Two concurrent _ensure_ray_cluster_name calls should only query the
+        K8s API once thanks to the asyncio.Lock."""
+        manager, mock_core_v1 = _make_manager_with_mock_api(namespace="ns")
+        mock_pod = SimpleNamespace(
+            metadata=SimpleNamespace(labels={"ray.io/cluster": "deduped-cluster"}),
+        )
+
+        async def _slow_read_pod(**kwargs: object) -> SimpleNamespace:
+            await asyncio.sleep(0.01)
+            return mock_pod
+
+        mock_core_v1.read_namespaced_pod.side_effect = _slow_read_pod
+
+        with patch.dict("os.environ", {"K8S_POD_NAME": "pod-x"}):
+            results = await asyncio.gather(
+                manager._ensure_ray_cluster_name(),
+                manager._ensure_ray_cluster_name(),
+            )
+
+        assert results == ["deduped-cluster", "deduped-cluster"]
+        assert mock_core_v1.read_namespaced_pod.await_count == 1
+
+    @pytest.mark.anyio
+    async def test_concurrent_ensure_client_creates_one_client(self) -> None:
+        """Two concurrent _ensure_client calls should create only one ApiClient."""
+        mock_api_client = MagicMock()
+        manager = K8sNodeManager(api_client=mock_api_client, namespace="ns")
+
+        async def _slow_load_kube_config() -> None:
+            await asyncio.sleep(0.01)
+
+        with (
+            patch("miles.utils.ft.adapters.impl.k8s_node_manager.k8s_config.load_incluster_config",
+                  side_effect=Exception("not in cluster")),
+            patch("miles.utils.ft.adapters.impl.k8s_node_manager.k8s_config.load_kube_config",
+                  side_effect=_slow_load_kube_config),
+            patch("miles.utils.ft.adapters.impl.k8s_node_manager.ApiClient", return_value=mock_api_client),
+        ):
+            manager._api_client = None
+
+            results = await asyncio.gather(
+                manager._ensure_client(),
+                manager._ensure_client(),
+            )
+
+        assert results[0] is results[1]
+
+    @pytest.mark.anyio
+    async def test_concurrent_mark_node_bad_validates_affinity_once(self) -> None:
+        """Two concurrent mark_node_bad calls should only run affinity validation once."""
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        manager._affinity_validated = False
+
+        mock_pod = _make_mock_pod_with_affinity()
+
+        affinity_call_count = 0
+        original_list = mock_core_v1.list_namespaced_pod
+
+        async def _counting_list(**kwargs: object) -> SimpleNamespace:
+            nonlocal affinity_call_count
+            if "affinity_check" not in str(kwargs):
+                pass
+            affinity_call_count += 1
+            await asyncio.sleep(0.01)
+            return SimpleNamespace(items=[mock_pod])
+
+        mock_core_v1.list_namespaced_pod.side_effect = _counting_list
+
+        await asyncio.gather(
+            manager.mark_node_bad(node_id="node-1", reason="test1"),
+            manager.mark_node_bad(node_id="node-2", reason="test2"),
+        )
+
+        assert manager._affinity_validated is True
