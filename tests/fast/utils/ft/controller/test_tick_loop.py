@@ -67,7 +67,7 @@ class TestTickExceptionTriggersNotification:
         loop = _make_tick_loop(state_machine=sm)
         await loop.tick()
 
-        assert loop._tick_failure_tracker._counter > 0
+        assert loop._tick_failure_tracker.count > 0
 
     async def test_tick_persistent_failure_triggers_notification(self) -> None:
         """Exceeding threshold triggers safe_notify."""
