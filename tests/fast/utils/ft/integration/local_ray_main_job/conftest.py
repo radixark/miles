@@ -38,6 +38,8 @@ def make_main_job(
         job = RayMainJob(
             client=job_client,
             entrypoint=entrypoint,
+            ft_id="test",
+            k8s_label_prefix="",
             poll_interval_seconds=_POLL_INTERVAL,
             **kwargs,
         )

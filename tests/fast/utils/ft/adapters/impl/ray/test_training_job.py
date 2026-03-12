@@ -13,11 +13,15 @@ def _make_job(
     entrypoint: str = "python train.py",
     runtime_env: dict[str, Any] | None = None,
     poll_interval_seconds: float = 0,
+    ft_id: str = "test",
+    k8s_label_prefix: str = "",
 ) -> tuple[RayMainJob, MagicMock]:
     mock_client = MagicMock()
     job = RayMainJob(
         client=mock_client,
         entrypoint=entrypoint,
+        ft_id=ft_id,
+        k8s_label_prefix=k8s_label_prefix,
         runtime_env=runtime_env,
         poll_interval_seconds=poll_interval_seconds,
     )

@@ -66,10 +66,10 @@ class RayMainJob(MainJobProtocol):
         self,
         client: JobSubmissionClient,
         entrypoint: str,
+        ft_id: str,
+        k8s_label_prefix: str,
         runtime_env: dict[str, Any] | None = None,
         poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
-        ft_id: str = "",
-        k8s_label_prefix: str = "",
     ) -> None:
         self._client = client
         self._entrypoint = entrypoint
