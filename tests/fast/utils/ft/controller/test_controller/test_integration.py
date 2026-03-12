@@ -80,7 +80,7 @@ class _RolloutTestHarness(NamedTuple):
     node_manager: FakeNodeManager
     notifier: FakeNotifier
     rollout_manager_handle: FakeRmHandle
-    metric_store: MiniPrometheus
+    time_series_store: MiniPrometheus
     subsystem_hub: SubsystemHub
 
 
@@ -136,7 +136,7 @@ def _make_test_controller_with_rollout(
         node_manager=node_manager,
         notifier=notifier,
         rollout_manager_handle=rollout_manager_handle,
-        metric_store=metric_store,
+        time_series_store=time_series_store,
         subsystem_hub=subsystem_hub,
     )
 
