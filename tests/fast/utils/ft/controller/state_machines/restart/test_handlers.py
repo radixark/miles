@@ -325,7 +325,7 @@ class TestStoppingAndRestarting:
         captured_run_ids: list[str] = []
         actuator = FakeActuator()
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, on_main_job_new_run=captured_run_ids.append)
+        ctx = _make_context(actuator=actuator, on_main_job_new_run=captured_run_ids.append, restart_mode=RestartMode.MAIN_JOB)
 
         state = StoppingAndRestartingSt(bad_node_ids=[])
         await _step_last(stepper, state, ctx)
