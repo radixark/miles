@@ -52,6 +52,8 @@ def _make_tick_loop(
         diagnostic_orchestrator=MagicMock(),
         recovery_timeout_seconds=600,
         subsystem_configs={},
+        on_main_job_new_run=lambda run_id: None,
+        rank_pids_provider=lambda node_id: {},
         registration_grace_ticks=registration_grace_ticks,
     )
 
