@@ -45,6 +45,12 @@
     {'test_file': 'e2e/long/test_qwen2.5_0.5B_gsm8k_async.py', 'num_gpus': 8},
 ] %>
 
+<% set low_precision_tests = [
+    {'name': 'qwen3-30B-A3B-bf16', 'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_fp8_rollout': '0', 'use_deepep': '0'},
+    {'name': 'qwen3-30B-A3B-rollout-fp8', 'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1'},
+    {'name': 'qwen3-30B-A3B-rollout-int4', 'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_int4_rollout': '1', 'use_fp8_rollout': '0', 'use_deepep': '0'},
+] %>
+
 <% set lora_tests = [
     {'test_file': 'e2e/lora/test_lora_qwen2.5_0.5B.py', 'num_gpus': 8},
 ] %>
@@ -96,6 +102,10 @@
     'e2e-test-lora': {
       'label': 'run-ci-lora',
       'tests': lora_tests,
+    },
+    'e2e-test-low-precision': {
+      'label': 'run-ci-low-precision',
+      'tests': low_precision_tests,
     },
     'e2e-test-glm5': {
       'label': 'run-ci-glm5',
@@ -173,6 +183,7 @@ jobs:
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
+      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
 

@@ -21,6 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     rollout_fp8: bool = False
     rollout_mxfp8: bool = False
+    rollout_int4: bool = False
     rollout_attn_fp8: bool = False
     train_fp8: bool = False
     train_mxfp8: bool = False
@@ -31,6 +32,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        if self.rollout_int4:
+            assert not self.rollout_fp8, "rollout_int4 and rollout_fp8 cannot be enabled at the same time"
+            assert not self.rollout_mxfp8, "rollout_int4 and rollout_mxfp8 cannot be enabled at the same time"
         if self.rollout_mxfp8:
             assert not self.rollout_fp8, "rollout_mxfp8 and rollout_fp8 cannot be enabled at the same time"
             assert self.hardware in ("B200", "B300", "GB200", "GB300"), "rollout_mxfp8 only supports Blackwell GPUs"
@@ -54,6 +58,11 @@ def prepare(args: ScriptArgs):
     if args.rollout_mxfp8:
         U.exec_command(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-MXFP8"
+        )
+
+    if args.rollout_int4:
+        U.exec_command(
+            f"python tools/convert_hf_to_int4_direct.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-INT4"
         )
 
     if not args.enable_megatron_bridge:
@@ -80,6 +89,8 @@ def execute(args: ScriptArgs):
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
     elif args.train_mxfp8:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
+    elif args.rollout_int4:
+        hf_checkpoint = f"{args.model_dir}/{args.model_name}-INT4"
     else:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
     ckpt_args = (
@@ -163,6 +174,12 @@ def execute(args: ScriptArgs):
     )
     misc_env_vars = {}
 
+    if args.rollout_int4:
+        misc_env_vars |= {
+            "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
+            "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
+        }
+
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
             case "B200" | "B300" | "GB200" | "GB300":
@@ -202,7 +219,7 @@ def execute(args: ScriptArgs):
                 "--expert-tensor-parallel-size 1 "
             )
             sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 8} "
+                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 1 if args.rollout_int4 else 8} "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
             )
