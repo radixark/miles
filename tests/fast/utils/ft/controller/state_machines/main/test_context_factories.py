@@ -102,6 +102,19 @@ class TestShouldRunDetectors:
         assert _should_run_detectors(active_node_ids=frozenset({"node-0"}), context=ctx) is True
 
 
+class TestShouldRunDetectorsNegativeTicks:
+    def test_tick_count_less_than_run_start_tick_does_not_run(self) -> None:
+        """Previously tick_count < run_start_tick produced a negative
+        ticks_since_run_start which always satisfied the <= grace check,
+        silently disabling detectors. Now max(0, ...) clamps it."""
+        ctx = _make_main_context(
+            tick_count=5,
+            run_start_tick=10,
+            registration_grace_ticks=0,
+        )
+        assert _should_run_detectors(active_node_ids=frozenset({"node-0"}), context=ctx) is False
+
+
 class TestBuildSubsystemContext:
     def test_per_subsystem_cooldown_isolation(self) -> None:
         """Cooldown was shared across all subsystems, so a rollout recovery

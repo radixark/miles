@@ -55,7 +55,7 @@ def _should_run_detectors(
     if len(active_node_ids) == 0:
         return False
 
-    ticks_since_run_start = context.tick_count - context.run_start_tick
+    ticks_since_run_start = max(0, context.tick_count - context.run_start_tick)
     if ticks_since_run_start <= context.shared.registration_grace_ticks:
         return False
 
