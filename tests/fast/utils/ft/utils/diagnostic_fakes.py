@@ -150,7 +150,7 @@ def make_fake_agents(
     node_results: dict[str, dict[str, bool]],
 ) -> dict[str, FakeNodeAgent]:
     """Build FakeNodeAgents from {node_id: {diag_type: passed}} mapping."""
-    agents: dict[str, FakeNodeAgent] = {}
+    node_agents: dict[str, FakeNodeAgent] = {}
     for node_id, results in node_results.items():
         diagnostic_results = {
             diag_type: DiagnosticResult(
@@ -161,11 +161,11 @@ def make_fake_agents(
             )
             for diag_type, passed in results.items()
         }
-        agents[node_id] = FakeNodeAgent(
+        node_agents[node_id] = FakeNodeAgent(
             diagnostic_results=diagnostic_results,
             node_id=node_id,
         )
-    return agents
+    return node_agents
 
 
 # ---------------------------------------------------------------------------

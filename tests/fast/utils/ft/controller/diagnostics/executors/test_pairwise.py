@@ -154,11 +154,11 @@ class TestGenerateRoundPairs:
 class TestRunSinglePairMissingAgent:
     @pytest.mark.anyio
     async def test_missing_master_agent_returns_failed(self) -> None:
-        agents = {"worker": _make_pairwise_agent("worker")}
+        node_agents = {"worker": _make_pairwise_agent("worker")}
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
-            agents=agents,
+            node_agents=node_agents,
             master_id="master",
             worker_id="worker",
             master_addr="10.0.0.1",
@@ -171,11 +171,11 @@ class TestRunSinglePairMissingAgent:
 
     @pytest.mark.anyio
     async def test_missing_worker_agent_returns_failed(self) -> None:
-        agents = {"master": _make_pairwise_agent("master")}
+        node_agents = {"master": _make_pairwise_agent("master")}
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
-            agents=agents,
+            node_agents=node_agents,
             master_id="master",
             worker_id="worker",
             master_addr="10.0.0.1",
@@ -190,7 +190,7 @@ class TestRunSinglePairMissingAgent:
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
-            agents={},
+            node_agents={},
             master_id="A",
             worker_id="B",
             master_addr="10.0.0.1",
@@ -209,10 +209,10 @@ class TestRunSinglePairMissingAgent:
 class TestExecuteEdgeCases:
     @pytest.mark.anyio
     async def test_single_node_returns_empty(self) -> None:
-        agents = {"A": _make_pairwise_agent("A")}
+        node_agents = {"A": _make_pairwise_agent("A")}
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=30)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=30)
 
         assert bad == []
 
@@ -220,19 +220,19 @@ class TestExecuteEdgeCases:
     async def test_empty_nodes_returns_empty(self) -> None:
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents={}, timeout_seconds=30)
+        bad = await executor.execute(node_agents={}, timeout_seconds=30)
 
         assert bad == []
 
     @pytest.mark.anyio
     async def test_two_nodes_all_pass(self) -> None:
-        agents = {
+        node_agents = {
             "A": _make_pairwise_agent("A"),
             "B": _make_pairwise_agent("B"),
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=30)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=30)
 
         assert bad == []
 
@@ -246,7 +246,7 @@ class TestExecuteRoundIsolation:
     @pytest.mark.anyio
     async def test_four_nodes_bad_middle_node_isolated(self) -> None:
         """N=4, B is bad. Pairs: R1=(A,B),(C,D) R2=(B,C),(D,A). B fails in 2 pairs."""
-        agents: dict = {
+        node_agents: dict = {
             "A": _make_pairwise_agent("A"),
             "B": _make_pairwise_agent("B", passed=False),
             "C": _make_pairwise_agent("C"),
@@ -254,14 +254,14 @@ class TestExecuteRoundIsolation:
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=30)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=30)
 
         assert bad == ["B"]
 
     @pytest.mark.anyio
     async def test_four_nodes_bad_edge_node_isolated(self) -> None:
         """N=4, D is bad. Wrap-around pair (D,A) in R2 covers it. D fails in 2 pairs."""
-        agents: dict = {
+        node_agents: dict = {
             "A": _make_pairwise_agent("A"),
             "B": _make_pairwise_agent("B"),
             "C": _make_pairwise_agent("C"),
@@ -269,14 +269,14 @@ class TestExecuteRoundIsolation:
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=30)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=30)
 
         assert bad == ["D"]
 
     @pytest.mark.anyio
     async def test_five_nodes_bad_middle_node_isolated(self) -> None:
         """N=5, C is bad. Pairs: R1=(A,B),(C,D) R2=(B,C),(D,E). C fails in 2 pairs."""
-        agents: dict = {
+        node_agents: dict = {
             "A": _make_pairwise_agent("A"),
             "B": _make_pairwise_agent("B"),
             "C": _make_pairwise_agent("C", passed=False),
@@ -285,14 +285,14 @@ class TestExecuteRoundIsolation:
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=30)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=30)
 
         assert bad == ["C"]
 
     @pytest.mark.anyio
     async def test_five_nodes_bad_edge_node_returns_tied(self) -> None:
         """N=5, E is bad but only in 1 pair (D,E). D and E are tied at 1 failure each."""
-        agents: dict = {
+        node_agents: dict = {
             "A": _make_pairwise_agent("A"),
             "B": _make_pairwise_agent("B"),
             "C": _make_pairwise_agent("C"),
@@ -301,14 +301,14 @@ class TestExecuteRoundIsolation:
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=30)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=30)
 
         assert sorted(bad) == ["D", "E"]
 
     @pytest.mark.anyio
     async def test_six_nodes_bad_node_isolated(self) -> None:
         """N=6, C is bad. R1=(A,B),(C,D),(E,F) R2=(B,C),(D,E),(F,A). C in 2 pairs."""
-        agents: dict = {
+        node_agents: dict = {
             "A": _make_pairwise_agent("A"),
             "B": _make_pairwise_agent("B"),
             "C": _make_pairwise_agent("C", passed=False),
@@ -318,7 +318,7 @@ class TestExecuteRoundIsolation:
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=30)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=30)
 
         assert bad == ["C"]
 
@@ -332,14 +332,14 @@ class TestRunSinglePairAgentHang:
     @pytest.mark.anyio
     async def test_hanging_master_agent_times_out(self) -> None:
         """When master agent RPC hangs, the pair should fail after timeout."""
-        agents: dict = {
+        node_agents: dict = {
             "master": HangingNodeAgent(node_id="master"),
             "worker": _make_pairwise_agent("worker"),
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
-            agents=agents,
+            node_agents=node_agents,
             master_id="master",
             worker_id="worker",
             master_addr="10.0.0.1",
@@ -353,14 +353,14 @@ class TestRunSinglePairAgentHang:
 
     @pytest.mark.anyio
     async def test_hanging_worker_agent_times_out(self) -> None:
-        agents: dict = {
+        node_agents: dict = {
             "master": _make_pairwise_agent("master"),
             "worker": HangingNodeAgent(node_id="worker"),
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
-            agents=agents,
+            node_agents=node_agents,
             master_id="master",
             worker_id="worker",
             master_addr="10.0.0.1",
@@ -372,14 +372,14 @@ class TestRunSinglePairAgentHang:
 
     @pytest.mark.anyio
     async def test_both_hanging_agents_time_out(self) -> None:
-        agents: dict = {
+        node_agents: dict = {
             "A": HangingNodeAgent(node_id="A"),
             "B": HangingNodeAgent(node_id="B"),
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
         result = await executor._run_single_pair(
-            agents=agents,
+            node_agents=node_agents,
             master_id="A",
             worker_id="B",
             master_addr="10.0.0.1",
@@ -392,13 +392,13 @@ class TestRunSinglePairAgentHang:
     @pytest.mark.anyio
     async def test_execute_with_hanging_agent_isolates_bad_node(self) -> None:
         """Full execute() with one hanging node should localize it as the bad node."""
-        agents: dict = {
+        node_agents: dict = {
             "A": _make_pairwise_agent("A"),
             "B": HangingNodeAgent(node_id="B"),
             "C": _make_pairwise_agent("C"),
         }
         executor = PairwiseClusterExecutor(diagnostic_type=_DIAG_TYPE)
 
-        bad = await executor.execute(agents=agents, timeout_seconds=0)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=0)
 
         assert "B" in bad

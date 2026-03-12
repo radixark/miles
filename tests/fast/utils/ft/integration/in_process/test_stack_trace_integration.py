@@ -43,7 +43,7 @@ class TestHangWithStackTraceSuspect:
     """Full pipeline: StackTraceClusterExecutor identifies outlier -> evicted immediately."""
 
     async def test_hang_suspects_from_trace_evicted_directly(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -69,7 +69,7 @@ class TestHangWithStackTraceSuspect:
         )
 
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline(
@@ -80,7 +80,7 @@ class TestHangWithStackTraceSuspect:
         assert decision.bad_node_ids == ["node-2"]
 
     async def test_hang_all_traces_same_falls_through_to_gpu(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -106,7 +106,7 @@ class TestHangWithStackTraceSuspect:
         )
 
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline(
@@ -120,12 +120,12 @@ class TestCrashSkipsStackTrace:
     """Without StackTraceClusterExecutor in pre_executors, no stack trace analysis runs."""
 
     async def test_crash_trigger_no_stack_trace(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent("node-0", gpu_passed=True),
             "node-1": _make_agent("node-1", gpu_passed=False),
         }
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -138,7 +138,7 @@ class TestHangWithCollectionFailure:
     """When stack trace collection fails for a node, that node is evicted."""
 
     async def test_failed_collection_node_evicted(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -164,7 +164,7 @@ class TestHangWithCollectionFailure:
         )
 
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline(

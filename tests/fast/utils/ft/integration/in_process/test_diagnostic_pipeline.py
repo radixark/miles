@@ -36,13 +36,13 @@ def _make_diagnostic_test_env(
     node_results: dict[str, dict[str, bool]],
     pipeline: list[str],
 ) -> ControllerTestHarness:
-    agents = make_fake_agents(node_results)
-    orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=_build_pipeline(pipeline))
+    node_agents = make_fake_agents(node_results)
+    orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=_build_pipeline(pipeline))
     harness = make_test_controller(
         status_sequence=[JobStatus.RUNNING] * 50,
         diagnostic_orchestrator=orchestrator,
     )
-    for node_id, agent in agents.items():
+    for node_id, agent in node_agents.items():
         harness.controller.register_node_agent(node_id, agent)
 
     set_training_subsystem_state(harness.controller, RecoveringSt(

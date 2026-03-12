@@ -72,7 +72,7 @@ def _make_controller_context(
             time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
             mini_wandb=MiniWandb(),
         ),
-        agents={},
+        node_agents={},
         notifier=FakeNotifier(),
         node_manager=FakeNodeManager(),
         diagnostic_orchestrator=FakeDiagnosticOrchestrator(),

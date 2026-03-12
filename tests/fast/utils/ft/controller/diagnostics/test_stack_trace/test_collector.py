@@ -35,7 +35,7 @@ class TestCollectStackTraceSuspects:
     def test_empty_agents_returns_empty(self) -> None:
         result = asyncio.run(
             collect_stack_trace_suspects(
-                agents={},
+                node_agents={},
                 rank_pids_provider=lambda nid: {},
                 default_timeout_seconds=30,
             )
@@ -44,14 +44,14 @@ class TestCollectStackTraceSuspects:
         assert result == []
 
     def test_rank_pids_provider_exception_marks_node_as_suspect(self) -> None:
-        agents = {"node-0": _make_agent_with_trace("node-0")}
+        node_agents = {"node-0": _make_agent_with_trace("node-0")}
 
         def _failing_provider(node_id: str) -> dict[int, int]:
             raise RuntimeError("cannot get pids")
 
         result = asyncio.run(
             collect_stack_trace_suspects(
-                agents=agents,
+                node_agents=node_agents,
                 rank_pids_provider=_failing_provider,
                 default_timeout_seconds=30,
             )
@@ -60,11 +60,11 @@ class TestCollectStackTraceSuspects:
         assert "node-0" in result
 
     def test_diagnostic_execution_failure_marks_node_as_suspect(self) -> None:
-        agents = {"node-0": _make_agent_with_trace("node-0", passed=False, details="py-spy failed")}
+        node_agents = {"node-0": _make_agent_with_trace("node-0", passed=False, details="py-spy failed")}
 
         result = asyncio.run(
             collect_stack_trace_suspects(
-                agents=agents,
+                node_agents=node_agents,
                 rank_pids_provider=lambda nid: {0: 1234},
                 default_timeout_seconds=30,
             )
@@ -74,7 +74,7 @@ class TestCollectStackTraceSuspects:
 
     def test_successful_collection_returns_aggregation_suspects(self) -> None:
         threads_json = json.dumps(_normal_threads())
-        agents = {
+        node_agents = {
             "node-0": _make_agent_with_trace("node-0", details=threads_json),
             "node-1": _make_agent_with_trace("node-1", details=threads_json),
             "node-2": _make_agent_with_trace("node-2", details=threads_json),
@@ -82,7 +82,7 @@ class TestCollectStackTraceSuspects:
 
         result = asyncio.run(
             collect_stack_trace_suspects(
-                agents=agents,
+                node_agents=node_agents,
                 rank_pids_provider=lambda nid: {0: 1234},
                 default_timeout_seconds=30,
             )

@@ -192,7 +192,7 @@ class TestOrchestratorHangTraceFullChain:
             return node_pids.get(node_id, {})
 
         orchestrator = DiagnosticOrchestrator(
-            agents={},
+            node_agents={},
             pipeline=[],
         )
 

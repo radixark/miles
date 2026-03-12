@@ -37,7 +37,7 @@ def _make_agent(
 class TestStackTraceClusterExecutorBasic:
     @pytest.mark.anyio
     async def test_all_traces_same_returns_no_bad_nodes(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -57,13 +57,13 @@ class TestStackTraceClusterExecutorBasic:
         )
 
         executor = StackTraceClusterExecutor(rank_pids_provider=pids_provider)
-        bad_nodes = await executor.execute(agents=agents, timeout_seconds=120)
+        bad_nodes = await executor.execute(node_agents=node_agents, timeout_seconds=120)
 
         assert bad_nodes == []
 
     @pytest.mark.anyio
     async def test_outlier_detected_returns_as_bad_node(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=False,
@@ -89,7 +89,7 @@ class TestStackTraceClusterExecutorBasic:
         )
 
         executor = StackTraceClusterExecutor(rank_pids_provider=pids_provider)
-        bad_nodes = await executor.execute(agents=agents, timeout_seconds=120)
+        bad_nodes = await executor.execute(node_agents=node_agents, timeout_seconds=120)
 
         assert bad_nodes == ["node-2"]
 
@@ -97,7 +97,7 @@ class TestStackTraceClusterExecutorBasic:
 class TestStackTraceClusterExecutorFailures:
     @pytest.mark.anyio
     async def test_collection_failure_makes_node_bad(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -117,14 +117,14 @@ class TestStackTraceClusterExecutorFailures:
         )
 
         executor = StackTraceClusterExecutor(rank_pids_provider=pids_provider)
-        bad_nodes = await executor.execute(agents=agents, timeout_seconds=120)
+        bad_nodes = await executor.execute(node_agents=node_agents, timeout_seconds=120)
 
         assert "node-1" in bad_nodes
 
     @pytest.mark.anyio
     async def test_agent_returning_unknown_diagnostic_makes_node_bad(self) -> None:
         """When agent has no stack_trace executor registered, call_agent_diagnostic returns fail."""
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -146,14 +146,14 @@ class TestStackTraceClusterExecutorFailures:
         )
 
         executor = StackTraceClusterExecutor(rank_pids_provider=pids_provider)
-        bad_nodes = await executor.execute(agents=agents, timeout_seconds=120)
+        bad_nodes = await executor.execute(node_agents=node_agents, timeout_seconds=120)
 
         assert "node-1" in bad_nodes
         assert "node-0" not in bad_nodes
 
     @pytest.mark.anyio
     async def test_rank_pids_provider_exception_isolates_node(self) -> None:
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=False,
@@ -177,7 +177,7 @@ class TestStackTraceClusterExecutorFailures:
             return {0: 100}
 
         executor = StackTraceClusterExecutor(rank_pids_provider=raising_provider)
-        bad_nodes = await executor.execute(agents=agents, timeout_seconds=120)
+        bad_nodes = await executor.execute(node_agents=node_agents, timeout_seconds=120)
 
         assert "node-0" in bad_nodes
 
@@ -191,7 +191,7 @@ class TestStackTraceClusterExecutorIntegrationWithPipeline:
         from miles.utils.ft.controller.diagnostics.executors import GpuClusterExecutor
         from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -217,7 +217,7 @@ class TestStackTraceClusterExecutorIntegrationWithPipeline:
         )
 
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline(
@@ -232,7 +232,7 @@ class TestStackTraceClusterExecutorIntegrationWithPipeline:
         from miles.utils.ft.controller.diagnostics.executors import GpuClusterExecutor
         from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
-        agents = {
+        node_agents = {
             "node-0": _make_agent(
                 "node-0",
                 gpu_passed=True,
@@ -252,7 +252,7 @@ class TestStackTraceClusterExecutorIntegrationWithPipeline:
         )
 
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline(

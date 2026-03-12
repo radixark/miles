@@ -79,7 +79,7 @@ class TestCallAgentDiagnostic:
 class TestGatherDiagnosticResults:
     @pytest.mark.asyncio
     async def test_gathers_from_multiple_agents(self) -> None:
-        agents = {
+        node_agents = {
             "n0": FakeNodeAgent(
                 diagnostic_results={
                     _DIAG_TYPE: DiagnosticResult(diagnostic_type=_DIAG_TYPE, node_id="n0", passed=True, details="ok")
@@ -93,14 +93,14 @@ class TestGatherDiagnosticResults:
                 node_id="n1",
             ),
         }
-        results = await gather_diagnostic_results(diagnostic_type=_DIAG_TYPE, agents=agents, timeout_seconds=10)
+        results = await gather_diagnostic_results(diagnostic_type=_DIAG_TYPE, node_agents=node_agents, timeout_seconds=10)
         assert set(results.keys()) == {"n0", "n1"}
         assert results["n0"].passed
         assert not results["n1"].passed
 
     @pytest.mark.asyncio
     async def test_empty_agents_returns_empty(self) -> None:
-        results = await gather_diagnostic_results(diagnostic_type=_DIAG_TYPE, agents={}, timeout_seconds=10)
+        results = await gather_diagnostic_results(diagnostic_type=_DIAG_TYPE, node_agents={}, timeout_seconds=10)
         assert results == {}
 
 

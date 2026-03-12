@@ -95,7 +95,7 @@ class TestFindGpuHashOutlierNodes:
 class TestGpuClusterExecutor:
     @pytest.mark.asyncio
     async def test_all_pass_no_outliers(self) -> None:
-        agents = {
+        node_agents = {
             "n0": FakeNodeAgent(
                 diagnostic_results={
                     "gpu": _make_result("n0", compute_hashes={"0": "aaa"}),
@@ -110,12 +110,12 @@ class TestGpuClusterExecutor:
             ),
         }
         executor = GpuClusterExecutor()
-        bad = await executor.execute(agents=agents, timeout_seconds=60)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=60)
         assert bad == []
 
     @pytest.mark.asyncio
     async def test_failed_node_plus_hash_outlier(self) -> None:
-        agents = {
+        node_agents = {
             "n0": FakeNodeAgent(
                 diagnostic_results={
                     "gpu": _make_result("n0", passed=False),
@@ -142,6 +142,6 @@ class TestGpuClusterExecutor:
             ),
         }
         executor = GpuClusterExecutor()
-        bad = await executor.execute(agents=agents, timeout_seconds=60)
+        bad = await executor.execute(node_agents=node_agents, timeout_seconds=60)
         assert "n0" in bad
         assert "n3" in bad
