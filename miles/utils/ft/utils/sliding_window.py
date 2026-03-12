@@ -31,6 +31,9 @@ class SlidingWindowCounter:
 
     @property
     def threshold_reached(self) -> bool:
+        # Uses >= (not >) so threshold=N fires at exactly N events.
+        # Audit 2.6 briefly changed to >, but that broke 40+ tests
+        # across cooldown, crash tracking, and coverage checkers.
         return self.count >= self._threshold
 
     @property
