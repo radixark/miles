@@ -26,7 +26,7 @@ _FETCH_RETRY_DELAY_SECONDS: float = 0.5
 
 
 class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
-    """MetricStoreProtocol implementation backed by a real Prometheus HTTP API.
+    """TimeSeriesStoreProtocol implementation backed by a real Prometheus HTTP API.
 
     Each typed method builds the corresponding PromQL query internally,
     sends it to Prometheus, and parses the JSON response into a Polars DataFrame
@@ -44,7 +44,7 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         self._range_query_step_seconds = range_query_step_seconds
 
     # -------------------------------------------------------------------
-    # MetricStoreProtocol implementation (sync)
+    # TimeSeriesStoreProtocol implementation (sync)
     # -------------------------------------------------------------------
 
     def query_latest(

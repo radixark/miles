@@ -1,4 +1,4 @@
-"""Tests for PrometheusClient (MetricStoreProtocol backed by real Prometheus HTTP API)."""
+"""Tests for PrometheusClient (TimeSeriesStoreProtocol backed by real Prometheus HTTP API)."""
 
 from __future__ import annotations
 

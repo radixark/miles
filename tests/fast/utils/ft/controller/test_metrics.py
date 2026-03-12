@@ -1,4 +1,4 @@
-"""Tests for MetricStoreProtocol split into query and lifecycle protocols."""
+"""Tests for TimeSeriesStoreProtocol split into query and lifecycle protocols."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ class TestMiniWandbProtocolCompliance:
 
 
 class _QueryOnlyStore(TimeSeriesQueryProtocol):
-    """Minimal implementation satisfying only MetricQueryProtocol."""
+    """Minimal implementation satisfying only TimeSeriesQueryProtocol."""
 
     def query_latest(
         self,

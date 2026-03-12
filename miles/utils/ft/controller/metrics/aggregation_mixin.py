@@ -1,4 +1,4 @@
-"""Mixin implementing the five range aggregation methods of MetricStoreProtocol.
+"""Mixin implementing the five range aggregation methods of TimeSeriesStoreProtocol.
 
 Subclasses must implement _dispatch_range_function().
 """
