@@ -46,6 +46,9 @@ async def retry_async(
     ``asyncio.wait_for`` to prevent a single hung invocation from blocking
     the entire retry loop.
     """
+    if max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1, got {max_retries}")
+
     _sleep = sleep_fn or asyncio.sleep
     last_exc: Exception | None = None
 
@@ -112,6 +115,9 @@ def retry_sync(
     Backoff formula: ``min(backoff_base * 2**attempt, max_backoff)``.
     For fixed delay set ``backoff_base == max_backoff``.
     """
+    if max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1, got {max_retries}")
+
     last_exc: Exception | None = None
 
     for attempt in range(max_retries):

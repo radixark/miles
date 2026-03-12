@@ -348,6 +348,40 @@ class TestRetryAsyncOrRaiseBackoff:
         assert sleep_calls[-1] == 10.0
 
 
+class TestRetryAsyncOrRaiseInvalidMaxRetries:
+    @pytest.mark.anyio
+    async def test_zero_max_retries_raises_value_error(self) -> None:
+        """With max_retries=0, the retry loop never executes and
+        retry_async_or_raise would raise None (TypeError). Now it
+        validates max_retries upfront."""
+
+        async def fn() -> str:
+            return "ok"
+
+        with pytest.raises(ValueError, match="max_retries must be >= 1"):
+            await retry_async_or_raise(func=fn, description="zero", max_retries=0)
+
+    @pytest.mark.anyio
+    async def test_negative_max_retries_raises_value_error(self) -> None:
+        async def fn() -> str:
+            return "ok"
+
+        with pytest.raises(ValueError, match="max_retries must be >= 1"):
+            await retry_async_or_raise(func=fn, description="neg", max_retries=-1)
+
+
+class TestRetrySyncInvalidMaxRetries:
+    def test_zero_max_retries_raises_value_error(self) -> None:
+        """With max_retries=0, the retry loop never executes and
+        result.exception is None. Now it validates max_retries upfront."""
+        with pytest.raises(ValueError, match="max_retries must be >= 1"):
+            retry_sync(func=lambda: "ok", description="zero", max_retries=0)
+
+    def test_negative_max_retries_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="max_retries must be >= 1"):
+            retry_sync(func=lambda: "ok", description="neg", max_retries=-1)
+
+
 class TestRetryAsyncOrRaisePerCallTimeout:
     @pytest.mark.anyio
     async def test_per_call_timeout_triggers(self) -> None:
