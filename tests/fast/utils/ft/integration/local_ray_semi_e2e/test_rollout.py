@@ -46,39 +46,7 @@ async def make_testbed(
         await tb.shutdown()
 
 
-async def test_single_cell_crash_and_recovery(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Rollout cell crash -> RolloutCrashDetector fires -> recovery -> DetectingAnomaly."""
-    # Step 1: create testbed with 1 training node + 1 rollout cell
-    testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
-        rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
-        rollout_num_cells=1,
-        rollout_alive_threshold_seconds=2.0,
-        rollout_monitoring_alive_duration_seconds=0,
-    )
-
-    # Step 2: verify training is stable
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
-
-    # Step 3: kill rollout cell
-    await testbed.kill_sglang_cell("default")
-
-    # Step 4: wait for rollout subsystem to enter recovery
-    await testbed.wait_for_subsystem_state(
-        name="rollout_default",
-        state="Recovering",
-        timeout=RECOVERY_TIMEOUT,
-    )
-
-    # Step 5: wait for rollout recovery to complete
-    status = await testbed.wait_for_subsystem_state(
-        name="rollout_default",
-        state="DetectingAnomaly",
-        timeout=LONG_RECOVERY_TIMEOUT,
-    )
-    assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
+# test_single_cell_crash_and_recovery removed: covered by test_scenarios::test_rollout_crash
 
 
 async def test_rollout_crash_does_not_affect_training(
@@ -127,45 +95,7 @@ async def test_rollout_crash_does_not_affect_training(
     )
 
 
-async def test_two_of_three_cells_crash_independently_recover(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Crash 2 of 3 rollout cells -> both recover independently, third unaffected."""
-    # Step 1: create testbed with 3 rollout cells
-    testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
-        rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
-        rollout_num_cells=3,
-        rollout_alive_threshold_seconds=2.0,
-        rollout_monitoring_alive_duration_seconds=0,
-    )
-
-    # Step 2: wait for stable state
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
-
-    # Step 3: crash cells "0" and "1" with stagger delay
-    await testbed.kill_sglang_cell("0")
-    await asyncio.sleep(2.0)
-    await testbed.kill_sglang_cell("1")
-
-    # Step 4: wait for both crashed cells to recover
-    await testbed.wait_for_subsystem_state(
-        name="rollout_0",
-        state="DetectingAnomaly",
-        timeout=LONG_RECOVERY_TIMEOUT,
-    )
-    await testbed.wait_for_subsystem_state(
-        name="rollout_1",
-        state="DetectingAnomaly",
-        timeout=LONG_RECOVERY_TIMEOUT,
-    )
-
-    # Step 5: verify all subsystems back to detecting
-    status = await testbed.wait_for_all_subsystems_detecting(timeout=LONG_RECOVERY_TIMEOUT)
-    for name in ["rollout_0", "rollout_1", "rollout_2", "training"]:
-        assert status.subsystem_states.get(name) == "DetectingAnomalySt", (
-            f"{name} not in DetectingAnomalySt: {status.subsystem_states}"
-        )
+# test_two_of_three_cells_crash_independently_recover removed: covered by test_scenarios::test_multi_cell_crash
 
 
 async def test_no_recovery_when_all_cells_healthy(

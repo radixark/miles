@@ -38,32 +38,7 @@ async def testbed(local_ray_nodes: list[RayNodeInfo]) -> AsyncIterator[MilesTest
     await tb.shutdown()
 
 
-async def test_training_crash_detected_and_recovered(testbed: MilesTestbed) -> None:
-    """Kill all ranks on one node → peer-check cascade → FAILED → recovery."""
-    # Step 1: Verify training is stable
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
-
-    # Step 2: Kill all ranks on train-0 (simulates node crash)
-    await testbed.kill_training_on_node("train-0")
-
-    # Step 3: Remaining ranks detect peer death → exit_actor() → all dead
-    #         → get_status() FAILED → TrainingCrashDetector fires → recovery
-    status = await testbed.wait_for_subsystem_state(
-        name="training",
-        state="Recovering",
-        timeout=RECOVERY_TIMEOUT,
-    )
-    assert status.recovery is not None
-
-    # Step 4: Recovery completes → back to detecting anomaly
-    await testbed.wait_for_subsystem_state(
-        name="training",
-        state="DetectingAnomaly",
-        timeout=RECOVERY_TIMEOUT,
-    )
-
-    # Step 5: Training resumes with new run
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
+# test_training_crash_detected_and_recovered removed: covered by test_scenarios::test_transient_crash
 
 
 async def test_gpu_xid_evicts_node(testbed: MilesTestbed) -> None:
@@ -93,25 +68,4 @@ async def test_gpu_xid_evicts_node(testbed: MilesTestbed) -> None:
     assert testbed.node_manager.was_ever_marked_bad("train-0")
 
 
-async def test_rollout_crash_detected_and_recovered(testbed: MilesTestbed) -> None:
-    """Kill sglang engine → health_generate fails → RolloutCrashDetector → recovery."""
-    # Step 1: Verify training is stable
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
-
-    # Step 2: Kill sglang engine (simulates sglang crash)
-    await testbed.kill_sglang_cell("default")
-
-    # Step 3: RolloutHealthChecker detects engine death → rollout_cell_alive=0
-    #         → RolloutCrashDetector fires → recovery
-    status = await testbed.wait_for_subsystem_state(
-        name="rollout_default",
-        state="Recovering",
-        timeout=RECOVERY_TIMEOUT,
-    )
-
-    # Step 4: Recovery restarts the cell
-    await testbed.wait_for_subsystem_state(
-        name="rollout_default",
-        state="DetectingAnomaly",
-        timeout=RECOVERY_TIMEOUT,
-    )
+# test_rollout_crash_detected_and_recovered removed: covered by test_scenarios::test_rollout_crash

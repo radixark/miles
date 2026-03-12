@@ -88,37 +88,7 @@ async def test_crash_during_hung_monitoring_escalates(
     )
 
 
-# ------------------------------------------------------------------
-# 3. test_hang_full_recovery_and_resume
-# ------------------------------------------------------------------
-
-
-async def test_hang_full_recovery_and_resume(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Hang -> detect -> full recovery -> training resumes with new workers.
-
-    After inject_hang(), workers stop advancing. FastHangDetector fires.
-    Controller enters recovery, stops training, starts new workers (not hung).
-    New workers advance normally -> MonitoringProgress succeeds -> MONITORING.
-    """
-    testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
-        detectors=[FastHangDetector(timeout_seconds=3.0)],
-    )
-
-    # Step 1: inject hang
-    await testbed.inject_hang()
-
-    # Step 2: wait for detection and recovery to complete
-    status = await testbed.wait_for_mode_transition(
-        target_mode=ControllerMode.MONITORING,
-        timeout=LONG_RECOVERY_TIMEOUT,
-    )
-    assert status.mode == ControllerMode.MONITORING
-
-    # Step 3: verify training resumes with 3 more iterations
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
+# test_hang_full_recovery_and_resume removed: covered by test_scenarios::test_hang_detection_and_recovery
 
 
 # ------------------------------------------------------------------

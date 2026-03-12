@@ -148,28 +148,7 @@ async def test_metric_scrape_pipeline(
     assert status.latest_iteration >= 5
 
 
-# ------------------------------------------------------------------
-# 4. test_healthy_training_no_false_positive
-# ------------------------------------------------------------------
-
-
-async def test_healthy_training_no_false_positive(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Healthy training with real workers never triggers spurious recovery."""
-    testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
-        detectors=[TrainingCrashDetector()],
-    )
-
-    # Step 1: verify stable and observe for 10+ ticks with no recovery
-    status = await assert_no_recovery_triggered(
-        testbed,
-        observation_ticks=20,
-        timeout=FAST_TIMEOUT,
-    )
-    assert status.mode == ControllerMode.MONITORING
-    assert status.recovery_in_progress is False
+# test_healthy_training_no_false_positive removed: covered by test_scenarios::test_no_false_positive
 
 
 # ------------------------------------------------------------------

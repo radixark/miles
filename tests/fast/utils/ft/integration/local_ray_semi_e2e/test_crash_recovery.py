@@ -34,32 +34,7 @@ pytestmark = [
 _SLOW_STEP = 2.0
 
 
-# ------------------------------------------------------------------
-# 1. test_crash_recovery_full_cycle
-# ------------------------------------------------------------------
-
-
-async def test_crash_recovery_full_cycle(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Single crash -> auto-recovery -> training resumes with re-registered workers."""
-    testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
-        detectors=[TrainingCrashDetector()],
-    )
-
-    # Step 1: verify training is stable
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
-
-    # Step 2: crash training
-    await testbed.crash_training()
-
-    # Step 3: wait for recovery to complete and return to MONITORING
-    status = await testbed.wait_for_mode_transition(
-        target_mode=ControllerMode.MONITORING,
-        timeout=RECOVERY_TIMEOUT,
-    )
-    assert status.mode == ControllerMode.MONITORING
+# test_crash_recovery_full_cycle removed: covered by test_scenarios::test_transient_crash
 
 
 # ------------------------------------------------------------------
@@ -144,64 +119,8 @@ async def test_state_clean_after_recovery(
     assert status.recovery is not None
 
 
-# ------------------------------------------------------------------
-# 4. test_crash_recovery_completes
-# ------------------------------------------------------------------
-
-
-async def test_crash_recovery_completes(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Crash -> recovery flow completes and controller continues operating."""
-    testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
-        detectors=[TrainingCrashDetector()],
-    )
-
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
-    await testbed.crash_training()
-
-    final = await testbed.wait_for_mode_transition(
-        target_mode=ControllerMode.MONITORING,
-        timeout=RECOVERY_TIMEOUT,
-    )
-    assert final.mode == ControllerMode.MONITORING
-
-
-# ------------------------------------------------------------------
-# 5. test_two_crashes_escalate_to_diagnosing
-# ------------------------------------------------------------------
-
-
-async def test_two_crashes_escalate_to_diagnosing(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Crash -> recovery MONITORING -> crash again -> escalates to DIAGNOSING."""
-    testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
-        detectors=[TrainingCrashDetector()],
-        recovery_cooldown=SlidingWindowThrottle(window_minutes=1.0, max_count=2),
-    )
-
-    # Step 1: crash -> recovery enters MonitoringProgress phase
-    await testbed.crash_training()
-    await testbed.wait_for_recovery_phase(
-        phase="MonitoringProgressSt",
-        timeout=RECOVERY_TIMEOUT,
-    )
-
-    # Step 2: crash during MonitoringProgress -> DIAGNOSING
-    await testbed.crash_training()
-
-    # Step 3: poll for StopTimeDiagnostics phase during the active recovery
-    deadline = time.monotonic() + RECOVERY_TIMEOUT
-    while time.monotonic() < deadline:
-        status = await testbed.get_status()
-        if status.recovery is not None and status.recovery.phase == "StopTimeDiagnosticsSt":
-            break
-        await asyncio.sleep(0.5)
-    else:
-        raise TimeoutError(f"DIAGNOSING not observed within {RECOVERY_TIMEOUT}s")
+# test_crash_recovery_completes removed: covered by test_scenarios::test_transient_crash
+# test_two_crashes_escalate_to_diagnosing removed: covered by test_scenarios::test_repeated_crash
 
 
 # ------------------------------------------------------------------
