@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.types import Decision, MetricStore, TrainingMetricStoreProtocol
+from miles.utils.ft.controller.types import Decision, MetricStore
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +56,3 @@ class BaseFaultDetector(ABC):
 
     @abstractmethod
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision: ...
-
-
-def get_non_finite_loss(mini_wandb: TrainingMetricStoreProtocol) -> float | None:
-    """Return the loss value if it is non-finite (NaN/Inf), otherwise None."""
-    latest_loss = mini_wandb.latest("loss")
-    if latest_loss is not None and not math.isfinite(latest_loss):
-        return latest_loss
-    return None
