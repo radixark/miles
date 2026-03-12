@@ -146,3 +146,42 @@ class TestParseRangeResponseErrors:
         }
         result = parse_range_response(data)
         assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# P2 item 24: additional response_parser edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestParseRangeResponseEdgeCases:
+    def test_empty_result_array_returns_empty(self) -> None:
+        data = {"status": "success", "data": {"resultType": "matrix", "result": []}}
+        result = parse_range_response(data)
+        assert len(result) == 0
+
+    def test_matrix_with_nan_inf_strings(self) -> None:
+        """NaN and Inf as string values should parse as valid floats."""
+        data = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"__name__": "m"},
+                        "values": [
+                            [1.0, "NaN"],
+                            [2.0, "Inf"],
+                            [3.0, "-Inf"],
+                            [4.0, "42.0"],
+                        ],
+                    },
+                ],
+            },
+        }
+        result = parse_range_response(data)
+        assert len(result) == 4
+
+    def test_missing_data_section_returns_empty(self) -> None:
+        data = {"status": "success"}
+        result = parse_range_response(data)
+        assert len(result) == 0

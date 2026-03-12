@@ -458,6 +458,48 @@ class TestMonitoringProgress:
         )
         assert iteration_progress(state=state, mini_wandb=mini_wandb) == expected_progress
 
+    # P2 item 28: exact boundary and no-steps edge cases
+    @pytest.mark.asyncio
+    async def test_exact_target_iterations_transitions_to_done(self) -> None:
+        """Exactly success_iterations reached (not exceeded) → RestartDoneSt."""
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+        mini_wandb = MiniWandb()
+        mini_wandb.set_active_run_id("r")
+        mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 110})
+        stepper = _make_stepper()
+        ctx = _make_context(
+            main_job=main_job,
+            mini_wandb=mini_wandb,
+            monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
+        )
+
+        state = MonitoringProgressSt(
+            bad_node_ids=["node-X"],
+            start_time=datetime.now(timezone.utc),
+            base_iteration=100,
+        )
+        result = await _step_last(stepper, state, ctx)
+        assert isinstance(result, RestartDoneSt)
+
+    @pytest.mark.asyncio
+    async def test_mini_wandb_no_steps_yet_stays_monitoring(self) -> None:
+        """mini_wandb has no steps → iteration_progress==0 → stays in monitoring."""
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+        mini_wandb = MiniWandb()
+        stepper = _make_stepper()
+        ctx = _make_context(
+            main_job=main_job,
+            mini_wandb=mini_wandb,
+            monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
+        )
+
+        state = MonitoringProgressSt(
+            start_time=datetime.now(timezone.utc),
+            base_iteration=0,
+        )
+        result = await _step_last(stepper, state, ctx)
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # Terminal states

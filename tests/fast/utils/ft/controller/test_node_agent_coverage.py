@@ -77,6 +77,20 @@ class TestNodeAgentCoverageChecker:
         assert len(warning_lines) == 1
         assert "n1" in warning_lines[0]
 
+    # P2 item 26: oscillating coverage (covered → uncovered → covered → uncovered)
+    def test_oscillating_coverage_rearms_notification_each_cycle(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Three full oscillation cycles: each drop after restore triggers a new warning."""
+        checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+                checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+                checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids={"n1"})
+
+        warning_count = caplog.text.count("without node agent")
+        assert warning_count == 3
+
     def test_node_not_in_training_set_is_ignored(self) -> None:
         """Nodes that leave the training set are not checked or warned about."""
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)

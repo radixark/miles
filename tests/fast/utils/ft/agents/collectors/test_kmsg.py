@@ -483,6 +483,40 @@ class TestKmsgCollectorReadLinesNoFallback:
             collector._collect_sync()
 
 
+# ---------------------------------------------------------------------------
+# P2 item 22: KmsgCollector additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCreateReaderFallback:
+    @pytest.mark.anyio
+    async def test_concurrent_xid_from_multiple_gpus_in_single_cycle(self) -> None:
+        """Multiple XID events from different GPU PCIs in a single collection cycle."""
+        collector = _make_kmsg_collector(
+            [
+                "NVRM: Xid (PCI:0000:3b:00): 48, pid=1234",
+                "NVRM: Xid (PCI:0000:5e:00): 48, pid=5678",
+                "NVRM: Xid (PCI:0000:87:00): 31, pid=9012",
+            ]
+        )
+
+        result = await collector.collect()
+        xid_samples = _filter_metrics(result, "miles_ft_xid_code_recent")
+        xid_codes = {m.labels["xid"] for m in xid_samples}
+        assert xid_codes == {"31", "48"}
+
+        count_total = _filter_metrics(result, "miles_ft_xid_count_total")
+        assert count_total[0].delta == 3.0
+
+    def test_create_reader_falls_back_to_dmesg_on_oserror(self) -> None:
+        """When /dev/kmsg fails to open, _create_reader() returns DmesgSubprocessReader."""
+        from miles.utils.ft.agents.collectors.kmsg import _create_reader
+        from miles.utils.ft.agents.collectors.kernel_log_reader import DmesgSubprocessReader
+
+        reader = _create_reader(Path("/nonexistent/path/kmsg"))
+        assert isinstance(reader, DmesgSubprocessReader)
+
+
 class TestKmsgCollectorInterval:
     def test_default_collect_interval(self) -> None:
         collector = KmsgCollector(kmsg_path=Path("/dev/null"))

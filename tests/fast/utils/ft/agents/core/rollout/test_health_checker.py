@@ -134,6 +134,37 @@ class TestProbeCell:
                 timeout=10.0,
             )
 
+    # P2 item 27: additional probe edge cases
+    @pytest.mark.anyio
+    async def test_engine_raises_timeout_error_returns_false(self) -> None:
+        """Engine health_fn that raises asyncio.TimeoutError → probe returns False."""
+
+        async def _timeout_fn(engine: object) -> None:
+            raise asyncio.TimeoutError("health check timed out")
+
+        result = await _probe_cell(
+            engines=[_MockEngine(True)],
+            engine_health_fn=_timeout_fn,
+            cell_id="timeout-cell",
+            timeout=10.0,
+        )
+        assert result is False
+
+    @pytest.mark.anyio
+    async def test_engine_raises_connection_refused_returns_false(self) -> None:
+        """Engine health_fn that raises ConnectionRefusedError → probe returns False."""
+
+        async def _refused_fn(engine: object) -> None:
+            raise ConnectionRefusedError("connection refused")
+
+        result = await _probe_cell(
+            engines=[_MockEngine(True)],
+            engine_health_fn=_refused_fn,
+            cell_id="refused-cell",
+            timeout=10.0,
+        )
+        assert result is False
+
 
 # ===========================================================================
 # RolloutHealthChecker (aggregate, with loop)
