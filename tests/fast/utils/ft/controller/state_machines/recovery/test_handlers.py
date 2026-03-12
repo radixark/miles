@@ -542,3 +542,18 @@ class TestFullRecoveryFlow:
         stepper = _make_stepper()
         result = await _step(stepper, NotifyHumansSt(state_before="Test"), notifier=notifier)
         assert isinstance(result, RecoveryDoneSt)
+
+
+# ---------------------------------------------------------------------------
+# Default timeout constant
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultTimeout:
+    def test_default_recovery_timeout_is_3600(self) -> None:
+        """Previously the default was 1800 (30 min), which was too short for
+        worst-case recovery paths (two restart attempts + diagnostics).
+        Increased to 3600 (1 hour).
+        """
+        from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
+        assert RECOVERY_TIMEOUT_SECONDS == 3600

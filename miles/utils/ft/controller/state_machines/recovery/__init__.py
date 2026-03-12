@@ -17,7 +17,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
-RECOVERY_TIMEOUT_SECONDS: int = 1800
+RECOVERY_TIMEOUT_SECONDS: int = 3600
 
 RecoveryContext.model_rebuild()
 
