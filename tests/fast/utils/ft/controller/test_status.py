@@ -228,3 +228,52 @@ class TestBuildControllerStatus:
 
         assert status.recovery is not None
         assert status.recovery.phase == "RestartingMainJobSt"
+
+    def test_status_module_imports_without_error(self) -> None:
+        """Importing status.py must not raise ImportError.
+        Previously it imported a non-existent symbol (get_known_bad_nodes)
+        from the subsystem package."""
+        import importlib
+
+        mod = importlib.import_module("miles.utils.ft.controller.status")
+        assert hasattr(mod, "build_controller_status")
+
+    def test_classify_recovery_reads_known_bad_node_ids_from_recovering_state(self) -> None:
+        """bad_nodes must be read from RecoveringSt.known_bad_node_ids,
+        not from a separate helper function that might not exist."""
+        state = RecoveringSt(
+            recovery=RealtimeChecksSt(),
+            trigger="crash",
+            recovery_start_time=_now(),
+            known_bad_node_ids=["node-a", "node-b"],
+        )
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(state),
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(),
+            tick_count=0,
+        )
+
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes == ["node-a", "node-b"]
+        assert status.recovery.bad_nodes_confirmed is True
+
+    def test_classify_recovery_empty_bad_nodes_not_confirmed(self) -> None:
+        """When known_bad_node_ids is empty and recovery is not done,
+        bad_nodes_confirmed should be False."""
+        state = RecoveringSt(
+            recovery=RealtimeChecksSt(),
+            trigger="crash",
+            recovery_start_time=_now(),
+            known_bad_node_ids=[],
+        )
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(state),
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(),
+            tick_count=0,
+        )
+
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes == []
+        assert status.recovery.bad_nodes_confirmed is False
