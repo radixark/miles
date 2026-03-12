@@ -30,7 +30,7 @@ class RolloutCrashDetector(BaseFaultDetector):
         if not ctx.active_node_ids:
             return Decision.no_fault(reason=f"rollout_{self._cell_id}: no active nodes")
 
-        df = ctx.metric_store.query_latest(
+        df = ctx.metric_store.time_series_store.query_latest(
             metric_name=ROLLOUT_CELL_ALIVE,
             label_filters={"cell_id": self._cell_id},
         )
@@ -47,7 +47,7 @@ class RolloutCrashDetector(BaseFaultDetector):
             )
 
         window = timedelta(seconds=self._threshold)
-        range_df = ctx.metric_store.query_range(
+        range_df = ctx.metric_store.time_series_store.query_range(
             metric_name=ROLLOUT_CELL_ALIVE,
             window=window,
             label_filters={"cell_id": self._cell_id},

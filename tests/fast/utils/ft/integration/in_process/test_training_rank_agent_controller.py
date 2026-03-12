@@ -91,7 +91,7 @@ class TestScrapeTargetRegistration:
                 pid=1,
             )
 
-            assert "rank-0" in harness.metric_store._scrape_targets
+            assert "rank-0" in harness.time_series_store._scrape_targets
         finally:
             agent.shutdown()
 
@@ -118,9 +118,9 @@ class TestHeartbeatScrape:
             agent.set_phase("training")
             agent.step()
 
-            await harness.metric_store.scrape_once()
+            await harness.time_series_store.scrape_once()
 
-            result = harness.metric_store.query_latest("miles_ft_agent_heartbeat")
+            result = harness.time_series_store.query_latest("miles_ft_agent_heartbeat")
             assert len(result) == 1, f"expected exactly 1 heartbeat series, got {len(result)}"
             row = result.row(0, named=True)
             assert row["__name__"] == "miles_ft_agent_heartbeat"

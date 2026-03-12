@@ -17,7 +17,6 @@ from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 def _make_detector_context() -> DetectorContext:
     return DetectorContext(
         metric_store=MagicMock(),
-        mini_wandb=MagicMock(),
         active_node_ids={"node-0"},
         job_status=JobStatus.RUNNING,
     )

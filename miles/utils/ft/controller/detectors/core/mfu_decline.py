@@ -27,7 +27,7 @@ class MfuDeclineDetector(BaseFaultDetector):
         cfg = self._config
 
         mfu = check_mfu_health(
-            ctx.mini_wandb,
+            ctx.metric_store.mini_wandb,
             consecutive_steps=cfg.consecutive_steps,
             threshold_ratio=cfg.mfu_threshold_ratio,
             baseline=cfg.mfu_baseline,
@@ -50,7 +50,7 @@ class MfuDeclineDetector(BaseFaultDetector):
         # localize faulty machines on MFU decline; for simplicity we notify human.
         decline_summary = f"{mfu.avg_mfu:.4f} < {mfu.threshold:.4f}"
 
-        elapsed_minutes = self._compute_decline_duration_minutes(ctx.mini_wandb, mfu.threshold)
+        elapsed_minutes = self._compute_decline_duration_minutes(ctx.metric_store.mini_wandb, mfu.threshold)
         if elapsed_minutes >= cfg.decline_timeout_minutes:
             return Decision(
                 action=ActionType.NOTIFY_HUMAN,

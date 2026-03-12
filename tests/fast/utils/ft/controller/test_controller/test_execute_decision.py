@@ -37,7 +37,7 @@ class TestTickEmptyDetectorChain:
         harness = make_test_controller()
         await harness.controller._tick()
         ctx = make_detector_context(
-            metric_store=harness.metric_store,
+            metric_store=harness.time_series_store,
             mini_wandb=harness.mini_wandb,
             active_node_ids=_TEST_ACTIVE_NODE_IDS,
         )

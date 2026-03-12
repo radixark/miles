@@ -6,7 +6,8 @@ from miles.utils.ft.agents.diagnostics.base import BaseNodeExecutor
 from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore
-from miles.utils.ft.controller.types import ActionType
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.types import ActionType, MetricStore
 
 
 class CollectorBasedNodeExecutor(BaseNodeExecutor):
@@ -31,7 +32,7 @@ class CollectorBasedNodeExecutor(BaseNodeExecutor):
         store = InMemoryMetricStore()
         store.ingest_samples(target_id=node_id, samples=output.metrics)
 
-        ctx = DetectorContext(metric_store=store)
+        ctx = DetectorContext(metric_store=MetricStore(time_series_store=store, mini_wandb=MiniWandb()))
         decision = self._detector.evaluate(ctx)
 
         if decision.action != ActionType.NONE:

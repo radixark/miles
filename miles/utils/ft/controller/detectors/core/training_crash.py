@@ -8,7 +8,7 @@ class TrainingCrashDetector(BaseFaultDetector):
         if ctx.job_status != JobStatus.FAILED:
             return Decision.no_fault(reason="training job not failed")
 
-        trigger = self._determine_trigger(ctx.mini_wandb)
+        trigger = self._determine_trigger(ctx.metric_store.mini_wandb)
 
         return Decision(
             action=ActionType.ENTER_RECOVERY,

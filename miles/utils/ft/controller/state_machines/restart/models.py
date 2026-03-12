@@ -7,8 +7,8 @@ from enum import Enum
 from pydantic import ConfigDict
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
+from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 
@@ -56,7 +56,7 @@ class RestartContext(FtBaseModel):
 
     node_manager: NodeManagerProtocol
     main_job: MainJobProtocol
-    mini_wandb: MiniWandb
+    metric_store: MetricStore
     notifier: NotifierProtocol | None
     on_new_run: Callable[[str], None] | None
     node_metadata: dict[str, dict[str, str]] = {}

@@ -15,7 +15,9 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 from tests.fast.utils.ft.utils.metric_injectors import make_detector_context
 
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.controller.state_machines.subsystem import (
     DetectingAnomalySt,
     SubsystemContext,
@@ -60,7 +62,7 @@ def _make_subsystem_context(
     notifier: FakeNotifier | None = None,
     max_simultaneous_bad_nodes: int = 3,
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
-    mini_wandb: MiniWandb | None = None,
+    metric_store: MetricStore | None = None,
 ) -> SubsystemContext:
     return SubsystemContext(
         job_status=JobStatus.RUNNING,
@@ -90,7 +92,10 @@ def _make_subsystem_context(
         on_recovery_duration=on_recovery_duration,
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
-        mini_wandb=mini_wandb or MiniWandb(),
+        metric_store=metric_store or MetricStore(
+            time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
+            mini_wandb=MiniWandb(),
+        ),
     )
 
 

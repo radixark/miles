@@ -94,8 +94,8 @@ class TestRegisterRank:
             pid=1,
         )
 
-        assert "rank-0" in harness.metric_store._scrape_targets
-        assert harness.metric_store._scrape_targets["rank-0"] == "http://node-0:9090"
+        assert "rank-0" in harness.time_series_store._scrape_targets
+        assert harness.time_series_store._scrape_targets["rank-0"] == "http://node-0:9090"
 
     @pytest.mark.anyio
     async def test_new_run_cleans_old_scrape_targets(self) -> None:
@@ -110,7 +110,7 @@ class TestRegisterRank:
             exporter_address="http://node-0:9090",
             pid=1,
         )
-        assert "rank-0" in harness.metric_store._scrape_targets
+        assert "rank-0" in harness.time_series_store._scrape_targets
 
         harness.controller._activate_run("run-2")
         harness.subsystem_hub.training_rank_roster.register_training_rank(
@@ -122,8 +122,8 @@ class TestRegisterRank:
             pid=1,
         )
 
-        assert "rank-0" not in harness.metric_store._scrape_targets
-        assert "rank-1" in harness.metric_store._scrape_targets
+        assert "rank-0" not in harness.time_series_store._scrape_targets
+        assert "rank-1" in harness.time_series_store._scrape_targets
 
     @pytest.mark.anyio
     async def test_new_run_cleans_multiple_old_scrape_targets(self) -> None:
@@ -146,8 +146,8 @@ class TestRegisterRank:
             exporter_address="http://node-1:9090",
             pid=1,
         )
-        assert "rank-0" in harness.metric_store._scrape_targets
-        assert "rank-1" in harness.metric_store._scrape_targets
+        assert "rank-0" in harness.time_series_store._scrape_targets
+        assert "rank-1" in harness.time_series_store._scrape_targets
 
         harness.controller._activate_run("run-2")
         harness.subsystem_hub.training_rank_roster.register_training_rank(
@@ -159,9 +159,9 @@ class TestRegisterRank:
             pid=1,
         )
 
-        assert "rank-0" not in harness.metric_store._scrape_targets
-        assert "rank-1" not in harness.metric_store._scrape_targets
-        assert "rank-2" in harness.metric_store._scrape_targets
+        assert "rank-0" not in harness.time_series_store._scrape_targets
+        assert "rank-1" not in harness.time_series_store._scrape_targets
+        assert "rank-2" in harness.time_series_store._scrape_targets
 
     @pytest.mark.anyio
     async def test_partial_registration_tick_still_runs(self, caplog: pytest.LogCaptureFixture) -> None:

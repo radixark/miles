@@ -14,7 +14,7 @@ class TestControllerWithRealDetectors:
             status_sequence=[JobStatus.RUNNING],
         )
 
-        inject_healthy_node(harness.metric_store, node_id="node-0")
+        inject_healthy_node(harness.time_series_store, node_id="node-0")
 
         await harness.controller._tick()
 
@@ -27,8 +27,8 @@ class TestControllerWithRealDetectors:
             status_sequence=[JobStatus.RUNNING],
         )
 
-        inject_healthy_node(harness.metric_store, node_id="node-0")
-        inject_gpu_unavailable(harness.metric_store, node_id="node-0", gpu="3")
+        inject_healthy_node(harness.time_series_store, node_id="node-0")
+        inject_gpu_unavailable(harness.time_series_store, node_id="node-0", gpu="3")
 
         await harness.controller._tick()
 

@@ -82,14 +82,14 @@ class TestRunLoopSurviveTickFailure:
         harness = make_test_controller(tick_interval=0.01)
 
         stop_called = False
-        original_stop = harness.metric_store.stop
+        original_stop = harness.time_series_store.stop
 
         async def tracking_stop() -> None:
             nonlocal stop_called
             stop_called = True
             await original_stop()
 
-        harness.metric_store.stop = tracking_stop  # type: ignore[assignment]
+        harness.time_series_store.stop = tracking_stop  # type: ignore[assignment]
 
         await run_controller_briefly(harness)
 

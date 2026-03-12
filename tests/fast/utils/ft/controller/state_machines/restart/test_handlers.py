@@ -16,7 +16,9 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 )
 
 from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.controller.state_machines.restart import (
     EvictingSt,
     ExternalExecutionResult,
@@ -77,7 +79,10 @@ def _make_context(
     return RestartContext(
         node_manager=node_manager or FakeNodeManager(),
         main_job=resolved_main_job,
-        mini_wandb=mini_wandb or MiniWandb(),
+        metric_store=MetricStore(
+            time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
+            mini_wandb=mini_wandb or MiniWandb(),
+        ),
         notifier=notifier,
         on_new_run=on_new_run,
         node_metadata=node_metadata or {},

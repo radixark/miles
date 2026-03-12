@@ -75,7 +75,7 @@ class TestRolloutGpuXidRecovery:
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller
-        store = harness.metric_store
+        store = harness.time_series_store
         _override_rollout_monitoring(harness)
         harness.subsystem_hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
 
@@ -126,7 +126,7 @@ class TestRolloutCrashRecovery:
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller
-        store = harness.metric_store
+        store = harness.time_series_store
 
         harness.subsystem_hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
@@ -183,7 +183,7 @@ class TestColocatedNodeFault:
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller
-        store = harness.metric_store
+        store = harness.time_series_store
 
         harness.subsystem_hub.training_rank_roster.rank_placement[0] = shared_node
         harness.subsystem_hub.training_rank_roster.rank_placement[1] = "train-only-1"
@@ -240,7 +240,7 @@ class TestMultiCellIndependentFailures:
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller
-        store = harness.metric_store
+        store = harness.time_series_store
 
         harness.subsystem_hub.set_rollout_node_ids("ep72", {"rollout-ep72-0", "rollout-ep72-1"})
         harness.subsystem_hub.set_rollout_node_ids("ep36", {"rollout-ep36-0", "rollout-ep36-1"})
@@ -334,7 +334,7 @@ class TestRolloutLevel1FailureNotifyHumans:
             diagnostic_orchestrator=diag_orch,
         )
         controller = harness.controller
-        store = harness.metric_store
+        store = harness.time_series_store
 
         harness.subsystem_hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]

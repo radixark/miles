@@ -28,7 +28,7 @@ class ThermalThrottlingDetector(BaseFaultDetector):
 
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
         hot_node_ids = _find_temperature_outlier_nodes(
-            metric_store=ctx.metric_store,
+            metric_store=ctx.metric_store.time_series_store,
             active_node_ids=ctx.active_node_ids,
             delta_threshold=self._config.temperature_delta_threshold,
         )
@@ -37,7 +37,7 @@ class ThermalThrottlingDetector(BaseFaultDetector):
 
         cfg = self._config
         mfu = check_mfu_health(
-            ctx.mini_wandb,
+            ctx.metric_store.mini_wandb,
             consecutive_steps=cfg.mfu_consecutive_steps,
             threshold_ratio=cfg.mfu_decline_threshold_ratio,
             baseline=cfg.mfu_baseline,

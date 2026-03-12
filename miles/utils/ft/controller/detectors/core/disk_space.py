@@ -5,7 +5,7 @@ from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 class DiskSpaceLowDetector(BaseFaultDetector):
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
-        faults = check_disk_fault(ctx.metric_store)
+        faults = check_disk_fault(ctx.metric_store.time_series_store)
         if not faults:
             return Decision.no_fault("disk space ok")
 

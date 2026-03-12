@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -15,7 +16,7 @@ from miles.utils.ft.utils.base_model import FtBaseModel
 
 if TYPE_CHECKING:
     from miles.utils.ft.adapters.types import ClusterExecutorProtocol
-    from miles.utils.ft.controller.metrics.mini_wandb import StepValue, TimedStepValue
+    from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb, StepValue, TimedStepValue
 
 
 # ---------------------------------------------------------------------------
@@ -218,3 +219,9 @@ class TrainingMetricStoreProtocol(ABC):
         metric_name: str,
         window: timedelta,
     ) -> list[TimedStepValue]: ...
+
+
+@dataclass
+class MetricStore:
+    time_series_store: TimeSeriesStoreProtocol
+    mini_wandb: MiniWandb

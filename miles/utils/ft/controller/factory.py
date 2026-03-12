@@ -8,7 +8,6 @@ from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, 
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import (
     MainContext,
@@ -28,8 +27,7 @@ from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
-    TimeSeriesQueryProtocol,
-    TimeSeriesStoreProtocol,
+    MetricStore,
     ScrapeTargetManagerProtocol,
 )
 from miles.utils.ft.utils.box import Box
@@ -47,8 +45,7 @@ class FtControllerBundle(NamedTuple):
 def create_ft_controller(
     node_manager: NodeManagerProtocol,
     main_job: MainJobProtocol,
-    metric_store: TimeSeriesStoreProtocol,
-    mini_wandb: MiniWandb,
+    metric_store: MetricStore,
     *,
     rollout_cell_ids: list[str] | None = None,
     scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
@@ -133,12 +130,11 @@ def create_ft_controller(
         main_job=main_job,
         state_machine=controller_sm,
         subsystem_hub=subsystem_hub,
-        mini_wandb=mini_wandb,
+        metric_store=metric_store,
         agents=agents,  # type: ignore[arg-type]
         tick_interval=tick_interval,
         tick_loop=None,  # type: ignore[arg-type]  # set below
         notifier=notifier,
-        metric_store=metric_store,
         scrape_target_manager=scrape_target_manager,
         controller_exporter=controller_exporter,
     )
@@ -150,7 +146,6 @@ def create_ft_controller(
         agents=agents,  # type: ignore[arg-type]
         main_job=main_job,
         metric_store=metric_store,
-        mini_wandb=mini_wandb,
         notifier=notifier,
         node_manager=node_manager,
         cooldown=cooldown,

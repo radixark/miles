@@ -18,7 +18,9 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
-RestartContext.model_rebuild()
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb as _MiniWandb
+
+RestartContext.model_rebuild(_types_namespace={"MiniWandb": _MiniWandb})
 
 _RESTART_HANDLER_MAP: dict[type, type] = {
     EvictingSt: EvictingHandler,

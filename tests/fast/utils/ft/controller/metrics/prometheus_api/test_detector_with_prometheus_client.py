@@ -31,7 +31,7 @@ from miles.utils.ft.controller.metrics.metric_names import (
 )
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
-from miles.utils.ft.controller.types import ActionType
+from miles.utils.ft.controller.types import ActionType, MetricStore
 
 
 def _make_response(json_data: dict[str, Any]) -> httpx.Response:
@@ -120,8 +120,7 @@ class TestHangDetectorWithPrometheusClient:
         with patch.object(httpx.Client, "get", side_effect=router):
             client = PrometheusClient(url="http://fake:9090")
             ctx = DetectorContext(
-                metric_store=client,
-                mini_wandb=MiniWandb(),
+                metric_store=MetricStore(time_series_store=client, mini_wandb=MiniWandb()),
                 active_node_ids={"node-0"},
                 job_status=JobStatus.RUNNING,
             )
@@ -148,8 +147,7 @@ class TestHangDetectorWithPrometheusClient:
         with patch.object(httpx.Client, "get", side_effect=router):
             client = PrometheusClient(url="http://fake:9090")
             ctx = DetectorContext(
-                metric_store=client,
-                mini_wandb=MiniWandb(),
+                metric_store=MetricStore(time_series_store=client, mini_wandb=MiniWandb()),
                 active_node_ids={"node-0"},
                 job_status=JobStatus.RUNNING,
             )

@@ -21,6 +21,7 @@ from miles.utils.ft.controller.metrics.metric_names import (
 )
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.types import MetricStore
 
 
 def get_sample_value(
@@ -85,8 +86,10 @@ def make_detector_context(
     job_status: JobStatus = JobStatus.RUNNING,
 ) -> DetectorContext:
     return DetectorContext(
-        metric_store=metric_store or make_fake_metric_store(),
-        mini_wandb=mini_wandb or make_fake_mini_wandb(),
+        metric_store=MetricStore(
+            time_series_store=metric_store or make_fake_metric_store(),
+            mini_wandb=mini_wandb or make_fake_mini_wandb(),
+        ),
         active_node_ids=active_node_ids if active_node_ids is not None else set(),
         job_status=job_status,
     )

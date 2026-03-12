@@ -6,13 +6,12 @@ import logging
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.types import ControllerStatus, TimeSeriesStoreProtocol, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import ControllerStatus, MetricStore, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -25,24 +24,22 @@ class FtController:
         main_job: MainJobProtocol,
         state_machine: StateMachine[MainState, MainContext],
         subsystem_hub: SubsystemHub,
-        mini_wandb: MiniWandb,
+        metric_store: MetricStore,
         agents: dict[str, NodeAgentProtocol],
         tick_interval: float,
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
-        metric_store: TimeSeriesStoreProtocol,
         scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
         controller_exporter: ControllerExporter | None = None,
     ) -> None:
         self._main_job = main_job
         self._state_machine = state_machine
         self._subsystem_hub = subsystem_hub
-        self._mini_wandb = mini_wandb
+        self._metric_store = metric_store
         self._agents = agents
         self._tick_interval = tick_interval
         self._tick_loop = tick_loop
         self._notifier = notifier
-        self._metric_store = metric_store
         self._scrape_target_manager = scrape_target_manager
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
@@ -54,8 +51,8 @@ class FtController:
     # ------------------------------------------------------------------
 
     @property
-    def mini_wandb(self) -> MiniWandb:
-        return self._mini_wandb
+    def metric_store(self) -> MetricStore:
+        return self._metric_store
 
     @property
     def node_metadata(self) -> dict[str, dict[str, str]]:
@@ -94,7 +91,7 @@ class FtController:
 
     async def run(self) -> None:
         logger.info("controller_start tick_interval=%s", self._tick_interval)
-        scrape_task = await start_metric_store_task(self._metric_store)
+        scrape_task = await start_metric_store_task(self._metric_store.time_series_store)
         try:
             while not self._shutting_down:
                 await self._tick()
@@ -111,7 +108,7 @@ class FtController:
     def get_status(self) -> ControllerStatus:
         return build_controller_status(
             controller_state_machine=self._state_machine,
-            mini_wandb=self._mini_wandb,
+            mini_wandb=self._metric_store.mini_wandb,
             training_rank_roster=self._subsystem_hub.training_rank_roster_box.value,
             tick_count=self._tick_loop.tick_count,
         )
@@ -129,14 +126,14 @@ class FtController:
             run_id=run_id,
             scrape_target_manager=self._scrape_target_manager,
         )
-        self._mini_wandb.set_active_run_id(run_id)
+        self._metric_store.mini_wandb.set_active_run_id(run_id)
         logger.info("run_activated run_id=%s", run_id)
 
     async def _tick(self) -> None:
         await self._tick_loop.tick()
 
     async def _stop_services(self, scrape_task: asyncio.Task[None] | None) -> None:
-        await stop_metric_store_task(self._metric_store, scrape_task)
+        await stop_metric_store_task(self._metric_store.time_series_store, scrape_task)
         self._controller_exporter.stop()
         if self._notifier is not None:
             try:

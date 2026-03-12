@@ -16,7 +16,7 @@ from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
-from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
+from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ class FastHangDetector(BaseFaultDetector):
         if ctx.job_status != JobStatus.RUNNING:
             return Decision(action=ActionType.NONE, reason="not running")
 
-        df = ctx.metric_store.changes(
+        df = ctx.metric_store.time_series_store.changes(
             AGENT_HEARTBEAT,
             window=self._timeout,
             label_filters={"rank": "0"},
@@ -206,7 +206,7 @@ class ControllerTestHarness(NamedTuple):
     controller: FtController
     node_manager: FakeNodeManager
     main_job: FakeMainJob
-    metric_store: MiniPrometheus
+    time_series_store: MiniPrometheus
     mini_wandb: MiniWandb
     controller_exporter: ControllerExporter
     notifier: FakeNotifier | None
@@ -240,8 +240,9 @@ def make_test_controller(
 
     node_manager = FakeNodeManager()
     main_job = FakeMainJob(status_sequence=status_sequence)
-    metric_store = MiniPrometheus(config=MiniPrometheusConfig())
+    time_series_store = MiniPrometheus(config=MiniPrometheusConfig())
     mini_wandb = MiniWandb()
+    metric_store = MetricStore(time_series_store=time_series_store, mini_wandb=mini_wandb)
 
     if controller_exporter is None:
         controller_exporter = ControllerExporter(registry=CollectorRegistry())
@@ -255,9 +256,8 @@ def make_test_controller(
         node_manager=node_manager,
         main_job=main_job,
         metric_store=metric_store,
-        mini_wandb=mini_wandb,
         rollout_cell_ids=rollout_cell_ids,
-        scrape_target_manager=metric_store,
+        scrape_target_manager=time_series_store,
         notifier=real_notifier,
         detectors=detectors,
         tick_interval=tick_interval,
@@ -278,7 +278,7 @@ def make_test_controller(
         controller=controller,
         node_manager=node_manager,
         main_job=main_job,
-        metric_store=metric_store,
+        time_series_store=time_series_store,
         mini_wandb=mini_wandb,
         controller_exporter=controller_exporter,
         notifier=real_notifier,

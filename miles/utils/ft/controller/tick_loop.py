@@ -6,7 +6,6 @@ from collections.abc import Callable
 
 from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
@@ -18,7 +17,7 @@ from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.types import (
     ControllerMode,
     DiagnosticOrchestratorProtocol,
-    TimeSeriesStoreProtocol,
+    MetricStore,
 )
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine
@@ -34,8 +33,7 @@ class TickLoop:
         training_rank_roster_box: Box[TrainingRankRoster | None],
         agents: dict[str, NodeAgentProtocol],
         main_job: MainJobProtocol,
-        metric_store: TimeSeriesStoreProtocol,
-        mini_wandb: MiniWandb,
+        metric_store: MetricStore,
         notifier: NotifierProtocol | None,
         node_manager: NodeManagerProtocol,
         cooldown: SlidingWindowThrottle,
@@ -56,7 +54,6 @@ class TickLoop:
         self._agents = agents
         self._main_job = main_job
         self._metric_store = metric_store
-        self._mini_wandb = mini_wandb
         self._notifier = notifier
         self._node_manager = node_manager
         self._cooldown = cooldown
@@ -119,7 +116,6 @@ class TickLoop:
             tick_count=self.tick_count,
             job_status=job_status,
             metric_store=self._metric_store,
-            mini_wandb=self._mini_wandb,
             agents=self._agents,
             notifier=self._notifier,
             node_manager=self._node_manager,
@@ -156,8 +152,8 @@ class TickLoop:
             job_status=job_status,
             mode=ControllerMode.RECOVERY if is_recovery else ControllerMode.MONITORING,
             recovery_phase_int=phase_int,
-            latest_loss=self._mini_wandb.latest(metric_name="loss"),
-            latest_mfu=self._mini_wandb.latest(metric_name="mfu"),
+            latest_loss=self._metric_store.mini_wandb.latest(metric_name="loss"),
+            latest_mfu=self._metric_store.mini_wandb.latest(metric_name="mfu"),
         )
 
     def _extract_main_state(self) -> object:

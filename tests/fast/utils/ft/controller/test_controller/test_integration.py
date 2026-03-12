@@ -18,7 +18,7 @@ from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
-from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
+from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticOrchestrator,
@@ -95,8 +95,9 @@ def _make_test_controller_with_rollout(
 
     node_manager = FakeNodeManager()
     main_job = FakeMainJob()
-    metric_store = MiniPrometheus(config=MiniPrometheusConfig())
+    time_series_store = MiniPrometheus(config=MiniPrometheusConfig())
     mini_wandb = MiniWandb()
+    metric_store = MetricStore(time_series_store=time_series_store, mini_wandb=mini_wandb)
     notifier = FakeNotifier()
     controller_exporter = ControllerExporter(registry=CollectorRegistry())
     cooldown = SlidingWindowThrottle(window_minutes=30.0, max_count=3)
@@ -105,9 +106,8 @@ def _make_test_controller_with_rollout(
         node_manager=node_manager,
         main_job=main_job,
         metric_store=metric_store,
-        mini_wandb=mini_wandb,
         rollout_cell_ids=resolved_cell_ids,
-        scrape_target_manager=metric_store,
+        scrape_target_manager=time_series_store,
         notifier=notifier,
         detectors=training_detectors,
         tick_interval=0.01,

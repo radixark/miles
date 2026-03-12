@@ -43,7 +43,7 @@ def build_subsystem_context(
         on_recovery_duration=context.on_recovery_duration,
         max_simultaneous_bad_nodes=context.max_simultaneous_bad_nodes,
         monitoring_config=config.monitoring_config,
-        mini_wandb=context.mini_wandb,
+        metric_store=context.metric_store,
     )
 
 
@@ -68,7 +68,6 @@ def _build_detector_context(
 ) -> DetectorContext:
     return DetectorContext(
         metric_store=context.metric_store,
-        mini_wandb=context.mini_wandb,
         active_node_ids=active_node_ids,
         job_status=context.job_status,
     )
@@ -85,7 +84,7 @@ def _build_recovery_context(
     restart_context = RestartContext(
         node_manager=context.node_manager,
         main_job=context.main_job,
-        mini_wandb=context.mini_wandb,
+        metric_store=context.metric_store,
         notifier=context.notifier,
         on_new_run=context.on_new_run,
         actuator=config.actuator,

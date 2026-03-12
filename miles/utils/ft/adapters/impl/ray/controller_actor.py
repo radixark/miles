@@ -46,7 +46,7 @@ class _FtControllerActorCls:
         step: int,
         metrics: dict[str, float],
     ) -> None:
-        self._ctrl.mini_wandb.log_step(
+        self._ctrl.metric_store.mini_wandb.log_step(
             run_id=run_id,
             step=step,
             metrics=metrics,

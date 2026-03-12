@@ -13,10 +13,9 @@ from miles.utils.ft.adapters.types import (
     NotifierProtocol,
 )
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.controller.subsystem import SubsystemConfig
-from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, TimeSeriesStoreProtocol
+from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 
@@ -51,8 +50,7 @@ class MainContext(FtBaseModel):
     job_status: JobStatus
 
     # Shared deps (for building sub-SM contexts)
-    metric_store: TimeSeriesStoreProtocol
-    mini_wandb: MiniWandb
+    metric_store: MetricStore
     agents: dict[str, NodeAgentProtocol]
     notifier: NotifierProtocol | None
     node_manager: NodeManagerProtocol

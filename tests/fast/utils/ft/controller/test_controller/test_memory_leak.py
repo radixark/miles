@@ -50,7 +50,7 @@ class TestControllerMemoryLeak:
         _register_n_nodes(harness.subsystem_hub.training_rank_roster, run_id=run_id)
 
         for node_id in _NODE_IDS:
-            inject_healthy_node(harness.metric_store, node_id=node_id)
+            inject_healthy_node(harness.time_series_store, node_id=node_id)
 
         # Warm-up: establish steady state
         for i in range(_WARMUP_TICKS):
@@ -96,6 +96,6 @@ class TestControllerMemoryLeak:
 
         for node_id in _NODE_IDS:
             inject_healthy_node(
-                harness.metric_store,
+                harness.time_series_store,
                 node_id=node_id,
             )

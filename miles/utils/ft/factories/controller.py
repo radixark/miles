@@ -24,7 +24,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
-from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol
+from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 if TYPE_CHECKING:
@@ -101,9 +101,12 @@ def build_ft_controller(
     if start_exporter:
         controller_exporter.start()
 
-    metric_store, scrape_target_manager = _build_metric_store(config, controller_exporter)
+    time_series_store, scrape_target_manager = _build_metric_store(config, controller_exporter)
 
-    mini_wandb = MiniWandb()
+    metric_store = MetricStore(
+        time_series_store=time_series_store,
+        mini_wandb=MiniWandb(),
+    )
 
     if notifier_override is not _NOTIFIER_SENTINEL:
         notifier: NotifierProtocol | None = notifier_override  # type: ignore[assignment]
@@ -133,7 +136,6 @@ def build_ft_controller(
         node_manager=node_manager,
         main_job=main_job,
         metric_store=metric_store,
-        mini_wandb=mini_wandb,
         scrape_target_manager=scrape_target_manager,
         notifier=notifier,
         detectors=detectors,

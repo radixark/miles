@@ -13,6 +13,7 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
 from miles.utils.ft.controller.types import (
+    MetricStore,
     TimeSeriesQueryProtocol,
     TimeSeriesStoreLifecycle,
     TimeSeriesStoreProtocol,
@@ -126,15 +127,15 @@ class TestQueryOnlyProtocol:
         store = _QueryOnlyStore()
         assert not isinstance(store, TimeSeriesStoreProtocol)
 
-    def test_query_only_store_usable_as_detector_context_metric_store(self) -> None:
+    def test_query_only_store_usable_in_metric_store_composite(self) -> None:
         store = _QueryOnlyStore()
+        composite = MetricStore(time_series_store=store, mini_wandb=_FakeMiniWandb())  # type: ignore[arg-type]
         ctx = DetectorContext(
-            metric_store=store,
-            mini_wandb=_FakeMiniWandb(),
+            metric_store=composite,
             active_node_ids={"node-0"},
             job_status=JobStatus.RUNNING,
         )
-        assert ctx.metric_store is store
+        assert ctx.metric_store.time_series_store is store
 
 
 class TestIncompleteSubclassRaisesTypeError:

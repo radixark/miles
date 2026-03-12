@@ -18,6 +18,7 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
+from miles.utils.ft.controller.types import MetricStore
 
 
 def _make_prom_response(
@@ -47,8 +48,7 @@ class TestControllerPrometheusMode:
         bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(status_sequence=[JobStatus.RUNNING]),
-            metric_store=prom_client,
-            mini_wandb=MiniWandb(),
+            metric_store=MetricStore(time_series_store=prom_client, mini_wandb=MiniWandb()),
             controller_exporter=exporter,
         )
 
@@ -67,8 +67,7 @@ class TestControllerPrometheusMode:
         bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(),
-            metric_store=prom_client,
-            mini_wandb=MiniWandb(),
+            metric_store=MetricStore(time_series_store=prom_client, mini_wandb=MiniWandb()),
             controller_exporter=exporter,
         )
 
@@ -92,8 +91,7 @@ class TestControllerPrometheusMode:
         bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(),
-            metric_store=PrometheusClient(url="http://fake:9090"),
-            mini_wandb=mini_wandb,
+            metric_store=MetricStore(time_series_store=PrometheusClient(url="http://fake:9090"), mini_wandb=mini_wandb),
             controller_exporter=exporter,
         )
 
@@ -106,7 +104,7 @@ class TestControllerPrometheusMode:
             exporter_address="http://node-0:9090",
             pid=1,
         )
-        bundle.controller.mini_wandb.log_step(
+        bundle.controller.metric_store.mini_wandb.log_step(
             run_id="run-1",
             step=1,
             metrics={"loss": 2.5, "mfu": 0.42},

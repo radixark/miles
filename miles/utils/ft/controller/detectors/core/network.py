@@ -37,7 +37,7 @@ class NetworkAlertDetector(BaseFaultDetector):
 
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
         faults = check_nic_down_in_window(
-            ctx.metric_store,
+            ctx.metric_store.time_series_store,
             window=self._alert_window,
             threshold=self._alert_threshold,
         )

@@ -30,7 +30,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 )
 from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
-from miles.utils.ft.controller.types import TriggerType
+from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 
 
@@ -68,8 +68,10 @@ def _make_controller_context(
         },
         tick_count=10,
         job_status=JobStatus.RUNNING,
-        metric_store=MiniPrometheus(config=MiniPrometheusConfig()),
-        mini_wandb=MiniWandb(),
+        metric_store=MetricStore(
+            time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
+            mini_wandb=MiniWandb(),
+        ),
         agents={},
         notifier=FakeNotifier(),
         node_manager=FakeNodeManager(),

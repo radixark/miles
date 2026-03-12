@@ -25,7 +25,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, NotifyHumansSt, StopTimeDiagnosticsSt
 from miles.utils.ft.controller.state_machines.restart import EvictingSt
-from miles.utils.ft.controller.types import ControllerMode
+from miles.utils.ft.controller.types import ControllerMode, MetricStore
 
 
 class TestTrainingJobStatusExporter:
@@ -203,8 +203,7 @@ class TestDefaultDiagnosticOrchestratorWiring:
         bundle = create_ft_controller(
             node_manager=FakeNodeManager(),
             main_job=FakeMainJob(),
-            metric_store=make_fake_metric_store(),
-            mini_wandb=MiniWandb(),
+            metric_store=MetricStore(time_series_store=make_fake_metric_store(), mini_wandb=MiniWandb()),
         )
 
         assert bundle.controller._tick_loop._on_new_run is not None
@@ -232,7 +231,7 @@ class TestShutdown:
     @pytest.mark.asyncio
     async def test_run_starts_and_stops_scrape_loop(self) -> None:
         harness = make_test_controller(tick_interval=0.01)
-        store = harness.metric_store
+        store = harness.time_series_store
 
         started = False
         stopped = False

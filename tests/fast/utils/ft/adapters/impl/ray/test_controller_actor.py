@@ -96,8 +96,9 @@ class TestBuildFtController:
 
     def test_controller_exporter_registered_as_scrape_target(self) -> None:
         bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
-        assert isinstance(bundle.controller._metric_store, MiniPrometheus)
-        assert "controller" in bundle.controller._metric_store._scrape_targets
+        time_series_store = bundle.controller._metric_store.time_series_store
+        assert isinstance(time_series_store, MiniPrometheus)
+        assert "controller" in time_series_store._scrape_targets
 
 
 class TestBuildPlatformComponentsK8sRay:
@@ -225,7 +226,7 @@ class TestFtControllerActorProxy:
             metrics_address="http://localhost:9999",
         )
 
-        assert "rollout-ft-agent" in harness.controller._metric_store._scrape_targets
+        assert "rollout-ft-agent" in harness.controller._metric_store.time_series_store._scrape_targets
 
     @pytest.mark.anyio
     async def test_register_rollout_without_metrics_address_skips_scrape(self) -> None:
@@ -236,4 +237,4 @@ class TestFtControllerActorProxy:
             rollout_manager_handle=fake_rollout_manager_handle,
         )
 
-        assert "rollout-ft-agent" not in harness.controller._metric_store._scrape_targets
+        assert "rollout-ft-agent" not in harness.controller._metric_store.time_series_store._scrape_targets

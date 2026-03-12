@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.controller.state_machines.restart.models import (
     EvictingSt,
     ExternalExecutionResult,
@@ -136,7 +137,7 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestartingSt, Restart
         status = await ctx.actuator.get_status()
 
         if status == JobStatus.RUNNING:
-            current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
+            current_iter = ctx.metric_store.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
             base = int(current_iter) if current_iter is not None and math.isfinite(current_iter) else 0
             return MonitoringProgressSt(
                 bad_node_ids=state.bad_node_ids,
@@ -182,7 +183,7 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
         assert isinstance(ctx.monitoring_config, MonitoringIterationProgressConfig)
         config = ctx.monitoring_config
 
-        progress = iteration_progress(state=state, mini_wandb=ctx.mini_wandb)
+        progress = iteration_progress(state=state, mini_wandb=ctx.metric_store.mini_wandb)
 
         if status == JobStatus.RUNNING and progress >= config.success_iterations:
             logger.info(
@@ -242,7 +243,7 @@ class ExternalRestartingMainJobHandler(StateHandler[ExternalRestartingMainJobSt,
             return None
 
         if state.external_execution_result == ExternalExecutionResult.SUCCEEDED:
-            current_iter = ctx.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
+            current_iter = ctx.metric_store.mini_wandb.latest(metric_name=_WANDB_ITERATION_METRIC)
             base = int(current_iter) if current_iter is not None and math.isfinite(current_iter) else 0
             return MonitoringProgressSt(
                 bad_node_ids=state.bad_node_ids,
