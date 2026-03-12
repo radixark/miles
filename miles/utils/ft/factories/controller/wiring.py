@@ -10,13 +10,13 @@ from miles.utils.ft.controller.controller import FtController, FtControllerBundl
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main import (
     MainContext,
     NormalSt,
     create_main_stepper,
 )
 from miles.utils.ft.controller.state_machines.main.models import MainState
-from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
 from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringIterationProgressConfig,
     MonitoringSustainedAliveConfig,
@@ -31,6 +31,7 @@ from miles.utils.ft.utils.state_machine import StateMachine
 
 
 def assemble_ft_controller(
+    runtime_config: ControllerRuntimeConfig,
     node_manager: NodeManagerProtocol,
     main_job: MainJobProtocol,
     metric_store: MetricStore,
@@ -39,18 +40,8 @@ def assemble_ft_controller(
     scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
     notifier: NotifierProtocol | None = None,
     detectors: list[BaseFaultDetector] | None = None,
-    tick_interval: float = 30.0,
     controller_exporter: ControllerExporter | None = None,
     diagnostic_orchestrator: DiagnosticOrchestratorProtocol | None = None,
-    recovery_cooldown_window_minutes: float = 30.0,
-    recovery_cooldown_max_count: int = 3,
-    registration_grace_ticks: int = 5,
-    max_simultaneous_bad_nodes: int = 3,
-    monitoring_success_iterations: int = 10,
-    monitoring_timeout_seconds: int = 600,
-    recovery_timeout_seconds: int = RECOVERY_TIMEOUT_SECONDS,
-    rollout_alive_threshold_seconds: float | None = None,
-    rollout_monitoring_alive_duration_seconds: float | None = None,
 ) -> FtControllerBundle:
     """Assemble an FtController from explicit component objects.
 
@@ -81,17 +72,14 @@ def assemble_ft_controller(
     resolved_detectors = detectors or []
 
     monitoring_config = MonitoringIterationProgressConfig(
-        success_iterations=monitoring_success_iterations,
-        timeout_seconds=monitoring_timeout_seconds,
+        success_iterations=runtime_config.monitoring_success_iterations,
+        timeout_seconds=runtime_config.monitoring_timeout_seconds,
     )
-
-    _cooldown_window_minutes = recovery_cooldown_window_minutes
-    _cooldown_max_count = recovery_cooldown_max_count
 
     def _make_cooldown() -> SlidingWindowThrottle:
         return SlidingWindowThrottle(
-            window_minutes=_cooldown_window_minutes,
-            max_count=_cooldown_max_count,
+            window_minutes=runtime_config.recovery_cooldown_window_minutes,
+            max_count=runtime_config.recovery_cooldown_max_count,
         )
 
     # --- Training SubsystemSpec ---
@@ -112,8 +100,8 @@ def assemble_ft_controller(
     # --- Rollout SubsystemSpecs ---
     rollout_specs = _build_rollout_subsystem_specs(
         rollout_cell_ids=rollout_cell_ids,
-        rollout_alive_threshold_seconds=rollout_alive_threshold_seconds,
-        rollout_monitoring_alive_duration_seconds=rollout_monitoring_alive_duration_seconds,
+        rollout_alive_threshold_seconds=runtime_config.rollout_alive_threshold_seconds,
+        rollout_monitoring_alive_duration_seconds=runtime_config.rollout_monitoring_alive_duration_seconds,
         subsystem_hub=subsystem_hub,
         make_cooldown=_make_cooldown,
     )
@@ -130,30 +118,27 @@ def assemble_ft_controller(
     # --- Create TickLoop (no FtController dependency) ---
     tick_loop = TickLoop(
         state_machine=controller_sm,
-        registration_grace_ticks=registration_grace_ticks,
+        registration_grace_ticks=runtime_config.registration_grace_ticks,
     )
 
     # --- Create FtController ---
     instance = FtController(
+        runtime_config=runtime_config,
         main_job=main_job,
         state_machine=controller_sm,
         subsystem_hub=subsystem_hub,
         metric_store=metric_store,
         node_agent_registry=node_agent_registry,
-        tick_interval=tick_interval,
         tick_loop=tick_loop,
         notifier=notifier,
         node_manager=node_manager,
         diagnostic_orchestrator=resolved_orchestrator,
-        recovery_timeout_seconds=recovery_timeout_seconds,
-        max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         subsystem_specs=subsystem_specs,
         rank_pids_provider=lambda node_id: (r.get_rank_pids_for_node(node_id) if (r := training_rank_roster_box.value) is not None else {}),
         training_rank_roster_box=training_rank_roster_box,
         on_recovery_duration=duration_cb,
         scrape_target_manager=scrape_target_manager,
         controller_exporter=controller_exporter,
-        registration_grace_ticks=registration_grace_ticks,
     )
 
     return FtControllerBundle(controller=instance, subsystem_hub=subsystem_hub)

@@ -9,14 +9,15 @@ from prometheus_client import CollectorRegistry
 from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
-from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
-from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
+from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
+from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT
 
 
 # ---------------------------------------------------------------------------
@@ -210,18 +211,20 @@ class ControllerTestHarness(NamedTuple):
     subsystem_hub: SubsystemHub | None = None
 
 
+_DEFAULT_TEST_RUNTIME_CONFIG = ControllerRuntimeConfig(
+    tick_interval=0.01,
+    registration_grace_ticks=0,
+)
+
+
 def make_test_controller(
     detectors: list[BaseFaultDetector] | None = None,
     status_sequence: list[JobStatus] | None = None,
     notifier: FakeNotifier | None = FakeNotifier,
-    tick_interval: float = 0.01,
+    runtime_config: ControllerRuntimeConfig | None = None,
     controller_exporter: ControllerExporter | None = None,
     diagnostic_orchestrator: object | None = None,
-    recovery_cooldown_minutes: float = 30.0,
-    recovery_cooldown_max_count: int = 3,
-    registration_grace_ticks: int = 0,
     register_dummy_rank: bool = True,
-    monitoring_success_iterations: int = 10,
     rollout_cell_ids: list[str] | None = None,
 ) -> ControllerTestHarness:
     """Construct a Controller and all its dependencies for testing.
@@ -233,6 +236,7 @@ def make_test_controller(
     empty pipeline (same behavior as old stub). Pass a FakeDiagnosticOrchestrator
     for recovery-specific tests.
     """
+    resolved_runtime_config = runtime_config or _DEFAULT_TEST_RUNTIME_CONFIG
     real_notifier: FakeNotifier | None = FakeNotifier() if notifier is FakeNotifier else notifier
 
     node_manager = FakeNodeManager()
@@ -245,20 +249,16 @@ def make_test_controller(
         controller_exporter = ControllerExporter(registry=CollectorRegistry())
 
     bundle = assemble_ft_controller(
-        node_manager=node_manager,
-        main_job=main_job,
-        metric_store=metric_store,
+        resolved_runtime_config,
+        node_manager,
+        main_job,
+        metric_store,
         rollout_cell_ids=rollout_cell_ids,
         scrape_target_manager=time_series_store,
         notifier=real_notifier,
         detectors=detectors,
-        tick_interval=tick_interval,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator,
-        recovery_cooldown_window_minutes=recovery_cooldown_minutes,
-        recovery_cooldown_max_count=recovery_cooldown_max_count,
-        registration_grace_ticks=registration_grace_ticks,
-        monitoring_success_iterations=monitoring_success_iterations,
     )
     controller = bundle.controller
 

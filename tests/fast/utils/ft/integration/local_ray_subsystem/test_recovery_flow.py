@@ -12,6 +12,7 @@ from tests.fast.utils.ft.utils.controller_fakes import OneShotCrashDetector
 
 from miles.utils.ft.adapters.types import ft_controller_actor_name
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.types import ActionType, ControllerMode, Decision, TriggerType
 
 pytestmark = [
@@ -89,7 +90,7 @@ class TestRecoveryCompletesSuccessfully:
     ) -> None:
         handle = make_controller_actor(
             detectors_override=[OneShotCrashDetector()],
-            monitoring_success_iterations_override=0,
+            runtime_config_override=ControllerRuntimeConfig(tick_interval=0.05, monitoring_success_iterations=0),
         )
 
         handle.submit_and_run.remote()

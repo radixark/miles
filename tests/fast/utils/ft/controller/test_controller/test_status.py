@@ -19,8 +19,9 @@ from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_st
 
 import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, NotifyHumansSt, StopTimeDiagnosticsSt
@@ -203,9 +204,10 @@ class TestAgentManagement:
 class TestDefaultDiagnosticOrchestratorWiring:
     def test_default_orchestrator_has_rank_pids_provider(self) -> None:
         bundle = assemble_ft_controller(
-            node_manager=FakeNodeManager(),
-            main_job=FakeMainJob(),
-            metric_store=MetricStore(time_series_store=make_fake_metric_store(), mini_wandb=MiniWandb()),
+            ControllerRuntimeConfig(),
+            FakeNodeManager(),
+            FakeMainJob(),
+            MetricStore(time_series_store=make_fake_metric_store(), mini_wandb=MiniWandb()),
         )
 
         deps = bundle.controller._build_tick_deps()
@@ -224,7 +226,7 @@ class TestDefaultDiagnosticPipeline:
 class TestShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_stops_run_loop(self) -> None:
-        harness = make_test_controller(tick_interval=0.01)
+        harness = make_test_controller()
 
         await run_controller_briefly(harness, delay=0.05)
 
@@ -233,7 +235,7 @@ class TestShutdown:
 
     @pytest.mark.asyncio
     async def test_run_starts_and_stops_scrape_loop(self) -> None:
-        harness = make_test_controller(tick_interval=0.01)
+        harness = make_test_controller()
         store = harness.time_series_store
 
         started = False

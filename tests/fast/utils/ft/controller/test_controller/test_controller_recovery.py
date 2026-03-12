@@ -6,6 +6,7 @@ import pytest
 from tests.fast.utils.ft.conftest import AlwaysEnterRecoveryDetector, FixedDecisionDetector, make_test_controller
 from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state
 
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
@@ -58,7 +59,11 @@ class TestRunIdUniqueness:
         """After two sequential recoveries, the run_id changes each time and all are distinct."""
         harness = make_test_controller(
             detectors=[AlwaysEnterRecoveryDetector()],
-            monitoring_success_iterations=0,
+            runtime_config=ControllerRuntimeConfig(
+                tick_interval=0.01,
+                registration_grace_ticks=0,
+                monitoring_success_iterations=0,
+            ),
         )
 
         recorded_run_ids: list[str] = []

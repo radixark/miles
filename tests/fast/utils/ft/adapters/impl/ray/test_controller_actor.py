@@ -6,10 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from tests.fast.utils.ft.conftest import make_test_controller
 
+from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.ray.controller_actor import _FtControllerActorCls
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNotifier
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.types import NullScrapeTargetManager
 from miles.utils.ft.factories.controller.from_config import build_ft_controller
@@ -22,81 +24,92 @@ def _get_training_detectors(ctrl):
 
 class TestBuildFtController:
     def test_stub_platform_creates_correct_components(self) -> None:
-        bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
+        bundle = build_ft_controller(
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
+            start_exporter=False,
+        )
         assert isinstance(bundle.controller._main_job, StubMainJob)
 
     def test_stub_platform_has_full_detector_chain(self) -> None:
-        bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
+        bundle = build_ft_controller(
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
+            start_exporter=False,
+        )
         expected_count = len(build_detector_chain())
         assert len(_get_training_detectors(bundle.controller)) == expected_count
 
     def test_stub_platform_has_stub_notifier(self) -> None:
-        bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
+        bundle = build_ft_controller(
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
+            start_exporter=False,
+        )
         assert isinstance(bundle.controller._notifier, StubNotifier)
 
     def test_lark_webhook_notifier_when_url_provided(self) -> None:
         from miles.utils.ft.adapters.impl.notifiers.lark_notifier import LarkWebhookNotifier
 
         bundle = build_ft_controller(
-            platform="stub",
-            notify_webhook_url="https://hook.example.com",
+            config=FtControllerConfig(
+                platform="stub",
+                notify_webhook_url="https://hook.example.com",
+                rollout_num_cells=0,
+            ),
             start_exporter=False,
-            rollout_num_cells=0,
         )
         assert isinstance(bundle.controller._notifier, LarkWebhookNotifier)
 
     def test_custom_tick_interval(self) -> None:
         bundle = build_ft_controller(
-            platform="stub",
-            tick_interval=5.0,
+            config=FtControllerConfig(platform="stub", tick_interval=5.0, rollout_num_cells=0),
             start_exporter=False,
-            rollout_num_cells=0,
         )
-        assert bundle.controller._tick_interval == 5.0
+        assert bundle.controller._runtime_config.tick_interval == 5.0
 
     def test_unknown_platform_raises(self) -> None:
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
-            build_ft_controller(platform="invalid", start_exporter=False)
+            FtControllerConfig(platform="invalid", rollout_num_cells=0)  # type: ignore[arg-type]
 
     def test_unknown_backend_raises(self) -> None:
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
-            build_ft_controller(
+            FtControllerConfig(
                 platform="stub",
                 metric_store_backend="invalid",
-                start_exporter=False,
-            )
+                rollout_num_cells=0,
+            )  # type: ignore[arg-type]
 
     def test_mini_backend_creates_scrape_target_manager(self) -> None:
         bundle = build_ft_controller(
-            platform="stub",
-            metric_store_backend="mini",
+            config=FtControllerConfig(platform="stub", metric_store_backend="mini", rollout_num_cells=0),
             start_exporter=False,
-            rollout_num_cells=0,
         )
         assert bundle.controller._scrape_target_manager is not None
 
     def test_prometheus_backend_uses_null_scrape_target_manager(self) -> None:
         bundle = build_ft_controller(
-            platform="stub",
-            metric_store_backend="prometheus",
+            config=FtControllerConfig(platform="stub", metric_store_backend="prometheus", rollout_num_cells=0),
             start_exporter=False,
-            rollout_num_cells=0,
         )
         assert isinstance(bundle.controller._scrape_target_manager, NullScrapeTargetManager)
 
     def test_detector_chain_types_match(self) -> None:
-        bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
+        bundle = build_ft_controller(
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
+            start_exporter=False,
+        )
         expected_chain = build_detector_chain()
         actual_types = [type(d).__name__ for d in _get_training_detectors(bundle.controller)]
         expected_types = [type(d).__name__ for d in expected_chain]
         assert actual_types == expected_types
 
     def test_controller_exporter_registered_as_scrape_target(self) -> None:
-        bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)
+        bundle = build_ft_controller(
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
+            start_exporter=False,
+        )
         time_series_store = bundle.controller._metric_store.time_series_store
         assert isinstance(time_series_store, MiniPrometheus)
         assert "controller" in time_series_store._scrape_targets

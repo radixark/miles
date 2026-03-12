@@ -15,10 +15,11 @@ from tests.fast.utils.ft.conftest import FakeMainJob, FakeNodeManager, get_sampl
 
 import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.types import MetricStore
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 
 
 def _make_prom_response(
@@ -46,9 +47,10 @@ class TestControllerPrometheusMode:
         prom_client = PrometheusClient(url="http://fake:9090")
 
         bundle = assemble_ft_controller(
-            node_manager=FakeNodeManager(),
-            main_job=FakeMainJob(status_sequence=[JobStatus.RUNNING]),
-            metric_store=MetricStore(time_series_store=prom_client, mini_wandb=MiniWandb()),
+            ControllerRuntimeConfig(),
+            FakeNodeManager(),
+            FakeMainJob(status_sequence=[JobStatus.RUNNING]),
+            MetricStore(time_series_store=prom_client, mini_wandb=MiniWandb()),
             controller_exporter=exporter,
         )
 
@@ -65,9 +67,10 @@ class TestControllerPrometheusMode:
         prom_client = PrometheusClient(url="http://fake:9090")
 
         bundle = assemble_ft_controller(
-            node_manager=FakeNodeManager(),
-            main_job=FakeMainJob(),
-            metric_store=MetricStore(time_series_store=prom_client, mini_wandb=MiniWandb()),
+            ControllerRuntimeConfig(),
+            FakeNodeManager(),
+            FakeMainJob(),
+            MetricStore(time_series_store=prom_client, mini_wandb=MiniWandb()),
             controller_exporter=exporter,
         )
 
@@ -89,9 +92,10 @@ class TestControllerPrometheusMode:
         mini_wandb = MiniWandb()
 
         bundle = assemble_ft_controller(
-            node_manager=FakeNodeManager(),
-            main_job=FakeMainJob(),
-            metric_store=MetricStore(time_series_store=PrometheusClient(url="http://fake:9090"), mini_wandb=mini_wandb),
+            ControllerRuntimeConfig(),
+            FakeNodeManager(),
+            FakeMainJob(),
+            MetricStore(time_series_store=PrometheusClient(url="http://fake:9090"), mini_wandb=mini_wandb),
             controller_exporter=exporter,
         )
 

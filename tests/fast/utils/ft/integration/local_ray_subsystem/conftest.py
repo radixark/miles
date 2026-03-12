@@ -10,6 +10,7 @@ from tests.fast.utils.ft.integration.conftest import _kill_named_actor, poll_for
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
 from miles.utils.ft.adapters.types import ft_controller_actor_name
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.factories.controller.from_config import build_ft_controller
 
 pytestmark = [
@@ -49,8 +50,9 @@ def make_controller_actor(
 
     def _factory(
         ft_id: str = "",
-        tick_interval: float = 0.05,
-        **overrides: Any,
+        runtime_config_override: ControllerRuntimeConfig | None = None,
+        detectors_override: list | None = None,
+        diagnostic_orchestrator_override: object | None = None,
     ) -> ray.actor.ActorHandle:
         actor_name = ft_controller_actor_name(ft_id)
         _kill_named_actor(actor_name)
@@ -58,11 +60,13 @@ def make_controller_actor(
             builder=build_ft_controller,
             config=FtControllerConfig(
                 platform="stub",
-                tick_interval=tick_interval,
+                tick_interval=0.05,
                 ft_id=ft_id,
                 rollout_num_cells=0,
             ),
-            **overrides,
+            runtime_config_override=runtime_config_override,
+            detectors_override=detectors_override,
+            diagnostic_orchestrator_override=diagnostic_orchestrator_override,
         )
         created_actors.append((handle, actor_name))
         return handle

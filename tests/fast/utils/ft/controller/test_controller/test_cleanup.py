@@ -14,7 +14,7 @@ class TestRunCleanupNotifierAclose:
 
     @pytest.mark.anyio
     async def test_notifier_aclose_exception_does_not_propagate(self) -> None:
-        harness = make_test_controller(tick_interval=0.01)
+        harness = make_test_controller()
 
         assert harness.notifier is not None
 
@@ -29,7 +29,7 @@ class TestRunCleanupNotifierAclose:
 
     @pytest.mark.anyio
     async def test_exporter_stop_called_on_shutdown(self) -> None:
-        harness = make_test_controller(tick_interval=0.01)
+        harness = make_test_controller()
 
         stop_called = False
         original_stop = harness.controller_exporter.stop
@@ -51,7 +51,7 @@ class TestRunLoopSurviveTickFailure:
 
     @pytest.mark.anyio
     async def test_run_continues_after_tick_inner_exception(self) -> None:
-        harness = make_test_controller(tick_interval=0.01)
+        harness = make_test_controller()
 
         original_get_status = harness.main_job.get_status
         call_count = 0
@@ -79,7 +79,7 @@ class TestRunLoopSurviveTickFailure:
 
     @pytest.mark.anyio
     async def test_metric_store_task_stopped_on_shutdown(self) -> None:
-        harness = make_test_controller(tick_interval=0.01)
+        harness = make_test_controller()
 
         stop_called = False
         original_stop = harness.time_series_store.stop

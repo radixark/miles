@@ -4,6 +4,7 @@ import pytest
 from tests.fast.utils.ft.conftest import AlwaysEnterRecoveryDetector, make_test_controller
 from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_state
 
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
@@ -21,10 +22,7 @@ class TestRecoveryCooldown:
     @pytest.mark.anyio
     async def test_third_crash_recovery_escalates_to_notify_human(self) -> None:
         detector = AlwaysEnterRecoveryDetector(reason="training crashed")
-        harness = make_test_controller(
-            detectors=[detector],
-            recovery_cooldown_max_count=3,
-        )
+        harness = make_test_controller(detectors=[detector])
 
         # Step 1: first recovery
         await harness.controller._tick()
@@ -49,10 +47,7 @@ class TestRecoveryCooldown:
     async def test_all_triggers_counted_globally(self) -> None:
         """After 2 crashes, a HANG trigger also counts toward the global cooldown."""
         crash_detector = AlwaysEnterRecoveryDetector(reason="crash")
-        harness = make_test_controller(
-            detectors=[crash_detector],
-            recovery_cooldown_max_count=3,
-        )
+        harness = make_test_controller(detectors=[crash_detector])
 
         await harness.controller._tick()
         _force_recovery_complete(harness)
@@ -72,7 +67,11 @@ class TestRecoveryCooldown:
         detector = AlwaysEnterRecoveryDetector(reason="crash")
         harness = make_test_controller(
             detectors=[detector],
-            recovery_cooldown_max_count=2,
+            runtime_config=ControllerRuntimeConfig(
+                tick_interval=0.01,
+                registration_grace_ticks=0,
+                recovery_cooldown_max_count=2,
+            ),
         )
 
         await harness.controller._tick()

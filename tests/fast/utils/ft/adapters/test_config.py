@@ -113,14 +113,34 @@ class TestStateMachineConfigFields:
         "field_name",
         [
             "recovery_cooldown_max_count",
-            "registration_grace_ticks",
             "max_simultaneous_bad_nodes",
-            "monitoring_success_iterations",
         ],
     )
     def test_int_params_reject_zero(self, field_name: str) -> None:
         with pytest.raises(ValidationError, match="must be >= 1"):
             FtControllerConfig(rollout_num_cells=0, **{field_name: 0})
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "registration_grace_ticks",
+            "monitoring_success_iterations",
+        ],
+    )
+    def test_non_negative_params_accept_zero(self, field_name: str) -> None:
+        config = FtControllerConfig(rollout_num_cells=0, **{field_name: 0})
+        assert getattr(config, field_name) == 0
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "registration_grace_ticks",
+            "monitoring_success_iterations",
+        ],
+    )
+    def test_non_negative_params_reject_negative(self, field_name: str) -> None:
+        with pytest.raises(ValidationError, match="must be >= 0"):
+            FtControllerConfig(rollout_num_cells=0, **{field_name: -1})
 
     def test_recovery_cooldown_window_rejects_zero(self) -> None:
         with pytest.raises(ValidationError, match="recovery_cooldown_window_minutes"):

@@ -10,6 +10,7 @@ import pytest
 
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.factories.controller.backends import build_platform_components
 from miles.utils.ft.factories.controller.from_config import build_ft_controller
 from miles.utils.ft.utils.box import Box
@@ -48,8 +49,7 @@ class TestRankPidsProviderTOCTOU:
 
 
 class TestBuildFtControllerStateMachineParams:
-    """State machine parameters were hardcoded in the factory and not read
-    from FtControllerConfig, so CLI values had no effect."""
+    """ControllerRuntimeConfig is derived from FtControllerConfig and passed through to assemble."""
 
     def test_config_state_machine_params_reach_assemble(self) -> None:
         config = FtControllerConfig(
@@ -74,14 +74,16 @@ class TestBuildFtControllerStateMachineParams:
                 main_job_override=StubMainJob(),
             )
 
-        kwargs = mock_assemble.call_args.kwargs
-        assert kwargs["recovery_cooldown_window_minutes"] == 60.0
-        assert kwargs["recovery_cooldown_max_count"] == 5
-        assert kwargs["registration_grace_ticks"] == 10
-        assert kwargs["max_simultaneous_bad_nodes"] == 2
-        assert kwargs["monitoring_success_iterations"] == 20
-        assert kwargs["monitoring_timeout_seconds"] == 1200
-        assert kwargs["recovery_timeout_seconds"] == 7200
+        args = mock_assemble.call_args
+        runtime_config = args[0][0]
+        assert isinstance(runtime_config, ControllerRuntimeConfig)
+        assert runtime_config.recovery_cooldown_window_minutes == 60.0
+        assert runtime_config.recovery_cooldown_max_count == 5
+        assert runtime_config.registration_grace_ticks == 10
+        assert runtime_config.max_simultaneous_bad_nodes == 2
+        assert runtime_config.monitoring_success_iterations == 20
+        assert runtime_config.monitoring_timeout_seconds == 1200
+        assert runtime_config.recovery_timeout_seconds == 7200
 
 
 class TestBuildFtControllerRetention:

@@ -9,6 +9,7 @@ from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, No
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub, SubsystemSpec, TrainingRankRoster
@@ -35,45 +36,39 @@ class FtController:
     def __init__(
         self,
         *,
+        runtime_config: ControllerRuntimeConfig,
         main_job: MainJobProtocol,
         state_machine: StateMachine[MainState, MainContext],
         subsystem_hub: SubsystemHub,
         metric_store: MetricStore,
         node_agent_registry: NodeAgentRegistry,
-        tick_interval: float,
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
         node_manager: NodeManagerProtocol,
         diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
-        recovery_timeout_seconds: int,
-        max_simultaneous_bad_nodes: int,
         subsystem_specs: dict[str, SubsystemSpec],
         rank_pids_provider: Callable[[str], dict[int, int]],
         training_rank_roster_box: Box[TrainingRankRoster | None],
         on_recovery_duration: Callable[[float], None] | None = None,
         scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
         controller_exporter: ControllerExporter | None = None,
-        registration_grace_ticks: int = 5,
     ) -> None:
+        self._runtime_config = runtime_config
         self._main_job = main_job
         self._state_machine = state_machine
         self._subsystem_hub = subsystem_hub
         self._metric_store = metric_store
         self._node_agent_registry = node_agent_registry
-        self._tick_interval = tick_interval
         self._tick_loop = tick_loop
         self._notifier = notifier
         self._node_manager = node_manager
         self._diagnostic_orchestrator = diagnostic_orchestrator
-        self._recovery_timeout_seconds = recovery_timeout_seconds
-        self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
         self._subsystem_specs = subsystem_specs
         self._rank_pids_provider = rank_pids_provider
         self._training_rank_roster_box = training_rank_roster_box
         self._on_recovery_duration = on_recovery_duration
         self._scrape_target_manager: ScrapeTargetManagerProtocol = scrape_target_manager or NullScrapeTargetManager()
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
-        self._registration_grace_ticks = registration_grace_ticks
 
         self._shutting_down: bool = False
 
@@ -118,13 +113,13 @@ class FtController:
         return run_id
 
     async def run(self) -> None:
-        logger.info("controller_start tick_interval=%s", self._tick_interval)
+        logger.info("controller_start tick_interval=%s", self._runtime_config.tick_interval)
         scrape_task = await start_metric_store_task(self._metric_store.time_series_store)
         try:
             while not self._shutting_down:
                 await self._tick()
                 if not self._shutting_down:
-                    await asyncio.sleep(self._tick_interval)
+                    await asyncio.sleep(self._runtime_config.tick_interval)
         finally:
             await self._stop_services(scrape_task)
         logger.info("controller_stopped")
@@ -164,14 +159,14 @@ class FtController:
             notifier=self._notifier,
             node_manager=self._node_manager,
             diagnostic_orchestrator=self._diagnostic_orchestrator,
-            recovery_timeout_seconds=self._recovery_timeout_seconds,
-            max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
+            recovery_timeout_seconds=self._runtime_config.recovery_timeout_seconds,
+            max_simultaneous_bad_nodes=self._runtime_config.max_simultaneous_bad_nodes,
             subsystem_specs=self._subsystem_specs,
             on_main_job_new_run=self._activate_run,
             rank_pids_provider=self._rank_pids_provider,
             on_recovery_duration=self._on_recovery_duration,
             controller_exporter=self._controller_exporter,
-            registration_grace_ticks=self._registration_grace_ticks,
+            registration_grace_ticks=self._runtime_config.registration_grace_ticks,
             training_rank_roster_box=self._training_rank_roster_box,
             node_agent_registry=self._node_agent_registry,
         )

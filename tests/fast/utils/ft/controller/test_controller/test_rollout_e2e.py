@@ -15,6 +15,7 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.chain import build_shared_hw_detectors
 from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringSustainedAliveConfig
@@ -182,7 +183,7 @@ class TestColocatedNodeFault:
         shared_node = "shared-node"
         harness = _make_test_controller_with_rollout(
             training_detectors=build_shared_hw_detectors(),
-            monitoring_success_iterations=0,
+            runtime_config=ControllerRuntimeConfig(tick_interval=0.01, registration_grace_ticks=0, monitoring_success_iterations=0),
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller

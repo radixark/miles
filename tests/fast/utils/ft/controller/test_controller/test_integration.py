@@ -10,15 +10,16 @@ from prometheus_client import CollectorRegistry
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
 from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemHub
 from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 
 from tests.fast.utils.ft.conftest import (
     FakeDiagnosticOrchestrator,
@@ -99,10 +100,14 @@ def _make_test_controller_with_rollout(
     *,
     training_detectors: list[BaseFaultDetector] | None = None,
     cell_ids: list[str] | None = None,
-    monitoring_success_iterations: int = 10,
+    runtime_config: ControllerRuntimeConfig | None = None,
     diagnostic_orchestrator: object | None = None,
 ) -> _RolloutTestHarness:
     resolved_cell_ids = cell_ids or ["ep72"]
+    resolved_runtime_config = runtime_config or ControllerRuntimeConfig(
+        tick_interval=0.01,
+        registration_grace_ticks=0,
+    )
 
     node_manager = FakeNodeManager()
     main_job = FakeMainJob()
@@ -112,20 +117,16 @@ def _make_test_controller_with_rollout(
     notifier = FakeNotifier()
     controller_exporter = ControllerExporter(registry=CollectorRegistry())
     bundle = assemble_ft_controller(
-        node_manager=node_manager,
-        main_job=main_job,
-        metric_store=metric_store,
+        resolved_runtime_config,
+        node_manager,
+        main_job,
+        metric_store,
         rollout_cell_ids=resolved_cell_ids,
         scrape_target_manager=time_series_store,
         notifier=notifier,
         detectors=training_detectors,
-        tick_interval=0.01,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator,
-        recovery_cooldown_window_minutes=30.0,
-        recovery_cooldown_max_count=3,
-        registration_grace_ticks=0,
-        monitoring_success_iterations=monitoring_success_iterations,
     )
     controller = bundle.controller
     subsystem_hub = bundle.subsystem_hub
@@ -393,7 +394,7 @@ class TestColocatedHardwareFault:
 
         harness = _make_test_controller_with_rollout(
             training_detectors=[training_detector],
-            monitoring_success_iterations=0,
+            runtime_config=ControllerRuntimeConfig(tick_interval=0.01, registration_grace_ticks=0, monitoring_success_iterations=0),
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller

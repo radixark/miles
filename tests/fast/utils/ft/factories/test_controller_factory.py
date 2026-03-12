@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.controller.controller import FtController
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.factories.controller.from_config import build_ft_controller
 
 
@@ -28,13 +29,6 @@ class TestFtControllerConfig:
             FtControllerConfig(metric_store_backend="influx")  # type: ignore[arg-type]
 
 
-class TestBuildFtControllerConfigConflict:
-    def test_config_and_kwargs_raises_value_error(self) -> None:
-        config = FtControllerConfig(rollout_num_cells=0)
-        with pytest.raises(ValueError, match="Cannot provide both"):
-            build_ft_controller(config=config, platform="stub")  # type: ignore[call-overload]
-
-
 class TestBuildFtControllerStub:
     def test_stub_platform_returns_controller(self) -> None:
         bundle = build_ft_controller(
@@ -52,14 +46,14 @@ class TestBuildFtControllerStub:
         assert bundle.controller._controller_exporter is not None
         assert bundle.controller._controller_exporter._httpd is None, "exporter should not have been started"
 
-    def test_kwargs_forwarded_to_config(self) -> None:
+    def test_runtime_config_override_applies(self) -> None:
+        override = ControllerRuntimeConfig(tick_interval=5.0)
         bundle = build_ft_controller(
-            platform="stub",
-            tick_interval=5.0,
-            rollout_num_cells=0,
+            config=FtControllerConfig(platform="stub", rollout_num_cells=0),
             start_exporter=False,
+            runtime_config_override=override,
         )
-        assert bundle.controller._tick_interval == 5.0
+        assert bundle.controller._runtime_config.tick_interval == 5.0
 
     def test_empty_ft_id_gets_auto_generated(self) -> None:
         bundle1 = build_ft_controller(
@@ -79,6 +73,27 @@ class TestBuildFtControllerStub:
         )
         assert bundle.controller is not None
         assert isinstance(bundle.controller, FtController)
+
+
+class TestToRuntimeConfig:
+    def test_to_runtime_config_round_trip(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=0,
+            tick_interval=5.0,
+            recovery_cooldown_max_count=5,
+            monitoring_success_iterations=20,
+        )
+        rc = config.to_runtime_config()
+        assert rc.tick_interval == 5.0
+        assert rc.recovery_cooldown_max_count == 5
+        assert rc.monitoring_success_iterations == 20
+
+    def test_to_runtime_config_defaults(self) -> None:
+        config = FtControllerConfig(rollout_num_cells=0)
+        rc = config.to_runtime_config()
+        assert rc.tick_interval == 30.0
+        assert rc.registration_grace_ticks == 5
+        assert rc.recovery_timeout_seconds == 3600
 
 
 class TestBuildFtControllerNotifier:
@@ -114,10 +129,6 @@ class TestUnifiedFactory:
     """
 
     def test_controller_factory_module_deleted(self) -> None:
-        """controller/factory.py should no longer exist as a source file.
-        Uses file-system check instead of importlib because cached .pyc
-        files can make a deleted module still importable.
-        """
         from pathlib import Path
 
         import miles.utils.ft.controller as controller_pkg
@@ -126,7 +137,6 @@ class TestUnifiedFactory:
         assert not factory_path.exists(), f"controller/factory.py still exists at {factory_path}"
 
     def test_assemble_ft_controller_builds_working_controller(self) -> None:
-        """assemble_ft_controller is the direct-component entry point."""
         from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
         from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
         from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -134,9 +144,10 @@ class TestUnifiedFactory:
         from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 
         bundle = assemble_ft_controller(
-            node_manager=StubNodeManager(),
-            main_job=StubMainJob(),
-            metric_store=MetricStore(
+            ControllerRuntimeConfig(),
+            StubNodeManager(),
+            StubMainJob(),
+            MetricStore(
                 time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
                 mini_wandb=MiniWandb(),
             ),

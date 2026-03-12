@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 from tests.fast.utils.ft.conftest import AlwaysNoneDetector, make_test_controller
 
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
+
 
 class TestRegistrationGuardNoRanks:
     @pytest.mark.anyio
@@ -10,7 +12,6 @@ class TestRegistrationGuardNoRanks:
         detector = AlwaysNoneDetector()
         harness = make_test_controller(
             detectors=[detector],
-            registration_grace_ticks=0,
             register_dummy_rank=False,
         )
 
@@ -24,7 +25,6 @@ class TestRegistrationGuardNoRanks:
         detector = AlwaysNoneDetector()
         harness = make_test_controller(
             detectors=[detector],
-            registration_grace_ticks=0,
         )
         harness.controller._activate_run("run-1")
         harness.subsystem_hub.training_rank_roster.register_training_rank(
@@ -47,7 +47,10 @@ class TestRegistrationGraceTicks:
         detector = AlwaysNoneDetector()
         harness = make_test_controller(
             detectors=[detector],
-            registration_grace_ticks=3,
+            runtime_config=ControllerRuntimeConfig(
+                tick_interval=0.01,
+                registration_grace_ticks=3,
+            ),
         )
         harness.controller._activate_run("run-1")
         harness.subsystem_hub.training_rank_roster.register_training_rank(
@@ -69,7 +72,10 @@ class TestRegistrationGraceTicks:
         detector = AlwaysNoneDetector()
         harness = make_test_controller(
             detectors=[detector],
-            registration_grace_ticks=2,
+            runtime_config=ControllerRuntimeConfig(
+                tick_interval=0.01,
+                registration_grace_ticks=2,
+            ),
         )
         harness.controller._activate_run("run-1")
         harness.subsystem_hub.training_rank_roster.register_training_rank(

@@ -14,24 +14,14 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore
 from miles.utils.ft.factories.controller.backends import build_metric_store, build_platform_components
 from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
-from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 logger = logging.getLogger(__name__)
 
 _NOTIFIER_SENTINEL: object = object()
-
-_SIMPLE_OVERRIDES = {
-    "registration_grace_ticks_override": "registration_grace_ticks",
-    "max_simultaneous_bad_nodes_override": "max_simultaneous_bad_nodes",
-    "recovery_timeout_seconds_override": "recovery_timeout_seconds",
-    "monitoring_timeout_seconds_override": "monitoring_timeout_seconds",
-    "monitoring_success_iterations_override": "monitoring_success_iterations",
-    "rollout_alive_threshold_seconds_override": "rollout_alive_threshold_seconds",
-    "rollout_monitoring_alive_duration_seconds_override": "rollout_monitoring_alive_duration_seconds",
-}
 
 
 def _rollout_num_cells_to_ids(num_cells: int) -> list[str] | None:
@@ -43,45 +33,27 @@ def _rollout_num_cells_to_ids(num_cells: int) -> list[str] | None:
 
 
 def build_ft_controller(
-    config: FtControllerConfig | None = None,
+    config: FtControllerConfig,
     *,
     start_exporter: bool = True,
+    runtime_config_override: ControllerRuntimeConfig | None = None,
     node_manager_override: NodeManagerProtocol | None = None,
     main_job_override: MainJobProtocol | None = None,
     notifier_override: NotifierProtocol | None | object = _NOTIFIER_SENTINEL,
     detectors_override: list[BaseFaultDetector] | None = None,
     diagnostic_orchestrator_override: DiagnosticOrchestratorProtocol | None = None,
-    recovery_cooldown_override: SlidingWindowThrottle | None = None,
-    registration_grace_ticks_override: int | None = None,
-    max_simultaneous_bad_nodes_override: int | None = None,
-    recovery_timeout_seconds_override: int | None = None,
-    monitoring_timeout_seconds_override: int | None = None,
-    monitoring_success_iterations_override: int | None = None,
-    rollout_alive_threshold_seconds_override: float | None = None,
-    rollout_monitoring_alive_duration_seconds_override: float | None = None,
-    **kwargs: object,
 ) -> FtControllerBundle:
-    """Build an FtController with all dependent components from config parameters.
-
-    Accepts either an ``FtControllerConfig`` or keyword arguments that
-    are forwarded to the config constructor.
+    """Build an FtController with all dependent components from config.
 
     Optional ``*_override`` parameters allow tests to inject fake
     dependencies while still using the real ``FtControllerActor`` wrapper.
     """
-    if config is not None and kwargs:
-        raise ValueError(
-            "Cannot provide both 'config' and keyword arguments to build_ft_controller; " "use one or the other"
-        )
-
     _has_nm = node_manager_override is not None
     _has_tj = main_job_override is not None
     if _has_nm != _has_tj:
         raise ValueError("node_manager_override and main_job_override must be provided together")
 
-    if config is None:
-        config = FtControllerConfig(**kwargs)  # type: ignore[arg-type]
-
+    runtime_config = runtime_config_override or config.to_runtime_config()
     ft_id = config.ft_id or uuid4().hex[:8]
 
     if node_manager_override is not None and main_job_override is not None:
@@ -140,38 +112,18 @@ def build_ft_controller(
 
     rollout_cell_ids = _rollout_num_cells_to_ids(config.rollout_num_cells)
 
-    assemble_kwargs: dict[str, Any] = dict(
-        node_manager=node_manager,
-        main_job=main_job,
-        metric_store=metric_store,
+    return assemble_ft_controller(
+        runtime_config,
+        node_manager,
+        main_job,
+        metric_store,
         scrape_target_manager=scrape_target_manager,
         notifier=notifier,
         detectors=detectors,
-        tick_interval=config.tick_interval,
         rollout_cell_ids=rollout_cell_ids,
         controller_exporter=controller_exporter,
         diagnostic_orchestrator=diagnostic_orchestrator_override,
-        recovery_cooldown_window_minutes=config.recovery_cooldown_window_minutes,
-        recovery_cooldown_max_count=config.recovery_cooldown_max_count,
-        registration_grace_ticks=config.registration_grace_ticks,
-        max_simultaneous_bad_nodes=config.max_simultaneous_bad_nodes,
-        monitoring_success_iterations=config.monitoring_success_iterations,
-        monitoring_timeout_seconds=config.monitoring_timeout_seconds,
-        recovery_timeout_seconds=config.recovery_timeout_seconds,
-        rollout_alive_threshold_seconds=config.rollout_alive_threshold_seconds,
-        rollout_monitoring_alive_duration_seconds=config.rollout_monitoring_alive_duration_seconds,
     )
-
-    if recovery_cooldown_override is not None:
-        assemble_kwargs["recovery_cooldown_window_minutes"] = recovery_cooldown_override.window_minutes
-        assemble_kwargs["recovery_cooldown_max_count"] = recovery_cooldown_override.max_count
-
-    all_overrides = locals()
-    for param, kwarg in _SIMPLE_OVERRIDES.items():
-        if (val := all_overrides[param]) is not None:
-            assemble_kwargs[kwarg] = val
-
-    return assemble_ft_controller(**assemble_kwargs)
 
 
 def launch_ft_controller_actor(

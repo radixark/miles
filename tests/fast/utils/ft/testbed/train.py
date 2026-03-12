@@ -133,6 +133,7 @@ class MilesTestbed:
                 scrape_interval_seconds=config.scrape_interval_seconds,
                 rollout_num_cells=config.rollout_num_cells,
             ),
+            runtime_config_override=config.build_runtime_config(),
             main_job_override=main_job,
             node_manager_override=node_manager,
             notifier_override=resolved_notifier,
@@ -140,22 +141,6 @@ class MilesTestbed:
             diagnostic_orchestrator_override=FakeDiagnosticOrchestrator(),
             start_exporter=True,
         )
-        if config.recovery_cooldown is not None:
-            controller_kwargs["recovery_cooldown_override"] = config.recovery_cooldown
-        if config.monitoring_success_iterations is not None:
-            controller_kwargs["monitoring_success_iterations_override"] = config.monitoring_success_iterations
-        if config.monitoring_timeout_seconds is not None:
-            controller_kwargs["monitoring_timeout_seconds_override"] = config.monitoring_timeout_seconds
-        if config.rollout_alive_threshold_seconds is not None:
-            controller_kwargs["rollout_alive_threshold_seconds_override"] = config.rollout_alive_threshold_seconds
-        if config.rollout_monitoring_alive_duration_seconds is not None:
-            controller_kwargs["rollout_monitoring_alive_duration_seconds_override"] = config.rollout_monitoring_alive_duration_seconds
-        if config.registration_grace_ticks is not None:
-            controller_kwargs["registration_grace_ticks_override"] = config.registration_grace_ticks
-        if config.max_simultaneous_bad_nodes is not None:
-            controller_kwargs["max_simultaneous_bad_nodes_override"] = config.max_simultaneous_bad_nodes
-        if config.recovery_timeout_seconds is not None:
-            controller_kwargs["recovery_timeout_seconds_override"] = config.recovery_timeout_seconds
 
         controller_name = ft_controller_actor_name(ft_id)
         controller = FtControllerActor.options(name=controller_name).remote(**controller_kwargs)

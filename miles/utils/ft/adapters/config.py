@@ -70,11 +70,18 @@ class FtControllerConfig(FtBaseModel):
             raise ValueError("recovery_cooldown_window_minutes must be > 0")
         return v
 
-    @field_validator("recovery_cooldown_max_count", "registration_grace_ticks", "max_simultaneous_bad_nodes", "monitoring_success_iterations", "notify_max_retries")
+    @field_validator("recovery_cooldown_max_count", "max_simultaneous_bad_nodes", "notify_max_retries")
     @classmethod
     def _int_params_must_be_at_least_one(cls, v: int) -> int:
         if v < 1:
             raise ValueError("must be >= 1")
+        return v
+
+    @field_validator("registration_grace_ticks", "monitoring_success_iterations")
+    @classmethod
+    def _int_params_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("must be >= 0")
         return v
 
     @field_validator("monitoring_timeout_seconds", "recovery_timeout_seconds")
@@ -83,3 +90,19 @@ class FtControllerConfig(FtBaseModel):
         if v <= 0:
             raise ValueError("must be > 0")
         return v
+
+    def to_runtime_config(self) -> ControllerRuntimeConfig:
+        from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
+
+        return ControllerRuntimeConfig(
+            tick_interval=self.tick_interval,
+            recovery_cooldown_window_minutes=self.recovery_cooldown_window_minutes,
+            recovery_cooldown_max_count=self.recovery_cooldown_max_count,
+            registration_grace_ticks=self.registration_grace_ticks,
+            max_simultaneous_bad_nodes=self.max_simultaneous_bad_nodes,
+            monitoring_success_iterations=self.monitoring_success_iterations,
+            monitoring_timeout_seconds=self.monitoring_timeout_seconds,
+            recovery_timeout_seconds=self.recovery_timeout_seconds,
+            rollout_alive_threshold_seconds=self.rollout_alive_threshold_seconds,
+            rollout_monitoring_alive_duration_seconds=self.rollout_monitoring_alive_duration_seconds,
+        )
