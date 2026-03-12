@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _CellEntry:
+class CellEntry:
     cell_id: str
     get_engines: Callable[[], list[object]]
 
@@ -27,7 +27,7 @@ class RolloutHealthChecker:
     def __init__(
         self,
         *,
-        cells: dict[str, Callable[[], list[object]]],
+        cells: list[CellEntry],
         engine_health_fn: EngineHealthChecker,
         report_fn: Callable[..., None],
         check_interval: float = 30.0,
@@ -39,9 +39,8 @@ class RolloutHealthChecker:
         self._check_interval = check_interval
         self._paused = False
 
-        self._cells: dict[str, _CellEntry] = {
-            cell_id: _CellEntry(cell_id=cell_id, get_engines=get_engines)
-            for cell_id, get_engines in cells.items()
+        self._cells: dict[str, CellEntry] = {
+            entry.cell_id: entry for entry in cells
         }
 
         self._task = asyncio.create_task(self._loop())
@@ -76,7 +75,7 @@ class RolloutHealthChecker:
                 )
             await asyncio.sleep(self._check_interval)
 
-    async def _check_one_cell(self, entry: _CellEntry) -> None:
+    async def _check_one_cell(self, entry: CellEntry) -> None:
         try:
             is_healthy = await _probe_cell(
                 engines=entry.get_engines(),

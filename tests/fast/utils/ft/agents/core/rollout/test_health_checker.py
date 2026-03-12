@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from miles.utils.ft.agents.core.rollout.health_checker import (
+    CellEntry,
     RolloutHealthChecker,
     _probe_cell,
 )
@@ -51,7 +52,10 @@ def _make_checker(
 ) -> tuple[RolloutHealthChecker, _ReportCollector]:
     collector = _ReportCollector()
     checker = RolloutHealthChecker(
-        cells={cid: (lambda es=es: es) for cid, es in engines_by_cell.items()},
+        cells=[
+            CellEntry(cell_id=cid, get_engines=lambda es=es: es)
+            for cid, es in engines_by_cell.items()
+        ],
         engine_health_fn=_engine_health_fn,
         report_fn=collector,
         check_interval=check_interval,
@@ -219,10 +223,10 @@ class TestLoopSurvivesException:
 
         collector = _ReportCollector()
         checker = RolloutHealthChecker(
-            cells={
-                "healthy": lambda: [_MockEngine(True)],
-                "broken": _exploding_engines,
-            },
+            cells=[
+                CellEntry(cell_id="healthy", get_engines=lambda: [_MockEngine(True)]),
+                CellEntry(cell_id="broken", get_engines=_exploding_engines),
+            ],
             engine_health_fn=_engine_health_fn,
             report_fn=collector,
             check_interval=0.05,
