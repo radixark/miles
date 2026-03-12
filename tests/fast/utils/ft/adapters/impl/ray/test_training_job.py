@@ -472,16 +472,11 @@ class TestStateLockSerialization:
     async def test_concurrent_starts_second_raises(self) -> None:
         """Two concurrent start() calls: one succeeds, the other raises RuntimeError."""
         job, mock_client = _make_job()
-        submit_entered = asyncio.Event()
-
-        original_submit = mock_client.submit_job
 
         def slow_submit(**kwargs: Any) -> str:
-            submit_entered.set()
-            return original_submit(**kwargs)
+            return "job-1"
 
         mock_client.submit_job.side_effect = slow_submit
-        mock_client.submit_job.return_value = "job-1"
 
         results: list[str | Exception] = []
 
