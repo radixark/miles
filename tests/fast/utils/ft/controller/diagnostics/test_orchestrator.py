@@ -272,7 +272,10 @@ class TestDiagnosticOrchestratorInterMachine:
         assert decision.bad_node_ids == ["node-1"]
 
     @pytest.mark.anyio
-    async def test_inter_machine_two_nodes_pair_fails_returns_empty(self) -> None:
+    async def test_inter_machine_two_nodes_pair_fails_treated_as_executor_failure(self) -> None:
+        """Two nodes both fail — pairwise cannot localize. Previously returned [],
+        misinterpreted as 'no fault'. Now raises PairwiseInconclusiveError,
+        caught by the orchestrator as executor failure."""
         node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False},
@@ -285,10 +288,13 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
+        assert "failed" in decision.reason
+        assert "all diagnostics passed" not in decision.reason
 
     @pytest.mark.anyio
     async def test_inter_machine_all_fail_continues_to_next_executor(self) -> None:
-        """When inter-machine all-fail (empty result), pipeline continues to next executor (gpu)."""
+        """When inter-machine inconclusive (PairwiseInconclusiveError), orchestrator
+        catches it and continues to the next executor (gpu)."""
         node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False, "gpu": False},

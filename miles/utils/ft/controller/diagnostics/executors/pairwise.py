@@ -18,6 +18,10 @@ from miles.utils.ft.controller.diagnostics.utils import RPC_TIMEOUT_BUFFER_SECON
 logger = logging.getLogger(__name__)
 
 
+class PairwiseInconclusiveError(Exception):
+    """All nodes share the same non-zero failure count — cannot localize the bad node."""
+
+
 class _PairResult(NamedTuple):
     master_id: str
     worker_id: str
@@ -186,6 +190,8 @@ def _cross_compare(
 
     if min(counts) == max_count:
         logger.warning("pairwise_all_failed — cannot localize bad node")
-        return []
+        raise PairwiseInconclusiveError(
+            f"pairwise inconclusive: all {len(node_ids)} nodes share failure_count={max_count}, cannot localize bad node — require human intervention"
+        )
 
     return sorted(nid for nid, count in failure_count.items() if count == max_count)

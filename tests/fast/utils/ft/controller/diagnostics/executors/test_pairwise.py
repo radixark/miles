@@ -8,6 +8,7 @@ from tests.fast.utils.ft.conftest import FakeNodeAgent, HangingNodeAgent
 from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.controller.diagnostics.executors.pairwise import (
     PairwiseClusterExecutor,
+    PairwiseInconclusiveError,
     _cross_compare,
     _generate_round_pairs,
     _PairResult,
@@ -56,14 +57,16 @@ class TestCrossCompare:
 
         assert bad == ["B"]
 
-    def test_all_fail_returns_empty(self) -> None:
-        """All nodes fail equally — cannot localize, returns empty."""
+    def test_all_fail_raises_inconclusive(self) -> None:
+        """All nodes fail equally — cannot localize. Previously returned [],
+        which was misinterpreted as 'no fault'. Now raises PairwiseInconclusiveError."""
         results = [
             _PairResult(master_id="A", worker_id="B", passed=False),
             _PairResult(master_id="B", worker_id="A", passed=False),
         ]
 
-        assert _cross_compare(node_ids=["A", "B"], pair_results=results) == []
+        with pytest.raises(PairwiseInconclusiveError, match="cannot localize"):
+            _cross_compare(node_ids=["A", "B"], pair_results=results)
 
     def test_single_node_no_pairs(self) -> None:
         """Single node with no pair results."""
