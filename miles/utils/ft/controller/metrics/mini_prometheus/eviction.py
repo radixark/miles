@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 class RetentionEvictor:
     def __init__(self, store: InMemoryMetricStore, retention: timedelta) -> None:
+        if retention.total_seconds() < 0:
+            raise ValueError(f"retention must be >= 0, got {retention}")
         self._store = store
         self._retention = retention
         self._last_eviction_time: datetime | None = None

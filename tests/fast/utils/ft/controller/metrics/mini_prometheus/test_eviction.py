@@ -1,7 +1,9 @@
-"""Unit tests for RetentionEvictor (P0 item 4)."""
+"""Unit tests for RetentionEvictor."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.metrics.mini_prometheus.eviction import RetentionEvictor
@@ -14,6 +16,21 @@ def _ingest_at(store: InMemoryMetricStore, metric_name: str, value: float, ts: d
         samples=[GaugeSample(name=metric_name, value=value, labels={})],
         timestamp=ts,
     )
+
+
+class TestRetentionValidation:
+    def test_negative_retention_raises(self) -> None:
+        """Previously negative retention caused evict_interval (retention/10)
+        to be negative, making the interval check always pass and causing
+        the cutoff timestamp to be in the future, evicting all data."""
+        store = InMemoryMetricStore()
+        with pytest.raises(ValueError, match="retention must be >= 0"):
+            RetentionEvictor(store=store, retention=timedelta(seconds=-1))
+
+    def test_zero_retention_allowed(self) -> None:
+        store = InMemoryMetricStore()
+        evictor = RetentionEvictor(store=store, retention=timedelta(seconds=0))
+        assert evictor._retention == timedelta(seconds=0)
 
 
 class TestEvictionIntervalThrottling:
