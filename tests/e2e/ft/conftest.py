@@ -310,6 +310,12 @@ async def target_node(k8s_node_manager: K8sNodeManager) -> str:
     return candidates[0]["NodeID"]
 
 
+@pytest.fixture
+def ft_env(ft_controller_handle: ray.actor.ActorHandle) -> E2eFaultTestAdapter:
+    """FaultTestProtocol adapter wrapping the E2E controller handle."""
+    return E2eFaultTestAdapter(handle=ft_controller_handle)
+
+
 # ---------------------------------------------------------------------------
 # Helper: query controller status via actor handle
 # ---------------------------------------------------------------------------
@@ -539,6 +545,65 @@ async def list_worker_pods_on_node(node_id: str, namespace: str = "default") -> 
             field_selector=f"spec.nodeName={node_id}",
         )
         return [pod.metadata.name for pod in pod_list.items]
+
+
+# ---------------------------------------------------------------------------
+# E2E FaultTestProtocol adapter
+# ---------------------------------------------------------------------------
+
+
+class E2eFaultTestAdapter:
+    """FaultTestProtocol implementation for E2E tests.
+
+    Wraps a ray.actor.ActorHandle (FtController) and delegates to the
+    existing conftest helper functions, so scenario functions can work
+    against real Ray clusters.
+    """
+
+    def __init__(self, handle: ray.actor.ActorHandle) -> None:
+        self._handle = handle
+
+    async def get_status(self) -> ControllerStatus:
+        return get_status(self._handle)
+
+    async def wait_for_training_stable(
+        self, *, n_iterations: int, timeout: float
+    ) -> None:
+        await wait_for_training_stable(
+            self._handle, n_iterations=n_iterations, timeout=timeout
+        )
+
+    async def wait_for_mode_transition(
+        self, *, target_mode: ControllerMode, timeout: float
+    ) -> ControllerStatus:
+        return await wait_for_mode_transition(
+            self._handle, target_mode=target_mode, timeout=timeout
+        )
+
+    async def wait_for_subsystem_state(
+        self, *, name: str, state: str, timeout: float
+    ) -> ControllerStatus:
+        return await wait_for_subsystem_state(
+            self._handle, subsystem_name=name, target_state=state, timeout=timeout
+        )
+
+    async def wait_for_recovery_phase(
+        self, *, phase: str, timeout: float
+    ) -> ControllerStatus:
+        return await poll_until(
+            probe=lambda: get_status(self._handle),
+            predicate=lambda s: s.recovery is not None and phase in s.recovery.phase,
+            timeout=timeout,
+            poll_interval=_ACTOR_POLL_INTERVAL,
+            description=f"recovery_phase({phase})",
+        )
+
+    async def wait_for_all_subsystems_detecting(
+        self, *, timeout: float
+    ) -> ControllerStatus:
+        return await wait_for_all_subsystems_detecting(
+            self._handle, timeout=timeout
+        )
 
 
 # ---------------------------------------------------------------------------
