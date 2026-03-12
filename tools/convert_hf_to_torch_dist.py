@@ -144,12 +144,13 @@ def main():
         device_id=torch.device(f"cuda:{local_rank}"),
     )
     args = get_args()
-    init(args)
-    model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
+    with with_transformers_patch():
+        init(args)
+        model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
 
-    # Load model
-    hf_model_path = args.hf_checkpoint
-    bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
+        # Load model
+        hf_model_path = args.hf_checkpoint
+        bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
 
     # Patch to preserve FP32 precision for _keep_fp32 params
     patch_weight_to_mcore_format_preserve_fp32()
