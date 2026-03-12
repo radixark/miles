@@ -224,3 +224,46 @@ class TestMiniWandbStepMonotonicity:
         result = wandb.query_last_n_steps(metric_name="loss", last_n=10)
         assert len(result) == 1
         assert result[0] == (10, 1.0)
+
+
+class TestMiniWandbActiveDataReturnsSnapshot:
+    """_active_data() used to return the original deque reference.
+    When log_step's _evict did popleft while a query method was iterating the
+    same deque, it caused 'RuntimeError: deque mutated during iteration'.
+    Fix: _active_data() returns a shallow copy so iteration is safe."""
+
+    def test_active_data_returns_copy_not_reference(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(run_id="run-1", step=1, metrics={"loss": 1.0})
+
+        snapshot = wandb._active_data()
+        original = wandb._runs["run-1"]
+        assert snapshot is not original
+        assert list(snapshot) == list(original)
+
+    def test_log_step_evict_does_not_corrupt_concurrent_snapshot(self) -> None:
+        """Simulate the race: take a snapshot, then evict via log_step,
+        then iterate the snapshot — must not raise."""
+        wandb = MiniWandb(active_run_id="run-1", max_steps=3)
+        for i in range(3):
+            wandb.log_step(run_id="run-1", step=i, metrics={"loss": float(i)})
+
+        # Step 1: take snapshot (as query methods do)
+        snapshot = wandb._active_data()
+
+        # Step 2: log_step triggers eviction of oldest record
+        wandb.log_step(run_id="run-1", step=100, metrics={"loss": 100.0})
+
+        # Step 3: iterate snapshot — previously would raise RuntimeError
+        items = list(snapshot)
+        assert len(items) == 3
+        assert items[0].step == 0
+
+    def test_concurrent_log_and_query_many_rounds(self) -> None:
+        """Stress test: interleave log_step (with eviction) and query_last_n_steps
+        for many rounds. Before the fix, this would eventually raise RuntimeError."""
+        wandb = MiniWandb(active_run_id="run-1", max_steps=5)
+        for step in range(1000):
+            wandb.log_step(run_id="run-1", step=step, metrics={"m": float(step)})
+            result = wandb.query_last_n_steps(metric_name="m", last_n=3)
+            assert len(result) <= 3

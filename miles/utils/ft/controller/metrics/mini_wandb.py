@@ -122,7 +122,10 @@ class MiniWandb(TrainingMetricStoreProtocol):
     def _active_data(self) -> deque[_StepRecord]:
         if self._active_run_id is None:
             return deque()
-        return self._runs.get(self._active_run_id, deque())
+        data = self._runs.get(self._active_run_id)
+        if data is None:
+            return deque()
+        return deque(data)
 
     def _evict(self, run_id: str) -> None:
         data = self._runs.get(run_id)
