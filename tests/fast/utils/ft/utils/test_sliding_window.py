@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 
 
@@ -14,6 +16,34 @@ def _now() -> float:
 # ---------------------------------------------------------------------------
 # SlidingWindowCounter
 # ---------------------------------------------------------------------------
+
+
+class TestSlidingWindowCounterValidation:
+    """Previously negative window_seconds caused _prune to keep events with
+    timestamps in the future, and negative threshold caused threshold_reached
+    to always be True from the start."""
+
+    def test_negative_window_seconds_raises(self) -> None:
+        with pytest.raises(ValueError, match="window_seconds must be >= 0"):
+            SlidingWindowCounter(window_seconds=-1, threshold=3)
+
+    def test_negative_threshold_raises(self) -> None:
+        with pytest.raises(ValueError, match="threshold must be >= 0"):
+            SlidingWindowCounter(window_seconds=60, threshold=-1)
+
+    def test_zero_values_allowed(self) -> None:
+        counter = SlidingWindowCounter(window_seconds=0, threshold=0)
+        assert counter.count == 0
+
+
+class TestSlidingWindowThrottleValidation:
+    def test_negative_window_minutes_raises(self) -> None:
+        with pytest.raises(ValueError, match="window_minutes must be >= 0"):
+            SlidingWindowThrottle(window_minutes=-1, max_count=3)
+
+    def test_negative_max_count_raises(self) -> None:
+        with pytest.raises(ValueError, match="max_count must be >= 0"):
+            SlidingWindowThrottle(window_minutes=30, max_count=-1)
 
 
 class TestSlidingWindowCounter:

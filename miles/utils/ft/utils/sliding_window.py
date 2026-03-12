@@ -14,6 +14,10 @@ class SlidingWindowCounter:
     """
 
     def __init__(self, *, window_seconds: float, threshold: int) -> None:
+        if window_seconds < 0:
+            raise ValueError(f"window_seconds must be >= 0, got {window_seconds}")
+        if threshold < 0:
+            raise ValueError(f"threshold must be >= 0, got {threshold}")
         self._window_seconds = window_seconds
         self._threshold = threshold
         self._events: list[tuple[float, str]] = []
@@ -68,6 +72,10 @@ class SlidingWindowThrottle:
     """
 
     def __init__(self, window_minutes: float, max_count: int) -> None:
+        if window_minutes < 0:
+            raise ValueError(f"window_minutes must be >= 0, got {window_minutes}")
+        if max_count < 0:
+            raise ValueError(f"max_count must be >= 0, got {max_count}")
         self.window_minutes = window_minutes
         self.max_count = max_count
         self._counter = SlidingWindowCounter(
