@@ -469,6 +469,46 @@ class TestRecovering:
         assert isinstance(result.recovery, RealtimeChecksSt)
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-old", "node-new"}
 
+    @pytest.mark.asyncio
+    async def test_cascading_bad_node_preserves_original_recovery_start_time(self) -> None:
+        """Previously _check_new_bad_nodes used datetime.now() as the new
+        recovery_start_time, resetting the global timeout clock. This meant
+        cascading failures could extend recovery indefinitely. Now the
+        original recovery_start_time is preserved.
+        """
+        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.restart import EvictingSt
+
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["node-new"],
+                reason="cascading fault",
+                trigger=TriggerType.HARDWARE,
+            )
+        )
+
+        original_start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        stepper = _make_stepper()
+        state = RecoveringSt(
+            recovery=EvictingAndRestartingSt(
+                restart=EvictingSt(bad_node_ids=["node-old"]),
+                failed_next_state=StopTimeDiagnosticsSt(),
+            ),
+            trigger=TriggerType.CRASH.value,
+            recovery_start_time=original_start,
+        )
+        result = await _step_last(stepper,
+            state,
+            _make_subsystem_context(
+                detectors=[detector],
+                recovery_stepper=_mock_stepper_yielding(None),
+                rank_placement={0: "node-old", 1: "node-new"},
+            ),
+        )
+        assert isinstance(result, RecoveringSt)
+        assert result.recovery_start_time == original_start
+
 
 # ---------------------------------------------------------------------------
 # StateMachine integration

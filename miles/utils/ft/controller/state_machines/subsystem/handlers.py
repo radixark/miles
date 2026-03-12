@@ -129,7 +129,7 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             return RecoveringSt(
                 recovery=RealtimeChecksSt(pre_identified_bad_nodes=all_bad),
                 trigger=state.trigger,
-                recovery_start_time=datetime.now(timezone.utc),
+                recovery_start_time=state.recovery_start_time,
             )
         return None
 
