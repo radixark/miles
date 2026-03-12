@@ -48,7 +48,7 @@ def _make_main_context(
         detector_crash_tracker=SlidingWindowCounter(window_seconds=300, threshold=5),
         recovery_timeout_seconds=600,
         max_simultaneous_bad_nodes=2,
-        on_new_run=None,
+        on_main_job_new_run=None,
         rank_pids_provider=None,
         controller_exporter=None,
         on_recovery_duration=None,
@@ -77,7 +77,7 @@ class TestShouldRunDetectors:
         ctx = _make_main_context(tick_count=1, registration_grace_ticks=0)
         assert _should_run_detectors(active_node_ids={"node-0", "node-1"}, context=ctx) is True
 
-    def test_grace_period_resets_on_new_run(self) -> None:
+    def test_grace_period_resets_on_main_job_new_run(self) -> None:
         """After a new run starts at tick 100, grace period should apply
         relative to the run start tick, not global tick_count. Previously
         the grace was only effective at process startup."""

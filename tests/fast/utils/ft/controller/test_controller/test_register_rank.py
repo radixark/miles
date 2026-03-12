@@ -218,7 +218,7 @@ class TestRegisterRank:
         assert "incomplete_rank_registration" not in caplog.text
 
     @pytest.mark.anyio
-    async def test_expected_world_size_reset_on_new_run(self) -> None:
+    async def test_expected_world_size_reset_on_main_job_new_run(self) -> None:
         """When a new run_id arrives, _expected_world_size is reset."""
         harness = make_test_controller()
 

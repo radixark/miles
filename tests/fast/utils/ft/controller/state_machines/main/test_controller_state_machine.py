@@ -81,7 +81,7 @@ def _make_controller_context(
         detector_crash_tracker=SlidingWindowCounter(window_seconds=1800, threshold=5),
         recovery_timeout_seconds=1800,
         max_simultaneous_bad_nodes=3,
-        on_new_run=None,
+        on_main_job_new_run=None,
         rank_pids_provider=None,
         controller_exporter=NullControllerExporter(),
         on_recovery_duration=None,

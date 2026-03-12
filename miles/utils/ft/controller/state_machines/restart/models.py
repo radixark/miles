@@ -81,7 +81,7 @@ class RestartContext(FtBaseModel):
     main_job: MainJobProtocol
     metric_store: MetricStore
     notifier: NotifierProtocol | None
-    on_new_run: Callable[[str], None] | None
+    on_main_job_new_run: Callable[[str], None] | None
     node_metadata: dict[str, dict[str, str]] = {}
 
     actuator: SubsystemActuatorProtocol

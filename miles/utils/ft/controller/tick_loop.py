@@ -39,7 +39,7 @@ class TickLoop:
         diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
         recovery_timeout_seconds: int,
         subsystem_configs: dict[str, SubsystemConfig],
-        on_new_run: Callable[[str], None] | None = None,
+        on_main_job_new_run: Callable[[str], None] | None = None,
         rank_pids_provider: Callable[[str], dict[int, int]] | None = None,
         on_recovery_duration: Callable[[float], None] | None = None,
         controller_exporter: ControllerExporter | None = None,
@@ -60,7 +60,7 @@ class TickLoop:
         self._diagnostic_orchestrator = diagnostic_orchestrator
         self._recovery_timeout_seconds = recovery_timeout_seconds
         self.subsystem_configs = subsystem_configs
-        self._on_new_run = self._wrap_on_new_run(on_new_run)
+        self._on_main_job_new_run = self._wrap_on_main_job_new_run(on_main_job_new_run)
         self._rank_pids_provider = rank_pids_provider
         self._on_recovery_duration = on_recovery_duration
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
@@ -104,7 +104,7 @@ class TickLoop:
             tick_duration = time.monotonic() - t0
             self._update_exporter_metrics(job_status, tick_duration=tick_duration)
 
-    def _wrap_on_new_run(
+    def _wrap_on_main_job_new_run(
         self,
         original: Callable[[str], None] | None,
     ) -> Callable[[str], None] | None:
@@ -136,7 +136,7 @@ class TickLoop:
             detector_crash_tracker=self._detector_crash_tracker,
             recovery_timeout_seconds=self._recovery_timeout_seconds,
             max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
-            on_new_run=self._on_new_run,
+            on_main_job_new_run=self._on_main_job_new_run,
             rank_pids_provider=self._rank_pids_provider,
             controller_exporter=self._controller_exporter,
             on_recovery_duration=self._on_recovery_duration,

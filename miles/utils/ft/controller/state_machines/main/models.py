@@ -60,7 +60,7 @@ class MainContext(FtBaseModel):
     max_simultaneous_bad_nodes: int
 
     # Callbacks
-    on_new_run: Callable[[str], None] | None
+    on_main_job_new_run: Callable[[str], None] | None
     rank_pids_provider: Callable[[str], dict[int, int]] | None
 
     # Optional

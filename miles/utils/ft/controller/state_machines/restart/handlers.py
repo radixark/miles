@@ -97,7 +97,8 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestartingSt, Restart
 
         success = await stop_and_submit(
             job=ctx.actuator,
-            on_new_run=ctx.on_new_run,
+            on_main_job_new_run=ctx.on_main_job_new_run,
+            restart_mode=ctx.restart_mode,
         )
         if not success:
             return RestartFailedSt(bad_node_ids=state.bad_node_ids)

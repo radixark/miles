@@ -9,6 +9,7 @@ from tests.fast.utils.ft.conftest import FakeMainJob, make_failing_main_job
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
+from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.utils.retry import RetryResult, retry_async
 
 
@@ -160,13 +161,13 @@ class TestStopAndSubmit:
         assert main_job._stopped
 
     @pytest.mark.anyio
-    async def test_on_new_run_called_after_successful_submit(self) -> None:
+    async def test_on_main_job_new_run_called_after_successful_submit(self) -> None:
         main_job = FakeMainJob()
         calls: list[str] = []
 
         result = await stop_and_submit(
             main_job,
-            on_new_run=lambda run_id: calls.append(run_id),
+            on_main_job_new_run=lambda run_id: calls.append(run_id),
         )
 
         assert result is True
@@ -174,16 +175,30 @@ class TestStopAndSubmit:
         assert calls[0].startswith("fake-")
 
     @pytest.mark.anyio
-    async def test_on_new_run_not_called_on_submit_failure(self) -> None:
+    async def test_on_main_job_new_run_not_called_on_submit_failure(self) -> None:
         main_job = make_failing_main_job(fail_submit=True)
         calls: list[str] = []
 
         result = await stop_and_submit(
             main_job,
-            on_new_run=lambda run_id: calls.append(run_id),
+            on_main_job_new_run=lambda run_id: calls.append(run_id),
         )
 
         assert result is False
+        assert len(calls) == 0
+
+    @pytest.mark.anyio
+    async def test_on_main_job_new_run_not_called_for_subsystem_restart(self) -> None:
+        main_job = FakeMainJob()
+        calls: list[str] = []
+
+        result = await stop_and_submit(
+            main_job,
+            on_main_job_new_run=lambda run_id: calls.append(run_id),
+            restart_mode=RestartMode.SUBSYSTEM,
+        )
+
+        assert result is True
         assert len(calls) == 0
 
     @pytest.mark.anyio

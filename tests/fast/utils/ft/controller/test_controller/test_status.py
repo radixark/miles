@@ -208,7 +208,7 @@ class TestDefaultDiagnosticOrchestratorWiring:
             metric_store=MetricStore(time_series_store=make_fake_metric_store(), mini_wandb=MiniWandb()),
         )
 
-        assert bundle.controller._tick_loop._on_new_run is not None
+        assert bundle.controller._tick_loop._on_main_job_new_run is not None
 
 
 class TestDefaultDiagnosticPipeline:

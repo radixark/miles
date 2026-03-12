@@ -7,7 +7,7 @@ from miles.utils.ft.controller.state_machines.main.models import MainContext
 from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext
 from miles.utils.ft.controller.state_machines.restart.models import RestartContext
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext
-from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
@@ -87,7 +87,7 @@ def _build_recovery_context(
         main_job=context.main_job,
         metric_store=context.metric_store,
         notifier=context.notifier,
-        on_new_run=context.on_new_run if config.restart_mode == RestartMode.MAIN_JOB else None,
+        on_main_job_new_run=context.on_main_job_new_run,
         actuator=config.actuator,
         monitoring_config=config.monitoring_config,
         restart_mode=config.restart_mode,

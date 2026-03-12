@@ -28,7 +28,7 @@ from miles.utils.ft.controller.state_machines.recovery import create_recovery_st
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig
 from miles.utils.ft.utils.state_machine import StateHandler, run_stepper_to_convergence
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,8 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
         success = await stop_and_submit(
             job=context.main_job,
-            on_new_run=context.on_new_run,
+            on_main_job_new_run=context.on_main_job_new_run,
+            restart_mode=RestartMode.MAIN_JOB,
         )
         if not success:
             await safe_notify(

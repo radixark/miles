@@ -70,7 +70,7 @@ def _make_context(
     main_job: FakeMainJob | None = None,
     mini_wandb: MiniWandb | None = None,
     notifier: FakeNotifier | None = None,
-    on_new_run: object | None = None,
+    on_main_job_new_run: object | None = None,
     node_metadata: dict[str, dict[str, str]] | None = None,
     actuator: SubsystemActuatorProtocol | None = None,
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
@@ -85,7 +85,7 @@ def _make_context(
             mini_wandb=mini_wandb or MiniWandb(),
         ),
         notifier=notifier,
-        on_new_run=on_new_run,
+        on_main_job_new_run=on_main_job_new_run,
         node_metadata=node_metadata or {},
         actuator=actuator or FakeActuator(),
         monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
@@ -321,11 +321,11 @@ class TestStoppingAndRestarting:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_on_new_run_callback_called(self) -> None:
+    async def test_on_main_job_new_run_callback_called(self) -> None:
         captured_run_ids: list[str] = []
         actuator = FakeActuator()
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, on_new_run=captured_run_ids.append)
+        ctx = _make_context(actuator=actuator, on_main_job_new_run=captured_run_ids.append)
 
         state = StoppingAndRestartingSt(bad_node_ids=[])
         await _step_last(stepper, state, ctx)

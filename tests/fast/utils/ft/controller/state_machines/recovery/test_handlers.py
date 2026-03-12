@@ -81,7 +81,7 @@ def _make_restart_stepper_and_context(
             mini_wandb=resolved_mini_wandb,
         ),
         notifier=notifier,
-        on_new_run=None,
+        on_main_job_new_run=None,
         actuator=_FakeActuator(main_job=resolved_main_job),
         monitoring_config=MonitoringIterationProgressConfig(),
         restart_mode=restart_mode,
