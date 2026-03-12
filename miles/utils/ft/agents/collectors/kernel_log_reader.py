@@ -77,17 +77,21 @@ class DmesgSubprocessReader:
             text=True,
             timeout=5,
         )
-        self._last_dmesg_time = new_time
 
-        if result.returncode == 0:
-            if result.stdout:
-                return result.stdout.strip().splitlines()
-        else:
+        if result.returncode != 0:
+            # Do not advance _last_dmesg_time on failure — the next successful
+            # call will re-read this window so no kernel logs are permanently lost.
             logger.warning(
                 "dmesg returned non-zero returncode=%d stderr=%s",
                 result.returncode,
                 result.stderr[:500] if result.stderr else "",
             )
+            return []
+
+        self._last_dmesg_time = new_time
+
+        if result.stdout:
+            return result.stdout.strip().splitlines()
 
         return []
 
