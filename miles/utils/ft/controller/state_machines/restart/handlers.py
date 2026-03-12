@@ -156,6 +156,8 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
         ctx: RestartContext,
     ) -> RestartState | None:
         status = await ctx.actuator.get_status()
+        now = datetime.now(timezone.utc)
+        elapsed = (now - state.start_time).total_seconds()
 
         if status == JobStatus.FAILED:
             logger.warning("monitoring_training_failed")
@@ -174,7 +176,6 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
             )
             return RestartDoneSt(bad_node_ids=state.bad_node_ids)
 
-        elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
         if elapsed > config.timeout_seconds:
             logger.warning("monitoring_timeout elapsed=%.0f", elapsed)
             return RestartFailedSt(bad_node_ids=state.bad_node_ids)
@@ -191,22 +192,21 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
         config = ctx.monitoring_config
 
         status = await ctx.actuator.get_status()
+        now = datetime.now(timezone.utc)
+        elapsed = (now - state.start_time).total_seconds()
 
         if status == JobStatus.FAILED:
             logger.warning("sustained_alive_failed")
             return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
-        if status == JobStatus.RUNNING:
-            elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
-            if elapsed >= config.alive_duration_seconds:
-                logger.info(
-                    "sustained_alive_success elapsed=%.0f threshold=%d",
-                    elapsed,
-                    config.alive_duration_seconds,
-                )
-                return RestartDoneSt(bad_node_ids=state.bad_node_ids)
+        if status == JobStatus.RUNNING and elapsed >= config.alive_duration_seconds:
+            logger.info(
+                "sustained_alive_success elapsed=%.0f threshold=%d",
+                elapsed,
+                config.alive_duration_seconds,
+            )
+            return RestartDoneSt(bad_node_ids=state.bad_node_ids)
 
-        elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
         if elapsed > config.timeout_seconds:
             logger.warning("sustained_alive_timeout elapsed=%.0f", elapsed)
             return RestartFailedSt(bad_node_ids=state.bad_node_ids)

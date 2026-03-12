@@ -557,6 +557,26 @@ class TestSustainedAlive:
         assert isinstance(result, RestartFailedSt)
 
     @pytest.mark.asyncio
+    async def test_sustained_alive_uses_single_elapsed_computation(self) -> None:
+        """elapsed was computed twice with separate datetime.now() calls, which
+        could cause the alive check and timeout check to use different values,
+        potentially missing a borderline timeout. Now a single elapsed is
+        computed once and reused for both checks."""
+        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        stepper = _make_stepper()
+        config = MonitoringSustainedAliveConfig(
+            alive_duration_seconds=120,
+            timeout_seconds=60,
+        )
+        ctx = _make_context(actuator=actuator, monitoring_config=config)
+
+        # start_time 65s ago — should timeout (elapsed > 60) even though alive check not met (< 120)
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=65)
+        state = MonitoringProgressSt(start_time=old_time, base_iteration=0)
+        result = await _step_last(stepper, state, ctx)
+        assert isinstance(result, RestartFailedSt)
+
+    @pytest.mark.asyncio
     async def test_sustained_alive_in_progress_returns_none(self) -> None:
         """Running but not yet alive_duration_seconds -> None."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
