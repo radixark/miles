@@ -34,54 +34,6 @@ from miles.utils.ft.utils.state_machine import StateHandler, run_stepper_to_conv
 logger = logging.getLogger(__name__)
 
 
-def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
-    requestor: str | None = None
-    for name, sub_state in subsystems.items():
-        match sub_state:
-            case RecoveringSt(
-                recovery=EvictingAndRestartingSt(
-                    restart=ExternalRestartingMainJobSt(external_execution_result=None)
-                )
-            ):
-                if requestor is None:
-                    requestor = name
-                else:
-                    # Intentional design choice (not a bug): concurrent MAIN_JOB
-                    # restart requestors are expected to be extremely rare in
-                    # production, so we only handle one requestor here.
-                    # Unless product requirements change, audits should not flag
-                    # this single-requestor behavior as a standalone issue.
-                    logger.warning(
-                        "multiple_restart_requestors found=%s handled=%s",
-                        name,
-                        requestor,
-                    )
-    return requestor
-
-
-def _update_external_execution_result(
-    frozen_state: SubsystemState,
-    result: ExternalExecutionResult,
-) -> SubsystemState:
-    match frozen_state:
-        case RecoveringSt(
-            recovery=EvictingAndRestartingSt(
-                restart=ExternalRestartingMainJobSt() as restart
-            ) as recovery
-        ):
-            return frozen_state.model_copy(update={"recovery":
-                recovery.model_copy(update={"restart":
-                    restart.model_copy(update={"external_execution_result": result})
-                })
-            })
-        case _:
-            raise AssertionError(f"Unexpected state for _update_external_execution_result: {frozen_state}")
-
-
-def _build_fresh_subsystem_states(specs: dict[str, SubsystemSpec]) -> dict[str, SubsystemState]:
-    return {name: DetectingAnomalySt() for name in specs}
-
-
 class NormalHandler(StateHandler[NormalSt, MainContext]):
     def __init__(self) -> None:
         self._restart_stepper = create_restart_stepper()
@@ -198,3 +150,51 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
                 state.requestor_name,
             )
         return NormalSt(subsystems=fresh_states)
+
+
+def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
+    requestor: str | None = None
+    for name, sub_state in subsystems.items():
+        match sub_state:
+            case RecoveringSt(
+                recovery=EvictingAndRestartingSt(
+                    restart=ExternalRestartingMainJobSt(external_execution_result=None)
+                )
+            ):
+                if requestor is None:
+                    requestor = name
+                else:
+                    # Intentional design choice (not a bug): concurrent MAIN_JOB
+                    # restart requestors are expected to be extremely rare in
+                    # production, so we only handle one requestor here.
+                    # Unless product requirements change, audits should not flag
+                    # this single-requestor behavior as a standalone issue.
+                    logger.warning(
+                        "multiple_restart_requestors found=%s handled=%s",
+                        name,
+                        requestor,
+                    )
+    return requestor
+
+
+def _update_external_execution_result(
+        frozen_state: SubsystemState,
+        result: ExternalExecutionResult,
+) -> SubsystemState:
+    match frozen_state:
+        case RecoveringSt(
+            recovery=EvictingAndRestartingSt(
+                restart=ExternalRestartingMainJobSt() as restart
+            ) as recovery
+        ):
+            return frozen_state.model_copy(update={"recovery":
+                                                       recovery.model_copy(update={"restart":
+                                                                                       restart.model_copy(update={"external_execution_result": result})
+                                                                                   })
+                                                   })
+        case _:
+            raise AssertionError(f"Unexpected state for _update_external_execution_result: {frozen_state}")
+
+
+def _build_fresh_subsystem_states(specs: dict[str, SubsystemSpec]) -> dict[str, SubsystemState]:
+    return {name: DetectingAnomalySt() for name in specs}
