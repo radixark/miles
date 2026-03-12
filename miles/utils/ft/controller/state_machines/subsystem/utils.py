@@ -10,6 +10,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RealtimeChecksSt,
     RecoveryState,
 )
+from miles.utils.ft.controller.state_machines.subsystem.models import RecoveringSt
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
@@ -17,7 +18,9 @@ from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 logger = logging.getLogger(__name__)
 
 
-def get_known_bad_nodes(recovery_state: RecoveryState) -> list[str]:
+def get_known_bad_nodes(recovery_state: RecoveryState | RecoveringSt) -> list[str]:
+    if isinstance(recovery_state, RecoveringSt):
+        return recovery_state.bad_node_ids
     if isinstance(recovery_state, EvictingAndRestartingSt):
         return recovery_state.restart.bad_node_ids
     if isinstance(recovery_state, RealtimeChecksSt):
