@@ -78,7 +78,7 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         curr_state = state
         del state
 
-        for name in curr_state.subsystems:
+        for name in sorted(curr_state.subsystems):
             sub_ctx = build_subsystem_context(
                 config=context.subsystem_configs[name],
                 context=context,

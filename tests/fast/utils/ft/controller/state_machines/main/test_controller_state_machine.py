@@ -311,3 +311,45 @@ class TestJobRestartPending:
         assert isinstance(requestor_state.recovery, EvictingAndRestartingSt)
         assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
         assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Subsystem stepping order
+# ---------------------------------------------------------------------------
+
+
+class TestSubsystemSteppingOrder:
+    @pytest.mark.asyncio
+    async def test_subsystems_stepped_in_sorted_order(self) -> None:
+        """Previously dict iteration order was used for subsystem stepping,
+        making behavior depend on insertion order. Now subsystems are stepped
+        in sorted name order for determinism.
+
+        We verify by inspecting which subsystem config objects are passed
+        to build_subsystem_context in what order.
+        """
+        from unittest.mock import patch
+        import miles.utils.ft.controller.state_machines.main.handlers as handlers_mod
+
+        call_order: list[str] = []
+        configs = {}
+        for name in ["zz_last", "aa_first", "mm_middle"]:
+            configs[name] = _make_subsystem_config()
+        subsystems = {name: DetectingAnomalySt() for name in configs}
+
+        original_build = handlers_mod.build_subsystem_context
+
+        def tracking_build(*, config, **kwargs):
+            name = next(n for n, c in configs.items() if c is config)
+            call_order.append(name)
+            return original_build(config=config, **kwargs)
+
+        state = NormalSt(subsystems=subsystems)
+        context = _make_controller_context(subsystem_configs=configs)
+
+        with patch.object(handlers_mod, "build_subsystem_context", tracking_build):
+            handler = handlers_mod.NormalHandler()
+            async for _ in handler.step(state, context):
+                pass
+
+        assert call_order == ["aa_first", "mm_middle", "zz_last"]
