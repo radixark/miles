@@ -156,7 +156,7 @@ class TestGlobalTimeout:
         _disable_detector(enter_recovery)
         injected = RestartingMainJobSt(
             requestor_name=main_state.requestor_name,
-            start_time=datetime.now(timezone.utc) - timedelta(seconds=1801),
+            start_time=datetime.now(timezone.utc) - timedelta(seconds=3601),
             requestor_frozen_state=main_state.requestor_frozen_state,
         )
         sm = harness.controller._state_machine
