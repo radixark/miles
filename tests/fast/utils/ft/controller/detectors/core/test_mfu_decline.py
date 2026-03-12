@@ -202,6 +202,66 @@ class TestMfuAbsoluteMinimum:
         assert "absolute minimum" not in decision.reason
 
 
+class TestMfuDeclineNoiseSpikeResistance:
+    def test_single_noise_spike_does_not_reset_decline_timer(self) -> None:
+        """_compute_decline_duration_minutes previously used per-step raw MFU
+        values to find the last healthy reading, so a single noise spike above
+        threshold would reset the decline timer. Now it uses a sliding window
+        average (same as check_mfu_health), making it resistant to noise."""
+        now = datetime.now(timezone.utc)
+        entries: list[tuple[float, datetime]] = []
+
+        # 100 steps, all at 0.19 (below threshold 0.20), except step 50 = 0.21 (noise spike)
+        for i in range(100):
+            mfu_val = 0.21 if i == 50 else 0.19
+            entries.append((mfu_val, now - timedelta(minutes=100 - i)))
+        wandb = _make_wandb_with_timed_mfu(entries)
+
+        detector = MfuDeclineDetector(
+            config=MfuDeclineDetectorConfig(
+                mfu_baseline=0.25,
+                mfu_threshold_ratio=0.8,  # threshold = 0.20
+                consecutive_steps=10,
+                decline_timeout_minutes=60.0,
+            )
+        )
+
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
+
+        # With sliding average, a single spike in 100 below-threshold steps
+        # should not prevent the timeout from triggering
+        assert decision.action == ActionType.NOTIFY_HUMAN
+
+    def test_genuine_recovery_resets_decline_timer_with_sliding_average(self) -> None:
+        """A sustained recovery period (not just a spike) still resets the timer."""
+        now = datetime.now(timezone.utc)
+        entries: list[tuple[float, datetime]] = []
+
+        # 20 steps below threshold, then 15 steps above threshold (genuine recovery), then 20 below again
+        for i in range(20):
+            entries.append((0.19, now - timedelta(minutes=55 - i)))
+        for i in range(15):
+            entries.append((0.25, now - timedelta(minutes=35 - i)))
+        for i in range(20):
+            entries.append((0.19, now - timedelta(minutes=20 - i)))
+        wandb = _make_wandb_with_timed_mfu(entries)
+
+        detector = MfuDeclineDetector(
+            config=MfuDeclineDetectorConfig(
+                mfu_baseline=0.25,
+                mfu_threshold_ratio=0.8,  # threshold = 0.20
+                consecutive_steps=10,
+                decline_timeout_minutes=30.0,
+            )
+        )
+
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
+
+        # Genuine recovery resets timer; only 20min of decline since recovery → not yet timed out
+        assert decision.action == ActionType.NONE
+        assert "monitoring" in decision.reason
+
+
 class TestMfuDeclineDetectorValidation:
     @pytest.mark.parametrize(
         "kwargs,match",

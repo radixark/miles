@@ -71,12 +71,24 @@ class MfuDeclineDetector(BaseFaultDetector):
 
         Queries a window wider than the timeout so the "last healthy" reading
         is visible even when the decline started exactly at the timeout boundary.
+
+        Uses a sliding window average (same window size as check_mfu_health)
+        instead of per-step raw values, so a single noise spike does not
+        reset the decline timer.
         """
         lookup_window = timedelta(minutes=self._config.decline_timeout_minutes * 2)
         timed_mfu = mini_wandb.query_time_window("mfu", window=lookup_window)
         if not timed_mfu:
             return 0.0
 
-        healthy_times = [ts for _, ts, value in timed_mfu if value >= threshold]
+        window_size = self._config.consecutive_steps
+        healthy_times: list[datetime] = []
+        for i in range(len(timed_mfu)):
+            start = max(0, i - window_size + 1)
+            window_values = [timed_mfu[j].value for j in range(start, i + 1)]
+            avg = sum(window_values) / len(window_values)
+            if avg >= threshold:
+                healthy_times.append(timed_mfu[i].timestamp)
+
         decline_start = healthy_times[-1] if healthy_times else timed_mfu[0].timestamp
         return (datetime.now(timezone.utc) - decline_start).total_seconds() / 60
