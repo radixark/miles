@@ -246,7 +246,7 @@ class TestMultiCellIndependentFailures:
         harness.hub.set_rollout_node_ids("ep36", {"rollout-ep36-0", "rollout-ep36-1"})
 
         controller._tick_loop._cooldown = SlidingWindowThrottle(
-            window_minutes=30.0, max_count=10,
+            window_minutes=30.0, max_count=50,
         )
 
         for cell_id in ["ep72", "ep36"]:
