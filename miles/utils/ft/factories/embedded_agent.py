@@ -76,7 +76,7 @@ def _ensure_ray_actor_on_node(
                 soft=False,
             ),
         ).remote(**(actor_kwargs or {}))
-        getattr(handle, start_method).remote()
+        ray.get(getattr(handle, start_method).remote())
         logger.info("Created actor %s on node %s", name, node_id)
     except ValueError:
         logger.info(

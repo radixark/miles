@@ -49,6 +49,31 @@ class TestEnsureRayActorOnNode:
             actor_cls.options.assert_called_once()
             actor_cls.options.return_value.remote.assert_called_once_with(key="val")
             handle.start.remote.assert_called_once()
+            mock_ray.get.assert_called_once_with(handle.start.remote.return_value)
+
+    def test_start_method_result_is_awaited_via_ray_get(self) -> None:
+        """Previously the start_method ObjectRef was fire-and-forget — if start()
+        raised, the error was silently lost. Now ray.get() blocks until the
+        actor's start() completes, surfacing any errors."""
+        with (
+            patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
+        ):
+            mock_ray.get_actor.side_effect = ValueError("not found")
+            actor_cls = MagicMock()
+            handle = MagicMock()
+            actor_cls.options.return_value.remote.return_value = handle
+            start_ref = handle.start.remote.return_value
+            mock_ray.get.side_effect = RuntimeError("start failed")
+
+            with pytest.raises(RuntimeError, match="start failed"):
+                _ensure_ray_actor_on_node(
+                    actor_cls=actor_cls,
+                    name="test_actor",
+                    node_id="node-1",
+                )
+
+            mock_ray.get.assert_called_once_with(start_ref)
 
     def test_concurrent_creation_race_logs_info(self, caplog: pytest.LogCaptureFixture) -> None:
         """When another rank creates the actor concurrently, logs info and does not raise."""
@@ -108,6 +133,7 @@ class TestEnsureRayActorOnNode:
             )
 
             handle.initialize.remote.assert_called_once()
+            mock_ray.get.assert_called_once_with(handle.initialize.remote.return_value)
 
 
 class TestEnsureNodeAgent:
