@@ -40,11 +40,16 @@ on:
         required: false
         default: 'docker/Dockerfile'
         type: string
+      simulate_schedule:
+        description: '[DEBUG] Simulate a scheduled build (runs upstream check)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   check-upstream:
-    # Only run on schedule — check if upstream repos have new commits
-    if: github.event_name == 'schedule'
+    # Only run on schedule (or simulated schedule) — check if upstream repos have new commits
+    if: github.event_name == 'schedule' || inputs.simulate_schedule == true
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
@@ -62,11 +67,11 @@ jobs:
           SHOULD_BUILD=false
 
           # Check sglang (sglang-miles branch)
-          SGLANG_SHA=$(curl -sf -H "Accept: application/vnd.github.sha" \
+          SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
             "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
 
           # Check Megatron-LM (main branch)
-          MEGATRON_SHA=$(curl -sf -H "Accept: application/vnd.github.sha" \
+          MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
             "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
