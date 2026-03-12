@@ -35,11 +35,12 @@ def _classify_recovery(state: RecoveringSt) -> RecoveryInfo:
     )
 
 
-def _find_first_recovery(subsystems: dict[str, object]) -> RecoveryInfo | None:
-    for sub_state in subsystems.values():
+def _collect_recoveries(subsystems: dict[str, object]) -> dict[str, RecoveryInfo]:
+    recoveries: dict[str, RecoveryInfo] = {}
+    for name, sub_state in subsystems.items():
         if isinstance(sub_state, RecoveringSt):
-            return _classify_recovery(sub_state)
-    return None
+            recoveries[name] = _classify_recovery(sub_state)
+    return recoveries
 
 
 def build_controller_status(
@@ -55,19 +56,21 @@ def build_controller_status(
 
     match controller_state:
         case RestartingMainJobSt():
-            recovery = RecoveryInfo(
-                phase=type(controller_state).__name__,
-                bad_nodes=[],
-                bad_nodes_confirmed=False,
-            )
+            recoveries = {
+                controller_state.requestor_name: RecoveryInfo(
+                    phase=type(controller_state).__name__,
+                    bad_nodes=[],
+                    bad_nodes_confirmed=False,
+                ),
+            }
             subsystem_states: dict[str, str] = {}
 
         case NormalSt(subsystems=subs):
             subsystem_states = {name: type(state).__name__ for name, state in subs.items()}
-            recovery = _find_first_recovery(subs)
+            recoveries = _collect_recoveries(subs)
 
         case _:
-            recovery = None
+            recoveries = {}
             subsystem_states = {}
 
     return ControllerStatus(
@@ -75,5 +78,5 @@ def build_controller_status(
         active_run_id=training_rank_roster.run_id if training_rank_roster is not None else None,
         latest_iteration=latest_iteration,
         subsystem_states=subsystem_states,
-        recovery=recovery,
+        recoveries=recoveries,
     )

@@ -45,17 +45,22 @@ class ControllerStatus(FtBaseModel):
     active_run_id: str | None
     latest_iteration: int | None
     subsystem_states: dict[str, str]
-    recovery: RecoveryInfo | None
+    recoveries: dict[str, RecoveryInfo] = Field(default_factory=dict)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def mode(self) -> ControllerMode:
-        return ControllerMode.RECOVERY if self.recovery is not None else ControllerMode.MONITORING
+        return ControllerMode.RECOVERY if self.recoveries else ControllerMode.MONITORING
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def recovery_in_progress(self) -> bool:
-        return self.recovery is not None
+        return bool(self.recoveries)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def recovery(self) -> RecoveryInfo | None:
+        return next(iter(self.recoveries.values()), None)
 
 
 # ---------------------------------------------------------------------------

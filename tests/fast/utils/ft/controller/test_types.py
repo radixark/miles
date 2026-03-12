@@ -184,12 +184,13 @@ class TestControllerStatus:
             active_run_id="run-1",
             latest_iteration=100,
             subsystem_states={"training": "DetectingAnomalySt"},
-            recovery=None,
         )
 
         assert status.mode == ControllerMode.MONITORING
         assert status.tick_count == 5
         assert status.recovery_in_progress is False
+        assert status.recoveries == {}
+        assert status.recovery is None
 
     def test_construction_recovery(self) -> None:
         from miles.utils.ft.controller.types import RecoveryInfo
@@ -200,12 +201,34 @@ class TestControllerStatus:
             active_run_id="run-2",
             latest_iteration=50,
             subsystem_states={"training": "RecoveringSt"},
-            recovery=recovery,
+            recoveries={"training": recovery},
         )
 
         assert status.mode == ControllerMode.RECOVERY
         assert status.recovery_in_progress is True
+        assert status.recoveries["training"].bad_nodes == ["node-0"]
+        assert status.recovery is not None
         assert status.recovery.bad_nodes == ["node-0"]
+
+    def test_multiple_recoveries(self) -> None:
+        """Previously only the first recovery was reported. Now all
+        recovering subsystems appear in the recoveries dict."""
+        from miles.utils.ft.controller.types import RecoveryInfo
+
+        r1 = RecoveryInfo(phase="RealtimeChecksSt", bad_nodes=["node-0"], bad_nodes_confirmed=False)
+        r2 = RecoveryInfo(phase="EvictingSt", bad_nodes=["node-1"], bad_nodes_confirmed=True)
+        status = ControllerStatus(
+            tick_count=10,
+            active_run_id="run-2",
+            latest_iteration=50,
+            subsystem_states={"training": "RecoveringSt", "rollout_0": "RecoveringSt"},
+            recoveries={"training": r1, "rollout_0": r2},
+        )
+
+        assert len(status.recoveries) == 2
+        assert status.recoveries["training"].phase == "RealtimeChecksSt"
+        assert status.recoveries["rollout_0"].phase == "EvictingSt"
+        assert status.recovery_in_progress is True
 
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -214,7 +237,6 @@ class TestControllerStatus:
                 active_run_id=None,
                 latest_iteration=None,
                 subsystem_states={},
-                recovery=None,
                 bogus_field="x",  # type: ignore[call-arg]
             )
 

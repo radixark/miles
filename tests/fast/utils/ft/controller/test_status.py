@@ -278,3 +278,81 @@ class TestBuildControllerStatus:
         assert status.recovery is not None
         assert status.recovery.bad_nodes == []
         assert status.recovery.bad_nodes_confirmed is False
+
+    def test_multiple_subsystem_recoveries_all_reported(self) -> None:
+        """Previously only the first recovering subsystem was shown in the
+        status. Now the recoveries dict contains an entry for every
+        subsystem in RecoveringSt, so operators can see all active
+        recovery flows at once."""
+        training_state = RecoveringSt(
+            recovery=RealtimeChecksSt(),
+            trigger="crash",
+            recovery_start_time=_now(),
+            known_bad_node_ids=["node-a"],
+        )
+        rollout_state = RecoveringSt(
+            recovery=RecoveryDoneSt(),
+            trigger="hang",
+            recovery_start_time=_now(),
+            known_bad_node_ids=["node-b"],
+        )
+        controller_state = NormalSt(subsystems={
+            "training": training_state,
+            "rollout_0": rollout_state,
+        })
+        sm: StateMachine[MainState, MainContext] = StateMachine(
+            initial_state=controller_state,
+            stepper=StateMachineStepper(handler_map={}),
+        )
+        status = build_controller_status(
+            controller_state_machine=sm,
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+
+        # Step 1: Both recoveries are present in the dict
+        assert len(status.recoveries) == 2
+        assert "training" in status.recoveries
+        assert "rollout_0" in status.recoveries
+
+        # Step 2: Each has correct phase and bad_nodes
+        assert status.recoveries["training"].phase == "RealtimeChecksSt"
+        assert status.recoveries["training"].bad_nodes == ["node-a"]
+        assert status.recoveries["rollout_0"].phase == "RecoveryDoneSt"
+        assert status.recoveries["rollout_0"].bad_nodes == ["node-b"]
+
+    def test_no_recovery_has_empty_recoveries_dict(self) -> None:
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+
+        assert status.recoveries == {}
+        assert status.recovery is None
+
+    def test_restarting_main_job_recoveries_keyed_by_requestor(self) -> None:
+        """During RestartingMainJobSt, the requestor subsystem should
+        appear in recoveries keyed by its name."""
+        from datetime import timezone
+
+        restarting_state = RestartingMainJobSt(
+            requestor_name="rollout_0",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=DetectingAnomalySt(),
+        )
+        sm: StateMachine[MainState, MainContext] = StateMachine(
+            initial_state=restarting_state,
+            stepper=StateMachineStepper(handler_map={}),
+        )
+        status = build_controller_status(
+            controller_state_machine=sm,
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+
+        assert "rollout_0" in status.recoveries
+        assert status.recoveries["rollout_0"].phase == "RestartingMainJobSt"
