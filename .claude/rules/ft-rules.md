@@ -27,11 +27,6 @@ Exception: `controller` and `agents` may import `adapters/types.py` (the boundar
 On fault detection / recovery / diagnostic paths, "I don't know" must never look like "everything is fine."
 Do NOT catch exceptions and return empty (`[]`, `None`, `set()`) when callers interpret empty as "all clear."
 
-### Code style: immutable state containers
+### Code style
 
-For FT state-machine models, prefer immutable containers by default:
-
-* Use `tuple[...]` instead of `list[...]` for state snapshots.
-* Use `frozenset[...]` instead of `set[...]` for state snapshots.
-* Use `frozendict[...]` instead of `dict[...]` for state snapshots and nested mappings.
-* `Field(default_factory=...)` is only for fields that must stay mutable; document why mutability is required.
+* **Immutable state containers**: in FT state-machine models, prefer `tuple`, `frozenset`, and `frozendict`.
