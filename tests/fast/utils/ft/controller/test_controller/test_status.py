@@ -180,13 +180,12 @@ class TestGetStatus:
 
 
 class TestAgentManagement:
-    def test_register_agent_adds_to_dict(self) -> None:
+    def test_register_agent_adds_to_registry(self) -> None:
         harness = make_test_controller()
         agent = object()
         harness.controller.register_node_agent("node-0", agent)
 
-        assert "node-0" in harness.controller._agents
-        assert harness.controller._agents["node-0"] is agent
+        assert harness.controller._registry.get("node-0") is agent
 
     def test_register_overwrites_existing(self) -> None:
         harness = make_test_controller()
@@ -195,7 +194,7 @@ class TestAgentManagement:
         harness.controller.register_node_agent("node-0", agent1)
         harness.controller.register_node_agent("node-0", agent2)
 
-        assert harness.controller._agents["node-0"] is agent2
+        assert harness.controller._registry.get("node-0") is agent2
 
 
 class TestDefaultDiagnosticOrchestratorWiring:

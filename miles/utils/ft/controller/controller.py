@@ -6,6 +6,7 @@ import logging
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
+from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub, TrainingRankRoster
@@ -24,7 +25,7 @@ class FtController:
         state_machine: StateMachine[MainState, MainContext],
         subsystem_hub: SubsystemHub,
         metric_store: MetricStore,
-        node_agents: dict[str, NodeAgentProtocol],
+        registry: NodeAgentRegistry,
         tick_interval: float,
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
@@ -35,14 +36,13 @@ class FtController:
         self._state_machine = state_machine
         self._subsystem_hub = subsystem_hub
         self._metric_store = metric_store
-        self._node_agents = node_agents
+        self._registry = registry
         self._tick_interval = tick_interval
         self._tick_loop = tick_loop
         self._notifier = notifier
         self._scrape_target_manager: ScrapeTargetManagerProtocol = scrape_target_manager or NullScrapeTargetManager()
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
-        self._node_metadata: dict[str, dict[str, str]] = {}
         self._shutting_down: bool = False
 
     # ------------------------------------------------------------------
@@ -55,7 +55,7 @@ class FtController:
 
     @property
     def node_metadata(self) -> dict[str, dict[str, str]]:
-        return self._node_metadata
+        return self._registry.all_metadata
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
         self._scrape_target_manager.add_scrape_target(
@@ -70,9 +70,7 @@ class FtController:
         exporter_address: str = "",
         node_metadata: dict[str, str] | None = None,
     ) -> None:
-        self._node_agents[node_id] = agent
-        if node_metadata:
-            self._node_metadata[node_id] = node_metadata
+        self._registry.register(node_id=node_id, agent=agent, metadata=node_metadata)
         if exporter_address:
             self.add_scrape_target(target_id=node_id, address=exporter_address)
         logger.info(

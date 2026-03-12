@@ -4,9 +4,9 @@ import logging
 import time
 from collections.abc import Callable
 
-from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
+from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
-from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
+from miles.utils.ft.controller.node_agents import NodeAgentCoverageChecker, NodeAgentRegistry
 from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
 from miles.utils.ft.utils.box import Box
@@ -30,7 +30,7 @@ class TickLoop:
         *,
         state_machine: StateMachine[MainState, MainContext],
         training_rank_roster_box: Box[TrainingRankRoster | None],
-        node_agents: dict[str, NodeAgentProtocol],
+        registry: NodeAgentRegistry,
         main_job: MainJobProtocol,
         metric_store: MetricStore,
         notifier: NotifierProtocol | None,
@@ -50,7 +50,7 @@ class TickLoop:
         self._training_rank_roster_box = training_rank_roster_box
         self.tick_count: int = 0
 
-        self._node_agents = node_agents
+        self._registry = registry
         self._main_job = main_job
         self._metric_store = metric_store
         self._notifier = notifier
@@ -84,7 +84,7 @@ class TickLoop:
                 roster.warn_if_incomplete()
                 self._node_agent_coverage_checker.check(
                     subsystem_node_ids=set(roster.rank_placement.values()),
-                    registered_agent_node_ids=set(self._node_agents.keys()),
+                    registered_agent_node_ids=self._registry.registered_node_ids(),
                 )
             job_status = await self._main_job.get_status()
 
@@ -115,7 +115,6 @@ class TickLoop:
             tick_count=self.tick_count,
             job_status=job_status,
             metric_store=self._metric_store,
-            node_agents=self._node_agents,
             notifier=self._notifier,
             node_manager=self._node_manager,
             diagnostic_orchestrator=self._diagnostic_orchestrator,

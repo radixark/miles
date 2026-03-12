@@ -5,6 +5,7 @@ import logging
 
 from miles.utils.ft.adapters.types import DIAGNOSTIC_TIMEOUT_SECONDS, ClusterExecutorProtocol, NodeAgentProtocol
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
+from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol
 
 logger = logging.getLogger(__name__)
@@ -20,12 +21,22 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
 
     def __init__(
         self,
-        node_agents: dict[str, NodeAgentProtocol],
+        *,
+        registry: NodeAgentRegistry | None = None,
+        node_agents: dict[str, NodeAgentProtocol] | None = None,
         pipeline: list[ClusterExecutorProtocol] | None = None,
         default_timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         pipeline_timeout_seconds: int = 900,
     ) -> None:
-        self._node_agents = node_agents
+        if registry is not None:
+            self._registry = registry
+        elif node_agents is not None:
+            self._registry = NodeAgentRegistry()
+            for node_id, agent in node_agents.items():
+                self._registry.register(node_id=node_id, agent=agent)
+        else:
+            self._registry = NodeAgentRegistry()
+
         self._pipeline = pipeline or []
         self._default_timeout_seconds = default_timeout_seconds
         self._pipeline_timeout_seconds = pipeline_timeout_seconds
@@ -71,7 +82,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         for executor in all_executors:
             try:
                 bad_node_ids = await executor.execute(
-                    node_agents=dict(self._node_agents),
+                    node_agents=self._registry.get_all(),
                     timeout_seconds=self._default_timeout_seconds,
                 )
             except Exception:

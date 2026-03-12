@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from miles.utils.ft.controller.node_agent_coverage import NodeAgentCoverageChecker
+from miles.utils.ft.controller.node_agents import NodeAgentCoverageChecker
 
 
 class TestNodeAgentCoverageChecker:

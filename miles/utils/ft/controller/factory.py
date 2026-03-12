@@ -7,6 +7,7 @@ from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActu
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig, SubsystemHub, TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import (
@@ -63,7 +64,7 @@ def create_ft_controller(
     from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
     from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
-    node_agents: dict[str, object] = {}
+    registry = NodeAgentRegistry()
     training_rank_roster_box: Box[TrainingRankRoster | None] = Box(None)
 
     subsystem_hub = SubsystemHub(
@@ -75,7 +76,7 @@ def create_ft_controller(
         return set(roster.rank_placement.values()) if roster is not None else set()
 
     resolved_orchestrator: DiagnosticOrchestratorProtocol = diagnostic_orchestrator or DiagnosticOrchestrator(
-        node_agents=node_agents,
+        registry=registry,
         pipeline=list(build_all_cluster_executors().values()),
     )
 
@@ -128,7 +129,7 @@ def create_ft_controller(
         state_machine=controller_sm,
         subsystem_hub=subsystem_hub,
         metric_store=metric_store,
-        node_agents=node_agents,  # type: ignore[arg-type]
+        registry=registry,
         tick_interval=tick_interval,
         tick_loop=None,  # type: ignore[arg-type]  # set below
         notifier=notifier,
@@ -140,7 +141,7 @@ def create_ft_controller(
     tick_loop = TickLoop(
         state_machine=controller_sm,
         training_rank_roster_box=training_rank_roster_box,
-        node_agents=node_agents,  # type: ignore[arg-type]
+        registry=registry,
         main_job=main_job,
         metric_store=metric_store,
         notifier=notifier,
