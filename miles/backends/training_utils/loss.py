@@ -626,6 +626,7 @@ def policy_loss_function(
             "total_lengths": total_lengths,
             "response_lengths": response_lengths,
             "parallel_state": parallel_state,
+            "max_seq_lens": max_seq_lens,
         }
 
         if args.custom_tis_function_path is not None:
