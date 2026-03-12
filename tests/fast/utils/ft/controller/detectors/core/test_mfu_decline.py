@@ -133,13 +133,14 @@ class TestMfuDeclineDetector:
         assert "monitoring" in decision.reason
 
     def test_mfu_recovery_resets_decline_window(self) -> None:
-        """If MFU recovers mid-window, the decline timer restarts from the
-        last healthy reading, so a brief dip doesn't trigger NOTIFY_HUMAN."""
+        """If MFU has a sustained recovery mid-window (above threshold for
+        consecutive_steps), the decline timer resets. Uses sliding window average
+        so only a genuine sustained recovery resets the timer, not a noise spike."""
         now = datetime.now(timezone.utc)
         entries: list[tuple[float, datetime]] = [
-            *[(0.3, now - timedelta(minutes=35) + timedelta(minutes=i)) for i in range(20)],
-            (0.48, now - timedelta(minutes=15)),
-            *[(0.3, now - timedelta(minutes=14) + timedelta(minutes=i)) for i in range(15)],
+            *[(0.3, now - timedelta(minutes=35) + timedelta(minutes=i)) for i in range(10)],
+            *[(0.48, now - timedelta(minutes=25) + timedelta(minutes=i)) for i in range(15)],
+            *[(0.3, now - timedelta(minutes=10) + timedelta(minutes=i)) for i in range(10)],
         ]
         wandb = _make_wandb_with_timed_mfu(entries)
 
