@@ -38,9 +38,9 @@ class TestbedRolloutManager:
         Must be called after the controller is running, since registration
         requires the controller actor to be reachable.
         """
-        from miles.utils.ft.factories.rollout_agent import create_rollout_agent
+        from miles.utils.ft.factories.rollout_agent import build_rollout_agent
 
-        create_rollout_agent(
+        build_rollout_agent(
             ray.get_runtime_context().current_actor,
             ft_id=self._ft_id,
             check_interval=1.0,

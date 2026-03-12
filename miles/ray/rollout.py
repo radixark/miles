@@ -95,8 +95,8 @@ class RolloutManager:
         self._ft_agent = None
         self._full_ft_mode = {"rollout", "train"} <= set(getattr(self.args, "ft_components", frozenset()))
         if self._full_ft_mode:
-            from miles.utils.ft.factories.rollout_agent import create_rollout_agent
-            self._ft_agent = create_rollout_agent(self)
+            from miles.utils.ft.factories.rollout_agent import build_rollout_agent
+            self._ft_agent = build_rollout_agent(self)
         elif "rollout" in self.args.ft_components:
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()

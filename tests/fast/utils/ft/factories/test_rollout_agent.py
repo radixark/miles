@@ -1,9 +1,25 @@
-"""Unit tests for factories/rollout_agent.py (P0 item 8)."""
+"""Unit tests for factories/rollout_agent.py."""
 from __future__ import annotations
 
+import inspect
 from unittest.mock import MagicMock, patch
 
+import miles.utils.ft.factories.rollout_agent as rollout_agent_mod
 from miles.utils.ft.factories.rollout_agent import _register_with_controller
+
+
+class TestFactoryNamingConsistency:
+    def test_build_prefix_used_for_pure_assembly(self) -> None:
+        """Factory functions that do pure assembly should use build_* prefix, not create_*."""
+        public_functions = [
+            name
+            for name, obj in inspect.getmembers(rollout_agent_mod, inspect.isfunction)
+            if not name.startswith("_")
+        ]
+        create_functions = [name for name in public_functions if name.startswith("create_")]
+        assert create_functions == [], (
+            f"Found create_* functions that should use build_* prefix: {create_functions}"
+        )
 
 
 class TestRegisterWithController:

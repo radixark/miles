@@ -18,7 +18,7 @@ _REGISTER_MAX_ATTEMPTS = 3
 _REGISTER_RETRY_DELAY = 2.0
 
 
-def create_rollout_agent(
+def build_rollout_agent(
     rollout_manager: object,
     *,
     check_interval: float = 30.0,
