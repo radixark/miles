@@ -1,0 +1,451 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+from uuid import uuid4
+
+import ray
+
+from miles.utils.ft.adapters.config import FtControllerConfig
+from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
+from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
+from miles.utils.ft.adapters.types import JobStatus, ft_controller_actor_name, ft_node_agent_actor_name
+from miles.utils.ft.agents.types import GaugeSample
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.metrics.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
+from miles.utils.ft.controller.types import ControllerStatus
+from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.node_agent import build_node_agent
+from tests.fast.utils.ft.testbed.config import TestbedConfig, TestbedNodeConfig
+from tests.fast.utils.ft.testbed.ray.actor_group import TestbedRayTrainGroup
+from tests.fast.utils.ft.testbed.ray.rollout import TestbedRolloutManager
+from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.k8s_node_manager import TestbedNodeManager
+from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.notifiers.webhook_notifier import TestbedNotifier
+from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.ray.main_job import TestbedMainJob
+from tests.fast.utils.ft.testbed.utils.ft.agents.collectors.collector import TestbedCollector
+from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator, StubDiagnostic, make_fake_agents
+
+if TYPE_CHECKING:
+    from tests.fast.utils.ft.integration.conftest import RayNodeInfo
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _NodeMapping:
+    """Maps logical node IDs to Ray node IDs."""
+    training: dict[str, str]
+    rollout: dict[str, str]
+    spare: dict[str, str]
+
+
+class MilesTestbed:
+    """High-fidelity miles FT system test environment.
+
+    Only fakes leaf dependencies (training computation, sglang, K8s, collectors).
+    All intermediate FT logic (controller, state machines, detectors, metrics pipeline)
+    runs real production code.
+    """
+
+    def __init__(
+        self,
+        config: TestbedConfig,
+        ft_id: str,
+        controller: ray.actor.ActorHandle,
+        train_group: TestbedRayTrainGroup,
+        node_manager: TestbedNodeManager,
+        notifier: TestbedNotifier,
+        collector_states: dict[str, ray.actor.ActorHandle],
+        rollout_manager: ray.actor.ActorHandle | None,
+        cleanup_handles: list[ray.actor.ActorHandle],
+        cleanup_names: list[str],
+    ) -> None:
+        self._config = config
+        self._ft_id = ft_id
+        self._controller = controller
+        self._train_group = train_group
+        self._node_manager = node_manager
+        self._notifier = notifier
+        self._collector_states = collector_states
+        self._rollout_manager = rollout_manager
+        self._cleanup_handles = cleanup_handles
+        self._cleanup_names = cleanup_names
+
+    @classmethod
+    async def launch(
+        cls,
+        config: TestbedConfig,
+        ray_nodes: list[RayNodeInfo],
+    ) -> MilesTestbed:
+        ft_id = uuid4().hex[:8]
+        cleanup_handles: list[ray.actor.ActorHandle] = []
+        cleanup_names: list[str] = []
+
+        # Step 1: Build logical → Ray node mapping
+        node_mapping = _build_node_mapping(
+            config=config,
+            ray_nodes=ray_nodes,
+        )
+
+        # Step 2: Create state actors for node manager, notifier
+        node_manager = TestbedNodeManager.create()
+        cleanup_handles.append(node_manager.state_actor)
+
+        notifier = TestbedNotifier.create()
+        cleanup_handles.append(notifier.state_actor)
+
+        # Step 3: Pre-deploy FtNodeAgentActor per node with TestbedCollector
+        collector_states: dict[str, ray.actor.ActorHandle] = {}
+        all_logical_nodes = (
+            [n.node_id for n in config.training_nodes]
+            + [n.node_id for n in config.rollout_nodes]
+        )
+        all_node_configs = list(config.training_nodes) + list(config.rollout_nodes)
+        all_node_mapping = {**node_mapping.training, **node_mapping.rollout}
+
+        for node_config in all_node_configs:
+            node_id = node_config.node_id
+            ray_node_id = all_node_mapping[node_id]
+
+            collector, collector_state = TestbedCollector.create(node_id=node_id)
+            collector_states[node_id] = collector_state
+            cleanup_handles.append(collector_state)
+
+            diagnostics = [
+                StubDiagnostic(
+                    passed=node_config.diagnostic_pass,
+                    diagnostic_type=dt,
+                )
+                for dt in ["gpu", "nccl_simple", "nccl_pairwise"]
+            ]
+
+            agent_name = ft_node_agent_actor_name(ft_id, node_id)
+            from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+            node_agent = FtNodeAgentActor.options(
+                name=agent_name,
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node_id=ray_node_id,
+                    soft=False,
+                ),
+            ).remote(
+                builder=build_node_agent,
+                node_id=node_id,
+                ft_id=ft_id,
+                collect_interval_seconds=0.3,
+                collectors_override=[collector],
+                diagnostics_override=diagnostics,
+            )
+            cleanup_names.append(agent_name)
+
+            ray.get(node_agent.start.remote(), timeout=15)
+            logger.info("Node agent deployed: %s → ray_node %s", node_id, ray_node_id)
+
+        # Step 4: Create TestbedRayTrainGroup + TestbedMainJob
+        train_group = TestbedRayTrainGroup(
+            training_nodes=config.training_nodes,
+            node_mapping=node_mapping.training,
+            ft_id=ft_id,
+            step_interval=config.step_interval,
+        )
+        main_job = TestbedMainJob(train_group=train_group)
+
+        # Step 5: Create FtControllerActor with real build_ft_controller
+        detectors = config.detectors if config.detectors is not None else build_detector_chain()
+
+        diagnostic_node_results = {
+            nc.node_id: {
+                dt: nc.diagnostic_pass for dt in ["gpu", "nccl_simple", "nccl_pairwise"]
+            }
+            for nc in all_node_configs
+        }
+        fake_orchestrator = FakeDiagnosticOrchestrator()
+
+        controller_kwargs: dict[str, object] = dict(
+            builder=build_ft_controller,
+            config=FtControllerConfig(
+                platform="stub",
+                tick_interval=config.tick_interval,
+                ft_id=ft_id,
+                scrape_interval_seconds=config.scrape_interval_seconds,
+                rollout_num_cells=config.rollout_num_cells,
+            ),
+            main_job_override=main_job,
+            node_manager_override=node_manager,
+            notifier_override=notifier,
+            detectors_override=detectors,
+            diagnostic_orchestrator_override=fake_orchestrator,
+            start_exporter=True,
+        )
+        if config.recovery_cooldown is not None:
+            controller_kwargs["recovery_cooldown_override"] = config.recovery_cooldown
+        if config.monitoring_success_iterations is not None:
+            controller_kwargs["monitoring_success_iterations_override"] = config.monitoring_success_iterations
+        if config.monitoring_timeout_seconds is not None:
+            controller_kwargs["monitoring_timeout_seconds_override"] = config.monitoring_timeout_seconds
+        if config.rollout_alive_threshold_seconds is not None:
+            controller_kwargs["rollout_alive_threshold_seconds_override"] = config.rollout_alive_threshold_seconds
+        if config.rollout_monitoring_alive_duration_seconds is not None:
+            controller_kwargs["rollout_monitoring_alive_duration_seconds_override"] = config.rollout_monitoring_alive_duration_seconds
+
+        controller_name = ft_controller_actor_name(ft_id)
+        controller = FtControllerActor.options(name=controller_name).remote(**controller_kwargs)
+        cleanup_names.append(controller_name)
+
+        # Step 6: Fire-and-forget submit_and_run (starts main job + tick loop)
+        controller.submit_and_run.remote()
+
+        # Wait for run_id to be set
+        _poll_for_run_id(controller)
+
+        # Step 7: If rollout configured, create TestbedRolloutManager
+        rollout_manager: ray.actor.ActorHandle | None = None
+        if config.rollout_num_cells > 0 and config.rollout_nodes:
+            rollout_cell_ids = _rollout_num_cells_to_ids(config.rollout_num_cells)
+
+            rollout_node_mapping: dict[str, str] = {}
+            rollout_node_ids_for_cells: dict[str, set[str]] = {}
+            for i, cell_id in enumerate(rollout_cell_ids):
+                rollout_node_idx = i % len(config.rollout_nodes)
+                rollout_node = config.rollout_nodes[rollout_node_idx]
+                ray_rollout_node_id = node_mapping.rollout[rollout_node.node_id]
+                rollout_node_mapping[cell_id] = ray_rollout_node_id
+                rollout_node_ids_for_cells[cell_id] = {rollout_node.node_id}
+
+            rollout_manager = TestbedRolloutManager.remote(
+                ft_id=ft_id,
+                cell_ids=rollout_cell_ids,
+                rollout_node_mapping=rollout_node_mapping,
+            )
+            cleanup_handles.append(rollout_manager)
+
+            ray.get(rollout_manager.init_ft_agent.remote(), timeout=15)
+
+            for cell_id, node_ids in rollout_node_ids_for_cells.items():
+                ray.get(
+                    controller.set_rollout_node_ids.remote(cell_id, node_ids),
+                    timeout=5,
+                )
+
+        # Step 8: Wait for training to stabilize
+        testbed = cls(
+            config=config,
+            ft_id=ft_id,
+            controller=controller,
+            train_group=train_group,
+            node_manager=node_manager,
+            notifier=notifier,
+            collector_states=collector_states,
+            rollout_manager=rollout_manager,
+            cleanup_handles=cleanup_handles,
+            cleanup_names=cleanup_names,
+        )
+        await testbed.wait_for_training_stable(n_iterations=2, timeout=30.0)
+        return testbed
+
+    async def shutdown(self) -> None:
+        try:
+            ray.get(self._controller.shutdown.remote(), timeout=10)
+        except Exception:
+            logger.debug("shutdown: controller shutdown failed", exc_info=True)
+
+        self._train_group.kill_all()
+
+        for name in self._cleanup_names:
+            try:
+                handle = ray.get_actor(name)
+                ray.kill(handle, no_restart=True)
+            except Exception:
+                logger.debug("shutdown: failed to kill actor %s", name, exc_info=True)
+
+        for handle in self._cleanup_handles:
+            try:
+                ray.kill(handle, no_restart=True)
+            except Exception:
+                logger.debug("shutdown: failed to kill handle", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Status queries
+    # ------------------------------------------------------------------
+
+    async def get_status(self) -> ControllerStatus:
+        return ray.get(self._controller.get_status.remote(), timeout=5)
+
+    # ------------------------------------------------------------------
+    # Fault injection
+    # ------------------------------------------------------------------
+
+    async def kill_training_on_node(self, node_id: str) -> None:
+        self._train_group.kill_on_node(node_id)
+
+    async def crash_training(self) -> None:
+        self._train_group.kill_all()
+
+    async def inject_gpu_xid(self, node_id: str, count: float = 1.0) -> None:
+        state = self._collector_states.get(node_id)
+        if state is None:
+            raise KeyError(f"No collector state for node {node_id}")
+        labels = {"node_id": node_id}
+        await state.set_metrics.remote([
+            GaugeSample(
+                name=XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
+                labels=labels,
+                value=count,
+            ),
+        ])
+
+    async def kill_sglang_cell(self, cell_id: str) -> None:
+        if self._rollout_manager is None:
+            raise RuntimeError("No rollout manager configured")
+        await self._rollout_manager.kill_engine.remote(cell_id)
+
+    async def inject_collector_metrics(
+        self,
+        node_id: str,
+        metrics: list[GaugeSample],
+    ) -> None:
+        state = self._collector_states.get(node_id)
+        if state is None:
+            raise KeyError(f"No collector state for node {node_id}")
+        await state.set_metrics.remote(metrics)
+
+    async def clear_collector_metrics(self, node_id: str) -> None:
+        state = self._collector_states.get(node_id)
+        if state is None:
+            raise KeyError(f"No collector state for node {node_id}")
+        await state.set_metrics.remote([])
+
+    # ------------------------------------------------------------------
+    # Wait helpers
+    # ------------------------------------------------------------------
+
+    async def wait_for_training_stable(
+        self,
+        n_iterations: int = 3,
+        timeout: float = 60.0,
+    ) -> None:
+        """Wait until iteration metrics are advancing on the controller."""
+        deadline = time.monotonic() + timeout
+        baseline: int | None = None
+
+        while time.monotonic() < deadline:
+            try:
+                status = await self.get_status()
+                current = status.latest_iteration
+                if current is not None and current > 0:
+                    if baseline is None:
+                        baseline = current
+                    elif current >= baseline + n_iterations:
+                        return
+            except Exception:
+                logger.debug("wait_for_training_stable: status check failed", exc_info=True)
+            await asyncio.sleep(0.3)
+
+        raise TimeoutError(
+            f"Training not stable after {timeout}s (baseline={baseline})"
+        )
+
+    async def wait_for_subsystem_state(
+        self,
+        name: str,
+        state: str,
+        timeout: float = 120.0,
+    ) -> ControllerStatus:
+        """Wait until a subsystem reaches the specified state name."""
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            try:
+                status = await self.get_status()
+                current_state = status.subsystem_states.get(name, "")
+                if state in current_state:
+                    return status
+            except Exception:
+                logger.debug("wait_for_subsystem_state: status check failed", exc_info=True)
+            await asyncio.sleep(0.3)
+
+        last_status = await self.get_status()
+        raise TimeoutError(
+            f"Subsystem '{name}' did not reach state '{state}' within {timeout}s. "
+            f"Current states: {last_status.subsystem_states}"
+        )
+
+    # ------------------------------------------------------------------
+    # Assertion helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def node_manager(self) -> TestbedNodeManager:
+        return self._node_manager
+
+    @property
+    def notifications(self) -> list[tuple[str, str, str]]:
+        return self._notifier.calls
+
+    @property
+    def ft_id(self) -> str:
+        return self._ft_id
+
+    @property
+    def controller(self) -> ray.actor.ActorHandle:
+        return self._controller
+
+
+def _build_node_mapping(
+    config: TestbedConfig,
+    ray_nodes: list[RayNodeInfo],
+) -> _NodeMapping:
+    """Assign logical node IDs to Ray nodes."""
+    available = list(ray_nodes)
+    needed = (
+        len(config.training_nodes)
+        + len(config.rollout_nodes)
+        + len(config.spare_nodes)
+    )
+    if len(available) < needed:
+        raise ValueError(
+            f"Need {needed} Ray nodes but only {len(available)} available"
+        )
+
+    idx = 0
+    training_map: dict[str, str] = {}
+    for node in config.training_nodes:
+        training_map[node.node_id] = available[idx].ray_node_id
+        idx += 1
+
+    rollout_map: dict[str, str] = {}
+    for node in config.rollout_nodes:
+        rollout_map[node.node_id] = available[idx].ray_node_id
+        idx += 1
+
+    spare_map: dict[str, str] = {}
+    for spare_id in config.spare_nodes:
+        spare_map[spare_id] = available[idx].ray_node_id
+        idx += 1
+
+    return _NodeMapping(
+        training=training_map,
+        rollout=rollout_map,
+        spare=spare_map,
+    )
+
+
+def _rollout_num_cells_to_ids(num_cells: int) -> list[str]:
+    if num_cells == 1:
+        return ["default"]
+    return [str(i) for i in range(num_cells)]
+
+
+def _poll_for_run_id(
+    controller: ray.actor.ActorHandle,
+    timeout: float = 15.0,
+) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = ray.get(controller.get_status.remote(), timeout=5)
+        if status.active_run_id is not None:
+            return status.active_run_id
+        time.sleep(0.3)
+    raise TimeoutError("active_run_id not set within timeout")
