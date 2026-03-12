@@ -299,6 +299,9 @@ def build_ft_controller(
             platform=config.platform,
             notify_webhook_url=config.notify_webhook_url,
             notify_platform=config.notify_platform,
+            notify_timeout_seconds=config.notify_timeout_seconds,
+            notify_max_retries=config.notify_max_retries,
+            notify_initial_backoff_seconds=config.notify_initial_backoff_seconds,
         )
 
     detectors = (

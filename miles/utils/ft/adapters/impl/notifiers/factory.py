@@ -19,13 +19,21 @@ def build_notifier(
     platform: str,
     notify_webhook_url: str = "",
     notify_platform: str = "",
+    notify_timeout_seconds: float = 10.0,
+    notify_max_retries: int = 3,
+    notify_initial_backoff_seconds: float = 1.0,
 ) -> BaseWebhookNotifier | StubNotifier | None:
     webhook_url = notify_webhook_url.strip()
     notify_platform = notify_platform.strip().lower() or "lark"
 
     if webhook_url:
         cls = _get_notifier_class(notify_platform)
-        return cls(webhook_url=webhook_url)
+        return cls(
+            webhook_url=webhook_url,
+            timeout_seconds=notify_timeout_seconds,
+            max_retries=notify_max_retries,
+            initial_backoff_seconds=notify_initial_backoff_seconds,
+        )
 
     if platform == "stub":
         return StubNotifier()

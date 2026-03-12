@@ -48,6 +48,15 @@ def launch(
         str, typer.Option(help="Webhook URL for notifications (empty = no webhook notifications)")
     ] = "",
     notify_platform: Annotated[str, typer.Option(help="Notification platform: 'lark', 'slack', or 'discord'")] = "",
+    notify_timeout_seconds: Annotated[
+        float, typer.Option(help="Webhook notification HTTP timeout in seconds")
+    ] = 10.0,
+    notify_max_retries: Annotated[
+        int, typer.Option(help="Webhook notification max retry count")
+    ] = 3,
+    notify_initial_backoff_seconds: Annotated[
+        float, typer.Option(help="Webhook notification initial backoff in seconds")
+    ] = 1.0,
     rollout_num_cells: Annotated[int, typer.Option(help="Number of rollout cells")] = 0,
     scrape_interval_seconds: Annotated[
         float, typer.Option(help="Metric scrape interval in seconds (mini backend)")
@@ -130,6 +139,9 @@ def launch(
         rollout_num_cells=rollout_num_cells,
         notify_webhook_url=notify_webhook_url,
         notify_platform=notify_platform,
+        notify_timeout_seconds=notify_timeout_seconds,
+        notify_max_retries=notify_max_retries,
+        notify_initial_backoff_seconds=notify_initial_backoff_seconds,
         scrape_interval_seconds=scrape_interval_seconds,
         mini_prometheus_retention_minutes=mini_prometheus_retention_minutes,
         recovery_cooldown_window_minutes=recovery_cooldown_window_minutes,

@@ -128,6 +128,21 @@ class TestBuildNotifier:
         )
         assert isinstance(notifier, SlackWebhookNotifier)
 
+    def test_custom_retry_timeout_params_reach_notifier(self) -> None:
+        """Notifier retry/timeout were hardcoded constants and not passed
+        through the factory, so custom values had no effect."""
+        notifier = build_notifier(
+            platform="stub",
+            notify_webhook_url="https://hook.example.com",
+            notify_platform="lark",
+            notify_timeout_seconds=30.0,
+            notify_max_retries=5,
+            notify_initial_backoff_seconds=2.0,
+        )
+        assert isinstance(notifier, LarkWebhookNotifier)
+        assert notifier._max_retries == 5
+        assert notifier._initial_backoff_seconds == 2.0
+
 
 class TestLauncherSubmitAndRun:
     def test_inline_mode_calls_submit_and_run(self) -> None:
@@ -394,6 +409,31 @@ class TestLauncherK8sNamespace:
         assert result.exit_code == 0, result.output
         config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
         assert config.k8s_namespace == ""
+
+
+class TestLauncherNotifierParams:
+    """Webhook notifier retry/timeout params were hardcoded and not exposed
+    as CLI parameters."""
+
+    def test_notifier_params_passed_to_config(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(
+                app,
+                [
+                    "launch",
+                    "--platform", "stub",
+                    "--notify-timeout-seconds", "30",
+                    "--notify-max-retries", "5",
+                    "--notify-initial-backoff-seconds", "2",
+                    "--", "python3", "train.py",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.notify_timeout_seconds == 30.0
+        assert config.notify_max_retries == 5
+        assert config.notify_initial_backoff_seconds == 2.0
 
 
 class TestLauncherInvalidInput:

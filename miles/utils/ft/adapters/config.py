@@ -26,6 +26,9 @@ class FtControllerConfig(FtBaseModel):
     mini_prometheus_retention_minutes: float = 60.0
     notify_webhook_url: str = ""
     notify_platform: str = ""
+    notify_timeout_seconds: float = 10.0
+    notify_max_retries: int = 3
+    notify_initial_backoff_seconds: float = 1.0
     rollout_num_cells: int
     detector_config: DetectorChainConfig = Field(default_factory=DetectorChainConfig)
 
@@ -51,6 +54,8 @@ class FtControllerConfig(FtBaseModel):
         "ray_submit_timeout_seconds",
         "ray_get_status_timeout_seconds",
         "ray_stop_job_timeout_seconds",
+        "notify_timeout_seconds",
+        "notify_initial_backoff_seconds",
     )
     @classmethod
     def _positive_float_fields(cls, v: float) -> float:
@@ -65,7 +70,7 @@ class FtControllerConfig(FtBaseModel):
             raise ValueError("recovery_cooldown_window_minutes must be > 0")
         return v
 
-    @field_validator("recovery_cooldown_max_count", "registration_grace_ticks", "max_simultaneous_bad_nodes", "monitoring_success_iterations")
+    @field_validator("recovery_cooldown_max_count", "registration_grace_ticks", "max_simultaneous_bad_nodes", "monitoring_success_iterations", "notify_max_retries")
     @classmethod
     def _int_params_must_be_at_least_one(cls, v: int) -> int:
         if v < 1:

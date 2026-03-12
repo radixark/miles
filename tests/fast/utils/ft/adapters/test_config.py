@@ -170,3 +170,36 @@ class TestRayJobConfigFields:
     def test_ray_job_params_reject_zero(self, field_name: str) -> None:
         with pytest.raises(ValidationError, match="must be > 0"):
             FtControllerConfig(rollout_num_cells=0, **{field_name: 0})
+
+
+class TestNotifierConfigFields:
+    """Webhook notifier retry/timeout were hardcoded constants, so operators
+    could not tune notification reliability for flaky endpoints."""
+
+    def test_notifier_params_have_sensible_defaults(self) -> None:
+        config = FtControllerConfig(rollout_num_cells=0)
+
+        assert config.notify_timeout_seconds == 10.0
+        assert config.notify_max_retries == 3
+        assert config.notify_initial_backoff_seconds == 1.0
+
+    def test_notifier_params_accept_custom_values(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=0,
+            notify_timeout_seconds=30.0,
+            notify_max_retries=5,
+            notify_initial_backoff_seconds=2.0,
+        )
+
+        assert config.notify_timeout_seconds == 30.0
+        assert config.notify_max_retries == 5
+        assert config.notify_initial_backoff_seconds == 2.0
+
+    def test_notify_max_retries_rejects_zero(self) -> None:
+        with pytest.raises(ValidationError, match="must be >= 1"):
+            FtControllerConfig(rollout_num_cells=0, notify_max_retries=0)
+
+    @pytest.mark.parametrize("field_name", ["notify_timeout_seconds", "notify_initial_backoff_seconds"])
+    def test_notify_float_params_reject_zero(self, field_name: str) -> None:
+        with pytest.raises(ValidationError, match="must be > 0"):
+            FtControllerConfig(rollout_num_cells=0, **{field_name: 0})
