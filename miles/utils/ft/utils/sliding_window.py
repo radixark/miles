@@ -31,7 +31,7 @@ class SlidingWindowCounter:
 
     @property
     def threshold_reached(self) -> bool:
-        return self.count >= self._threshold
+        return self.count > self._threshold
 
     @property
     def should_notify(self) -> bool:
