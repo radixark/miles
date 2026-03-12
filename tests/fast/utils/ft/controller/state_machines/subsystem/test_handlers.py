@@ -368,49 +368,26 @@ class TestRecovering:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_recovery_exception_forces_notify(self) -> None:
+    async def test_recovery_exception_propagates_to_tick_loop(self) -> None:
+        """Previously _advance_recovery caught all exceptions and funneled them
+        into NotifyHumansSt, masking bugs in handler code. Now exceptions
+        propagate to the TickLoop tick_failure_tracker so they surface as
+        tick failures (not infinite recovery loops).
+        """
         stepper = _make_stepper()
         state = RecoveringSt(
             recovery=RealtimeChecksSt(),
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await _step_last(stepper,
-            state,
-            _make_subsystem_context(
-                recovery_stepper=_mock_stepper_raising(RuntimeError("boom")),
-                should_run_detectors=False,
-            ),
-        )
-        assert isinstance(result, RecoveringSt)
-        assert isinstance(result.recovery, NotifyHumansSt)
-
-    @pytest.mark.anyio
-    async def test_recovery_exception_forces_notify_then_done_then_detecting(self) -> None:
-        """Exception -> NotifyHumans -> RecoveryDone -> DetectingAnomaly full chain."""
-        recovery_stepper = _mock_stepper_sequence(
-            [RuntimeError("boom"), RecoveryDoneSt()],
-        )
-        stepper = _make_stepper()
-        ctx = _make_subsystem_context(
-            recovery_stepper=recovery_stepper,
-            should_run_detectors=False,
-        )
-
-        state = RecoveringSt(
-            recovery=RealtimeChecksSt(),
-            trigger=TriggerType.CRASH.value,
-            recovery_start_time=datetime.now(timezone.utc),
-        )
-
-        # Step 1: exception -> NotifyHumans
-        result = await _step_last(stepper, state, ctx)
-        assert isinstance(result, RecoveringSt)
-        assert isinstance(result.recovery, NotifyHumansSt)
-
-        # Step 2: NotifyHumans -> RecoveryDone -> DetectingAnomaly
-        result = await _step_last(stepper, result, ctx)
-        assert isinstance(result, DetectingAnomalySt)
+        with pytest.raises(RuntimeError, match="boom"):
+            await _step_last(stepper,
+                state,
+                _make_subsystem_context(
+                    recovery_stepper=_mock_stepper_raising(RuntimeError("boom")),
+                    should_run_detectors=False,
+                ),
+            )
 
     @pytest.mark.asyncio
     async def test_duration_callback_on_recovery_done(self) -> None:

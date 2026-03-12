@@ -139,17 +139,13 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
         state: RecoveringSt,
         ctx: SubsystemContext,
     ) -> SubsystemState | None:
-        try:
-            recovery_ctx = ctx.recovery_context_factory(
-                state.trigger,
-                state.recovery_start_time,
-            )
-            new_recovery = None
-            async for new_recovery in ctx.recovery_stepper(state.recovery, recovery_ctx):
-                pass
-        except Exception:
-            logger.error("Recovery stepper raised exception", exc_info=True)
-            new_recovery = NotifyHumansSt(state_before=type(state.recovery).__name__)
+        recovery_ctx = ctx.recovery_context_factory(
+            state.trigger,
+            state.recovery_start_time,
+        )
+        new_recovery = None
+        async for new_recovery in ctx.recovery_stepper(state.recovery, recovery_ctx):
+            pass
 
         if new_recovery is None:
             return None
