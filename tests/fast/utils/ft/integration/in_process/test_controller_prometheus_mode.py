@@ -13,7 +13,7 @@ import httpx
 import pytest
 from tests.fast.utils.ft.conftest import FakeMainJob, FakeNodeManager, get_sample_value, make_test_exporter
 
-import miles.utils.ft.controller.metrics.metric_names as mn
+import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb

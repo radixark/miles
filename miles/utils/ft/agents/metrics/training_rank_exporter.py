@@ -5,7 +5,7 @@ from typing import Literal
 
 from prometheus_client import Gauge
 
-import miles.utils.ft.controller.metrics.metric_names as mn
+import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 

@@ -11,7 +11,7 @@ from miles.utils.ft.adapters.types import (
     REGISTER_TIMEOUT_SECONDS,
     ft_controller_actor_name,
 )
-from miles.utils.ft.agents.types import DiagnosticResult
+from miles.utils.ft.utils.diagnostic_types import DiagnosticResult
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 from pydantic import Field, computed_field, model_validator
 
-from miles.utils.ft.agents.types import DiagnosticPipelineResult
+from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 if TYPE_CHECKING:

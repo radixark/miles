@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-import miles.utils.ft.controller.metrics.metric_names as mn
+import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.agents.collectors.disk import DiskCollector, discover_disk_mounts
 
 

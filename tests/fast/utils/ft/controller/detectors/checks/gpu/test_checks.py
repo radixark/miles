@@ -8,7 +8,7 @@ from miles.utils.ft.controller.detectors.checks.gpu.checks import (
     _check_non_auto_recoverable_xid,
     check_gpu_faults,
 )
-from miles.utils.ft.controller.metrics.metric_names import (
+from miles.utils.ft.utils.metric_names import (
     GPU_AVAILABLE,
     XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
 )

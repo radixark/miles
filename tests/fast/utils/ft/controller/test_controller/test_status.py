@@ -17,7 +17,7 @@ from tests.fast.utils.ft.conftest import (
 )
 from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_state
 
-import miles.utils.ft.controller.metrics.metric_names as mn
+import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task

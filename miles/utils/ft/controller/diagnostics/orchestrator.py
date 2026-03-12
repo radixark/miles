@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from miles.utils.ft.adapters.types import DIAGNOSTIC_TIMEOUT_SECONDS, ClusterExecutorProtocol, NodeAgentProtocol
-from miles.utils.ft.agents.types import DiagnosticPipelineResult
+from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol
 

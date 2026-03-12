@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import polars as pl
 
-from miles.utils.ft.controller.metrics.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
+from miles.utils.ft.utils.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
 from miles.utils.ft.controller.types import TimeSeriesQueryProtocol, NodeFault
 
 logger = logging.getLogger(__name__)

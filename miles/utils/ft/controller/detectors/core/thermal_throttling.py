@@ -3,7 +3,7 @@ from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.checks.mfu_health import check_mfu_health
-from miles.utils.ft.controller.metrics.metric_names import DCGM_FI_DEV_GPU_TEMP
+from miles.utils.ft.utils.metric_names import DCGM_FI_DEV_GPU_TEMP
 from miles.utils.ft.controller.types import ActionType, Decision, TimeSeriesQueryProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 

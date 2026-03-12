@@ -12,7 +12,7 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.factory import create_ft_controller
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
-from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
+from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState

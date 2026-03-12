@@ -15,7 +15,7 @@ from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
 from miles.utils.ft.adapters.types import ft_controller_actor_name, ft_node_agent_actor_name
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
-from miles.utils.ft.controller.metrics.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
+from miles.utils.ft.utils.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
 from miles.utils.ft.controller.types import ControllerStatus
 from miles.utils.ft.factories.controller import build_ft_controller
 from miles.utils.ft.factories.node_agent import build_node_agent

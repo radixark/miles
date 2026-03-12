@@ -5,7 +5,7 @@ from http.server import HTTPServer
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, start_http_server
 
-import miles.utils.ft.controller.metrics.metric_names as metric_names
+import miles.utils.ft.utils.metric_names as metric_names
 from miles.utils.ft.adapters.types import JobStatus
 
 logger = logging.getLogger(__name__)

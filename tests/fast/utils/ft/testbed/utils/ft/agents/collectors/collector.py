@@ -6,7 +6,7 @@ import ray
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.types import GaugeSample, MetricSample
-from miles.utils.ft.controller.metrics.metric_names import (
+from miles.utils.ft.utils.metric_names import (
     DCGM_FI_DEV_GPU_TEMP,
     DCGM_FI_DEV_GPU_UTIL,
     GPU_AVAILABLE,

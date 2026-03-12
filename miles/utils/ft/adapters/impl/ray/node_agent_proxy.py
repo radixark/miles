@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from miles.utils.ft.adapters.types import DIAGNOSTIC_TIMEOUT_SECONDS, NodeAgentProtocol
-from miles.utils.ft.agents.types import DiagnosticResult
+from miles.utils.ft.utils.diagnostic_types import DiagnosticResult
 
 logger = logging.getLogger(__name__)
 

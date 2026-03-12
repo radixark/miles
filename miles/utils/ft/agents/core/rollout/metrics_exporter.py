@@ -5,7 +5,7 @@ import logging
 from prometheus_client import Gauge
 
 from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
-from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE
+from miles.utils.ft.utils.metric_names import ROLLOUT_CELL_ALIVE
 
 logger = logging.getLogger(__name__)
 

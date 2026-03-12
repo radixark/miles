@@ -4,7 +4,7 @@ import logging
 from datetime import timedelta
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.metrics.metric_names import ROLLOUT_CELL_ALIVE
+from miles.utils.ft.utils.metric_names import ROLLOUT_CELL_ALIVE
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 logger = logging.getLogger(__name__)

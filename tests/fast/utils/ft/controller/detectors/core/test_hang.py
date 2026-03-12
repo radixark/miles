@@ -12,7 +12,7 @@ from tests.fast.utils.ft.utils import (
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
+from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.types import ActionType
 
 

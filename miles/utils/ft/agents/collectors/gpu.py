@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from types import ModuleType
 
-import miles.utils.ft.controller.metrics.metric_names as mn
+import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade

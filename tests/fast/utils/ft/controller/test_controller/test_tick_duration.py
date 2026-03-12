@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from tests.fast.utils.ft.conftest import get_sample_value, make_test_controller
 
-import miles.utils.ft.controller.metrics.metric_names as mn
+import miles.utils.ft.utils.metric_names as mn
 
 
 class TestTickDuration:
