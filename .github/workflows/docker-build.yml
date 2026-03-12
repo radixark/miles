@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'docker/Dockerfile.dev'
+      - 'docker/Dockerfile'
 
   schedule:
     # Every 12 hours: midnight and noon UTC
@@ -23,7 +23,7 @@ on:
           - cu13-arm64
           - debug
       dockerfile:
-        description: 'Path to dockerfile (e.g. docker/Dockerfile.dev)'
+        description: 'Path to dockerfile (e.g. docker/Dockerfile)'
         required: false
         default: 'docker/Dockerfile'
         type: string
@@ -41,7 +41,7 @@ jobs:
         id: defaults
         run: |
           echo "variant=dev" >> "$GITHUB_OUTPUT"
-          echo "dockerfile=docker/Dockerfile.dev" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=docker/Dockerfile" >> "$GITHUB_OUTPUT"
 
   check-upstream:
     # Only run on schedule — check if upstream repos have new commits

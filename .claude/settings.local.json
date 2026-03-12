@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout:*)",
+      "Bash(git -C /Users/doug/miles check-ignore .claude/ && echo \"already ignored\" || echo \"not ignored\")",
+      "Bash(git -C /Users/doug/miles status .claude/)"
+    ]
+  }
+}
