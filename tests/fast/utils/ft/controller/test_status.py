@@ -95,6 +95,7 @@ class TestBuildControllerStatus:
             recovery=recovery,
             trigger="crash",
             recovery_start_time=_now(),
+            known_bad_node_ids=["node-1"],
         )
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(state),

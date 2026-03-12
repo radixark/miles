@@ -49,6 +49,7 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             recovery=RealtimeChecksSt(pre_identified_bad_nodes=decision.bad_node_ids),
             trigger=decision.trigger,
             recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=decision.bad_node_ids,
         )
 
     async def _get_actionable_decision(self, *, ctx: SubsystemContext) -> Decision | None:
@@ -122,7 +123,7 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             )
             return None
 
-        known_bad = set(get_known_bad_nodes(state.recovery))
+        known_bad = set(get_known_bad_nodes(state))
         truly_new = new_bad_nodes - known_bad
         if truly_new:
             all_bad = sorted(known_bad | new_bad_nodes)
@@ -130,6 +131,7 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
                 recovery=RealtimeChecksSt(pre_identified_bad_nodes=all_bad),
                 trigger=state.trigger,
                 recovery_start_time=state.recovery_start_time,
+                known_bad_node_ids=all_bad,
             )
         return None
 
@@ -156,6 +158,7 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             recovery=new_recovery,
             trigger=state.trigger,
             recovery_start_time=state.recovery_start_time,
+            known_bad_node_ids=state.known_bad_node_ids,
         )
 
     def _report_recovery_duration(self, *, state: RecoveringSt, ctx: SubsystemContext) -> None:

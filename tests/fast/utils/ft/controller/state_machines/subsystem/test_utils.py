@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.state_machines.subsystem.models import RecoveringSt
 from miles.utils.ft.controller.state_machines.subsystem.utils import (
     collect_evictable_bad_nodes,
+    get_known_bad_nodes,
     handle_notify_human,
     run_detectors,
 )
@@ -237,3 +240,26 @@ class TestCollectEvictableBadNodes:
             tick_detector_context=ctx,
         )
         assert result == set()
+
+
+class TestGetKnownBadNodes:
+    def test_returns_known_bad_node_ids_from_recovering_state(self) -> None:
+        from miles.utils.ft.controller.state_machines.recovery.models import StopTimeDiagnosticsSt
+
+        state = RecoveringSt(
+            recovery=StopTimeDiagnosticsSt(),
+            trigger="crash",
+            recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=["node-0", "node-1"],
+        )
+        assert get_known_bad_nodes(state) == ["node-0", "node-1"]
+
+    def test_returns_empty_when_no_bad_nodes_tracked(self) -> None:
+        from miles.utils.ft.controller.state_machines.recovery.models import NotifyHumansSt
+
+        state = RecoveringSt(
+            recovery=NotifyHumansSt(state_before="test"),
+            trigger="crash",
+            recovery_start_time=datetime.now(timezone.utc),
+        )
+        assert get_known_bad_nodes(state) == []

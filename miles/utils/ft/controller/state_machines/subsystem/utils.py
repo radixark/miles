@@ -3,26 +3,22 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 
+from typing import TYPE_CHECKING
+
 from miles.utils.ft.adapters.types import NotifierProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestartingSt,
-    RealtimeChecksSt,
-    RecoveryState,
-)
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
+if TYPE_CHECKING:
+    from miles.utils.ft.controller.state_machines.subsystem.models import RecoveringSt
+
 logger = logging.getLogger(__name__)
 
 
-def get_known_bad_nodes(recovery_state: RecoveryState) -> list[str]:
-    if isinstance(recovery_state, EvictingAndRestartingSt):
-        return recovery_state.restart.bad_node_ids
-    if isinstance(recovery_state, RealtimeChecksSt):
-        return recovery_state.pre_identified_bad_nodes
-    return []
+def get_known_bad_nodes(state: RecoveringSt) -> list[str]:
+    return state.known_bad_node_ids
 
 
 async def handle_notify_human(

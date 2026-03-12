@@ -149,6 +149,7 @@ class TestGetStatus:
             ),
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=["node-0"],
         ))
         status = harness.controller.get_status()
         assert status.recovery_in_progress is True

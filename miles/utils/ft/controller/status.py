@@ -20,16 +20,16 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
     return type(recovery).__name__
 
 
-def _classify_recovery(recovery: RecoveryState) -> RecoveryInfo:
-    bad_nodes = sorted(get_known_bad_nodes(recovery))
-    match recovery:
+def _classify_recovery(state: RecoveringSt) -> RecoveryInfo:
+    bad_nodes = sorted(get_known_bad_nodes(state))
+    match state.recovery:
         case RecoveryDoneSt():
             bad_nodes_confirmed = True
         case _:
             bad_nodes_confirmed = bool(bad_nodes)
 
     return RecoveryInfo(
-        phase=recovery_phase_name(recovery),
+        phase=recovery_phase_name(state.recovery),
         bad_nodes=bad_nodes,
         bad_nodes_confirmed=bad_nodes_confirmed,
     )
@@ -38,7 +38,7 @@ def _classify_recovery(recovery: RecoveryState) -> RecoveryInfo:
 def _find_first_recovery(subsystems: dict[str, object]) -> RecoveryInfo | None:
     for sub_state in subsystems.values():
         if isinstance(sub_state, RecoveringSt):
-            return _classify_recovery(sub_state.recovery)
+            return _classify_recovery(sub_state)
     return None
 
 

@@ -613,6 +613,7 @@ class TestBadNodeCountSafeguard:
             ),
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=["node-old"],
         )
         result = await _step_last(stepper,
             state,
@@ -651,6 +652,7 @@ class TestBadNodeCountSafeguard:
             ),
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=["node-old-1", "node-old-2"],
         )
         result = await _step_last(stepper,
             state,
@@ -664,6 +666,7 @@ class TestBadNodeCountSafeguard:
         assert isinstance(result, RecoveringSt)
         assert isinstance(result.recovery, RealtimeChecksSt)
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-old-1", "node-old-2", "node-new"}
+        assert set(result.known_bad_node_ids) == {"node-old-1", "node-old-2", "node-new"}
 
 
 # ---------------------------------------------------------------------------
