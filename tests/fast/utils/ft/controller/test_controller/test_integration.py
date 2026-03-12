@@ -181,7 +181,7 @@ class TestRegisterRolloutSubsystems:
     def test_rollout_active_node_ids_returns_registered_nodes(self) -> None:
         harness = _make_test_controller_with_rollout()
         rollout_spec = harness.controller._subsystem_specs["rollout_ep72"]
-        assert rollout_spec.runtime.get_active_node_ids() == {"rollout-node-ep72-0", "rollout-node-ep72-1"}
+        assert rollout_spec.runtime.get_active_node_ids() == frozenset({"rollout-node-ep72-0", "rollout-node-ep72-1"})
 
 
 class TestNormalOperationWithRollout:

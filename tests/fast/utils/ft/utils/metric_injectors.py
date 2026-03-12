@@ -82,7 +82,7 @@ def make_test_exporter() -> tuple[CollectorRegistry, ControllerExporter]:
 def make_detector_context(
     metric_store: MiniPrometheus | None = None,
     mini_wandb: MiniWandb | None = None,
-    active_node_ids: set[str] | None = None,
+    active_node_ids: frozenset[str] | set[str] | None = None,
     job_status: JobStatus = JobStatus.RUNNING,
 ) -> DetectorContext:
     return DetectorContext(
@@ -90,7 +90,7 @@ def make_detector_context(
             time_series_store=metric_store or make_fake_metric_store(),
             mini_wandb=mini_wandb or make_fake_mini_wandb(),
         ),
-        active_node_ids=active_node_ids if active_node_ids is not None else set(),
+        active_node_ids=frozenset(active_node_ids) if active_node_ids is not None else frozenset(),
         job_status=job_status,
     )
 

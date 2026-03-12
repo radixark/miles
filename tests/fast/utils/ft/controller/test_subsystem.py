@@ -76,10 +76,10 @@ class TestSubsystemSpec:
 
         assert spec.config.detectors == []
         assert isinstance(spec.config.monitoring_config, MonitoringIterationProgressConfig)
-        assert spec.runtime.get_active_node_ids() == set()
+        assert spec.runtime.get_active_node_ids() == frozenset()
 
     def test_custom_get_active_node_ids(self) -> None:
-        nodes = {"node-1", "node-2"}
+        nodes = frozenset({"node-1", "node-2"})
 
         spec = SubsystemSpec(
             config=SubsystemConfig(),
@@ -89,7 +89,7 @@ class TestSubsystemSpec:
             ),
         )
 
-        assert spec.runtime.get_active_node_ids() == {"node-1", "node-2"}
+        assert spec.runtime.get_active_node_ids() == frozenset({"node-1", "node-2"})
 
     def test_config_and_runtime_are_separate(self) -> None:
         """Static config should not contain runtime objects, and vice versa."""

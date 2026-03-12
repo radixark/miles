@@ -10,7 +10,7 @@ from miles.utils.ft.controller.types import Decision, MetricStore
 logger = logging.getLogger(__name__)
 
 
-def _filter_node_ids_by_active(node_ids: list[str], active_node_ids: set[str]) -> list[str]:
+def _filter_node_ids_by_active(node_ids: list[str], active_node_ids: frozenset[str]) -> list[str]:
     """Keep only node IDs that are in the active training placement."""
     return [n for n in node_ids if n in active_node_ids]
 
@@ -18,7 +18,7 @@ def _filter_node_ids_by_active(node_ids: list[str], active_node_ids: set[str]) -
 @dataclass
 class DetectorContext:
     metric_store: MetricStore
-    active_node_ids: set[str] = field(default_factory=set)
+    active_node_ids: frozenset[str] = field(default_factory=frozenset)
     job_status: JobStatus | None = None
 
 

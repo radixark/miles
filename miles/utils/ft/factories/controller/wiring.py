@@ -67,9 +67,9 @@ def assemble_ft_controller(
         training_rank_roster_box=training_rank_roster_box,
     )
 
-    def _get_active_training_nodes() -> set[str]:
+    def _get_active_training_nodes() -> frozenset[str]:
         roster = training_rank_roster_box.value
-        return set(roster.rank_placement.values()) if roster is not None else set()
+        return frozenset(roster.rank_placement.values()) if roster is not None else frozenset()
 
     resolved_orchestrator: DiagnosticOrchestratorProtocol = diagnostic_orchestrator or DiagnosticOrchestrator(
         node_agent_registry=node_agent_registry,

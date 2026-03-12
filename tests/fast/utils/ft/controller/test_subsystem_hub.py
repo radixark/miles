@@ -43,20 +43,34 @@ class TestRolloutManagerHandle:
 
 
 class TestRolloutNodeIds:
-    def test_get_returns_empty_set_for_unknown_cell(self) -> None:
+    def test_get_returns_empty_frozenset_for_unknown_cell(self) -> None:
         hub = SubsystemHub(training_rank_roster_box=Box(None))
-        assert hub.get_rollout_node_ids("cell-0") == set()
+        result = hub.get_rollout_node_ids("cell-0")
+        assert result == frozenset()
+        assert isinstance(result, frozenset)
 
     def test_set_and_get_round_trip(self) -> None:
         hub = SubsystemHub(training_rank_roster_box=Box(None))
-        node_ids = {"node-0", "node-1"}
-        hub.set_rollout_node_ids("cell-0", node_ids)
-        assert hub.get_rollout_node_ids("cell-0") == node_ids
+        hub.set_rollout_node_ids("cell-0", {"node-0", "node-1"})
+        result = hub.get_rollout_node_ids("cell-0")
+        assert result == frozenset({"node-0", "node-1"})
+        assert isinstance(result, frozenset)
 
     def test_per_cell_isolation(self) -> None:
         hub = SubsystemHub(training_rank_roster_box=Box(None))
         hub.set_rollout_node_ids("cell-a", {"node-0"})
         hub.set_rollout_node_ids("cell-b", {"node-1", "node-2"})
 
-        assert hub.get_rollout_node_ids("cell-a") == {"node-0"}
-        assert hub.get_rollout_node_ids("cell-b") == {"node-1", "node-2"}
+        assert hub.get_rollout_node_ids("cell-a") == frozenset({"node-0"})
+        assert hub.get_rollout_node_ids("cell-b") == frozenset({"node-1", "node-2"})
+
+    def test_stored_as_frozenset_cuts_external_alias(self) -> None:
+        """set_rollout_node_ids stores a frozenset copy, so mutating the
+        original mutable set cannot affect the hub's internal state."""
+        hub = SubsystemHub(training_rank_roster_box=Box(None))
+        mutable: set[str] = {"node-0"}
+        hub.set_rollout_node_ids("cell-0", mutable)
+
+        mutable.add("node-injected")
+
+        assert hub.get_rollout_node_ids("cell-0") == frozenset({"node-0"})

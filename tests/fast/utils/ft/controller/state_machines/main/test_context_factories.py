@@ -62,23 +62,23 @@ def _make_main_context(
 class TestShouldRunDetectors:
     def test_returns_false_when_active_node_ids_empty(self) -> None:
         ctx = _make_main_context(tick_count=10, registration_grace_ticks=5)
-        assert _should_run_detectors(active_node_ids=set(), context=ctx) is False
+        assert _should_run_detectors(active_node_ids=frozenset(), context=ctx) is False
 
     def test_returns_false_during_registration_grace_period(self) -> None:
         ctx = _make_main_context(tick_count=3, registration_grace_ticks=5)
-        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is False
+        assert _should_run_detectors(active_node_ids=frozenset({"node-0"}), context=ctx) is False
 
     def test_returns_false_at_exact_grace_tick_boundary(self) -> None:
         ctx = _make_main_context(tick_count=5, registration_grace_ticks=5)
-        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is False
+        assert _should_run_detectors(active_node_ids=frozenset({"node-0"}), context=ctx) is False
 
     def test_returns_true_after_grace_period(self) -> None:
         ctx = _make_main_context(tick_count=6, registration_grace_ticks=5)
-        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is True
+        assert _should_run_detectors(active_node_ids=frozenset({"node-0"}), context=ctx) is True
 
     def test_returns_true_with_nodes_and_no_grace(self) -> None:
         ctx = _make_main_context(tick_count=1, registration_grace_ticks=0)
-        assert _should_run_detectors(active_node_ids={"node-0", "node-1"}, context=ctx) is True
+        assert _should_run_detectors(active_node_ids=frozenset({"node-0", "node-1"}), context=ctx) is True
 
     def test_grace_period_resets_on_main_job_new_run(self) -> None:
         """After a new run starts at tick 100, grace period should apply
@@ -89,7 +89,7 @@ class TestShouldRunDetectors:
             run_start_tick=100,
             registration_grace_ticks=5,
         )
-        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is False
+        assert _should_run_detectors(active_node_ids=frozenset({"node-0"}), context=ctx) is False
 
     def test_detectors_run_after_grace_period_since_new_run(self) -> None:
         """Once enough ticks pass after the new run's start tick,
@@ -99,7 +99,7 @@ class TestShouldRunDetectors:
             run_start_tick=100,
             registration_grace_ticks=5,
         )
-        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is True
+        assert _should_run_detectors(active_node_ids=frozenset({"node-0"}), context=ctx) is True
 
 
 class TestBuildSubsystemContext:
@@ -117,7 +117,7 @@ class TestBuildSubsystemContext:
             runtime=SubsystemRuntime(
                 actuator=MagicMock(),
                 cooldown=cooldown_a,
-                get_active_node_ids=lambda: {"node-0"},
+                get_active_node_ids=lambda: frozenset({"node-0"}),
             ),
         )
         spec_b = SubsystemSpec(
@@ -125,7 +125,7 @@ class TestBuildSubsystemContext:
             runtime=SubsystemRuntime(
                 actuator=MagicMock(),
                 cooldown=cooldown_b,
-                get_active_node_ids=lambda: {"node-1"},
+                get_active_node_ids=lambda: frozenset({"node-1"}),
             ),
         )
 
@@ -153,7 +153,7 @@ class TestBuildSubsystemContext:
             ),
             runtime=SubsystemRuntime(
                 actuator=actuator,
-                get_active_node_ids=lambda: {"node-0"},
+                get_active_node_ids=lambda: frozenset({"node-0"}),
             ),
         )
         recovery_stepper = AsyncMock()
@@ -170,7 +170,7 @@ class TestBuildSubsystemContext:
         assert result.tick_count == ctx.tick_count
         assert result.should_run_detectors is True
         assert result.detector_context is not None
-        assert result.detector_context.active_node_ids == {"node-0"}
+        assert result.detector_context.active_node_ids == frozenset({"node-0"})
         assert result.notifier is ctx.shared.notifier
         assert result.detectors == []
         assert result.cooldown is spec.runtime.cooldown
@@ -184,7 +184,7 @@ class TestBuildSubsystemContext:
             config=SubsystemConfig(),
             runtime=SubsystemRuntime(
                 actuator=MagicMock(),
-                get_active_node_ids=lambda: {"node-0"},
+                get_active_node_ids=lambda: frozenset({"node-0"}),
             ),
         )
 

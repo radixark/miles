@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
 from miles.utils.ft.controller.subsystem_hub.training_rank_roster import TrainingRankRoster
 from miles.utils.ft.utils.box import Box
@@ -26,7 +27,7 @@ class SubsystemHub:
     ) -> None:
         self._training_rank_roster_box = training_rank_roster_box
         self._rollout_manager_handle: object | None = None
-        self._rollout_node_ids: dict[str, set[str]] = {}
+        self._rollout_node_ids: dict[str, frozenset[str]] = {}
 
     @property
     def training_rank_roster(self) -> TrainingRankRoster:
@@ -47,9 +48,9 @@ class SubsystemHub:
         self._rollout_manager_handle = handle
         logger.info("rollout_handle_set")
 
-    def set_rollout_node_ids(self, cell_id: str, node_ids: set[str]) -> None:
-        self._rollout_node_ids[cell_id] = node_ids
+    def set_rollout_node_ids(self, cell_id: str, node_ids: Iterable[str]) -> None:
+        self._rollout_node_ids[cell_id] = frozenset(node_ids)
         logger.info("rollout_node_ids_set cell_id=%s nodes=%s", cell_id, sorted(node_ids))
 
-    def get_rollout_node_ids(self, cell_id: str) -> set[str]:
-        return self._rollout_node_ids.get(cell_id, set())
+    def get_rollout_node_ids(self, cell_id: str) -> frozenset[str]:
+        return self._rollout_node_ids.get(cell_id, frozenset())

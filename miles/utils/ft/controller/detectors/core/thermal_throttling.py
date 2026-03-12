@@ -60,7 +60,7 @@ class ThermalThrottlingDetector(BaseFaultDetector):
 
 def _find_temperature_outlier_nodes(
     metric_store: TimeSeriesQueryProtocol,
-    active_node_ids: set[str],
+    active_node_ids: frozenset[str],
     delta_threshold: float,
 ) -> list[str]:
     """Return all nodes whose hottest GPU exceeds the cluster-wide average

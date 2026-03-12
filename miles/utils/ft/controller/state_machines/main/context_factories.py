@@ -49,7 +49,7 @@ def build_subsystem_context(
 
 def _should_run_detectors(
     *,
-    active_node_ids: set[str],
+    active_node_ids: frozenset[str],
     context: MainContext,
 ) -> bool:
     if len(active_node_ids) == 0:
@@ -64,7 +64,7 @@ def _should_run_detectors(
 
 def _build_detector_context(
     *,
-    active_node_ids: set[str],
+    active_node_ids: frozenset[str],
     context: MainContext,
 ) -> DetectorContext:
     return DetectorContext(
