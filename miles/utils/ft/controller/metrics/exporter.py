@@ -115,7 +115,7 @@ class ControllerExporter:
         self._recovery_phase.labels(subsystem=subsystem).set(phase_int)
 
     def update_main_job_status(self, status: JobStatus) -> None:
-        self._main_job_status.set(_JOB_STATUS_TO_NUMERIC.get(status, 0))
+        self._main_job_status.set(_JOB_STATUS_TO_NUMERIC[status])
 
     def update_tick_duration(self, seconds: float) -> None:
         self._tick_duration_seconds.observe(seconds)

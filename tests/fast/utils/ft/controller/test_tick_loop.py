@@ -168,6 +168,24 @@ class TestCollectSubsystemModes:
         assert result == {}
 
 
+class TestRecoveryStateToIntCompleteness:
+    """L-7: RECOVERY_STATE_TO_INT used .get(key, 0) which silently
+    defaulted unknown states to 0. Now uses dict[key] which raises
+    KeyError on unmapped state types."""
+
+    def test_all_recovery_states_are_mapped(self) -> None:
+        from miles.utils.ft.controller.state_machines.recovery.models import (
+            EvictingAndRestartingSt,
+            NotifyHumansSt,
+            RecoveryDoneSt,
+            StopTimeDiagnosticsSt,
+        )
+
+        expected_types = [RealtimeChecksSt, EvictingAndRestartingSt, StopTimeDiagnosticsSt, NotifyHumansSt, RecoveryDoneSt]
+        for state_type in expected_types:
+            assert state_type in RECOVERY_STATE_TO_INT, f"{state_type.__name__} missing from mapping"
+
+
 class TestRegistrationGraceTicks:
     async def test_roster_warn_and_coverage_skipped_when_roster_is_none(self) -> None:
         """When roster is None, warn_if_incomplete and coverage check are skipped."""

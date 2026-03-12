@@ -157,6 +157,6 @@ class TickLoop:
             is_recovery = isinstance(sub_state, RecoveringSt)
             phase_int = 0
             if is_recovery:
-                phase_int = RECOVERY_STATE_TO_INT.get(type(sub_state.recovery), 0)
+                phase_int = RECOVERY_STATE_TO_INT[type(sub_state.recovery)]
             result[name] = (is_recovery, phase_int)
         return result

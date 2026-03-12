@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from prometheus_client import CollectorRegistry
 from tests.fast.utils.ft.conftest import get_sample_value, make_test_exporter
 
 import miles.utils.ft.controller.metrics.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.metrics.exporter import ControllerExporter
+from miles.utils.ft.controller.metrics.exporter import ControllerExporter, _JOB_STATUS_TO_NUMERIC
 
 
 class TestControllerExporterGauges:
@@ -224,3 +225,17 @@ class TestControllerExporterLifecycle:
         _, exporter = make_test_exporter()
         exporter.stop()
         assert exporter._httpd is None
+
+
+class TestJobStatusMappingCompleteness:
+    """L-7: _JOB_STATUS_TO_NUMERIC used .get(status, 0) which silently
+    defaulted unknown statuses to 0. Now uses direct dict access which
+    raises KeyError on unmapped statuses."""
+
+    def test_all_job_statuses_are_mapped(self) -> None:
+        for status in JobStatus:
+            assert status in _JOB_STATUS_TO_NUMERIC, f"{status} missing from mapping"
+
+    def test_unknown_status_raises_key_error(self) -> None:
+        with pytest.raises(KeyError):
+            _JOB_STATUS_TO_NUMERIC["bogus"]  # type: ignore[index]
