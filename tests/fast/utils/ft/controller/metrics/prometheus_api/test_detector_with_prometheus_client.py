@@ -104,11 +104,17 @@ class _ResponseRouter:
 
 class TestHangDetectorWithPrometheusClient:
     def test_hang_detected_when_heartbeat_stalled(self) -> None:
+        # count_over_time must match before AGENT_HEARTBEAT so the router
+        # returns a count >= 2 (enough data) instead of the heartbeat value 0.0
         router = _ResponseRouter(
             {
                 TRAINING_PHASE: _vector_json(
                     TRAINING_PHASE,
                     [_vector_item(TRAINING_PHASE, PHASE_TRAINING, labels={"rank": "0"})],
+                ),
+                "count_over_time": _vector_json(
+                    AGENT_HEARTBEAT,
+                    [_vector_item(AGENT_HEARTBEAT, 10.0, labels={"rank": "0"})],
                 ),
                 AGENT_HEARTBEAT: _vector_json(
                     AGENT_HEARTBEAT,
