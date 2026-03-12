@@ -34,10 +34,12 @@ async def stop_metric_store_task(
     store: TimeSeriesStoreLifecycle,
     task: asyncio.Task[None],
 ) -> None:
-    await store.stop()
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        await store.stop()
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     logger.info("scrape_loop_stopped")
