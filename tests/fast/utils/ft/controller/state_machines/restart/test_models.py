@@ -9,7 +9,9 @@ from pydantic import ValidationError
 
 from miles.utils.ft.controller.state_machines.restart.models import (
     EvictingSt,
+    MonitoringIterationProgressConfig,
     MonitoringProgressSt,
+    MonitoringSustainedAliveConfig,
     RestartDoneSt,
     RestartFailedSt,
     RestartState,
@@ -69,6 +71,35 @@ class TestStoppingAndRestartingValidator:
         state = StoppingAndRestartingSt(submitted=True, submit_time=now)
         assert state.submitted is True
         assert state.submit_time == now
+
+
+class TestMonitoringConfigValidation:
+    """Config fields lacked ge=0 validation, so negative values could cause
+    instant success (iterations=0) or instant timeout (timeout_seconds=0)."""
+
+    def test_iteration_progress_negative_success_iterations_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            MonitoringIterationProgressConfig(success_iterations=-1)
+
+    def test_iteration_progress_zero_success_iterations_allowed(self) -> None:
+        cfg = MonitoringIterationProgressConfig(success_iterations=0)
+        assert cfg.success_iterations == 0
+
+    def test_iteration_progress_negative_timeout_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            MonitoringIterationProgressConfig(timeout_seconds=-1)
+
+    def test_sustained_alive_negative_duration_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            MonitoringSustainedAliveConfig(alive_duration_seconds=-1)
+
+    def test_sustained_alive_zero_duration_allowed(self) -> None:
+        cfg = MonitoringSustainedAliveConfig(alive_duration_seconds=0)
+        assert cfg.alive_duration_seconds == 0
+
+    def test_sustained_alive_negative_timeout_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            MonitoringSustainedAliveConfig(timeout_seconds=-1)
 
 
 class TestRestartStateFrozen:

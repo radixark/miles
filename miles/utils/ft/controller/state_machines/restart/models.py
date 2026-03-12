@@ -17,16 +17,16 @@ class MonitoringIterationProgressConfig(FtBaseModel):
     """Training mode: confirm recovery after N successful iterations."""
 
     mode: Literal["iteration_progress"] = "iteration_progress"
-    success_iterations: int = 10
-    timeout_seconds: int = 600
+    success_iterations: int = Field(default=10, ge=0)
+    timeout_seconds: int = Field(default=600, ge=0)
 
 
 class MonitoringSustainedAliveConfig(FtBaseModel):
     """Rollout mode: confirm recovery after get_status() == RUNNING for N seconds."""
 
     mode: Literal["sustained_alive"] = "sustained_alive"
-    alive_duration_seconds: int = 180
-    timeout_seconds: int = 600
+    alive_duration_seconds: int = Field(default=180, ge=0)
+    timeout_seconds: int = Field(default=600, ge=0)
 
 
 MonitoringConfig = Annotated[
@@ -93,5 +93,5 @@ class RestartContext(FtBaseModel):
     actuator: SubsystemActuatorProtocol
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig
     is_main_job_restart: bool
-    pending_timeout_seconds: int = 300
+    pending_timeout_seconds: int = Field(default=300, ge=0)
     restart_lock: asyncio.Lock | None = None
