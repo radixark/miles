@@ -24,7 +24,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         *,
         node_agent_registry: NodeAgentRegistry | None = None,
         node_agents: dict[str, NodeAgentProtocol] | None = None,
-        pipeline: list[ClusterExecutorProtocol] | None = None,
+        pipeline: list[ClusterExecutorProtocol],
         default_timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         pipeline_timeout_seconds: int = 900,
     ) -> None:
@@ -37,7 +37,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         else:
             self._node_agent_registry = NodeAgentRegistry()
 
-        self._pipeline = pipeline or []
+        self._pipeline = pipeline
         self._default_timeout_seconds = default_timeout_seconds
         self._pipeline_timeout_seconds = pipeline_timeout_seconds
 

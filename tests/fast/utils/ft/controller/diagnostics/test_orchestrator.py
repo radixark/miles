@@ -67,7 +67,7 @@ class TestDiagnosticOrchestratorEmptyPipeline:
 
     @pytest.mark.anyio
     async def test_no_pipeline_arg_returns_notify_human(self) -> None:
-        orchestrator = DiagnosticOrchestrator(node_agents={})
+        orchestrator = DiagnosticOrchestrator(node_agents={}, pipeline=[])
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert decision.bad_node_ids == []
