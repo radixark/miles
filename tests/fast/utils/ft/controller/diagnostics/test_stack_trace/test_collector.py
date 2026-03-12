@@ -72,6 +72,38 @@ class TestCollectStackTraceSuspects:
 
         assert "node-0" in result
 
+    def test_invalid_json_marks_node_as_suspect(self) -> None:
+        """M-6: json.loads on corrupt details used to raise unhandled
+        JSONDecodeError, crashing the entire gather. Now caught and the
+        node is marked as suspect."""
+        node_agents = {"node-0": _make_agent_with_trace("node-0", details="not valid json{{")}
+
+        result = asyncio.run(
+            collect_stack_trace_suspects(
+                node_agents=node_agents,
+                rank_pids_provider=lambda nid: {0: 1234},
+                default_timeout_seconds=30,
+            )
+        )
+
+        assert "node-0" in result
+
+    def test_invalid_model_marks_node_as_suspect(self) -> None:
+        """M-6: if PySpyThread.model_validate fails (e.g. missing required
+        fields), the node should be treated as suspect, not crash."""
+        bad_thread_data = json.dumps([{"bad_field": "value"}])
+        node_agents = {"node-0": _make_agent_with_trace("node-0", details=bad_thread_data)}
+
+        result = asyncio.run(
+            collect_stack_trace_suspects(
+                node_agents=node_agents,
+                rank_pids_provider=lambda nid: {0: 1234},
+                default_timeout_seconds=30,
+            )
+        )
+
+        assert "node-0" in result
+
     def test_successful_collection_returns_aggregation_suspects(self) -> None:
         threads_json = json.dumps(_normal_threads())
         node_agents = {

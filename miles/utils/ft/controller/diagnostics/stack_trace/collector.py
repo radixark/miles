@@ -46,7 +46,17 @@ async def collect_stack_trace_suspects(
         )
 
         if result.passed:
-            threads = [PySpyThread.model_validate(t) for t in json.loads(result.details)]
+            try:
+                threads = [PySpyThread.model_validate(t) for t in json.loads(result.details)]
+            except (json.JSONDecodeError, Exception) as exc:
+                suspect_from_failures.append(node_id)
+                logger.warning(
+                    "stack_trace_parse_failed node=%s: %s",
+                    node_id,
+                    exc,
+                    exc_info=True,
+                )
+                return
             traces[node_id] = threads
         else:
             suspect_from_failures.append(node_id)
