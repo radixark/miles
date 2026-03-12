@@ -162,7 +162,7 @@ async def _cleanup_environment() -> None:
 
     await _cleanup_sglang_processes()
 
-    node_mgr = K8sNodeManager()
+    node_mgr = K8sNodeManager(namespace=os.environ.get("K8S_NAMESPACE", "default"))
     try:
         await clear_all_bad_node_markers(node_mgr)
     except Exception:
@@ -251,7 +251,7 @@ async def ft_controller_handle(
 @pytest.fixture
 async def k8s_node_manager(ray_cluster: None) -> AsyncGenerator[K8sNodeManager, None]:
     """Shared K8sNodeManager for test use (e.g. checking bad nodes)."""
-    node_mgr = K8sNodeManager()
+    node_mgr = K8sNodeManager(namespace=os.environ.get("K8S_NAMESPACE", "default"))
     yield node_mgr
     await node_mgr.aclose()
 
