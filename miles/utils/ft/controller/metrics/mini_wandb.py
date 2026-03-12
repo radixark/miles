@@ -80,6 +80,8 @@ class MiniWandb(TrainingMetricStoreProtocol):
         metric_name: str,
         last_n: int,
     ) -> list[StepValue]:
+        if last_n < 0:
+            raise ValueError(f"last_n must be >= 0, got {last_n}")
         snapshot = list(self._active_data())
         result: list[StepValue] = []
         for record in reversed(snapshot):

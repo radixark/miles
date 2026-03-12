@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 
 
@@ -91,6 +93,22 @@ class TestMiniWandbTimeWindowEdgeCases:
         assert grad[0] == (1, 1.5)
         assert len(lr) == 2
         assert lr[0][1] == 0.001
+
+
+class TestMiniWandbQueryValidation:
+    def test_query_last_n_negative_raises(self) -> None:
+        """Previously negative last_n caused reversed() to scan all records
+        without ever reaching the break condition, silently returning all data."""
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(run_id="run-1", step=1, metrics={"loss": 1.0})
+        with pytest.raises(ValueError, match="last_n must be >= 0"):
+            wandb.query_last_n_steps(metric_name="loss", last_n=-1)
+
+    def test_query_last_n_zero_returns_empty(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(run_id="run-1", step=1, metrics={"loss": 1.0})
+        result = wandb.query_last_n_steps(metric_name="loss", last_n=0)
+        assert result == []
 
 
 class TestMiniWandbRingBuffer:
