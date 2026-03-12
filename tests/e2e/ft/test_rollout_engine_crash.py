@@ -3,6 +3,9 @@
 Verifies that a software-level sglang crash (not hardware) triggers only a
 subsystem-level restart (actuator stop+start) without evicting the node.
 Training subsystem should remain unaffected throughout.
+
+Uses shared scenario_rollout_crash for the core detection → recovery flow,
+then adds E2E-specific assertions (K8s eviction check, training advancement).
 """
 
 from __future__ import annotations
@@ -17,10 +20,9 @@ from tests.e2e.ft.conftest import (
     ROLLOUT_FOCUSED,
     find_rollout_node,
     get_status,
-    wait_for_all_subsystems_detecting,
-    wait_for_subsystem_state,
     wait_for_training_stable,
 )
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import scenario_rollout_crash
 
 from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
 
@@ -36,19 +38,12 @@ async def test_rollout_engine_crash_restarts_without_eviction(
 ) -> None:
     handle = ft_controller_handle
 
-    # Step 1: wait for training to stabilize
-    await wait_for_training_stable(handle=handle, n_iterations=3, timeout=300.0)
-
-    # Step 2: confirm rollout_0 is in DetectingAnomalySt
+    # Step 1: discover rollout node and subsystem
     status = get_status(handle)
     rollout_subsystems = [n for n in status.subsystem_states if n.startswith("rollout_")]
     assert rollout_subsystems, f"No rollout subsystems found in {status.subsystem_states}"
     target_subsystem = rollout_subsystems[0]
-    assert status.subsystem_states[target_subsystem] == "DetectingAnomalySt", (
-        f"{target_subsystem} not in DetectingAnomalySt: {status.subsystem_states[target_subsystem]}"
-    )
 
-    # Step 3: find a rollout node and record its ID
     rollout_node_id, rollout_injector = find_rollout_node(fault_injector)
     logger.info("target_rollout_node=%s subsystem=%s", rollout_node_id, target_subsystem)
 
@@ -58,40 +53,24 @@ async def test_rollout_engine_crash_restarts_without_eviction(
         rollout_injectors={rollout_node_id: rollout_injector},
     )
 
-    # Step 4: SIGKILL sglang process on the rollout node
-    await fault.crash_rollout_on_node(node_id=rollout_node_id)
-    logger.info("sglang_killed on node=%s", rollout_node_id)
-
-    # Step 5: wait for rollout subsystem to enter RecoveringSt (~60-120s, alive_threshold_seconds=60)
-    await wait_for_subsystem_state(
+    # Step 2: run shared rollout crash scenario (wait stable → crash → recover → verify training)
+    status = await scenario_rollout_crash(
         handle=handle,
-        subsystem_name=target_subsystem,
-        target_state="RecoveringSt",
-        timeout=180.0,
+        injector=fault,
+        target_subsystem=target_subsystem,
+        target_node=rollout_node_id,
+        stable_iterations=3,
+        stable_timeout=300.0,
+        detection_timeout=180.0,
+        recovery_timeout=420.0,
     )
-    logger.info("%s entered RecoveringSt", target_subsystem)
 
-    # Step 6: wait for rollout subsystem to return to DetectingAnomalySt (Level 1 restart + sustained_alive ~180s)
-    await wait_for_subsystem_state(
-        handle=handle,
-        subsystem_name=target_subsystem,
-        target_state="DetectingAnomalySt",
-        timeout=420.0,
-    )
-    logger.info("%s returned to DetectingAnomalySt", target_subsystem)
-
-    # Step 7: assert node NOT evicted (software crash should not mark node as bad)
+    # Step 3: E2E-specific: assert node NOT evicted (software crash → no mark_node_bad)
     bad_nodes = set(await k8s_node_manager.get_bad_nodes())
     assert rollout_node_id not in bad_nodes, (
         f"Rollout node {rollout_node_id} was evicted despite software-only crash. "
         f"bad_nodes={bad_nodes}"
     )
 
-    # Step 8: assert training subsystem unaffected
-    status = get_status(handle)
-    assert status.subsystem_states.get("training") == "DetectingAnomalySt", (
-        f"Training subsystem affected: {status.subsystem_states.get('training')}"
-    )
-
-    # Step 9: assert training still advancing iterations
+    # Step 4: assert training still advancing iterations after recovery
     await wait_for_training_stable(handle=handle, n_iterations=3, timeout=120.0)
