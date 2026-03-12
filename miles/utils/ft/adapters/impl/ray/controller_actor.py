@@ -28,7 +28,7 @@ class _FtControllerActorCls:
     ) -> None:
         bundle = builder(config=config, **kwargs)
         self._ctrl = bundle.controller
-        self._hub = bundle.hub
+        self._subsystem_hub = bundle.subsystem_hub
 
     async def run(self) -> None:
         await self._ctrl.run()
@@ -61,7 +61,7 @@ class _FtControllerActorCls:
         exporter_address: str,
         pid: int,
     ) -> None:
-        self._hub.training_rank_roster.register_training_rank(
+        self._subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=rank,
             world_size=world_size,
@@ -96,7 +96,7 @@ class _FtControllerActorCls:
         rollout_manager_handle: object,
         metrics_address: str = "",
     ) -> None:
-        self._hub.set_rollout_handle(rollout_manager_handle)
+        self._subsystem_hub.set_rollout_handle(rollout_manager_handle)
         if metrics_address:
             self._ctrl.add_scrape_target("rollout-ft-agent", metrics_address)
 

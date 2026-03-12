@@ -394,7 +394,7 @@ class TestLogStep:
             metrics={"loss": 3.0},
         )
 
-        assert harness.hub.training_rank_roster_box.value is None
+        assert harness.subsystem_hub.training_rank_roster_box.value is None
         assert harness.mini_wandb.latest(metric_name="loss") is None
         harness.mini_wandb.set_active_run_id("run-123")
         assert harness.mini_wandb.latest(metric_name="loss") == 3.0

@@ -154,7 +154,7 @@ class TestFtControllerActorProxy:
         harness = make_test_controller()
         actor = _FtControllerActorCls.__new__(_FtControllerActorCls)
         actor._ctrl = harness.controller
-        actor._hub = harness.hub
+        actor._subsystem_hub = harness.subsystem_hub
         return actor, harness
 
     @pytest.mark.anyio
@@ -213,7 +213,7 @@ class TestFtControllerActorProxy:
             metrics_address="http://localhost:9999",
         )
 
-        assert harness.hub._rollout_manager_handle is fake_rollout_manager_handle
+        assert harness.subsystem_hub._rollout_manager_handle is fake_rollout_manager_handle
 
     @pytest.mark.anyio
     async def test_register_rollout_adds_scrape_target(self) -> None:

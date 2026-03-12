@@ -210,7 +210,7 @@ class ControllerTestHarness(NamedTuple):
     mini_wandb: MiniWandb
     controller_exporter: ControllerExporter
     notifier: FakeNotifier | None
-    hub: SubsystemHub | None = None
+    subsystem_hub: SubsystemHub | None = None
 
 
 def make_test_controller(
@@ -282,7 +282,7 @@ def make_test_controller(
         mini_wandb=mini_wandb,
         controller_exporter=controller_exporter,
         notifier=real_notifier,
-        hub=bundle.hub,
+        subsystem_hub=bundle.subsystem_hub,
     )
 
 

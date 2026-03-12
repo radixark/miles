@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 class FtControllerBundle(NamedTuple):
     controller: FtController
-    hub: SubsystemHub
+    subsystem_hub: SubsystemHub
 
 
 @dataclass
@@ -89,7 +89,7 @@ def create_ft_controller(
     agents: dict[str, object] = {}
     training_rank_roster_box: Box[TrainingRankRoster | None] = Box(None)
 
-    hub = SubsystemHub(
+    subsystem_hub = SubsystemHub(
         training_rank_roster_box=training_rank_roster_box,
     )
 
@@ -128,13 +128,13 @@ def create_ft_controller(
         _cid = cell_id  # capture for closure
         subsystem_configs[name] = SubsystemConfig(
             actuator=RayRolloutActuator(
-                get_handle=lambda: hub.rollout_manager_handle,
+                get_handle=lambda: subsystem_hub.rollout_manager_handle,
                 cell_id=cell_id,
             ),
             restart_mode=RestartMode.SUBSYSTEM,
             detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id),
             monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
-            get_active_node_ids=lambda _c=_cid: hub.get_rollout_node_ids(_c),
+            get_active_node_ids=lambda _c=_cid: subsystem_hub.get_rollout_node_ids(_c),
         )
 
     # --- Create Main SM (includes all subsystems from the start) ---
@@ -149,7 +149,7 @@ def create_ft_controller(
     instance = FtController(
         main_job=main_job,
         state_machine=controller_sm,
-        hub=hub,
+        subsystem_hub=subsystem_hub,
         mini_wandb=mini_wandb,
         agents=agents,  # type: ignore[arg-type]
         tick_interval=tick_interval,
@@ -183,4 +183,4 @@ def create_ft_controller(
     )
     instance._tick_loop = tick_loop
 
-    return FtControllerBundle(controller=instance, hub=hub)
+    return FtControllerBundle(controller=instance, subsystem_hub=subsystem_hub)

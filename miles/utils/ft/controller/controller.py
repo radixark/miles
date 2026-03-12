@@ -24,7 +24,7 @@ class FtController:
         *,
         main_job: MainJobProtocol,
         state_machine: StateMachine[MainState, MainContext],
-        hub: SubsystemHub,
+        subsystem_hub: SubsystemHub,
         mini_wandb: MiniWandb,
         agents: dict[str, NodeAgentProtocol],
         tick_interval: float,
@@ -36,7 +36,7 @@ class FtController:
     ) -> None:
         self._main_job = main_job
         self._state_machine = state_machine
-        self._hub = hub
+        self._subsystem_hub = subsystem_hub
         self._mini_wandb = mini_wandb
         self._agents = agents
         self._tick_interval = tick_interval
@@ -55,7 +55,7 @@ class FtController:
 
     @property
     def training_rank_roster(self) -> TrainingRankRoster:
-        return self._hub.training_rank_roster
+        return self._subsystem_hub.training_rank_roster
 
     @property
     def mini_wandb(self) -> MiniWandb:
@@ -116,7 +116,7 @@ class FtController:
         return build_controller_status(
             controller_state_machine=self._state_machine,
             mini_wandb=self._mini_wandb,
-            training_rank_roster=self._hub.training_rank_roster_box.value,
+            training_rank_roster=self._subsystem_hub.training_rank_roster_box.value,
             tick_count=self._tick_count,
         )
 
@@ -130,10 +130,10 @@ class FtController:
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
-        old_roster = self._hub.training_rank_roster_box.value
+        old_roster = self._subsystem_hub.training_rank_roster_box.value
         if old_roster is not None:
             old_roster.cleanup()
-        self._hub.training_rank_roster_box.value = TrainingRankRoster(
+        self._subsystem_hub.training_rank_roster_box.value = TrainingRankRoster(
             run_id=run_id,
             scrape_target_manager=self._scrape_target_manager,
         )

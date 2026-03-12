@@ -81,7 +81,7 @@ class _RolloutTestHarness(NamedTuple):
     notifier: FakeNotifier
     rollout_manager_handle: FakeRmHandle
     metric_store: MiniPrometheus
-    hub: SubsystemHub
+    subsystem_hub: SubsystemHub
 
 
 def _make_test_controller_with_rollout(
@@ -118,17 +118,17 @@ def _make_test_controller_with_rollout(
         monitoring_success_iterations=monitoring_success_iterations,
     )
     controller = bundle.controller
-    hub = bundle.hub
+    subsystem_hub = bundle.subsystem_hub
 
     controller._activate_run("test-run")
     controller.training_rank_roster.rank_placement[0] = "train-node-0"
     controller.training_rank_roster.rank_placement[1] = "train-node-1"
 
     rollout_manager_handle = FakeRmHandle()
-    hub.set_rollout_handle(rollout_manager_handle)
+    subsystem_hub.set_rollout_handle(rollout_manager_handle)
 
     for cid in resolved_cell_ids:
-        hub.set_rollout_node_ids(cid, {f"rollout-node-{cid}-0", f"rollout-node-{cid}-1"})
+        subsystem_hub.set_rollout_node_ids(cid, {f"rollout-node-{cid}-0", f"rollout-node-{cid}-1"})
 
     return _RolloutTestHarness(
         controller=controller,
@@ -137,7 +137,7 @@ def _make_test_controller_with_rollout(
         notifier=notifier,
         rollout_manager_handle=rollout_manager_handle,
         metric_store=metric_store,
-        hub=hub,
+        subsystem_hub=subsystem_hub,
     )
 
 
@@ -397,7 +397,7 @@ class TestColocatedHardwareFault:
             timeout_seconds=60,
         )
 
-        harness.hub.set_rollout_node_ids("ep72", {shared_node, "rollout-node-ep72-0"})
+        harness.subsystem_hub.set_rollout_node_ids("ep72", {shared_node, "rollout-node-ep72-0"})
 
         rollout_detector = _OneShotDecisionDetector(
             Decision(
