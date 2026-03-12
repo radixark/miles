@@ -102,9 +102,10 @@ async def run_stepper_to_convergence(
     for _ in range(max_iterations):
         had_transition = False
         async for new_state in stepper(current, context):
-            current = new_state
-            had_transition = True
-            yield current
+            if new_state != current:
+                current = new_state
+                had_transition = True
+                yield current
         if not had_transition:
             return
 

@@ -528,6 +528,30 @@ class TestRunStepperToConvergenceGenerator:
         assert 2 in values
 
 
+class TestRunStepperToConvergenceSameStateYield:
+    @pytest.mark.asyncio
+    async def test_same_state_yield_not_treated_as_transition(self) -> None:
+        """run_stepper_to_convergence previously treated every yield as a
+        transition. If a handler yielded the same state (e.g. no-op handler),
+        the loop would never converge. Now it uses value equality like
+        StateMachine.step, so same-state yields are skipped."""
+        stepper = _make_gen_stepper(SameStateGenHandler)
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_same_state_yield_does_not_hit_max_iterations(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Convergence should complete immediately without hitting the cap."""
+        stepper = _make_gen_stepper(SameStateGenHandler)
+        with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
+            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+
+        assert "hit max iterations" not in caplog.text
+
+
 class TestRunStepperToConvergenceMaxIterations:
     @pytest.mark.asyncio
     async def test_oscillating_stops_at_max_iterations(self) -> None:
