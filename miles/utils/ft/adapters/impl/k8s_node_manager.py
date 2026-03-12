@@ -88,10 +88,11 @@ class K8sNodeManager(NodeManagerProtocol):
             )
 
     async def aclose(self) -> None:
-        if self._api_client is not None:
-            await self._api_client.close()
-            self._api_client = None
-            self._core_v1 = None
+        async with self._init_lock:
+            if self._api_client is not None:
+                await self._api_client.close()
+                self._api_client = None
+                self._core_v1 = None
 
     async def assert_worker_node_affinity(self) -> None:
         """Validate that ray worker pods have a nodeAffinity NotIn rule for the label key.
@@ -155,7 +156,7 @@ class K8sNodeManager(NodeManagerProtocol):
             if not pod_name:
                 raise RuntimeError("K8S_POD_NAME env var not set. " "Configure Kubernetes Downward API in pod spec.")
 
-            core_v1 = await self._ensure_client()
+            core_v1 = await self._ensure_client_unlocked()
             pod = await retry_async_or_raise(
                 lambda: core_v1.read_namespaced_pod(
                     name=pod_name,
@@ -221,6 +222,11 @@ class K8sNodeManager(NodeManagerProtocol):
         )
 
     async def _ensure_client(self) -> CoreV1Api:
+        async with self._init_lock:
+            return await self._ensure_client_unlocked()
+
+    async def _ensure_client_unlocked(self) -> CoreV1Api:
+        """Must be called while holding self._init_lock."""
         if self._core_v1 is not None:
             return self._core_v1
 

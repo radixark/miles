@@ -416,3 +416,19 @@ class TestInitLockPreventsDuplicateWork:
         )
 
         assert manager._affinity_validated is True
+
+    @pytest.mark.anyio
+    async def test_concurrent_ensure_client_creates_api_client_once(self) -> None:
+        """Previously _ensure_client was not protected by the init lock, so
+        two concurrent callers could both see _core_v1 is None and both create
+        an ApiClient, leaking the first one. Now _ensure_client acquires the
+        lock, and the real init logic is in _ensure_client_unlocked."""
+        manager = K8sNodeManager(namespace="default")
+        manager._api_client = MagicMock()
+
+        results = await asyncio.gather(
+            manager._ensure_client(),
+            manager._ensure_client(),
+        )
+
+        assert results[0] is results[1]
