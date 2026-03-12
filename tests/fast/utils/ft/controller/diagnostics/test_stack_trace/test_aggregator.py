@@ -261,10 +261,11 @@ class TestAggregationResult:
         agg = StackTraceAggregator()
         traces = {
             "node-0": SAMPLE_PYSPY_THREADS_STUCK,
-            "node-1": SAMPLE_PYSPY_THREADS_DIFFERENT_STUCK,
+            "node-1": SAMPLE_PYSPY_THREADS_STUCK,
+            "node-2": SAMPLE_PYSPY_THREADS_DIFFERENT_STUCK,
         }
         result = agg.aggregate(traces=traces)
 
         json_str = result.model_dump_json()
         assert "node-0" in json_str
-        assert "node-1" in json_str
+        assert "node-2" in json_str
