@@ -9,7 +9,11 @@ import pytest
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.state_machines.subsystem.utils import handle_notify_human, run_detectors
+from miles.utils.ft.controller.state_machines.subsystem.utils import (
+    collect_evictable_bad_nodes,
+    handle_notify_human,
+    run_detectors,
+)
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
@@ -152,3 +156,84 @@ class TestHandleNotifyHuman:
         )
 
         await handle_notify_human(decision=decision, notifier=None)
+
+
+# ---------------------------------------------------------------------------
+# P1 item 13: collect_evictable_bad_nodes()
+# ---------------------------------------------------------------------------
+
+
+class _NotifyHumanDetector(BaseFaultDetector):
+    def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
+        return Decision(
+            action=ActionType.NOTIFY_HUMAN,
+            reason="notify human",
+            trigger=TriggerType.MISC,
+        )
+
+
+class _RecoveryDetectorWithNodes(BaseFaultDetector):
+    def __init__(self, bad_node_ids: list[str]) -> None:
+        self._bad_node_ids = bad_node_ids
+
+    def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
+        return Decision(
+            action=ActionType.ENTER_RECOVERY,
+            bad_node_ids=self._bad_node_ids,
+            reason="found bad nodes",
+            trigger=TriggerType.HARDWARE,
+        )
+
+
+class TestCollectEvictableBadNodes:
+    def test_returns_empty_when_context_is_none(self) -> None:
+        result = collect_evictable_bad_nodes(
+            detectors=[_RecoveryDetector()],
+            tick_detector_context=None,
+        )
+        assert result == set()
+
+    def test_accumulates_bad_nodes_across_multiple_enter_recovery(self) -> None:
+        ctx = _make_detector_context()
+        result = collect_evictable_bad_nodes(
+            detectors=[
+                _RecoveryDetectorWithNodes(["node-0"]),
+                _RecoveryDetectorWithNodes(["node-1", "node-2"]),
+            ],
+            tick_detector_context=ctx,
+        )
+        assert result == {"node-0", "node-1", "node-2"}
+
+    def test_ignores_notify_human_decisions(self) -> None:
+        ctx = _make_detector_context()
+        result = collect_evictable_bad_nodes(
+            detectors=[_NotifyHumanDetector(), _RecoveryDetectorWithNodes(["node-0"])],
+            tick_detector_context=ctx,
+        )
+        assert result == {"node-0"}
+
+    def test_all_passing_returns_empty(self) -> None:
+        ctx = _make_detector_context()
+        result = collect_evictable_bad_nodes(
+            detectors=[_PassingDetector()],
+            tick_detector_context=ctx,
+        )
+        assert result == set()
+
+    def test_enter_recovery_without_bad_node_ids_ignored(self) -> None:
+        """ENTER_RECOVERY with no bad_node_ids should not contribute to result."""
+        ctx = _make_detector_context()
+
+        class _NoNodeRecovery(BaseFaultDetector):
+            def _evaluate_raw(self, ctx_: DetectorContext) -> Decision:
+                return Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    reason="recovery without specific nodes",
+                    trigger=TriggerType.CRASH,
+                )
+
+        result = collect_evictable_bad_nodes(
+            detectors=[_NoNodeRecovery()],
+            tick_detector_context=ctx,
+        )
+        assert result == set()

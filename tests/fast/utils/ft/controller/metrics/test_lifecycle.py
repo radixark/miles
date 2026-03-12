@@ -88,3 +88,24 @@ class TestStopMetricStoreTask:
             await stop_metric_store_task(store=store, task=task)
 
         asyncio.run(_run())
+
+    def test_stop_still_cancels_task_when_store_stop_raises(self) -> None:
+        """P1 item 14: store.stop() raises → task should still be cancelled."""
+
+        async def _run() -> None:
+            store = AsyncMock()
+            store.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+
+            async def _noop() -> None:
+                await asyncio.Event().wait()
+
+            task = asyncio.create_task(_noop())
+
+            try:
+                await stop_metric_store_task(store=store, task=task)
+            except RuntimeError:
+                pass
+
+            assert task.cancelled() or task.done()
+
+        asyncio.run(_run())
