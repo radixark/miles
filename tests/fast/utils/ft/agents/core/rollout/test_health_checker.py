@@ -280,6 +280,33 @@ class TestLoopSurvivesException:
             await checker.shutdown()
 
 
+class TestCheckOneCellExceptionReportsUnhealthy:
+    @pytest.mark.anyio
+    async def test_exception_in_check_still_reports_unhealthy(self) -> None:
+        """_check_one_cell must always call report_fn even when an
+        exception occurs. Previously, the exception path could skip
+        the report_fn call, leaving the metric at a stale 'healthy' value."""
+
+        async def _crashing_health_fn(engine: object) -> None:
+            raise RuntimeError("unexpected health check failure")
+
+        collector = _ReportCollector()
+        checker = RolloutHealthChecker(
+            cells=[
+                CellEntry(cell_id="crash", get_engines=lambda: [_MockEngine(True)]),
+            ],
+            engine_health_fn=_crashing_health_fn,
+            report_fn=collector,
+            check_interval=0.05,
+        )
+
+        try:
+            await asyncio.sleep(0.15)
+            assert collector.latest("crash") is False
+        finally:
+            await checker.shutdown()
+
+
 class TestMultiCell:
     @pytest.mark.anyio
     async def test_independent_cell_results(self) -> None:
