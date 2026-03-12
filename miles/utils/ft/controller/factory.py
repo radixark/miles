@@ -9,7 +9,7 @@ from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
-from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig, SubsystemHub, TrainingRankRoster
+from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig, SubsystemHub, SubsystemRuntime, SubsystemSpec, TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main import (
     MainContext,
     NormalSt,
@@ -101,16 +101,20 @@ def create_ft_controller(
             max_count=_cooldown_max_count,
         )
 
-    # --- Training SubsystemConfig ---
-    training_config = SubsystemConfig(
-        actuator=TrainingSubsystemActuator(main_job=main_job),
-        restart_mode=RestartMode.MAIN_JOB,
-        detectors=resolved_detectors,
-        monitoring_config=monitoring_config,
-        cooldown=_make_cooldown(),
-        get_active_node_ids=_get_active_training_nodes,
+    # --- Training SubsystemSpec ---
+    training_spec = SubsystemSpec(
+        config=SubsystemConfig(
+            restart_mode=RestartMode.MAIN_JOB,
+            detectors=resolved_detectors,
+            monitoring_config=monitoring_config,
+        ),
+        runtime=SubsystemRuntime(
+            actuator=TrainingSubsystemActuator(main_job=main_job),
+            cooldown=_make_cooldown(),
+            get_active_node_ids=_get_active_training_nodes,
+        ),
     )
-    subsystem_configs: dict[str, SubsystemConfig] = {"training": training_config}
+    subsystem_specs: dict[str, SubsystemSpec] = {"training": training_spec}
 
     # --- Rollout SubsystemConfigs ---
     rollout_alive_dur = rollout_monitoring_alive_duration_seconds if rollout_monitoring_alive_duration_seconds is not None else 180
@@ -121,20 +125,24 @@ def create_ft_controller(
     for cell_id in (rollout_cell_ids or []):
         name = f"rollout_{cell_id}"
         _cid = cell_id  # capture for closure
-        subsystem_configs[name] = SubsystemConfig(
-            actuator=RayRolloutActuator(
-                get_handle=lambda: subsystem_hub.rollout_manager_handle,
-                cell_id=cell_id,
+        subsystem_specs[name] = SubsystemSpec(
+            config=SubsystemConfig(
+                restart_mode=RestartMode.SUBSYSTEM,
+                detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id, **rollout_det_kwargs),
+                monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=rollout_alive_dur),
             ),
-            restart_mode=RestartMode.SUBSYSTEM,
-            detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id, **rollout_det_kwargs),
-            monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=rollout_alive_dur),
-            cooldown=_make_cooldown(),
-            get_active_node_ids=lambda _c=_cid: subsystem_hub.get_rollout_node_ids(_c),
+            runtime=SubsystemRuntime(
+                actuator=RayRolloutActuator(
+                    get_handle=lambda: subsystem_hub.rollout_manager_handle,
+                    cell_id=cell_id,
+                ),
+                cooldown=_make_cooldown(),
+                get_active_node_ids=lambda _c=_cid: subsystem_hub.get_rollout_node_ids(_c),
+            ),
         )
 
     # --- Create Main SM (includes all subsystems from the start) ---
-    initial_subsystem_states = {name: DetectingAnomalySt() for name in subsystem_configs}
+    initial_subsystem_states = {name: DetectingAnomalySt() for name in subsystem_specs}
     main_stepper = create_main_stepper()
     controller_sm: StateMachine[MainState, MainContext] = StateMachine(
         initial_state=NormalSt(subsystems=initial_subsystem_states),
@@ -167,7 +175,7 @@ def create_ft_controller(
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         diagnostic_orchestrator=resolved_orchestrator,
         recovery_timeout_seconds=recovery_timeout_seconds,
-        subsystem_configs=subsystem_configs,
+        subsystem_specs=subsystem_specs,
         on_main_job_new_run=instance._activate_run,
         rank_pids_provider=lambda node_id: (r.get_rank_pids_for_node(node_id) if (r := training_rank_roster_box.value) is not None else {}),
         on_recovery_duration=duration_cb,

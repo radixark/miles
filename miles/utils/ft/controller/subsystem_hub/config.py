@@ -29,13 +29,27 @@ def _default_monitoring_config() -> MonitoringIterationProgressConfig:
 
 @dataclass
 class SubsystemConfig:
-    """Static configuration for a single subsystem (no runtime state)."""
+    """Pure static configuration — no runtime state or closures."""
 
-    actuator: SubsystemActuatorProtocol
     restart_mode: RestartMode = RestartMode.SUBSYSTEM
     detectors: list[BaseFaultDetector] = field(default_factory=list)
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig = field(
         default_factory=_default_monitoring_config
     )
+
+
+@dataclass
+class SubsystemRuntime:
+    """Runtime dependencies — stateful objects and closures."""
+
+    actuator: SubsystemActuatorProtocol
     cooldown: SlidingWindowThrottle = field(default_factory=lambda: SlidingWindowThrottle(window_minutes=30.0, max_count=3))
     get_active_node_ids: Callable[[], set[str]] = field(default_factory=lambda: lambda: set())
+
+
+@dataclass
+class SubsystemSpec:
+    """Complete specification for a single subsystem: config + runtime."""
+
+    config: SubsystemConfig
+    runtime: SubsystemRuntime

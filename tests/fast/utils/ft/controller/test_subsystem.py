@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
-from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, SubsystemRuntime, SubsystemSpec
 
 
 class TestMonitoringIterationProgressConfig:
@@ -61,21 +61,47 @@ class TestMonitoringSustainedAliveConfig:
             MonitoringSustainedAliveConfig(success_iterations=10)  # type: ignore[call-arg]
 
 
-class TestSubsystemConfig:
-    def test_defaults(self) -> None:
-        """Default detectors, monitoring_config, and get_active_node_ids are sensible."""
-        config = SubsystemConfig(actuator=AsyncMock())
+class TestSubsystemSpec:
+    """SubsystemConfig used to mix static config fields (restart_mode, detectors)
+    with runtime state (actuator, cooldown, get_active_node_ids). They are now
+    separated into SubsystemConfig (pure config) and SubsystemRuntime (runtime deps),
+    wrapped by SubsystemSpec.
+    """
 
-        assert config.detectors == []
-        assert isinstance(config.monitoring_config, MonitoringIterationProgressConfig)
-        assert config.get_active_node_ids() == set()
+    def test_defaults(self) -> None:
+        spec = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(actuator=AsyncMock()),
+        )
+
+        assert spec.config.detectors == []
+        assert isinstance(spec.config.monitoring_config, MonitoringIterationProgressConfig)
+        assert spec.runtime.get_active_node_ids() == set()
 
     def test_custom_get_active_node_ids(self) -> None:
         nodes = {"node-1", "node-2"}
 
-        config = SubsystemConfig(
-            actuator=AsyncMock(),
-            get_active_node_ids=lambda: nodes,
+        spec = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(
+                actuator=AsyncMock(),
+                get_active_node_ids=lambda: nodes,
+            ),
         )
 
-        assert config.get_active_node_ids() == {"node-1", "node-2"}
+        assert spec.runtime.get_active_node_ids() == {"node-1", "node-2"}
+
+    def test_config_and_runtime_are_separate(self) -> None:
+        """Static config should not contain runtime objects, and vice versa."""
+        spec = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(actuator=AsyncMock()),
+        )
+
+        assert not hasattr(spec.config, "actuator")
+        assert not hasattr(spec.config, "cooldown")
+        assert not hasattr(spec.config, "get_active_node_ids")
+
+        assert not hasattr(spec.runtime, "restart_mode")
+        assert not hasattr(spec.runtime, "detectors")
+        assert not hasattr(spec.runtime, "monitoring_config")

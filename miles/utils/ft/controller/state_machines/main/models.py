@@ -13,7 +13,7 @@ from miles.utils.ft.adapters.types import (
 )
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
-from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemSpec
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
@@ -42,7 +42,7 @@ class MainContext(FtBaseModel):
 
     # Level 2 job management
     main_job: MainJobProtocol
-    subsystem_configs: dict[str, SubsystemConfig]
+    subsystem_specs: dict[str, SubsystemSpec]
 
     # Shared per-tick data
     tick_count: int

@@ -28,7 +28,7 @@ from miles.utils.ft.controller.state_machines.recovery import create_recovery_st
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
 from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemSpec
 from miles.utils.ft.utils.state_machine import StateHandler, run_stepper_to_convergence
 
 logger = logging.getLogger(__name__)
@@ -78,8 +78,8 @@ def _update_external_execution_result(
             raise AssertionError(f"Unexpected state for _update_external_execution_result: {frozen_state}")
 
 
-def _build_fresh_subsystem_states(configs: dict[str, SubsystemConfig]) -> dict[str, SubsystemState]:
-    return {name: DetectingAnomalySt() for name in configs}
+def _build_fresh_subsystem_states(specs: dict[str, SubsystemSpec]) -> dict[str, SubsystemState]:
+    return {name: DetectingAnomalySt() for name in specs}
 
 
 class NormalHandler(StateHandler[NormalSt, MainContext]):
@@ -89,9 +89,9 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         self._subsystem_stepper = create_subsystem_stepper()
 
     async def step(self, state: NormalSt, context: MainContext):  # type: ignore[override]
-        assert set(state.subsystems.keys()) == set(context.subsystem_configs.keys()), (
+        assert set(state.subsystems.keys()) == set(context.subsystem_specs.keys()), (
             f"subsystem keys out of sync: state={set(state.subsystems.keys())} "
-            f"configs={set(context.subsystem_configs.keys())}"
+            f"configs={set(context.subsystem_specs.keys())}"
         )
 
         # Step 1: Step all subsystems to convergence
@@ -100,7 +100,7 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
 
         for name in sorted(curr_state.subsystems):
             sub_ctx = build_subsystem_context(
-                config=context.subsystem_configs[name],
+                spec=context.subsystem_specs[name],
                 context=context,
                 recovery_stepper=self._recovery_stepper,
                 restart_stepper=self._restart_stepper,
@@ -177,7 +177,7 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
         if execution_result is None:
             return None
 
-        fresh_states = _build_fresh_subsystem_states(context.subsystem_configs)
+        fresh_states = _build_fresh_subsystem_states(context.subsystem_specs)
         if state.requestor_name in fresh_states:
             restored = _update_external_execution_result(state.requestor_frozen_state, execution_result)
             fresh_states[state.requestor_name] = restored

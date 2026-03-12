@@ -7,7 +7,7 @@ from collections.abc import Callable
 from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.node_agents import NodeAgentCoverageChecker, NodeAgentRegistry
-from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, TrainingRankRoster
+from miles.utils.ft.controller.subsystem_hub import SubsystemSpec, TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
 from miles.utils.ft.utils.box import Box
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
@@ -37,7 +37,7 @@ class TickLoop:
         max_simultaneous_bad_nodes: int,
         diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
         recovery_timeout_seconds: int,
-        subsystem_configs: dict[str, SubsystemConfig],
+        subsystem_specs: dict[str, SubsystemSpec],
         on_main_job_new_run: Callable[[str], None],
         rank_pids_provider: Callable[[str], dict[int, int]],
         on_recovery_duration: Callable[[float], None] | None = None,
@@ -57,7 +57,7 @@ class TickLoop:
         self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
         self._diagnostic_orchestrator = diagnostic_orchestrator
         self._recovery_timeout_seconds = recovery_timeout_seconds
-        self.subsystem_configs = subsystem_configs
+        self.subsystem_specs = subsystem_specs
         self._external_on_main_job_new_run = on_main_job_new_run
         self._rank_pids_provider = rank_pids_provider
         self._on_recovery_duration = on_recovery_duration
@@ -114,7 +114,7 @@ class TickLoop:
     def _build_controller_context(self, *, job_status: JobStatus) -> MainContext:
         return MainContext(
             main_job=self._main_job,
-            subsystem_configs=self.subsystem_configs,
+            subsystem_specs=self.subsystem_specs,
             tick_count=self.tick_count,
             run_start_tick=self._run_start_tick,
             job_status=job_status,
@@ -168,7 +168,7 @@ class TickLoop:
             return result
 
         if isinstance(controller_state, RestartingMainJobSt):
-            modes = {name: (False, 0) for name in self.subsystem_configs}
+            modes = {name: (False, 0) for name in self.subsystem_specs}
             frozen = controller_state.requestor_frozen_state
             if isinstance(frozen, RecoveringSt):
                 modes[controller_state.requestor_name] = (
@@ -177,4 +177,4 @@ class TickLoop:
                 )
             return modes
 
-        return {name: (False, 0) for name in self.subsystem_configs}
+        return {name: (False, 0) for name in self.subsystem_specs}

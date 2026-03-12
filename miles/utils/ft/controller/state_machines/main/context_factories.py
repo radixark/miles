@@ -7,19 +7,19 @@ from miles.utils.ft.controller.state_machines.main.models import MainContext
 from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext
 from miles.utils.ft.controller.state_machines.restart.models import RestartContext
 from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemContext
-from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemSpec
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
 def build_subsystem_context(
     *,
-    config: SubsystemConfig,
+    spec: SubsystemSpec,
     context: MainContext,
     recovery_stepper: StateMachineStepper,
     restart_stepper: StateMachineStepper,
 ) -> SubsystemContext:
-    active_node_ids = config.get_active_node_ids()
+    active_node_ids = spec.runtime.get_active_node_ids()
     should_run = _should_run_detectors(active_node_ids=active_node_ids, context=context)
     detector_ctx = _build_detector_context(active_node_ids=active_node_ids, context=context) if should_run else None
 
@@ -29,12 +29,12 @@ def build_subsystem_context(
         should_run_detectors=should_run,
         detector_context=detector_ctx,
         notifier=context.notifier,
-        detectors=config.detectors,
-        cooldown=config.cooldown,
+        detectors=spec.config.detectors,
+        cooldown=spec.runtime.cooldown,
         detector_crash_tracker=context.detector_crash_tracker,
         recovery_stepper=recovery_stepper,
         recovery_context_factory=lambda trigger, start_time: _build_recovery_context(
-            config=config,
+            spec=spec,
             context=context,
             trigger=trigger,
             recovery_start_time=start_time,
@@ -42,7 +42,7 @@ def build_subsystem_context(
         ),
         on_recovery_duration=context.on_recovery_duration,
         max_simultaneous_bad_nodes=context.max_simultaneous_bad_nodes,
-        monitoring_config=config.monitoring_config,
+        monitoring_config=spec.config.monitoring_config,
         metric_store=context.metric_store,
     )
 
@@ -76,7 +76,7 @@ def _build_detector_context(
 
 def _build_recovery_context(
     *,
-    config: SubsystemConfig,
+    spec: SubsystemSpec,
     context: MainContext,
     trigger: TriggerType,
     recovery_start_time: datetime,
@@ -89,9 +89,9 @@ def _build_recovery_context(
         notifier=context.notifier,
         on_main_job_new_run=context.on_main_job_new_run,
         node_metadata=context.node_metadata,
-        actuator=config.actuator,
-        monitoring_config=config.monitoring_config,
-        restart_mode=config.restart_mode,
+        actuator=spec.runtime.actuator,
+        monitoring_config=spec.config.monitoring_config,
+        restart_mode=spec.config.restart_mode,
     )
     return RecoveryContext(
         trigger=trigger,
