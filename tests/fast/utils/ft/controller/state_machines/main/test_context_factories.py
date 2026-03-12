@@ -160,7 +160,7 @@ class TestBuildSubsystemContext:
         assert result.detector_context.active_node_ids == {"node-0"}
         assert result.notifier is ctx.notifier
         assert result.detectors == []
-        assert result.cooldown is ctx.cooldown
+        assert result.cooldown is config.cooldown
         assert result.recovery_stepper is recovery_stepper
         assert result.max_simultaneous_bad_nodes == ctx.max_simultaneous_bad_nodes
         assert result.monitoring_config is monitoring_config
