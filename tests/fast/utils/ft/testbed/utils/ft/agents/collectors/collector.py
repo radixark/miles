@@ -68,5 +68,6 @@ class TestbedCollector(BaseCollector):
             GaugeSample(name=DCGM_FI_DEV_GPU_UTIL, labels=labels, value=0.0),
             GaugeSample(name=XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL, labels=labels, value=0.0),
             GaugeSample(name=NODE_NETWORK_UP, labels={**labels, "device": "eth0"}, value=1.0),
+            GaugeSample(name=NODE_NETWORK_UP, labels={**labels, "device": "eth1"}, value=1.0),
             GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={**labels, "mountpoint": "/"}, value=500_000_000_000.0),
         ]
