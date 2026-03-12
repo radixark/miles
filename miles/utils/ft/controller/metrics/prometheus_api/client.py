@@ -42,6 +42,7 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         self._url = url.rstrip("/")
         self._client = httpx.Client(timeout=timeout)
         self._range_query_step_seconds = range_query_step_seconds
+        self._stop_event: asyncio.Event | None = None
 
     # -------------------------------------------------------------------
     # TimeSeriesStoreProtocol implementation (sync)
@@ -69,7 +70,7 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         await self._stop_event.wait()
 
     async def stop(self) -> None:
-        if hasattr(self, "_stop_event"):
+        if self._stop_event is not None:
             self._stop_event.set()
         self._client.close()
 
