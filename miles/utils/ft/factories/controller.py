@@ -59,6 +59,8 @@ def build_ft_controller(
     recovery_timeout_seconds_override: int | None = None,
     monitoring_timeout_seconds_override: int | None = None,
     monitoring_success_iterations_override: int | None = None,
+    rollout_alive_threshold_seconds_override: float | None = None,
+    rollout_monitoring_alive_duration_seconds_override: float | None = None,
     **kwargs: object,
 ) -> FtControllerBundle:
     """Build an FtController with all dependent components from config parameters.
@@ -156,6 +158,10 @@ def build_ft_controller(
         create_kwargs["monitoring_timeout_seconds"] = monitoring_timeout_seconds_override
     if monitoring_success_iterations_override is not None:
         create_kwargs["monitoring_success_iterations"] = monitoring_success_iterations_override
+    if rollout_alive_threshold_seconds_override is not None:
+        create_kwargs["rollout_alive_threshold_seconds"] = rollout_alive_threshold_seconds_override
+    if rollout_monitoring_alive_duration_seconds_override is not None:
+        create_kwargs["rollout_monitoring_alive_duration_seconds"] = rollout_monitoring_alive_duration_seconds_override
 
     return create_ft_controller(**create_kwargs)
 

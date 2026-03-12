@@ -54,11 +54,15 @@ def build_training_detectors(
     ]
 
 
-def build_rollout_detectors(*, cell_id: str) -> list[BaseFaultDetector]:
+def build_rollout_detectors(
+    *,
+    cell_id: str,
+    alive_threshold_seconds: float = 60.0,
+) -> list[BaseFaultDetector]:
     """Per-cell rollout detectors."""
     from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
 
-    return [RolloutCrashDetector(cell_id=cell_id)]
+    return [RolloutCrashDetector(cell_id=cell_id, alive_threshold_seconds=alive_threshold_seconds)]
 
 
 def build_detector_chain(

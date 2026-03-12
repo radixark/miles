@@ -58,6 +58,8 @@ def create_ft_controller(
     monitoring_success_iterations: int = 10,
     monitoring_timeout_seconds: int = 600,
     recovery_timeout_seconds: int = RECOVERY_TIMEOUT_SECONDS,
+    rollout_alive_threshold_seconds: float | None = None,
+    rollout_monitoring_alive_duration_seconds: float | None = None,
 ) -> FtControllerBundle:
     from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
     from miles.utils.ft.controller.detectors.chain import build_rollout_detectors, build_shared_hw_detectors
@@ -101,6 +103,11 @@ def create_ft_controller(
     subsystem_configs: dict[str, SubsystemConfig] = {"training": training_config}
 
     # --- Rollout SubsystemConfigs ---
+    rollout_alive_dur = rollout_monitoring_alive_duration_seconds if rollout_monitoring_alive_duration_seconds is not None else 180
+    rollout_det_kwargs: dict[str, float] = {}
+    if rollout_alive_threshold_seconds is not None:
+        rollout_det_kwargs["alive_threshold_seconds"] = rollout_alive_threshold_seconds
+
     for cell_id in (rollout_cell_ids or []):
         name = f"rollout_{cell_id}"
         _cid = cell_id  # capture for closure
@@ -110,8 +117,8 @@ def create_ft_controller(
                 cell_id=cell_id,
             ),
             restart_mode=RestartMode.SUBSYSTEM,
-            detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id),
-            monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=180),
+            detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id, **rollout_det_kwargs),
+            monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=rollout_alive_dur),
             get_active_node_ids=lambda _c=_cid: subsystem_hub.get_rollout_node_ids(_c),
         )
 
