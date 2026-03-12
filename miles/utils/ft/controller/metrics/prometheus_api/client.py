@@ -65,9 +65,12 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         return self._range_query_raw(promql, window)
 
     async def start(self) -> None:
-        pass
+        self._stop_event = asyncio.Event()
+        await self._stop_event.wait()
 
     async def stop(self) -> None:
+        if hasattr(self, "_stop_event"):
+            self._stop_event.set()
         self._client.close()
 
     # -------------------------------------------------------------------

@@ -760,3 +760,32 @@ class TestLifecycle:
 
         with pytest.raises(PrometheusQueryError):
             client.query_latest("some_metric")
+
+    @pytest.mark.asyncio
+    async def test_start_blocks_until_stop_is_called(self) -> None:
+        """start() must block (not return immediately) to avoid busy-wait
+        in the lifecycle while-True loop. It should unblock when stop() is called."""
+        import asyncio
+
+        client = PrometheusClient(url="http://fake:9090")
+        started = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def _run_start() -> None:
+            started.set()
+            await client.start()
+            finished.set()
+
+        task = asyncio.create_task(_run_start())
+        await started.wait()
+        await asyncio.sleep(0.05)
+        assert not finished.is_set(), "start() returned immediately — would cause busy-wait"
+
+        await client.stop()
+        await asyncio.sleep(0.05)
+        assert finished.is_set(), "start() did not unblock after stop()"
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

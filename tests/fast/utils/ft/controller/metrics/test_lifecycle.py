@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
+
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 
 
@@ -109,3 +111,44 @@ class TestStopMetricStoreTask:
             assert task.cancelled() or task.done()
 
         asyncio.run(_run())
+
+
+class TestLifecycleWithImmediateReturnStore:
+    @pytest.mark.asyncio
+    async def test_immediate_return_start_does_not_busy_loop(self) -> None:
+        """When store.start() returns immediately (e.g. PrometheusClient),
+        the lifecycle must NOT spin in a tight busy-wait loop. Previously
+        start() was a no-op pass, causing the while True loop in
+        start_metric_store_task to spin without delay."""
+        call_count = 0
+
+        async def _immediate_start() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                await asyncio.Event().wait()
+
+        store = AsyncMock()
+        store.start = _immediate_start
+
+        import miles.utils.ft.controller.metrics.lifecycle as mod
+
+        original_delay = mod._SCRAPE_RESTART_DELAY_SECONDS
+        mod._SCRAPE_RESTART_DELAY_SECONDS = 0.01
+        try:
+            task = await start_metric_store_task(store)
+            await asyncio.sleep(0.15)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            mod._SCRAPE_RESTART_DELAY_SECONDS = original_delay
+
+        # Previously, with immediate-return start(), the loop would call
+        # start() thousands of times in 0.15s. Now it should be bounded
+        # by the restart delay.
+        assert call_count < 20, (
+            f"start() called {call_count} times — suggests busy-wait loop"
+        )
