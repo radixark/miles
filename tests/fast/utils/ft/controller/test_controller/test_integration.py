@@ -56,7 +56,18 @@ class _FakeRemoteMethod:
 
 
 class _OneShotDecisionDetector(BaseFaultDetector):
-    """Fires a configured decision once, then returns NONE forever."""
+    """Fires a configured decision once, then returns NONE forever.
+
+    Needed because test fakes complete all async operations instantly (evict,
+    stop, restart, monitor), so run_stepper_to_convergence can drive a
+    subsystem through the full recovery cycle back to DetectingAnomalySt within
+    a single tick.  A real detector would then re-fire on stale metrics that
+    haven't been cleared yet, consuming cooldown budget repeatedly.
+
+    In production this doesn't happen: recovery blocks on real I/O (job stays
+    PENDING for seconds/minutes), so the convergence loop exits before the
+    subsystem returns to DetectingAnomalySt within the same tick.
+    """
 
     def __init__(self, decision: Decision) -> None:
         self._decision = decision

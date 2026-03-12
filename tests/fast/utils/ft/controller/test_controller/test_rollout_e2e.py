@@ -202,7 +202,10 @@ class TestColocatedNodeFault:
         # Step 2: Override rollout detectors with one-shot to prevent re-entry
         # within the convergence loop (HW detectors re-fire because XID metrics
         # persist in MiniPrometheus, exhausting shared cooldown before training
-        # gets a chance to enter L2 recovery)
+        # gets a chance to enter L2 recovery).
+        # Test-only artifact: fakes complete recovery instantly so the subsystem
+        # loops back to DetectingAnomalySt within one tick; in production,
+        # recovery blocks on real I/O and the convergence loop exits first.
         rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
         rollout_config.detectors = [
             _OneShotDecisionDetector(Decision(
@@ -252,7 +255,13 @@ class TestMultiCellIndependentFailures:
     async def test_two_cells_recover_independently(self) -> None:
         """Each cell recovers via one-shot detector; one-shot prevents re-entry
         within the same convergence loop (crash samples would persist in
-        MiniPrometheus and cause RolloutCrashDetector to fire repeatedly)."""
+        MiniPrometheus and cause RolloutCrashDetector to fire repeatedly).
+
+        This is a test-only artifact: fakes complete recovery instantly, so the
+        subsystem loops back to DetectingAnomalySt within one tick.  In
+        production, recovery blocks on real I/O (job PENDING/restarting), so
+        the convergence loop exits before the detector can re-fire.
+        """
         harness = _make_test_controller_with_rollout(
             cell_ids=["ep72", "ep36"],
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
