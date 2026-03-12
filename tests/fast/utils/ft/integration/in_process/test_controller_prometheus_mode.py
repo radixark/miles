@@ -15,7 +15,7 @@ from tests.fast.utils.ft.conftest import FakeMainJob, FakeNodeManager, get_sampl
 
 import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.factories.controller import assemble_ft_controller
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
 from miles.utils.ft.controller.types import MetricStore

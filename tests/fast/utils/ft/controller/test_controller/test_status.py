@@ -19,7 +19,7 @@ from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_st
 
 import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.factories.controller import assemble_ft_controller
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt

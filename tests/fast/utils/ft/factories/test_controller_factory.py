@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.controller.controller import FtController
-from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.controller.from_config import build_ft_controller
 
 
 class TestFtControllerConfig:
@@ -131,7 +131,7 @@ class TestUnifiedFactory:
         from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
         from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
         from miles.utils.ft.controller.types import MetricStore
-        from miles.utils.ft.factories.controller import assemble_ft_controller
+        from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 
         bundle = assemble_ft_controller(
             node_manager=StubNodeManager(),
@@ -147,7 +147,7 @@ class TestUnifiedFactory:
 
 class TestBuildPlatformComponentsUnknown:
     def test_unknown_platform_raises_value_error(self) -> None:
-        from miles.utils.ft.factories.controller import _build_platform_components
+        from miles.utils.ft.factories.controller.backends import build_platform_components
 
         with pytest.raises(ValueError, match="Unknown platform"):
-            _build_platform_components(platform="docker", ray_address="", entrypoint="", ft_id="test", k8s_label_prefix="")
+            build_platform_components(platform="docker", ray_address="", entrypoint="", ft_id="test", k8s_label_prefix="")

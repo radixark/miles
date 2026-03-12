@@ -10,7 +10,8 @@ import pytest
 
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
-from miles.utils.ft.factories.controller import _build_platform_components, build_ft_controller
+from miles.utils.ft.factories.controller.backends import build_platform_components
+from miles.utils.ft.factories.controller.from_config import build_ft_controller
 from miles.utils.ft.utils.box import Box
 
 
@@ -63,7 +64,7 @@ class TestBuildFtControllerStateMachineParams:
         )
 
         with patch(
-            "miles.utils.ft.factories.controller.assemble_ft_controller"
+            "miles.utils.ft.factories.controller.from_config.assemble_ft_controller"
         ) as mock_assemble:
             mock_assemble.return_value = MagicMock()
             build_ft_controller(
@@ -109,7 +110,7 @@ class TestK8sNamespaceFallback:
 
     def test_cli_namespace_takes_precedence_over_env_var(self) -> None:
         with patch.dict(os.environ, {"K8S_NAMESPACE": "env-ns"}):
-            node_mgr, _ = _build_platform_components(
+            node_mgr, _ = build_platform_components(
                 platform="k8s-ray",
                 ray_address="http://localhost:8265",
                 entrypoint="python train.py",
@@ -121,7 +122,7 @@ class TestK8sNamespaceFallback:
 
     def test_falls_back_to_env_var_when_cli_empty(self) -> None:
         with patch.dict(os.environ, {"K8S_NAMESPACE": "env-ns"}):
-            node_mgr, _ = _build_platform_components(
+            node_mgr, _ = build_platform_components(
                 platform="k8s-ray",
                 ray_address="http://localhost:8265",
                 entrypoint="python train.py",
@@ -134,7 +135,7 @@ class TestK8sNamespaceFallback:
     def test_raises_when_both_cli_and_env_var_missing(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(RuntimeError, match="namespace not configured"):
-                _build_platform_components(
+                build_platform_components(
                     platform="k8s-ray",
                     ray_address="http://localhost:8265",
                     entrypoint="python train.py",

@@ -20,7 +20,7 @@ from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import ControllerMode
-from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.controller.from_config import build_ft_controller
 
 pytestmark = [
     pytest.mark.local_ray,

@@ -17,7 +17,7 @@ from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.utils.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
 from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
-from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.controller.from_config import build_ft_controller
 from miles.utils.ft.factories.node_agent import build_node_agent
 from tests.fast.utils.ft.testbed.config import TestbedConfig
 from tests.fast.utils.ft.testbed.ray.actor_group import TestbedRayTrainGroup

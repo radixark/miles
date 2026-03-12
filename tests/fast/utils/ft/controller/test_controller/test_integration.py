@@ -10,7 +10,7 @@ from prometheus_client import CollectorRegistry
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.controller import FtController
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.factories.controller import assemble_ft_controller
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb

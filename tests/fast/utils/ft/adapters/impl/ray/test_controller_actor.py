@@ -12,7 +12,7 @@ from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.types import NullScrapeTargetManager
-from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.controller.from_config import build_ft_controller
 
 
 def _get_training_detectors(ctrl):
@@ -104,7 +104,7 @@ class TestBuildFtController:
 
 class TestBuildPlatformComponentsK8sRay:
     def test_k8s_ray_creates_correct_types(self) -> None:
-        from miles.utils.ft.factories.controller import _build_platform_components
+        from miles.utils.ft.factories.controller.backends import build_platform_components
 
         with (
             patch("miles.utils.ft.adapters.impl.k8s_node_manager.K8sNodeManager") as mock_k8s,
@@ -114,7 +114,7 @@ class TestBuildPlatformComponentsK8sRay:
             mock_k8s.return_value = MagicMock()
             mock_jsc.return_value = MagicMock()
 
-            node_mgr, main_job = _build_platform_components(
+            node_mgr, main_job = build_platform_components(
                 platform="k8s-ray",
                 ray_address="http://ray:8265",
                 entrypoint="python train.py",
@@ -128,7 +128,7 @@ class TestBuildPlatformComponentsK8sRay:
 
     def test_k8s_ray_passes_ft_id_and_label_prefix(self) -> None:
         from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
-        from miles.utils.ft.factories.controller import _build_platform_components
+        from miles.utils.ft.factories.controller.backends import build_platform_components
 
         with (
             patch("miles.utils.ft.adapters.impl.k8s_node_manager.K8sNodeManager") as mock_k8s,
@@ -138,7 +138,7 @@ class TestBuildPlatformComponentsK8sRay:
             mock_k8s.return_value = MagicMock()
             mock_jsc.return_value = MagicMock()
 
-            node_mgr, main_job = _build_platform_components(
+            node_mgr, main_job = build_platform_components(
                 platform="k8s-ray",
                 ray_address="http://ray:8265",
                 entrypoint="python train.py",

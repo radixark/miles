@@ -12,7 +12,7 @@ from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
 from miles.utils.ft.adapters.types import ft_controller_actor_name
 from miles.utils.ft.controller.types import ControllerMode
-from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.controller.from_config import build_ft_controller
 
 pytestmark = [
     pytest.mark.local_ray,
