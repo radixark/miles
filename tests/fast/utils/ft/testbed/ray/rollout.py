@@ -32,11 +32,13 @@ class TestbedRolloutManager:
         self._engines: dict[str, ray.actor.ActorHandle] = {}
         self.all_rollout_engines: list[ray.actor.ActorHandle] = []
 
-    def init_ft_agent(self) -> None:
+    async def init_ft_agent(self) -> None:
         """Create and register real FtRolloutAgent with the controller.
 
         Must be called after the controller is running, since registration
-        requires the controller actor to be reachable.
+        requires the controller actor to be reachable.  Async because
+        build_rollout_agent → RolloutHealthChecker.__init__ calls
+        asyncio.create_task(), which requires a running event loop.
         """
         from miles.utils.ft.factories.rollout_agent import build_rollout_agent
 

@@ -65,7 +65,10 @@ class TestbedRayTrainGroup:
             await worker.set_peers.remote([h for h in workers if h is not worker])
 
         for worker in workers:
-            worker.start.remote()
+            await worker.start.remote()
+
+        for worker in workers:
+            worker.begin_loop.remote()
 
         return workers
 

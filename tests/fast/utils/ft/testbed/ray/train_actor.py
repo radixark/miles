@@ -56,6 +56,12 @@ class TestbedTrainRayActor:
         self._custom_log_metrics = metrics
 
     async def start(self) -> None:
+        """Initialize agent and register with controller.
+
+        Does NOT start the run loop — call begin_loop() after all
+        workers have finished start() so peer-checks don't race
+        against agent initialization.
+        """
         os.environ["MILES_FT_ID"] = self._ft_id
         os.environ["MILES_FT_TRAINING_RUN_ID"] = self._run_id
 
@@ -67,6 +73,9 @@ class TestbedTrainRayActor:
             node_id=self._node_id,
         )
         self._iteration = 0
+
+    def begin_loop(self) -> None:
+        """Start the training run loop. Call after all peers are started."""
         self._loop_task = asyncio.get_event_loop().create_task(self._run_loop())
 
     async def _run_loop(self) -> None:
