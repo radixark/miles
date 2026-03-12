@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -445,3 +446,94 @@ class TestStopAllActiveJobs:
 
         assert count == 2
         assert mock_client.stop_job.call_count == 3
+
+
+class TestStateLockSerialization:
+    """_state_lock serializes start/stop/get_status to prevent TOCTOU races on _job_id.
+
+    Without the lock, concurrent start() calls could both pass the
+    ``_job_id is None`` check before the await, causing double-submit.
+    """
+
+    @pytest.mark.anyio
+    async def test_concurrent_starts_second_raises(self) -> None:
+        """Two concurrent start() calls: one succeeds, the other raises RuntimeError."""
+        job, mock_client = _make_job()
+        submit_entered = asyncio.Event()
+
+        original_submit = mock_client.submit_job
+
+        def slow_submit(**kwargs: Any) -> str:
+            submit_entered.set()
+            return original_submit(**kwargs)
+
+        mock_client.submit_job.side_effect = slow_submit
+        mock_client.submit_job.return_value = "job-1"
+
+        results: list[str | Exception] = []
+
+        async def start_and_record() -> None:
+            try:
+                run_id = await job.start()
+                results.append(run_id)
+            except Exception as exc:
+                results.append(exc)
+
+        # Launch two concurrent starts; the lock serializes them so the
+        # second one sees _job_id already set and raises.
+        task1 = asyncio.create_task(start_and_record())
+        task2 = asyncio.create_task(start_and_record())
+        await asyncio.gather(task1, task2)
+
+        successes = [r for r in results if isinstance(r, str)]
+        failures = [r for r in results if isinstance(r, RuntimeError)]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert "still tracked" in str(failures[0])
+
+    @pytest.mark.anyio
+    async def test_get_status_waits_for_stop_to_complete(self) -> None:
+        """get_status() called during stop() waits for stop to finish,
+        then returns STOPPED (because _job_id was cleared)."""
+        job, mock_client = _make_job(poll_interval_seconds=0)
+        mock_client.submit_job.return_value = "job-1"
+        await job.start()
+
+        stop_entered = asyncio.Event()
+        stop_proceed = asyncio.Event()
+
+        original_stop = mock_client.stop_job
+
+        def gated_stop(job_id: str) -> None:
+            stop_entered.set()
+            # Block in a sync function; asyncio.to_thread will run this in a thread
+            import threading
+            evt = threading.Event()
+
+            async def _signal() -> None:
+                await stop_proceed.wait()
+                evt.set()
+
+            asyncio.get_event_loop().call_soon_threadsafe(
+                lambda: asyncio.ensure_future(_signal())
+            )
+            evt.wait(timeout=5)
+            return original_stop(job_id)
+
+        mock_client.stop_job.side_effect = gated_stop
+        mock_client.get_job_status.return_value = "STOPPED"
+
+        stop_task = asyncio.create_task(job.stop(timeout_seconds=10))
+
+        await stop_entered.wait()
+
+        # get_status is blocked by the lock while stop holds it
+        status_task = asyncio.create_task(job.get_status())
+        await asyncio.sleep(0.01)
+        assert not status_task.done()
+
+        stop_proceed.set()
+        await stop_task
+
+        status = await status_task
+        assert status == JobStatus.STOPPED

@@ -84,12 +84,25 @@ class RayMainJob(MainJobProtocol):
         self._ft_id = ft_id
         self._k8s_label_prefix = k8s_label_prefix
         self._job_id: str | None = None
+        self._state_lock = asyncio.Lock()
 
     @property
     def job_id(self) -> str | None:
         return self._job_id
 
     async def start(self) -> str:
+        async with self._state_lock:
+            return await self._start_locked()
+
+    async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
+        async with self._state_lock:
+            await self._stop_locked(timeout_seconds=timeout_seconds)
+
+    async def get_status(self) -> JobStatus:
+        async with self._state_lock:
+            return await self._get_status_locked()
+
+    async def _start_locked(self) -> str:
         if self._job_id is not None:
             raise RuntimeError(f"Cannot submit: previous job {self._job_id} still tracked. " "Call stop_job() first.")
 
@@ -122,7 +135,7 @@ class RayMainJob(MainJobProtocol):
         )
         return run_id
 
-    async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
+    async def _stop_locked(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
         if self._job_id is None:
             logger.warning("stop_job called with no active job")
             return
@@ -135,7 +148,7 @@ class RayMainJob(MainJobProtocol):
         )
         self._job_id = None
 
-    async def get_status(self) -> JobStatus:
+    async def _get_status_locked(self) -> JobStatus:
         if self._job_id is None:
             return JobStatus.STOPPED
 
