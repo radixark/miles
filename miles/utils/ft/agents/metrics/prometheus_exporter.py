@@ -49,6 +49,12 @@ class PrometheusExporter:
                     self._resolve_child(self._gauges, Gauge, sample).set(sample.value)
                 case CounterSample() if sample.delta > 0:
                     self._resolve_child(self._counters, Counter, sample).inc(sample.delta)
+                case CounterSample():
+                    logger.debug(
+                        "counter_delta_non_positive name=%s delta=%s",
+                        sample.name,
+                        sample.delta,
+                    )
 
     def _resolve_child(
         self,
