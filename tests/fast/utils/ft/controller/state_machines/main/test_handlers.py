@@ -129,6 +129,26 @@ class TestFindRestartRequestor:
         }
         assert _find_restart_requestor(subsystems) == "c"
 
+    def test_multiple_requestors_logs_warning_and_returns_first(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Previously _find_restart_requestor returned on the first match,
+        silently ignoring additional requestors. Now it logs a warning
+        for each extra requestor. Only the first match is handled.
+        """
+        import logging
+
+        subsystems = {
+            "gpu": _make_recovering_with_main_job_restart(),
+            "net": _make_recovering_with_main_job_restart(),
+        }
+        with caplog.at_level(logging.WARNING, logger="miles.utils.ft.controller.state_machines.main.handlers"):
+            result = _find_restart_requestor(subsystems)
+
+        assert result in ("gpu", "net")
+        assert "multiple_restart_requestors" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # _update_external_execution_result

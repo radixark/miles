@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
+    requestor: str | None = None
     for name, sub_state in subsystems.items():
         match sub_state:
             case RecoveringSt(
@@ -40,8 +41,15 @@ def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None
                     restart=ExternalRestartingMainJobSt(external_execution_result=None)
                 )
             ):
-                return name
-    return None
+                if requestor is None:
+                    requestor = name
+                else:
+                    logger.warning(
+                        "multiple_restart_requestors found=%s handled=%s",
+                        name,
+                        requestor,
+                    )
+    return requestor
 
 
 def _update_external_execution_result(
