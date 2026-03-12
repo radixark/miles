@@ -154,14 +154,27 @@ class TickLoop:
         )
 
     def _collect_subsystem_modes(self) -> dict[str, tuple[bool, int]]:
+        from miles.utils.ft.controller.state_machines.main.models import RestartingMainJobSt
+
         controller_state = self.state_machine.state
-        if not isinstance(controller_state, NormalSt):
-            return {name: (False, 0) for name in self.subsystem_configs}
-        result: dict[str, tuple[bool, int]] = {}
-        for name, sub_state in controller_state.subsystems.items():
-            is_recovery = isinstance(sub_state, RecoveringSt)
-            phase_int = 0
-            if is_recovery:
-                phase_int = RECOVERY_STATE_TO_INT[type(sub_state.recovery)]
-            result[name] = (is_recovery, phase_int)
-        return result
+        if isinstance(controller_state, NormalSt):
+            result: dict[str, tuple[bool, int]] = {}
+            for name, sub_state in controller_state.subsystems.items():
+                is_recovery = isinstance(sub_state, RecoveringSt)
+                phase_int = 0
+                if is_recovery:
+                    phase_int = RECOVERY_STATE_TO_INT[type(sub_state.recovery)]
+                result[name] = (is_recovery, phase_int)
+            return result
+
+        if isinstance(controller_state, RestartingMainJobSt):
+            modes = {name: (False, 0) for name in self.subsystem_configs}
+            frozen = controller_state.requestor_frozen_state
+            if isinstance(frozen, RecoveringSt):
+                modes[controller_state.requestor_name] = (
+                    True,
+                    RECOVERY_STATE_TO_INT[type(frozen.recovery)],
+                )
+            return modes
+
+        return {name: (False, 0) for name in self.subsystem_configs}

@@ -197,6 +197,40 @@ class TestRecoveryStateToIntCompleteness:
             assert state_type in RECOVERY_STATE_TO_INT, f"{state_type.__name__} missing from mapping"
 
 
+class TestCollectSubsystemModesRestartingMainJob:
+    def test_requestor_reported_as_recovery_during_main_job_restart(self) -> None:
+        """During RestartingMainJobSt, all subsystems were reported as idle.
+        The requestor's frozen recovery state should still appear as recovery
+        so Prometheus metrics reflect the ongoing recovery."""
+        from datetime import datetime, timezone
+
+        from miles.utils.ft.controller.state_machines.main.models import RestartingMainJobSt
+        from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
+
+        frozen = RecoveringSt(
+            recovery=RealtimeChecksSt(),
+            trigger=TriggerType.CRASH,
+            recovery_start_time=datetime.now(timezone.utc),
+        )
+        sm = MagicMock()
+        sm.state = RestartingMainJobSt(
+            requestor_name="rollout_0",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=frozen,
+        )
+
+        loop = _make_tick_loop(state_machine=sm)
+        loop.subsystem_configs = {
+            "training": MagicMock(),
+            "rollout_0": MagicMock(),
+        }
+
+        result = loop._collect_subsystem_modes()
+
+        assert result["rollout_0"] == (True, RECOVERY_STATE_TO_INT[RealtimeChecksSt])
+        assert result["training"] == (False, 0)
+
+
 class TestRegistrationGraceTicks:
     async def test_roster_warn_and_coverage_skipped_when_roster_is_none(self) -> None:
         """When roster is None, warn_if_incomplete and coverage check are skipped."""
