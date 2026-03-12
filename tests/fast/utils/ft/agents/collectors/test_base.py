@@ -34,6 +34,28 @@ class _CrashingCollector(BaseCollector):
         raise RuntimeError("collector crashed")
 
 
+class TestCollectIntervalValidation:
+    def test_negative_collect_interval_on_subclass_raises(self) -> None:
+        """Previously negative collect_interval made the internal timeout
+        (interval * 2) negative, causing asyncio.wait_for to raise
+        ValueError. Now rejected at class definition time."""
+        with pytest.raises(ValueError, match="collect_interval must be >= 0"):
+            class _BadCollector(BaseCollector):
+                collect_interval: float = -1.0
+
+                def _collect_sync(self) -> list[MetricSample]:
+                    return []
+
+    def test_zero_collect_interval_allowed(self) -> None:
+        class _ZeroCollector(BaseCollector):
+            collect_interval: float = 0.0
+
+            def _collect_sync(self) -> list[MetricSample]:
+                return []
+
+        assert _ZeroCollector.collect_interval == 0.0
+
+
 class TestBaseCollector:
     def test_collect_returns_collector_output(self) -> None:
         collector = _SuccessCollector()

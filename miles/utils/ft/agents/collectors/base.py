@@ -14,6 +14,15 @@ class CollectorOutput(FtBaseModel):
 class BaseCollector(ABC):
     collect_interval: float = 10.0
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "collect_interval" in cls.__dict__:
+            val = cls.__dict__["collect_interval"]
+            if isinstance(val, (int, float)) and val < 0:
+                raise ValueError(
+                    f"{cls.__name__}.collect_interval must be >= 0, got {val}"
+                )
+
     async def collect(self) -> CollectorOutput:
         timeout = self.collect_interval * _COLLECT_TIMEOUT_MULTIPLIER
         metrics = await asyncio.wait_for(
