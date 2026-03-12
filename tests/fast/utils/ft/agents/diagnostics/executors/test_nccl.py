@@ -424,9 +424,16 @@ class TestNcclPairwise:
 # ---------------------------------------------------------------------------
 
 
+_skip_no_nccl = pytest.mark.skipif(
+    not __import__("shutil").which("all_reduce_perf"),
+    reason="all_reduce_perf not installed (nccl-tests required)",
+)
+
+
 class TestNcclSimpleRealGpu:
     """E2E tests that run real all_reduce_perf on a single GPU node."""
 
+    @_skip_no_nccl
     @pytest.mark.requires_gpu
     async def test_real_all_reduce_passes_on_healthy_node(self) -> None:
         """Real all_reduce_perf should produce a passing result with reasonable bandwidth."""
@@ -441,6 +448,7 @@ class TestNcclSimpleRealGpu:
         assert result.node_id == "test-node"
         assert result.passed is True
 
+    @_skip_no_nccl
     @pytest.mark.requires_gpu
     async def test_real_all_reduce_result_contains_bandwidth(self) -> None:
         """Result details should mention measured bandwidth and threshold."""
