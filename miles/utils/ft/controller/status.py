@@ -3,7 +3,7 @@ from __future__ import annotations
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
-from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt, get_known_bad_nodes
+from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestartingSt,
     NotifyHumansSt,
@@ -21,7 +21,7 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
 
 
 def _classify_recovery(state: RecoveringSt) -> RecoveryInfo:
-    bad_nodes = sorted(get_known_bad_nodes(state))
+    bad_nodes = sorted(state.known_bad_node_ids)
     match state.recovery:
         case RecoveryDoneSt():
             bad_nodes_confirmed = True

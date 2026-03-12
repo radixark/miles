@@ -8,7 +8,7 @@ from miles.utils.ft.controller.state_machines.subsystem.models import (
     SubsystemState,
     RecoveringSt,
 )
-from miles.utils.ft.controller.state_machines.subsystem.utils import get_known_bad_nodes, handle_notify_human
+from miles.utils.ft.controller.state_machines.subsystem.utils import handle_notify_human
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb as _MiniWandb
@@ -33,6 +33,5 @@ __all__ = [
     "RecoveringSt",
     "RecoveringHandler",
     "create_subsystem_stepper",
-    "get_known_bad_nodes",
     "handle_notify_human",
 ]

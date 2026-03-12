@@ -11,9 +11,7 @@ from miles.utils.ft.controller.state_machines.subsystem.models import (
 )
 from miles.utils.ft.controller.state_machines.subsystem.utils import (
     collect_evictable_bad_nodes,
-    get_known_bad_nodes,
     handle_notify_human,
-    notify_too_many_bad_nodes,
     run_detectors,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
@@ -81,14 +79,11 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             return None
 
         if len(decision.bad_node_ids) >= ctx.max_simultaneous_bad_nodes:
-            await notify_too_many_bad_nodes(
-                bad_node_count=len(decision.bad_node_ids),
-                max_simultaneous_bad_nodes=ctx.max_simultaneous_bad_nodes,
+            return Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason=f"too_many_simultaneous_bad_nodes ({len(decision.bad_node_ids)} >= {ctx.max_simultaneous_bad_nodes})",
                 trigger=decision.trigger,
-                context_str="Detector reported",
-                notifier=ctx.notifier,
             )
-            return None
 
         if decision.trigger is None:
             raise ValueError(f"Decision with action={decision.action} has no trigger")
@@ -114,16 +109,17 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             crash_tracker=ctx.detector_crash_tracker,
         )
         if len(new_bad_nodes) >= ctx.max_simultaneous_bad_nodes:
-            await notify_too_many_bad_nodes(
-                bad_node_count=len(new_bad_nodes),
-                max_simultaneous_bad_nodes=ctx.max_simultaneous_bad_nodes,
+            return RecoveringSt(
+                recovery=NotifyHumansSt(
+                    state_before=type(state.recovery).__name__,
+                    reason="too_many_simultaneous_bad_nodes",
+                ),
                 trigger=state.trigger,
-                context_str="Critical detectors reported during recovery",
-                notifier=ctx.notifier,
+                recovery_start_time=state.recovery_start_time,
+                known_bad_node_ids=state.known_bad_node_ids,
             )
-            return None
 
-        known_bad = set(get_known_bad_nodes(state))
+        known_bad = set(state.known_bad_node_ids)
         truly_new = new_bad_nodes - known_bad
         if truly_new:
             all_bad = sorted(known_bad | new_bad_nodes)

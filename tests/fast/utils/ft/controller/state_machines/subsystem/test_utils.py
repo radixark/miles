@@ -13,7 +13,6 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.state_machines.subsystem.models import RecoveringSt
 from miles.utils.ft.controller.state_machines.subsystem.utils import (
     collect_evictable_bad_nodes,
-    get_known_bad_nodes,
     handle_notify_human,
     run_detectors,
 )
@@ -242,8 +241,9 @@ class TestCollectEvictableBadNodes:
         assert result == set()
 
 
-class TestGetKnownBadNodes:
-    def test_returns_known_bad_node_ids_from_recovering_state(self) -> None:
+class TestKnownBadNodeIds:
+    def test_known_bad_node_ids_available_during_diagnostics(self) -> None:
+        """2.4: bad nodes must remain visible even when inner state is StopTimeDiagnosticsSt."""
         from miles.utils.ft.controller.state_machines.recovery.models import StopTimeDiagnosticsSt
 
         state = RecoveringSt(
@@ -252,9 +252,9 @@ class TestGetKnownBadNodes:
             recovery_start_time=datetime.now(timezone.utc),
             known_bad_node_ids=["node-0", "node-1"],
         )
-        assert get_known_bad_nodes(state) == ["node-0", "node-1"]
+        assert state.known_bad_node_ids == ["node-0", "node-1"]
 
-    def test_returns_empty_when_no_bad_nodes_tracked(self) -> None:
+    def test_known_bad_node_ids_defaults_to_empty(self) -> None:
         from miles.utils.ft.controller.state_machines.recovery.models import NotifyHumansSt
 
         state = RecoveringSt(
@@ -262,4 +262,4 @@ class TestGetKnownBadNodes:
             trigger="crash",
             recovery_start_time=datetime.now(timezone.utc),
         )
-        assert get_known_bad_nodes(state) == []
+        assert state.known_bad_node_ids == []
