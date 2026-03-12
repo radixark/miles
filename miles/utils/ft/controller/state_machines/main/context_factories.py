@@ -28,10 +28,10 @@ def build_subsystem_context(
         tick_count=context.tick_count,
         should_run_detectors=should_run,
         detector_context=detector_ctx,
-        notifier=context.notifier,
+        notifier=context.shared.notifier,
         detectors=spec.config.detectors,
         cooldown=spec.runtime.cooldown,
-        detector_crash_tracker=context.detector_crash_tracker,
+        detector_crash_tracker=context.shared.detector_crash_tracker,
         recovery_stepper=recovery_stepper,
         recovery_context_factory=lambda trigger, start_time: _build_recovery_context(
             spec=spec,
@@ -40,10 +40,10 @@ def build_subsystem_context(
             recovery_start_time=start_time,
             restart_stepper=restart_stepper,
         ),
-        on_recovery_duration=context.on_recovery_duration,
-        max_simultaneous_bad_nodes=context.max_simultaneous_bad_nodes,
+        on_recovery_duration=context.shared.on_recovery_duration,
+        max_simultaneous_bad_nodes=context.shared.max_simultaneous_bad_nodes,
         monitoring_config=spec.config.monitoring_config,
-        metric_store=context.metric_store,
+        metric_store=context.shared.metric_store,
     )
 
 
@@ -56,7 +56,7 @@ def _should_run_detectors(
         return False
 
     ticks_since_run_start = context.tick_count - context.run_start_tick
-    if ticks_since_run_start <= context.registration_grace_ticks:
+    if ticks_since_run_start <= context.shared.registration_grace_ticks:
         return False
 
     return True
@@ -68,7 +68,7 @@ def _build_detector_context(
     context: MainContext,
 ) -> DetectorContext:
     return DetectorContext(
-        metric_store=context.metric_store,
+        metric_store=context.shared.metric_store,
         active_node_ids=active_node_ids,
         job_status=context.job_status,
     )
@@ -83,11 +83,11 @@ def _build_recovery_context(
     restart_stepper: StateMachineStepper,
 ) -> RecoveryContext:
     restart_context = RestartContext(
-        node_manager=context.node_manager,
-        main_job=context.main_job,
-        metric_store=context.metric_store,
-        notifier=context.notifier,
-        on_main_job_new_run=context.on_main_job_new_run,
+        node_manager=context.shared.node_manager,
+        main_job=context.shared.main_job,
+        metric_store=context.shared.metric_store,
+        notifier=context.shared.notifier,
+        on_main_job_new_run=context.shared.on_main_job_new_run,
         node_metadata=context.node_metadata,
         actuator=spec.runtime.actuator,
         monitoring_config=spec.config.monitoring_config,
@@ -96,10 +96,10 @@ def _build_recovery_context(
     return RecoveryContext(
         trigger=trigger,
         recovery_start_time=recovery_start_time,
-        diagnostic_orchestrator=context.diagnostic_orchestrator,
+        diagnostic_orchestrator=context.shared.diagnostic_orchestrator,
         restart_stepper=restart_stepper,
         restart_context=restart_context,
-        notifier=context.notifier,
-        timeout_seconds=context.recovery_timeout_seconds,
-        rank_pids_provider=context.rank_pids_provider,
+        notifier=context.shared.notifier,
+        timeout_seconds=context.shared.recovery_timeout_seconds,
+        rank_pids_provider=context.shared.rank_pids_provider,
     )

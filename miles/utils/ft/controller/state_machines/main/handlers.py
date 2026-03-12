@@ -89,9 +89,9 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         self._subsystem_stepper = create_subsystem_stepper()
 
     async def step(self, state: NormalSt, context: MainContext):  # type: ignore[override]
-        assert set(state.subsystems.keys()) == set(context.subsystem_specs.keys()), (
+        assert set(state.subsystems.keys()) == set(context.shared.subsystem_specs.keys()), (
             f"subsystem keys out of sync: state={set(state.subsystems.keys())} "
-            f"configs={set(context.subsystem_specs.keys())}"
+            f"configs={set(context.shared.subsystem_specs.keys())}"
         )
 
         # Step 1: Step all subsystems to convergence
@@ -100,7 +100,7 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
 
         for name in sorted(curr_state.subsystems):
             sub_ctx = build_subsystem_context(
-                spec=context.subsystem_specs[name],
+                spec=context.shared.subsystem_specs[name],
                 context=context,
                 recovery_stepper=self._recovery_stepper,
                 restart_stepper=self._restart_stepper,
@@ -139,13 +139,13 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
 
         logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
         success = await stop_and_submit(
-            job=context.main_job,
-            on_main_job_new_run=context.on_main_job_new_run,
+            job=context.shared.main_job,
+            on_main_job_new_run=context.shared.on_main_job_new_run,
             restart_mode=RestartMode.MAIN_JOB,
         )
         if not success:
             await safe_notify(
-                context.notifier,
+                context.shared.notifier,
                 title="Main job restart failed",
                 content=f"stop_and_submit failed for requestor {requestor}",
             )
@@ -162,7 +162,7 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
     async def step(
         self, state: RestartingMainJobSt, context: MainContext
     ) -> MainState | None:
-        status = await context.main_job.get_status()
+        status = await context.shared.main_job.get_status()
         execution_result: ExternalExecutionResult | None = None
 
         if status == JobStatus.RUNNING:
@@ -171,13 +171,13 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
             execution_result = ExternalExecutionResult.FAILED
         else:
             elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
-            if elapsed > context.recovery_timeout_seconds:
+            if elapsed > context.shared.recovery_timeout_seconds:
                 execution_result = ExternalExecutionResult.TIMEOUT
 
         if execution_result is None:
             return None
 
-        fresh_states = _build_fresh_subsystem_states(context.subsystem_specs)
+        fresh_states = _build_fresh_subsystem_states(context.shared.subsystem_specs)
         if state.requestor_name in fresh_states:
             restored = _update_external_execution_result(state.requestor_frozen_state, execution_result)
             fresh_states[state.requestor_name] = restored

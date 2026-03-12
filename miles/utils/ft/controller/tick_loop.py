@@ -17,6 +17,7 @@ from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
     MetricStore,
+    SharedDeps,
 )
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 from miles.utils.ft.utils.state_machine import StateMachine
@@ -110,12 +111,9 @@ class TickLoop:
     # ------------------------------------------------------------------
 
     def _build_controller_context(self, *, job_status: JobStatus, deps: TickDeps) -> MainContext:
-        return MainContext(
+        shared = SharedDeps(
             main_job=deps.main_job,
             subsystem_specs=deps.subsystem_specs,
-            tick_count=self.tick_count,
-            run_start_tick=self._run_start_tick,
-            job_status=job_status,
             metric_store=deps.metric_store,
             notifier=deps.notifier,
             node_manager=deps.node_manager,
@@ -127,8 +125,14 @@ class TickLoop:
             rank_pids_provider=deps.rank_pids_provider,
             controller_exporter=deps.controller_exporter,
             on_recovery_duration=deps.on_recovery_duration,
-            node_metadata=deps.node_agent_registry.all_metadata,
             registration_grace_ticks=self._registration_grace_ticks,
+        )
+        return MainContext(
+            shared=shared,
+            tick_count=self.tick_count,
+            run_start_tick=self._run_start_tick,
+            job_status=job_status,
+            node_metadata=deps.node_agent_registry.all_metadata,
         )
 
     # ------------------------------------------------------------------

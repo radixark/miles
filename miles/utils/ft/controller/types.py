@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
@@ -11,12 +12,16 @@ from typing import TYPE_CHECKING
 import polars as pl
 from pydantic import Field, computed_field, model_validator
 
+from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 if TYPE_CHECKING:
     from miles.utils.ft.adapters.types import ClusterExecutorProtocol
+    from miles.utils.ft.controller.metrics.exporter import ControllerExporter
     from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb, StepValue, TimedStepValue
+    from miles.utils.ft.controller.subsystem_hub import SubsystemSpec
+    from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +243,28 @@ class TrainingMetricStoreProtocol(ABC):
 class MetricStore:
     time_series_store: TimeSeriesStoreProtocol
     mini_wandb: MiniWandb
+
+
+@dataclass
+class SharedDeps:
+    """Stable dependencies that do not change tick-to-tick.
+
+    MainContext used to carry ~18 flat fields mixing stable deps with
+    per-tick data. SharedDeps groups the stable portion so MainContext
+    only holds per-tick fields plus this container.
+    """
+
+    main_job: MainJobProtocol
+    subsystem_specs: dict[str, SubsystemSpec]
+    metric_store: MetricStore
+    notifier: NotifierProtocol | None
+    node_manager: NodeManagerProtocol
+    diagnostic_orchestrator: DiagnosticOrchestratorProtocol
+    detector_crash_tracker: SlidingWindowCounter
+    recovery_timeout_seconds: int
+    max_simultaneous_bad_nodes: int
+    on_main_job_new_run: Callable[[str], None] | None
+    rank_pids_provider: Callable[[str], dict[int, int]] | None
+    controller_exporter: ControllerExporter | None
+    on_recovery_duration: Callable[[float], None] | None
+    registration_grace_ticks: int

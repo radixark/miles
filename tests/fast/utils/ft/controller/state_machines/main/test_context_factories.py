@@ -17,7 +17,7 @@ from miles.utils.ft.controller.state_machines.main.context_factories import (
 from miles.utils.ft.controller.state_machines.main.models import MainContext
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
 from miles.utils.ft.controller.subsystem_hub.config import RestartMode, SubsystemConfig, SubsystemRuntime, SubsystemSpec
-from miles.utils.ft.controller.types import MetricStore, TriggerType
+from miles.utils.ft.controller.types import MetricStore, SharedDeps, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
@@ -31,12 +31,9 @@ def _make_main_context(
     registration_grace_ticks: int = 5,
     job_status: JobStatus = JobStatus.RUNNING,
 ) -> MainContext:
-    return MainContext(
+    shared = SharedDeps(
         main_job=FakeMainJob(),
         subsystem_specs={},
-        tick_count=tick_count,
-        run_start_tick=run_start_tick,
-        job_status=job_status,
         metric_store=MetricStore(
             time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
             mini_wandb=MiniWandb(),
@@ -51,8 +48,14 @@ def _make_main_context(
         rank_pids_provider=None,
         controller_exporter=None,
         on_recovery_duration=None,
-        node_metadata={},
         registration_grace_ticks=registration_grace_ticks,
+    )
+    return MainContext(
+        shared=shared,
+        tick_count=tick_count,
+        run_start_tick=run_start_tick,
+        job_status=job_status,
+        node_metadata={},
     )
 
 
@@ -168,11 +171,11 @@ class TestBuildSubsystemContext:
         assert result.should_run_detectors is True
         assert result.detector_context is not None
         assert result.detector_context.active_node_ids == {"node-0"}
-        assert result.notifier is ctx.notifier
+        assert result.notifier is ctx.shared.notifier
         assert result.detectors == []
         assert result.cooldown is spec.runtime.cooldown
         assert result.recovery_stepper is recovery_stepper
-        assert result.max_simultaneous_bad_nodes == ctx.max_simultaneous_bad_nodes
+        assert result.max_simultaneous_bad_nodes == ctx.shared.max_simultaneous_bad_nodes
         assert result.monitoring_config is monitoring_config
 
     def test_detector_context_is_none_when_detectors_should_not_run(self) -> None:
@@ -223,11 +226,11 @@ class TestBuildRecoveryContext:
         assert result.trigger == TriggerType.CRASH
         assert result.recovery_start_time == now
         assert result.restart_stepper is restart_stepper
-        assert result.notifier is ctx.notifier
-        assert result.timeout_seconds == ctx.recovery_timeout_seconds
+        assert result.notifier is ctx.shared.notifier
+        assert result.timeout_seconds == ctx.shared.recovery_timeout_seconds
 
-        assert result.restart_context.node_manager is ctx.node_manager
-        assert result.restart_context.main_job is ctx.main_job
+        assert result.restart_context.node_manager is ctx.shared.node_manager
+        assert result.restart_context.main_job is ctx.shared.main_job
         assert result.restart_context.actuator is actuator
         assert result.restart_context.monitoring_config is monitoring_config
         assert result.restart_context.restart_mode == RestartMode.SUBSYSTEM
@@ -237,12 +240,9 @@ class TestBuildRecoveryContext:
         so EvictingHandler always received empty metadata and mark_node_bad
         used Ray node_id instead of K8s node name for K8s label operations."""
         metadata = {"ray-uuid-abc": {"k8s_node_name": "gke-node-01"}}
-        ctx = MainContext(
+        shared = SharedDeps(
             main_job=FakeMainJob(),
             subsystem_specs={},
-            tick_count=10,
-            run_start_tick=0,
-            job_status=JobStatus.RUNNING,
             metric_store=MetricStore(
                 time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
                 mini_wandb=MiniWandb(),
@@ -257,8 +257,14 @@ class TestBuildRecoveryContext:
             rank_pids_provider=None,
             controller_exporter=None,
             on_recovery_duration=None,
-            node_metadata=metadata,
             registration_grace_ticks=5,
+        )
+        ctx = MainContext(
+            shared=shared,
+            tick_count=10,
+            run_start_tick=0,
+            job_status=JobStatus.RUNNING,
+            node_metadata=metadata,
         )
         actuator = AsyncMock(spec=SubsystemActuatorProtocol)
         spec = SubsystemSpec(
@@ -276,3 +282,41 @@ class TestBuildRecoveryContext:
 
         assert result.restart_context.node_metadata == metadata
         assert result.restart_context.node_metadata["ray-uuid-abc"]["k8s_node_name"] == "gke-node-01"
+
+
+class TestSharedDepsGrouping:
+    """MainContext used to carry ~18 flat fields mixing stable deps with
+    per-tick data. Now stable deps are grouped in SharedDeps so MainContext
+    is cleaner and per-tick data is clearly separated.
+    """
+
+    def test_main_context_has_shared_deps_and_per_tick_fields(self) -> None:
+        ctx = _make_main_context()
+        assert hasattr(ctx, "shared")
+        assert hasattr(ctx, "tick_count")
+        assert hasattr(ctx, "job_status")
+        assert hasattr(ctx, "node_metadata")
+
+    def test_shared_deps_contains_stable_fields(self) -> None:
+        ctx = _make_main_context()
+        shared = ctx.shared
+        assert shared.main_job is not None
+        assert shared.metric_store is not None
+        assert shared.recovery_timeout_seconds == 600
+        assert shared.max_simultaneous_bad_nodes == 2
+
+    def test_context_factories_read_from_shared(self) -> None:
+        """build_subsystem_context reads notifier, metric_store, etc. from ctx.shared."""
+        ctx = _make_main_context()
+        spec = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(actuator=AsyncMock(spec=SubsystemActuatorProtocol)),
+        )
+        sub_ctx = build_subsystem_context(
+            spec=spec,
+            context=ctx,
+            recovery_stepper=AsyncMock(),
+            restart_stepper=AsyncMock(),
+        )
+        assert sub_ctx.notifier is ctx.shared.notifier
+        assert sub_ctx.metric_store is ctx.shared.metric_store

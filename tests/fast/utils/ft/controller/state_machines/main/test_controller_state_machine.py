@@ -30,7 +30,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 )
 from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, SubsystemRuntime, SubsystemSpec
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
-from miles.utils.ft.controller.types import MetricStore, TriggerType
+from miles.utils.ft.controller.types import MetricStore, SharedDeps, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 
@@ -64,15 +64,11 @@ def _make_controller_context(
     subsystem_specs: dict[str, SubsystemSpec] | None = None,
     notifier: FakeNotifier | None = None,
 ) -> MainContext:
-    resolved_main_job = main_job or FakeMainJob()
-    return MainContext(
-        main_job=resolved_main_job,
+    shared = SharedDeps(
+        main_job=main_job or FakeMainJob(),
         subsystem_specs=subsystem_specs or {
             "training": _make_subsystem_spec(),
         },
-        tick_count=10,
-        run_start_tick=0,
-        job_status=JobStatus.RUNNING,
         metric_store=MetricStore(
             time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
             mini_wandb=MiniWandb(),
@@ -87,8 +83,14 @@ def _make_controller_context(
         rank_pids_provider=None,
         controller_exporter=NullControllerExporter(),
         on_recovery_duration=None,
-        node_metadata={},
         registration_grace_ticks=5,
+    )
+    return MainContext(
+        shared=shared,
+        tick_count=10,
+        run_start_tick=0,
+        job_status=JobStatus.RUNNING,
+        node_metadata={},
     )
 
 
