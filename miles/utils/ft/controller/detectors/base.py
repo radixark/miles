@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.types import Decision, MetricQueryProtocol, TrainingMetricStoreProtocol
+from miles.utils.ft.controller.types import Decision, TimeSeriesQueryProtocol, TrainingMetricStoreProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ def _filter_node_ids_by_active(node_ids: list[str], active_node_ids: set[str]) -
 
 @dataclass
 class DetectorContext:
-    metric_store: MetricQueryProtocol
+    metric_store: TimeSeriesQueryProtocol
     mini_wandb: TrainingMetricStoreProtocol | None = None
     active_node_ids: set[str] = field(default_factory=set)
     job_status: JobStatus | None = None

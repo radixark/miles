@@ -7,13 +7,13 @@ import logging
 import polars as pl
 
 from miles.utils.ft.controller.metrics.metric_names import GPU_AVAILABLE, XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
-from miles.utils.ft.controller.types import MetricQueryProtocol, NodeFault
+from miles.utils.ft.controller.types import TimeSeriesQueryProtocol, NodeFault
 
 logger = logging.getLogger(__name__)
 
 
 def check_gpu_faults(
-    metric_store: MetricQueryProtocol,
+    metric_store: TimeSeriesQueryProtocol,
 ) -> list[NodeFault]:
     return [
         *_check_gpu_lost(metric_store),
@@ -21,7 +21,7 @@ def check_gpu_faults(
     ]
 
 
-def _check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
+def _check_gpu_lost(metric_store: TimeSeriesQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(GPU_AVAILABLE)
     if df is None or df.is_empty():
         return []
@@ -37,7 +37,7 @@ def _check_gpu_lost(metric_store: MetricQueryProtocol) -> list[NodeFault]:
 
 
 def _check_non_auto_recoverable_xid(
-    metric_store: MetricQueryProtocol,
+    metric_store: TimeSeriesQueryProtocol,
 ) -> list[NodeFault]:
     df = metric_store.query_latest(XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL)
     if df is None or df.is_empty():

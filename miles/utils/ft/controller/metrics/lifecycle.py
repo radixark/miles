@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.ft.controller.types import MetricStoreLifecycle
+from miles.utils.ft.controller.types import TimeSeriesStoreLifecycle
 
 logger = logging.getLogger(__name__)
 
 _SCRAPE_RESTART_DELAY_SECONDS = 10.0
 
 
-async def start_metric_store_task(store: MetricStoreLifecycle) -> asyncio.Task[None]:
+async def start_metric_store_task(store: TimeSeriesStoreLifecycle) -> asyncio.Task[None]:
     async def _run() -> None:
         while True:
             try:
@@ -31,7 +31,7 @@ async def start_metric_store_task(store: MetricStoreLifecycle) -> asyncio.Task[N
 
 
 async def stop_metric_store_task(
-    store: MetricStoreLifecycle,
+    store: TimeSeriesStoreLifecycle,
     task: asyncio.Task[None],
 ) -> None:
     await store.stop()

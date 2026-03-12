@@ -141,7 +141,7 @@ class DiagnosticOrchestratorProtocol(ABC):
     ) -> DiagnosticPipelineResult: ...
 
 
-class MetricQueryProtocol(ABC):
+class TimeSeriesQueryProtocol(ABC):
     @abstractmethod
     def query_latest(
         self,
@@ -182,7 +182,7 @@ class MetricQueryProtocol(ABC):
     ) -> pl.DataFrame: ...
 
 
-class MetricStoreLifecycle(ABC):
+class TimeSeriesStoreLifecycle(ABC):
     @abstractmethod
     async def start(self) -> None: ...
 
@@ -190,7 +190,7 @@ class MetricStoreLifecycle(ABC):
     async def stop(self) -> None: ...
 
 
-class MetricStoreProtocol(MetricQueryProtocol, MetricStoreLifecycle): ...
+class TimeSeriesStoreProtocol(TimeSeriesQueryProtocol, TimeSeriesStoreLifecycle): ...
 
 
 class ScrapeTargetManagerProtocol(ABC):

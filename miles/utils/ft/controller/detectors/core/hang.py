@@ -10,7 +10,7 @@ from miles.utils.ft.controller.metrics.metric_names import (
     PHASE_TRAINING,
     TRAINING_PHASE,
 )
-from miles.utils.ft.controller.types import ActionType, Decision, MetricQueryProtocol, TriggerType
+from miles.utils.ft.controller.types import ActionType, Decision, TimeSeriesQueryProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 
@@ -67,7 +67,7 @@ class HangDetector(BaseFaultDetector):
 
         return Decision.no_fault(reason="heartbeat progressing normally")
 
-    def _get_current_phase(self, metric_store: MetricQueryProtocol) -> float:
+    def _get_current_phase(self, metric_store: TimeSeriesQueryProtocol) -> float:
         df = metric_store.query_latest(TRAINING_PHASE, label_filters={"rank": "0"})
         if df is None or df.is_empty():
             return PHASE_TRAINING
@@ -76,7 +76,7 @@ class HangDetector(BaseFaultDetector):
 
     def _get_heartbeat_changes(
         self,
-        metric_store: MetricQueryProtocol,
+        metric_store: TimeSeriesQueryProtocol,
         window_minutes: int,
     ) -> float | None:
         df = metric_store.changes(

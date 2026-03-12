@@ -7,7 +7,7 @@ from miles.utils.ft.agents.types import MetricSample
 from miles.utils.ft.controller.metrics.mini_prometheus.eviction import RetentionEvictor
 from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore
 from miles.utils.ft.controller.metrics.mini_prometheus.scrape_loop import ScrapeLoop
-from miles.utils.ft.controller.types import MetricStoreProtocol, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import TimeSeriesStoreProtocol, ScrapeTargetManagerProtocol
 
 
 @dataclass
@@ -16,7 +16,7 @@ class MiniPrometheusConfig:
     retention: timedelta = field(default_factory=lambda: timedelta(minutes=60))
 
 
-class MiniPrometheus(InMemoryMetricStore, MetricStoreProtocol, ScrapeTargetManagerProtocol):
+class MiniPrometheus(InMemoryMetricStore, TimeSeriesStoreProtocol, ScrapeTargetManagerProtocol):
     def __init__(self, config: MiniPrometheusConfig | None = None) -> None:
         super().__init__()
         self._config = config or MiniPrometheusConfig()

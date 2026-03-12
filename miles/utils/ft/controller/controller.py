@@ -12,7 +12,7 @@ from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.types import ControllerStatus, MetricStoreProtocol, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import ControllerStatus, TimeSeriesStoreProtocol, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ class FtController:
         tick_interval: float,
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
-        metric_store: MetricStoreProtocol,
+        metric_store: TimeSeriesStoreProtocol,
         scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
         controller_exporter: ControllerExporter | None = None,
     ) -> None:

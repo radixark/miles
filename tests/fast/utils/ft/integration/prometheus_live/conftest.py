@@ -24,7 +24,7 @@ from prometheus_client import CollectorRegistry, Gauge, start_http_server
 
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
-from miles.utils.ft.controller.types import MetricQueryProtocol
+from miles.utils.ft.controller.types import TimeSeriesQueryProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ class DynamicExporter:
 class MetricBackend(ABC):
     @property
     @abstractmethod
-    def store(self) -> MetricQueryProtocol: ...
+    def store(self) -> TimeSeriesQueryProtocol: ...
 
     @abstractmethod
     def set_gauge(

@@ -13,9 +13,9 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
 from miles.utils.ft.controller.types import (
-    MetricQueryProtocol,
-    MetricStoreLifecycle,
-    MetricStoreProtocol,
+    TimeSeriesQueryProtocol,
+    TimeSeriesStoreLifecycle,
+    TimeSeriesStoreProtocol,
     ScrapeTargetManagerProtocol,
     TrainingMetricStoreProtocol,
 )
@@ -24,15 +24,15 @@ from miles.utils.ft.controller.types import (
 class TestMiniPrometheusProtocolCompliance:
     def test_satisfies_metric_query_protocol(self) -> None:
         store = MiniPrometheus()
-        assert isinstance(store, MetricQueryProtocol)
+        assert isinstance(store, TimeSeriesQueryProtocol)
 
     def test_satisfies_metric_store_lifecycle(self) -> None:
         store = MiniPrometheus()
-        assert isinstance(store, MetricStoreLifecycle)
+        assert isinstance(store, TimeSeriesStoreLifecycle)
 
     def test_satisfies_metric_store_protocol(self) -> None:
         store = MiniPrometheus()
-        assert isinstance(store, MetricStoreProtocol)
+        assert isinstance(store, TimeSeriesStoreProtocol)
 
     def test_satisfies_scrape_target_manager_protocol(self) -> None:
         store = MiniPrometheus()
@@ -42,15 +42,15 @@ class TestMiniPrometheusProtocolCompliance:
 class TestPrometheusClientProtocolCompliance:
     def test_satisfies_metric_query_protocol(self) -> None:
         client = PrometheusClient(url="http://localhost:9090")
-        assert isinstance(client, MetricQueryProtocol)
+        assert isinstance(client, TimeSeriesQueryProtocol)
 
     def test_satisfies_metric_store_lifecycle(self) -> None:
         client = PrometheusClient(url="http://localhost:9090")
-        assert isinstance(client, MetricStoreLifecycle)
+        assert isinstance(client, TimeSeriesStoreLifecycle)
 
     def test_satisfies_metric_store_protocol(self) -> None:
         client = PrometheusClient(url="http://localhost:9090")
-        assert isinstance(client, MetricStoreProtocol)
+        assert isinstance(client, TimeSeriesStoreProtocol)
 
 
 class TestMiniWandbProtocolCompliance:
@@ -59,7 +59,7 @@ class TestMiniWandbProtocolCompliance:
         assert isinstance(store, TrainingMetricStoreProtocol)
 
 
-class _QueryOnlyStore(MetricQueryProtocol):
+class _QueryOnlyStore(TimeSeriesQueryProtocol):
     """Minimal implementation satisfying only MetricQueryProtocol."""
 
     def query_latest(
@@ -116,15 +116,15 @@ class _FakeMiniWandb(TrainingMetricStoreProtocol):
 class TestQueryOnlyProtocol:
     def test_satisfies_query_protocol(self) -> None:
         store = _QueryOnlyStore()
-        assert isinstance(store, MetricQueryProtocol)
+        assert isinstance(store, TimeSeriesQueryProtocol)
 
     def test_does_not_satisfy_lifecycle_protocol(self) -> None:
         store = _QueryOnlyStore()
-        assert not isinstance(store, MetricStoreLifecycle)
+        assert not isinstance(store, TimeSeriesStoreLifecycle)
 
     def test_does_not_satisfy_full_protocol(self) -> None:
         store = _QueryOnlyStore()
-        assert not isinstance(store, MetricStoreProtocol)
+        assert not isinstance(store, TimeSeriesStoreProtocol)
 
     def test_query_only_store_usable_as_detector_context_metric_store(self) -> None:
         store = _QueryOnlyStore()
@@ -139,14 +139,14 @@ class TestQueryOnlyProtocol:
 
 class TestIncompleteSubclassRaisesTypeError:
     def test_incomplete_metric_query(self) -> None:
-        class _Incomplete(MetricQueryProtocol):
+        class _Incomplete(TimeSeriesQueryProtocol):
             pass
 
         with pytest.raises(TypeError):
             _Incomplete()
 
     def test_incomplete_metric_store_lifecycle(self) -> None:
-        class _Incomplete(MetricStoreLifecycle):
+        class _Incomplete(TimeSeriesStoreLifecycle):
             pass
 
         with pytest.raises(TypeError):

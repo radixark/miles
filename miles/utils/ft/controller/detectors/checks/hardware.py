@@ -12,7 +12,7 @@ from datetime import timedelta
 import polars as pl
 
 from miles.utils.ft.controller.metrics.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
-from miles.utils.ft.controller.types import MetricQueryProtocol, NodeFault
+from miles.utils.ft.controller.types import TimeSeriesQueryProtocol, NodeFault
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ DISK_AVAILABLE_THRESHOLD_BYTES: float = 1e9  # 1 GB
 
 
 def check_disk_fault(
-    metric_store: MetricQueryProtocol,
+    metric_store: TimeSeriesQueryProtocol,
     disk_available_threshold_bytes: float = DISK_AVAILABLE_THRESHOLD_BYTES,
 ) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_FILESYSTEM_AVAIL_BYTES)
@@ -41,7 +41,7 @@ def check_disk_fault(
 
 
 def check_nic_down_in_window(
-    metric_store: MetricQueryProtocol,
+    metric_store: TimeSeriesQueryProtocol,
     window: timedelta,
     threshold: int,
 ) -> list[NodeFault]:
@@ -79,7 +79,7 @@ def check_nic_down_in_window(
     ]
 
 
-def check_majority_nic_down(metric_store: MetricQueryProtocol) -> list[NodeFault]:
+def check_majority_nic_down(metric_store: TimeSeriesQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_NETWORK_UP)
     if df is None or df.is_empty():
         return []

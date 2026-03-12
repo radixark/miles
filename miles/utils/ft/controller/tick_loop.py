@@ -18,7 +18,7 @@ from miles.utils.ft.controller.subsystem import SubsystemConfig
 from miles.utils.ft.controller.types import (
     ControllerMode,
     DiagnosticOrchestratorProtocol,
-    MetricStoreProtocol,
+    TimeSeriesStoreProtocol,
 )
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine
@@ -34,7 +34,7 @@ class TickLoop:
         training_rank_roster_box: Box[TrainingRankRoster | None],
         agents: dict[str, NodeAgentProtocol],
         main_job: MainJobProtocol,
-        metric_store: MetricStoreProtocol,
+        metric_store: TimeSeriesStoreProtocol,
         mini_wandb: MiniWandb,
         notifier: NotifierProtocol | None,
         node_manager: NodeManagerProtocol,

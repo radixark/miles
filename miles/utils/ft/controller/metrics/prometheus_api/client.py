@@ -15,7 +15,7 @@ from miles.utils.ft.controller.metrics.prometheus_api.response_parser import (
     parse_instant_response,
     parse_range_response,
 )
-from miles.utils.ft.controller.types import MetricStoreProtocol
+from miles.utils.ft.controller.types import TimeSeriesStoreProtocol
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ _FETCH_MAX_RETRIES: int = 2
 _FETCH_RETRY_DELAY_SECONDS: float = 0.5
 
 
-class PrometheusClient(RangeAggregationMixin, MetricStoreProtocol):
+class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
     """MetricStoreProtocol implementation backed by a real Prometheus HTTP API.
 
     Each typed method builds the corresponding PromQL query internally,

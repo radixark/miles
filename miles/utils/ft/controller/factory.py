@@ -28,8 +28,8 @@ from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
-    MetricQueryProtocol,
-    MetricStoreProtocol,
+    TimeSeriesQueryProtocol,
+    TimeSeriesStoreProtocol,
     ScrapeTargetManagerProtocol,
 )
 from miles.utils.ft.utils.box import Box
@@ -47,7 +47,7 @@ class FtControllerBundle(NamedTuple):
 def create_ft_controller(
     node_manager: NodeManagerProtocol,
     main_job: MainJobProtocol,
-    metric_store: MetricStoreProtocol,
+    metric_store: TimeSeriesStoreProtocol,
     mini_wandb: MiniWandb,
     *,
     rollout_cell_ids: list[str] | None = None,
