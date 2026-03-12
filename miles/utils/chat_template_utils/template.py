@@ -61,19 +61,27 @@ def _tojson(value, ensure_ascii=True, indent=None):
 
 
 def _normalize_tool_arguments(messages: list[dict]) -> list[dict]:
-    """Deep-copy messages and parse JSON-string tool_call arguments to dicts.
+    """Deep-copy messages and normalize for template rendering.
 
-    Matches SGLang's ``_apply_jinja_template`` / ``_apply_pretokenized_template``
-    normalization (serving_chat.py L446-462, L669-682).  Some templates
-    (e.g. Qwen3-Coder-Next, GLM-4.7) use ``arguments|items`` which requires
-    a mapping.
+    Normalizations:
+    - Parse JSON-string tool_call arguments to dicts.  Matches SGLang's
+      ``_apply_jinja_template`` / ``_apply_pretokenized_template``
+      normalization (serving_chat.py L446-462, L669-682).  Some templates
+      (e.g. Qwen3-Coder-Next, GLM-4.7) use ``arguments|items`` which requires
+      a mapping.
+    - Convert ``content: None`` to ``content: ""`` for assistant messages with
+      tool_calls.  The OpenAI API returns ``content: null`` for tool-call-only
+      responses; Jinja2 renders Python ``None`` as the literal string "None".
     """
     normalized = copy.deepcopy(messages)
     for msg in normalized:
-        if msg.get("role") == "assistant" and "tool_calls" in msg and isinstance(msg["tool_calls"], list):
-            for item in msg["tool_calls"]:
-                if "arguments" in item["function"] and isinstance(item["function"]["arguments"], str):
-                    item["function"]["arguments"] = json.loads(item["function"]["arguments"])
+        if msg.get("role") == "assistant":
+            if msg.get("content") is None and msg.get("tool_calls"):
+                msg["content"] = ""
+            if "tool_calls" in msg and isinstance(msg["tool_calls"], list):
+                for item in msg["tool_calls"]:
+                    if "arguments" in item["function"] and isinstance(item["function"]["arguments"], str):
+                        item["function"]["arguments"] = json.loads(item["function"]["arguments"])
     return normalized
 
 
