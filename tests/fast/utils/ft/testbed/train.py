@@ -16,7 +16,7 @@ from miles.utils.ft.adapters.types import ft_controller_actor_name, ft_node_agen
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.utils.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
-from miles.utils.ft.controller.types import ControllerStatus
+from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
 from miles.utils.ft.factories.controller import build_ft_controller
 from miles.utils.ft.factories.node_agent import build_node_agent
 from tests.fast.utils.ft.testbed.config import TestbedConfig
@@ -386,6 +386,92 @@ class MilesTestbed:
         raise TimeoutError(
             f"Subsystem '{name}' did not reach state '{state}' within {timeout}s. "
             f"Current states: {last_status.subsystem_states}"
+        )
+
+    async def wait_for_recovery_phase(
+        self,
+        phase: str,
+        timeout: float = 120.0,
+    ) -> ControllerStatus:
+        """Wait until recovery.phase contains the given string."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                status = await self.get_status()
+                if status.recovery is not None and phase in status.recovery.phase:
+                    return status
+            except Exception:
+                logger.debug("wait_for_recovery_phase: status check failed", exc_info=True)
+            await asyncio.sleep(0.3)
+        raise TimeoutError(f"Recovery phase did not reach '{phase}' within {timeout}s")
+
+    async def wait_for_mode(
+        self,
+        mode: ControllerMode,
+        timeout: float = 60.0,
+    ) -> ControllerStatus:
+        """Wait until controller mode matches."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                status = await self.get_status()
+                if status.mode == mode:
+                    return status
+            except Exception:
+                logger.debug("wait_for_mode: status check failed", exc_info=True)
+            await asyncio.sleep(0.3)
+        raise TimeoutError(f"Mode did not reach {mode} within {timeout}s")
+
+    async def wait_for_mode_transition(
+        self,
+        target_mode: ControllerMode,
+        timeout: float = 120.0,
+    ) -> ControllerStatus:
+        """Wait for mode to leave target, then return when it reaches target again."""
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            try:
+                status = await self.get_status()
+                if status.mode != target_mode:
+                    break
+            except Exception:
+                logger.debug("wait_for_mode_transition: status check failed", exc_info=True)
+            await asyncio.sleep(0.3)
+
+        while time.monotonic() < deadline:
+            try:
+                status = await self.get_status()
+                if status.mode == target_mode:
+                    return status
+            except Exception:
+                logger.debug("wait_for_mode_transition: status check failed", exc_info=True)
+            await asyncio.sleep(0.3)
+
+        raise TimeoutError(
+            f"Mode transition to {target_mode} did not complete within {timeout}s"
+        )
+
+    async def wait_for_all_subsystems_detecting(
+        self,
+        timeout: float = 120.0,
+    ) -> ControllerStatus:
+        """Wait until all subsystems are in DetectingAnomalySt."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                status = await self.get_status()
+                if status.subsystem_states and all(
+                    s == "DetectingAnomalySt" for s in status.subsystem_states.values()
+                ):
+                    return status
+            except Exception:
+                logger.debug("wait_for_all_subsystems_detecting: check failed", exc_info=True)
+            await asyncio.sleep(0.3)
+        last_status = await self.get_status()
+        raise TimeoutError(
+            f"Not all subsystems reached DetectingAnomalySt within {timeout}s "
+            f"(states={last_status.subsystem_states})"
         )
 
     # ------------------------------------------------------------------
