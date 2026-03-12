@@ -156,7 +156,9 @@ class TestGetStatus:
         assert status.recovery.bad_nodes_confirmed is True
         assert status.recovery.bad_nodes == ["node-0"]
 
-    def test_bad_nodes_confirmed_when_notifying(self) -> None:
+    def test_bad_nodes_not_confirmed_when_notifying(self) -> None:
+        """NotifyHumansSt can be reached without confirming bad nodes (e.g.
+        diagnostic pipeline found no fault). Only RecoveryDoneSt confirms."""
         harness = make_test_controller()
         set_training_subsystem_state(harness.controller, RecoveringSt(
             recovery=NotifyHumansSt(state_before="Test"),
@@ -165,7 +167,7 @@ class TestGetStatus:
         ))
         status = harness.controller.get_status()
         assert status.recovery is not None
-        assert status.recovery.bad_nodes_confirmed is True
+        assert status.recovery.bad_nodes_confirmed is False
 
     def test_bad_nodes_not_confirmed_during_diagnostics(self) -> None:
         harness = make_test_controller()
