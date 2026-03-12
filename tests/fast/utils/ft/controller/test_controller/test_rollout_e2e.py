@@ -199,15 +199,29 @@ class TestColocatedNodeFault:
         state = controller._state_machine.state
         assert isinstance(state, NormalSt)
 
-        # Step 2: Inject GPU XID on the shared node
+        # Step 2: Override rollout detectors with one-shot to prevent re-entry
+        # within the convergence loop (HW detectors re-fire because XID metrics
+        # persist in MiniPrometheus, exhausting shared cooldown before training
+        # gets a chance to enter L2 recovery)
+        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        rollout_config.detectors = [
+            _OneShotDecisionDetector(Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=[shared_node],
+                reason="gpu fault on shared node",
+                trigger=TriggerType.HARDWARE,
+            ))
+        ]
+
+        # Step 3: Inject GPU XID on the shared node
         inject_critical_xid(store, shared_node)
         inject_gpu_unavailable(store, shared_node, gpu="0")
 
-        # Step 3: Tick -> both subsystems detect, training L2 escalates to
+        # Step 4: Tick -> both subsystems detect, training L2 escalates to
         #   main-job restart; main SM rebuilds all subsystems
         await controller._tick()
 
-        # Step 4: Verify
+        # Step 5: Verify
         state = controller._state_machine.state
         assert isinstance(state, NormalSt)
         assert "training" in state.subsystems
