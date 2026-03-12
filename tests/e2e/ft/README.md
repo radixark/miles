@@ -9,7 +9,7 @@ Therefore, please:
 
 1. Define scenarios inside `tests/fast/utils/ft/integration/local_ray_semi_e2e/scenarios`
 2. Add tests in `tests/fast/utils/ft/integration/local_ray_semi_e2e`
-2. Add tests here (`tests/e2e/ft`)
+3. Add tests here (`tests/e2e/ft`)
 
 ## Prerequisites
 
