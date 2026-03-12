@@ -8,6 +8,7 @@ from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
+from miles.utils.ft.controller.types import NullScrapeTargetManager
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
 from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, SubsystemState, RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery.models import (
@@ -81,7 +82,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=5,
         )
 
@@ -100,7 +101,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=10,
         )
 
@@ -114,7 +115,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
@@ -125,7 +126,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=wandb,
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
@@ -145,7 +146,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
@@ -161,7 +162,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
@@ -172,7 +173,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
@@ -187,14 +188,14 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
         assert status.subsystem_states["training"] == "RecoveringSt"
 
     def test_active_run_id_from_training_rank_roster(self) -> None:
-        roster = TrainingRankRoster(run_id="run-42")
+        roster = TrainingRankRoster(run_id="run-42", scrape_target_manager=NullScrapeTargetManager())
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
             mini_wandb=MiniWandb(),
@@ -222,7 +223,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=sm,
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
@@ -250,7 +251,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 
@@ -270,7 +271,7 @@ class TestBuildControllerStatus:
         status = build_controller_status(
             controller_state_machine=_make_controller_sm(state),
             mini_wandb=MiniWandb(),
-            training_rank_roster=TrainingRankRoster(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
             tick_count=0,
         )
 

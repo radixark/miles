@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
+from miles.utils.ft.controller.types import NullScrapeTargetManager
 
 
 class _FakeScrapeTargetManager:
@@ -22,12 +23,12 @@ class _FakeScrapeTargetManager:
 
 def _make_registry(
     *,
-    run_id: str | None = "run-1",
-    scrape_target_manager: _FakeScrapeTargetManager | None = None,
+    run_id: str = "run-1",
+    scrape_target_manager: _FakeScrapeTargetManager | NullScrapeTargetManager | None = None,
 ) -> TrainingRankRoster:
     return TrainingRankRoster(
         run_id=run_id,
-        scrape_target_manager=scrape_target_manager,
+        scrape_target_manager=scrape_target_manager or NullScrapeTargetManager(),
     )
 
 
@@ -97,8 +98,8 @@ class TestRunIdMatching:
 
         assert registry.rank_placement == {}
 
-    def test_none_run_id_rejects_everything(self) -> None:
-        registry = _make_registry(run_id=None)
+    def test_empty_run_id_rejects_real_run_id(self) -> None:
+        registry = _make_registry(run_id="")
         registry.register_training_rank(**_VALID_KWARGS)
 
         assert registry.rank_placement == {}
@@ -158,8 +159,8 @@ class TestScrapeTargetManager:
 
         assert stm.targets == {"rank-0": "http://node-0:9090"}
 
-    def test_no_scrape_target_manager_is_safe(self) -> None:
-        registry = _make_registry(scrape_target_manager=None)
+    def test_null_scrape_target_manager_is_safe(self) -> None:
+        registry = _make_registry(scrape_target_manager=NullScrapeTargetManager())
         registry.register_training_rank(**_VALID_KWARGS)
 
     def test_cleanup_removes_all_scrape_targets(self) -> None:
@@ -188,8 +189,8 @@ class TestScrapeTargetManager:
 
         assert stm.targets == {}
 
-    def test_cleanup_without_scrape_target_manager_is_safe(self) -> None:
-        registry = _make_registry(scrape_target_manager=None)
+    def test_cleanup_with_null_scrape_target_manager_is_safe(self) -> None:
+        registry = _make_registry(scrape_target_manager=NullScrapeTargetManager())
         registry.register_training_rank(**_VALID_KWARGS)
         registry.cleanup()
 
@@ -302,7 +303,7 @@ class TestWarnIfIncomplete:
         assert "incomplete_rank_registration" not in caplog.text
 
     def test_no_warn_when_empty_roster(self, caplog: pytest.LogCaptureFixture) -> None:
-        registry = _make_registry(run_id=None)
+        registry = _make_registry(run_id="unused")
 
         with caplog.at_level("WARNING"):
             registry.warn_if_incomplete()

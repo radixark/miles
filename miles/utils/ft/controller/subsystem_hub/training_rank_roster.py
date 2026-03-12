@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from miles.utils.ft.controller.types import NullScrapeTargetManager, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import ScrapeTargetManagerProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -12,14 +12,14 @@ class TrainingRankRoster:
 
     def __init__(
         self,
-        run_id: str | None = None,
-        scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
+        run_id: str,
+        scrape_target_manager: ScrapeTargetManagerProtocol,
     ) -> None:
         self.run_id = run_id
         self.expected_world_size: int | None = None
         self.rank_placement: dict[int, str] = {}
         self.rank_pids: dict[int, int] = {}
-        self._scrape_target_manager: ScrapeTargetManagerProtocol = scrape_target_manager or NullScrapeTargetManager()
+        self._scrape_target_manager: ScrapeTargetManagerProtocol = scrape_target_manager
 
     def register_training_rank(
         self,
