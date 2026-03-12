@@ -389,9 +389,6 @@ async def wait_for_sglang_pid(
 # ---------------------------------------------------------------------------
 
 
-wait_for_recovery_complete = _scenarios.wait_for_recovery_complete
-
-
 async def wait_for_training_stable(
     handle: ray.actor.ActorHandle,
     n_iterations: int = 5,
