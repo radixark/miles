@@ -170,17 +170,17 @@ class TestRegisterRolloutSubsystems:
 
     def test_rollout_spec_has_subsystem_restart_mode(self) -> None:
         controller, *_ = _make_test_controller_with_rollout()
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         assert rollout_spec.config.restart_mode == RestartMode.SUBSYSTEM
 
     def test_training_spec_has_main_job_restart_mode(self) -> None:
         controller, *_ = _make_test_controller_with_rollout()
-        training_spec = controller._tick_loop.subsystem_specs["training"]
+        training_spec = controller._subsystem_specs["training"]
         assert training_spec.config.restart_mode == RestartMode.MAIN_JOB
 
     def test_rollout_active_node_ids_returns_registered_nodes(self) -> None:
         harness = _make_test_controller_with_rollout()
-        rollout_spec = harness.controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = harness.controller._subsystem_specs["rollout_ep72"]
         assert rollout_spec.runtime.get_active_node_ids() == {"rollout-node-ep72-0", "rollout-node-ep72-1"}
 
 
@@ -220,7 +220,7 @@ class TestRolloutCrashRecovery:
         """When a rollout detector fires, the rollout subsystem enters Recovering."""
         controller, *_ = _make_test_controller_with_rollout()
 
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         crash_detector = FixedDecisionDetector(
             Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -249,7 +249,7 @@ class TestSubsystemSpecsIncludeRollout:
             cell_ids=["ep72", "ep36"],
         )
 
-        specs = controller._tick_loop.subsystem_specs
+        specs = controller._subsystem_specs
         assert "training" in specs
         assert "rollout_ep72" in specs
         assert "rollout_ep36" in specs
@@ -260,7 +260,7 @@ class TestSubsystemSpecsIncludeRollout:
         from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
 
         controller, *_ = _make_test_controller_with_rollout()
-        specs = controller._tick_loop.subsystem_specs
+        specs = controller._subsystem_specs
 
         training = specs["training"]
         assert isinstance(training.runtime.actuator, TrainingSubsystemActuator)
@@ -303,7 +303,7 @@ class TestFullLevel1RecoveryCycle:
         )
         controller = harness.controller
 
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
@@ -341,7 +341,7 @@ class TestLevel1FailureEscalation:
         )
         controller = harness.controller
 
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
@@ -401,7 +401,7 @@ class TestColocatedHardwareFault:
         harness.subsystem_hub.training_rank_roster.rank_placement[0] = shared_node
         harness.subsystem_hub.training_rank_roster.rank_placement[1] = "train-node-1"
 
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,

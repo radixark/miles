@@ -208,7 +208,8 @@ class TestDefaultDiagnosticOrchestratorWiring:
             metric_store=MetricStore(time_series_store=make_fake_metric_store(), mini_wandb=MiniWandb()),
         )
 
-        assert bundle.controller._tick_loop._external_on_main_job_new_run is not None
+        deps = bundle.controller._build_tick_deps()
+        assert deps.on_main_job_new_run is not None
 
 
 class TestDefaultDiagnosticPipeline:
@@ -216,7 +217,7 @@ class TestDefaultDiagnosticPipeline:
         from miles.utils.ft.controller.diagnostics.executors import GpuClusterExecutor
 
         harness = make_test_controller()
-        orchestrator = harness.controller._tick_loop._diagnostic_orchestrator
+        orchestrator = harness.controller._diagnostic_orchestrator
         assert any(isinstance(e, GpuClusterExecutor) for e in orchestrator._pipeline)
 
 

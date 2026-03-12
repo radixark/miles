@@ -39,7 +39,7 @@ def _override_rollout_monitoring(harness: _RolloutTestHarness, *, cell_ids: list
     """Set alive_duration_seconds=0 on rollout subsystem specs so tests don't wait 180s."""
     resolved = cell_ids or ["ep72"]
     for cell_id in resolved:
-        spec = harness.controller._tick_loop.subsystem_specs[f"rollout_{cell_id}"]
+        spec = harness.controller._subsystem_specs[f"rollout_{cell_id}"]
         spec.config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
@@ -130,7 +130,7 @@ class TestRolloutCrashRecovery:
         store = harness.time_series_store
 
         harness.subsystem_hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         rollout_spec.config.detectors = [
             RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),
         ]
@@ -208,7 +208,7 @@ class TestColocatedNodeFault:
         # Test-only artifact: fakes complete recovery instantly so the subsystem
         # loops back to DetectingAnomalySt within one tick; in production,
         # recovery blocks on real I/O and the convergence loop exits first.
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         rollout_spec.config.detectors = [
             _OneShotDecisionDetector(Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -276,13 +276,13 @@ class TestMultiCellIndependentFailures:
 
         # Step 1: Initial tick — all subsystems healthy (no detectors installed)
         for cell_id in ["ep72", "ep36"]:
-            controller._tick_loop.subsystem_specs[f"rollout_{cell_id}"].config.detectors = []
+            controller._subsystem_specs[f"rollout_{cell_id}"].config.detectors = []
         await controller._tick()
         state = controller._state_machine.state
         assert isinstance(state, NormalSt)
 
         # Step 2: Install one-shot crash detector for ep72 only
-        ep72_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        ep72_spec = controller._subsystem_specs["rollout_ep72"]
         ep72_spec.config.detectors = [
             _OneShotDecisionDetector(Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -303,7 +303,7 @@ class TestMultiCellIndependentFailures:
         assert harness.rollout_manager_handle.stop_cell.call_count > stop_before
 
         # Step 4: Install one-shot crash detector for ep36 only
-        ep36_spec = controller._tick_loop.subsystem_specs["rollout_ep36"]
+        ep36_spec = controller._subsystem_specs["rollout_ep36"]
         ep36_spec.config.detectors = [
             _OneShotDecisionDetector(Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -352,7 +352,7 @@ class TestRolloutLevel1FailureNotifyHumans:
         store = harness.time_series_store
 
         harness.subsystem_hub.set_rollout_node_ids("ep72", {"rollout-0", "rollout-1"})
-        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec = controller._subsystem_specs["rollout_ep72"]
         rollout_spec.config.detectors = [
             RolloutCrashDetector(cell_id="ep72", alive_threshold_seconds=2.0),
         ]

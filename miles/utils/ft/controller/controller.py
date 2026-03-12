@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
-from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NotifierProtocol
+from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
 from miles.utils.ft.controller.status import build_controller_status
-from miles.utils.ft.controller.subsystem_hub import SubsystemHub, TrainingRankRoster
-from miles.utils.ft.controller.tick_loop import TickLoop
-from miles.utils.ft.controller.types import ControllerStatus, MetricStore, NullScrapeTargetManager, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.subsystem_hub import SubsystemHub, SubsystemSpec, TrainingRankRoster
+from miles.utils.ft.controller.tick_loop import TickDeps, TickLoop
+from miles.utils.ft.controller.types import (
+    ControllerStatus,
+    DiagnosticOrchestratorProtocol,
+    MetricStore,
+    NullScrapeTargetManager,
+    ScrapeTargetManagerProtocol,
+)
+from miles.utils.ft.utils.box import Box
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -29,8 +37,17 @@ class FtController:
         tick_interval: float,
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
+        node_manager: NodeManagerProtocol,
+        diagnostic_orchestrator: DiagnosticOrchestratorProtocol,
+        recovery_timeout_seconds: int,
+        max_simultaneous_bad_nodes: int,
+        subsystem_specs: dict[str, SubsystemSpec],
+        rank_pids_provider: Callable[[str], dict[int, int]],
+        training_rank_roster_box: Box[TrainingRankRoster | None],
+        on_recovery_duration: Callable[[float], None] | None = None,
         scrape_target_manager: ScrapeTargetManagerProtocol | None = None,
         controller_exporter: ControllerExporter | None = None,
+        registration_grace_ticks: int = 5,
     ) -> None:
         self._main_job = main_job
         self._state_machine = state_machine
@@ -40,8 +57,17 @@ class FtController:
         self._tick_interval = tick_interval
         self._tick_loop = tick_loop
         self._notifier = notifier
+        self._node_manager = node_manager
+        self._diagnostic_orchestrator = diagnostic_orchestrator
+        self._recovery_timeout_seconds = recovery_timeout_seconds
+        self._max_simultaneous_bad_nodes = max_simultaneous_bad_nodes
+        self._subsystem_specs = subsystem_specs
+        self._rank_pids_provider = rank_pids_provider
+        self._training_rank_roster_box = training_rank_roster_box
+        self._on_recovery_duration = on_recovery_duration
         self._scrape_target_manager: ScrapeTargetManagerProtocol = scrape_target_manager or NullScrapeTargetManager()
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
+        self._registration_grace_ticks = registration_grace_ticks
 
         self._shutting_down: bool = False
 
@@ -125,9 +151,27 @@ class FtController:
         self._metric_store.mini_wandb.set_active_run_id(run_id)
         logger.info("run_activated run_id=%s", run_id)
 
+    def _build_tick_deps(self) -> TickDeps:
+        return TickDeps(
+            main_job=self._main_job,
+            metric_store=self._metric_store,
+            notifier=self._notifier,
+            node_manager=self._node_manager,
+            diagnostic_orchestrator=self._diagnostic_orchestrator,
+            recovery_timeout_seconds=self._recovery_timeout_seconds,
+            max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
+            subsystem_specs=self._subsystem_specs,
+            on_main_job_new_run=self._activate_run,
+            rank_pids_provider=self._rank_pids_provider,
+            on_recovery_duration=self._on_recovery_duration,
+            controller_exporter=self._controller_exporter,
+            registration_grace_ticks=self._registration_grace_ticks,
+            training_rank_roster_box=self._training_rank_roster_box,
+            node_agent_registry=self._node_agent_registry,
+        )
+
     async def _tick(self) -> None:
-        assert self._tick_loop is not None, "tick_loop not initialized — factory must set it before run()"
-        await self._tick_loop.tick()
+        await self._tick_loop.tick(self._build_tick_deps())
 
     async def _stop_services(self, scrape_task: asyncio.Task[None]) -> None:
         await stop_metric_store_task(self._metric_store.time_series_store, scrape_task)
