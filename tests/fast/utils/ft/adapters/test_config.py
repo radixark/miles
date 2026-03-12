@@ -42,3 +42,13 @@ class TestFtControllerConfig:
         assert config.platform == "k8s-ray"
         assert config.tick_interval == 10.0
         assert config.scrape_interval_seconds == 5.0
+
+    def test_scrape_interval_seconds_rejects_zero(self) -> None:
+        """scrape_interval_seconds was not validated — zero or negative values
+        would silently create a broken scrape loop."""
+        with pytest.raises(ValidationError, match="scrape_interval_seconds"):
+            FtControllerConfig(rollout_num_cells=0, scrape_interval_seconds=0)
+
+    def test_scrape_interval_seconds_rejects_negative(self) -> None:
+        with pytest.raises(ValidationError, match="scrape_interval_seconds"):
+            FtControllerConfig(rollout_num_cells=0, scrape_interval_seconds=-1.0)

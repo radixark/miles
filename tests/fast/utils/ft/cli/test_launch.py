@@ -53,6 +53,7 @@ class TestLauncherCli:
             "--k8s-label-prefix",
             "--notify-webhook-url",
             "--notify-platform",
+            "--scrape-interval-se",
         ],
     )
     def test_help_includes_option(self, expected_text: str) -> None:
@@ -224,6 +225,38 @@ class TestLauncherSubmitAndRun:
         assert result.exit_code == 0, result.output
         config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
         assert config.runtime_env == runtime_env
+
+
+class TestLauncherScrapeInterval:
+    def test_scrape_interval_seconds_passed_to_config(self) -> None:
+        """scrape_interval_seconds existed in FtControllerConfig but was not
+        exposed as a CLI parameter, so it could only use the default value."""
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(
+                app,
+                [
+                    "launch",
+                    "--platform",
+                    "stub",
+                    "--scrape-interval-seconds",
+                    "5.0",
+                    "--",
+                    "python3",
+                    "train.py",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.scrape_interval_seconds == 5.0
+
+    def test_scrape_interval_seconds_defaults_to_10(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(app, ["launch", "--platform", "stub", "--", "python3", "train.py"])
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.scrape_interval_seconds == 10.0
 
 
 class TestLauncherInvalidInput:

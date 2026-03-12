@@ -46,6 +46,9 @@ def launch(
     ] = "",
     notify_platform: Annotated[str, typer.Option(help="Notification platform: 'lark', 'slack', or 'discord'")] = "",
     rollout_num_cells: Annotated[int, typer.Option(help="Number of rollout cells")] = 0,
+    scrape_interval_seconds: Annotated[
+        float, typer.Option(help="Metric scrape interval in seconds (mini backend)")
+    ] = 10.0,
     detector_config_json: Annotated[
         str, typer.Option(help="Detector config JSON string or @filepath (default: all detectors with defaults)")
     ] = "",
@@ -81,6 +84,7 @@ def launch(
         rollout_num_cells=rollout_num_cells,
         notify_webhook_url=notify_webhook_url,
         notify_platform=notify_platform,
+        scrape_interval_seconds=scrape_interval_seconds,
         detector_config=detector_config,
     )
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 
 from miles.utils.ft.controller.detectors.chain import DetectorChainConfig
 from miles.utils.ft.utils.base_model import FtBaseModel
@@ -26,3 +26,10 @@ class FtControllerConfig(FtBaseModel):
     notify_platform: str = ""
     rollout_num_cells: int
     detector_config: DetectorChainConfig = Field(default_factory=DetectorChainConfig)
+
+    @field_validator("scrape_interval_seconds")
+    @classmethod
+    def _scrape_interval_must_be_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("scrape_interval_seconds must be > 0")
+        return v
