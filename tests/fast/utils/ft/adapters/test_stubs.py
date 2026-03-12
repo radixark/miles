@@ -16,11 +16,9 @@ class TestNullMetadataProvider:
 
 
 class TestStubNodeManager:
-    async def test_mark_and_get_bad_nodes(self) -> None:
+    async def test_mark_node_bad_does_not_raise(self) -> None:
         manager = StubNodeManager()
         await manager.mark_node_bad(node_id="node-1", reason="gpu failure")
-        result = await manager.get_bad_nodes()
-        assert result == []
 
 class TestStubMainJob:
     async def test_submit_returns_unique_run_id(self) -> None:

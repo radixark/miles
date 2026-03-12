@@ -45,10 +45,6 @@ async def stop_and_submit(
     return True
 
 
-async def get_already_bad_nodes(node_manager: NodeManagerProtocol) -> set[str]:
-    return set(await node_manager.get_bad_nodes())
-
-
 async def retry_mark_node_bad(
     node_manager: NodeManagerProtocol,
     node_id: str,

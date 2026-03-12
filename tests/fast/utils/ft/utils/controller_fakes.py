@@ -50,9 +50,6 @@ class FakeNodeManager(NodeManagerProtocol):
     def was_ever_marked_bad(self, node_id: str) -> bool:
         return node_id in self._ever_marked_bad
 
-    async def get_bad_nodes(self) -> list[str]:
-        return sorted(self._bad_nodes)
-
 
 class FakeNotifier(NotifierProtocol):
     """Records all send() calls for assertion in tests."""

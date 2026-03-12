@@ -21,7 +21,6 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     StoppingAndRestartingSt,
 )
 from miles.utils.ft.controller.state_machines.restart.utils import (
-    get_already_bad_nodes,
     retry_mark_node_bad,
     stop_and_submit,
 )
@@ -56,19 +55,7 @@ def iteration_progress(state: MonitoringProgressSt, mini_wandb: MiniWandb) -> in
 
 class EvictingHandler(StateHandler[EvictingSt, RestartContext]):
     async def step(self, state: EvictingSt, ctx: RestartContext) -> RestartState:
-        try:
-            already_bad = await get_already_bad_nodes(ctx.node_manager)
-        except Exception:
-            # mark_node_bad is idempotent, so re-marking is harmless
-            logger.warning("get_already_bad_nodes_failed, proceeding with empty set", exc_info=True)
-            already_bad = set()
-
-        nodes_to_mark: list[str] = []
         for node_id in state.bad_node_ids:
-            if node_id not in already_bad:
-                nodes_to_mark.append(node_id)
-
-        for node_id in nodes_to_mark:
             metadata = ctx.node_metadata.get(node_id)
             result = await retry_mark_node_bad(
                 ctx.node_manager,
@@ -82,7 +69,7 @@ class EvictingHandler(StateHandler[EvictingSt, RestartContext]):
         await safe_notify(
             ctx.notifier,
             title="Nodes evicted",
-            content=f"Evicted: {nodes_to_mark}",
+            content=f"Evicted: {state.bad_node_ids}",
             severity="warning",
         )
 

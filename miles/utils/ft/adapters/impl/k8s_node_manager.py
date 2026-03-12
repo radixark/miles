@@ -89,36 +89,6 @@ class K8sNodeManager(NodeManagerProtocol):
             self._api_client = None
             self._core_v1 = None
 
-    async def get_bad_nodes(self) -> list[str]:
-        core_v1 = await self._ensure_client()
-
-        start = time.monotonic()
-        node_list = await retry_async_or_raise(
-            lambda: core_v1.list_node(label_selector=f"{self._label_key}=true"),
-            description="list_node(bad)",
-            max_retries=_K8S_API_MAX_RETRIES,
-            per_call_timeout=_K8S_API_TIMEOUT_SECONDS,
-            backoff_base=_K8S_API_BACKOFF_BASE,
-        )
-        elapsed = time.monotonic() - start
-
-        k8s_names = [node.metadata.name for node in node_list.items]
-
-        result: list[str] = []
-        for k8s_name in k8s_names:
-            if k8s_name in self._reverse_map:
-                result.append(self._reverse_map[k8s_name])
-            else:
-                logger.debug("get_bad_nodes: no reverse mapping for k8s_name=%s, skipping", k8s_name)
-
-        logger.info(
-            "get_bad_nodes k8s_count=%d mapped_count=%d elapsed_seconds=%.3f",
-            len(k8s_names),
-            len(result),
-            elapsed,
-        )
-        return result
-
     async def assert_worker_node_affinity(self) -> None:
         """Validate that ray worker pods have a nodeAffinity NotIn rule for the label key.
 

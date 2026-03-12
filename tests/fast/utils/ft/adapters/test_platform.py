@@ -26,29 +26,17 @@ class TestJobStatus:
 
 
 class TestNodeManagerProtocol:
-    def test_incomplete_subclass_raises_type_error(self) -> None:
-        class _MissingGetBadNodes(NodeManagerProtocol):
-            async def mark_node_bad(self, node_id: str, reason: str) -> None:
-                pass
-
-        with pytest.raises(TypeError):
-            _MissingGetBadNodes()
-
     @pytest.mark.anyio
-    async def test_methods_callable_with_expected_signatures(self) -> None:
+    async def test_mark_node_bad_callable(self) -> None:
         class _Impl(NodeManagerProtocol):
             def __init__(self) -> None:
                 self._bad: dict[str, str] = {}
 
-            async def mark_node_bad(self, node_id: str, reason: str) -> None:
+            async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
                 self._bad[node_id] = reason
-
-            async def get_bad_nodes(self) -> list[str]:
-                return list(self._bad.keys())
 
         instance: NodeManagerProtocol = _Impl()
         await instance.mark_node_bad(node_id="n-0", reason="bad gpu")
-        assert await instance.get_bad_nodes() == ["n-0"]
 
 
 class TestMainJobProtocol:

@@ -65,11 +65,12 @@ class TestMakeFakeMiniWandb:
 
 class TestFakeNodeManager:
     @pytest.mark.anyio
-    async def test_mark_and_get_bad_nodes(self) -> None:
+    async def test_mark_node_bad_tracks_bad_nodes(self) -> None:
         manager = FakeNodeManager()
         await manager.mark_node_bad(node_id="node-1", reason="gpu failure")
         await manager.mark_node_bad(node_id="node-2", reason="network error")
-        assert await manager.get_bad_nodes() == ["node-1", "node-2"]
+        assert manager.is_node_bad("node-1")
+        assert manager.is_node_bad("node-2")
 
     @pytest.mark.anyio
     async def test_is_node_bad(self) -> None:

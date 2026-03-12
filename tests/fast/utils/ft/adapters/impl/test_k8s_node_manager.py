@@ -58,72 +58,6 @@ class TestMarkNodeBad:
             await manager.mark_node_bad(node_id="node-1", reason="test")
 
 
-class TestGetBadNodes:
-    @pytest.mark.anyio
-    async def test_returns_mapped_node_ids_after_mark(self) -> None:
-        """get_bad_nodes returns node_ids (not k8s names) via reverse map."""
-        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
-
-        # Step 1: mark_node_bad with metadata to populate reverse map
-        await manager.mark_node_bad(
-            node_id="ray-uuid-a",
-            reason="test",
-            node_metadata={"k8s_node_name": "gke-node-a"},
-        )
-        await manager.mark_node_bad(
-            node_id="ray-uuid-b",
-            reason="test",
-            node_metadata={"k8s_node_name": "gke-node-b"},
-        )
-
-        # Step 2: get_bad_nodes returns k8s names from API
-        mock_core_v1.list_node.return_value = SimpleNamespace(
-            items=[
-                SimpleNamespace(metadata=SimpleNamespace(name="gke-node-a")),
-                SimpleNamespace(metadata=SimpleNamespace(name="gke-node-b")),
-            ]
-        )
-
-        result = await manager.get_bad_nodes()
-
-        assert result == ["ray-uuid-a", "ray-uuid-b"]
-        mock_core_v1.list_node.assert_awaited_once_with(
-            label_selector=f"{LABEL_KEY}=true",
-        )
-
-    @pytest.mark.anyio
-    async def test_returns_empty_list_when_no_bad_nodes(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api()
-        mock_core_v1.list_node.return_value = SimpleNamespace(items=[])
-
-        result = await manager.get_bad_nodes()
-
-        assert result == []
-
-    @pytest.mark.anyio
-    async def test_skips_unmapped_k8s_names(self) -> None:
-        """K8s names without a reverse mapping are skipped."""
-        manager, mock_core_v1 = _make_manager_with_mock_api()
-
-        mock_core_v1.list_node.return_value = SimpleNamespace(
-            items=[
-                SimpleNamespace(metadata=SimpleNamespace(name="unknown-node")),
-            ]
-        )
-
-        result = await manager.get_bad_nodes()
-
-        assert result == []
-
-    @pytest.mark.anyio
-    async def test_raises_on_api_failure(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api()
-        mock_core_v1.list_node.side_effect = Exception("K8s API unreachable")
-
-        with pytest.raises(Exception, match="K8s API unreachable"):
-            await manager.get_bad_nodes()
-
-
 class TestLabelPrefix:
     def test_build_label_keys_no_prefix(self) -> None:
         label_key, reason_key = _build_label_keys("")
@@ -147,18 +81,6 @@ class TestLabelPrefix:
         body = mock_core_v1.patch_node.call_args.kwargs["body"]
         assert "ft.miles.io/pfx-disabled" in body["metadata"]["labels"]
         assert "ft.miles.io/pfx-disabled-reason" in body["metadata"]["labels"]
-
-    @pytest.mark.anyio
-    async def test_get_bad_nodes_uses_prefixed_selector(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api(label_prefix="pfx")
-        mock_core_v1.list_node.return_value = SimpleNamespace(items=[])
-
-        await manager.get_bad_nodes()
-
-        mock_core_v1.list_node.assert_awaited_once_with(
-            label_selector="ft.miles.io/pfx-disabled=true",
-        )
-
 
 class TestMarkNodeBadDeletesPod:
     @pytest.mark.anyio
@@ -271,28 +193,6 @@ class TestMetadataTranslation:
 
         call_kwargs = mock_core_v1.patch_node.call_args
         assert call_kwargs.kwargs["name"] == "ray-uuid-abc"
-
-    @pytest.mark.anyio
-    async def test_get_bad_nodes_reverse_translates(self) -> None:
-        """get_bad_nodes uses reverse map to return node_ids instead of k8s names."""
-        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
-
-        # Step 1: establish reverse mapping via mark_node_bad
-        await manager.mark_node_bad(
-            node_id="ray-uuid-abc",
-            reason="test",
-            node_metadata={"k8s_node_name": "gke-node-01"},
-        )
-
-        # Step 2: get_bad_nodes returns k8s names from API
-        mock_core_v1.list_node.return_value = SimpleNamespace(
-            items=[
-                SimpleNamespace(metadata=SimpleNamespace(name="gke-node-01")),
-            ]
-        )
-
-        result = await manager.get_bad_nodes()
-        assert result == ["ray-uuid-abc"]
 
     @pytest.mark.anyio
     async def test_mark_node_bad_with_metadata_deletes_pod_using_k8s_name(self) -> None:

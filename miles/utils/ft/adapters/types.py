@@ -128,9 +128,6 @@ class NodeManagerProtocol(ABC):
     @abstractmethod
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None: ...
 
-    @abstractmethod
-    async def get_bad_nodes(self) -> list[str]: ...
-
 
 class StoppableJobProtocol(ABC):
     @abstractmethod

@@ -143,14 +143,14 @@ class TestEvicting:
         assert result.bad_node_ids == ["node-A"]
 
     @pytest.mark.asyncio
-    async def test_get_bad_nodes_failure_continues_with_empty_set(self) -> None:
-        """When K8s API (get_bad_nodes) fails, eviction continues (mark_bad is idempotent)."""
+    async def test_mark_node_bad_called_unconditionally(self) -> None:
+        """mark_node_bad is idempotent — evicting calls it for all bad nodes
+        without first querying which nodes are already marked. Previously
+        get_bad_nodes() was called to skip already-marked nodes, but that
+        depended on an in-memory reverse map that was lost on restart."""
         node_manager = FakeNodeManager()
+        await node_manager.mark_node_bad("node-A", reason="prior eviction")
 
-        async def _failing_get_bad_nodes() -> list[str]:
-            raise ConnectionError("k8s API unavailable")
-
-        node_manager.get_bad_nodes = _failing_get_bad_nodes  # type: ignore[assignment]
         stepper = _make_stepper()
         ctx = _make_context(node_manager=node_manager)
 

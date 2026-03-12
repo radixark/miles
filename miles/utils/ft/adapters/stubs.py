@@ -26,9 +26,6 @@ class StubNodeManager(NodeManagerProtocol):
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
         logger.info("stub_mark_node_bad node_id=%s reason=%s", node_id, reason)
 
-    async def get_bad_nodes(self) -> list[str]:
-        return []
-
 
 class StubMainJob(MainJobProtocol):
     """Logs operations but does not call real Ray Job API."""

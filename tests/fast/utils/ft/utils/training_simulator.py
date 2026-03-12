@@ -327,9 +327,6 @@ class NodeManagerStateActor:
     def clear_bad_nodes(self) -> None:
         self._bad_nodes.clear()
 
-    def get_bad_nodes(self) -> list[str]:
-        return sorted(self._bad_nodes)
-
     def was_ever_marked_bad(self, node_id: str) -> bool:
         return node_id in self._ever_marked_bad
 
@@ -355,9 +352,6 @@ class RemoteControlledNodeManager(NodeManagerProtocol):
 
     async def clear_bad_nodes(self) -> None:
         await self._state.clear_bad_nodes.remote()
-
-    async def get_bad_nodes(self) -> list[str]:
-        return await self._state.get_bad_nodes.remote()
 
     def was_ever_marked_bad(self, node_id: str) -> bool:
         return ray.get(self._state.was_ever_marked_bad.remote(node_id))
