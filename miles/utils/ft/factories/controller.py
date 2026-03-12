@@ -274,6 +274,7 @@ def build_ft_controller(
             runtime_env=config.runtime_env,
             ft_id=ft_id,
             k8s_label_prefix=config.k8s_label_prefix,
+            k8s_namespace=config.k8s_namespace,
             ray_job_poll_interval_seconds=config.ray_job_poll_interval_seconds,
             ray_submit_timeout_seconds=config.ray_submit_timeout_seconds,
             ray_get_status_timeout_seconds=config.ray_get_status_timeout_seconds,
@@ -386,6 +387,7 @@ def _build_platform_components(
     entrypoint: str,
     ft_id: str,
     k8s_label_prefix: str,
+    k8s_namespace: str = "",
     runtime_env: dict[str, Any] | None = None,
     ray_job_poll_interval_seconds: float = 5.0,
     ray_submit_timeout_seconds: float = 60.0,
@@ -401,9 +403,12 @@ def _build_platform_components(
         from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
         from miles.utils.ft.adapters.impl.ray.main_job import RayMainJob
 
-        namespace = os.environ.get("K8S_NAMESPACE", "")
+        namespace = k8s_namespace or os.environ.get("K8S_NAMESPACE", "")
         if not namespace:
-            raise RuntimeError("K8S_NAMESPACE env var not set. " "Configure Kubernetes Downward API in pod spec.")
+            raise RuntimeError(
+                "K8s namespace not configured. "
+                "Set --k8s-namespace or the K8S_NAMESPACE env var."
+            )
 
         node_manager = K8sNodeManager(
             label_prefix=k8s_label_prefix,

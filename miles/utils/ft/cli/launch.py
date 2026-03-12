@@ -30,6 +30,9 @@ def launch(
             help="K8s label prefix for label isolation (empty = no prefix)", envvar="MILES_FT_K8S_LABEL_PREFIX"
         ),
     ] = "",
+    k8s_namespace: Annotated[
+        str, typer.Option(help="K8s namespace (falls back to K8S_NAMESPACE env var if empty)")
+    ] = "",
     tick_interval: Annotated[float, typer.Option(help="Controller main loop interval (seconds)")] = 30.0,
     platform: Annotated[str, typer.Option(help="Platform mode: 'stub' or 'k8s-ray'")] = "k8s-ray",
     ray_address: Annotated[str, typer.Option(help="Ray dashboard address (k8s-ray mode)")] = "http://127.0.0.1:8265",
@@ -115,6 +118,7 @@ def launch(
     config = FtControllerConfig(
         ft_id=ft_id,
         k8s_label_prefix=k8s_label_prefix,
+        k8s_namespace=k8s_namespace,
         platform=platform,
         ray_address=ray_address,
         entrypoint=entrypoint,

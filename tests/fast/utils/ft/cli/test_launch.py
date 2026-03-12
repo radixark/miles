@@ -367,6 +367,35 @@ class TestLauncherRayJobParams:
         assert config.ray_stop_job_timeout_seconds == 45.0
 
 
+class TestLauncherK8sNamespace:
+    """K8s namespace was only available via K8S_NAMESPACE env var, with no
+    CLI parameter. The launch command could not express its full context."""
+
+    def test_k8s_namespace_passed_to_config(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(
+                app,
+                [
+                    "launch",
+                    "--platform", "stub",
+                    "--k8s-namespace", "my-ns",
+                    "--", "python3", "train.py",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.k8s_namespace == "my-ns"
+
+    def test_k8s_namespace_defaults_to_empty(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(app, ["launch", "--platform", "stub", "--", "python3", "train.py"])
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.k8s_namespace == ""
+
+
 class TestLauncherInvalidInput:
     def test_invalid_runtime_env_json_fails(self) -> None:
         result = runner.invoke(

@@ -13,6 +13,7 @@ class FtControllerConfig(FtBaseModel):
 
     ft_id: str = ""
     k8s_label_prefix: str = ""
+    k8s_namespace: str = ""
     platform: Literal["stub", "k8s-ray"] = "stub"
     ray_address: str = "http://127.0.0.1:8265"
     entrypoint: str = ""

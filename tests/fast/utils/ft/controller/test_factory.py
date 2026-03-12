@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.stubs import StubMainJob, StubNodeManager
-from miles.utils.ft.factories.controller import build_ft_controller
+from miles.utils.ft.factories.controller import _build_platform_components, build_ft_controller
 from miles.utils.ft.utils.box import Box
 
 
@@ -98,3 +101,44 @@ class TestBuildFtControllerRetention:
         store = bundle.controller._metric_store
         mini_prom = store.time_series_store
         assert mini_prom._config.retention == timedelta(minutes=120)
+
+
+class TestK8sNamespaceFallback:
+    """K8s namespace was only read from K8S_NAMESPACE env var. Now the CLI
+    parameter takes precedence, with the env var as fallback."""
+
+    def test_cli_namespace_takes_precedence_over_env_var(self) -> None:
+        with patch.dict(os.environ, {"K8S_NAMESPACE": "env-ns"}):
+            node_mgr, _ = _build_platform_components(
+                platform="k8s-ray",
+                ray_address="http://localhost:8265",
+                entrypoint="python train.py",
+                ft_id="test",
+                k8s_label_prefix="",
+                k8s_namespace="cli-ns",
+            )
+        assert node_mgr._namespace == "cli-ns"
+
+    def test_falls_back_to_env_var_when_cli_empty(self) -> None:
+        with patch.dict(os.environ, {"K8S_NAMESPACE": "env-ns"}):
+            node_mgr, _ = _build_platform_components(
+                platform="k8s-ray",
+                ray_address="http://localhost:8265",
+                entrypoint="python train.py",
+                ft_id="test",
+                k8s_label_prefix="",
+                k8s_namespace="",
+            )
+        assert node_mgr._namespace == "env-ns"
+
+    def test_raises_when_both_cli_and_env_var_missing(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(RuntimeError, match="namespace not configured"):
+                _build_platform_components(
+                    platform="k8s-ray",
+                    ray_address="http://localhost:8265",
+                    entrypoint="python train.py",
+                    ft_id="test",
+                    k8s_label_prefix="",
+                    k8s_namespace="",
+                )
