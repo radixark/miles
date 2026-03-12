@@ -36,12 +36,12 @@ class TestTrainingSubsystemActuator:
         actuator: TrainingSubsystemActuator,
         mock_main_job: AsyncMock,
     ) -> None:
-        mock_main_job.get_job_status.return_value = JobStatus.RUNNING
+        mock_main_job.get_status.return_value = JobStatus.RUNNING
 
         status = await actuator.get_status()
 
         assert status == JobStatus.RUNNING
-        mock_main_job.get_job_status.assert_awaited_once()
+        mock_main_job.get_status.assert_awaited_once()
 
     @pytest.mark.anyio
     async def test_get_status_propagates_all_statuses(
@@ -50,7 +50,7 @@ class TestTrainingSubsystemActuator:
         mock_main_job: AsyncMock,
     ) -> None:
         for expected_status in JobStatus:
-            mock_main_job.get_job_status.return_value = expected_status
+            mock_main_job.get_status.return_value = expected_status
 
             status = await actuator.get_status()
 
