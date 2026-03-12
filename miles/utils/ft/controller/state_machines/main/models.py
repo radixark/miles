@@ -51,7 +51,7 @@ class MainContext(FtBaseModel):
 
     # Shared deps (for building sub-SM contexts)
     metric_store: MetricStore
-    agents: dict[str, NodeAgentProtocol]
+    node_agents: dict[str, NodeAgentProtocol]
     notifier: NotifierProtocol | None
     node_manager: NodeManagerProtocol
     diagnostic_orchestrator: DiagnosticOrchestratorProtocol

@@ -20,12 +20,12 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
 
     def __init__(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         pipeline: list[ClusterExecutorProtocol] | None = None,
         default_timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         pipeline_timeout_seconds: int = 900,
     ) -> None:
-        self._agents = agents
+        self._node_agents = node_agents
         self._pipeline = pipeline or []
         self._default_timeout_seconds = default_timeout_seconds
         self._pipeline_timeout_seconds = pipeline_timeout_seconds
@@ -71,7 +71,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         for executor in all_executors:
             try:
                 bad_node_ids = await executor.execute(
-                    agents=dict(self._agents),
+                    node_agents=dict(self._node_agents),
                     timeout_seconds=self._default_timeout_seconds,
                 )
             except Exception:

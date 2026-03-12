@@ -37,8 +37,8 @@ def cluster(
         validate_check_names(selected, available=registry.keys())
 
         async def _run() -> list[DiagnosticResult]:
-            async with _managed_agents(nodes) as agents:
-                return await _run_cluster_checks(registry, agents, selected, timeout)
+            async with _managed_agents(nodes) as node_agents:
+                return await _run_cluster_checks(registry, node_agents, selected, timeout)
 
         results = asyncio.run(_run())
     finally:
@@ -50,7 +50,7 @@ def cluster(
 
 async def _run_cluster_checks(
     registry: dict[str, ClusterExecutorProtocol],
-    agents: dict[str, Any],
+    node_agents: dict[str, Any],
     checks: list[str],
     timeout: int,
 ) -> list[DiagnosticResult]:
@@ -58,7 +58,7 @@ async def _run_cluster_checks(
     for name in checks:
         try:
             bad_nodes = await registry[name].execute(
-                agents=agents,
+                node_agents=node_agents,
                 timeout_seconds=timeout,
             )
             if bad_nodes:
@@ -95,11 +95,11 @@ async def _managed_agents(
 ) -> AsyncIterator[dict[str, Any]]:
     import ray
 
-    agents = _deploy_agents(nodes)
+    node_agents = _deploy_agents(nodes)
     try:
-        yield agents
+        yield node_agents
     finally:
-        for actor in agents.values():
+        for actor in node_agents.values():
             ray.kill(actor)
 
 
@@ -133,7 +133,7 @@ def _deploy_agents(
                 **kwargs,
             )
 
-    agents: dict[str, Any] = {}
+    node_agents: dict[str, Any] = {}
     for node in nodes:
         node_id = node["NodeID"]
         num_gpus = int(node["Resources"]["GPU"])
@@ -143,6 +143,6 @@ def _deploy_agents(
                 soft=False,
             ),
         ).remote(node_id=node_id, num_gpus=num_gpus)
-        agents[node_id] = actor
+        node_agents[node_id] = actor
 
-    return agents
+    return node_agents

@@ -59,15 +59,15 @@ class TestBaseNodeExecutor:
 class TestDiagnosticOrchestratorEmptyPipeline:
     @pytest.mark.anyio
     async def test_empty_pipeline_returns_notify_human(self) -> None:
-        agents = make_fake_agents({"node-0": {}})
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[])
+        node_agents = make_fake_agents({"node-0": {}})
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[])
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert decision.bad_node_ids == []
 
     @pytest.mark.anyio
     async def test_no_pipeline_arg_returns_notify_human(self) -> None:
-        orchestrator = DiagnosticOrchestrator(agents={})
+        orchestrator = DiagnosticOrchestrator(node_agents={})
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert decision.bad_node_ids == []
@@ -76,26 +76,26 @@ class TestDiagnosticOrchestratorEmptyPipeline:
 class TestDiagnosticOrchestratorSingleStep:
     @pytest.mark.anyio
     async def test_all_pass_returns_notify_human(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"gpu": True},
                 "node-1": {"gpu": True},
             }
         )
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[GpuClusterExecutor()])
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[GpuClusterExecutor()])
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert decision.bad_node_ids == []
 
     @pytest.mark.anyio
     async def test_one_node_fails_returns_mark_bad(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"gpu": True},
                 "node-1": {"gpu": False},
             }
         )
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[GpuClusterExecutor()])
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[GpuClusterExecutor()])
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert "node-1" in decision.bad_node_ids
@@ -103,13 +103,13 @@ class TestDiagnosticOrchestratorSingleStep:
 
     @pytest.mark.anyio
     async def test_all_nodes_fail_returns_mark_bad(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"gpu": False},
                 "node-1": {"gpu": False},
             }
         )
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[GpuClusterExecutor()])
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[GpuClusterExecutor()])
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert sorted(decision.bad_node_ids) == ["node-0", "node-1"]
@@ -118,14 +118,14 @@ class TestDiagnosticOrchestratorSingleStep:
 class TestDiagnosticOrchestratorMultiStep:
     @pytest.mark.anyio
     async def test_first_step_catches_bad_node(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"gpu": False, "intra": True},
                 "node-1": {"gpu": True, "intra": True},
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor(), PerNodeClusterExecutor("intra")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -134,14 +134,14 @@ class TestDiagnosticOrchestratorMultiStep:
 
     @pytest.mark.anyio
     async def test_first_passes_second_catches(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"gpu": True, "intra": True},
                 "node-1": {"gpu": True, "intra": False},
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor(), PerNodeClusterExecutor("intra")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -150,14 +150,14 @@ class TestDiagnosticOrchestratorMultiStep:
 
     @pytest.mark.anyio
     async def test_all_steps_pass_returns_notify(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"gpu": True, "intra": True},
                 "node-1": {"gpu": True, "intra": True},
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor(), PerNodeClusterExecutor("intra")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -177,18 +177,18 @@ class TestDiagnosticOrchestratorErrorHandling:
                 raise RuntimeError("agent crashed")
 
         good_agents = make_fake_agents({"node-0": {"gpu": True}})
-        agents = {
+        node_agents = {
             **good_agents,
             "node-1": _RaisingAgent(),
         }
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[GpuClusterExecutor()])
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[GpuClusterExecutor()])
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert "node-1" in decision.bad_node_ids
 
     @pytest.mark.anyio
     async def test_no_agents_returns_notify(self) -> None:
-        orchestrator = DiagnosticOrchestrator(agents={}, pipeline=[GpuClusterExecutor()])
+        orchestrator = DiagnosticOrchestrator(node_agents={}, pipeline=[GpuClusterExecutor()])
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert decision.bad_node_ids == []
@@ -199,7 +199,7 @@ class TestDiagnosticOrchestratorInterMachine:
 
     @pytest.mark.anyio
     async def test_inter_machine_all_pass(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": True},
                 "node-1": {"nccl_pairwise": True},
@@ -207,7 +207,7 @@ class TestDiagnosticOrchestratorInterMachine:
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -215,7 +215,7 @@ class TestDiagnosticOrchestratorInterMachine:
 
     @pytest.mark.anyio
     async def test_inter_machine_one_bad_node(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False},
                 "node-1": {"nccl_pairwise": True},
@@ -223,7 +223,7 @@ class TestDiagnosticOrchestratorInterMachine:
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -234,7 +234,7 @@ class TestDiagnosticOrchestratorInterMachine:
     async def test_inter_machine_cannot_localize_all_fail_odd_nodes(self) -> None:
         """With 3 nodes all-fail under two-round pairing, node-1 appears in
         both rounds and accumulates the highest failure count."""
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False},
                 "node-1": {"nccl_pairwise": False},
@@ -242,7 +242,7 @@ class TestDiagnosticOrchestratorInterMachine:
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -250,14 +250,14 @@ class TestDiagnosticOrchestratorInterMachine:
 
     @pytest.mark.anyio
     async def test_inter_machine_two_nodes_pair_fails_returns_empty(self) -> None:
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False},
                 "node-1": {"nccl_pairwise": False},
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -266,14 +266,14 @@ class TestDiagnosticOrchestratorInterMachine:
     @pytest.mark.anyio
     async def test_inter_machine_all_fail_continues_to_next_executor(self) -> None:
         """When inter-machine all-fail (empty result), pipeline continues to next executor (gpu)."""
-        agents = make_fake_agents(
+        node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False, "gpu": False},
                 "node-1": {"nccl_pairwise": False, "gpu": True},
             }
         )
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise"), GpuClusterExecutor()],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -281,9 +281,9 @@ class TestDiagnosticOrchestratorInterMachine:
 
     @pytest.mark.anyio
     async def test_inter_machine_single_node_skipped(self) -> None:
-        agents = make_fake_agents({"node-0": {"nccl_pairwise": True}})
+        node_agents = make_fake_agents({"node-0": {"nccl_pairwise": True}})
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -326,9 +326,9 @@ class TestDiagnosticOrchestratorInterMachine:
                 "node-2": {"nccl_pairwise": True},
             }
         )
-        agents = {**good_agents, "node-1": _RaisingInterMachineAgent()}  # type: ignore[dict-item]
+        node_agents = {**good_agents, "node-1": _RaisingInterMachineAgent()}  # type: ignore[dict-item]
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
@@ -345,8 +345,8 @@ class TestDiagnosticOrchestratorLiveAgents:
         agent0 = FtNodeAgent(node_id="node-0", diagnostics=[stub])
         agent1 = FtNodeAgent(node_id="node-1", diagnostics=[stub])
 
-        agents = {"node-0": agent0, "node-1": agent1}
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[PerNodeClusterExecutor("stub")])
+        node_agents = {"node-0": agent0, "node-1": agent1}
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[PerNodeClusterExecutor("stub")])
 
         try:
             decision = await orchestrator.run_diagnostic_pipeline()
@@ -362,9 +362,9 @@ class TestDiagnosticOrchestratorLiveAgents:
         agent0 = FtNodeAgent(node_id="node-0", diagnostics=[good])
         agent1 = FtNodeAgent(node_id="node-1", diagnostics=[bad])
 
-        agents = {"node-0": agent0, "node-1": agent1}
+        node_agents = {"node-0": agent0, "node-1": agent1}
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[PerNodeClusterExecutor("stub")],
         )
 
@@ -391,13 +391,13 @@ class TestPreExecutors:
         class _EvictAllExecutor:
             async def execute(
                 self,
-                agents: dict[str, FakeNodeAgent],
+                node_agents: dict[str, FakeNodeAgent],
                 timeout_seconds: int,
             ) -> list[str]:
-                return list(agents.keys())
+                return list(node_agents.keys())
 
-        agents = make_fake_agents({"node-0": {"gpu": True}, "node-1": {"gpu": True}})
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[GpuClusterExecutor()])
+        node_agents = make_fake_agents({"node-0": {"gpu": True}, "node-1": {"gpu": True}})
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[GpuClusterExecutor()])
         decision = await orchestrator.run_diagnostic_pipeline(
             pre_executors=[_EvictAllExecutor()],
         )
@@ -411,13 +411,13 @@ class TestPreExecutors:
         class _PassThroughExecutor:
             async def execute(
                 self,
-                agents: dict[str, FakeNodeAgent],
+                node_agents: dict[str, FakeNodeAgent],
                 timeout_seconds: int,
             ) -> list[str]:
                 return []
 
-        agents = make_fake_agents({"node-0": {"gpu": False}})
-        orchestrator = DiagnosticOrchestrator(agents=agents, pipeline=[GpuClusterExecutor()])
+        node_agents = make_fake_agents({"node-0": {"gpu": False}})
+        orchestrator = DiagnosticOrchestrator(node_agents=node_agents, pipeline=[GpuClusterExecutor()])
         decision = await orchestrator.run_diagnostic_pipeline(
             pre_executors=[_PassThroughExecutor()],
         )
@@ -436,9 +436,9 @@ class TestAgentRpcHang:
     @pytest.mark.anyio
     async def test_hanging_agent_returns_fail_result(self) -> None:
         good_agents = make_fake_agents({"node-0": {"gpu": True}})
-        agents = {**good_agents, "node-hang": HangingNodeAgent(node_id="node-hang")}
+        node_agents = {**good_agents, "node-hang": HangingNodeAgent(node_id="node-hang")}
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
             default_timeout_seconds=0,
         )
@@ -457,9 +457,9 @@ class TestAgentRpcHang:
                 "node-1": {"gpu": True},
             }
         )
-        agents = {**good_agents, "node-hang": HangingNodeAgent(node_id="node-hang")}
+        node_agents = {**good_agents, "node-hang": HangingNodeAgent(node_id="node-hang")}
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
             default_timeout_seconds=0,
         )
@@ -472,12 +472,12 @@ class TestAgentRpcHang:
 
     @pytest.mark.anyio
     async def test_all_agents_hanging_returns_mark_bad(self) -> None:
-        agents: dict = {
+        node_agents: dict = {
             "node-0": HangingNodeAgent(node_id="node-0"),
             "node-1": HangingNodeAgent(node_id="node-1"),
         }
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
             default_timeout_seconds=0,
         )
@@ -496,11 +496,11 @@ class TestPipelineTimeout:
     @pytest.mark.anyio
     async def test_pipeline_timeout_returns_empty(self) -> None:
         """When the entire pipeline exceeds pipeline_timeout_seconds, return empty result."""
-        agents: dict = {
+        node_agents: dict = {
             "node-0": HangingNodeAgent(node_id="node-0"),
         }
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
             default_timeout_seconds=9999,
             pipeline_timeout_seconds=0,
@@ -514,12 +514,12 @@ class TestPipelineTimeout:
     @pytest.mark.anyio
     async def test_pipeline_timeout_fires_before_per_call_timeout(self) -> None:
         """Pipeline timeout should fire even when per-call timeout is very large."""
-        agents: dict = {
+        node_agents: dict = {
             "node-0": HangingNodeAgent(node_id="node-0"),
             "node-1": HangingNodeAgent(node_id="node-1"),
         }
         orchestrator = DiagnosticOrchestrator(
-            agents=agents,
+            node_agents=node_agents,
             pipeline=[GpuClusterExecutor()],
             default_timeout_seconds=99999,
             pipeline_timeout_seconds=0,

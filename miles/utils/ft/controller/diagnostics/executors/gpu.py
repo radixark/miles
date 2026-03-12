@@ -21,12 +21,12 @@ class GpuClusterExecutor(ClusterExecutorProtocol):
 
     async def execute(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
     ) -> list[str]:
         results = await gather_diagnostic_results(
             diagnostic_type=_GPU_DIAGNOSTIC_TYPE,
-            agents=agents,
+            node_agents=node_agents,
             timeout_seconds=timeout_seconds,
         )
 

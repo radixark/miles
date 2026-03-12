@@ -22,11 +22,11 @@ class StackTraceClusterExecutor(ClusterExecutorProtocol):
 
     async def execute(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
     ) -> list[str]:
         suspects = await collect_stack_trace_suspects(
-            agents=agents,
+            node_agents=node_agents,
             rank_pids_provider=self._rank_pids_provider,
             default_timeout_seconds=timeout_seconds,
         )

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 async def collect_stack_trace_suspects(
-    agents: dict[str, NodeAgentProtocol],
+    node_agents: dict[str, NodeAgentProtocol],
     rank_pids_provider: Callable[[str], dict[int, int]],
     default_timeout_seconds: int,
 ) -> list[str]:
@@ -38,7 +38,7 @@ async def collect_stack_trace_suspects(
             return
 
         result = await call_agent_diagnostic(
-            agent=agents[node_id],
+            agent=node_agents[node_id],
             node_id=node_id,
             diagnostic_type="stack_trace",
             timeout_seconds=default_timeout_seconds,
@@ -56,7 +56,7 @@ async def collect_stack_trace_suspects(
                 result.details,
             )
 
-    await asyncio.gather(*(_collect_node(nid) for nid in agents))
+    await asyncio.gather(*(_collect_node(nid) for nid in node_agents))
 
     aggregation_result = StackTraceAggregator().aggregate(traces=traces)
     all_suspects = sorted(set(suspect_from_failures) | set(aggregation_result.suspect_node_ids))

@@ -56,10 +56,10 @@ class PairwiseClusterExecutor(ClusterExecutorProtocol):
 
     async def execute(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
     ) -> list[str]:
-        sorted_ids = sorted(agents.keys())
+        sorted_ids = sorted(node_agents.keys())
 
         if len(sorted_ids) < 2:
             logger.info("pairwise_skip — fewer than 2 nodes")
@@ -78,7 +78,7 @@ class PairwiseClusterExecutor(ClusterExecutorProtocol):
                 port = self._base_port + pair_index
                 tasks.append(
                     self._run_single_pair(
-                        agents=agents,
+                        node_agents=node_agents,
                         master_id=master_id,
                         worker_id=worker_id,
                         master_addr=master_id,
@@ -94,15 +94,15 @@ class PairwiseClusterExecutor(ClusterExecutorProtocol):
 
     async def _run_single_pair(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         master_id: str,
         worker_id: str,
         master_addr: str,
         port: int,
         timeout_seconds: int,
     ) -> _PairResult:
-        master_agent = agents.get(master_id)
-        worker_agent = agents.get(worker_id)
+        master_agent = node_agents.get(master_id)
+        worker_agent = node_agents.get(worker_id)
 
         if master_agent is None or worker_agent is None:
             logger.warning(

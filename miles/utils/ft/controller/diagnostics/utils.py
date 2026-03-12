@@ -71,11 +71,11 @@ async def call_agent_diagnostic(
 
 async def gather_diagnostic_results(
     diagnostic_type: str,
-    agents: dict[str, NodeAgentProtocol],
+    node_agents: dict[str, NodeAgentProtocol],
     timeout_seconds: int,
 ) -> dict[str, DiagnosticResult]:
     """Run one diagnostic on all agents in parallel and return the raw results."""
-    node_ids = list(agents.keys())
+    node_ids = list(node_agents.keys())
     logger.info(
         "diagnostic_step_start type=%s nodes=%s",
         diagnostic_type,
@@ -85,7 +85,7 @@ async def gather_diagnostic_results(
     raw_results = await asyncio.gather(
         *(
             call_agent_diagnostic(
-                agent=agents[node_id],
+                agent=node_agents[node_id],
                 node_id=node_id,
                 diagnostic_type=diagnostic_type,
                 timeout_seconds=timeout_seconds,

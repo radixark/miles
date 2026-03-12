@@ -63,7 +63,7 @@ def create_ft_controller(
     from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
     from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
-    agents: dict[str, object] = {}
+    node_agents: dict[str, object] = {}
     training_rank_roster_box: Box[TrainingRankRoster | None] = Box(None)
 
     subsystem_hub = SubsystemHub(
@@ -75,7 +75,7 @@ def create_ft_controller(
         return set(roster.rank_placement.values()) if roster is not None else set()
 
     resolved_orchestrator: DiagnosticOrchestratorProtocol = diagnostic_orchestrator or DiagnosticOrchestrator(
-        agents=agents,
+        node_agents=node_agents,
         pipeline=list(build_all_cluster_executors().values()),
     )
 
@@ -128,7 +128,7 @@ def create_ft_controller(
         state_machine=controller_sm,
         subsystem_hub=subsystem_hub,
         metric_store=metric_store,
-        agents=agents,  # type: ignore[arg-type]
+        node_agents=node_agents,  # type: ignore[arg-type]
         tick_interval=tick_interval,
         tick_loop=None,  # type: ignore[arg-type]  # set below
         notifier=notifier,
@@ -140,7 +140,7 @@ def create_ft_controller(
     tick_loop = TickLoop(
         state_machine=controller_sm,
         training_rank_roster_box=training_rank_roster_box,
-        agents=agents,  # type: ignore[arg-type]
+        node_agents=node_agents,  # type: ignore[arg-type]
         main_job=main_job,
         metric_store=metric_store,
         notifier=notifier,
