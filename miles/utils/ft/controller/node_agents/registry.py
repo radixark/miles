@@ -41,4 +41,4 @@ class NodeAgentRegistry:
 
     @property
     def all_metadata(self) -> dict[str, dict[str, str]]:
-        return self._metadata
+        return dict(self._metadata)

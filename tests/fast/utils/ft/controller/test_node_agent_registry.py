@@ -104,3 +104,40 @@ class TestMetadata:
             "node-0": {"role": "worker"},
             "node-1": {"role": "driver"},
         }
+
+
+class TestAllMetadataReturnsSnapshot:
+    """all_metadata used to return self._metadata directly. If a caller iterated
+    the dict (e.g. for nid, meta in controller.node_metadata.items()) while
+    register_node_agent was scheduled by Ray and modified _metadata, the iteration
+    would crash with 'RuntimeError: dictionary changed size during iteration'.
+    Fix: return dict(self._metadata) — a shallow copy."""
+
+    def test_all_metadata_returns_copy_not_reference(self) -> None:
+        registry = NodeAgentRegistry()
+        registry.register(node_id="node-0", agent=MagicMock(), metadata={"k": "v"})
+
+        snapshot = registry.all_metadata
+        assert snapshot is not registry._metadata
+        assert snapshot == registry._metadata
+
+    def test_mutating_all_metadata_does_not_affect_registry(self) -> None:
+        registry = NodeAgentRegistry()
+        registry.register(node_id="node-0", agent=MagicMock(), metadata={"k": "v"})
+
+        snapshot = registry.all_metadata
+        snapshot["node-99"] = {"injected": "true"}
+
+        assert "node-99" not in registry.all_metadata
+
+    def test_register_during_iteration_of_snapshot_does_not_crash(self) -> None:
+        """Simulate the race: get snapshot, then register new node, then iterate."""
+        registry = NodeAgentRegistry()
+        registry.register(node_id="node-0", agent=MagicMock(), metadata={"a": "1"})
+
+        snapshot = registry.all_metadata
+        registry.register(node_id="node-1", agent=MagicMock(), metadata={"b": "2"})
+
+        items = list(snapshot.items())
+        assert len(items) == 1
+        assert items[0] == ("node-0", {"a": "1"})
