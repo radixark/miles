@@ -140,10 +140,10 @@ on:
         type: string
         default: 'miles-main'
       ci_sglang_pr:
-        description: 'SGLang branch/commit (default: sglang-miles)'
+        description: 'SGLang branch/commit (default: sglang-miles-v0.5.9)'
         required: false
         type: string
-        default: 'sglang-miles'
+        default: 'sglang-miles-v0.5.9'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -226,7 +226,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.9"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
