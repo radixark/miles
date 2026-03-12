@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from miles.utils.ft.agents.types import GaugeSample
@@ -115,25 +117,53 @@ class TestStop:
         assert scrape_loop._running is False
 
     @pytest.mark.anyio
-    async def test_stop_closes_client(self, scrape_loop: ScrapeLoop) -> None:
+    async def test_stop_does_not_close_client_directly(self, scrape_loop: ScrapeLoop) -> None:
+        """stop() only sets the flag; client cleanup is deferred to start()'s
+        finally block to avoid closing the client while scrape_once is in flight."""
         client = scrape_loop._ensure_client()
         assert not client.is_closed
 
         await scrape_loop.stop()
 
-        assert client.is_closed
-        assert scrape_loop._client is None
+        assert not client.is_closed
 
     @pytest.mark.anyio
     async def test_stop_when_client_is_none(self, scrape_loop: ScrapeLoop) -> None:
         await scrape_loop.stop()
 
     @pytest.mark.anyio
-    async def test_stop_when_client_already_closed(self, scrape_loop: ScrapeLoop) -> None:
-        client = scrape_loop._ensure_client()
-        await client.aclose()
+    async def test_start_loop_cleans_up_client_after_stop(self) -> None:
+        """start() closes the client in its finally block after the loop exits."""
+        loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=0.01)
+        start_task = asyncio.create_task(loop.start())
 
-        await scrape_loop.stop()
+        await asyncio.sleep(0.03)
+        client = loop._client
+        await loop.stop()
+        await start_task
+
+        assert client is not None
+        assert client.is_closed
+        assert loop._client is None
+
+    @pytest.mark.anyio
+    async def test_stop_during_scrape_does_not_cause_client_error(self) -> None:
+        """stop() called while scrape_once is in-flight does not close the
+        client out from under it — the client remains open until start() exits."""
+        store = _FakeStore()
+        loop = ScrapeLoop(store=store, scrape_interval_seconds=60)
+        loop.add_target("t1", "http://127.0.0.1:1/metrics")
+
+        start_task = asyncio.create_task(loop.start())
+        await asyncio.sleep(0.02)
+
+        # stop() only sets the flag, so any in-flight scrape can finish safely
+        await loop.stop()
+        start_task.cancel()
+        try:
+            await start_task
+        except asyncio.CancelledError:
+            pass
 
 
 # ===================================================================

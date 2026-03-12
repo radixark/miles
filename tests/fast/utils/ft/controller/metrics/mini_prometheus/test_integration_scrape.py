@@ -169,8 +169,11 @@ class TestMiniPrometheusScrapeReal:
         client_after_second = store._scrape_loop._client
         assert client_after_second is client_after_first
 
-    async def test_stop_closes_httpx_client(self) -> None:
-        """ScrapeLoop.stop() must close the httpx client and set it to None."""
+    async def test_close_client_releases_httpx_client(self) -> None:
+        """_close_client() closes the httpx client and sets it to None.
+        stop() only sets the running flag; client cleanup is deferred to
+        start()'s finally block to avoid closing the client while
+        scrape_once is in flight."""
         port, _ = _start_exporter()
 
         store = make_fake_metric_store()
@@ -182,7 +185,7 @@ class TestMiniPrometheusScrapeReal:
         await store.scrape_once()
         assert store._scrape_loop._client is not None
 
-        await store._scrape_loop.stop()
+        await store._scrape_loop._close_client()
         assert store._scrape_loop._client is None
 
     async def test_scrape_bad_target_doesnt_affect_good(self) -> None:

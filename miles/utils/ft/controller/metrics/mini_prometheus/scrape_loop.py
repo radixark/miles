@@ -55,12 +55,17 @@ class ScrapeLoop:
 
     async def start(self) -> None:
         self._running = True
-        while self._running:
-            await self.scrape_once()
-            await asyncio.sleep(self._scrape_interval_seconds)
+        try:
+            while self._running:
+                await self.scrape_once()
+                await asyncio.sleep(self._scrape_interval_seconds)
+        finally:
+            await self._close_client()
 
     async def stop(self) -> None:
         self._running = False
+
+    async def _close_client(self) -> None:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
