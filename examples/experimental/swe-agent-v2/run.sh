@@ -141,6 +141,7 @@ print(json.dumps({'env_vars': {
     'HARBOR_TASKS_DIR': '${HARBOR_TASKS_DIR}',
     'MILES_HOST_IP': '${MILES_HOST_IP:-$(hostname)}',
     'NCCL_NVLS_ENABLE': '0',
+    'DEPRECATED_MEGATRON_COMPATIBLE': '1',
 }}))
 ")
 

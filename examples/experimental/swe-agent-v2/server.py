@@ -228,7 +228,7 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
             ),
             environment=EnvironmentConfig(
                 type="docker",
-                delete=False,
+                delete=os.getenv("HARBOR_DELETE_CONTAINERS", "false").lower() in ("true", "1", "t"),
             ),
         )
 

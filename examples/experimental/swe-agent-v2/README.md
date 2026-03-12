@@ -58,6 +58,7 @@ Docker Network (swe-net)
 
 - Docker with GPU support (nvidia-container-toolkit)
 - Model weights downloaded (e.g. `zai-org/GLM-4.7-Flash`)
+- `transformers>=5` (`pip install "transformers>=5"` — GLM-4.7-Flash's `glm4_moe_lite` model type is not in transformers 4.x)
 - Harbor task directories prepared under a shared path
 
 ### Step 1: Create Docker network
@@ -82,7 +83,7 @@ docker run -itd \
   --ulimit stack=67108864 \
   --privileged \
   --network swe-net \
-  --name miles-maocheng \
+  --name miles \
   radixark/miles:latest \
   /bin/bash
 ```
@@ -109,7 +110,7 @@ docker run -itd \
 Inside agent_env, install Harbor and set up the server:
 
 ```bash
-pip install harbor-framework
+pip install harbor
 # Copy server.py into the container, or mount the miles repo
 ```
 
@@ -158,10 +159,12 @@ The reference checkpoint must be in Megatron distributed format for training:
 
 ```bash
 # Inside miles container — one-time conversion
-python /root/miles/tools/convert_hf_to_megatron.py \
+torchrun --nproc_per_node=4 /root/miles/tools/convert_hf_to_torch_dist.py \
   --hf-checkpoint zai-org/GLM-4.7-Flash \
-  --output /root/GLM-4.7-Flash_torch_dist \
-  --tp 1 --pp 1 --ep 4
+  --save /root/GLM-4.7-Flash_torch_dist \
+  --tensor-model-parallel-size 1 \
+  --pipeline-model-parallel-size 1 \
+  --expert-model-parallel-size 4
 ```
 
 ### Step 7: Launch training
