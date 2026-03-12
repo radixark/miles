@@ -52,6 +52,7 @@ def _make_main_context(
         rank_pids_provider=None,
         controller_exporter=None,
         on_recovery_duration=None,
+        node_metadata={},
         registration_grace_ticks=registration_grace_ticks,
     )
 
@@ -181,3 +182,46 @@ class TestBuildRecoveryContext:
         assert result.restart_context.actuator is actuator
         assert result.restart_context.monitoring_config is monitoring_config
         assert result.restart_context.restart_mode == RestartMode.SUBSYSTEM
+
+    def test_node_metadata_propagated_to_restart_context(self) -> None:
+        """node_metadata was not passed from MainContext to RestartContext,
+        so EvictingHandler always received empty metadata and mark_node_bad
+        used Ray node_id instead of K8s node name for K8s label operations."""
+        metadata = {"ray-uuid-abc": {"k8s_node_name": "gke-node-01"}}
+        ctx = MainContext(
+            main_job=FakeMainJob(),
+            subsystem_configs={},
+            tick_count=10,
+            run_start_tick=0,
+            job_status=JobStatus.RUNNING,
+            metric_store=MetricStore(
+                time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
+                mini_wandb=MiniWandb(),
+            ),
+            notifier=FakeNotifier(),
+            node_manager=FakeNodeManager(),
+            diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
+            cooldown=SlidingWindowThrottle(window_minutes=30, max_count=3),
+            detector_crash_tracker=SlidingWindowCounter(window_seconds=300, threshold=5),
+            recovery_timeout_seconds=600,
+            max_simultaneous_bad_nodes=2,
+            on_main_job_new_run=None,
+            rank_pids_provider=None,
+            controller_exporter=None,
+            on_recovery_duration=None,
+            node_metadata=metadata,
+            registration_grace_ticks=5,
+        )
+        actuator = AsyncMock(spec=SubsystemActuatorProtocol)
+        config = SubsystemConfig(actuator=actuator)
+
+        result = _build_recovery_context(
+            config=config,
+            context=ctx,
+            trigger=TriggerType.CRASH,
+            recovery_start_time=datetime.now(timezone.utc),
+            restart_stepper=AsyncMock(),
+        )
+
+        assert result.restart_context.node_metadata == metadata
+        assert result.restart_context.node_metadata["ray-uuid-abc"]["k8s_node_name"] == "gke-node-01"

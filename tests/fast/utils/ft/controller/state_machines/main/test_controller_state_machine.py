@@ -85,6 +85,7 @@ def _make_controller_context(
         rank_pids_provider=None,
         controller_exporter=NullControllerExporter(),
         on_recovery_duration=None,
+        node_metadata={},
         registration_grace_ticks=5,
     )
 

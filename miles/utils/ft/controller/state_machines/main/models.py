@@ -67,5 +67,8 @@ class MainContext(FtBaseModel):
     controller_exporter: ControllerExporter | None
     on_recovery_duration: Callable[[float], None] | None
 
+    # Node metadata (from NodeAgentRegistry)
+    node_metadata: dict[str, dict[str, str]]
+
     # Grace period
     registration_grace_ticks: int

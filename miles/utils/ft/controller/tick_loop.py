@@ -132,6 +132,7 @@ class TickLoop:
             rank_pids_provider=self._rank_pids_provider,
             controller_exporter=self._controller_exporter,
             on_recovery_duration=self._on_recovery_duration,
+            node_metadata=self._node_agent_registry.all_metadata,
             registration_grace_ticks=self._registration_grace_ticks,
         )
 

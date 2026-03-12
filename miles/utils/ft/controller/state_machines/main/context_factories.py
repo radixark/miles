@@ -88,6 +88,7 @@ def _build_recovery_context(
         metric_store=context.metric_store,
         notifier=context.notifier,
         on_main_job_new_run=context.on_main_job_new_run,
+        node_metadata=context.node_metadata,
         actuator=config.actuator,
         monitoring_config=config.monitoring_config,
         restart_mode=config.restart_mode,
