@@ -48,6 +48,7 @@ class TickLoop:
         self.state_machine = state_machine
         self._training_rank_roster_box = training_rank_roster_box
         self.tick_count: int = 0
+        self._run_start_tick: int = 0
 
         self._node_agent_registry = node_agent_registry
         self._main_job = main_job
@@ -59,7 +60,7 @@ class TickLoop:
         self._diagnostic_orchestrator = diagnostic_orchestrator
         self._recovery_timeout_seconds = recovery_timeout_seconds
         self.subsystem_configs = subsystem_configs
-        self._on_new_run = on_new_run
+        self._on_new_run = self._wrap_on_new_run(on_new_run)
         self._rank_pids_provider = rank_pids_provider
         self._on_recovery_duration = on_recovery_duration
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
@@ -103,6 +104,19 @@ class TickLoop:
             tick_duration = time.monotonic() - t0
             self._update_exporter_metrics(job_status, tick_duration=tick_duration)
 
+    def _wrap_on_new_run(
+        self,
+        original: Callable[[str], None] | None,
+    ) -> Callable[[str], None] | None:
+        if original is None:
+            return None
+
+        def _wrapped(run_id: str) -> None:
+            self._run_start_tick = self.tick_count
+            original(run_id)
+
+        return _wrapped
+
     # ------------------------------------------------------------------
     # Context factory
     # ------------------------------------------------------------------
@@ -112,6 +126,7 @@ class TickLoop:
             main_job=self._main_job,
             subsystem_configs=self.subsystem_configs,
             tick_count=self.tick_count,
+            run_start_tick=self._run_start_tick,
             job_status=job_status,
             metric_store=self._metric_store,
             notifier=self._notifier,

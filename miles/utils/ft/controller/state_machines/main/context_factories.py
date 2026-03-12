@@ -55,7 +55,8 @@ def _should_run_detectors(
     if len(active_node_ids) == 0:
         return False
 
-    if context.tick_count <= context.registration_grace_ticks:
+    ticks_since_run_start = context.tick_count - context.run_start_tick
+    if ticks_since_run_start <= context.registration_grace_ticks:
         return False
 
     return True

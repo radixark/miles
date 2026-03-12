@@ -27,6 +27,7 @@ from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrato
 def _make_main_context(
     *,
     tick_count: int = 10,
+    run_start_tick: int = 0,
     registration_grace_ticks: int = 5,
     job_status: JobStatus = JobStatus.RUNNING,
 ) -> MainContext:
@@ -34,6 +35,7 @@ def _make_main_context(
         main_job=FakeMainJob(),
         subsystem_configs={},
         tick_count=tick_count,
+        run_start_tick=run_start_tick,
         job_status=job_status,
         metric_store=MetricStore(
             time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
@@ -74,6 +76,27 @@ class TestShouldRunDetectors:
     def test_returns_true_with_nodes_and_no_grace(self) -> None:
         ctx = _make_main_context(tick_count=1, registration_grace_ticks=0)
         assert _should_run_detectors(active_node_ids={"node-0", "node-1"}, context=ctx) is True
+
+    def test_grace_period_resets_on_new_run(self) -> None:
+        """After a new run starts at tick 100, grace period should apply
+        relative to the run start tick, not global tick_count. Previously
+        the grace was only effective at process startup."""
+        ctx = _make_main_context(
+            tick_count=102,
+            run_start_tick=100,
+            registration_grace_ticks=5,
+        )
+        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is False
+
+    def test_detectors_run_after_grace_period_since_new_run(self) -> None:
+        """Once enough ticks pass after the new run's start tick,
+        detectors should run again."""
+        ctx = _make_main_context(
+            tick_count=106,
+            run_start_tick=100,
+            registration_grace_ticks=5,
+        )
+        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is True
 
 
 class TestBuildSubsystemContext:

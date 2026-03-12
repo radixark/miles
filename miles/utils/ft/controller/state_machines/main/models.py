@@ -46,6 +46,7 @@ class MainContext(FtBaseModel):
 
     # Shared per-tick data
     tick_count: int
+    run_start_tick: int
     job_status: JobStatus
 
     # Shared deps (for building sub-SM contexts)

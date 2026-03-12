@@ -68,6 +68,7 @@ def _make_controller_context(
             "training": _make_subsystem_config(),
         },
         tick_count=10,
+        run_start_tick=0,
         job_status=JobStatus.RUNNING,
         metric_store=MetricStore(
             time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
