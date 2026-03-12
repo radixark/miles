@@ -66,7 +66,7 @@ class TestRolloutCrashDetector:
         decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.ENTER_RECOVERY
-        assert decision.bad_node_ids == ["node-0", "node-1"]
+        assert decision.bad_node_ids == []
         assert "dead for 60s" in decision.reason
 
     def test_no_metric_yet_returns_no_fault(self) -> None:
@@ -161,7 +161,30 @@ class TestRolloutCrashDetector:
         decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.ENTER_RECOVERY
-        assert decision.bad_node_ids == ["node-0", "node-1"]
+        assert decision.bad_node_ids == []
+
+    def test_rollout_crash_does_not_mark_nodes_as_bad(self) -> None:
+        """Rollout crashes are software-level issues, not hardware faults.
+        Previously all active nodes were marked as bad, causing unnecessary
+        node eviction on rollout restart."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        for i in range(8):
+            inject_rollout_cell_alive(
+                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
+            )
+
+        detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0", "node-1", "node-2"},
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.bad_node_ids == []
+        assert decision.trigger == TriggerType.CRASH
 
     def test_different_cell_ids_are_isolated(self) -> None:
         """Dead data for cell '0' must not affect detector for cell '1'."""

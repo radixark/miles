@@ -14,7 +14,9 @@ class RolloutCrashDetector(BaseFaultDetector):
     """Detect rollout cell crash via rollout_cell_alive metric.
 
     Queries rollout_cell_alive{cell_id=X}. When alive=0 persists
-    beyond alive_threshold_seconds, reports all active nodes as bad.
+    beyond alive_threshold_seconds, triggers restart with empty
+    bad_node_ids (no eviction). Rollout crashes are software-level
+    issues, not node hardware faults.
     """
 
     def __init__(
@@ -70,16 +72,14 @@ class RolloutCrashDetector(BaseFaultDetector):
                 reason=f"rollout_{self._cell_id}: cell intermittently dead, waiting"
             )
 
-        bad_node_ids = sorted(ctx.active_node_ids)
         logger.warning(
-            "rollout_crash_detected cell_id=%s bad_nodes=%s threshold=%.0f",
+            "rollout_crash_detected cell_id=%s threshold=%.0f",
             self._cell_id,
-            bad_node_ids,
             self._threshold,
         )
         return Decision(
             action=ActionType.ENTER_RECOVERY,
-            bad_node_ids=bad_node_ids,
+            bad_node_ids=[],
             reason=f"rollout cell {self._cell_id} dead for {self._threshold:.0f}s",
             trigger=TriggerType.CRASH,
         )
