@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import random
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+class JobStatus(str, Enum):
+    RUNNING = "running"
+    PENDING = "pending"
+    STOPPED = "stopped"
+    FAILED = "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -235,11 +243,29 @@ class ServerCell:
     Each cell owns an ``asyncio.Lock`` so concurrent ``start``/``stop``
     calls on the *same* cell are serialised, while calls on *different*
     cells can proceed in parallel.
+
+    Design reference (miles-prod PR #1, rl-resilience/dev):
+        https://github.com/radixark/miles-prod/blob/bc26ac11/miles/ray/rollout.py#L239
+
+        The original design envisioned::
+
+            class ServerCell:
+                _lock: asyncio.Lock
+                _status: Literal["running", "stopping", "starting", ...]
+                async def start(self): async with self._lock: really start engine
+                async def stop(self): ...
+
+            class ServerGroup:
+                cells: List[ServerCell]   # no start/stop/recover here
+
+        Then ``RolloutManager.start_cell(cell_id)`` simply does
+        ``find_the_cell(cell_id).start()`` — with the single-thread
+        async lock we are not worried about racing conditions.
+
+        This class is the concrete implementation of that design.
     """
 
     def __init__(self, cell_id: str, server_group: ServerGroup, engine_indices: list[int]):
-        from miles.utils.ft.adapters.types import JobStatus
-
         self.cell_id = cell_id
         self.server_group = server_group
         self.engine_indices = engine_indices
@@ -263,14 +289,12 @@ class ServerCell:
 
         Returns the number of engines that were newly created.
         """
-        from miles.utils.ft.adapters.types import JobStatus
-
         async with self._lock:
             if self._status == JobStatus.RUNNING and self.is_alive:
                 return 0
             self._status = JobStatus.PENDING
             try:
-                num_started = await asyncio.to_thread(self._sync_start)
+                num_started = await self._async_start()
                 self._status = JobStatus.RUNNING
                 return num_started
             except Exception:
@@ -279,35 +303,33 @@ class ServerCell:
 
     async def stop(self) -> None:
         """Gracefully stop and kill all engines in this cell."""
-        from miles.utils.ft.adapters.types import JobStatus
-
         async with self._lock:
             if self._status == JobStatus.STOPPED:
                 return
             self._status = JobStatus.PENDING
-            await asyncio.to_thread(self._sync_stop)
+            await self._async_stop()
             self._status = JobStatus.STOPPED
 
-    def _sync_start(self) -> int:
+    async def _async_start(self) -> int:
         group = self.server_group
         handles, _ = group.start_engines(target_indices=self.engine_indices)
         if handles:
-            ray.get(handles)
+            await asyncio.gather(*handles)
         num_started = len(handles)
 
         if group.needs_offload and num_started > 0:
             new_engines = [group.all_engines[i] for i in self.engine_indices if group.all_engines[i] is not None]
-            ray.get([e.release_memory_occupation.remote() for e in new_engines])
-            ray.get([e.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for e in new_engines])
+            await asyncio.gather(*[e.release_memory_occupation.remote() for e in new_engines])
+            await asyncio.gather(*[e.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for e in new_engines])
 
         return num_started
 
-    def _sync_stop(self) -> None:
+    async def _async_stop(self) -> None:
         for i in self.engine_indices:
             engine = self.server_group.all_engines[i]
             if engine is not None:
                 try:
-                    ray.get(engine.shutdown.remote())
+                    await engine.shutdown.remote()
                     ray.kill(engine)
                     logger.info(f"Killed engine at cell={self.cell_id} index={i}")
                 except Exception as e:
@@ -366,7 +388,7 @@ class RolloutServer:
             raise ValueError(f"Heterogeneous nodes_per_engine across groups: {values}")
         return values.pop()
 
-    def recover(self):
+    async def recover(self):
         """Recover dead engines across all active groups, overlapping init."""
         dead_per_group = [[i for i, engine in enumerate(g.all_engines) if engine is None] for g in self.server_groups]
 
@@ -376,7 +398,7 @@ class RolloutServer:
             handles, port_cursors = g.start_engines(port_cursors)
             all_handles.extend(handles)
         if all_handles:
-            ray.get(all_handles)
+            await asyncio.gather(*all_handles)
 
         release_handles = []
         updatable_new_engines = []
@@ -393,43 +415,41 @@ class RolloutServer:
                     non_updatable_groups_engines.append((g.model_path, new_engines))
 
         if release_handles:
-            ray.get(release_handles)
+            await asyncio.gather(*release_handles)
             all_resume_engines = updatable_new_engines[:]
             for _model_path, engines in non_updatable_groups_engines:
                 all_resume_engines.extend(engines)
             if all_resume_engines:
-                ray.get(
-                    [
-                        engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS])
-                        for engine in all_resume_engines
-                    ]
-                )
+                await asyncio.gather(*[
+                    engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+                    for engine in all_resume_engines
+                ])
 
-    def offload(self):
+    async def offload(self):
         handles = []
         for g in self.server_groups:
             handles.extend(g.offload())
-        return ray.get(handles) if handles else []
+        return list(await asyncio.gather(*handles)) if handles else []
 
-    def onload(self, tags: list[str] | None = None):
+    async def onload(self, tags: list[str] | None = None):
         handles = []
         for g in self.server_groups:
             handles.extend(g.onload(tags))
-        return ray.get(handles) if handles else []
+        return list(await asyncio.gather(*handles)) if handles else []
 
-    def onload_weights(self):
+    async def onload_weights(self):
         handles = []
         for g in self.server_groups:
             if not g.needs_offload:
                 continue
             handles.extend(g.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
-        return ray.get(handles) if handles else []
+        return list(await asyncio.gather(*handles)) if handles else []
 
-    def onload_kv(self):
+    async def onload_kv(self):
         handles = []
         for g in self.server_groups:
             handles.extend(g.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH]))
-        return ray.get(handles) if handles else []
+        return list(await asyncio.gather(*handles)) if handles else []
 
 
 # ---------------------------------------------------------------------------
@@ -473,30 +493,46 @@ class RolloutManager:
 
         if self.args.debug_train_only:
             self.servers: dict[str, RolloutServer] = {}
+            self._init_handles: list = []
         else:
             init_http_client(args)
-            self.servers = start_rollout_servers(args, pg)
+            self.servers, self._init_handles = start_rollout_servers(args, pg)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitors = []
-        self._ft_agent = None
-        ft_components = set(getattr(self.args, "ft_components", ()))
-        self._full_ft_mode = {"rollout", "train"} <= ft_components
         self._ci_fault_injection_pending = False
         if not self.args.debug_train_only:
-            if self._full_ft_mode:
-                from miles.utils.ft.factories.rollout_agent import create_rollout_agent
-
-                self._ft_agent = create_rollout_agent(self)
-            elif getattr(self.args, "use_fault_tolerance", False):
+            if getattr(self.args, "use_fault_tolerance", False):
                 for srv in self.servers.values():
                     for group in srv.server_groups:
                         monitor = RolloutHealthMonitor(group, args)
                         monitor.start()
                         self._health_monitors.append(monitor)
                 self._ci_fault_injection_pending = self.args.ci_test
+            # TODO [FT v2]: When miles.utils.ft is available, add a full FT mode here.
+            #
+            # Design reference (miles-prod PR #1, rl-resilience/dev):
+            #   https://github.com/radixark/miles-prod/blob/bc26ac11/miles/ray/rollout.py#L100
+            #
+            # The full FT mode replaces RolloutHealthMonitor with an FT agent
+            # that drives per-cell recovery via the async start_cell/stop_cell
+            # APIs below, instead of the batched recover path:
+            #
+            #   ft_components = set(getattr(self.args, "ft_components", ()))
+            #   if {"rollout", "train"} <= ft_components:
+            #       from miles.utils.ft.factories.rollout_agent import create_rollout_agent
+            #       self._ft_agent = create_rollout_agent(self)
+            #
+            # When the FT agent is active:
+            #   - Health monitoring is handled by the FT agent (async task on
+            #     the event loop), NOT a background thread — this avoids
+            #     multi-threading races on shared engine objects.
+            #   - Recovery is per-cell via start_cell()/stop_cell(), not bulk.
+            #   - recover_updatable_engines() is still called by the training
+            #     loop but becomes a lightweight check (the FT agent has
+            #     already done the actual recovery).
 
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -519,7 +555,16 @@ class RolloutManager:
             except Exception as e:
                 logger.warning(f"CI Fault Injection failed: {e}")
 
-    def dispose(self):
+    async def ready(self):
+        """Wait for all rollout engines to finish initialization."""
+        if self._init_handles:
+            await asyncio.gather(*self._init_handles)
+            self._init_handles = []
+
+    async def dispose(self):
+        await asyncio.to_thread(self._do_dispose)
+
+    def _do_dispose(self):
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
@@ -543,7 +588,7 @@ class RolloutManager:
         """All node-0 engines across all servers / models."""
         return [e for srv in self.servers.values() for e in srv.engines]
 
-    def get_updatable_engines_and_lock(self):
+    async def get_updatable_engines_and_lock(self):
         """Return engines eligible for weight updates."""
         srv = self._get_updatable_server()
         engines = srv.engines if srv else []
@@ -552,11 +597,14 @@ class RolloutManager:
         num_new = srv.num_new_engines if srv else 0
         return engines, self.rollout_engine_lock, num_new, gpu_counts, gpu_offsets
 
-    def get_num_rollout_per_epoch(self):
+    async def get_num_rollout_per_epoch(self):
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    def generate(self, rollout_id):
+    async def generate(self, rollout_id):
+        return await asyncio.to_thread(self._do_generate, rollout_id)
+
+    def _do_generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
         self.health_monitoring_resume()
@@ -568,9 +616,11 @@ class RolloutManager:
         data = self._convert_samples_to_train_data(data)
         return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
 
-    def eval(self, rollout_id):
+    async def eval(self, rollout_id):
+        await asyncio.to_thread(self._do_eval, rollout_id)
+
+    def _do_eval(self, rollout_id):
         if self.args.debug_train_only:
-            # if debug train only, we don't generate evaluation data
             return
         self.health_monitoring_resume()
 
@@ -586,13 +636,13 @@ class RolloutManager:
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
-    def save(self, rollout_id):
-        self.data_source.save(rollout_id)
+    async def save(self, rollout_id):
+        await asyncio.to_thread(self.data_source.save, rollout_id)
 
-    def load(self, rollout_id=None):
-        self.data_source.load(rollout_id)
+    async def load(self, rollout_id=None):
+        await asyncio.to_thread(self.data_source.load, rollout_id)
 
-    def offload(self, tags: list[str] | None = None):
+    async def offload(self, tags: list[str] | None = None):
         self.health_monitoring_pause()
         if tags is not None:
             handles = [
@@ -600,43 +650,41 @@ class RolloutManager:
                 for engine in self.rollout_engines
                 if engine is not None
             ]
-            return ray.get(handles) if handles else []
+            return list(await asyncio.gather(*handles)) if handles else []
         for srv in self.servers.values():
-            srv.offload()
+            await srv.offload()
 
-    def onload(self, tags: list[str] | None = None):
+    async def onload(self, tags: list[str] | None = None):
         for srv in self.servers.values():
-            srv.onload(tags)
+            await srv.onload(tags)
 
     def health_monitoring_pause(self) -> None:
-        if self._ft_agent is not None:
-            self._ft_agent.pause()
-        else:
-            for monitor in self._health_monitors:
-                monitor.pause()
+        for monitor in self._health_monitors:
+            monitor.pause()
 
     def health_monitoring_resume(self) -> None:
-        if self._ft_agent is not None:
-            self._ft_agent.resume()
-        else:
-            for monitor in self._health_monitors:
-                monitor.resume()
+        for monitor in self._health_monitors:
+            monitor.resume()
 
-    def onload_weights(self):
+    async def onload_weights(self):
         for srv in self.servers.values():
-            srv.onload_weights()
+            await srv.onload_weights()
 
-    def onload_kv(self):
+    async def onload_kv(self):
         for srv in self.servers.values():
-            srv.onload_kv()
+            await srv.onload_kv()
 
-    def recover_updatable_engines(self):
-        """Restart any dead rollout engines and update num_new_engines for update_weights detection.
+    async def recover_updatable_engines(self):
+        """Restart any dead rollout engines and update num_new_engines for weight-update detection.
 
-        Recovers the updatable model (the one that receives weight
-        updates from training).  In full FT mode the FtController drives
-        recovery via ``start_cell``/``stop_cell``, so we skip the
-        bulk-recover path here.
+        Uses per-cell parallel recovery: each dead cell is restarted
+        independently via ``asyncio.gather``, so multiple cells can
+        recover concurrently without blocking each other.
+
+        When the FT agent is active (TODO [FT v2]), the agent drives
+        recovery via start_cell/stop_cell before this method is called,
+        so this becomes a lightweight status-reporting path.  See the
+        __init__ TODO for the full FT integration plan.
         """
         self.health_monitoring_pause()
         srv = self._get_updatable_server()
@@ -646,8 +694,19 @@ class RolloutManager:
             gpu_offsets = srv.engine_gpu_offsets if srv else []
             return engines, self.rollout_engine_lock, (srv.num_new_engines if srv else 0), gpu_counts, gpu_offsets
 
-        if not self._full_ft_mode:
-            srv.recover()
+        dead_cells = [
+            cell
+            for group in srv.server_groups
+            for cell in group.cells
+            if not cell.is_alive
+        ]
+        if dead_cells:
+            results = await asyncio.gather(*[cell.start() for cell in dead_cells])
+            for group in srv.server_groups:
+                group.num_new_engines = sum(
+                    r for cell, r in zip(dead_cells, results) if cell.server_group is group
+                )
+
         return (
             srv.engines,
             self.rollout_engine_lock,
@@ -656,18 +715,39 @@ class RolloutManager:
             srv.engine_gpu_offsets,
         )
 
-    def clear_updatable_num_new_engines(self):
+    async def clear_updatable_num_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights
         srv = self._get_updatable_server()
         if srv:
             srv.num_new_engines = 0
 
-    def check_weights(self, action: str):
-        return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+    async def check_weights(self, action: str):
+        refs = [engine.check_weights.remote(action=action) for engine in self.rollout_engines]
+        return list(await asyncio.gather(*refs))
 
     # ------------------------------------------------------------------
     # Cell-based fault-tolerance APIs (called by FtController via
     # RayRolloutActuator)
+    # ------------------------------------------------------------------
+    # Design reference (miles-prod PR #1, rl-resilience/dev):
+    #   https://github.com/radixark/miles-prod/blob/bc26ac11/miles/ray/rollout.py#L239
+    #
+    # These two APIs are the public interface for unified fault tolerance.
+    # The FT controller (when active) drives per-cell recovery:
+    #   1. FT controller detects a dead engine via its own health probes
+    #   2. Calls stop_cell(cell_id) to clean up the dead cell
+    #   3. Calls start_cell(cell_id) to restart engines in that cell
+    #   4. get_cell_status(cell_id) returns the current JobStatus
+    #
+    # Because RolloutManager is an async actor, these calls are
+    # non-blocking — the event loop stays responsive while engines
+    # restart in the background.  Multiple cells can recover in
+    # parallel via concurrent start_cell calls.
+    #
+    # This replaces the legacy bulk recover path.  When the FT agent
+    # is active, recover_updatable_engines() is no longer the primary
+    # recovery mechanism — the FT controller calls start_cell/stop_cell
+    # directly.
     # ------------------------------------------------------------------
 
     def _find_cell(self, cell_id: str) -> ServerCell:
@@ -681,13 +761,21 @@ class RolloutManager:
     async def start_cell(self, cell_id: str) -> int:
         """Start (or restart) all engines in a cell.
 
+        A "cell" is the atomic fault-tolerance unit.  For example, in PD
+        with EP72 on 8-GPU nodes, one decode instance spans 9 nodes — those
+        9 nodes form a single cell.  If any node fails, the entire cell
+        (all 9 nodes) must be restarted as a whole.
+
         Returns the number of engines that were newly created.
         """
         cell = self._find_cell(cell_id)
         return await cell.start()
 
     async def stop_cell(self, cell_id: str) -> None:
-        """Gracefully stop and kill all engines in a cell."""
+        """Gracefully stop and kill all engines in a cell.
+
+        See ``start_cell`` for the definition of "cell".
+        """
         cell = self._find_cell(cell_id)
         await cell.stop()
 
@@ -883,7 +971,7 @@ class RolloutManager:
 
         return train_data
 
-    def set_train_parallel_config(self, config: dict):
+    async def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
 
     def _split_train_data_by_dp(self, data, dp_size):
@@ -1132,14 +1220,17 @@ def _compute_megatron_num_gpus(args) -> int:
     return num
 
 
-def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
+def start_rollout_servers(args, pg) -> tuple[dict[str, RolloutServer], list]:
     """Start rollout servers: one per model, each with its own router.
 
-    Returns a dict mapping model name -> ``RolloutServer``.
+    Returns ``(servers, init_handles)`` where *servers* is a dict mapping
+    model name -> ``RolloutServer`` and *init_handles* is a flat list of
+    Ray ObjectRefs whose completion signals that all engines are ready.
     """
     config = _resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
+    all_pending_handles: list = []
     gpu_offset = 0
     engine_offset = 0
 
@@ -1198,8 +1289,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
             engine_offset += num_engines
             gpu_offset += group_cfg.num_gpus
 
-        if all_init_handles:
-            ray.get(all_init_handles)
+        all_pending_handles.extend(all_init_handles)
 
         servers[model_cfg.name] = RolloutServer(
             server_groups=server_groups,
@@ -1211,7 +1301,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
-    return servers
+    return servers, all_pending_handles
 
 
 def _resolve_sglang_config(args) -> SglangConfig:
