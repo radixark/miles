@@ -1,0 +1,159 @@
+"""Unit tests for context_factories.py (P0 item 5)."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.state_machines.main.context_factories import (
+    _build_recovery_context,
+    _should_run_detectors,
+    build_subsystem_context,
+)
+from miles.utils.ft.controller.state_machines.main.models import MainContext
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
+from miles.utils.ft.controller.subsystem_hub.config import RestartMode, SubsystemConfig
+from miles.utils.ft.controller.types import MetricStore, TriggerType
+from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
+
+from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
+
+
+def _make_main_context(
+    *,
+    tick_count: int = 10,
+    registration_grace_ticks: int = 5,
+    job_status: JobStatus = JobStatus.RUNNING,
+) -> MainContext:
+    return MainContext(
+        main_job=FakeMainJob(),
+        subsystem_configs={},
+        tick_count=tick_count,
+        job_status=job_status,
+        metric_store=MetricStore(
+            time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
+            mini_wandb=MiniWandb(),
+        ),
+        notifier=FakeNotifier(),
+        node_manager=FakeNodeManager(),
+        diagnostic_orchestrator=MagicMock(),
+        cooldown=SlidingWindowThrottle(window_minutes=30, max_count=3),
+        detector_crash_tracker=SlidingWindowCounter(window_seconds=300, threshold=5),
+        recovery_timeout_seconds=600,
+        max_simultaneous_bad_nodes=2,
+        on_new_run=None,
+        rank_pids_provider=None,
+        controller_exporter=None,
+        on_recovery_duration=None,
+        registration_grace_ticks=registration_grace_ticks,
+    )
+
+
+class TestShouldRunDetectors:
+    def test_returns_false_when_active_node_ids_empty(self) -> None:
+        ctx = _make_main_context(tick_count=10, registration_grace_ticks=5)
+        assert _should_run_detectors(active_node_ids=set(), context=ctx) is False
+
+    def test_returns_false_during_registration_grace_period(self) -> None:
+        ctx = _make_main_context(tick_count=3, registration_grace_ticks=5)
+        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is False
+
+    def test_returns_false_at_exact_grace_tick_boundary(self) -> None:
+        ctx = _make_main_context(tick_count=5, registration_grace_ticks=5)
+        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is False
+
+    def test_returns_true_after_grace_period(self) -> None:
+        ctx = _make_main_context(tick_count=6, registration_grace_ticks=5)
+        assert _should_run_detectors(active_node_ids={"node-0"}, context=ctx) is True
+
+    def test_returns_true_with_nodes_and_no_grace(self) -> None:
+        ctx = _make_main_context(tick_count=1, registration_grace_ticks=0)
+        assert _should_run_detectors(active_node_ids={"node-0", "node-1"}, context=ctx) is True
+
+
+class TestBuildSubsystemContext:
+    def test_wires_all_fields_correctly(self) -> None:
+        ctx = _make_main_context(tick_count=10)
+        actuator = MagicMock()
+        monitoring_config = MonitoringIterationProgressConfig()
+        config = SubsystemConfig(
+            actuator=actuator,
+            detectors=[],
+            monitoring_config=monitoring_config,
+            get_active_node_ids=lambda: {"node-0"},
+        )
+        recovery_stepper = AsyncMock()
+        restart_stepper = AsyncMock()
+
+        result = build_subsystem_context(
+            config=config,
+            context=ctx,
+            recovery_stepper=recovery_stepper,
+            restart_stepper=restart_stepper,
+        )
+
+        assert result.job_status == ctx.job_status
+        assert result.tick_count == ctx.tick_count
+        assert result.should_run_detectors is True
+        assert result.detector_context is not None
+        assert result.detector_context.active_node_ids == {"node-0"}
+        assert result.notifier is ctx.notifier
+        assert result.detectors == []
+        assert result.cooldown is ctx.cooldown
+        assert result.recovery_stepper is recovery_stepper
+        assert result.max_simultaneous_bad_nodes == ctx.max_simultaneous_bad_nodes
+        assert result.monitoring_config is monitoring_config
+
+    def test_detector_context_is_none_when_detectors_should_not_run(self) -> None:
+        ctx = _make_main_context(tick_count=1, registration_grace_ticks=5)
+        config = SubsystemConfig(
+            actuator=MagicMock(),
+            get_active_node_ids=lambda: {"node-0"},
+        )
+
+        result = build_subsystem_context(
+            config=config,
+            context=ctx,
+            recovery_stepper=AsyncMock(),
+            restart_stepper=AsyncMock(),
+        )
+
+        assert result.should_run_detectors is False
+        assert result.detector_context is None
+
+
+class TestBuildRecoveryContext:
+    def test_correctly_constructs_recovery_context(self) -> None:
+        ctx = _make_main_context()
+        actuator = MagicMock()
+        monitoring_config = MonitoringIterationProgressConfig()
+        config = SubsystemConfig(
+            actuator=actuator,
+            monitoring_config=monitoring_config,
+        )
+        restart_stepper = AsyncMock()
+        now = datetime.now(timezone.utc)
+
+        result = _build_recovery_context(
+            config=config,
+            context=ctx,
+            trigger=TriggerType.CRASH,
+            recovery_start_time=now,
+            restart_stepper=restart_stepper,
+        )
+
+        assert result.trigger == TriggerType.CRASH
+        assert result.recovery_start_time == now
+        assert result.restart_stepper is restart_stepper
+        assert result.notifier is ctx.notifier
+        assert result.timeout_seconds == ctx.recovery_timeout_seconds
+
+        assert result.restart_context.node_manager is ctx.node_manager
+        assert result.restart_context.main_job is ctx.main_job
+        assert result.restart_context.actuator is actuator
+        assert result.restart_context.monitoring_config is monitoring_config
+        assert result.restart_context.restart_mode == RestartMode.SUBSYSTEM
