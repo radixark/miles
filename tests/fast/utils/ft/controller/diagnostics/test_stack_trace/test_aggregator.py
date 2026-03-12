@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tests.fast.utils.ft.utils import (
     SAMPLE_PYSPY_THREADS_DIFFERENT_STUCK,
     SAMPLE_PYSPY_THREADS_NORMAL,
@@ -11,6 +13,7 @@ from tests.fast.utils.ft.utils import (
 
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import PySpyFrame, PySpyThread
 from miles.utils.ft.controller.diagnostics.stack_trace import StackTraceAggregator
+from miles.utils.ft.controller.diagnostics.stack_trace.aggregator import StackTraceTieError
 
 
 class TestStackTraceAggregatorBasic:
@@ -46,14 +49,16 @@ class TestStackTraceAggregatorSuspectDetection:
         result = agg.aggregate(traces=traces)
         assert result.suspect_node_ids == ["node-2"]
 
-    def test_two_nodes_all_different_returns_empty(self) -> None:
+    def test_two_nodes_all_different_raises_tie(self) -> None:
+        """Two nodes with different fingerprints produce a tie (1 vs 1).
+        Previously returned [], masking the ambiguity. Now raises StackTraceTieError."""
         agg = StackTraceAggregator()
         traces = {
             "node-0": SAMPLE_PYSPY_THREADS_STUCK,
             "node-1": SAMPLE_PYSPY_THREADS_DIFFERENT_STUCK,
         }
-        result = agg.aggregate(traces=traces)
-        assert result.suspect_node_ids == []
+        with pytest.raises(StackTraceTieError, match="unable to determine majority"):
+            agg.aggregate(traces=traces)
 
     def test_multiple_minority_groups(self) -> None:
         agg = StackTraceAggregator()
@@ -69,7 +74,9 @@ class TestStackTraceAggregatorSuspectDetection:
         assert "node-4" in result.suspect_node_ids
         assert "node-0" not in result.suspect_node_ids
 
-    def test_tied_groups_returns_empty(self) -> None:
+    def test_tied_groups_raises_tie(self) -> None:
+        """2-2 split produces a tie. Previously returned [], masking the
+        ambiguity. Now raises StackTraceTieError."""
         agg = StackTraceAggregator()
         traces = {
             "node-0": SAMPLE_PYSPY_THREADS_STUCK,
@@ -77,8 +84,8 @@ class TestStackTraceAggregatorSuspectDetection:
             "node-2": SAMPLE_PYSPY_THREADS_DIFFERENT_STUCK,
             "node-3": SAMPLE_PYSPY_THREADS_DIFFERENT_STUCK,
         }
-        result = agg.aggregate(traces=traces)
-        assert result.suspect_node_ids == []
+        with pytest.raises(StackTraceTieError):
+            agg.aggregate(traces=traces)
 
     def test_same_leaf_different_caller_detects_suspect(self) -> None:
         """forward->allreduce (majority) vs backward->allreduce (minority) are distinguished."""

@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from miles.utils.ft.adapters.types import NodeAgentProtocol
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import PySpyThread
-from miles.utils.ft.controller.diagnostics.stack_trace.aggregator import StackTraceAggregator
+from miles.utils.ft.controller.diagnostics.stack_trace.aggregator import StackTraceAggregator, StackTraceTieError
 from miles.utils.ft.controller.diagnostics.utils import call_agent_diagnostic
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,12 @@ async def collect_stack_trace_suspects(
 
     await asyncio.gather(*(_collect_node(nid) for nid in node_agents))
 
-    aggregation_result = StackTraceAggregator().aggregate(traces=traces)
+    try:
+        aggregation_result = StackTraceAggregator().aggregate(traces=traces)
+    except StackTraceTieError:
+        logger.warning("stack_trace_aggregation_tie traces_collected=%d", len(traces), exc_info=True)
+        raise
+
     all_suspects = sorted(set(suspect_from_failures) | set(aggregation_result.suspect_node_ids))
 
     logger.info(

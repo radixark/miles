@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_FRAMES = 8
 
 
+class StackTraceTieError(Exception):
+    """Fingerprint groups are tied — cannot determine majority, require human intervention."""
+
+
 class AggregationResult(FtBaseModel):
     suspect_node_ids: list[str]
     fingerprint_groups: dict[str, list[str]]
@@ -49,6 +53,12 @@ class StackTraceAggregator:
             suspects: list[str] = []
         else:
             majority_size = max(len(nodes) for nodes in fp_to_nodes.values())
+            minority_exists = any(len(nodes) < majority_size for nodes in fp_to_nodes.values())
+            if not minority_exists:
+                raise StackTraceTieError(
+                    f"stack trace tie: {len(fp_to_nodes)} fingerprint groups of equal size {majority_size}, "
+                    "unable to determine majority — require human intervention"
+                )
             suspects = sorted(nid for nodes in fp_to_nodes.values() if len(nodes) < majority_size for nid in nodes)
 
         result = AggregationResult(
