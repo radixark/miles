@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main.context_factories import (
@@ -153,7 +153,7 @@ class TestBuildSubsystemContext:
 class TestBuildRecoveryContext:
     def test_correctly_constructs_recovery_context(self) -> None:
         ctx = _make_main_context()
-        actuator = MagicMock()
+        actuator = AsyncMock(spec=SubsystemActuatorProtocol)
         monitoring_config = MonitoringIterationProgressConfig()
         config = SubsystemConfig(
             actuator=actuator,
