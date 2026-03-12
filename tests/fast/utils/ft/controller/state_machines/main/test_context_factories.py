@@ -233,7 +233,8 @@ class TestBuildRecoveryContext:
         assert result.restart_context.main_job is ctx.shared.main_job
         assert result.restart_context.actuator is actuator
         assert result.restart_context.monitoring_config is monitoring_config
-        assert result.restart_context.restart_mode == RestartMode.SUBSYSTEM
+        assert result.restart_context.is_main_job_restart is False
+        assert result.restart_context.on_new_run is None
 
     def test_node_metadata_propagated_to_restart_context(self) -> None:
         """node_metadata was not passed from MainContext to RestartContext,

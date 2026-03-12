@@ -32,7 +32,6 @@ from miles.utils.ft.controller.state_machines.restart import (
     create_restart_stepper,
 )
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
-from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.state_machine import StateMachineStepper
@@ -66,7 +65,7 @@ def _make_restart_stepper_and_context(
     mini_wandb: MiniWandb | None = None,
     node_manager: FakeNodeManager | None = None,
     notifier: FakeNotifier | None = None,
-    restart_mode: RestartMode = RestartMode.SUBSYSTEM,
+    is_main_job_restart: bool = False,
 ) -> tuple[StateMachineStepper, RestartContext]:
     resolved_node_manager = node_manager or FakeNodeManager()
     resolved_main_job = main_job or FakeMainJob()
@@ -81,10 +80,10 @@ def _make_restart_stepper_and_context(
             mini_wandb=resolved_mini_wandb,
         ),
         notifier=notifier,
-        on_main_job_new_run=None,
+        on_new_run=None,
         actuator=_FakeActuator(main_job=resolved_main_job),
         monitoring_config=MonitoringIterationProgressConfig(),
-        restart_mode=restart_mode,
+        is_main_job_restart=is_main_job_restart,
     )
     return stepper, ctx
 

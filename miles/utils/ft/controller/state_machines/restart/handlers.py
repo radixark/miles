@@ -5,7 +5,6 @@ import math
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.types import MetricStore
@@ -91,13 +90,12 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestartingSt, Restart
         state: StoppingAndRestartingSt,
         ctx: RestartContext,
     ) -> RestartState | None:
-        if ctx.restart_mode == RestartMode.MAIN_JOB:
+        if ctx.is_main_job_restart:
             return ExternalRestartingMainJobSt(bad_node_ids=state.bad_node_ids)
 
         success = await stop_and_submit(
             job=ctx.actuator,
-            on_main_job_new_run=ctx.on_main_job_new_run,
-            restart_mode=ctx.restart_mode,
+            on_new_run=ctx.on_new_run,
             restart_lock=ctx.restart_lock,
         )
         if not success:

@@ -22,7 +22,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 )
 from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
 from miles.utils.ft.controller.state_machines.utils import safe_notify
-from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemSpec
+from miles.utils.ft.controller.subsystem_hub import SubsystemSpec
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +115,7 @@ async def trigger_main_job_restart(
     logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
     success = await stop_and_submit(
         job=context.shared.main_job,
-        on_main_job_new_run=context.shared.on_main_job_new_run,
-        restart_mode=RestartMode.MAIN_JOB,
+        on_new_run=context.shared.on_main_job_new_run,
         restart_lock=context.shared.restart_lock,
     )
     if not success:

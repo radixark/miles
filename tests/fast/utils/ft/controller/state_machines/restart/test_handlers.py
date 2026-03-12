@@ -32,7 +32,6 @@ from miles.utils.ft.controller.state_machines.restart import (
     iteration_progress,
 )
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
-from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
@@ -70,11 +69,11 @@ def _make_context(
     main_job: FakeMainJob | None = None,
     mini_wandb: MiniWandb | None = None,
     notifier: FakeNotifier | None = None,
-    on_main_job_new_run: object | None = None,
+    on_new_run: object | None = None,
     node_metadata: dict[str, dict[str, str]] | None = None,
     actuator: SubsystemActuatorProtocol | None = None,
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
-    restart_mode: RestartMode = RestartMode.SUBSYSTEM,
+    is_main_job_restart: bool = False,
     pending_timeout_seconds: int = 300,
 ) -> RestartContext:
     resolved_main_job = main_job or FakeMainJob()
@@ -86,11 +85,11 @@ def _make_context(
             mini_wandb=mini_wandb or MiniWandb(),
         ),
         notifier=notifier,
-        on_main_job_new_run=on_main_job_new_run,
+        on_new_run=on_new_run,
         node_metadata=node_metadata or {},
         actuator=actuator or FakeActuator(),
         monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
-        restart_mode=restart_mode,
+        is_main_job_restart=is_main_job_restart,
         pending_timeout_seconds=pending_timeout_seconds,
     )
 
@@ -228,9 +227,9 @@ class TestEvicting:
 class TestStoppingAndRestarting:
     @pytest.mark.asyncio
     async def test_main_job_restart_mode_returns_restarting_main_job(self) -> None:
-        """restart_mode=MAIN_JOB -> ExternalRestartingMainJobSt(external_execution_result=None)."""
+        """is_main_job_restart=True -> ExternalRestartingMainJobSt(external_execution_result=None)."""
         stepper = _make_stepper()
-        ctx = _make_context(restart_mode=RestartMode.MAIN_JOB)
+        ctx = _make_context(is_main_job_restart=True)
 
         state = StoppingAndRestartingSt(bad_node_ids=["node-A"])
         result = await _step_last(stepper, state, ctx)
@@ -243,7 +242,7 @@ class TestStoppingAndRestarting:
     async def test_subsystem_restart_submit_calls_actuator_stop_and_start(self) -> None:
         actuator = FakeActuator()
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, restart_mode=RestartMode.SUBSYSTEM)
+        ctx = _make_context(actuator=actuator, is_main_job_restart=False)
 
         state = StoppingAndRestartingSt(bad_node_ids=["node-A"])
         result = await _step_last(stepper, state, ctx)
@@ -259,7 +258,7 @@ class TestStoppingAndRestarting:
         actuator = FakeActuator()
         actuator.stop = AsyncMock(side_effect=RuntimeError("stop failed"))  # type: ignore[assignment]
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, restart_mode=RestartMode.SUBSYSTEM)
+        ctx = _make_context(actuator=actuator, is_main_job_restart=False)
 
         state = StoppingAndRestartingSt()
         result = await _step_last(stepper, state, ctx)
@@ -270,7 +269,7 @@ class TestStoppingAndRestarting:
         actuator = FakeActuator()
         actuator.start = AsyncMock(side_effect=RuntimeError("start failed"))  # type: ignore[assignment]
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, restart_mode=RestartMode.SUBSYSTEM)
+        ctx = _make_context(actuator=actuator, is_main_job_restart=False)
 
         state = StoppingAndRestartingSt()
         result = await _step_last(stepper, state, ctx)
@@ -342,17 +341,19 @@ class TestStoppingAndRestarting:
         assert isinstance(result, RestartFailedSt)
 
     @pytest.mark.asyncio
-    async def test_on_main_job_new_run_not_called_for_subsystem_restart(self) -> None:
-        """Callback should only fire for main job restarts (via main/handlers.py),
-        not for subsystem restarts handled by the restart SM."""
-        captured_run_ids: list[str] = []
+    async def test_on_new_run_not_called_for_subsystem_restart(self) -> None:
+        """For subsystem restarts the caller (context_factories) sets
+        on_new_run=None, so the callback is never invoked.  Previously
+        stop_and_submit checked restart_mode internally; now the caller
+        decides whether to pass the callback."""
         actuator = FakeActuator()
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, on_main_job_new_run=captured_run_ids.append, restart_mode=RestartMode.SUBSYSTEM)
+        ctx = _make_context(actuator=actuator, on_new_run=None, is_main_job_restart=False)
 
         state = StoppingAndRestartingSt(bad_node_ids=[])
-        await _step_last(stepper, state, ctx)
-        assert len(captured_run_ids) == 0
+        result = await _step_last(stepper, state, ctx)
+        assert isinstance(result, StoppingAndRestartingSt)
+        assert result.submitted is True
 
 
 # ---------------------------------------------------------------------------
@@ -731,7 +732,7 @@ class TestFullRestartFlow:
             actuator=actuator,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=5),
-            restart_mode=RestartMode.SUBSYSTEM,
+            is_main_job_restart=False,
         )
 
         # Step 1: Evicting -> StoppingAndRestarting
@@ -758,7 +759,7 @@ class TestFullRestartFlow:
     async def test_main_job_restart_evict_to_restarting_main_job(self) -> None:
         """MAIN_JOB: Evicting -> StoppingAndRestarting -> RestartingMainJob."""
         stepper = _make_stepper()
-        ctx = _make_context(restart_mode=RestartMode.MAIN_JOB)
+        ctx = _make_context(is_main_job_restart=True)
 
         # Step 1: Evicting -> StoppingAndRestarting
         state = EvictingSt(bad_node_ids=["node-A"])
@@ -783,7 +784,7 @@ class TestFullRestartFlow:
             actuator=actuator,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=5),
-            restart_mode=RestartMode.SUBSYSTEM,
+            is_main_job_restart=False,
         )
 
         state = StoppingAndRestartingSt(bad_node_ids=[])

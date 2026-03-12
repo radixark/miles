@@ -9,7 +9,6 @@ from typing import Annotated, Literal, Union
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
-from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
 
@@ -82,11 +81,11 @@ class RestartContext(FtBaseModel):
     main_job: MainJobProtocol
     metric_store: MetricStore
     notifier: NotifierProtocol | None
-    on_main_job_new_run: Callable[[str], None] | None
+    on_new_run: Callable[[str], None] | None
     node_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     actuator: SubsystemActuatorProtocol
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig
-    restart_mode: RestartMode
+    is_main_job_restart: bool
     pending_timeout_seconds: int = 300
     restart_lock: asyncio.Lock | None = None

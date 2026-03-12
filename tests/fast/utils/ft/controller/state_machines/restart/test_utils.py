@@ -9,7 +9,6 @@ from tests.fast.utils.ft.conftest import FakeMainJob, make_failing_main_job
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
-from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.utils.retry import RetryResult, retry_async
 
 
@@ -161,13 +160,14 @@ class TestStopAndSubmit:
         assert main_job._stopped
 
     @pytest.mark.anyio
-    async def test_on_main_job_new_run_called_after_successful_submit(self) -> None:
+    async def test_on_new_run_called_after_successful_submit(self) -> None:
+        """on_new_run callback receives the run_id on success."""
         main_job = FakeMainJob()
         calls: list[str] = []
 
         result = await stop_and_submit(
             main_job,
-            on_main_job_new_run=lambda run_id: calls.append(run_id),
+            on_new_run=lambda run_id: calls.append(run_id),
         )
 
         assert result is True
@@ -175,31 +175,29 @@ class TestStopAndSubmit:
         assert calls[0].startswith("fake-")
 
     @pytest.mark.anyio
-    async def test_on_main_job_new_run_not_called_on_submit_failure(self) -> None:
+    async def test_on_new_run_not_called_on_submit_failure(self) -> None:
         main_job = make_failing_main_job(fail_submit=True)
         calls: list[str] = []
 
         result = await stop_and_submit(
             main_job,
-            on_main_job_new_run=lambda run_id: calls.append(run_id),
+            on_new_run=lambda run_id: calls.append(run_id),
         )
 
         assert result is False
         assert len(calls) == 0
 
     @pytest.mark.anyio
-    async def test_on_main_job_new_run_not_called_for_subsystem_restart(self) -> None:
+    async def test_on_new_run_omitted_for_subsystem_restart(self) -> None:
+        """Subsystem restarts omit the on_new_run callback entirely,
+        so the callback is never invoked regardless of restart_mode.
+        Previously stop_and_submit checked restart_mode internally;
+        now callers simply don't pass on_new_run for subsystems."""
         main_job = FakeMainJob()
-        calls: list[str] = []
 
-        result = await stop_and_submit(
-            main_job,
-            on_main_job_new_run=lambda run_id: calls.append(run_id),
-            restart_mode=RestartMode.SUBSYSTEM,
-        )
+        result = await stop_and_submit(main_job, on_new_run=None)
 
         assert result is True
-        assert len(calls) == 0
 
     @pytest.mark.anyio
     async def test_stop_failure_job_failed_still_submits(self) -> None:
@@ -237,7 +235,7 @@ class TestRestartLockSerialization:
     """restart_lock serializes concurrent stop_and_submit calls.
 
     Without the lock, two concurrent callers could interleave their
-    stop→start sequences: both stop, then both start, resulting in
+    stop->start sequences: both stop, then both start, resulting in
     a ghost job that the controller no longer tracks.
     """
 
@@ -269,7 +267,7 @@ class TestRestartLockSerialization:
         # One must succeed, the other may fail (double submit guard) or succeed
         assert any(r is True for r in results)
 
-        # The stop→start pairs must not interleave.
+        # The stop->start pairs must not interleave.
         # With proper serialization: stop_start, stop_end, start_start, start_end,
         # then second caller's sequence follows entirely after.
         stop_starts = [i for i, e in enumerate(execution_log) if e == "stop_start"]

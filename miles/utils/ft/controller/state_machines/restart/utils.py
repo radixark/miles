@@ -5,7 +5,6 @@ import logging
 from collections.abc import Callable
 
 from miles.utils.ft.adapters.types import JobStatus, NodeManagerProtocol, StoppableJobProtocol
-from miles.utils.ft.controller.subsystem_hub import RestartMode
 from miles.utils.ft.utils.retry import RetryResult, retry_async
 
 logger = logging.getLogger(__name__)
@@ -13,11 +12,15 @@ logger = logging.getLogger(__name__)
 
 async def stop_and_submit(
     job: StoppableJobProtocol,
-    on_main_job_new_run: Callable[[str], None] | None = None,
-    restart_mode: RestartMode = RestartMode.MAIN_JOB,
+    on_new_run: Callable[[str], None] | None = None,
     restart_lock: asyncio.Lock | None = None,
 ) -> bool:
-    """Stop job, submit new job, notify caller of new run_id. Returns True on success.
+    """Stop job, submit new job, optionally notify caller of new run_id.
+
+    *on_new_run* is an optional callback invoked with the new ``run_id``
+    after a successful ``start()``.  Callers that need run-id tracking
+    (e.g. main-job restarts) pass a callback; subsystem restarts simply
+    omit it.
 
     When *restart_lock* is provided the entire stop-then-start sequence is
     executed under the lock, preventing concurrent restart attempts from
@@ -25,22 +28,13 @@ async def stop_and_submit(
     """
     if restart_lock is not None:
         async with restart_lock:
-            return await _stop_and_submit_locked(
-                job=job,
-                on_main_job_new_run=on_main_job_new_run,
-                restart_mode=restart_mode,
-            )
-    return await _stop_and_submit_locked(
-        job=job,
-        on_main_job_new_run=on_main_job_new_run,
-        restart_mode=restart_mode,
-    )
+            return await _stop_and_submit_locked(job=job, on_new_run=on_new_run)
+    return await _stop_and_submit_locked(job=job, on_new_run=on_new_run)
 
 
 async def _stop_and_submit_locked(
     job: StoppableJobProtocol,
-    on_main_job_new_run: Callable[[str], None] | None = None,
-    restart_mode: RestartMode = RestartMode.MAIN_JOB,
+    on_new_run: Callable[[str], None] | None = None,
 ) -> bool:
     stop_result = await retry_async(
         job.stop,
@@ -68,8 +62,8 @@ async def _stop_and_submit_locked(
         logger.error("submit_job_failed", exc_info=True)
         return False
 
-    if restart_mode == RestartMode.MAIN_JOB and on_main_job_new_run is not None:
-        on_main_job_new_run(run_id)
+    if on_new_run is not None:
+        on_new_run(run_id)
     return True
 
 

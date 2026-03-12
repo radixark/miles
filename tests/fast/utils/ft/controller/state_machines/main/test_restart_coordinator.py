@@ -58,7 +58,7 @@ def _make_shared_deps(
         notifier=notifier,
         node_manager=FakeNodeManager(),
         diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
-        detector_crash_tracker=SlidingWindowCounter(window_minutes=30, max_count=3),
+        detector_crash_tracker=SlidingWindowCounter(window_seconds=1800, threshold=3),
         recovery_timeout_seconds=recovery_timeout_seconds,
         max_simultaneous_bad_nodes=2,
         on_main_job_new_run=None,
