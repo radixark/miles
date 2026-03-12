@@ -39,6 +39,8 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
 
         self._pipeline = pipeline
         self._default_timeout_seconds = default_timeout_seconds
+        if pipeline_timeout_seconds < 0:
+            raise ValueError(f"pipeline_timeout_seconds must be >= 0, got {pipeline_timeout_seconds}")
         self._pipeline_timeout_seconds = pipeline_timeout_seconds
 
     async def run_diagnostic_pipeline(

@@ -56,6 +56,19 @@ class TestBaseNodeExecutor:
 # ---------------------------------------------------------------------------
 
 
+class TestDiagnosticOrchestratorValidation:
+    def test_negative_pipeline_timeout_raises(self) -> None:
+        """Previously negative pipeline_timeout_seconds caused
+        asyncio.wait_for to raise ValueError at runtime. Now
+        rejected at construction time."""
+        with pytest.raises(ValueError, match="pipeline_timeout_seconds must be >= 0"):
+            DiagnosticOrchestrator(pipeline=[], pipeline_timeout_seconds=-1)
+
+    def test_zero_pipeline_timeout_allowed(self) -> None:
+        orchestrator = DiagnosticOrchestrator(pipeline=[], pipeline_timeout_seconds=0)
+        assert orchestrator._pipeline_timeout_seconds == 0
+
+
 class TestDiagnosticOrchestratorEmptyPipeline:
     @pytest.mark.anyio
     async def test_empty_pipeline_returns_notify_human(self) -> None:
