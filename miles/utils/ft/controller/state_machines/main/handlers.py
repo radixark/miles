@@ -109,7 +109,12 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
                 restart_stepper=self._restart_stepper,
             )
             old_sub_state = curr_state.subsystems[name]
-            async for new_sub_state in run_stepper_to_convergence(self._subsystem_stepper, old_sub_state, sub_ctx):
+            async for new_sub_state in run_stepper_to_convergence(
+                self._subsystem_stepper,
+                old_sub_state,
+                sub_ctx,
+                on_convergence_failure=context.shared.on_convergence_failure,
+            ):
                 curr_state = NormalSt(subsystems={**curr_state.subsystems, name: new_sub_state})
                 yield curr_state
 

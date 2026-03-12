@@ -653,3 +653,90 @@ class TestToAsyncGen:
 
         results = [x async for x in _to_async_gen(gen())]
         assert results == ["only"]
+
+
+# -- Tests: convergence failure callback ---------------------------------------
+
+
+class TestConvergenceFailureCallback:
+    """Convergence failure previously only logged a warning, providing no
+    mechanism for the controller to escalate or track repeated failures.
+    Now both run_stepper_to_convergence and StateMachine.step call an
+    optional on_convergence_failure callback when the iteration cap is hit."""
+
+    @pytest.mark.asyncio
+    async def test_run_stepper_calls_callback_on_max_iterations(self) -> None:
+        stepper = _make_oscillating_stepper()
+        callback_calls: list[tuple[object, int]] = []
+
+        def on_failure(state: object, iterations: int) -> None:
+            callback_calls.append((state, iterations))
+
+        _ = [s async for s in run_stepper_to_convergence(
+            stepper, StateA(), None,
+            max_iterations=3,
+            on_convergence_failure=on_failure,
+        )]
+
+        assert len(callback_calls) == 1
+        assert callback_calls[0][1] == 3
+
+    @pytest.mark.asyncio
+    async def test_run_stepper_no_callback_on_normal_convergence(self) -> None:
+        stepper = _make_stepper()
+        callback_calls: list[tuple[object, int]] = []
+
+        def on_failure(state: object, iterations: int) -> None:
+            callback_calls.append((state, iterations))
+
+        _ = [s async for s in run_stepper_to_convergence(
+            stepper, StateA(), None,
+            on_convergence_failure=on_failure,
+        )]
+
+        assert callback_calls == []
+
+    @pytest.mark.asyncio
+    async def test_run_stepper_no_callback_when_none(self) -> None:
+        """No error when on_convergence_failure is None (default)."""
+        stepper = _make_oscillating_stepper()
+        _ = [s async for s in run_stepper_to_convergence(
+            stepper, StateA(), None,
+            max_iterations=3,
+            on_convergence_failure=None,
+        )]
+
+    @pytest.mark.asyncio
+    async def test_state_machine_calls_callback_on_max_iterations(self) -> None:
+        stepper = _make_oscillating_stepper()
+        callback_calls: list[tuple[object, int]] = []
+
+        def on_failure(state: object, iterations: int) -> None:
+            callback_calls.append((state, iterations))
+
+        machine = StateMachine(
+            initial_state=StateA(),
+            stepper=stepper,
+            on_convergence_failure=on_failure,
+        )
+        await machine.step(None)
+
+        assert len(callback_calls) == 1
+        assert callback_calls[0][1] == 50
+
+    @pytest.mark.asyncio
+    async def test_state_machine_no_callback_on_normal_convergence(self) -> None:
+        stepper = _make_stepper()
+        callback_calls: list[tuple[object, int]] = []
+
+        def on_failure(state: object, iterations: int) -> None:
+            callback_calls.append((state, iterations))
+
+        machine = StateMachine(
+            initial_state=StateA(),
+            stepper=stepper,
+            on_convergence_failure=on_failure,
+        )
+        await machine.step(None)
+
+        assert callback_calls == []

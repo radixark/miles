@@ -66,7 +66,10 @@ class TickLoop:
 
         self._detector_crash_tracker = SlidingWindowCounter(window_seconds=1800, threshold=5)
         self._tick_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=5)
+        self._convergence_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=3)
         self._node_agent_coverage_checker = NodeAgentCoverageChecker()
+
+        self.state_machine._on_convergence_failure = self._on_convergence_failure
 
     # ------------------------------------------------------------------
     # Tick execution
@@ -88,6 +91,17 @@ class TickLoop:
 
             context = self._build_controller_context(job_status=job_status, deps=deps)
             await self.state_machine.step(context)
+
+            if self._convergence_failure_tracker.should_notify:
+                logger.error(
+                    "convergence_persistently_failing: %s",
+                    self._convergence_failure_tracker.summary(),
+                )
+                await safe_notify(
+                    deps.notifier,
+                    title="State machine convergence persistently failing",
+                    content=self._convergence_failure_tracker.summary(),
+                )
         except Exception:
             logger.error("tick_failed tick=%d", self.tick_count, exc_info=True)
             self._tick_failure_tracker.record()
@@ -101,6 +115,11 @@ class TickLoop:
         finally:
             tick_duration = time.monotonic() - t0
             self._update_exporter_metrics(job_status, tick_duration=tick_duration, deps=deps)
+
+    def _on_convergence_failure(self, last_state: object, iterations: int) -> None:
+        self._convergence_failure_tracker.record(
+            label=f"state={type(last_state).__name__} iterations={iterations}",
+        )
 
     def _handle_main_job_new_run(self, run_id: str, deps: TickDeps) -> None:
         self._run_start_tick = self.tick_count
@@ -126,6 +145,7 @@ class TickLoop:
             controller_exporter=deps.controller_exporter,
             on_recovery_duration=deps.on_recovery_duration,
             registration_grace_ticks=self._registration_grace_ticks,
+            on_convergence_failure=self._on_convergence_failure,
         )
         return MainContext(
             shared=shared,

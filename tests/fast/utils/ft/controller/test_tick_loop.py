@@ -250,6 +250,52 @@ class TestCollectSubsystemModesRestartingMainJob:
         assert result["training"] == (False, 0)
 
 
+class TestConvergenceFailureTracking:
+    """Convergence failure previously only logged a warning with no
+    escalation path. Now TickLoop tracks convergence failures via
+    SlidingWindowCounter and sends a notification when the threshold
+    is exceeded."""
+
+    async def test_convergence_failure_callback_records_event(self) -> None:
+        loop = _make_tick_loop()
+        assert loop._convergence_failure_tracker.count == 0
+
+        loop._on_convergence_failure(last_state="SomeState", iterations=50)
+
+        assert loop._convergence_failure_tracker.count == 1
+
+    async def test_convergence_failure_wired_to_state_machine(self) -> None:
+        """TickLoop sets on_convergence_failure on the state machine at init."""
+        sm = MagicMock()
+        sm.step = AsyncMock()
+        sm.state = NormalSt(subsystems={})
+
+        loop = TickLoop(state_machine=sm, registration_grace_ticks=0)
+
+        assert sm._on_convergence_failure == loop._on_convergence_failure
+
+    async def test_persistent_convergence_failure_triggers_notification(self) -> None:
+        """Exceeding threshold triggers safe_notify after state_machine.step."""
+        sm = MagicMock()
+        sm.step = AsyncMock()
+        sm.state = NormalSt(subsystems={})
+        notifier = FakeNotifier()
+
+        loop = _make_tick_loop(state_machine=sm)
+        loop._convergence_failure_tracker = SlidingWindowCounter(window_seconds=300, threshold=2)
+        deps = _make_tick_deps(notifier=notifier)
+
+        # Step 1: Simulate convergence failures recorded by callback
+        loop._on_convergence_failure("StateA", 50)
+        loop._on_convergence_failure("StateB", 50)
+
+        # Step 2: tick checks should_notify and sends notification
+        await loop.tick(deps)
+
+        assert len(notifier.calls) >= 1
+        assert any("convergence" in call[0].lower() for call in notifier.calls)
+
+
 class TestRegistrationGraceTicks:
     async def test_roster_warn_and_coverage_skipped_when_roster_is_none(self) -> None:
         """When roster is None, warn_if_incomplete and coverage check are skipped."""

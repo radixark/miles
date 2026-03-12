@@ -90,6 +90,8 @@ class StateMachineStepper(Generic[StateT, ContextT]):
 
 _MAX_CONVERGENCE_ITERATIONS = 50
 
+ConvergenceFailureCallback = Callable[[object, int], None]
+
 
 async def run_stepper_to_convergence(
     stepper: StateMachineStepper[StateT, ContextT],
@@ -97,6 +99,7 @@ async def run_stepper_to_convergence(
     context: ContextT,
     *,
     max_iterations: int = _MAX_CONVERGENCE_ITERATIONS,
+    on_convergence_failure: ConvergenceFailureCallback | None = None,
 ) -> AsyncGenerator[StateT, None]:
     current = state
     for _ in range(max_iterations):
@@ -114,6 +117,8 @@ async def run_stepper_to_convergence(
         max_iterations,
         current,
     )
+    if on_convergence_failure is not None:
+        on_convergence_failure(current, max_iterations)
 
 
 class StateMachine(Generic[StateT, ContextT]):
@@ -134,10 +139,17 @@ class StateMachine(Generic[StateT, ContextT]):
     # faults from scratch. This should be made persistent (e.g. checkpoint to
     # disk/etcd) in the future to avoid redundant evictions and lost diagnostics.
 
-    def __init__(self, *, initial_state: StateT, stepper: StateMachineStepper[StateT, ContextT]) -> None:
+    def __init__(
+        self,
+        *,
+        initial_state: StateT,
+        stepper: StateMachineStepper[StateT, ContextT],
+        on_convergence_failure: ConvergenceFailureCallback | None = None,
+    ) -> None:
         self._state = initial_state
         self._stepper = stepper
         self._state_history: deque[StateT] = deque(maxlen=self._MAX_HISTORY)
+        self._on_convergence_failure = on_convergence_failure
 
     @property
     def state(self) -> StateT:
@@ -165,3 +177,5 @@ class StateMachine(Generic[StateT, ContextT]):
             _MAX_CONVERGENCE_ITERATIONS,
             self._state,
         )
+        if self._on_convergence_failure is not None:
+            self._on_convergence_failure(self._state, _MAX_CONVERGENCE_ITERATIONS)
