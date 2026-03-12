@@ -65,9 +65,9 @@ class RecoveryDoneSt(RecoveryState):
 RECOVERY_STATE_TO_INT: dict[type[RecoveryState], int] = {
     RealtimeChecksSt: 1,
     EvictingAndRestartingSt: 2,
-    StopTimeDiagnosticsSt: 4,
-    NotifyHumansSt: 5,
-    RecoveryDoneSt: 6,
+    StopTimeDiagnosticsSt: 3,
+    NotifyHumansSt: 4,
+    RecoveryDoneSt: 5,
 }
 
 

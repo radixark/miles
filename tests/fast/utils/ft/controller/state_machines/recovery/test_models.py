@@ -79,3 +79,17 @@ class TestRecoveryStateToInt:
     def test_values_are_monotonically_increasing(self) -> None:
         values = list(RECOVERY_STATE_TO_INT.values())
         assert values == sorted(values)
+
+    def test_values_are_contiguous_starting_from_1(self) -> None:
+        """Previously there was a gap (int 3 was missing), confusing metric
+        consumers. Values must be contiguous from 1 to len(mapping).
+        """
+        values = sorted(RECOVERY_STATE_TO_INT.values())
+        assert values == list(range(1, len(values) + 1))
+
+    def test_all_concrete_recovery_states_are_covered(self) -> None:
+        concrete_subclasses = {
+            cls for cls in RecoveryState.__subclasses__()
+        }
+        mapped_classes = set(RECOVERY_STATE_TO_INT.keys())
+        assert mapped_classes == concrete_subclasses
