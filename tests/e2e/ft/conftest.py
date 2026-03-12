@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import threading
 import time
 from collections.abc import AsyncGenerator, Generator
@@ -40,8 +41,24 @@ pytestmark = [
     pytest.mark.timeout(600),
 ]
 
-_EXPECTED_CLUSTER_NODES = 3
+_EXPECTED_CLUSTER_NODES = 4
 _ACTOR_POLL_INTERVAL: float = 5.0
+
+
+# ---------------------------------------------------------------------------
+# Cluster topology definitions
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ClusterTopology:
+    num_training_nodes: int
+    rollout_num_cells: int
+
+
+ROLLOUT_FOCUSED = ClusterTopology(num_training_nodes=1, rollout_num_cells=2)
+TRAINING_FOCUSED = ClusterTopology(num_training_nodes=2, rollout_num_cells=1)
+MULTI_CELL = ClusterTopology(num_training_nodes=1, rollout_num_cells=3)
 
 
 # ---------------------------------------------------------------------------
@@ -85,17 +102,17 @@ def ray_cluster(ray_address: str) -> Generator[None, None, None]:
     nodes = ray.nodes()
     alive_nodes = [n for n in nodes if n.get("Alive")]
     assert len(alive_nodes) == _EXPECTED_CLUSTER_NODES, (
-        f"FT E2E tests require exactly {_EXPECTED_CLUSTER_NODES} cluster nodes "
-        f"(2 training + 1 spare for eviction), got {len(alive_nodes)}"
+        f"FT E2E tests require exactly {_EXPECTED_CLUSTER_NODES} cluster nodes, "
+        f"got {len(alive_nodes)}"
     )
 
-    gpu_nodes = [n for n in alive_nodes if n.get("Resources", {}).get("GPU", 0) > 0]
-    assert len(gpu_nodes) == _EXPECTED_CLUSTER_NODES, (
+    gpu_node_list = [n for n in alive_nodes if n.get("Resources", {}).get("GPU", 0) > 0]
+    assert len(gpu_node_list) == _EXPECTED_CLUSTER_NODES, (
         f"All {_EXPECTED_CLUSTER_NODES} cluster nodes must have GPUs, "
-        f"but only {len(gpu_nodes)} of {len(alive_nodes)} have GPUs"
+        f"but only {len(gpu_node_list)} of {len(alive_nodes)} have GPUs"
     )
 
-    logger.info("ray_cluster_connected nodes=%d gpu_nodes=%d", len(alive_nodes), len(gpu_nodes))
+    logger.info("ray_cluster_connected nodes=%d gpu_nodes=%d", len(alive_nodes), len(gpu_node_list))
     yield
 
 
@@ -104,8 +121,28 @@ def ray_cluster(ray_address: str) -> Generator[None, None, None]:
 # ---------------------------------------------------------------------------
 
 
+async def _cleanup_sglang_processes() -> None:
+    """Kill any leftover sglang processes on all cluster nodes."""
+    for node in ray.nodes():
+        if not node.get("Alive"):
+            continue
+        node_id = node["NodeID"]
+        try:
+            injector = deploy_fault_injector(node_id=node_id)
+            procs = ray.get(injector.find_sglang_processes.remote(), timeout=10)
+            for proc in procs:
+                try:
+                    ray.get(injector.kill_process.remote(pid=proc["pid"], sig=signal.SIGKILL), timeout=5)
+                    logger.info("cleanup_killed_sglang pid=%d node=%s", proc["pid"], node_id)
+                except Exception:
+                    logger.debug("cleanup_kill_sglang_failed pid=%d", proc["pid"], exc_info=True)
+            ray.kill(injector)
+        except Exception:
+            logger.debug("cleanup_sglang_scan_failed node=%s", node_id, exc_info=True)
+
+
 async def _cleanup_environment() -> None:
-    """Shut down any leftover FtController, stop all Ray jobs, and uncordon K8s nodes."""
+    """Shut down any leftover FtController, stop all Ray jobs, clean sglang, and uncordon K8s nodes."""
     try:
         old_handle = ray.get_actor(ft_controller_actor_name(""))
         ray.get(old_handle.shutdown.remote(), timeout=60)
@@ -122,6 +159,8 @@ async def _cleanup_environment() -> None:
             await stop_all_active_jobs(client)
         except Exception:
             logger.warning("cleanup_stop_all_jobs_failed", exc_info=True)
+
+    await _cleanup_sglang_processes()
 
     node_mgr = K8sNodeManager()
     try:
@@ -163,20 +202,29 @@ async def _wait_for_named_actor(
 @pytest.fixture
 async def ft_controller_handle(
     ray_cluster: None,
+    request: pytest.FixtureRequest,
 ) -> AsyncGenerator[ray.actor.ActorHandle, None]:
     """Launch independent training + FT Controller for a single test.
 
-    1. Clean up leftover state (controller, K8s node cordons)
-    2. Launch launch_standard_run.main() in background thread
-    3. Wait for FtController actor to appear
-    4. Yield controller handle
-    5. Tear down controller and clean up
+    Supports indirect parametrize via ClusterTopology:
+      @pytest.mark.parametrize("ft_controller_handle", [ROLLOUT_FOCUSED], indirect=True)
+
+    Default topology is TRAINING_FOCUSED when not parametrized.
     """
+    topology: ClusterTopology = getattr(request, "param", TRAINING_FOCUSED)
+
     await _cleanup_environment()
 
     from tests.e2e.ft.launch_standard_run import main
 
-    thread = threading.Thread(target=main, daemon=True)
+    thread = threading.Thread(
+        target=main,
+        kwargs={
+            "num_training_nodes": topology.num_training_nodes,
+            "rollout_num_cells": topology.rollout_num_cells,
+        },
+        daemon=True,
+    )
     thread.start()
 
     handle = await _wait_for_named_actor(
@@ -314,6 +362,28 @@ async def wait_for_training_pid(
     return pid
 
 
+async def wait_for_sglang_pid(
+    injector: ray.actor.ActorHandle,
+    timeout: float = 60.0,
+    poll_interval: float = 3.0,
+) -> int:
+    """Poll until a sglang process appears on the injector's node, then return its PID."""
+
+    def _probe() -> int | None:
+        procs = ray.get(injector.find_sglang_processes.remote())
+        return procs[0]["pid"] if procs else None
+
+    pid = await poll_until(
+        probe=_probe,
+        predicate=lambda p: p is not None,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        description="sglang_pid",
+    )
+    assert pid is not None
+    return pid
+
+
 # ---------------------------------------------------------------------------
 # Helper functions for E2E assertions
 # ---------------------------------------------------------------------------
@@ -372,6 +442,93 @@ async def wait_for_mode_transition(
     )
 
 
+# ---------------------------------------------------------------------------
+# Helper: subsystem state polling
+# ---------------------------------------------------------------------------
+
+
+async def wait_for_subsystem_state(
+    handle: ray.actor.ActorHandle,
+    subsystem_name: str,
+    target_state: str,
+    timeout: float = 300.0,
+    poll_interval: float = 5.0,
+) -> ControllerStatus:
+    """Poll until a specific subsystem reaches the target state (class name)."""
+
+    def _probe() -> ControllerStatus:
+        return get_status(handle)
+
+    return await poll_until(
+        probe=_probe,
+        predicate=lambda s: s.subsystem_states.get(subsystem_name) == target_state,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        description=f"subsystem_state({subsystem_name}={target_state})",
+    )
+
+
+async def wait_for_all_subsystems_detecting(
+    handle: ray.actor.ActorHandle,
+    timeout: float = 600.0,
+    poll_interval: float = 5.0,
+) -> ControllerStatus:
+    """Poll until all subsystems are in DetectingAnomalySt."""
+
+    def _all_detecting(status: ControllerStatus) -> bool:
+        return bool(status.subsystem_states) and all(
+            state == "DetectingAnomalySt" for state in status.subsystem_states.values()
+        )
+
+    return await poll_until(
+        probe=lambda: get_status(handle),
+        predicate=_all_detecting,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        description="all_subsystems_detecting",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helper: rollout node discovery
+# ---------------------------------------------------------------------------
+
+
+def find_rollout_node(factory: FaultInjectorFactory) -> tuple[str, ray.actor.ActorHandle]:
+    """Find one node running a sglang process. Returns (node_id, injector_handle)."""
+    for node in ray.nodes():
+        if not node.get("Alive"):
+            continue
+        if not node.get("Resources", {}).get("GPU", 0) > 0:
+            continue
+
+        node_id = node["NodeID"]
+        injector = factory.deploy_to(node_id=node_id)
+        procs = ray.get(injector.find_sglang_processes.remote(), timeout=10)
+        if procs:
+            return node_id, injector
+
+    raise AssertionError("No node running sglang found in the cluster")
+
+
+def find_all_rollout_nodes(factory: FaultInjectorFactory) -> list[tuple[str, ray.actor.ActorHandle]]:
+    """Find all nodes running sglang processes. Returns list of (node_id, injector_handle)."""
+    results: list[tuple[str, ray.actor.ActorHandle]] = []
+    for node in ray.nodes():
+        if not node.get("Alive"):
+            continue
+        if not node.get("Resources", {}).get("GPU", 0) > 0:
+            continue
+
+        node_id = node["NodeID"]
+        injector = factory.deploy_to(node_id=node_id)
+        procs = ray.get(injector.find_sglang_processes.remote(), timeout=10)
+        if procs:
+            results.append((node_id, injector))
+
+    return results
+
+
 async def list_worker_pods_on_node(node_id: str, namespace: str = "default") -> list[str]:
     """List ray worker pod names scheduled on a specific K8s node."""
     from kubernetes_asyncio import config as k8s_config
@@ -392,10 +549,16 @@ async def list_worker_pods_on_node(node_id: str, namespace: str = "default") -> 
         return [pod.metadata.name for pod in pod_list.items]
 
 
+# ---------------------------------------------------------------------------
+# E2E Fault Injector
+# ---------------------------------------------------------------------------
+
+
 class E2eFaultInjector:
     """FaultInjectionProtocol implementation for E2E tests.
 
     Wraps the remote FaultInjector actor to kill/stop real training processes.
+    Also supports killing sglang processes on rollout nodes.
     """
 
     _DEFAULT_EXCEPTION_FLAG_PATH = "/tmp/miles_ft_inject_exception"
@@ -405,10 +568,12 @@ class E2eFaultInjector:
         injector_handle: ray.actor.ActorHandle,
         target_node: str,
         exception_flag_path: str = _DEFAULT_EXCEPTION_FLAG_PATH,
+        rollout_injectors: dict[str, ray.actor.ActorHandle] | None = None,
     ) -> None:
         self._injector = injector_handle
         self._target_node = target_node
         self._exception_flag_path = exception_flag_path
+        self._rollout_injectors = rollout_injectors or {}
 
     async def crash_training(self) -> None:
         pid = await wait_for_training_pid(
@@ -427,3 +592,14 @@ class E2eFaultInjector:
 
     async def inject_python_exception(self) -> None:
         ray.get(self._injector.write_exception_flag.remote(path=self._exception_flag_path))
+
+    async def crash_rollout_on_node(self, node_id: str) -> None:
+        """SIGKILL the sglang process on a specific rollout node."""
+        injector = self._rollout_injectors.get(node_id)
+        assert injector is not None, (
+            f"No fault injector deployed to rollout node {node_id}. "
+            f"Available: {list(self._rollout_injectors.keys())}"
+        )
+        pid = await wait_for_sglang_pid(injector, timeout=60.0, poll_interval=3.0)
+        ray.get(injector.kill_process.remote(pid=pid, sig=signal.SIGKILL))
+        logger.info("crash_rollout_on_node node=%s pid=%d", node_id, pid)

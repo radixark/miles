@@ -40,6 +40,10 @@ class FaultInjectionProtocol(Protocol):
         """Trigger a Python exception inside the training process."""
         ...
 
+    async def crash_rollout_on_node(self, node_id: str) -> None:
+        """SIGKILL the sglang process on a specific rollout node."""
+        ...
+
 
 class LocalRayFaultInjector:
     """Fault injector for local_ray tests.

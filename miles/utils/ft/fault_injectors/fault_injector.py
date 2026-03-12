@@ -45,6 +45,25 @@ class FaultInjectorActor:
                 continue
         return results
 
+    def find_sglang_processes(self) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for proc in psutil.process_iter(["pid", "cmdline", "name"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+                cmdline_str = " ".join(cmdline).lower()
+
+                if any(pattern in cmdline_str for pattern in _SGLANG_CMDLINE_PATTERNS):
+                    results.append(
+                        {
+                            "pid": proc.info["pid"],
+                            "name": proc.info.get("name", ""),
+                            "cmdline": cmdline,
+                        }
+                    )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return results
+
     def kill_process(self, pid: int, sig: int = signal.SIGKILL) -> None:
         logger.info("kill_process pid=%d sig=%d", pid, sig)
         os.kill(pid, sig)
@@ -172,6 +191,7 @@ def deploy_fault_injector(
 
 
 _TRAINING_CMDLINE_PATTERNS = ("megatron", "run_deepseek", "run_train", "torchrun")
+_SGLANG_CMDLINE_PATTERNS = ("sglang", "launch_server")
 
 _GPU_STRESS_SCRIPT = Path(__file__).parent / "gpu_stress.py"
 _TRIGGER_XID_SOURCE = Path(__file__).parent / "trigger_xid.cu"

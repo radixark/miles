@@ -19,7 +19,7 @@ MODEL_TYPE = "qwen2.5-0.5B"
 
 @dataclass
 class ScriptArgs(ExecuteTrainConfig):
-    num_nodes: int = 2  # 2 training nodes + 1 spare for eviction in 3-node cluster
+    num_nodes: int = 2
     tight_device_memory: bool = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
     few_gpu: bool = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
     full_fault_tolerance: bool = True
@@ -147,9 +147,15 @@ def execute(args: ScriptArgs) -> None:
     )
 
 
-def main() -> None:
+def main(
+    num_training_nodes: int = 2,
+    rollout_num_cells: int = 1,
+) -> None:
     assert U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"), "MILES_SCRIPT_EXTERNAL_RAY must be set"
-    args = ScriptArgs()
+    args = ScriptArgs(
+        num_nodes=num_training_nodes,
+        ft_launch_extra_args=f"--rollout-num-cells {rollout_num_cells}",
+    )
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
