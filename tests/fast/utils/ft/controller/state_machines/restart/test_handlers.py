@@ -321,16 +321,17 @@ class TestStoppingAndRestarting:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_on_main_job_new_run_callback_called(self) -> None:
+    async def test_on_main_job_new_run_not_called_for_subsystem_restart(self) -> None:
+        """Callback should only fire for main job restarts (via main/handlers.py),
+        not for subsystem restarts handled by the restart SM."""
         captured_run_ids: list[str] = []
         actuator = FakeActuator()
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator, on_main_job_new_run=captured_run_ids.append, restart_mode=RestartMode.MAIN_JOB)
+        ctx = _make_context(actuator=actuator, on_main_job_new_run=captured_run_ids.append, restart_mode=RestartMode.SUBSYSTEM)
 
         state = StoppingAndRestartingSt(bad_node_ids=[])
         await _step_last(stepper, state, ctx)
-        assert len(captured_run_ids) == 1
-        assert captured_run_ids[0] == actuator.start_run_id
+        assert len(captured_run_ids) == 0
 
 
 # ---------------------------------------------------------------------------
