@@ -75,12 +75,14 @@ class _FtControllerActorCls:
         node_id: str,
         agent: object,
         exporter_address: str = "",
+        node_metadata: dict[str, str] | None = None,
     ) -> None:
         proxy = RayNodeAgentProxy(agent)
         self._ctrl.register_node_agent(
             node_id=node_id,
             agent=proxy,
             exporter_address=exporter_address,
+            node_metadata=node_metadata,
         )
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
