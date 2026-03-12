@@ -30,7 +30,7 @@ class TestTickEmptyDetectorChain:
     async def test_tick_succeeds_with_no_detectors(self) -> None:
         harness = make_test_controller()
         await harness.controller._tick()
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     @pytest.mark.anyio
     async def test_tick_returns_none_decision(self) -> None:
@@ -97,7 +97,7 @@ class TestDetectorExceptionIsolation:
 
         await harness.controller._tick()
         await harness.controller._tick()
-        assert harness.controller._tick_count == 2
+        assert harness.controller._tick_loop.tick_count == 2
 
 
 class TestTickFailureTracker:
@@ -139,7 +139,7 @@ class TestAllDetectorsCrashSilentPass:
 
         assert d1.call_count == 1
         assert d2.call_count == 1
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
         error_messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
         assert any("detector_evaluate_failed" in m for m in error_messages)
 
@@ -172,14 +172,14 @@ class TestExecuteDecision:
             detectors=[AlwaysMarkBadDetector()],
         )
         await harness.controller._tick()
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     @pytest.mark.anyio
     async def test_enter_recovery_does_not_raise(self) -> None:
         detector = AlwaysEnterRecoveryDetector()
         harness = make_test_controller(detectors=[detector])
         await harness.controller._tick()
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     @pytest.mark.anyio
     async def test_notify_human_sends_notification(self) -> None:
@@ -193,7 +193,7 @@ class TestExecuteDecision:
         harness = make_test_controller(detectors=[detector])
         await harness.controller._tick()
 
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
         assert harness.notifier is not None
         assert len(harness.notifier.calls) == 1
         title, content, severity = harness.notifier.calls[0]
@@ -212,7 +212,7 @@ class TestExecuteDecision:
         )
         harness = make_test_controller(detectors=[detector], notifier=None)
         await harness.controller._tick()
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     @pytest.mark.anyio
     async def test_none_decision_does_not_notify(self) -> None:
@@ -258,7 +258,7 @@ class TestExecuteDecision:
         assert harness.notifier is not None
         harness.notifier.send = _raise_runtime_error
         await harness.controller._tick()
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     @pytest.mark.anyio
     async def test_notify_human_sends_on_every_tick(self) -> None:

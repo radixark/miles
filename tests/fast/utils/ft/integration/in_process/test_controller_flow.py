@@ -13,7 +13,7 @@ class TestEmptyDetectorChainMultipleTicks:
         for _ in range(3):
             await harness.controller._tick()
 
-        assert harness.controller._tick_count == 3
+        assert harness.controller._tick_loop.tick_count == 3
 
 
 class TestRegisterRankLogStepQuery:
@@ -138,4 +138,4 @@ class TestCustomDetectorInTick:
         await harness.controller._tick()
 
         assert detector.call_count == 1
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1

@@ -66,7 +66,7 @@ class TestRunLoopSurviveTickFailure:
         harness.main_job.get_status = _exploding_get_status  # type: ignore[assignment]
 
         async def _shutdown_after_ticks() -> None:
-            while harness.controller._tick_count < 4:
+            while harness.controller._tick_loop.tick_count < 4:
                 await asyncio.sleep(0.01)
             await harness.controller.shutdown()
 
@@ -74,7 +74,7 @@ class TestRunLoopSurviveTickFailure:
         await harness.controller.run()
         await task
 
-        assert harness.controller._tick_count >= 4
+        assert harness.controller._tick_loop.tick_count >= 4
         assert call_count >= 4
 
     @pytest.mark.anyio

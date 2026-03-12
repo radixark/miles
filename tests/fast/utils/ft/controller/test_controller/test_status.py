@@ -227,7 +227,7 @@ class TestShutdown:
         await run_controller_briefly(harness, delay=0.05)
 
         assert harness.controller._shutting_down
-        assert harness.controller._tick_count >= 1
+        assert harness.controller._tick_loop.tick_count >= 1
 
     @pytest.mark.asyncio
     async def test_run_starts_and_stops_scrape_loop(self) -> None:

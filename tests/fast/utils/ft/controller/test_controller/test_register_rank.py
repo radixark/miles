@@ -188,7 +188,7 @@ class TestRegisterRank:
         with caplog.at_level(logging.WARNING):
             await harness.controller._tick()
 
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
         assert "incomplete_rank_registration" in caplog.text
         assert "registered=3" in caplog.text
         assert "expected=4" in caplog.text

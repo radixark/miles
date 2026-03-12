@@ -18,7 +18,7 @@ class TestControllerWithRealDetectors:
 
         await harness.controller._tick()
 
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     async def test_tick_gpu_lost_triggers_mark_bad(self) -> None:
         chain = build_detector_chain()
@@ -33,7 +33,7 @@ class TestControllerWithRealDetectors:
         await harness.controller._tick()
 
         # Decision is executed (currently just logged), but tick completes
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     async def test_tick_training_crash_triggers_recovery(self) -> None:
         chain = build_detector_chain()
@@ -44,11 +44,11 @@ class TestControllerWithRealDetectors:
 
         await harness.controller._tick()
 
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
 
     async def test_detector_chain_no_detectors_passes(self) -> None:
         harness = make_test_controller(detectors=[])
 
         await harness.controller._tick()
 
-        assert harness.controller._tick_count == 1
+        assert harness.controller._tick_loop.tick_count == 1
