@@ -164,7 +164,8 @@ def check_peak_gpu_memory_after_load(args) -> None:
         return
 
     hf_ckpt = getattr(args, "hf_checkpoint", "") or ""
-    assert "Qwen3-4B" in hf_ckpt, f"Peak GPU memory CI check only supports Qwen3-4B, got {hf_ckpt}"
+    if "Qwen3-4B" not in hf_ckpt:
+        return
 
     # Threshold 20 GB is midpoint between ~16.9 GB (with) and ~22.4 GB (without) on 8xH200.
     peak_gpu_gb = torch.cuda.max_memory_allocated() / (1024**3)
