@@ -31,17 +31,13 @@ class TestSlidingWindowCounter:
         assert counter.count == 2
         assert not counter.threshold_reached
 
-    def test_at_threshold_not_reached(self) -> None:
-        """Previously threshold_reached used >=, meaning threshold=3 fired on
-        the 3rd event (allowing only 2 actions). Now uses >, so threshold=3
-        allows exactly 3 events before triggering.
-        """
+    def test_at_threshold_reached(self) -> None:
         t = _now()
         counter = SlidingWindowCounter(window_seconds=60, threshold=3)
         counter.record("a", _now=t)
         counter.record("a", _now=t + 1.0)
         counter.record("b", _now=t + 2.0)
-        assert not counter.threshold_reached
+        assert counter.threshold_reached
 
     def test_above_threshold_reached(self) -> None:
         t = _now()
@@ -57,7 +53,6 @@ class TestSlidingWindowCounter:
         counter = SlidingWindowCounter(window_seconds=60, threshold=2)
         counter.record("a", _now=t)
         counter.record("b", _now=t + 1.0)
-        counter.record("c", _now=t + 2.0)
         assert counter.should_notify
         assert not counter.should_notify
         assert not counter.should_notify
@@ -67,14 +62,12 @@ class TestSlidingWindowCounter:
         counter = SlidingWindowCounter(window_seconds=10, threshold=2)
         counter.record("a", _now=t)
         counter.record("a", _now=t + 1.0)
-        counter.record("a", _now=t + 2.0)
         assert counter.should_notify
 
         counter.record("a", _now=t + 20.0)
         assert not counter.should_notify
 
         counter.record("a", _now=t + 21.0)
-        counter.record("a", _now=t + 22.0)
         assert counter.should_notify
 
     def test_record_with_label(self) -> None:
@@ -103,7 +96,6 @@ class TestSlidingWindowCounter:
         counter = SlidingWindowCounter(window_seconds=10, threshold=2)
         counter.record("a", _now=t)
         counter.record("b", _now=t + 10.0)
-        counter.record("c", _now=t + 10.0)
         assert counter.threshold_reached
 
     def test_well_above_threshold_still_reached(self) -> None:
@@ -122,20 +114,14 @@ class TestSlidingWindowCounter:
 
 
 class TestSlidingWindowThrottle:
-    def test_not_throttled_at_max_count(self) -> None:
-        """With > semantics, max_count=3 allows exactly 3 events without throttle."""
+    def test_not_throttled_below_max_count(self) -> None:
         throttle = SlidingWindowThrottle(window_minutes=30.0, max_count=3)
-        throttle.record()
         throttle.record()
         throttle.record()
         assert not throttle.is_throttled()
 
-    def test_throttled_above_max_count(self) -> None:
-        """Previously >= caused throttle on the 3rd event, off by one.
-        Now > causes throttle only on the 4th event (count > max_count).
-        """
+    def test_throttled_at_max_count(self) -> None:
         throttle = SlidingWindowThrottle(window_minutes=30.0, max_count=3)
-        throttle.record()
         throttle.record()
         throttle.record()
         throttle.record()
@@ -148,7 +134,6 @@ class TestSlidingWindowThrottle:
     def test_throttle_is_not_one_shot(self) -> None:
         """Unlike should_notify, is_throttled returns True on every call."""
         throttle = SlidingWindowThrottle(window_minutes=30.0, max_count=2)
-        throttle.record()
         throttle.record()
         throttle.record()
         assert throttle.is_throttled()
