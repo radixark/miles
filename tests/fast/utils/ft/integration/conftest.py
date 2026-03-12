@@ -263,7 +263,13 @@ def _stop_multi_node_ray() -> None:
 
 @pytest.fixture(scope="session")
 def local_ray_nodes() -> Generator[list[RayNodeInfo], None, None]:
-    """Session-scoped multi-node Ray cluster for MilesTestbed tests."""
+    """Session-scoped multi-node Ray cluster for MilesTestbed tests.
+
+    IMPORTANT: This fixture is incompatible with the single-node `local_ray`
+    fixture. Tests using `local_ray_nodes` should NOT be run in the same
+    pytest session as tests using `local_ray`. Use separate invocations or
+    test selection (e.g. ``-k testbed`` vs ``-k "not testbed"``).
+    """
     nodes = _start_multi_node_ray(num_nodes=_MULTI_NODE_COUNT)
     try:
         yield nodes

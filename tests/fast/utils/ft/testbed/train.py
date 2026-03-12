@@ -12,7 +12,7 @@ import ray
 from miles.utils.ft.adapters.config import FtControllerConfig
 from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
 from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
-from miles.utils.ft.adapters.types import JobStatus, ft_controller_actor_name, ft_node_agent_actor_name
+from miles.utils.ft.adapters.types import ft_controller_actor_name, ft_node_agent_actor_name
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
@@ -26,7 +26,7 @@ from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.k8s_node_manager import 
 from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.notifiers.webhook_notifier import TestbedNotifier
 from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.ray.main_job import TestbedMainJob
 from tests.fast.utils.ft.testbed.utils.ft.agents.collectors.collector import TestbedCollector
-from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator, StubDiagnostic, make_fake_agents
+from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator, StubDiagnostic
 
 if TYPE_CHECKING:
     from tests.fast.utils.ft.integration.conftest import RayNodeInfo
@@ -97,51 +97,17 @@ class MilesTestbed:
         notifier = TestbedNotifier.create()
         cleanup_handles.append(notifier.state_actor)
 
-        # Step 3: Pre-deploy FtNodeAgentActor per node with TestbedCollector
+        # Step 3: Prepare collector state actors (before node agents)
         collector_states: dict[str, ray.actor.ActorHandle] = {}
-        all_logical_nodes = (
-            [n.node_id for n in config.training_nodes]
-            + [n.node_id for n in config.rollout_nodes]
-        )
         all_node_configs = list(config.training_nodes) + list(config.rollout_nodes)
         all_node_mapping = {**node_mapping.training, **node_mapping.rollout}
 
+        collectors_by_node: dict[str, TestbedCollector] = {}
         for node_config in all_node_configs:
-            node_id = node_config.node_id
-            ray_node_id = all_node_mapping[node_id]
-
-            collector, collector_state = TestbedCollector.create(node_id=node_id)
-            collector_states[node_id] = collector_state
+            collector, collector_state = TestbedCollector.create(node_id=node_config.node_id)
+            collector_states[node_config.node_id] = collector_state
+            collectors_by_node[node_config.node_id] = collector
             cleanup_handles.append(collector_state)
-
-            diagnostics = [
-                StubDiagnostic(
-                    passed=node_config.diagnostic_pass,
-                    diagnostic_type=dt,
-                )
-                for dt in ["gpu", "nccl_simple", "nccl_pairwise"]
-            ]
-
-            agent_name = ft_node_agent_actor_name(ft_id, node_id)
-            from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-            node_agent = FtNodeAgentActor.options(
-                name=agent_name,
-                scheduling_strategy=NodeAffinitySchedulingStrategy(
-                    node_id=ray_node_id,
-                    soft=False,
-                ),
-            ).remote(
-                builder=build_node_agent,
-                node_id=node_id,
-                ft_id=ft_id,
-                collect_interval_seconds=0.3,
-                collectors_override=[collector],
-                diagnostics_override=diagnostics,
-            )
-            cleanup_names.append(agent_name)
-
-            ray.get(node_agent.start.remote(), timeout=15)
-            logger.info("Node agent deployed: %s → ray_node %s", node_id, ray_node_id)
 
         # Step 4: Create TestbedRayTrainGroup + TestbedMainJob
         train_group = TestbedRayTrainGroup(
@@ -154,14 +120,6 @@ class MilesTestbed:
 
         # Step 5: Create FtControllerActor with real build_ft_controller
         detectors = config.detectors if config.detectors is not None else build_detector_chain()
-
-        diagnostic_node_results = {
-            nc.node_id: {
-                dt: nc.diagnostic_pass for dt in ["gpu", "nccl_simple", "nccl_pairwise"]
-            }
-            for nc in all_node_configs
-        }
-        fake_orchestrator = FakeDiagnosticOrchestrator()
 
         controller_kwargs: dict[str, object] = dict(
             builder=build_ft_controller,
@@ -176,7 +134,7 @@ class MilesTestbed:
             node_manager_override=node_manager,
             notifier_override=notifier,
             detectors_override=detectors,
-            diagnostic_orchestrator_override=fake_orchestrator,
+            diagnostic_orchestrator_override=FakeDiagnosticOrchestrator(),
             start_exporter=True,
         )
         if config.recovery_cooldown is not None:
@@ -196,9 +154,43 @@ class MilesTestbed:
 
         # Step 6: Fire-and-forget submit_and_run (starts main job + tick loop)
         controller.submit_and_run.remote()
+        await _poll_for_run_id(controller)
 
-        # Wait for run_id to be set
-        _poll_for_run_id(controller)
+        # Step 7: Deploy FtNodeAgentActor per node (AFTER controller exists,
+        #         because node agent start() registers with controller)
+        from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+        for node_config in all_node_configs:
+            node_id = node_config.node_id
+            ray_node_id = all_node_mapping[node_id]
+
+            diagnostics = [
+                StubDiagnostic(
+                    passed=node_config.diagnostic_pass,
+                    diagnostic_type=dt,
+                )
+                for dt in ["gpu", "nccl_simple", "nccl_pairwise"]
+            ]
+
+            agent_name = ft_node_agent_actor_name(ft_id, node_id)
+            node_agent = FtNodeAgentActor.options(
+                name=agent_name,
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node_id=ray_node_id,
+                    soft=False,
+                ),
+            ).remote(
+                builder=build_node_agent,
+                node_id=node_id,
+                ft_id=ft_id,
+                collect_interval_seconds=0.3,
+                collectors_override=[collectors_by_node[node_id]],
+                diagnostics_override=diagnostics,
+            )
+            cleanup_names.append(agent_name)
+
+            ray.get(node_agent.start.remote(), timeout=15)
+            logger.info("Node agent deployed: %s → ray_node %s", node_id, ray_node_id)
 
         # Step 7: If rollout configured, create TestbedRolloutManager
         rollout_manager: ray.actor.ActorHandle | None = None
@@ -438,7 +430,7 @@ def _rollout_num_cells_to_ids(num_cells: int) -> list[str]:
     return [str(i) for i in range(num_cells)]
 
 
-def _poll_for_run_id(
+async def _poll_for_run_id(
     controller: ray.actor.ActorHandle,
     timeout: float = 15.0,
 ) -> str:
@@ -447,5 +439,5 @@ def _poll_for_run_id(
         status = ray.get(controller.get_status.remote(), timeout=5)
         if status.active_run_id is not None:
             return status.active_run_id
-        time.sleep(0.3)
+        await asyncio.sleep(0.3)
     raise TimeoutError("active_run_id not set within timeout")

@@ -87,6 +87,8 @@ class TestbedRayTrainGroup:
                 logger.debug("kill_on_node: failed to kill worker on %s", node_id, exc_info=True)
 
     async def all_alive(self) -> bool:
+        if not self._workers:
+            return False
         for worker in self._workers:
             try:
                 ray.get(worker.ping.remote(), timeout=2.0)
