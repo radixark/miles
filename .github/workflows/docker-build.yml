@@ -133,7 +133,7 @@ jobs:
 
       - name: Build and push
         run: |
-          python docker/build.py \
+          python3 docker/build.py \
             --variant ${{ needs.set-build-config.outputs.variant || inputs.variant }} \
             --dockerfile ${{ needs.set-build-config.outputs.dockerfile || inputs.dockerfile }} \
             --push
