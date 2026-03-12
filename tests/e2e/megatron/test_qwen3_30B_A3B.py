@@ -10,6 +10,7 @@ ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 USE_DEEPEP = True
 USE_FP8_ROLLOUT = True
+USE_INT4_ROLLOUT = False
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
