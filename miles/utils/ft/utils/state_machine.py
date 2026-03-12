@@ -128,6 +128,11 @@ class StateMachine(Generic[StateT, ContextT]):
 
     _MAX_HISTORY = 128
 
+    # TODO: state is currently ephemeral (in-memory only). If the controller
+    # process crashes, all recovery progress is lost and detectors re-discover
+    # faults from scratch. This should be made persistent (e.g. checkpoint to
+    # disk/etcd) in the future to avoid redundant evictions and lost diagnostics.
+
     def __init__(self, *, initial_state: StateT, stepper: StateMachineStepper[StateT, ContextT]) -> None:
         self._state = initial_state
         self._stepper = stepper
