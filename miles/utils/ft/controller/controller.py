@@ -25,7 +25,7 @@ class FtController:
         state_machine: StateMachine[MainState, MainContext],
         subsystem_hub: SubsystemHub,
         metric_store: MetricStore,
-        registry: NodeAgentRegistry,
+        node_agent_registry: NodeAgentRegistry,
         tick_interval: float,
         tick_loop: TickLoop,
         notifier: NotifierProtocol | None,
@@ -36,7 +36,7 @@ class FtController:
         self._state_machine = state_machine
         self._subsystem_hub = subsystem_hub
         self._metric_store = metric_store
-        self._registry = registry
+        self._node_agent_registry = node_agent_registry
         self._tick_interval = tick_interval
         self._tick_loop = tick_loop
         self._notifier = notifier
@@ -55,7 +55,7 @@ class FtController:
 
     @property
     def node_metadata(self) -> dict[str, dict[str, str]]:
-        return self._registry.all_metadata
+        return self._node_agent_registry.all_metadata
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
         self._scrape_target_manager.add_scrape_target(
@@ -70,7 +70,7 @@ class FtController:
         exporter_address: str = "",
         node_metadata: dict[str, str] | None = None,
     ) -> None:
-        self._registry.register(node_id=node_id, agent=agent, metadata=node_metadata)
+        self._node_agent_registry.register(node_id=node_id, agent=agent, metadata=node_metadata)
         if exporter_address:
             self.add_scrape_target(target_id=node_id, address=exporter_address)
         logger.info(

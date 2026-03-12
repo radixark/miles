@@ -28,7 +28,7 @@ class TestRegisterNodeAgentScrapeTarget:
             exporter_address="http://node-0:9100",
         )
 
-        assert "node-0" in ctrl._registry._agents
+        assert "node-0" in ctrl._node_agent_registry._agents
         assert isinstance(ctrl._scrape_target_manager, MiniPrometheus)
         assert "node-0" in ctrl._scrape_target_manager._scrape_targets
 
@@ -47,7 +47,7 @@ class TestRegisterNodeAgentScrapeTarget:
 
         ctrl.register_node_agent(node_id="node-1", agent=_FakeAgent())
 
-        assert "node-1" in ctrl._registry._agents
+        assert "node-1" in ctrl._node_agent_registry._agents
         assert isinstance(ctrl._scrape_target_manager, MiniPrometheus)
         assert "node-1" not in ctrl._scrape_target_manager._scrape_targets
 
@@ -71,7 +71,7 @@ class TestRegisterNodeAgentScrapeTarget:
             exporter_address="http://node-2:9100",
         )
 
-        assert "node-2" in ctrl._registry._agents
+        assert "node-2" in ctrl._node_agent_registry._agents
 
 
 class TestRegisterNodeAgentMetadata:

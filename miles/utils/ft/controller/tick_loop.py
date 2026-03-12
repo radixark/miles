@@ -30,7 +30,7 @@ class TickLoop:
         *,
         state_machine: StateMachine[MainState, MainContext],
         training_rank_roster_box: Box[TrainingRankRoster | None],
-        registry: NodeAgentRegistry,
+        node_agent_registry: NodeAgentRegistry,
         main_job: MainJobProtocol,
         metric_store: MetricStore,
         notifier: NotifierProtocol | None,
@@ -50,7 +50,7 @@ class TickLoop:
         self._training_rank_roster_box = training_rank_roster_box
         self.tick_count: int = 0
 
-        self._registry = registry
+        self._node_agent_registry = node_agent_registry
         self._main_job = main_job
         self._metric_store = metric_store
         self._notifier = notifier
@@ -84,7 +84,7 @@ class TickLoop:
                 roster.warn_if_incomplete()
                 self._node_agent_coverage_checker.check(
                     subsystem_node_ids=set(roster.rank_placement.values()),
-                    registered_agent_node_ids=self._registry.registered_node_ids(),
+                    registered_agent_node_ids=self._node_agent_registry.registered_node_ids(),
                 )
             job_status = await self._main_job.get_status()
 

@@ -22,20 +22,20 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
     def __init__(
         self,
         *,
-        registry: NodeAgentRegistry | None = None,
+        node_agent_registry: NodeAgentRegistry | None = None,
         node_agents: dict[str, NodeAgentProtocol] | None = None,
         pipeline: list[ClusterExecutorProtocol] | None = None,
         default_timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         pipeline_timeout_seconds: int = 900,
     ) -> None:
-        if registry is not None:
-            self._registry = registry
+        if node_agent_registry is not None:
+            self._node_agent_registry = node_agent_registry
         elif node_agents is not None:
-            self._registry = NodeAgentRegistry()
+            self._node_agent_registry = NodeAgentRegistry()
             for node_id, agent in node_agents.items():
-                self._registry.register(node_id=node_id, agent=agent)
+                self._node_agent_registry.register(node_id=node_id, agent=agent)
         else:
-            self._registry = NodeAgentRegistry()
+            self._node_agent_registry = NodeAgentRegistry()
 
         self._pipeline = pipeline or []
         self._default_timeout_seconds = default_timeout_seconds
@@ -82,7 +82,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         for executor in all_executors:
             try:
                 bad_node_ids = await executor.execute(
-                    node_agents=self._registry.get_all(),
+                    node_agents=self._node_agent_registry.get_all(),
                     timeout_seconds=self._default_timeout_seconds,
                 )
             except Exception:
