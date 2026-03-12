@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
+import polars as pl
 import pytest
 
 from miles.utils.ft.controller.metrics.mini_prometheus.query import (
@@ -257,3 +258,27 @@ class TestRangeAggregate:
         )
 
         assert df.shape == EMPTY_INSTANT.shape
+
+
+# ===================================================================
+# EMPTY_RANGE / query_range timestamp dtype consistency (M-1)
+# ===================================================================
+
+
+class TestTimestampDtypeConsistency:
+    """M-1: EMPTY_RANGE used Float64 for timestamp while non-empty results
+    used Datetime. Both must use Datetime("us", "UTC") for consistency."""
+
+    def test_empty_range_has_datetime_dtype(self) -> None:
+        assert EMPTY_RANGE["timestamp"].dtype == pl.Datetime("us", "UTC")
+
+    def test_non_empty_query_range_has_datetime_dtype(self) -> None:
+        key = _key("m", node="n1")
+        series, lm, ni = _build_series(
+            [
+                (key, [(-5, 1.0), (-1, 2.0)]),
+            ]
+        )
+        df = query_range(series, lm, ni, metric_name="m", window=timedelta(minutes=1))
+        assert len(df) > 0
+        assert df["timestamp"].dtype == pl.Datetime("us", "UTC")

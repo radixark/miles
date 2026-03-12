@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import polars as pl
@@ -119,7 +120,7 @@ def _parse_matrix_item(
             continue
 
         record = _build_label_record(metric, sorted_label_keys)
-        record["timestamp"] = parsed_ts
+        record["timestamp"] = datetime.fromtimestamp(parsed_ts, tz=timezone.utc)
         record["value"] = parsed_value
         records.append(record)
     return records

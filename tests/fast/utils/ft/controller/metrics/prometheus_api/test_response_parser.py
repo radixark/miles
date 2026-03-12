@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import polars as pl
 import pytest
 
 from miles.utils.ft.controller.metrics.prometheus_api.errors import PrometheusQueryError
@@ -185,3 +188,39 @@ class TestParseRangeResponseEdgeCases:
         data = {"status": "success"}
         result = parse_range_response(data)
         assert len(result) == 0
+
+
+class TestParseRangeTimestampType:
+    """C-1: PrometheusClient used to return float timestamps, causing
+    AttributeError on (max - min).total_seconds(). Now timestamps are
+    converted to datetime in _parse_matrix_item."""
+
+    def test_range_response_returns_datetime_timestamps(self) -> None:
+        data = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"__name__": "m"},
+                        "values": [
+                            [1700000000.0, "1.0"],
+                            [1700000060.0, "2.0"],
+                        ],
+                    },
+                ],
+            },
+        }
+        result = parse_range_response(data)
+        assert result["timestamp"].dtype == pl.Datetime("us", "UTC")
+        ts_min = result["timestamp"].min()
+        ts_max = result["timestamp"].max()
+        assert isinstance(ts_min, datetime)
+        assert isinstance(ts_max, datetime)
+        time_span = (ts_max - ts_min).total_seconds()
+        assert time_span == pytest.approx(60.0)
+
+    def test_empty_range_response_has_datetime_dtype(self) -> None:
+        data = {"status": "success", "data": {"resultType": "matrix", "result": []}}
+        result = parse_range_response(data)
+        assert result["timestamp"].dtype == pl.Datetime("us", "UTC")

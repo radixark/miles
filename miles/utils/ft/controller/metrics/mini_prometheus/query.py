@@ -13,7 +13,7 @@ EMPTY_INSTANT = pl.DataFrame({"__name__": pl.Series([], dtype=pl.Utf8), "value":
 EMPTY_RANGE = pl.DataFrame(
     {
         "__name__": pl.Series([], dtype=pl.Utf8),
-        "timestamp": pl.Series([], dtype=pl.Float64),
+        "timestamp": pl.Series([], dtype=pl.Datetime("us", "UTC")),
         "value": pl.Series([], dtype=pl.Float64),
     }
 )
