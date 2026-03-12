@@ -58,7 +58,14 @@ def _profile_simple_loop(iterator, args, name):
 
 
 def _create_torch_profiler(args, name):
+    activity_map = {
+        "CPU": torch.profiler.ProfilerActivity.CPU,
+        "GPU": torch.profiler.ProfilerActivity.CUDA,
+    }
+    activities = [activity_map[a] for a in getattr(args, "profile_activities", ["CPU", "GPU"]) if a in activity_map]
+
     return torch.profiler.profile(
+        activities=activities,
         schedule=torch.profiler.schedule(
             # TODO the train_actor and train_log_probs ones may need to have different args to control step
             wait=max(args.profile_step_start - 1, 0),

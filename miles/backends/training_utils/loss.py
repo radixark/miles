@@ -626,6 +626,7 @@ def policy_loss_function(
             "total_lengths": total_lengths,
             "response_lengths": response_lengths,
             "parallel_state": parallel_state,
+            "max_seq_lens": max_seq_lens,
         }
 
         if args.custom_tis_function_path is not None:
@@ -657,13 +658,12 @@ def policy_loss_function(
     else:
         pg_loss_reducer = sum_of_sample_mean
 
+    entropy = log_probs_and_entropy["entropy"]
+    entropy = torch.cat(entropy, dim=0)
+
     pg_loss = pg_loss_reducer(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
     ppo_kl = sum_of_sample_mean(ppo_kl)
-
-    # entropy loss
-    entropy = log_probs_and_entropy["entropy"]
-    entropy = torch.cat(entropy, dim=0)
     entropy_loss = sum_of_sample_mean(entropy)
 
     loss = pg_loss - args.entropy_coef * entropy_loss
@@ -924,7 +924,7 @@ def loss_function(
 
     return (
         loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
+        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, dtype=torch.int, device=logits.device),
         {
             "keys": list(log.keys()),
             "values": torch.tensor(

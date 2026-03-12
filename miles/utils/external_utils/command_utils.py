@@ -41,6 +41,15 @@ def convert_checkpoint(
 
     multinode_args = ""
     if multinode:
+        # This variable can be provided via:
+        # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
+        print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
+        hostnames_raw = os.environ["SLURM_JOB_HOSTNAMES"].strip()
+        job_hostnames = hostnames_raw.split(",") if "," in hostnames_raw else hostnames_raw.split("\n")
+        master_addr = job_hostnames[0]
+        nnodes = len(job_hostnames)
+        node_rank = int(os.environ["SLURM_NODEID"])
+
         multinode_args = (
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
@@ -112,6 +121,9 @@ def execute_train(
         train_script = f"{repo_base_dir}/{train_script}"
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+
+    print("HACK: disable RAY_DEDUP_LOGS")
+    os.environ["RAY_DEDUP_LOGS"] = "0"
 
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)

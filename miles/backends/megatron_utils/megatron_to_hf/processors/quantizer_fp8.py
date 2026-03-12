@@ -1,10 +1,11 @@
 import re
 
 import torch
+from sglang.srt.utils import is_blackwell_supported
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
-from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
+from ...sglang import per_block_cast_to_fp8, quant_weight_ue8m0, transform_scale_ue8m0
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -72,9 +73,15 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.linear_q_up_proj.weight",
         "self_attention.linear_kv_down_proj.weight",
         "self_attention.linear_kv_up_proj.weight",
-        # indexer
+        # DSA indexer (GLM5 style)
         "self_attention.wq_b.weight",
         "self_attention.wk.weight",
+        # DeepSeek V4 attention
+        "self_attention.wq_a.weight",
+        "self_attention.wkv.weight",
+        "self_attention.wo_b.weight",
+        "self_attention.indexer.linear_wq_b.weight",
+        "self_attention.indexer.linear_wk.weight",
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
@@ -95,7 +102,10 @@ def _quantize_param(args, name, weight, weight_block_size):
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
+            if True:  # TODO: add a flag to choose quantize method
+                qweight, scale = per_block_cast_to_fp8(weight)
+            else:
+                qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
         # per tensor quant

@@ -27,6 +27,7 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
+from ...utils.transformers_patch import with_transformers_patch
 from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
@@ -101,9 +102,11 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
+        print_memory("before initialize_model_and_optimizer")
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
+        print_memory("after initialize_model_and_optimizer")
 
         self.parallel_state = create_megatron_parallel_state(model=self.model)
 
@@ -259,7 +262,7 @@ class MegatronTrainRayActor(TrainRayActor):
             else:
                 replay_data = [slice_with_cp(r, pad_func, self.parallel_state, qkv_format) for r in replay_data]
                 replay_data = torch.cat(replay_data, dim=0)
-                pad_size = self.parallel_state.tp_size * self.args.data_pad_size_multiplier
+                pad_size = self.parallel_state.dp_size * self.args.data_pad_size_multiplier
                 pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
                 if pad != 0:
                     replay_data = pad_func(replay_data, pad)
@@ -489,6 +492,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             reload_process_groups()
+
+        if isinstance(num_new_engines, tuple):
+            num_new_engines = num_new_engines[0]
 
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)

@@ -386,6 +386,8 @@ def train_one_step(
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+        batch["debug_rollout_id"] = rollout_id
+        batch["debug_step_id"] = step_id
 
         from miles.utils.replay_base import all_replay_managers
 
@@ -592,6 +594,7 @@ def train(
             num_microbatches[step_id],
             parallel_state,
         )
+        logger.info(f"hi [rank={torch.distributed.get_rank()}] train_one_step {loss_dict=}")
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent

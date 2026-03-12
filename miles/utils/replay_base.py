@@ -200,5 +200,15 @@ class RoutingReplayManager(BaseReplayManager):
     replay_check_threshold = 1e-2
 
 
+class IndexerReplayManager(BaseReplayManager):
+    name = "indexer"
+    filename = "indexer_replay.pt"
+    data_key = "rollout_indexer_topk"
+    if_sp_region = False
+    squeeze_batch_for_load_from_file = True  # indexer has (batch, seq, topk) format, squeeze batch dim
+    thresh_check_replay_result = 0.7
+
+
 routing_replay_manager = RoutingReplayManager()
-all_replay_managers = [routing_replay_manager]
+indexer_replay_manager = IndexerReplayManager()
+all_replay_managers = [routing_replay_manager, indexer_replay_manager]

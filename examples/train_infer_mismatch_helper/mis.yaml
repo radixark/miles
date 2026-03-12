@@ -7,7 +7,7 @@ use_rs: true
 # sequence: product over tokens
 # geometric: geometric mean
 tis_level: "token"
-rs_level: "token"
+rs_level: "geometric"
 
 # Handling mode for IS weights: 
 # truncate: cap to upper bound, TIS
@@ -23,12 +23,12 @@ tis_lower_bound: 0.5
 
 # For truncate or clip mode, the upper bound of the IS weights
 # For Geometry level, the upper bound should be 1.0001
-tis_upper_bound: 2.0
+tis_upper_bound: 1.5
 
 # Lower and upper bound for rejection sampling.
 # If not set, it will be same as tis_lower_bound and tis_upper_bound.
-rs_lower_bound: null
-rs_upper_bound: null
+rs_lower_bound: 0.99
+rs_upper_bound: 1.001
 
 # Per-token veto threshold. If any token ratio < this, zero the entire sequence weight, the sequences won't have gradient
 # Note: float number must be written with dot e.g. 1.0e-4, not 1e-4

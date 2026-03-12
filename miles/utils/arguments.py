@@ -14,6 +14,7 @@ from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import load_function
+from miles.utils.transformers_patch import with_transformers_patch
 
 logger = logging.getLogger(__name__)
 
@@ -957,6 +958,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
             )
             parser.add_argument(
+                "--use-indexer-replay",
+                action="store_true",
+                default=False,
+                help="The indexer replay technique for layers with indexer.",
+            )
+            parser.add_argument(
+                "--use-rollout-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk from rollout during training for layers with indexer.",
+            )
+            parser.add_argument(
                 "--use-opsm",
                 action="store_true",
                 default=False,
@@ -1199,6 +1212,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-debug-loss-data",
+                type=str,
+                default=None,
+                help=(
+                    "Save per-token loss data to this path for debugging. "
+                    "The file will be saved to `save_debug_loss_data.format(rollout_id, step_id, rank)`."
+                ),
+            )
+            parser.add_argument(
                 "--dump-details",
                 type=str,
                 default=None,
@@ -1221,6 +1243,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["train_overall", "train_actor", "train_log_probs"],
                 default=["train_overall"],
                 nargs="+",
+            )
+            parser.add_argument(
+                "--profile-activities",
+                type=str,
+                choices=["CPU", "GPU"],
+                default=["CPU", "GPU"],
+                nargs="+",
+                help="Activities to profile. Default: CPU GPU.",
             )
             parser.add_argument(
                 "--memory-recorder",
@@ -1534,7 +1564,8 @@ def parse_args(add_custom_arguments=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         if args.hf_checkpoint:
-            hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            with with_transformers_patch():
+                hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
             hf_validate_args(args, hf_config)
 
         args.rank = 0
@@ -1736,6 +1767,7 @@ def miles_validate_args(args):
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
+        args.save_debug_loss_data = f"{args.dump_details}/loss_data/{{rollout_id}}_{{step_id}}_{{rank}}.pt"
 
     if args.load_debug_rollout_data is not None:
         logger.info(
@@ -1844,6 +1876,9 @@ def miles_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
+    if args.use_rollout_indexer_replay:
+        args.use_indexer_replay = True
+
     if args.custom_config_path:
         with open(args.custom_config_path) as f:
             data = yaml.safe_load(f) or {}
@@ -1872,6 +1907,16 @@ def miles_validate_args(args):
         args.prefill_num_servers is not None and args.rollout_external
     ), "prefill_num_servers cannot be set when rollout_external is set."
 
+    if args.qkv_format == "bshd":
+        assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
+        assert (
+            args.use_dynamic_batch_size is False
+        ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+
+    assert args.qkv_format in [
+        "thd",
+        "bshd",
+    ], f"qkv_format {args.qkv_format} is not supported. (only 'thd' and 'bshd' are supported)"
     if args.qkv_format == "bshd":
         assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
         assert (

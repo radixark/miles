@@ -8,6 +8,7 @@ import torch
 import triton
 import triton.language as tl
 from safetensors.torch import load_file, save_file
+from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
 from tqdm import tqdm
 
 
@@ -49,7 +50,11 @@ def main(fp8_path, bf16_path):
     model_index_file = os.path.join(fp8_path, "model.safetensors.index.json")
     with open(model_index_file) as f:
         model_index = json.load(f)
-    weight_map = model_index["weight_map"]
+    weight_map_raw = model_index["weight_map"]
+    weight_map_renamed = {
+        DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(tensor_name): file_name
+        for tensor_name, file_name in weight_map_raw.items()
+    }
 
     # Cache for loaded safetensor files
     loaded_files = {}
@@ -57,11 +62,18 @@ def main(fp8_path, bf16_path):
 
     # Helper function to get tensor from the correct file
     def get_tensor(tensor_name):
-        file_name = weight_map[tensor_name]
+        file_name = weight_map_renamed[tensor_name]
         if file_name not in loaded_files:
             file_path = os.path.join(fp8_path, file_name)
             loaded_files[file_name] = load_file(file_path, device="cuda")
-        return loaded_files[file_name][tensor_name]
+
+        loaded_file_dict_raw = loaded_files[file_name]
+        loaded_file_dict_renamed = {
+            DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(tensor_name): tensor
+            for tensor_name, tensor in loaded_file_dict_raw.items()
+        }
+
+        return loaded_file_dict_renamed[tensor_name]
 
     safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
     safetensor_files.sort()
@@ -72,7 +84,9 @@ def main(fp8_path, bf16_path):
         loaded_files[file_name] = current_state_dict
 
         new_state_dict = {}
-        for weight_name, weight in current_state_dict.items():
+        for weight_name_raw, weight in current_state_dict.items():
+            weight_name = DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(weight_name_raw)
+
             if weight_name.endswith("_scale_inv"):
                 continue
             elif weight.element_size() == 1:  # FP8 weight
@@ -88,6 +102,17 @@ def main(fp8_path, bf16_path):
             else:
                 new_state_dict[weight_name] = weight
 
+        for weight_name, weight in new_state_dict.items():
+            if weight_name.endswith(".compressor.ape"):
+                if weight.shape[0] == 4:
+                    ape = torch.chunk(weight, 2, dim=-1)
+                    ape = torch.cat([ape[1], ape[0]], dim=-1)
+                    new_state_dict[weight_name] = ape
+                    print(f"Converted APE (C4): {weight_name}")
+                else:
+                    assert weight.shape[0] == 128
+                    print(f"Skipped APE conversion (C128): {weight_name}")
+
         new_safetensor_file = os.path.join(bf16_path, file_name)
         save_file(new_state_dict, new_safetensor_file)
 
@@ -101,10 +126,10 @@ def main(fp8_path, bf16_path):
     new_model_index_file = os.path.join(bf16_path, "model.safetensors.index.json")
     for weight_name in fp8_weight_names:
         scale_inv_name = f"{weight_name}_scale_inv"
-        if scale_inv_name in weight_map:
-            weight_map.pop(scale_inv_name)
+        if scale_inv_name in weight_map_renamed:
+            weight_map_renamed.pop(scale_inv_name)
     with open(new_model_index_file, "w") as f:
-        json.dump({"metadata": {}, "weight_map": weight_map}, f, indent=2)
+        json.dump({"metadata": {}, "weight_map": weight_map_renamed}, f, indent=2)
 
 
 if __name__ == "__main__":
