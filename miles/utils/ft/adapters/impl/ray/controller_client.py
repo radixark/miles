@@ -26,7 +26,7 @@ class RayControllerClient(ControllerClientProtocol):
     * ``log_step`` — fire-and-forget (``.remote()`` only)
     """
 
-    def __init__(self, ft_id: str = "") -> None:
+    def __init__(self, ft_id: str) -> None:
         self._ft_id = ft_id
         self._handle: Any | None = None
 
