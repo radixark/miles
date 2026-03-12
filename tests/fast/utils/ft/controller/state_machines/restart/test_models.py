@@ -52,6 +52,25 @@ class TestRestartStateConstruction:
         assert isinstance(state, RestartState)
 
 
+class TestStoppingAndRestartingValidator:
+    def test_submitted_true_without_submit_time_raises(self) -> None:
+        """Previously submitted=True with submit_time=None was silently accepted,
+        causing the timeout check in _poll() to be skipped and the handler
+        to hang indefinitely."""
+        with pytest.raises(ValidationError, match="submit_time must be set"):
+            StoppingAndRestartingSt(submitted=True, submit_time=None)
+
+    def test_submitted_false_without_submit_time_ok(self) -> None:
+        state = StoppingAndRestartingSt(submitted=False, submit_time=None)
+        assert state.submitted is False
+
+    def test_submitted_true_with_submit_time_ok(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        state = StoppingAndRestartingSt(submitted=True, submit_time=now)
+        assert state.submitted is True
+        assert state.submit_time == now
+
+
 class TestRestartStateFrozen:
     def test_evicting_frozen(self) -> None:
         state = EvictingSt(bad_node_ids=["node-0"])

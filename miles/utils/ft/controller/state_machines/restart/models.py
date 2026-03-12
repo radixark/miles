@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal, Union
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
 from miles.utils.ft.controller.types import MetricStore
@@ -53,6 +53,12 @@ class EvictingSt(RestartState):
 class StoppingAndRestartingSt(RestartState):
     submitted: bool = False
     submit_time: datetime | None = None
+
+    @model_validator(mode="after")
+    def _submit_time_required_when_submitted(self) -> StoppingAndRestartingSt:
+        if self.submitted and self.submit_time is None:
+            raise ValueError("submit_time must be set when submitted=True")
+        return self
 
 
 class MonitoringProgressSt(RestartState):
