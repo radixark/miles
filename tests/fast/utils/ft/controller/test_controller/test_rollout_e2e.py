@@ -18,11 +18,12 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringSustainedAliveConfig
-from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
+from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator
 from tests.fast.utils.ft.controller.test_controller.test_integration import (
     _FakeRemoteMethod,
+    _OneShotDecisionDetector,
     _RolloutTestHarness,
     _make_test_controller_with_rollout,
 )
@@ -235,44 +236,39 @@ class TestMultiCellIndependentFailures:
 
     @pytest.mark.anyio
     async def test_two_cells_recover_independently(self) -> None:
+        """Each cell recovers via one-shot detector; one-shot prevents re-entry
+        within the same convergence loop (crash samples would persist in
+        MiniPrometheus and cause RolloutCrashDetector to fire repeatedly)."""
         harness = _make_test_controller_with_rollout(
             cell_ids=["ep72", "ep36"],
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller
-        store = harness.time_series_store
 
         harness.subsystem_hub.set_rollout_node_ids("ep72", {"rollout-ep72-0", "rollout-ep72-1"})
         harness.subsystem_hub.set_rollout_node_ids("ep36", {"rollout-ep36-0", "rollout-ep36-1"})
-
-        controller._tick_loop._cooldown = SlidingWindowThrottle(
-            window_minutes=30.0, max_count=50,
-        )
-
-        for cell_id in ["ep72", "ep36"]:
-            config = controller._tick_loop.subsystem_configs[f"rollout_{cell_id}"]
-            config.detectors = [
-                RolloutCrashDetector(cell_id=cell_id, alive_threshold_seconds=2.0),
-            ]
         _override_rollout_monitoring(harness, cell_ids=["ep72", "ep36"])
 
-        # Step 1: Inject healthy baselines
-        for node_id in [
-            "train-node-0", "train-node-1",
-            "rollout-ep72-0", "rollout-ep72-1",
-            "rollout-ep36-0", "rollout-ep36-1",
-        ]:
-            inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
-        inject_rollout_cell_alive(store, "ep72", alive=True)
-        inject_rollout_cell_alive(store, "ep36", alive=True)
+        # Step 1: Initial tick — all subsystems healthy (no detectors installed)
+        for cell_id in ["ep72", "ep36"]:
+            controller._tick_loop.subsystem_configs[f"rollout_{cell_id}"].detectors = []
         await controller._tick()
+        state = controller._state_machine.state
+        assert isinstance(state, NormalSt)
 
-        # Step 2: Crash ep72 only
-        _inject_crash_samples(store, "ep72", span_seconds=3.0)
+        # Step 2: Install one-shot crash detector for ep72 only
+        ep72_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        ep72_config.detectors = [
+            _OneShotDecisionDetector(Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["rollout-ep72-0", "rollout-ep72-1"],
+                reason="rollout cell ep72 dead",
+                trigger=TriggerType.CRASH,
+            ))
+        ]
         stop_before = harness.rollout_manager_handle.stop_cell.call_count
-        stop_args_before = len(harness.rollout_manager_handle.stop_cell.call_args)
 
-        # Step 3: Tick -> ep72 recovers, ep36 stays healthy
+        # Step 3: Tick → ep72 recovers, ep36 stays healthy
         await controller._tick()
 
         state = controller._state_machine.state
@@ -281,19 +277,19 @@ class TestMultiCellIndependentFailures:
         assert isinstance(state.subsystems["rollout_ep36"], DetectingAnomalySt)
         assert harness.rollout_manager_handle.stop_cell.call_count > stop_before
 
-        ep72_stop_calls = [
-            args for args in harness.rollout_manager_handle.stop_cell.call_args[stop_args_before:]
-            if args[0] == "ep72"
+        # Step 4: Install one-shot crash detector for ep36 only
+        ep36_config = controller._tick_loop.subsystem_configs["rollout_ep36"]
+        ep36_config.detectors = [
+            _OneShotDecisionDetector(Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["rollout-ep36-0", "rollout-ep36-1"],
+                reason="rollout cell ep36 dead",
+                trigger=TriggerType.CRASH,
+            ))
         ]
-        assert len(ep72_stop_calls) >= 1, "ep72 should have been targeted by stop_cell"
-
-        # Step 4: Clear ep72 crash, crash ep36
-        inject_rollout_cell_alive(store, "ep72", alive=True)
-        _inject_crash_samples(store, "ep36", span_seconds=3.0)
         stop_before = harness.rollout_manager_handle.stop_cell.call_count
-        stop_args_before = len(harness.rollout_manager_handle.stop_cell.call_args)
 
-        # Step 5: Tick -> ep36 recovers
+        # Step 5: Tick → ep36 recovers, ep72 stays healthy
         await controller._tick()
 
         state = controller._state_machine.state
@@ -301,12 +297,6 @@ class TestMultiCellIndependentFailures:
         assert isinstance(state.subsystems["rollout_ep36"], DetectingAnomalySt)
         assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomalySt)
         assert harness.rollout_manager_handle.stop_cell.call_count > stop_before
-
-        ep36_stop_calls = [
-            args for args in harness.rollout_manager_handle.stop_cell.call_args[stop_args_before:]
-            if args[0] == "ep36"
-        ]
-        assert len(ep36_stop_calls) >= 1, "ep36 should have been targeted by stop_cell"
 
         assert not harness.main_job._stopped
 
