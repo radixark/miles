@@ -109,3 +109,45 @@ async def wait_for_recovery_complete(
         timeout=timeout,
         poll_interval=poll_interval,
     )
+
+
+async def wait_for_subsystem_state(
+    handle: ray.actor.ActorHandle,
+    subsystem_name: str,
+    target_state: str,
+    timeout: float = 120.0,
+    poll_interval: float = 0.5,
+) -> ControllerStatus:
+    """Poll until a specific subsystem reaches the target state (class name)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = get_status(handle)
+        if status.subsystem_states.get(subsystem_name) == target_state:
+            return status
+        await asyncio.sleep(poll_interval)
+    last_state = get_status(handle).subsystem_states.get(subsystem_name, "(missing)")
+    raise TimeoutError(
+        f"Subsystem {subsystem_name} did not reach {target_state} within {timeout}s "
+        f"(last={last_state})"
+    )
+
+
+async def wait_for_all_subsystems_detecting(
+    handle: ray.actor.ActorHandle,
+    timeout: float = 120.0,
+    poll_interval: float = 0.5,
+) -> ControllerStatus:
+    """Poll until all subsystems are in DetectingAnomalySt."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = get_status(handle)
+        if status.subsystem_states and all(
+            s == "DetectingAnomalySt" for s in status.subsystem_states.values()
+        ):
+            return status
+        await asyncio.sleep(poll_interval)
+    last_states = get_status(handle).subsystem_states
+    raise TimeoutError(
+        f"Not all subsystems reached DetectingAnomalySt within {timeout}s "
+        f"(states={last_states})"
+    )
