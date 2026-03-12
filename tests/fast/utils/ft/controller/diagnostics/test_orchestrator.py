@@ -165,6 +165,29 @@ class TestDiagnosticOrchestratorMultiStep:
         assert decision.bad_node_ids == []
 
 
+class TestDiagnosticOrchestratorExecutorCrash:
+    @pytest.mark.anyio
+    async def test_crashed_executor_reflected_in_reason(self) -> None:
+        """H-6: when an executor raises, the reason must mention the failure
+        instead of claiming 'all diagnostics passed'."""
+
+        class _CrashingExecutor:
+            async def execute(self, node_agents: dict, timeout_seconds: int) -> list[str]:
+                raise RuntimeError("executor boom")
+
+        node_agents = make_fake_agents({"node-0": {"gpu": True}})
+        orchestrator = DiagnosticOrchestrator(
+            node_agents=node_agents,
+            pipeline=[_CrashingExecutor(), GpuClusterExecutor()],
+        )
+        decision = await orchestrator.run_diagnostic_pipeline()
+
+        assert decision.bad_node_ids == []
+        assert "failed" in decision.reason
+        assert "_CrashingExecutor" in decision.reason
+        assert "all diagnostics passed" not in decision.reason
+
+
 class TestDiagnosticOrchestratorErrorHandling:
     @pytest.mark.anyio
     async def test_agent_exception_treated_as_failure(self) -> None:

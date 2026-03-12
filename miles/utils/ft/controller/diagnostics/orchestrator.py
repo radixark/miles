@@ -79,6 +79,8 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                 reason="no diagnostics configured (empty pipeline)",
             )
 
+        failed_executors: list[str] = []
+
         for executor in all_executors:
             try:
                 bad_node_ids = await executor.execute(
@@ -91,6 +93,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                     type(executor).__name__,
                     exc_info=True,
                 )
+                failed_executors.append(type(executor).__name__)
                 continue
 
             if bad_node_ids:
@@ -103,8 +106,13 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                     reason=f"diagnostic failed on nodes: {bad_node_ids}",
                 )
 
-        logger.info("diagnostic_pipeline_all_passed")
+        if failed_executors:
+            reason = f"no bad nodes found, but {len(failed_executors)} executor(s) failed: {failed_executors}"
+        else:
+            reason = "all diagnostics passed — no bad nodes found"
+
+        logger.info("diagnostic_pipeline_done reason=%s", reason)
         return DiagnosticPipelineResult(
             bad_node_ids=[],
-            reason="all diagnostics passed — no bad nodes found",
+            reason=reason,
         )
