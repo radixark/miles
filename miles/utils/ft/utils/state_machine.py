@@ -148,7 +148,7 @@ class StateMachine(Generic[StateT, ContextT]):
 
     async def step(self, context: ContextT) -> None:
         """Run stepper until no more transitions this tick."""
-        while True:
+        for _ in range(_MAX_CONVERGENCE_ITERATIONS):
             had_transition = False
             async for new_state in self._stepper(self._state, context):
                 if new_state != self._state:
@@ -157,4 +157,10 @@ class StateMachine(Generic[StateT, ContextT]):
                 self._state = new_state
                 had_transition = True
             if not had_transition:
-                break
+                return
+
+        logger.warning(
+            "StateMachine.step hit max iterations (%d), last state: %r",
+            _MAX_CONVERGENCE_ITERATIONS,
+            self._state,
+        )

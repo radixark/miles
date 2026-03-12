@@ -237,6 +237,26 @@ class TestStateMachine:
         assert len(machine.state_history) == 0
 
     @pytest.mark.asyncio
+    async def test_step_oscillating_terminates_at_max_iterations(self) -> None:
+        """Previously StateMachine.step() used while True with no bound.
+        Two oscillating handlers (A→B→A→…) would livelock the controller.
+        Now step() is capped at _MAX_CONVERGENCE_ITERATIONS (same as run_stepper_to_convergence).
+        """
+        stepper = _make_oscillating_stepper()
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        await machine.step(None)
+        assert len(machine.state_history) <= 50
+
+    @pytest.mark.asyncio
+    async def test_step_oscillating_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Max-iteration guard logs a warning on cap hit."""
+        stepper = _make_oscillating_stepper()
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
+            await machine.step(None)
+        assert "StateMachine.step hit max iterations" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_state_history_records_all_transitions(self) -> None:
         machine = StateMachine(initial_state=StateA(), stepper=_make_stepper())
         await machine.step(None)
