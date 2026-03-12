@@ -39,9 +39,10 @@ class K8sNodeManager(NodeManagerProtocol):
 
     def __init__(
         self,
+        *,
+        namespace: str,
         api_client: ApiClient | None = None,
         label_prefix: str = "",
-        namespace: str = "",
     ) -> None:
         self._api_client: ApiClient | None = api_client
         self._core_v1: CoreV1Api | None = None
@@ -55,11 +56,10 @@ class K8sNodeManager(NodeManagerProtocol):
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
         await self._ensure_ray_cluster_name()
 
-        if not self._affinity_validated:
-            async with self._init_lock:
-                if not self._affinity_validated:
-                    await self.assert_worker_node_affinity()
-                    self._affinity_validated = True
+        async with self._init_lock:
+            if not self._affinity_validated:
+                await self.assert_worker_node_affinity()
+                self._affinity_validated = True
 
         k8s_name = node_id
         if node_metadata and "k8s_node_name" in node_metadata:
@@ -147,9 +147,6 @@ class K8sNodeManager(NodeManagerProtocol):
         raise RuntimeError(f"worker pod missing nodeAffinity NotIn rule for {self._label_key}")
 
     async def _ensure_ray_cluster_name(self) -> str:
-        if self._ray_cluster_name:
-            return self._ray_cluster_name
-
         async with self._init_lock:
             if self._ray_cluster_name:
                 return self._ray_cluster_name
@@ -227,20 +224,16 @@ class K8sNodeManager(NodeManagerProtocol):
         if self._core_v1 is not None:
             return self._core_v1
 
-        async with self._init_lock:
-            if self._core_v1 is not None:
-                return self._core_v1
+        if self._api_client is None:
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                await k8s_config.load_kube_config()
 
-            if self._api_client is None:
-                try:
-                    k8s_config.load_incluster_config()
-                except k8s_config.ConfigException:
-                    await k8s_config.load_kube_config()
+            self._api_client = ApiClient()
 
-                self._api_client = ApiClient()
-
-            self._core_v1 = CoreV1Api(self._api_client)
-            return self._core_v1
+        self._core_v1 = CoreV1Api(self._api_client)
+        return self._core_v1
 
     async def _patch_node_labels(
         self,

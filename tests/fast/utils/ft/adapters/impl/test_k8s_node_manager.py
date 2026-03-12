@@ -360,10 +360,10 @@ class TestAutoDetectRayClusterName:
 
 
 class TestInitLockPreventsDuplicateWork:
-    """_ensure_ray_cluster_name, _ensure_client, and the affinity check had
-    check-then-act races: two concurrent mark_node_bad calls could both see
-    empty state, both execute the K8s API query, and the first ApiClient would
-    leak. Fix: asyncio.Lock with double-checked locking in all three paths."""
+    """_ensure_ray_cluster_name and the affinity check had check-then-act races:
+    two concurrent mark_node_bad calls could both see empty state, both execute
+    the K8s API query, and the first ApiClient would leak.
+    Fix: asyncio.Lock in _ensure_ray_cluster_name and mark_node_bad."""
 
     @pytest.mark.anyio
     async def test_concurrent_ensure_ray_cluster_name_calls_api_once(self) -> None:
@@ -388,31 +388,6 @@ class TestInitLockPreventsDuplicateWork:
 
         assert results == ["deduped-cluster", "deduped-cluster"]
         assert mock_core_v1.read_namespaced_pod.await_count == 1
-
-    @pytest.mark.anyio
-    async def test_concurrent_ensure_client_creates_one_client(self) -> None:
-        """Two concurrent _ensure_client calls should create only one ApiClient."""
-        mock_api_client = MagicMock()
-        manager = K8sNodeManager(api_client=mock_api_client, namespace="ns")
-
-        async def _slow_load_kube_config() -> None:
-            await asyncio.sleep(0.01)
-
-        with (
-            patch("miles.utils.ft.adapters.impl.k8s_node_manager.k8s_config.load_incluster_config",
-                  side_effect=Exception("not in cluster")),
-            patch("miles.utils.ft.adapters.impl.k8s_node_manager.k8s_config.load_kube_config",
-                  side_effect=_slow_load_kube_config),
-            patch("miles.utils.ft.adapters.impl.k8s_node_manager.ApiClient", return_value=mock_api_client),
-        ):
-            manager._api_client = None
-
-            results = await asyncio.gather(
-                manager._ensure_client(),
-                manager._ensure_client(),
-            )
-
-        assert results[0] is results[1]
 
     @pytest.mark.anyio
     async def test_concurrent_mark_node_bad_validates_affinity_once(self) -> None:
