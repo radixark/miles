@@ -33,8 +33,6 @@ class ControllerExporter:
         self._port = port
         self._registry = registry or CollectorRegistry()
         self._httpd: HTTPServer | None = None
-        self._known_subsystems: set[str] = set()
-
         self._mode = Gauge(
             metric_names.CONTROLLER_MODE,
             "Controller mode (0=monitoring, 1=recovery)",
@@ -163,11 +161,6 @@ class ControllerExporter:
     ) -> None:
         self.update_main_job_status(job_status)
         self.update_tick_count()
-
-        current_names = set(subsystem_modes.keys())
-        for gone in self._known_subsystems - current_names:
-            self.update_subsystem_state(subsystem=gone, is_recovery=False, recovery_phase_int=0)
-        self._known_subsystems = current_names
 
         for name, (is_recovery, phase_int) in subsystem_modes.items():
             self.update_subsystem_state(

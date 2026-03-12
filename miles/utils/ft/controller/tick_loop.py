@@ -60,7 +60,7 @@ class TickLoop:
         self._diagnostic_orchestrator = diagnostic_orchestrator
         self._recovery_timeout_seconds = recovery_timeout_seconds
         self.subsystem_configs = subsystem_configs
-        self._on_main_job_new_run = self._wrap_on_main_job_new_run(on_main_job_new_run)
+        self._external_on_main_job_new_run = on_main_job_new_run
         self._rank_pids_provider = rank_pids_provider
         self._on_recovery_duration = on_recovery_duration
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
@@ -104,18 +104,10 @@ class TickLoop:
             tick_duration = time.monotonic() - t0
             self._update_exporter_metrics(job_status, tick_duration=tick_duration)
 
-    def _wrap_on_main_job_new_run(
-        self,
-        original: Callable[[str], None] | None,
-    ) -> Callable[[str], None] | None:
-        if original is None:
-            return None
-
-        def _wrapped(run_id: str) -> None:
-            self._run_start_tick = self.tick_count
-            original(run_id)
-
-        return _wrapped
+    def _handle_main_job_new_run(self, run_id: str) -> None:
+        self._run_start_tick = self.tick_count
+        if self._external_on_main_job_new_run is not None:
+            self._external_on_main_job_new_run(run_id)
 
     # ------------------------------------------------------------------
     # Context factory
@@ -136,7 +128,7 @@ class TickLoop:
             detector_crash_tracker=self._detector_crash_tracker,
             recovery_timeout_seconds=self._recovery_timeout_seconds,
             max_simultaneous_bad_nodes=self._max_simultaneous_bad_nodes,
-            on_main_job_new_run=self._on_main_job_new_run,
+            on_main_job_new_run=self._handle_main_job_new_run,
             rank_pids_provider=self._rank_pids_provider,
             controller_exporter=self._controller_exporter,
             on_recovery_duration=self._on_recovery_duration,
@@ -166,7 +158,7 @@ class TickLoop:
     def _collect_subsystem_modes(self) -> dict[str, tuple[bool, int]]:
         controller_state = self.state_machine.state
         if not isinstance(controller_state, NormalSt):
-            return {}
+            return {name: (False, 0) for name in self.subsystem_configs}
         result: dict[str, tuple[bool, int]] = {}
         for name, sub_state in controller_state.subsystems.items():
             is_recovery = isinstance(sub_state, RecoveringSt)

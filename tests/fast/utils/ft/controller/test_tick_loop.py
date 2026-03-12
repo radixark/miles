@@ -159,13 +159,25 @@ class TestCollectSubsystemModes:
         assert result["training"] == (True, RECOVERY_STATE_TO_INT[RealtimeChecksSt])
         assert result["networking"] == (False, 0)
 
-    def test_non_normal_state_returns_empty(self) -> None:
+    def test_non_normal_state_returns_all_subsystems_as_idle(self) -> None:
+        """When state machine is not in NormalSt, _collect_subsystem_modes
+        returns all configured subsystems with (False, 0) so the exporter
+        can overwrite any stale recovery labels."""
         sm = MagicMock()
         sm.state = MagicMock(spec=MainState)
 
         loop = _make_tick_loop(state_machine=sm)
+        loop.subsystem_configs = {
+            "training": MagicMock(),
+            "networking": MagicMock(),
+        }
+
         result = loop._collect_subsystem_modes()
-        assert result == {}
+
+        assert result == {
+            "training": (False, 0),
+            "networking": (False, 0),
+        }
 
 
 class TestRecoveryStateToIntCompleteness:
