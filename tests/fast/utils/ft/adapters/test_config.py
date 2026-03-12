@@ -46,12 +46,26 @@ class TestFtControllerConfig:
     def test_scrape_interval_seconds_rejects_zero(self) -> None:
         """scrape_interval_seconds was not validated — zero or negative values
         would silently create a broken scrape loop."""
-        with pytest.raises(ValidationError, match="scrape_interval_seconds"):
+        with pytest.raises(ValidationError, match="must be > 0"):
             FtControllerConfig(rollout_num_cells=0, scrape_interval_seconds=0)
 
     def test_scrape_interval_seconds_rejects_negative(self) -> None:
-        with pytest.raises(ValidationError, match="scrape_interval_seconds"):
+        with pytest.raises(ValidationError, match="must be > 0"):
             FtControllerConfig(rollout_num_cells=0, scrape_interval_seconds=-1.0)
+
+    def test_mini_prometheus_retention_minutes_default(self) -> None:
+        config = FtControllerConfig(rollout_num_cells=0)
+        assert config.mini_prometheus_retention_minutes == 60.0
+
+    def test_mini_prometheus_retention_minutes_custom(self) -> None:
+        config = FtControllerConfig(rollout_num_cells=0, mini_prometheus_retention_minutes=120.0)
+        assert config.mini_prometheus_retention_minutes == 120.0
+
+    def test_mini_prometheus_retention_minutes_rejects_zero(self) -> None:
+        """Retention was hardcoded in MiniPrometheusConfig and not exposed
+        through the config, so it could not be tuned per deployment."""
+        with pytest.raises(ValidationError, match="must be > 0"):
+            FtControllerConfig(rollout_num_cells=0, mini_prometheus_retention_minutes=0)
 
 
 class TestStateMachineConfigFields:

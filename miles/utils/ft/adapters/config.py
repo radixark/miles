@@ -22,6 +22,7 @@ class FtControllerConfig(FtBaseModel):
     controller_exporter_port: int = 0
     tick_interval: float = 30.0
     scrape_interval_seconds: float = 10.0
+    mini_prometheus_retention_minutes: float = 60.0
     notify_webhook_url: str = ""
     notify_platform: str = ""
     rollout_num_cells: int
@@ -37,11 +38,11 @@ class FtControllerConfig(FtBaseModel):
     rollout_alive_threshold_seconds: float | None = None
     rollout_monitoring_alive_duration_seconds: float | None = None
 
-    @field_validator("scrape_interval_seconds")
+    @field_validator("scrape_interval_seconds", "mini_prometheus_retention_minutes")
     @classmethod
-    def _scrape_interval_must_be_positive(cls, v: float) -> float:
+    def _positive_float_fields(cls, v: float) -> float:
         if v <= 0:
-            raise ValueError("scrape_interval_seconds must be > 0")
+            raise ValueError("must be > 0")
         return v
 
     @field_validator("recovery_cooldown_window_minutes")

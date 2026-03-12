@@ -49,6 +49,9 @@ def launch(
     scrape_interval_seconds: Annotated[
         float, typer.Option(help="Metric scrape interval in seconds (mini backend)")
     ] = 10.0,
+    mini_prometheus_retention_minutes: Annotated[
+        float, typer.Option(help="MiniPrometheus data retention in minutes (mini backend)")
+    ] = 60.0,
     recovery_cooldown_window_minutes: Annotated[
         float, typer.Option(help="Recovery cooldown sliding window in minutes")
     ] = 30.0,
@@ -112,6 +115,7 @@ def launch(
         notify_webhook_url=notify_webhook_url,
         notify_platform=notify_platform,
         scrape_interval_seconds=scrape_interval_seconds,
+        mini_prometheus_retention_minutes=mini_prometheus_retention_minutes,
         recovery_cooldown_window_minutes=recovery_cooldown_window_minutes,
         recovery_cooldown_max_count=recovery_cooldown_max_count,
         registration_grace_ticks=registration_grace_ticks,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from miles.utils.ft.adapters.config import FtControllerConfig
@@ -77,3 +78,23 @@ class TestBuildFtControllerStateMachineParams:
         assert kwargs["monitoring_success_iterations"] == 20
         assert kwargs["monitoring_timeout_seconds"] == 1200
         assert kwargs["recovery_timeout_seconds"] == 7200
+
+
+class TestBuildFtControllerRetention:
+    """MiniPrometheus retention was hardcoded and not wired from config."""
+
+    def test_retention_from_config_reaches_mini_prometheus(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=0,
+            mini_prometheus_retention_minutes=120.0,
+        )
+        bundle = build_ft_controller(
+            config=config,
+            start_exporter=False,
+            node_manager_override=StubNodeManager(),
+            main_job_override=StubMainJob(),
+        )
+
+        store = bundle.controller._metric_store
+        mini_prom = store.time_series_store
+        assert mini_prom._config.retention == timedelta(minutes=120)

@@ -422,6 +422,7 @@ def _build_metric_store(
         mini_prom = MiniPrometheus(
             config=MiniPrometheusConfig(
                 scrape_interval=timedelta(seconds=config.scrape_interval_seconds),
+                retention=timedelta(minutes=config.mini_prometheus_retention_minutes),
             )
         )
         mini_prom.add_scrape_target(

@@ -259,6 +259,34 @@ class TestLauncherScrapeInterval:
         assert config.scrape_interval_seconds == 10.0
 
 
+class TestLauncherRetention:
+    def test_mini_prometheus_retention_minutes_passed_to_config(self) -> None:
+        """MiniPrometheus retention was hardcoded and not exposed as a CLI
+        parameter, so memory usage vs observability could not be tuned."""
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(
+                app,
+                [
+                    "launch",
+                    "--platform", "stub",
+                    "--mini-prometheus-retention-minutes", "120",
+                    "--", "python3", "train.py",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.mini_prometheus_retention_minutes == 120.0
+
+    def test_mini_prometheus_retention_minutes_defaults_to_60(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(app, ["launch", "--platform", "stub", "--", "python3", "train.py"])
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.mini_prometheus_retention_minutes == 60.0
+
+
 class TestLauncherStateMachineParams:
     """State machine parameters were hardcoded in the factory with no CLI
     entry, so operators could not tune recovery behavior at launch time."""
