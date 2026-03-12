@@ -46,6 +46,8 @@ def _find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None
                 if requestor is None:
                     requestor = name
                 else:
+                    # Known limitation: only one requestor is handled; non-requestor
+                    # subsystems' recovery states will be discarded in _check_main_job_restart.
                     logger.warning(
                         "multiple_restart_requestors found=%s handled=%s",
                         name,
@@ -115,6 +117,8 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
 
         for name, sub_state in state.subsystems.items():
             if name != requestor and isinstance(sub_state, RecoveringSt):
+                # Known limitation: non-requestor recovery progress (diagnostics,
+                # identified bad nodes) is discarded and must be re-detected.
                 logger.warning(
                     "subsystem_recovery_discarded name=%s phase=%s",
                     name,

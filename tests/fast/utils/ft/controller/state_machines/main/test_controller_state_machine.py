@@ -283,6 +283,35 @@ class TestNonRequestorRecoveryDiscarded:
         assert "subsystem_recovery_discarded" in caplog.text
         assert "training" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_non_requestor_recovery_state_reset_to_detecting_after_restart(self) -> None:
+        """Known limitation: when one subsystem requests main job restart, other
+        subsystems' recovery progress is discarded. After the restart completes,
+        non-requestor subsystems are reset to DetectingAnomalySt and must
+        re-detect faults from scratch."""
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+        stepper = create_main_stepper()
+
+        frozen = _make_frozen_recovering_state()
+        state = RestartingMainJobSt(
+            requestor_name="rollout_0",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=frozen,
+        )
+        context = _make_controller_context(
+            main_job=main_job,
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
+        )
+
+        result = await _step_last(stepper, state, context)
+
+        assert isinstance(result, NormalSt)
+        assert isinstance(result.subsystems["training"], DetectingAnomalySt)
+        assert isinstance(result.subsystems["rollout_0"], RecoveringSt)
+
 
 # ---------------------------------------------------------------------------
 # Scenario 5: Job restart pending — keep waiting
