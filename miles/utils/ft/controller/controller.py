@@ -128,7 +128,7 @@ class FtController:
     async def _tick(self) -> None:
         await self._tick_loop.tick()
 
-    async def _stop_services(self, scrape_task: asyncio.Task[None] | None) -> None:
+    async def _stop_services(self, scrape_task: asyncio.Task[None]) -> None:
         await stop_metric_store_task(self._metric_store.time_series_store, scrape_task)
         self._controller_exporter.stop()
         if self._notifier is not None:
