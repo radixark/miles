@@ -56,7 +56,7 @@ def build_controller_status(
     match controller_state:
         case RestartingMainJobSt():
             recovery = RecoveryInfo(
-                phase="RestartingMainJobSt",
+                phase=type(controller_state).__name__,
                 bad_nodes=[],
                 bad_nodes_confirmed=False,
             )

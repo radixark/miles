@@ -8,7 +8,7 @@ from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
-from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
 from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, SubsystemState, RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestartingSt,
@@ -202,3 +202,28 @@ class TestBuildControllerStatus:
         )
 
         assert status.active_run_id == "run-42"
+
+    def test_restarting_main_job_phase_uses_type_name(self) -> None:
+        """L-4: the phase was previously a hardcoded string
+        'RestartingMainJobSt' which would silently desync if the class
+        was renamed. Now uses type().__name__."""
+        from datetime import timezone
+
+        restarting_state = RestartingMainJobSt(
+            requestor_name="training",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=DetectingAnomalySt(),
+        )
+        sm: StateMachine[MainState, MainContext] = StateMachine(
+            initial_state=restarting_state,
+            stepper=StateMachineStepper(handler_map={}),
+        )
+        status = build_controller_status(
+            controller_state_machine=sm,
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(),
+            tick_count=0,
+        )
+
+        assert status.recovery is not None
+        assert status.recovery.phase == "RestartingMainJobSt"
