@@ -341,13 +341,13 @@ class TestStoppingAndRestarting:
 class TestMonitoringProgress:
     @pytest.mark.asyncio
     async def test_monitoring_success(self) -> None:
-        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=200, metrics={"iteration": 110})
         stepper = _make_stepper()
         ctx = _make_context(
-            actuator=actuator,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
         )
@@ -363,13 +363,9 @@ class TestMonitoringProgress:
 
     @pytest.mark.asyncio
     async def test_monitoring_job_failed(self) -> None:
-        """Previously _step_iteration_progress polled ctx.main_job.get_status(),
-        which checks the global training job — not the restarted subsystem.
-        Now it polls ctx.actuator.get_status() (the subsystem-level actuator).
-        """
-        actuator = FakeActuator(status_sequence=[JobStatus.FAILED])
+        main_job = FakeMainJob(status_sequence=[JobStatus.FAILED])
         stepper = _make_stepper()
-        ctx = _make_context(actuator=actuator)
+        ctx = _make_context(main_job=main_job)
 
         state = MonitoringProgressSt(
             start_time=datetime.now(timezone.utc),
@@ -380,11 +376,11 @@ class TestMonitoringProgress:
 
     @pytest.mark.asyncio
     async def test_monitoring_timeout(self) -> None:
-        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         stepper = _make_stepper()
         ctx = _make_context(
-            actuator=actuator,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(timeout_seconds=60),
         )
@@ -396,13 +392,13 @@ class TestMonitoringProgress:
 
     @pytest.mark.asyncio
     async def test_monitoring_in_progress_returns_none(self) -> None:
-        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 3})
         stepper = _make_stepper()
         ctx = _make_context(
-            actuator=actuator,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
         )
@@ -417,13 +413,13 @@ class TestMonitoringProgress:
     @pytest.mark.asyncio
     async def test_monitoring_timeout_transitions_to_failed(self) -> None:
         """Partial progress but timeout expired -> RestartFailed."""
-        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 5})
         stepper = _make_stepper()
         ctx = _make_context(
-            actuator=actuator,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=100, timeout_seconds=60),
         )
@@ -466,13 +462,13 @@ class TestMonitoringProgress:
     @pytest.mark.asyncio
     async def test_exact_target_iterations_transitions_to_done(self) -> None:
         """Exactly success_iterations reached (not exceeded) → RestartDoneSt."""
-        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
         mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 110})
         stepper = _make_stepper()
         ctx = _make_context(
-            actuator=actuator,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
         )
@@ -488,11 +484,11 @@ class TestMonitoringProgress:
     @pytest.mark.asyncio
     async def test_mini_wandb_no_steps_yet_stays_monitoring(self) -> None:
         """mini_wandb has no steps → iteration_progress==0 → stays in monitoring."""
-        actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         stepper = _make_stepper()
         ctx = _make_context(
-            actuator=actuator,
+            main_job=main_job,
             mini_wandb=mini_wandb,
             monitoring_config=MonitoringIterationProgressConfig(success_iterations=10),
         )
