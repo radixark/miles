@@ -43,9 +43,17 @@ class TestbedTrainRayActor:
         self._controller_client: RayControllerClient | None = None
         self._iteration: int = 0
         self._loop_task: asyncio.Task[None] | None = None
+        self._hung: bool = False
+        self._custom_log_metrics: dict[str, float] = {}
 
     def set_peers(self, peers: list[ray.actor.ActorHandle]) -> None:
         self._peers = peers
+
+    def set_hung(self, hung: bool) -> None:
+        self._hung = hung
+
+    def set_custom_log_metrics(self, metrics: dict[str, float]) -> None:
+        self._custom_log_metrics = metrics
 
     async def start(self) -> None:
         os.environ["MILES_FT_ID"] = self._ft_id
@@ -71,19 +79,22 @@ class TestbedTrainRayActor:
                 self._shutdown_agent()
                 ray.actor.exit_actor()
 
-            self._iteration += 1
-            if self._agent is not None:
-                self._agent.step()
+            if not self._hung:
+                self._iteration += 1
+                if self._agent is not None:
+                    self._agent.step()
 
-            if self._controller_client is not None:
-                try:
-                    self._controller_client.log_step(
-                        run_id=self._run_id,
-                        step=self._iteration,
-                        metrics={"iteration": float(self._iteration)},
-                    )
-                except Exception:
-                    logger.debug("log_step failed", exc_info=True)
+                if self._controller_client is not None:
+                    try:
+                        merged_metrics: dict[str, float] = {"iteration": float(self._iteration)}
+                        merged_metrics.update(self._custom_log_metrics)
+                        self._controller_client.log_step(
+                            run_id=self._run_id,
+                            step=self._iteration,
+                            metrics=merged_metrics,
+                        )
+                    except Exception:
+                        logger.debug("log_step failed", exc_info=True)
 
             await asyncio.sleep(self._step_interval)
 

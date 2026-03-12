@@ -312,6 +312,21 @@ class MilesTestbed:
             raise KeyError(f"No collector state for node {node_id}")
         await state.set_metrics.remote(metrics)
 
+    async def inject_hang(self) -> None:
+        await self._train_group.set_hung(hung=True)
+
+    async def clear_hang(self) -> None:
+        await self._train_group.set_hung(hung=False)
+
+    async def inject_nan_loss(self) -> None:
+        await self._train_group.set_custom_log_metrics({"loss": float("nan")})
+
+    async def clear_nan_loss(self) -> None:
+        await self._train_group.set_custom_log_metrics({})
+
+    async def inject_custom_metrics(self, metrics: dict[str, float]) -> None:
+        await self._train_group.set_custom_log_metrics(metrics)
+
     async def clear_collector_metrics(self, node_id: str) -> None:
         state = self._collector_states.get(node_id)
         if state is None:

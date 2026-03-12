@@ -86,6 +86,18 @@ class TestbedRayTrainGroup:
             except Exception:
                 logger.debug("kill_on_node: failed to kill worker on %s", node_id, exc_info=True)
 
+    @property
+    def all_workers(self) -> list[ray.actor.ActorHandle]:
+        return list(self._workers)
+
+    async def set_hung(self, hung: bool) -> None:
+        for worker in self._workers:
+            await worker.set_hung.remote(hung)
+
+    async def set_custom_log_metrics(self, metrics: dict[str, float]) -> None:
+        for worker in self._workers:
+            await worker.set_custom_log_metrics.remote(metrics)
+
     async def all_alive(self) -> bool:
         if not self._workers:
             return False
