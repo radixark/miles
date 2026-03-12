@@ -40,6 +40,8 @@ class ControllerExporter:
             labelnames=["subsystem"],
             registry=self._registry,
         )
+        self._mode.labels(subsystem="training").set(0)
+
         self._tick_count = Counter(
             metric_names.CONTROLLER_TICK_COUNT,
             "Cumulative tick count",
@@ -51,6 +53,7 @@ class ControllerExporter:
             labelnames=["subsystem"],
             registry=self._registry,
         )
+        self._recovery_phase.labels(subsystem="training").set(0)
 
         self._main_job_status = Gauge(
             metric_names.MAIN_JOB_STATUS,
