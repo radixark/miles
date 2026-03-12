@@ -21,6 +21,7 @@ from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 
 from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
+from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 
 def _make_main_context(
@@ -40,7 +41,7 @@ def _make_main_context(
         ),
         notifier=FakeNotifier(),
         node_manager=FakeNodeManager(),
-        diagnostic_orchestrator=MagicMock(),
+        diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         cooldown=SlidingWindowThrottle(window_minutes=30, max_count=3),
         detector_crash_tracker=SlidingWindowCounter(window_seconds=300, threshold=5),
         recovery_timeout_seconds=600,
