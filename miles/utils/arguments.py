@@ -204,7 +204,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on peak memory. "
+                    "Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "
                 ),
             )
 
