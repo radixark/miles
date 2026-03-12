@@ -75,4 +75,7 @@ MODEL_ARGS=(
     --dsa-indexer-n-heads 64
     --dsa-indexer-head-dim 128
     --dsa-indexer-topk 512
+
+    # V4 model spec (plugin)
+    --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
 )
