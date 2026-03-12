@@ -10,7 +10,7 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.utils.chat_template_utils.additional_message_tokenizer import AdditionalMessageTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
@@ -556,11 +556,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
             )
             parser.add_argument(
-                "--additional-tokenizer",
+                "--tito-model",
                 type=str,
                 default="default",
-                choices=[t.value for t in AdditionalMessageTokenizerType],
-                help="Incremental message tokenizer type for pretokenized prefix reuse. "
+                choices=[t.value for t in TITOTokenizerType],
+                help="TITO tokenizer type for pretokenized prefix reuse. "
                 "Controls how token IDs are computed for messages appended after "
                 "the pretokenized prefix in multi-turn agentic sessions.",
             )

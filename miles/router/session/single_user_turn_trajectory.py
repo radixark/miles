@@ -65,15 +65,13 @@ class SingleUserTurnTrajectoryManager:
     appended. This allows reusing pretokenized_token_ids across turns.
     """
 
-    def __init__(self, args, tokenizer: Any, *, additional_tokenizer=None):
+    def __init__(self, args, tokenizer: Any, *, tito_tokenizer=None):
         self.sessions: dict[str, SingleUserTurnTrajectory] = {}
         self.args = args
         self.tokenizer = tokenizer
         self._lock = threading.RLock()
         self._comparator = TokenSeqComparator(tokenizer) if tokenizer else None
-        self._trim_trailing_ids = (
-            (additional_tokenizer.get_trim_trailing_ids() or None) if additional_tokenizer else None
-        )
+        self._trim_trailing_ids = (tito_tokenizer.get_trim_trailing_ids() or None) if tito_tokenizer else None
 
     def create_session(self) -> str:
         with self._lock:

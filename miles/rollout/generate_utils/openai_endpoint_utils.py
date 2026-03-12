@@ -8,7 +8,7 @@ from copy import deepcopy
 
 from miles.rollout.generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
 from miles.router.session.sessions import GetSessionResponse, SessionRecord
-from miles.utils.chat_template_utils import get_additional_message_tokenizer
+from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -49,20 +49,20 @@ class OpenAIEndpointTracer:
 def compute_samples_from_openai_records(
     args: Namespace, input_sample: Sample, records: list[SessionRecord], tokenizer
 ) -> list[Sample]:
-    additional_tokenizer = get_additional_message_tokenizer(
+    tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=getattr(args, "additional_tokenizer", "default"),
+        tokenizer_type=getattr(args, "tito_model", "default"),
     )
     return [
         _compute_sample_from_openai_record(
-            args, input_sample, record, tokenizer, additional_tokenizer, is_last=(i == len(records) - 1)
+            args, input_sample, record, tokenizer, tito_tokenizer, is_last=(i == len(records) - 1)
         )
         for i, record in enumerate(records)
     ]
 
 
 def _compute_sample_from_openai_record(
-    args: Namespace, input_sample: Sample, record: SessionRecord, tokenizer, additional_tokenizer, *, is_last: bool
+    args: Namespace, input_sample: Sample, record: SessionRecord, tokenizer, tito_tokenizer, *, is_last: bool
 ) -> Sample:
     choice = record.response["choices"][0]
 
@@ -91,7 +91,7 @@ def _compute_sample_from_openai_record(
     # prefix check works: turn N+1's prompt_token_ids comes from stripped
     # pretokenized, so turn N's sample.tokens must also be stripped to align.
     # The last sample keeps its stop token (no subsequent turn to match).
-    if not is_last and additional_tokenizer.should_strip_trailing_stop_token(output_token_ids):
+    if not is_last and tito_tokenizer.should_strip_trailing_stop_token(output_token_ids):
         sample.strip_last_output_token(tokenizer)
 
     # TODO unify with Sample.update_from_meta_info

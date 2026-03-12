@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, Response
 
 from miles.router.session.session_types import GetSessionResponse, SessionRecord
 from miles.router.session.single_user_turn_trajectory import SingleUserTurnTrajectoryManager
-from miles.utils.chat_template_utils import get_additional_message_tokenizer
+from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 
 if TYPE_CHECKING:
@@ -28,12 +28,12 @@ def setup_session_routes(app, router: "MilesRouter"):
         hf_checkpoint, chat_template_path=router.args.chat_template_path, trust_remote_code=True
     )
 
-    additional_tokenizer = get_additional_message_tokenizer(
+    tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=getattr(router.args, "additional_tokenizer", "default"),
+        tokenizer_type=getattr(router.args, "tito_model", "default"),
     )
 
-    manager = SingleUserTurnTrajectoryManager(router.args, tokenizer, additional_tokenizer=additional_tokenizer)
+    manager = SingleUserTurnTrajectoryManager(router.args, tokenizer, tito_tokenizer=tito_tokenizer)
 
     @app.post("/sessions")
     async def create_session():
@@ -80,7 +80,7 @@ def setup_session_routes(app, router: "MilesRouter"):
         if pretokenized is not None:
             request_body["pretokenized_token_ids"] = pretokenized["pretokenized_token_ids"]
             request_body["pretokenized_num_message"] = pretokenized["pretokenized_num_message"]
-            request_body["additional_tokenizer"] = getattr(router.args, "additional_tokenizer", "default")
+            request_body["tito_model"] = getattr(router.args, "tito_model", "default")
             logger.debug(
                 "Using pretokenized input: %d tokens, %d messages",
                 len(pretokenized["pretokenized_token_ids"]),
@@ -134,7 +134,7 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         # Strip trailing stop token so pretokenized + incremental matches
         # full template rendering on the next turn.
-        if additional_tokenizer.should_strip_trailing_stop_token(completion_token_ids):
+        if tito_tokenizer.should_strip_trailing_stop_token(completion_token_ids):
             completion_token_ids = completion_token_ids[:-1]
 
         manager.update_pretokenized_state(

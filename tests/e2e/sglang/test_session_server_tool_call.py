@@ -28,7 +28,7 @@ class ModelConfig:
     model_name: str
     reasoning_parser: str
     tool_call_parser: str | None = None
-    additional_tokenizer: str = "default"
+    tito_model: str = "default"
     num_gpus: int = 1
 
 
@@ -37,7 +37,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         model_name="Qwen/Qwen3-4B",
         reasoning_parser="qwen3",
         tool_call_parser="qwen25",
-        additional_tokenizer="qwen3",
+        tito_model="qwen3",
     ),
     "qwen35": ModelConfig(
         model_name="Qwen/Qwen3.5-4B",
@@ -48,7 +48,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         model_name="zai-org/GLM-4.7-Flash",
         reasoning_parser="glm45",
         tool_call_parser="glm47",
-        additional_tokenizer="glm47",
+        tito_model="glm47",
         num_gpus=4,
     ),
 }
@@ -119,9 +119,7 @@ def execute():
         "tests.e2e.sglang.session_tool_agent.run_agent "
     )
 
-    router_args = (
-        "--use-miles-router " "--chat-template-path autofix " f"--additional-tokenizer {cfg.additional_tokenizer} "
-    )
+    router_args = "--use-miles-router " "--chat-template-path autofix " f"--tito-model {cfg.tito_model} "
 
     sglang_args = f"--rollout-num-gpus-per-engine {cfg.num_gpus} " f"--sglang-reasoning-parser {cfg.reasoning_parser} "
     if cfg.tool_call_parser:
@@ -145,7 +143,7 @@ def execute():
         extra_env_vars={
             "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "SGLANG_E2E_MODEL_PATH": local_model_dir,
-            "MILES_ADDITIONAL_TOKENIZER": cfg.additional_tokenizer,
+            "MILES_TITO_MODEL": cfg.tito_model,
         },
     )
 

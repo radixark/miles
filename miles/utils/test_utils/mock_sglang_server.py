@@ -150,16 +150,16 @@ class MockSGLangServer:
         pretokenized_num = payload.get("pretokenized_num_message")
         if pretokenized_ids is not None and pretokenized_num is not None:
             # Simulate sglang's _apply_pretokenized_template using miles'
-            # AdditionalMessageTokenizer — same codepath as real sglang.
-            from miles.utils.chat_template_utils.additional_message_tokenizer import get_additional_message_tokenizer
+            # TITOTokenizer — same codepath as real sglang.
+            from miles.utils.chat_template_utils.tito_tokenizer import get_tito_tokenizer
 
-            additional_tokenizer_type = payload.get("additional_tokenizer", "default")
-            additional_tokenizer = get_additional_message_tokenizer(
+            tito_model_type = payload.get("tito_model", "default")
+            tito_tokenizer = get_tito_tokenizer(
                 self.tokenizer,
-                tokenizer_type=additional_tokenizer_type,
+                tokenizer_type=tito_model_type,
             )
             new_messages = messages[pretokenized_num:]
-            incremental_ids = additional_tokenizer.tokenize_additional(
+            incremental_ids = tito_tokenizer.tokenize_additional(
                 new_messages=new_messages,
                 pretokenized_token_ids=pretokenized_ids,
                 tools=tools,

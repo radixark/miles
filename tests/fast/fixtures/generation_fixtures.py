@@ -226,7 +226,7 @@ def with_miles_router(
         miles_router_health_check_failure_threshold=3,
         hf_checkpoint=model_name,
         chat_template_path=None,
-        additional_tokenizer="default",
+        tito_model="default",
         use_rollout_routing_replay=use_rollout_routing_replay,
     )
     router = MilesRouter(router_args)

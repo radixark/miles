@@ -1,8 +1,8 @@
-"""Incremental message tokenization for pretokenized prefix reuse.
+"""TITO tokenizer — incremental message tokenization for pretokenized prefix reuse.
 
-``AdditionalMessageTokenizer`` computes the token IDs for messages appended
-after an already-tokenized prefix.  The default implementation uses a
-dummy-message diff (mirrors sglang's ``calc_additional_message_tokenization_by_dummy``).
+``TITOTokenizer`` computes the token IDs for messages appended after an
+already-tokenized prefix.  The default implementation uses a dummy-message diff
+(mirrors sglang's ``calc_additional_message_tokenization_by_dummy``).
 Model-specific subclasses handle quirks such as GLM 4.7's ambiguous boundary
 tokens.
 """
@@ -51,7 +51,7 @@ def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, An
 # ---------------------------------------------------------------------------
 
 
-class AdditionalMessageTokenizer(ABC):
+class TITOTokenizer(ABC):
     """Base class for computing incremental token IDs for new messages."""
 
     def __init__(
@@ -116,7 +116,7 @@ class AdditionalMessageTokenizer(ABC):
 # ---------------------------------------------------------------------------
 
 
-class DefaultAdditionalMessageTokenizer(AdditionalMessageTokenizer):
+class DefaultTITOTokenizer(TITOTokenizer):
     """Dummy-prefix diff approach.
 
     1. Build dummy base: ``[dummy_user, dummy_assistant]``
@@ -171,7 +171,7 @@ class DefaultAdditionalMessageTokenizer(AdditionalMessageTokenizer):
 # ---------------------------------------------------------------------------
 
 
-class Qwen3AdditionalMessageTokenizer(DefaultAdditionalMessageTokenizer):
+class Qwen3TITOTokenizer(DefaultTITOTokenizer):
     """Qwen3 variant: prepends trailing whitespace token for alignment.
 
     Qwen3 templates insert a trailing ``\\n`` after the last assistant
@@ -205,7 +205,7 @@ class Qwen3AdditionalMessageTokenizer(DefaultAdditionalMessageTokenizer):
 # ---------------------------------------------------------------------------
 
 
-class GLM47AdditionalMessageTokenizer(DefaultAdditionalMessageTokenizer):
+class GLM47TITOTokenizer(DefaultTITOTokenizer):
     """GLM 4.7 variant: strips trailing stop token from stored token IDs.
 
     ``<|user|>`` and ``<|observation|>`` are both assistant stop tokens *and*
@@ -238,34 +238,34 @@ class GLM47AdditionalMessageTokenizer(DefaultAdditionalMessageTokenizer):
 # ---------------------------------------------------------------------------
 
 
-class AdditionalMessageTokenizerType(str, Enum):
+class TITOTokenizerType(str, Enum):
     DEFAULT = "default"
     QWEN3 = "qwen3"
     GLM47 = "glm47"
 
 
-_TOKENIZER_REGISTRY: dict[AdditionalMessageTokenizerType, type[AdditionalMessageTokenizer]] = {
-    AdditionalMessageTokenizerType.DEFAULT: DefaultAdditionalMessageTokenizer,
-    AdditionalMessageTokenizerType.QWEN3: Qwen3AdditionalMessageTokenizer,
-    AdditionalMessageTokenizerType.GLM47: GLM47AdditionalMessageTokenizer,
+_TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
+    TITOTokenizerType.DEFAULT: DefaultTITOTokenizer,
+    TITOTokenizerType.QWEN3: Qwen3TITOTokenizer,
+    TITOTokenizerType.GLM47: GLM47TITOTokenizer,
 }
 
 
-def get_additional_message_tokenizer(
+def get_tito_tokenizer(
     tokenizer: Any,
-    tokenizer_type: AdditionalMessageTokenizerType | str = AdditionalMessageTokenizerType.DEFAULT,
+    tokenizer_type: TITOTokenizerType | str = TITOTokenizerType.DEFAULT,
     chat_template_kwargs: dict[str, Any] | None = None,
-) -> AdditionalMessageTokenizer:
-    """Create an ``AdditionalMessageTokenizer`` instance.
+) -> TITOTokenizer:
+    """Create a ``TITOTokenizer`` instance.
 
     Args:
         tokenizer: HuggingFace tokenizer object.
         tokenizer_type: Explicit type (string or enum).  Corresponds to the
-            ``--additional-tokenizer`` CLI argument.
+            ``--tito-model`` CLI argument.
         chat_template_kwargs: Extra kwargs forwarded to ``apply_chat_template``.
     """
     if isinstance(tokenizer_type, str):
-        resolved = AdditionalMessageTokenizerType(tokenizer_type)
+        resolved = TITOTokenizerType(tokenizer_type)
     else:
         resolved = tokenizer_type
 
