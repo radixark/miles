@@ -72,24 +72,11 @@ class TestFakeNodeManager:
         assert await manager.get_bad_nodes() == ["node-1", "node-2"]
 
     @pytest.mark.anyio
-    async def test_unmark_node(self) -> None:
-        manager = FakeNodeManager()
-        await manager.mark_node_bad(node_id="node-1", reason="test")
-        await manager.unmark_node_bad(node_id="node-1")
-        assert await manager.get_bad_nodes() == []
-
-    @pytest.mark.anyio
     async def test_is_node_bad(self) -> None:
         manager = FakeNodeManager()
         assert not manager.is_node_bad("node-1")
         await manager.mark_node_bad(node_id="node-1", reason="test")
         assert manager.is_node_bad("node-1")
-
-    @pytest.mark.anyio
-    async def test_unmark_nonexistent_node(self) -> None:
-        manager = FakeNodeManager()
-        await manager.unmark_node_bad(node_id="node-1")
-
 
 class TestFakeMainJob:
     @pytest.mark.anyio

@@ -31,9 +31,6 @@ class TestNodeManagerProtocol:
             async def mark_node_bad(self, node_id: str, reason: str) -> None:
                 pass
 
-            async def unmark_node_bad(self, node_id: str) -> None:
-                pass
-
         with pytest.raises(TypeError):
             _MissingGetBadNodes()
 
@@ -46,17 +43,12 @@ class TestNodeManagerProtocol:
             async def mark_node_bad(self, node_id: str, reason: str) -> None:
                 self._bad[node_id] = reason
 
-            async def unmark_node_bad(self, node_id: str) -> None:
-                self._bad.pop(node_id, None)
-
             async def get_bad_nodes(self) -> list[str]:
                 return list(self._bad.keys())
 
         instance: NodeManagerProtocol = _Impl()
         await instance.mark_node_bad(node_id="n-0", reason="bad gpu")
         assert await instance.get_bad_nodes() == ["n-0"]
-        await instance.unmark_node_bad(node_id="n-0")
-        assert await instance.get_bad_nodes() == []
 
 
 class TestMainJobProtocol:

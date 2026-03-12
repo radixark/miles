@@ -364,12 +364,12 @@ class TestNotificationContent:
         assert "state_before=" in content, f"Notification missing state_before=: {content}"
 
 
-class TestUnmarkNodeReusable:
-    async def test_unmark_removes_node_from_bad_list(
+class TestClearBadNodes:
+    async def test_clear_bad_nodes_empties_bad_list(
         self,
         make_e2e_env: Callable[..., E2EEnv],
     ) -> None:
-        """Eviction marks node bad; unmark_node_bad removes it from bad_nodes list."""
+        """Eviction marks node bad; clear_bad_nodes removes all from bad_nodes list."""
         # Step 1: build env — node-0 diagnostic fails, node-1 passes
         env = make_e2e_env(
             ft_id="e2eunm",
@@ -398,7 +398,7 @@ class TestUnmarkNodeReusable:
         bad_nodes = await env.node_manager.get_bad_nodes()
         assert "e2eunm-node-0" in bad_nodes
 
-        # Step 4: unmark_node_bad → assert removed from get_bad_nodes
-        await env.node_manager.unmark_node_bad("e2eunm-node-0")
+        # Step 4: clear_bad_nodes → assert all removed from get_bad_nodes
+        await env.node_manager.clear_bad_nodes()
         bad_nodes = await env.node_manager.get_bad_nodes()
-        assert "e2eunm-node-0" not in bad_nodes
+        assert bad_nodes == []

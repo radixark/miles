@@ -83,17 +83,6 @@ class K8sNodeManager(NodeManagerProtocol):
                 exc_info=True,
             )
 
-    async def unmark_node_bad(self, node_id: str) -> None:
-        elapsed = await self._patch_node_labels(
-            node_id=node_id,
-            labels={self._label_key: None, self._reason_label_key: None},
-        )
-        logger.info(
-            "unmark_node_bad node_id=%s elapsed_seconds=%.3f",
-            node_id,
-            elapsed,
-        )
-
     async def aclose(self) -> None:
         if self._api_client is not None:
             await self._api_client.close()

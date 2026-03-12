@@ -58,7 +58,7 @@ class ClusterExecutorProtocol(ABC):
     @abstractmethod
     async def execute(
         self,
-        agents: dict[str, NodeAgentProtocol],
+        node_agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
     ) -> list[str]: ...
 
@@ -127,9 +127,6 @@ STOP_TRAINING_TIMEOUT_SECONDS: int = 300
 class NodeManagerProtocol(ABC):
     @abstractmethod
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None: ...
-
-    @abstractmethod
-    async def unmark_node_bad(self, node_id: str) -> None: ...
 
     @abstractmethod
     async def get_bad_nodes(self) -> list[str]: ...

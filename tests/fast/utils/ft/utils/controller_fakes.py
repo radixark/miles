@@ -41,8 +41,8 @@ class FakeNodeManager(NodeManagerProtocol):
         self._ever_marked_bad.add(node_id)
         self.last_node_metadata = node_metadata
 
-    async def unmark_node_bad(self, node_id: str) -> None:
-        self._bad_nodes.discard(node_id)
+    def clear_bad_nodes(self) -> None:
+        self._bad_nodes.clear()
 
     def is_node_bad(self, node_id: str) -> bool:
         return node_id in self._bad_nodes

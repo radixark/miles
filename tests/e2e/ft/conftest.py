@@ -24,6 +24,8 @@ from ray.job_submission import JobSubmissionClient
 from tests.fast.utils.ft.integration.local_ray_semi_e2e import scenarios as _scenarios
 
 from miles.utils.external_utils.command_utils import get_bool_env_var
+from tests.e2e.ft.utils import clear_all_bad_node_markers
+
 from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
 from miles.utils.ft.adapters.impl.ray.main_job import stop_all_active_jobs
 from miles.utils.ft.adapters.types import ft_controller_actor_name
@@ -123,14 +125,9 @@ async def _cleanup_environment() -> None:
 
     node_mgr = K8sNodeManager()
     try:
-        bad_nodes = await node_mgr.get_bad_nodes()
-        for node_id in bad_nodes:
-            try:
-                await node_mgr.unmark_node_bad(node_id=node_id)
-            except Exception:
-                logger.warning("cleanup_uncordon_failed node_id=%s", node_id, exc_info=True)
+        await clear_all_bad_node_markers(node_mgr)
     except Exception:
-        logger.warning("cleanup_get_bad_nodes_failed", exc_info=True)
+        logger.warning("cleanup_clear_bad_node_markers_failed", exc_info=True)
     finally:
         await node_mgr.aclose()
 

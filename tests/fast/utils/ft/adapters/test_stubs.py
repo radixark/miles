@@ -22,11 +22,6 @@ class TestStubNodeManager:
         result = await manager.get_bad_nodes()
         assert result == []
 
-    async def test_unmark_node_bad(self) -> None:
-        manager = StubNodeManager()
-        await manager.unmark_node_bad(node_id="node-1")
-
-
 class TestStubMainJob:
     async def test_submit_returns_unique_run_id(self) -> None:
         job = StubMainJob()

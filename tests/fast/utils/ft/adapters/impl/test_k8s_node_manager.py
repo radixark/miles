@@ -58,29 +58,6 @@ class TestMarkNodeBad:
             await manager.mark_node_bad(node_id="node-1", reason="test")
 
 
-class TestUnmarkNodeBad:
-    @pytest.mark.anyio
-    async def test_patches_node_with_none_labels(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api()
-
-        await manager.unmark_node_bad(node_id="node-2")
-
-        mock_core_v1.patch_node.assert_awaited_once()
-        call_kwargs = mock_core_v1.patch_node.call_args
-        assert call_kwargs.kwargs["name"] == "node-2"
-        body = call_kwargs.kwargs["body"]
-        assert body["metadata"]["labels"][LABEL_KEY] is None
-        assert body["metadata"]["labels"][REASON_LABEL_KEY] is None
-
-    @pytest.mark.anyio
-    async def test_raises_on_api_failure(self) -> None:
-        manager, mock_core_v1 = _make_manager_with_mock_api()
-        mock_core_v1.patch_node.side_effect = Exception("K8s API unreachable")
-
-        with pytest.raises(Exception, match="K8s API unreachable"):
-            await manager.unmark_node_bad(node_id="node-2")
-
-
 class TestGetBadNodes:
     @pytest.mark.anyio
     async def test_returns_mapped_node_ids_after_mark(self) -> None:

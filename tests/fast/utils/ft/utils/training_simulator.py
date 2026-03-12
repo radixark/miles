@@ -324,8 +324,8 @@ class NodeManagerStateActor:
         self._ever_marked_bad.add(node_id)
         self._last_node_metadata = node_metadata
 
-    def unmark_bad(self, node_id: str) -> None:
-        self._bad_nodes.discard(node_id)
+    def clear_bad_nodes(self) -> None:
+        self._bad_nodes.clear()
 
     def get_bad_nodes(self) -> list[str]:
         return sorted(self._bad_nodes)
@@ -353,8 +353,8 @@ class RemoteControlledNodeManager(NodeManagerProtocol):
     ) -> None:
         await self._state.mark_bad.remote(node_id, reason, node_metadata)
 
-    async def unmark_node_bad(self, node_id: str) -> None:
-        await self._state.unmark_bad.remote(node_id)
+    async def clear_bad_nodes(self) -> None:
+        await self._state.clear_bad_nodes.remote()
 
     async def get_bad_nodes(self) -> list[str]:
         return await self._state.get_bad_nodes.remote()
