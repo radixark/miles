@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """Build and push Miles Docker images.
 
-Replaces the justfile with a single script that handles all build variants.
-
 Usage:
-    python docker/build.py --variant primary
-    python docker/build.py --variant cu129-arm64
-    python docker/build.py --variant cu13-arm64
-    python docker/build.py --variant debug
-    python docker/build.py --variant dev --push
-    python docker/build.py --variant primary --dry-run
+    python docker/build.py --variant primary --image-tag dev --push
+    python docker/build.py --variant cu129-arm64 --image-tag latest
+    python docker/build.py --variant primary --image-tag custom --custom-tag v1.0.0
+    python docker/build.py --variant primary --image-tag dev --dry-run
 """
 
 import os
@@ -28,7 +24,6 @@ VARIANTS = {
         "image": "radixark/miles",
         "tag_postfix": "",
         "build_args": {},
-        "tag_latest": True,
     },
     "cu129-arm64": {
         "image": "radixark/miles",
@@ -37,7 +32,6 @@ VARIANTS = {
             "SGLANG_IMAGE_TAG": "v0.5.5.post3-cu129-arm64",
             "ENABLE_SGLANG_PATCH": "0",
         },
-        "tag_latest": False,
     },
     "cu13-arm64": {
         "image": "radixark/miles",
@@ -47,27 +41,13 @@ VARIANTS = {
             "ENABLE_CUDA_13": "1",
             "ENABLE_SGLANG_PATCH": "0",
         },
-        "tag_latest": False,
     },
     "debug": {
         "image": "radixark/miles-test",
         "tag_postfix": "",
         "build_args": {},
-        "tag_latest": True,
-    },
-    "dev": {
-        "image": "radixark/miles",
-        "build_args": {
-            "MEGATRON_COMMIT": "main",
-        },
-        "tag_latest": False,
     },
 }
-
-
-def get_version() -> str:
-    version_file = REPO_ROOT / "docker" / "version.txt"
-    return version_file.read_text().strip()
 
 
 def run(cmd: list[str], dry_run: bool) -> None:
@@ -77,20 +57,24 @@ def run(cmd: list[str], dry_run: bool) -> None:
     subprocess.run(cmd, check=True)
 
 
-def build_and_push(variant: str, dry_run: bool, dockerfile: str, push: bool = False) -> None:
+def build_and_push(
+    variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
+) -> None:
     config = VARIANTS[variant]
     image = config["image"]
+    postfix = config.get("tag_postfix", "")
 
-    # Dev variant uses rolling + timestamped tags instead of version.txt
-    if variant == "dev":
+    if image_tag == "latest":
+        tags = [f"{image}:latest{postfix}"]
+    elif image_tag == "dev":
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
-        tags = [f"{image}:dev", f"{image}:dev-{timestamp}"]
+        tags = [f"{image}:dev{postfix}", f"{image}:dev{postfix}-{timestamp}"]
+    elif image_tag == "custom":
+        if not custom_tag:
+            raise typer.BadParameter("--custom-tag is required when --image-tag is custom")
+        tags = [f"{image}:{custom_tag}{postfix}"]
     else:
-        version = get_version()
-        image_tag = f"{version}{config.get('tag_postfix', '')}"
-        tags = [f"{image}:{image_tag}"]
-        if config.get("tag_latest"):
-            tags.append(f"{image}:latest")
+        raise typer.BadParameter(f"Unknown image tag: {image_tag}")
 
     cmd = [
         "docker",
@@ -130,16 +114,23 @@ class Variant(str, Enum):
     cu129_arm64 = "cu129-arm64"
     cu13_arm64 = "cu13-arm64"
     debug = "debug"
+
+
+class ImageTag(str, Enum):
+    latest = "latest"
     dev = "dev"
+    custom = "custom"
 
 
 def main(
     variant: Variant = typer.Option(..., help="Build variant to use."),  # noqa: B008
+    image_tag: ImageTag = typer.Option(..., help="Tag mode: latest, dev, or custom."),  # noqa: B008
     dockerfile: str = typer.Option("docker/Dockerfile", help="Path to the Dockerfile."),  # noqa: B008
     dry_run: bool = typer.Option(False, help="Print commands without executing them."),  # noqa: B008
     push: bool = typer.Option(False, help="Push images to registry after building."),  # noqa: B008
+    custom_tag: str = typer.Option("", help="Custom tag name (required when --image-tag is custom)."),  # noqa: B008
 ) -> None:
-    build_and_push(variant.value, dry_run, dockerfile, push=push)
+    build_and_push(variant.value, image_tag.value, dry_run, dockerfile, push=push, custom_tag=custom_tag)
 
 
 if __name__ == "__main__":
