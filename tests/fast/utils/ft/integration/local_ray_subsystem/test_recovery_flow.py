@@ -192,21 +192,27 @@ class TestControllerKilledDuringRecovery:
 
         ray.kill(handle, no_restart=False)
 
+        # After restart submit_and_run is retried (max_task_retries=-1),
+        # creating a fresh controller with a new run. Poll until the
+        # restarted actor has a new active_run_id (not None and different
+        # from the original). active_run_id is None until submit_and_run
+        # completes, so we must keep polling rather than breaking on the
+        # first successful get_status call.
         name = ft_controller_actor_name("")
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + 15.0
+        status = None
         while time.monotonic() < deadline:
             try:
                 restarted = ray.get_actor(name)
                 status = ray.get(restarted.get_status.remote(), timeout=2)
-                break
+                if status.active_run_id is not None:
+                    break
             except Exception:
-                time.sleep(0.3)
+                pass
+            time.sleep(0.3)
         else:
-            raise TimeoutError("Actor did not restart within 10s")
+            raise TimeoutError("Actor did not restart with a new run_id within 15s")
 
-        # After restart submit_and_run is retried (max_task_retries=-1),
-        # creating a fresh controller with a new run. _AlwaysCrashDetector
-        # fires immediately so mode may be RECOVERY again — verify
-        # the actor restarted by checking it has a new run_id.
+        assert status is not None
         assert status.active_run_id is not None
         assert status.active_run_id != run_id
