@@ -11,10 +11,23 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
 StateT = TypeVar("StateT", bound=BaseModel)
 ContextT = TypeVar("ContextT")
 StateT_contra = TypeVar("StateT_contra", bound=BaseModel, contravariant=True)
 ContextT_contra = TypeVar("ContextT_contra", contravariant=True)
+
+
+async def _to_async_gen(raw: Awaitable[T | None] | AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
+    """Normalize a coroutine or async generator into a non-None async generator."""
+    if inspect.isasyncgen(raw):
+        async for item in raw:
+            if item is not None:
+                yield item
+    else:
+        result = await raw
+        if result is not None:
+            yield result
 
 
 class StateHandler(ABC, Generic[StateT_contra, ContextT_contra]):
@@ -72,15 +85,8 @@ class StateMachineStepper(Generic[StateT, ContextT]):
                 f"{type(state).__name__}; register it in handler_map"
             )
 
-        raw = handler(state, context)
-        if inspect.isasyncgen(raw):
-            async for item in raw:
-                if item is not None:
-                    yield item
-        else:
-            result = await raw
-            if result is not None:
-                yield result
+        async for item in _to_async_gen(handler(state, context)):
+            yield item
 
 
 _MAX_CONVERGENCE_ITERATIONS = 50
