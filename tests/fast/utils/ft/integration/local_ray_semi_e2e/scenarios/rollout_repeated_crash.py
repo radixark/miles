@@ -63,4 +63,9 @@ async def scenario_rollout_repeated_crash(
         name=target_subsystem, state="DetectingAnomalySt", timeout=recovery_timeout
     )
 
+    # Step 6: verify subsystem recovered
+    assert status.subsystem_states[target_subsystem] == "DetectingAnomalySt", (
+        f"{target_subsystem} not in DetectingAnomalySt: {status.subsystem_states[target_subsystem]}"
+    )
+
     return status

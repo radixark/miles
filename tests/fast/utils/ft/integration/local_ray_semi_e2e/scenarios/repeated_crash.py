@@ -48,6 +48,9 @@ async def scenario_repeated_crash(
             status.recovery is not None
             and status.recovery.phase == "StopTimeDiagnosticsSt"
         ):
+            assert status.mode == ControllerMode.RECOVERY, (
+                f"Expected RECOVERY mode during StopTimeDiagnostics, got {status.mode}"
+            )
             return
         await asyncio.sleep(0.5)
 

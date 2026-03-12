@@ -46,4 +46,11 @@ async def scenario_multi_cell_crash(
     # Step 2: wait for all rollout subsystems to return to DetectingAnomalySt
     status = await env.wait_for_all_subsystems_detecting(timeout=recovery_timeout)
 
+    # Step 3: verify all subsystems recovered
+    assert all(
+        state == "DetectingAnomalySt" for state in status.subsystem_states.values()
+    ), (
+        f"Not all subsystems in DetectingAnomalySt: {status.subsystem_states}"
+    )
+
     return status

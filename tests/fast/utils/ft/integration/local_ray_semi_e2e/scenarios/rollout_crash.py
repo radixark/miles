@@ -47,4 +47,15 @@ async def scenario_rollout_crash(
         name=target_subsystem, state="DetectingAnomalySt", timeout=recovery_timeout
     )
 
+    # Step 5: verify rollout subsystem recovered
+    assert status.subsystem_states[target_subsystem] == "DetectingAnomalySt", (
+        f"{target_subsystem} not in DetectingAnomalySt: {status.subsystem_states[target_subsystem]}"
+    )
+
+    # Step 6: verify training subsystem was not affected (if present)
+    if "training" in status.subsystem_states:
+        assert status.subsystem_states["training"] == "DetectingAnomalySt", (
+            f"Training subsystem affected by rollout crash: {status.subsystem_states['training']}"
+        )
+
     return status

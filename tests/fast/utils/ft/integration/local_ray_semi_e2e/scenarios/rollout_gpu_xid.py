@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from miles.utils.ft.controller.types import ControllerStatus
+from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
 
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.protocol import (
     FaultTestProtocol,
@@ -42,6 +42,14 @@ async def scenario_rollout_gpu_xid(
     # Step 3: wait for recovery to complete
     status = await env.wait_for_subsystem_state(
         name=target_subsystem, state="DetectingAnomalySt", timeout=recovery_timeout
+    )
+
+    # Step 4: verify subsystem recovered and controller is back to monitoring
+    assert status.subsystem_states[target_subsystem] == "DetectingAnomalySt", (
+        f"{target_subsystem} not in DetectingAnomalySt: {status.subsystem_states[target_subsystem]}"
+    )
+    assert status.mode == ControllerMode.MONITORING, (
+        f"Controller not in MONITORING after GPU XID recovery: {status.mode}"
     )
 
     return status
