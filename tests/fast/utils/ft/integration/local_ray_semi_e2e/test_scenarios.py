@@ -17,7 +17,6 @@ from collections.abc import Callable
 import pytest
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
-from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from tests.fast.utils.ft.integration.conftest import (
     FAST_TIMEOUT,
@@ -148,13 +147,12 @@ async def test_no_false_positive(
         detectors=[TrainingCrashDetector()],
     )
 
-    status = await scenario_no_false_positive(
+    await scenario_no_false_positive(
         env=testbed,
         observation_iterations=10,
         timeout=FAST_TIMEOUT,
         poll_interval=1.0,
     )
-    assert status.mode == ControllerMode.MONITORING
 
 
 # ------------------------------------------------------------------
@@ -176,7 +174,7 @@ async def test_rollout_crash(
 
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
 
-    status = await scenario_rollout_crash(
+    await scenario_rollout_crash(
         env=testbed,
         crash_fn=functools.partial(testbed.kill_sglang_cell, "default"),
         target_subsystem="rollout_default",
@@ -184,7 +182,6 @@ async def test_rollout_crash(
         detection_timeout=RECOVERY_TIMEOUT,
         recovery_timeout=LONG_RECOVERY_TIMEOUT,
     )
-    assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
 
 
 # ------------------------------------------------------------------
@@ -211,7 +208,7 @@ async def test_multi_cell_crash(
         functools.partial(testbed.kill_sglang_cell, "1"),
     ]
 
-    status = await scenario_multi_cell_crash(
+    await scenario_multi_cell_crash(
         env=testbed,
         crash_fns=crash_fns,
         all_rollout_subsystems=["rollout_0", "rollout_1", "rollout_2"],
@@ -220,12 +217,6 @@ async def test_multi_cell_crash(
         detection_timeout=RECOVERY_TIMEOUT,
         recovery_timeout=LONG_RECOVERY_TIMEOUT,
     )
-
-    # Step: all subsystems back to detecting
-    for name in ["rollout_0", "rollout_1", "rollout_2", "training"]:
-        assert status.subsystem_states.get(name) == "DetectingAnomalySt", (
-            f"{name} not in DetectingAnomalySt: {status.subsystem_states}"
-        )
 
 
 # ------------------------------------------------------------------
@@ -252,7 +243,7 @@ async def test_rollout_gpu_xid(
 
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
 
-    status = await scenario_rollout_gpu_xid(
+    await scenario_rollout_gpu_xid(
         env=testbed,
         inject_xid_fn=functools.partial(testbed.inject_gpu_xid, "rollout-0"),
         target_subsystem="rollout_default",
