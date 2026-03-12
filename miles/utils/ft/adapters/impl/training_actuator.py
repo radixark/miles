@@ -24,4 +24,4 @@ class TrainingSubsystemActuator(SubsystemActuatorProtocol):
         )
 
     async def get_status(self) -> JobStatus:
-        return await self._main_job.get_job_status()
+        return await self._main_job.get_status()

@@ -36,15 +36,15 @@ class StubNodeManager(NodeManagerProtocol):
 class StubMainJob(MainJobProtocol):
     """Logs operations but does not call real Ray Job API."""
 
-    async def stop_job(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
+    async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
         logger.info("stub_stop_job timeout_seconds=%d", timeout_seconds)
 
-    async def submit_job(self) -> str:
+    async def start(self) -> str:
         run_id = uuid4().hex[:8]
         logger.info("stub_submit_job run_id=%s", run_id)
         return run_id
 
-    async def get_job_status(self) -> JobStatus:
+    async def get_status(self) -> JobStatus:
         return JobStatus.RUNNING
 
 

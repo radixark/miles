@@ -92,7 +92,7 @@ class FtController:
         )
 
     async def submit_initial_job(self) -> str:
-        run_id = await self._main_job.submit_job()
+        run_id = await self._main_job.start()
         self._activate_run(run_id)
         return run_id
 

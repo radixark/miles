@@ -83,7 +83,7 @@ class RayMainJob(MainJobProtocol):
     def job_id(self) -> str | None:
         return self._job_id
 
-    async def submit_job(self) -> str:
+    async def start(self) -> str:
         if self._job_id is not None:
             raise RuntimeError(f"Cannot submit: previous job {self._job_id} still tracked. " "Call stop_job() first.")
 
@@ -116,7 +116,7 @@ class RayMainJob(MainJobProtocol):
         )
         return run_id
 
-    async def stop_job(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
+    async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
         if self._job_id is None:
             logger.warning("stop_job called with no active job")
             return
@@ -129,7 +129,7 @@ class RayMainJob(MainJobProtocol):
         )
         self._job_id = None
 
-    async def get_job_status(self) -> JobStatus:
+    async def get_status(self) -> JobStatus:
         if self._job_id is None:
             return JobStatus.STOPPED
 

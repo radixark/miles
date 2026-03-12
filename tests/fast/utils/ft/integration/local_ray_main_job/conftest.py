@@ -49,7 +49,7 @@ def make_main_job(
     for job in created:
         if job.job_id is not None:
             try:
-                asyncio.get_event_loop().run_until_complete(job.stop_job(timeout_seconds=15))
+                asyncio.get_event_loop().run_until_complete(job.stop(timeout_seconds=15))
             except Exception:
                 pass
 
@@ -65,7 +65,7 @@ async def poll_until_terminal(
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        status = await job.get_job_status()
+        status = await job.get_status()
         if status in (JobStatus.STOPPED, JobStatus.FAILED):
             return status
         await asyncio.sleep(interval)

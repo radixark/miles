@@ -15,14 +15,14 @@ async def stop_and_submit(
 ) -> bool:
     """Stop job, submit new job, notify caller of new run_id. Returns True on success."""
     stop_result = await retry_async(
-        main_job.stop_job,
+        main_job.stop,
         description="stop_job",
         max_retries=2,
     )
 
     if not stop_result.ok:
         try:
-            status = await main_job.get_job_status()
+            status = await main_job.get_status()
         except Exception:
             logger.error("get_status_after_stop_failure_also_failed", exc_info=True)
             return False
@@ -35,7 +35,7 @@ async def stop_and_submit(
             return False
 
     try:
-        run_id = await main_job.submit_job()
+        run_id = await main_job.start()
     except Exception:
         logger.error("submit_job_failed", exc_info=True)
         return False

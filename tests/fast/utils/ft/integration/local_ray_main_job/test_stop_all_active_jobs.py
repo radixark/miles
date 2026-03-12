@@ -23,8 +23,8 @@ class TestStopAllActiveJobs:
         # Step 1: submit two long-running jobs (via separate RayMainJob instances)
         job_a: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
         job_b: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
-        await job_a.submit_job()
-        await job_b.submit_job()
+        await job_a.start()
+        await job_b.start()
 
         await asyncio.sleep(2)
 
@@ -47,7 +47,7 @@ class TestStopAllActiveJobs:
     ) -> None:
         # Step 1: submit and stop a job
         job: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
-        await job.submit_job()
+        await job.start()
         await asyncio.sleep(2)
         await stop_all_active_jobs(client=job_client, timeout_seconds=30)
 

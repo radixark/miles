@@ -101,21 +101,21 @@ class TestFakeMainJob:
                 JobStatus.FAILED,
             ]
         )
-        assert await job.get_job_status() == JobStatus.PENDING
-        assert await job.get_job_status() == JobStatus.RUNNING
-        assert await job.get_job_status() == JobStatus.FAILED
-        assert await job.get_job_status() == JobStatus.FAILED
+        assert await job.get_status() == JobStatus.PENDING
+        assert await job.get_status() == JobStatus.RUNNING
+        assert await job.get_status() == JobStatus.FAILED
+        assert await job.get_status() == JobStatus.FAILED
 
     @pytest.mark.anyio
     async def test_default_status_is_running(self) -> None:
         job = FakeMainJob()
-        assert await job.get_job_status() == JobStatus.RUNNING
+        assert await job.get_status() == JobStatus.RUNNING
 
     @pytest.mark.anyio
     async def test_stop_sets_flag(self) -> None:
         job = FakeMainJob()
         assert not job._stopped
-        await job.stop_job()
+        await job.stop()
         assert job._stopped
 
     @pytest.mark.anyio
@@ -126,10 +126,10 @@ class TestFakeMainJob:
                 JobStatus.RUNNING,
             ]
         )
-        assert await job.get_job_status() == JobStatus.PENDING
-        await job.submit_job()
+        assert await job.get_status() == JobStatus.PENDING
+        await job.start()
         assert job._submitted
-        assert await job.get_job_status() == JobStatus.PENDING
+        assert await job.get_status() == JobStatus.PENDING
 
 
 class TestTestCollector:

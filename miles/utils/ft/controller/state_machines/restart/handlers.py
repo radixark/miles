@@ -173,7 +173,7 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
         state: MonitoringProgressSt,
         ctx: RestartContext,
     ) -> RestartState | None:
-        status = await ctx.main_job.get_job_status()
+        status = await ctx.main_job.get_status()
 
         if status == JobStatus.FAILED:
             logger.warning("monitoring_training_failed")

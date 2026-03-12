@@ -106,8 +106,8 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         frozen_state = state.subsystems[requestor]
 
         logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
-        await context.main_job.stop_job()
-        run_id = await context.main_job.submit_job()
+        await context.main_job.stop()
+        run_id = await context.main_job.start()
 
         if context.on_new_run is not None:
             context.on_new_run(run_id)
@@ -123,7 +123,7 @@ class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
     async def step(
         self, state: RestartingMainJobSt, context: MainContext
     ) -> MainState | None:
-        status = await context.main_job.get_job_status()
+        status = await context.main_job.get_status()
         execution_result: ExternalExecutionResult | None = None
 
         if status == JobStatus.RUNNING:

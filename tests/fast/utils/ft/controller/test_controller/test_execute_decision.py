@@ -93,7 +93,7 @@ class TestDetectorExceptionIsolation:
     @pytest.mark.anyio
     async def test_tick_survives_exception_in_tick_inner(self) -> None:
         harness = make_test_controller()
-        harness.main_job.get_job_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.main_job.get_status = _raise_runtime_error  # type: ignore[assignment]
 
         await harness.controller._tick()
         await harness.controller._tick()
@@ -104,7 +104,7 @@ class TestTickFailureTracker:
     @pytest.mark.anyio
     async def test_persistent_failure_triggers_notification(self) -> None:
         harness = make_test_controller()
-        harness.main_job.get_job_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.main_job.get_status = _raise_runtime_error  # type: ignore[assignment]
         harness.controller._tick_loop._tick_failure_tracker._threshold = 3
 
         for _ in range(3):
@@ -117,7 +117,7 @@ class TestTickFailureTracker:
     @pytest.mark.anyio
     async def test_sporadic_failure_does_not_trigger_notification(self) -> None:
         harness = make_test_controller()
-        harness.main_job.get_job_status = _raise_runtime_error  # type: ignore[assignment]
+        harness.main_job.get_status = _raise_runtime_error  # type: ignore[assignment]
         harness.controller._tick_loop._tick_failure_tracker._threshold = 5
 
         await harness.controller._tick()

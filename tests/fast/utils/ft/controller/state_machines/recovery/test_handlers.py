@@ -55,7 +55,7 @@ class _FakeActuator(SubsystemActuatorProtocol):
         return "actuator-run"
 
     async def get_status(self) -> JobStatus:
-        return await self._main_job.get_job_status()
+        return await self._main_job.get_status()
 
 
 def _make_restart_stepper_and_context(

@@ -62,10 +62,10 @@ class TestNodeManagerProtocol:
 class TestMainJobProtocol:
     def test_incomplete_subclass_raises_type_error(self) -> None:
         class _MissingSubmit(MainJobProtocol):
-            async def stop_job(self, timeout_seconds: int = 300) -> None:
+            async def stop(self, timeout_seconds: int = 300) -> None:
                 pass
 
-            async def get_job_status(self) -> JobStatus:
+            async def get_status(self) -> JobStatus:
                 return JobStatus.RUNNING
 
         with pytest.raises(TypeError):
@@ -77,22 +77,22 @@ class TestMainJobProtocol:
             def __init__(self) -> None:
                 self._status = JobStatus.PENDING
 
-            async def stop_job(self, timeout_seconds: int = 300) -> None:
+            async def stop(self, timeout_seconds: int = 300) -> None:
                 self._status = JobStatus.STOPPED
 
-            async def submit_job(self) -> str:
+            async def start(self) -> str:
                 self._status = JobStatus.RUNNING
                 return "run-abc"
 
-            async def get_job_status(self) -> JobStatus:
+            async def get_status(self) -> JobStatus:
                 return self._status
 
         instance: MainJobProtocol = _Impl()
-        run_id = await instance.submit_job()
+        run_id = await instance.start()
         assert run_id == "run-abc"
-        assert await instance.get_job_status() == JobStatus.RUNNING
-        await instance.stop_job(timeout_seconds=10)
-        assert await instance.get_job_status() == JobStatus.STOPPED
+        assert await instance.get_status() == JobStatus.RUNNING
+        await instance.stop(timeout_seconds=10)
+        assert await instance.get_status() == JobStatus.STOPPED
 
 
 class TestNotifierProtocol:

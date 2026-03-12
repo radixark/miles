@@ -78,16 +78,16 @@ class FakeMainJob(MainJobProtocol):
         self._submit_call_count: int = 0
         self._run_id: str = "fake-initial"
 
-    async def get_job_status(self) -> JobStatus:
+    async def get_status(self) -> JobStatus:
         index = min(self._call_count, len(self._status_sequence) - 1)
         status = self._status_sequence[index]
         self._call_count += 1
         return status
 
-    async def stop_job(self, timeout_seconds: int = 300) -> None:
+    async def stop(self, timeout_seconds: int = 300) -> None:
         self._stopped = True
 
-    async def submit_job(self) -> str:
+    async def start(self) -> str:
         self._submitted = True
         self._submit_call_count += 1
         self._call_count = 0
@@ -321,9 +321,9 @@ def make_failing_main_job(
     """FakeMainJob with configurable method failures."""
     job = FakeMainJob(status_sequence=status_sequence)
     if fail_stop:
-        job.stop_job = failing_stop_job  # type: ignore[assignment]
+        job.stop = failing_stop_job  # type: ignore[assignment]
     if fail_submit:
-        job.submit_job = failing_submit_job  # type: ignore[assignment]
+        job.start = failing_submit_job  # type: ignore[assignment]
     return job
 
 

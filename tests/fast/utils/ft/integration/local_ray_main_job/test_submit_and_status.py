@@ -21,7 +21,7 @@ class TestSubmitAndStatus:
         make_main_job: ...,
     ) -> None:
         job: RayMainJob = make_main_job()
-        run_id = await job.submit_job()
+        run_id = await job.start()
 
         assert len(run_id) == 8
         assert run_id.isalnum()
@@ -32,7 +32,7 @@ class TestSubmitAndStatus:
     ) -> None:
         """A trivial 'print(42)' job should reach STOPPED (SUCCEEDED mapped to STOPPED)."""
         job: RayMainJob = make_main_job(entrypoint='python -c "print(42)"')
-        await job.submit_job()
+        await job.start()
 
         status = await poll_until_terminal(job)
 
@@ -44,14 +44,14 @@ class TestSubmitAndStatus:
     ) -> None:
         """A sleeping job should be RUNNING or PENDING while alive."""
         job: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
-        await job.submit_job()
+        await job.start()
 
         await asyncio.sleep(3)
-        status = await job.get_job_status()
+        status = await job.get_status()
 
         assert status in (JobStatus.RUNNING, JobStatus.PENDING)
 
-        await job.stop_job(timeout_seconds=15)
+        await job.stop(timeout_seconds=15)
 
     async def test_failing_job_reaches_failed_status(
         self,
@@ -59,7 +59,7 @@ class TestSubmitAndStatus:
     ) -> None:
         """A job that exits with nonzero should reach FAILED."""
         job: RayMainJob = make_main_job(entrypoint='python -c "import sys; sys.exit(1)"')
-        await job.submit_job()
+        await job.start()
 
         status = await poll_until_terminal(job)
 
@@ -70,12 +70,12 @@ class TestSubmitAndStatus:
         make_main_job: ...,
     ) -> None:
         job: RayMainJob = make_main_job(entrypoint='python -c "import time; time.sleep(300)"')
-        await job.submit_job()
+        await job.start()
 
         with pytest.raises(RuntimeError, match="Cannot submit"):
-            await job.submit_job()
+            await job.start()
 
-        await job.stop_job(timeout_seconds=15)
+        await job.stop(timeout_seconds=15)
 
     async def test_no_job_returns_stopped(
         self,
@@ -83,7 +83,7 @@ class TestSubmitAndStatus:
     ) -> None:
         """get_job_status with no submitted job should return STOPPED."""
         job: RayMainJob = make_main_job()
-        status = await job.get_job_status()
+        status = await job.get_status()
 
         assert status == JobStatus.STOPPED
 
@@ -96,7 +96,7 @@ class TestSubmitAndStatus:
         job: RayMainJob = make_main_job(
             entrypoint="python -c \"import os; print(os.environ['MILES_FT_TRAINING_RUN_ID'])\"",
         )
-        run_id = await job.submit_job()
+        run_id = await job.start()
 
         await poll_until_terminal(job)
 

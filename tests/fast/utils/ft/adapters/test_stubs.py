@@ -30,17 +30,17 @@ class TestStubNodeManager:
 class TestStubMainJob:
     async def test_submit_returns_unique_run_id(self) -> None:
         job = StubMainJob()
-        run_id_1 = await job.submit_job()
-        run_id_2 = await job.submit_job()
+        run_id_1 = await job.start()
+        run_id_2 = await job.start()
         assert isinstance(run_id_1, str)
         assert len(run_id_1) == 8
         assert run_id_1 != run_id_2
 
     async def test_get_job_status_returns_running(self) -> None:
         job = StubMainJob()
-        status = await job.get_job_status()
+        status = await job.get_status()
         assert status == JobStatus.RUNNING
 
     async def test_stop_job_does_not_raise(self) -> None:
         job = StubMainJob()
-        await job.stop_job(timeout_seconds=10)
+        await job.stop(timeout_seconds=10)

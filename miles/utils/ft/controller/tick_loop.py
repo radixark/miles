@@ -90,7 +90,7 @@ class TickLoop:
                     subsystem_node_ids=set(roster.rank_placement.values()),
                     registered_agent_node_ids=set(self._agents.keys()),
                 )
-            job_status = await self._main_job.get_job_status()
+            job_status = await self._main_job.get_status()
 
             context = self._build_controller_context(job_status=job_status)
             await self.state_machine.step(context)
