@@ -144,6 +144,37 @@ class TestRegisterTrainingRankHappyPath:
         assert registry.rank_pids == {0: 10, 1: 20}
         assert registry.expected_world_size == 2
 
+    def test_inconsistent_world_size_rejected(self, caplog: pytest.LogCaptureFixture) -> None:
+        """world_size was overwritten on every registration, allowing
+        inconsistent values to drift the completeness check. Now locked
+        after first registration; mismatches are rejected."""
+        registry = _make_registry()
+
+        registry.register_training_rank(
+            run_id="run-1",
+            rank=0,
+            world_size=4,
+            node_id="node-0",
+            exporter_address="addr",
+            pid=10,
+        )
+        assert registry.expected_world_size == 4
+
+        with caplog.at_level("ERROR"):
+            registry.register_training_rank(
+                run_id="run-1",
+                rank=1,
+                world_size=8,
+                node_id="node-1",
+                exporter_address="addr",
+                pid=20,
+            )
+
+        assert "rejected_inconsistent_world_size" in caplog.text
+        assert registry.expected_world_size == 4
+        assert 1 not in registry.rank_placement
+        assert 1 not in registry.rank_pids
+
 
 # ===================================================================
 # scrape target management

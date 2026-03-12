@@ -38,7 +38,20 @@ class TrainingRankRoster:
             )
             return
         _validate_rank(rank=rank, world_size=world_size, node_id=node_id)
-        self.expected_world_size = world_size
+
+        if self.expected_world_size is None:
+            self.expected_world_size = world_size
+        elif world_size != self.expected_world_size:
+            logger.error(
+                "rejected_inconsistent_world_size run_id=%s rank=%d reported_world_size=%d expected_world_size=%d node_id=%s",
+                run_id,
+                rank,
+                world_size,
+                self.expected_world_size,
+                node_id,
+            )
+            return
+
         self.rank_placement[rank] = node_id
         self.rank_pids[rank] = pid
         logger.info(
