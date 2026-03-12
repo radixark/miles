@@ -79,7 +79,6 @@ def _compute_sample_from_openai_record(
             request_input_ids == prompt_token_ids
         ), "for prompt part, input_ids return by sglang should match with the request input_ids"
 
-    # Build full sample first (routed_experts reshape depends on len(tokens)-1).
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
@@ -87,10 +86,8 @@ def _compute_sample_from_openai_record(
     sample.loss_mask = [1] * len(output_token_ids)
     sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice, sample, "routed_experts")
 
-    # Strip trailing stop token from intermediate turns so merge_samples
-    # prefix check works: turn N+1's prompt_token_ids comes from stripped
-    # pretokenized, so turn N's sample.tokens must also be stripped to align.
-    # The last sample keeps its stop token (no subsequent turn to match).
+    # Strip trailing stop token for some models (e.g. GLM 4.7/5) from intermediate turns (1,2,...,N-1) so merge_samples
+    # prefix check works, but we should skip the last turn (N).
     if not is_last and tito_tokenizer.should_strip_trailing_stop_token(output_token_ids):
         sample.strip_last_output_token(tokenizer)
 
