@@ -246,8 +246,10 @@ class TestResume:
 
 class TestLoopSurvivesException:
     @pytest.mark.anyio
-    async def test_broken_cell_does_not_crash_loop(self) -> None:
-        """If one cell's engine list callback raises, the loop continues."""
+    async def test_broken_cell_reports_unhealthy(self) -> None:
+        """H-2: If get_engines() raises, report_fn must still be called with
+        is_healthy=False so the metric transitions to 0 (previously the
+        exception silently swallowed the report, leaving the metric stale)."""
 
         def _exploding_engines() -> list[object]:
             raise RuntimeError("simulated failure")
@@ -269,8 +271,8 @@ class TestLoopSurvivesException:
             # Step 1: healthy cell still reported
             assert collector.latest("healthy") is True
 
-            # Step 2: broken cell never reported (exception caught)
-            assert collector.latest("broken") is None
+            # Step 2: broken cell reported as unhealthy (not silently skipped)
+            assert collector.latest("broken") is False
 
             # Step 3: loop still running
             assert not checker._task.done()

@@ -76,6 +76,7 @@ class RolloutHealthChecker:
             await asyncio.sleep(self._check_interval)
 
     async def _check_one_cell(self, entry: CellEntry) -> None:
+        is_healthy = False
         try:
             is_healthy = await _probe_cell(
                 engines=entry.get_engines(),
@@ -83,11 +84,11 @@ class RolloutHealthChecker:
                 cell_id=entry.cell_id,
                 timeout=self._timeout,
             )
-            self._report_fn(cell_id=entry.cell_id, is_healthy=is_healthy)
         except Exception:
             logger.warning(
                 "health_check_failed cell_id=%s", entry.cell_id, exc_info=True,
             )
+        self._report_fn(cell_id=entry.cell_id, is_healthy=is_healthy)
 
 
 async def _probe_cell(
