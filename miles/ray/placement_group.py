@@ -170,7 +170,10 @@ def create_rollout_manager(args, pg):
     rollout_manager = RolloutManager.options(
         num_cpus=1,
         num_gpus=0,
+        max_concurrency=10,
     ).remote(args, pg)
+
+    ray.get(rollout_manager.ready.remote())
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
