@@ -6,10 +6,11 @@ from miles.utils.ft.adapters.types import NodeAgentProtocol
 
 
 class NodeAgentRegistry:
-    """Thread-safe-ish registry for node agents.
+    """Single-threaded asyncio-only registry for node agents.
 
     Wraps the mutable dict that was previously shared as a raw reference
     between FtController (writer), TickLoop and DiagnosticOrchestrator (readers).
+    Not thread-safe — all access must happen on the same event loop.
     """
 
     def __init__(self) -> None:
