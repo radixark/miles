@@ -114,13 +114,7 @@ def setup_session_routes(app, router: "MilesRouter"):
         prompt_token_ids = choice.get("prompt_token_ids")
         meta_info = choice["meta_info"]
         output_token_logprobs = meta_info["output_token_logprobs"]
-        completion_tokens = meta_info.get("completion_tokens")
-
-        if not isinstance(completion_tokens, int):
-            raise RuntimeError(
-                "meta_info.completion_tokens must be present and int when output_token_logprobs is returned; "
-                f"got {completion_tokens!r}"
-            )
+        completion_tokens = meta_info["completion_tokens"]
 
         actual_output_logprobs_len = len(output_token_logprobs)
         if actual_output_logprobs_len != completion_tokens:
@@ -128,6 +122,7 @@ def setup_session_routes(app, router: "MilesRouter"):
                 "invalid chat completion response: "
                 f"len(output_token_logprobs)={actual_output_logprobs_len} "
                 f"!= completion_tokens={completion_tokens}"
+                f"Please check whether you use the correct SGLang branch which has fix the tokenizer batch decode issue."
             )
 
         completion_token_ids = [t[1] for t in output_token_logprobs]

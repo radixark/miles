@@ -12,26 +12,6 @@ from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqCompara
 logger = logging.getLogger(__name__)
 
 
-def _messages_equal_relaxed(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """Compare two messages treating content=None as equivalent to content=""."""
-    if a.keys() != b.keys():
-        # Also handle case where one dict omits the key entirely.
-        all_keys = a.keys() | b.keys()
-        for k in all_keys:
-            va, vb = a.get(k), b.get(k)
-            if k == "content" and (va or "") == (vb or ""):
-                continue
-            if va != vb:
-                return False
-        return True
-    for k in a:
-        if a[k] != b[k]:
-            if k == "content" and (a[k] or "") == (b[k] or ""):
-                continue
-            return False
-    return True
-
-
 class SingleUserTurnTrajectory(BaseModel):
     """State for a single-user-turn trajectory.
 
@@ -41,7 +21,7 @@ class SingleUserTurnTrajectory(BaseModel):
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     records: list[SessionRecord] = Field(default_factory=list)
-    # Accumulated token IDs from the latest response
+    # Accumulated token IDs from the latest trajectory
     # (prompt_token_ids + completion_token_ids).
     # Sent as pretokenized_token_ids on the next turn so SGLang can skip
     # re-tokenizing the prefix.
@@ -233,14 +213,9 @@ class SingleUserTurnTrajectoryManager:
         if len(new_messages) < len(stored_messages):
             return False
 
-        # Check that the stored prefix is unchanged.
-        # SGLang returns content=None for assistant messages with only
-        # tool_calls; we normalise to "" in update_pretokenized_state,
-        # so treat None and "" as equivalent here.
         for i, stored_msg in enumerate(stored_messages):
             if new_messages[i] != stored_msg:
-                if not _messages_equal_relaxed(stored_msg, new_messages[i]):
-                    return False
+                return False
 
         ALLOWED_APPEND_ROLES = {"tool", "system"}
         for msg in new_messages[len(stored_messages) :]:
