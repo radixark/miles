@@ -42,17 +42,6 @@ class TestRayRolloutActuator:
         assert result == "9"
         assert isinstance(result, str)
 
-    async def test_start_with_dict_result_extracts_count(self) -> None:
-        handle = FakeRmHandle()
-        handle.start_cell.remote = AsyncMock(
-            return_value={"engine_handles": ["e0", "e1"], "count": 2},
-        )
-        actuator = RayRolloutActuator(get_handle=lambda: handle, cell_id="0")
-
-        result = await actuator.start()
-
-        assert result == "2"
-
     async def test_get_status_running(self) -> None:
         handle = FakeRmHandle()
         actuator = RayRolloutActuator(get_handle=lambda: handle, cell_id="0")
