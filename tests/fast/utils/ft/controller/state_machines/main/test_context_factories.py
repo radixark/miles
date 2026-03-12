@@ -16,7 +16,7 @@ from miles.utils.ft.controller.state_machines.main.context_factories import (
 )
 from miles.utils.ft.controller.state_machines.main.models import MainContext
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
-from miles.utils.ft.controller.subsystem_hub.config import RestartMode, SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub.config import RestartMode, SubsystemConfig, SubsystemRuntime, SubsystemSpec
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
@@ -33,7 +33,7 @@ def _make_main_context(
 ) -> MainContext:
     return MainContext(
         main_job=FakeMainJob(),
-        subsystem_configs={},
+        subsystem_specs={},
         tick_count=tick_count,
         run_start_tick=run_start_tick,
         job_status=job_status,
@@ -109,23 +109,29 @@ class TestBuildSubsystemContext:
         ctx = _make_main_context(tick_count=10)
         cooldown_a = SlidingWindowThrottle(window_minutes=30, max_count=3)
         cooldown_b = SlidingWindowThrottle(window_minutes=30, max_count=3)
-        config_a = SubsystemConfig(
-            actuator=MagicMock(),
-            cooldown=cooldown_a,
-            get_active_node_ids=lambda: {"node-0"},
+        spec_a = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(
+                actuator=MagicMock(),
+                cooldown=cooldown_a,
+                get_active_node_ids=lambda: {"node-0"},
+            ),
         )
-        config_b = SubsystemConfig(
-            actuator=MagicMock(),
-            cooldown=cooldown_b,
-            get_active_node_ids=lambda: {"node-1"},
+        spec_b = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(
+                actuator=MagicMock(),
+                cooldown=cooldown_b,
+                get_active_node_ids=lambda: {"node-1"},
+            ),
         )
 
         result_a = build_subsystem_context(
-            config=config_a, context=ctx,
+            spec=spec_a, context=ctx,
             recovery_stepper=AsyncMock(), restart_stepper=AsyncMock(),
         )
         result_b = build_subsystem_context(
-            config=config_b, context=ctx,
+            spec=spec_b, context=ctx,
             recovery_stepper=AsyncMock(), restart_stepper=AsyncMock(),
         )
 
@@ -137,17 +143,21 @@ class TestBuildSubsystemContext:
         ctx = _make_main_context(tick_count=10)
         actuator = MagicMock()
         monitoring_config = MonitoringIterationProgressConfig()
-        config = SubsystemConfig(
-            actuator=actuator,
-            detectors=[],
-            monitoring_config=monitoring_config,
-            get_active_node_ids=lambda: {"node-0"},
+        spec = SubsystemSpec(
+            config=SubsystemConfig(
+                detectors=[],
+                monitoring_config=monitoring_config,
+            ),
+            runtime=SubsystemRuntime(
+                actuator=actuator,
+                get_active_node_ids=lambda: {"node-0"},
+            ),
         )
         recovery_stepper = AsyncMock()
         restart_stepper = AsyncMock()
 
         result = build_subsystem_context(
-            config=config,
+            spec=spec,
             context=ctx,
             recovery_stepper=recovery_stepper,
             restart_stepper=restart_stepper,
@@ -160,20 +170,23 @@ class TestBuildSubsystemContext:
         assert result.detector_context.active_node_ids == {"node-0"}
         assert result.notifier is ctx.notifier
         assert result.detectors == []
-        assert result.cooldown is config.cooldown
+        assert result.cooldown is spec.runtime.cooldown
         assert result.recovery_stepper is recovery_stepper
         assert result.max_simultaneous_bad_nodes == ctx.max_simultaneous_bad_nodes
         assert result.monitoring_config is monitoring_config
 
     def test_detector_context_is_none_when_detectors_should_not_run(self) -> None:
         ctx = _make_main_context(tick_count=1, registration_grace_ticks=5)
-        config = SubsystemConfig(
-            actuator=MagicMock(),
-            get_active_node_ids=lambda: {"node-0"},
+        spec = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(
+                actuator=MagicMock(),
+                get_active_node_ids=lambda: {"node-0"},
+            ),
         )
 
         result = build_subsystem_context(
-            config=config,
+            spec=spec,
             context=ctx,
             recovery_stepper=AsyncMock(),
             restart_stepper=AsyncMock(),
@@ -188,15 +201,19 @@ class TestBuildRecoveryContext:
         ctx = _make_main_context()
         actuator = AsyncMock(spec=SubsystemActuatorProtocol)
         monitoring_config = MonitoringIterationProgressConfig()
-        config = SubsystemConfig(
-            actuator=actuator,
-            monitoring_config=monitoring_config,
+        spec = SubsystemSpec(
+            config=SubsystemConfig(
+                monitoring_config=monitoring_config,
+            ),
+            runtime=SubsystemRuntime(
+                actuator=actuator,
+            ),
         )
         restart_stepper = AsyncMock()
         now = datetime.now(timezone.utc)
 
         result = _build_recovery_context(
-            config=config,
+            spec=spec,
             context=ctx,
             trigger=TriggerType.CRASH,
             recovery_start_time=now,
@@ -222,7 +239,7 @@ class TestBuildRecoveryContext:
         metadata = {"ray-uuid-abc": {"k8s_node_name": "gke-node-01"}}
         ctx = MainContext(
             main_job=FakeMainJob(),
-            subsystem_configs={},
+            subsystem_specs={},
             tick_count=10,
             run_start_tick=0,
             job_status=JobStatus.RUNNING,
@@ -244,10 +261,13 @@ class TestBuildRecoveryContext:
             registration_grace_ticks=5,
         )
         actuator = AsyncMock(spec=SubsystemActuatorProtocol)
-        config = SubsystemConfig(actuator=actuator)
+        spec = SubsystemSpec(
+            config=SubsystemConfig(),
+            runtime=SubsystemRuntime(actuator=actuator),
+        )
 
         result = _build_recovery_context(
-            config=config,
+            spec=spec,
             context=ctx,
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),

@@ -28,7 +28,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
     ExternalRestartingMainJobSt,
 )
-from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
+from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, SubsystemRuntime, SubsystemSpec
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
@@ -51,21 +51,24 @@ def _make_frozen_recovering_state() -> RecoveringSt:
     )
 
 
-def _make_subsystem_config() -> SubsystemConfig:
-    return SubsystemConfig(actuator=AsyncMock(spec=SubsystemActuatorProtocol))
+def _make_subsystem_spec() -> SubsystemSpec:
+    return SubsystemSpec(
+        config=SubsystemConfig(),
+        runtime=SubsystemRuntime(actuator=AsyncMock(spec=SubsystemActuatorProtocol)),
+    )
 
 
 def _make_controller_context(
     *,
     main_job: FakeMainJob | None = None,
-    subsystem_configs: dict[str, SubsystemConfig] | None = None,
+    subsystem_specs: dict[str, SubsystemSpec] | None = None,
     notifier: FakeNotifier | None = None,
 ) -> MainContext:
     resolved_main_job = main_job or FakeMainJob()
     return MainContext(
         main_job=resolved_main_job,
-        subsystem_configs=subsystem_configs or {
-            "training": _make_subsystem_config(),
+        subsystem_specs=subsystem_specs or {
+            "training": _make_subsystem_spec(),
         },
         tick_count=10,
         run_start_tick=0,
@@ -112,9 +115,9 @@ class TestNormalOperation:
         }
         state = NormalSt(subsystems=subsystems)
         context = _make_controller_context(
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -143,7 +146,7 @@ class TestSingleSubsystemEscalation:
         state = NormalSt(subsystems=subsystems)
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={"rollout_0": _make_subsystem_config()},
+            subsystem_specs={"rollout_0": _make_subsystem_spec()},
         )
 
         result = await _step_last(stepper, state, context)
@@ -175,9 +178,9 @@ class TestJobRestartComplete:
         )
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -217,9 +220,9 @@ class TestMultiSubsystemOneEscalates:
 
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -270,9 +273,9 @@ class TestNonRequestorRecoveryDiscarded:
         state = NormalSt(subsystems=subsystems)
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -299,9 +302,9 @@ class TestNonRequestorRecoveryDiscarded:
         )
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -350,9 +353,9 @@ class TestJobRestartPending:
         )
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -381,9 +384,9 @@ class TestJobRestartPending:
         )
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -405,7 +408,7 @@ class TestJobRestartPending:
 class TestSubsystemKeysSyncAssert:
     @pytest.mark.asyncio
     async def test_mismatched_subsystem_keys_raises_assertion_error(self) -> None:
-        """NormalHandler.step assumes subsystem_configs keys match
+        """NormalHandler.step assumes subsystem_specs keys match
         state.subsystems keys. If they diverge, a KeyError would occur
         deep in the handler. An explicit assert catches this early."""
         stepper = create_main_stepper()
@@ -413,9 +416,9 @@ class TestSubsystemKeysSyncAssert:
             "training": DetectingAnomalySt(),
         })
         context = _make_controller_context(
-            subsystem_configs={
-                "training": _make_subsystem_config(),
-                "rollout_0": _make_subsystem_config(),
+            subsystem_specs={
+                "training": _make_subsystem_spec(),
+                "rollout_0": _make_subsystem_spec(),
             },
         )
 
@@ -437,20 +440,20 @@ class TestSubsystemSteppingOrder:
         import miles.utils.ft.controller.state_machines.main.handlers as handlers_mod
 
         call_order: list[str] = []
-        configs = {}
+        specs = {}
         for name in ["zz_last", "aa_first", "mm_middle"]:
-            configs[name] = _make_subsystem_config()
-        subsystems = {name: DetectingAnomalySt() for name in configs}
+            specs[name] = _make_subsystem_spec()
+        subsystems = {name: DetectingAnomalySt() for name in specs}
 
         original_build = handlers_mod.build_subsystem_context
 
-        def tracking_build(*, config, **kwargs):
-            name = next(n for n, c in configs.items() if c is config)
+        def tracking_build(*, spec, **kwargs):
+            name = next(n for n, s in specs.items() if s is spec)
             call_order.append(name)
-            return original_build(config=config, **kwargs)
+            return original_build(spec=spec, **kwargs)
 
         state = NormalSt(subsystems=subsystems)
-        context = _make_controller_context(subsystem_configs=configs)
+        context = _make_controller_context(subsystem_specs=specs)
 
         with patch.object(handlers_mod, "build_subsystem_context", tracking_build):
             handler = handlers_mod.NormalHandler()
@@ -484,7 +487,7 @@ class TestMainJobRestartStopFailure:
         state = NormalSt(subsystems=subsystems)
         context = _make_controller_context(
             main_job=main_job,
-            subsystem_configs={"rollout_0": _make_subsystem_config()},
+            subsystem_specs={"rollout_0": _make_subsystem_spec()},
             notifier=notifier,
         )
 

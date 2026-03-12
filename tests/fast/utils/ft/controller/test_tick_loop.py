@@ -51,7 +51,7 @@ def _make_tick_loop(
         max_simultaneous_bad_nodes=2,
         diagnostic_orchestrator=MagicMock(),
         recovery_timeout_seconds=600,
-        subsystem_configs={},
+        subsystem_specs={},
         on_main_job_new_run=lambda run_id: None,
         rank_pids_provider=lambda node_id: {},
         registration_grace_ticks=registration_grace_ticks,
@@ -168,7 +168,7 @@ class TestCollectSubsystemModes:
         sm.state = MagicMock(spec=MainState)
 
         loop = _make_tick_loop(state_machine=sm)
-        loop.subsystem_configs = {
+        loop.subsystem_specs = {
             "training": MagicMock(),
             "networking": MagicMock(),
         }
@@ -222,7 +222,7 @@ class TestCollectSubsystemModesRestartingMainJob:
         )
 
         loop = _make_tick_loop(state_machine=sm)
-        loop.subsystem_configs = {
+        loop.subsystem_specs = {
             "training": MagicMock(),
             "rollout_0": MagicMock(),
         }

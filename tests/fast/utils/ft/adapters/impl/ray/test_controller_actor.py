@@ -16,8 +16,8 @@ from miles.utils.ft.factories.controller import build_ft_controller
 
 
 def _get_training_detectors(ctrl):
-    """Extract detectors from the training SubsystemConfig."""
-    return ctrl._tick_loop.subsystem_configs["training"].detectors
+    """Extract detectors from the training SubsystemSpec."""
+    return ctrl._tick_loop.subsystem_specs["training"].config.detectors
 
 
 class TestBuildFtController:

@@ -168,20 +168,20 @@ class TestRegisterRolloutSubsystems:
         assert "rollout_ep36" in state.subsystems
         assert len(state.subsystems) == 3
 
-    def test_rollout_config_has_subsystem_restart_mode(self) -> None:
+    def test_rollout_spec_has_subsystem_restart_mode(self) -> None:
         controller, *_ = _make_test_controller_with_rollout()
-        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
-        assert rollout_config.restart_mode == RestartMode.SUBSYSTEM
+        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        assert rollout_spec.config.restart_mode == RestartMode.SUBSYSTEM
 
-    def test_training_config_has_main_job_restart_mode(self) -> None:
+    def test_training_spec_has_main_job_restart_mode(self) -> None:
         controller, *_ = _make_test_controller_with_rollout()
-        training_config = controller._tick_loop.subsystem_configs["training"]
-        assert training_config.restart_mode == RestartMode.MAIN_JOB
+        training_spec = controller._tick_loop.subsystem_specs["training"]
+        assert training_spec.config.restart_mode == RestartMode.MAIN_JOB
 
     def test_rollout_active_node_ids_returns_registered_nodes(self) -> None:
         harness = _make_test_controller_with_rollout()
-        rollout_config = harness.controller._tick_loop.subsystem_configs["rollout_ep72"]
-        assert rollout_config.get_active_node_ids() == {"rollout-node-ep72-0", "rollout-node-ep72-1"}
+        rollout_spec = harness.controller._tick_loop.subsystem_specs["rollout_ep72"]
+        assert rollout_spec.runtime.get_active_node_ids() == {"rollout-node-ep72-0", "rollout-node-ep72-1"}
 
 
 class TestNormalOperationWithRollout:
@@ -220,7 +220,7 @@ class TestRolloutCrashRecovery:
         """When a rollout detector fires, the rollout subsystem enters Recovering."""
         controller, *_ = _make_test_controller_with_rollout()
 
-        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
+        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
         crash_detector = FixedDecisionDetector(
             Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -229,8 +229,8 @@ class TestRolloutCrashRecovery:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_config.detectors.clear()
-        rollout_config.detectors.append(crash_detector)
+        rollout_spec.config.detectors.clear()
+        rollout_spec.config.detectors.append(crash_detector)
 
         await controller._tick()
 
@@ -242,36 +242,36 @@ class TestRolloutCrashRecovery:
         )
 
 
-class TestSubsystemConfigsIncludeRollout:
-    def test_subsystem_configs_include_rollout(self) -> None:
-        """After construction, subsystem_configs contains both training + rollout."""
+class TestSubsystemSpecsIncludeRollout:
+    def test_subsystem_specs_include_rollout(self) -> None:
+        """After construction, subsystem_specs contains both training + rollout."""
         controller, *_ = _make_test_controller_with_rollout(
             cell_ids=["ep72", "ep36"],
         )
 
-        configs = controller._tick_loop.subsystem_configs
-        assert "training" in configs
-        assert "rollout_ep72" in configs
-        assert "rollout_ep36" in configs
-        assert len(configs) == 3
+        specs = controller._tick_loop.subsystem_specs
+        assert "training" in specs
+        assert "rollout_ep72" in specs
+        assert "rollout_ep36" in specs
+        assert len(specs) == 3
 
-    def test_subsystem_configs_have_correct_actuator_and_config_types(self) -> None:
+    def test_subsystem_specs_have_correct_actuator_and_config_types(self) -> None:
         from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
         from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
 
         controller, *_ = _make_test_controller_with_rollout()
-        configs = controller._tick_loop.subsystem_configs
+        specs = controller._tick_loop.subsystem_specs
 
-        training = configs["training"]
-        assert isinstance(training.actuator, TrainingSubsystemActuator)
-        assert training.restart_mode == RestartMode.MAIN_JOB
-        assert isinstance(training.monitoring_config, MonitoringIterationProgressConfig)
+        training = specs["training"]
+        assert isinstance(training.runtime.actuator, TrainingSubsystemActuator)
+        assert training.config.restart_mode == RestartMode.MAIN_JOB
+        assert isinstance(training.config.monitoring_config, MonitoringIterationProgressConfig)
 
-        rollout = configs["rollout_ep72"]
-        assert isinstance(rollout.actuator, RayRolloutActuator)
-        assert rollout.restart_mode == RestartMode.SUBSYSTEM
-        assert isinstance(rollout.monitoring_config, MonitoringSustainedAliveConfig)
-        assert len(rollout.detectors) > 0
+        rollout = specs["rollout_ep72"]
+        assert isinstance(rollout.runtime.actuator, RayRolloutActuator)
+        assert rollout.config.restart_mode == RestartMode.SUBSYSTEM
+        assert isinstance(rollout.config.monitoring_config, MonitoringSustainedAliveConfig)
+        assert len(rollout.config.detectors) > 0
 
 
 class TestStatusReportsRollout:
@@ -303,8 +303,8 @@ class TestFullLevel1RecoveryCycle:
         )
         controller = harness.controller
 
-        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
-        rollout_config.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -317,8 +317,8 @@ class TestFullLevel1RecoveryCycle:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_config.detectors.clear()
-        rollout_config.detectors.append(rollout_detector)
+        rollout_spec.config.detectors.clear()
+        rollout_spec.config.detectors.append(rollout_detector)
 
         await controller._tick()
 
@@ -341,8 +341,8 @@ class TestLevel1FailureEscalation:
         )
         controller = harness.controller
 
-        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
-        rollout_config.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -357,8 +357,8 @@ class TestLevel1FailureEscalation:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_config.detectors.clear()
-        rollout_config.detectors.append(rollout_detector)
+        rollout_spec.config.detectors.clear()
+        rollout_spec.config.detectors.append(rollout_detector)
 
         await controller._tick()
 
@@ -401,8 +401,8 @@ class TestColocatedHardwareFault:
         harness.subsystem_hub.training_rank_roster.rank_placement[0] = shared_node
         harness.subsystem_hub.training_rank_roster.rank_placement[1] = "train-node-1"
 
-        rollout_config = controller._tick_loop.subsystem_configs["rollout_ep72"]
-        rollout_config.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_spec = controller._tick_loop.subsystem_specs["rollout_ep72"]
+        rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -417,8 +417,8 @@ class TestColocatedHardwareFault:
                 trigger=TriggerType.CRASH,
             )
         )
-        rollout_config.detectors.clear()
-        rollout_config.detectors.append(rollout_detector)
+        rollout_spec.config.detectors.clear()
+        rollout_spec.config.detectors.append(rollout_detector)
 
         await controller._tick()
 
