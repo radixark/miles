@@ -111,6 +111,49 @@ class TestGpuCollector:
 
         assert collector.collect_interval == 10.0
 
+    # P2 item 18: individual collection method edge cases
+    async def test_row_remap_failure_returns_empty_for_that_metric(self) -> None:
+        """_collect_row_remap raises → graceful_degrade returns [], other metrics still reported."""
+        with _patched_gpu_collector(device_count=1) as (collector, mock):
+            mock.nvmlDeviceGetRemappedRows.side_effect = RuntimeError("remap query failed")
+            result = await collector.collect()
+
+        names = {m.name for m in result.metrics}
+        assert "miles_ft_dcgm_fi_dev_row_remap_pending" not in names
+        assert "miles_ft_dcgm_fi_dev_row_remap_failure" not in names
+        assert "miles_ft_gpu_available" in names
+        assert "miles_ft_dcgm_fi_dev_gpu_temp" in names
+
+    async def test_utilization_at_zero_percent(self) -> None:
+        """GPU utilization at 0% should be reported correctly."""
+        with _patched_gpu_collector(device_count=1) as (collector, mock):
+            mock.nvmlDeviceGetUtilizationRates.return_value = MagicMock(gpu=0, memory=0)
+            result = await collector.collect()
+
+        util = [m for m in result.metrics if m.name == "miles_ft_dcgm_fi_dev_gpu_util"]
+        assert len(util) == 1
+        assert util[0].value == 0.0
+
+    async def test_utilization_at_100_percent(self) -> None:
+        """GPU utilization at 100% should be reported correctly."""
+        with _patched_gpu_collector(device_count=1) as (collector, mock):
+            mock.nvmlDeviceGetUtilizationRates.return_value = MagicMock(gpu=100, memory=80)
+            result = await collector.collect()
+
+        util = [m for m in result.metrics if m.name == "miles_ft_dcgm_fi_dev_gpu_util"]
+        assert len(util) == 1
+        assert util[0].value == 100.0
+
+    async def test_pcie_bandwidth_failure_returns_empty_for_that_metric(self) -> None:
+        """_collect_pcie_bandwidth raises → graceful_degrade returns []."""
+        with _patched_gpu_collector(device_count=1) as (collector, mock):
+            mock.nvmlDeviceGetPcieThroughput.side_effect = RuntimeError("pcie query failed")
+            result = await collector.collect()
+
+        names = {m.name for m in result.metrics}
+        assert "miles_ft_dcgm_fi_dev_pcie_tx_throughput" not in names
+        assert "miles_ft_gpu_available" in names
+
 
 class TestGpuCollectorRealHardware:
     """Zero-mock tests against real NVML. Run on GPU nodes."""

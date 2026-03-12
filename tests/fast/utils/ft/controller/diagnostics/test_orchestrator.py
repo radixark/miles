@@ -533,6 +533,28 @@ class TestPipelineTimeout:
         assert decision.bad_node_ids == []
         assert "timed out" in decision.reason
 
+    # P2 item 23: pre-executor timeout
+    @pytest.mark.anyio
+    async def test_pipeline_timeout_during_pre_executors(self) -> None:
+        """Pipeline timeout fires during pre_executors, before main pipeline."""
+        node_agents: dict = {
+            "node-0": HangingNodeAgent(node_id="node-0"),
+        }
+        orchestrator = DiagnosticOrchestrator(
+            node_agents=node_agents,
+            pipeline=[],
+            default_timeout_seconds=9999,
+            pipeline_timeout_seconds=0,
+        )
+        hanging_pre_executor = GpuClusterExecutor()
+
+        decision = await orchestrator.run_diagnostic_pipeline(
+            pre_executors=[hanging_pre_executor],
+        )
+
+        assert decision.bad_node_ids == []
+        assert "timed out" in decision.reason
+
     @pytest.mark.anyio
     async def test_pipeline_timeout_fires_before_per_call_timeout(self) -> None:
         """Pipeline timeout should fire even when per-call timeout is very large."""
