@@ -34,9 +34,8 @@ async def test_hang_detected_workers_alive_but_stalled(
 ) -> None:
     """Workers respond to ping but stop advancing iterations -> HangDetector fires -> RECOVERY -> resume.
 
-    This exercises real Ray actor hang detection: unlike old E2EEnv where "hang"
-    was a flag on fake TrainingWorkerActor with state_actor, MilesTestbed workers
-    are real Ray actor processes that stay alive but stop doing work.
+    MilesTestbed workers are real Ray actor processes that stay alive but stop
+    doing work when hung, so this test validates true process-level hang detection.
     """
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],

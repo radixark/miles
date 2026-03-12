@@ -37,9 +37,6 @@ async def test_single_node_kill_cascades_to_all_ranks(
     When node-0's 2 ranks are killed, node-1's 2 ranks detect peer death via
     _all_peers_alive() -> exit_actor(), cascading to a full training crash.
     The controller detects FAILED status and triggers recovery back to MONITORING.
-
-    This exercises real process cascade behavior that was impossible with
-    the old E2EEnv (which used set_status(FAILED) global state).
     """
     testbed = await make_testbed(
         training_nodes=[
