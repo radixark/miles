@@ -264,6 +264,31 @@ class TestMfuDeclineNoiseSpikeResistance:
         assert "monitoring" in decision.reason
 
 
+class TestDeclineDurationClamp:
+    def test_future_decline_start_clamped_to_zero(self) -> None:
+        """If decline_start is in the future due to clock skew,
+        _compute_decline_duration_minutes previously returned a negative
+        value. Negative elapsed_minutes < decline_timeout_minutes was
+        always True, so the detector silently stopped alerting. Now
+        clamped to max(0, ...)."""
+        now = datetime.now(timezone.utc)
+        future_entries: list[tuple[float, datetime]] = [
+            (0.3, now + timedelta(minutes=5 + i)) for i in range(10)
+        ]
+        wandb = _make_wandb_with_timed_mfu(future_entries)
+
+        detector = MfuDeclineDetector(
+            config=MfuDeclineDetectorConfig(
+                mfu_baseline=0.5,
+                mfu_threshold_ratio=0.8,
+                consecutive_steps=10,
+                decline_timeout_minutes=30.0,
+            )
+        )
+        duration = detector._compute_decline_duration_minutes(wandb, threshold=0.4)
+        assert duration >= 0.0
+
+
 class TestMfuDeclineDetectorValidation:
     @pytest.mark.parametrize(
         "kwargs,match",

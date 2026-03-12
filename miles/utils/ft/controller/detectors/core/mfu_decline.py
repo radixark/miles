@@ -91,4 +91,4 @@ class MfuDeclineDetector(BaseFaultDetector):
                 healthy_times.append(timed_mfu[i].timestamp)
 
         decline_start = healthy_times[-1] if healthy_times else timed_mfu[0].timestamp
-        return (datetime.now(timezone.utc) - decline_start).total_seconds() / 60
+        return max(0.0, (datetime.now(timezone.utc) - decline_start).total_seconds() / 60)
