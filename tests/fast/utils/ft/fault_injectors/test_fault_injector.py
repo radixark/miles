@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import psutil
+import pytest
 
 from miles.utils.ft.fault_injectors.fault_injector import _TRAINING_CMDLINE_PATTERNS, FaultInjectorActor
 
@@ -178,6 +179,31 @@ class TestGpuStressOperations:
             actor.stop_gpu_stress(pid=999)
 
         assert 999 not in actor._stress_pids
+
+
+class TestTriggerGpuXid:
+    def test_nonzero_exit_code_raises(self) -> None:
+        """trigger_gpu_xid previously only logged on failure, letting the caller
+        think injection succeeded. Now raises RuntimeError on non-zero exit."""
+        actor = _make_actor()
+        mock_result = MagicMock(returncode=1, stdout="", stderr="CUDA error")
+
+        with (
+            patch("miles.utils.ft.fault_injectors.fault_injector._ensure_trigger_xid_binary"),
+            patch("subprocess.run", return_value=mock_result),
+            pytest.raises(RuntimeError, match="trigger_gpu_xid failed"),
+        ):
+            actor.trigger_gpu_xid()
+
+    def test_zero_exit_code_succeeds(self) -> None:
+        actor = _make_actor()
+        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+
+        with (
+            patch("miles.utils.ft.fault_injectors.fault_injector._ensure_trigger_xid_binary"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            actor.trigger_gpu_xid()
 
 
 class TestTrainingCmdlinePatterns:

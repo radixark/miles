@@ -134,6 +134,12 @@ class FaultInjectorActor:
             result.stdout[:500] if result.stdout else "",
             result.stderr[:500] if result.stderr else "",
         )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"trigger_gpu_xid failed with exit code {result.returncode}: "
+                f"stdout={result.stdout[:500] if result.stdout else ''} "
+                f"stderr={result.stderr[:500] if result.stderr else ''}"
+            )
 
     def write_exception_flag(self, path: str) -> None:
         logger.info("write_exception_flag path=%s", path)
