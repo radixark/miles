@@ -9,7 +9,10 @@ import torch.nn as nn
 from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TELinear, TENorm
-from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.models.gpt import experimental_attention_variant_module_specs as _eav_specs
+from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
+    get_transformer_block_with_experimental_attention_variant_spec,
+)
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.core.tensor_parallel.mappings import (
@@ -23,7 +26,6 @@ from megatron.core.transformer.experimental_attention_variant.dsa import (
 )
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec
-from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
@@ -312,27 +314,29 @@ class DeepSeekV4Attention(MegatronModule):
         return float_mask
 
 
-def get_dsv4_spec(args, config, vp_stage):
-    """
-    Get the DeepSeek V4 transformer layer spec, following the GLM-5 plugin pattern.
-
-    Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4.get_dsv4_spec
-    """
-    kwargs = {
-        "use_transformer_engine": True,
-    }
-    if vp_stage is not None:
-        kwargs["vp_stage"] = vp_stage
-    transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
-    num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
-
-    self_attn_module_spec = ModuleSpec(
+def _dsv4_attention_module_spec(config, backend=None):
+    return ModuleSpec(
         module=DeepSeekV4Attention,
         submodules=None,
         metainfo={"fuse_input_layernorm": False},
     )
-    for layer_id in range(num_layers_to_build):
-        layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
-        layer_specs.submodules.self_attention = self_attn_module_spec
-        transformer_layer_spec.layer_specs[layer_id] = layer_specs
-    return transformer_layer_spec
+
+
+def get_dsv4_spec(args, config, vp_stage):
+    """
+    Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
+    """
+    _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
+
+    def _patched_get_spec(config, backend=None):
+        if config.experimental_attention_variant == "dsv4":
+            return _dsv4_attention_module_spec(config, backend)
+        return _orig_get_spec(config, backend)
+
+    _eav_specs.get_experimental_attention_variant_module_spec = _patched_get_spec
+    try:
+        return get_transformer_block_with_experimental_attention_variant_spec(
+            config, vp_stage=vp_stage
+        )
+    finally:
+        _eav_specs.get_experimental_attention_variant_module_spec = _orig_get_spec
