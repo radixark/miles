@@ -1,14 +1,20 @@
-"""Tests for miles.utils.ft.agents.diagnostics.executors.collector_based."""
+"""Tests for miles.utils.ft.agents.diagnostics.executors.collector_based.
+
+The CollectorBasedNodeExecutor used to directly import and instantiate controller-layer
+classes (BaseFaultDetector, InMemoryMetricStore, MiniWandb, DetectorContext). It now
+takes a SampleEvaluator callable, keeping the agents layer free of controller imports.
+"""
 
 from __future__ import annotations
 
+import ast
 import asyncio
+from collections.abc import Sequence
+from pathlib import Path
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
-from miles.utils.ft.agents.types import GaugeSample, MetricSample
-from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
+from miles.utils.ft.agents.types import GaugeSample, CounterSample, MetricSample, SampleEvaluator
 
 
 class _FakeCollector(BaseCollector):
@@ -28,28 +34,27 @@ class _CrashingCollector(BaseCollector):
         raise RuntimeError("hw failure")
 
 
-class _AlwaysPassDetector(BaseFaultDetector):
-    def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
-        return Decision.no_fault("all checks passed")
+def _always_pass_evaluator(
+    node_id: str,
+    samples: Sequence[GaugeSample | CounterSample],
+) -> tuple[bool, str]:
+    return True, "all checks passed"
 
 
-class _AlwaysFailDetector(BaseFaultDetector):
-    def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
-        return Decision(
-            action=ActionType.ENTER_RECOVERY,
-            reason="fault detected",
-            trigger=TriggerType.HARDWARE,
-            bad_node_ids=["node-0"],
-        )
+def _always_fail_evaluator(
+    node_id: str,
+    samples: Sequence[GaugeSample | CounterSample],
+) -> tuple[bool, str]:
+    return False, "fault detected"
 
 
 class TestCollectorBasedNodeExecutor:
-    def test_pass_when_detector_returns_no_fault(self) -> None:
+    def test_pass_when_evaluator_returns_true(self) -> None:
         collector = _FakeCollector(metrics=[GaugeSample(name="m", labels={}, value=1.0)])
         executor = CollectorBasedNodeExecutor(
             diagnostic_type="test",
             collector=collector,
-            detector=_AlwaysPassDetector(),
+            evaluator=_always_pass_evaluator,
         )
 
         result = asyncio.run(executor.run(node_id="node-0"))
@@ -57,12 +62,12 @@ class TestCollectorBasedNodeExecutor:
         assert result.passed is True
         assert result.diagnostic_type == "test"
 
-    def test_fail_when_detector_returns_fault(self) -> None:
+    def test_fail_when_evaluator_returns_false(self) -> None:
         collector = _FakeCollector(metrics=[GaugeSample(name="m", labels={}, value=1.0)])
         executor = CollectorBasedNodeExecutor(
             diagnostic_type="test",
             collector=collector,
-            detector=_AlwaysFailDetector(),
+            evaluator=_always_fail_evaluator,
         )
 
         result = asyncio.run(executor.run(node_id="node-0"))
@@ -75,7 +80,7 @@ class TestCollectorBasedNodeExecutor:
         executor = CollectorBasedNodeExecutor(
             diagnostic_type="test",
             collector=collector,
-            detector=_AlwaysPassDetector(),
+            evaluator=_always_pass_evaluator,
         )
 
         try:
@@ -89,9 +94,40 @@ class TestCollectorBasedNodeExecutor:
         executor = CollectorBasedNodeExecutor(
             diagnostic_type="test",
             collector=collector,
-            detector=_AlwaysPassDetector(),
+            evaluator=_always_pass_evaluator,
         )
 
         result = asyncio.run(executor.run(node_id="node-0"))
 
         assert result.passed is True
+
+
+class TestCollectorBasedHasNoControllerImports:
+    """The module used to directly import controller-layer classes.
+    Now it only depends on agents-layer and utils-layer types.
+    """
+
+    def test_no_controller_imports_in_collector_based(self) -> None:
+        source_path = (
+            Path(__file__).resolve().parents[7]
+            / "miles"
+            / "utils"
+            / "ft"
+            / "agents"
+            / "diagnostics"
+            / "executors"
+            / "collector_based.py"
+        )
+        source = source_path.read_text()
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert "controller" not in alias.name, (
+                        f"collector_based.py still imports from controller: {alias.name}"
+                    )
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                assert "controller" not in node.module, (
+                    f"collector_based.py still imports from controller: {node.module}"
+                )

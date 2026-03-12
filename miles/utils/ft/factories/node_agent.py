@@ -7,6 +7,7 @@ and the agent assembly logic is independently testable.
 from __future__ import annotations
 
 import socket
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,12 +23,40 @@ from miles.utils.ft.agents.diagnostics.executors.collector_based import Collecto
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.nccl import NcclNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import StackTraceNodeExecutor
+from miles.utils.ft.agents.types import GaugeSample, CounterSample, SampleEvaluator
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
 from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
+from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.types import ActionType, MetricStore
 
 DEFAULT_NUM_GPUS: int = 8
 DEFAULT_COLLECT_INTERVAL_SECONDS: float = 10.0
+
+
+def _detector_to_evaluator(detector: BaseFaultDetector) -> SampleEvaluator:
+    """Adapt a controller-layer BaseFaultDetector into an agent-layer SampleEvaluator."""
+
+    def _evaluate(
+        node_id: str,
+        samples: Sequence[GaugeSample | CounterSample],
+    ) -> tuple[bool, str]:
+        store = InMemoryMetricStore()
+        store.ingest_samples(target_id=node_id, samples=list(samples))
+
+        ctx = DetectorContext(
+            metric_store=MetricStore(
+                time_series_store=store,
+                mini_wandb=MiniWandb(),
+            )
+        )
+        decision = detector.evaluate(ctx)
+        passed = decision.action == ActionType.NONE
+        return passed, decision.reason
+
+    return _evaluate
 
 
 def build_default_collectors() -> list[BaseCollector]:
@@ -57,17 +86,17 @@ def build_all_diagnostics(
         CollectorBasedNodeExecutor(
             diagnostic_type="disk",
             collector=DiskCollector(disk_mounts=disk_mounts),
-            detector=DiskSpaceLowDetector(),
+            evaluator=_detector_to_evaluator(DiskSpaceLowDetector()),
         ),
         CollectorBasedNodeExecutor(
             diagnostic_type="network",
             collector=NetworkCollector(),
-            detector=NicMajorityDownDetector(),
+            evaluator=_detector_to_evaluator(NicMajorityDownDetector()),
         ),
         CollectorBasedNodeExecutor(
             diagnostic_type="xid",
             collector=KmsgCollector(since=xid_since),
-            detector=GpuFaultDetector(),
+            evaluator=_detector_to_evaluator(GpuFaultDetector()),
         ),
     ]
 
@@ -93,5 +122,3 @@ def build_node_agent(
         diagnostics=diagnostics,
         metadata_provider=metadata_provider,
     )
-
-

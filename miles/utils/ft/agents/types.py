@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from collections.abc import Sequence
+from typing import Annotated, Literal, Protocol
 
 from pydantic import Field
 
@@ -19,6 +20,7 @@ __all__ = [
     "DiagnosticResult",
     "GaugeSample",
     "MetricSample",
+    "SampleEvaluator",
     "UnknownDiagnosticError",
 ]
 
@@ -42,3 +44,9 @@ MetricSample = Annotated[
     GaugeSample | CounterSample,
     Field(discriminator="metric_type"),
 ]
+
+
+class SampleEvaluator(Protocol):
+    """Evaluate collected metric samples and return (passed, reason)."""
+
+    def __call__(self, node_id: str, samples: Sequence[GaugeSample | CounterSample]) -> tuple[bool, str]: ...
