@@ -54,10 +54,6 @@ class FtController:
     # ------------------------------------------------------------------
 
     @property
-    def training_rank_roster(self) -> TrainingRankRoster:
-        return self._subsystem_hub.training_rank_roster
-
-    @property
     def mini_wandb(self) -> MiniWandb:
         return self._mini_wandb
 
@@ -117,16 +113,12 @@ class FtController:
             controller_state_machine=self._state_machine,
             mini_wandb=self._mini_wandb,
             training_rank_roster=self._subsystem_hub.training_rank_roster_box.value,
-            tick_count=self._tick_count,
+            tick_count=self._tick_loop.tick_count,
         )
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
-
-    @property
-    def _tick_count(self) -> int:
-        return self._tick_loop.tick_count
 
     def _activate_run(self, run_id: str) -> None:
         """Create a fresh TrainingRankRoster for the new run and switch MiniWandb."""
