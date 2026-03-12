@@ -202,6 +202,14 @@ class ScrapeTargetManagerProtocol(ABC):
     def remove_scrape_target(self, target_id: str) -> None: ...
 
 
+class NullScrapeTargetManager(ScrapeTargetManagerProtocol):
+    def add_scrape_target(self, target_id: str, address: str) -> None:
+        pass
+
+    def remove_scrape_target(self, target_id: str) -> None:
+        pass
+
+
 class TrainingMetricStoreProtocol(ABC):
     @abstractmethod
     def latest(self, metric_name: str) -> float | None: ...

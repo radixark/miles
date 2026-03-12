@@ -11,6 +11,7 @@ from miles.utils.ft.adapters.stubs import StubMainJob, StubNotifier
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
+from miles.utils.ft.controller.types import NullScrapeTargetManager
 from miles.utils.ft.factories.controller import build_ft_controller
 
 
@@ -78,14 +79,14 @@ class TestBuildFtController:
         )
         assert bundle.controller._scrape_target_manager is not None
 
-    def test_prometheus_backend_no_scrape_target_manager(self) -> None:
+    def test_prometheus_backend_uses_null_scrape_target_manager(self) -> None:
         bundle = build_ft_controller(
             platform="stub",
             metric_store_backend="prometheus",
             start_exporter=False,
             rollout_num_cells=0,
         )
-        assert bundle.controller._scrape_target_manager is None
+        assert isinstance(bundle.controller._scrape_target_manager, NullScrapeTargetManager)
 
     def test_detector_chain_types_match(self) -> None:
         bundle = build_ft_controller(platform="stub", start_exporter=False, rollout_num_cells=0)

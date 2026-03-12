@@ -24,7 +24,7 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
-from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore
+from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore, NullScrapeTargetManager
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 if TYPE_CHECKING:
@@ -217,7 +217,7 @@ def _build_platform_components(
 def _build_metric_store(
     config: FtControllerConfig,
     controller_exporter: ControllerExporter,
-) -> tuple[MiniPrometheus | PrometheusClient, MiniPrometheus | None]:
+) -> tuple[MiniPrometheus | PrometheusClient, MiniPrometheus | NullScrapeTargetManager]:
     """Return (metric_store, scrape_target_manager) based on config backend."""
     if config.metric_store_backend == "mini":
         mini_prom = MiniPrometheus(
@@ -232,6 +232,6 @@ def _build_metric_store(
         return mini_prom, mini_prom
 
     if config.metric_store_backend == "prometheus":
-        return PrometheusClient(url=config.prometheus_url), None
+        return PrometheusClient(url=config.prometheus_url), NullScrapeTargetManager()
 
     raise ValueError(f"Unknown metric-store-backend: {config.metric_store_backend}")

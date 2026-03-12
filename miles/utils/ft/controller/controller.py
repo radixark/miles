@@ -11,7 +11,7 @@ from miles.utils.ft.controller.status import build_controller_status
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.training_rank_roster import TrainingRankRoster
-from miles.utils.ft.controller.types import ControllerStatus, MetricStore, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import ControllerStatus, MetricStore, NullScrapeTargetManager, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class FtController:
         self._tick_interval = tick_interval
         self._tick_loop = tick_loop
         self._notifier = notifier
-        self._scrape_target_manager = scrape_target_manager
+        self._scrape_target_manager: ScrapeTargetManagerProtocol = scrape_target_manager or NullScrapeTargetManager()
         self._controller_exporter: ControllerExporter = controller_exporter or NullControllerExporter()
 
         self._node_metadata: dict[str, dict[str, str]] = {}
@@ -59,11 +59,10 @@ class FtController:
         return self._node_metadata
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
-        if self._scrape_target_manager is not None:
-            self._scrape_target_manager.add_scrape_target(
-                target_id=target_id,
-                address=address,
-            )
+        self._scrape_target_manager.add_scrape_target(
+            target_id=target_id,
+            address=address,
+        )
 
     def register_node_agent(
         self,

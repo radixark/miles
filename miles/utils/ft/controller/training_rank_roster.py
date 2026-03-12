@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from miles.utils.ft.controller.types import ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import NullScrapeTargetManager, ScrapeTargetManagerProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class TrainingRankRoster:
         self.expected_world_size: int | None = None
         self.rank_placement: dict[int, str] = {}
         self.rank_pids: dict[int, int] = {}
-        self._scrape_target_manager = scrape_target_manager
+        self._scrape_target_manager: ScrapeTargetManagerProtocol = scrape_target_manager or NullScrapeTargetManager()
 
     def register_training_rank(
         self,
@@ -48,11 +48,10 @@ class TrainingRankRoster:
             world_size,
             node_id,
         )
-        if self._scrape_target_manager is not None:
-            self._scrape_target_manager.add_scrape_target(
-                target_id=f"rank-{rank}",
-                address=exporter_address,
-            )
+        self._scrape_target_manager.add_scrape_target(
+            target_id=f"rank-{rank}",
+            address=exporter_address,
+        )
 
     def get_rank_pids_for_node(self, node_id: str) -> dict[int, int]:
         return {rank: self.rank_pids[rank] for rank, nid in self.rank_placement.items() if nid == node_id}
@@ -68,9 +67,8 @@ class TrainingRankRoster:
 
     def cleanup(self) -> None:
         """Remove scrape targets. Call before discarding this registry."""
-        if self._scrape_target_manager is not None:
-            for old_rank in self.rank_placement:
-                self._scrape_target_manager.remove_scrape_target(f"rank-{old_rank}")
+        for old_rank in self.rank_placement:
+            self._scrape_target_manager.remove_scrape_target(f"rank-{old_rank}")
 
 
 def _validate_rank(*, rank: int, world_size: int, node_id: str) -> None:

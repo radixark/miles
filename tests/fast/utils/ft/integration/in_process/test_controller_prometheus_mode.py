@@ -59,8 +59,8 @@ class TestControllerPrometheusMode:
         assert get_sample_value(registry, mn.CONTROLLER_TICK_COUNT + "_total") == 1.0
 
     @pytest.mark.anyio
-    async def test_no_scrape_target_manager_in_prometheus_mode(self) -> None:
-        """In prometheus mode, register_training_rank should not fail even without scrape_target_manager."""
+    async def test_null_scrape_target_manager_in_prometheus_mode(self) -> None:
+        """In prometheus mode, NullScrapeTargetManager is used and register_training_rank works."""
         _, exporter = make_test_exporter()
         prom_client = PrometheusClient(url="http://fake:9090")
 

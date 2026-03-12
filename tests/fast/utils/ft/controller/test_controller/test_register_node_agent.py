@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.fast.utils.ft.conftest import StubDiagnostic, make_test_controller
 
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
+from miles.utils.ft.controller.types import NullScrapeTargetManager
 
 
 class TestRegisterNodeAgentScrapeTarget:
@@ -50,10 +51,10 @@ class TestRegisterNodeAgentScrapeTarget:
         assert isinstance(ctrl._scrape_target_manager, MiniPrometheus)
         assert "node-1" not in ctrl._scrape_target_manager._scrape_targets
 
-    def test_register_node_agent_no_scrape_manager_is_safe(self) -> None:
+    def test_register_node_agent_with_null_scrape_manager_is_safe(self) -> None:
         harness = make_test_controller()
         ctrl = harness.controller
-        ctrl._scrape_target_manager = None
+        ctrl._scrape_target_manager = NullScrapeTargetManager()
 
         class _FakeAgent:
             async def run_diagnostic(
