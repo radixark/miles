@@ -110,10 +110,15 @@ class Decision(FtBaseModel):
         if not non_ephemeral:
             return cls(action=ActionType.NONE, reason=f"ephemeral only: {fallback_reason}")
 
+        ephemeral = [f for f in faults if f.ephemeral]
+        reason_parts = [f.reason for f in non_ephemeral]
+        if ephemeral:
+            reason_parts.append(f"(also {len(ephemeral)} ephemeral fault(s) ignored)")
+
         return cls(
             action=ActionType.ENTER_RECOVERY,
             bad_node_ids=sorted(cls._unique_node_ids(non_ephemeral)),
-            reason="; ".join(f.reason for f in faults),
+            reason="; ".join(reason_parts),
             trigger=trigger,
         )
 

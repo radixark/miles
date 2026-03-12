@@ -135,6 +135,25 @@ class TestDecisionFromNodeFaults:
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.bad_node_ids == ["node-0"]
 
+    def test_mixed_reason_excludes_ephemeral_fault_details(self) -> None:
+        """M-5: previously the reason string included ephemeral fault
+        reasons alongside non-ephemeral ones, making it ambiguous which
+        faults actually triggered recovery. Now only non-ephemeral
+        fault reasons appear, with a count note for ephemeral ones."""
+        faults = [
+            NodeFault(node_id="node-0", reason="gpu xid 48", ephemeral=False),
+            NodeFault(node_id="node-1", reason="transient nic flap", ephemeral=True),
+        ]
+        decision = Decision.from_node_faults(
+            faults=faults,
+            fallback_reason="",
+            trigger=TriggerType.HARDWARE,
+        )
+
+        assert "gpu xid 48" in decision.reason
+        assert "transient nic flap" not in decision.reason
+        assert "ephemeral" in decision.reason
+
 
 class TestDecisionUniqueNodeIds:
     def test_deduplicates_preserving_order(self) -> None:
