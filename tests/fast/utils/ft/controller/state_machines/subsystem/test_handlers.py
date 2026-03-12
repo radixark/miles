@@ -549,12 +549,12 @@ class TestBadNodeCountSafeguard:
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-1", "node-2"}
 
     @pytest.mark.asyncio
-    async def test_too_many_dynamic_bad_nodes_continues_recovery(self) -> None:
-        """Detectors report >= threshold new bad nodes during recovery -> NOTIFY_HUMAN but keep recovering."""
+    async def test_too_many_dynamic_bad_nodes_transitions_to_notify_humans(self) -> None:
+        """M-4: Detectors report >= threshold new bad nodes during recovery ->
+        transition to NotifyHumansSt instead of inline notification (previously
+        notify_too_many_bad_nodes fired every tick with no state change)."""
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
-
-        notifier = FakeNotifier()
 
         detector = FixedDecisionDetector(
             Decision(
@@ -579,14 +579,13 @@ class TestBadNodeCountSafeguard:
             _make_subsystem_context(
                 detectors=[detector],
                 recovery_stepper=_mock_stepper_yielding(None),
-                notifier=notifier,
                 max_simultaneous_bad_nodes=3,
                 rank_placement={0: "node-old", 1: "node-a", 2: "node-b", 3: "node-c"},
             ),
         )
-        assert result is None
-        assert len(notifier.calls) == 1
-        assert "likely false positive" in notifier.calls[0][1]
+        assert isinstance(result, RecoveringSt)
+        assert isinstance(result.recovery, NotifyHumansSt)
+        assert result.recovery.reason == "too_many_simultaneous_bad_nodes"
 
     @pytest.mark.asyncio
     async def test_already_known_bad_nodes_do_not_restart_recovery(self) -> None:

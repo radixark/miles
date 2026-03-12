@@ -79,11 +79,19 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             return None
 
         if len(decision.bad_node_ids) >= ctx.max_simultaneous_bad_nodes:
-            return Decision(
-                action=ActionType.NOTIFY_HUMAN,
-                reason=f"too_many_simultaneous_bad_nodes ({len(decision.bad_node_ids)} >= {ctx.max_simultaneous_bad_nodes})",
-                trigger=decision.trigger,
+            await handle_notify_human(
+                decision=Decision(
+                    action=ActionType.NOTIFY_HUMAN,
+                    reason=(
+                        f"too_many_simultaneous_bad_nodes "
+                        f"({len(decision.bad_node_ids)} >= {ctx.max_simultaneous_bad_nodes}), "
+                        f"likely false positive"
+                    ),
+                    trigger=decision.trigger,
+                ),
+                notifier=ctx.notifier,
             )
+            return None
 
         if decision.trigger is None:
             raise ValueError(f"Decision with action={decision.action} has no trigger")

@@ -549,6 +549,71 @@ class TestFullRecoveryFlow:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# M-4: NotifyHumansSt.reason field — verify each construction path populates
+# a descriptive reason string (previously reason was absent, making it hard
+# to distinguish notification causes)
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyHumansReasonField:
+    @pytest.mark.asyncio
+    async def test_timeout_sets_reason_recovery_timeout_exceeded(self) -> None:
+        """recovery_timeout_check should set reason='recovery_timeout_exceeded'."""
+        stepper = _make_stepper()
+        old_time = _now() - timedelta(seconds=120)
+        ctx = _make_ctx(
+            trigger=TriggerType.HANG,
+            recovery_start_time=old_time,
+            timeout_seconds=60,
+        )
+        result = await _step_last(stepper, RealtimeChecksSt(), ctx)
+        assert isinstance(result, NotifyHumansSt)
+        assert result.reason == "recovery_timeout_exceeded"
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_clean_sets_reason(self) -> None:
+        """StopTimeDiagnosticsHandler should set reason='diagnostics_clean_no_bad_nodes'
+        when no bad nodes are found."""
+        diag = FakeDiagnosticOrchestrator(
+            result=DiagnosticPipelineResult(bad_node_ids=[], reason="all passed"),
+        )
+        stepper = _make_stepper()
+        result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
+        assert isinstance(result, NotifyHumansSt)
+        assert result.reason == "diagnostics_clean_no_bad_nodes"
+
+    @pytest.mark.asyncio
+    async def test_final_restart_failed_sets_reason(self) -> None:
+        """EvictingAndRestartingSt.evict_and_restart_final should set
+        reason='final_restart_failed' on its failed_next_state."""
+        stepper = _make_stepper()
+        ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailedSt()))
+        state = EvictingAndRestartingSt.evict_and_restart_final(bad_node_ids=["node-X"])
+        result = await _step_last(stepper, state, ctx)
+        assert isinstance(result, NotifyHumansSt)
+        assert result.reason == "final_restart_failed"
+
+    @pytest.mark.asyncio
+    async def test_notify_handler_includes_reason_in_message(self) -> None:
+        """NotifyHumansHandler.step should include reason in the notification content."""
+        notifier = FakeNotifier()
+        stepper = _make_stepper()
+        result = await _step(
+            stepper,
+            NotifyHumansSt(state_before="Test", reason="test_reason_xyz"),
+            notifier=notifier,
+        )
+        assert isinstance(result, RecoveryDoneSt)
+        assert len(notifier.calls) == 1
+        assert "test_reason_xyz" in notifier.calls[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Default timeout constant
+# ---------------------------------------------------------------------------
+
+
 class TestDefaultTimeout:
     def test_default_recovery_timeout_is_3600(self) -> None:
         """Previously the default was 1800 (30 min), which was too short for

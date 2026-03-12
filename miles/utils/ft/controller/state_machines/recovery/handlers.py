@@ -28,7 +28,7 @@ async def recovery_timeout_check(
 ) -> RecoveryState | None:
     elapsed = (datetime.now(timezone.utc) - ctx.recovery_start_time).total_seconds()
     if elapsed > ctx.timeout_seconds and not isinstance(state, (NotifyHumansSt, RecoveryDoneSt)):
-        return NotifyHumansSt(state_before=type(state).__name__)
+        return NotifyHumansSt(state_before=type(state).__name__, reason="recovery_timeout_exceeded")
     return None
 
 
@@ -90,13 +90,17 @@ class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnosticsSt, RecoveryCon
             )
 
         logger.info("diagnosing_all_passed trigger=%s", ctx.trigger)
-        return NotifyHumansSt(state_before="StopTimeDiagnosticsSt")
+        return NotifyHumansSt(state_before="StopTimeDiagnosticsSt", reason="diagnostics_clean_no_bad_nodes")
 
 
 class NotifyHumansHandler(StateHandler[NotifyHumansSt, RecoveryContext]):
     async def step(self, state: NotifyHumansSt, ctx: RecoveryContext) -> RecoveryState:
+        reason_part = f" reason={state.reason}" if state.reason else ""
         message = (
-            f"Recovery requires human intervention. " f"trigger={ctx.trigger} " f"state_before={state.state_before}"
+            f"Recovery requires human intervention. "
+            f"trigger={ctx.trigger} "
+            f"state_before={state.state_before}"
+            f"{reason_part}"
         )
         logger.warning("recovery_notify reason=%s", message)
         await safe_notify(ctx.notifier, title="Recovery Alert", content=message)
