@@ -274,6 +274,10 @@ def build_ft_controller(
             runtime_env=config.runtime_env,
             ft_id=ft_id,
             k8s_label_prefix=config.k8s_label_prefix,
+            ray_job_poll_interval_seconds=config.ray_job_poll_interval_seconds,
+            ray_submit_timeout_seconds=config.ray_submit_timeout_seconds,
+            ray_get_status_timeout_seconds=config.ray_get_status_timeout_seconds,
+            ray_stop_job_timeout_seconds=config.ray_stop_job_timeout_seconds,
         )
 
     controller_exporter = ControllerExporter(port=config.controller_exporter_port)
@@ -383,6 +387,10 @@ def _build_platform_components(
     ft_id: str,
     k8s_label_prefix: str,
     runtime_env: dict[str, Any] | None = None,
+    ray_job_poll_interval_seconds: float = 5.0,
+    ray_submit_timeout_seconds: float = 60.0,
+    ray_get_status_timeout_seconds: float = 30.0,
+    ray_stop_job_timeout_seconds: float = 30.0,
 ) -> tuple[StubNodeManager | K8sNodeManager, StubMainJob | RayMainJob]:
     if platform == "stub":
         return StubNodeManager(), StubMainJob()
@@ -407,6 +415,10 @@ def _build_platform_components(
             runtime_env=runtime_env,
             ft_id=ft_id,
             k8s_label_prefix=k8s_label_prefix,
+            poll_interval_seconds=ray_job_poll_interval_seconds,
+            submit_timeout_seconds=ray_submit_timeout_seconds,
+            get_status_timeout_seconds=ray_get_status_timeout_seconds,
+            stop_job_timeout_seconds=ray_stop_job_timeout_seconds,
         )
         return node_manager, main_job
 

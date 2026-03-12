@@ -70,11 +70,17 @@ class RayMainJob(MainJobProtocol):
         k8s_label_prefix: str,
         runtime_env: dict[str, Any] | None = None,
         poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
+        submit_timeout_seconds: float = _SUBMIT_TIMEOUT_SECONDS,
+        get_status_timeout_seconds: float = _GET_STATUS_TIMEOUT_SECONDS,
+        stop_job_timeout_seconds: float = _STOP_JOB_TIMEOUT_SECONDS,
     ) -> None:
         self._client = client
         self._entrypoint = entrypoint
         self._runtime_env = runtime_env or {}
         self._poll_interval = poll_interval_seconds
+        self._submit_timeout = submit_timeout_seconds
+        self._get_status_timeout = get_status_timeout_seconds
+        self._stop_job_timeout = stop_job_timeout_seconds
         self._ft_id = ft_id
         self._k8s_label_prefix = k8s_label_prefix
         self._job_id: str | None = None
@@ -103,7 +109,7 @@ class RayMainJob(MainJobProtocol):
                 entrypoint=self._entrypoint,
                 runtime_env=runtime_env,
             ),
-            timeout=_SUBMIT_TIMEOUT_SECONDS,
+            timeout=self._submit_timeout,
         )
         elapsed = time.monotonic() - start
 
@@ -136,7 +142,7 @@ class RayMainJob(MainJobProtocol):
         start = time.monotonic()
         raw_status = await asyncio.wait_for(
             asyncio.to_thread(self._client.get_job_status, self._job_id),
-            timeout=_GET_STATUS_TIMEOUT_SECONDS,
+            timeout=self._get_status_timeout,
         )
         elapsed = time.monotonic() - start
 

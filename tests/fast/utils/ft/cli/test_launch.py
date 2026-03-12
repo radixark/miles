@@ -340,6 +340,33 @@ class TestLauncherStateMachineParams:
         assert config.rollout_monitoring_alive_duration_seconds is None
 
 
+class TestLauncherRayJobParams:
+    """RayMainJob poll interval and RPC timeouts were hardcoded as module-level
+    constants and not exposed as CLI parameters."""
+
+    def test_ray_job_params_passed_to_config(self) -> None:
+        with _patch_build_and_run() as (mock_actor_cls, _):
+            result = runner.invoke(
+                app,
+                [
+                    "launch",
+                    "--platform", "stub",
+                    "--ray-job-poll-interval-seconds", "10",
+                    "--ray-submit-timeout-seconds", "120",
+                    "--ray-get-status-timeout-seconds", "60",
+                    "--ray-stop-job-timeout-seconds", "45",
+                    "--", "python3", "train.py",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = mock_actor_cls.options.return_value.remote.call_args.kwargs["config"]
+        assert config.ray_job_poll_interval_seconds == 10.0
+        assert config.ray_submit_timeout_seconds == 120.0
+        assert config.ray_get_status_timeout_seconds == 60.0
+        assert config.ray_stop_job_timeout_seconds == 45.0
+
+
 class TestLauncherInvalidInput:
     def test_invalid_runtime_env_json_fails(self) -> None:
         result = runner.invoke(

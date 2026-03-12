@@ -38,7 +38,19 @@ class FtControllerConfig(FtBaseModel):
     rollout_alive_threshold_seconds: float | None = None
     rollout_monitoring_alive_duration_seconds: float | None = None
 
-    @field_validator("scrape_interval_seconds", "mini_prometheus_retention_minutes")
+    ray_job_poll_interval_seconds: float = 5.0
+    ray_submit_timeout_seconds: float = 60.0
+    ray_get_status_timeout_seconds: float = 30.0
+    ray_stop_job_timeout_seconds: float = 30.0
+
+    @field_validator(
+        "scrape_interval_seconds",
+        "mini_prometheus_retention_minutes",
+        "ray_job_poll_interval_seconds",
+        "ray_submit_timeout_seconds",
+        "ray_get_status_timeout_seconds",
+        "ray_stop_job_timeout_seconds",
+    )
     @classmethod
     def _positive_float_fields(cls, v: float) -> float:
         if v <= 0:

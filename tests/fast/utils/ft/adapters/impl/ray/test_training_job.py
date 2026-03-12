@@ -28,6 +28,34 @@ def _make_job(
     return job, mock_client
 
 
+class TestRayMainJobTimeoutParams:
+    """submit/get_status/stop timeouts were module-level constants in main_job.py,
+    so operators could not tune them for slow or high-load clusters."""
+
+    def test_custom_timeouts_stored_on_instance(self) -> None:
+        job, _ = _make_job()
+        custom_job = RayMainJob(
+            client=MagicMock(),
+            entrypoint="python train.py",
+            ft_id="test",
+            k8s_label_prefix="",
+            submit_timeout_seconds=120.0,
+            get_status_timeout_seconds=60.0,
+            stop_job_timeout_seconds=45.0,
+        )
+
+        assert custom_job._submit_timeout == 120.0
+        assert custom_job._get_status_timeout == 60.0
+        assert custom_job._stop_job_timeout == 45.0
+
+    def test_default_timeouts_match_module_constants(self) -> None:
+        job, _ = _make_job()
+
+        assert job._submit_timeout == 60
+        assert job._get_status_timeout == 30
+        assert job._stop_job_timeout == 30
+
+
 class TestSubmitJob:
     @pytest.mark.anyio
     async def test_calls_submit_job_and_returns_run_id(self) -> None:

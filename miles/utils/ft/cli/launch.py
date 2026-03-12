@@ -79,6 +79,18 @@ def launch(
     rollout_monitoring_alive_duration_seconds: Annotated[
         float | None, typer.Option(help="Rollout monitoring alive duration in seconds (None = default)")
     ] = None,
+    ray_job_poll_interval_seconds: Annotated[
+        float, typer.Option(help="RayMainJob poll interval in seconds")
+    ] = 5.0,
+    ray_submit_timeout_seconds: Annotated[
+        float, typer.Option(help="RayMainJob submit RPC timeout in seconds")
+    ] = 60.0,
+    ray_get_status_timeout_seconds: Annotated[
+        float, typer.Option(help="RayMainJob get_status RPC timeout in seconds")
+    ] = 30.0,
+    ray_stop_job_timeout_seconds: Annotated[
+        float, typer.Option(help="RayMainJob stop_job RPC timeout in seconds")
+    ] = 30.0,
     detector_config_json: Annotated[
         str, typer.Option(help="Detector config JSON string or @filepath (default: all detectors with defaults)")
     ] = "",
@@ -125,6 +137,10 @@ def launch(
         recovery_timeout_seconds=recovery_timeout_seconds,
         rollout_alive_threshold_seconds=rollout_alive_threshold_seconds,
         rollout_monitoring_alive_duration_seconds=rollout_monitoring_alive_duration_seconds,
+        ray_job_poll_interval_seconds=ray_job_poll_interval_seconds,
+        ray_submit_timeout_seconds=ray_submit_timeout_seconds,
+        ray_get_status_timeout_seconds=ray_get_status_timeout_seconds,
+        ray_stop_job_timeout_seconds=ray_stop_job_timeout_seconds,
         detector_config=detector_config,
     )
 

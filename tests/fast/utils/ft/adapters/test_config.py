@@ -130,3 +130,43 @@ class TestStateMachineConfigFields:
     def test_timeout_params_reject_zero(self, field_name: str) -> None:
         with pytest.raises(ValidationError, match="must be > 0"):
             FtControllerConfig(rollout_num_cells=0, **{field_name: 0})
+
+
+class TestRayJobConfigFields:
+    """RayMainJob poll/timeout params were module-level constants, so
+    operators could not tune them for slow or high-load clusters."""
+
+    def test_ray_job_params_have_sensible_defaults(self) -> None:
+        config = FtControllerConfig(rollout_num_cells=0)
+
+        assert config.ray_job_poll_interval_seconds == 5.0
+        assert config.ray_submit_timeout_seconds == 60.0
+        assert config.ray_get_status_timeout_seconds == 30.0
+        assert config.ray_stop_job_timeout_seconds == 30.0
+
+    def test_ray_job_params_accept_custom_values(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=0,
+            ray_job_poll_interval_seconds=10.0,
+            ray_submit_timeout_seconds=120.0,
+            ray_get_status_timeout_seconds=60.0,
+            ray_stop_job_timeout_seconds=45.0,
+        )
+
+        assert config.ray_job_poll_interval_seconds == 10.0
+        assert config.ray_submit_timeout_seconds == 120.0
+        assert config.ray_get_status_timeout_seconds == 60.0
+        assert config.ray_stop_job_timeout_seconds == 45.0
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "ray_job_poll_interval_seconds",
+            "ray_submit_timeout_seconds",
+            "ray_get_status_timeout_seconds",
+            "ray_stop_job_timeout_seconds",
+        ],
+    )
+    def test_ray_job_params_reject_zero(self, field_name: str) -> None:
+        with pytest.raises(ValidationError, match="must be > 0"):
+            FtControllerConfig(rollout_num_cells=0, **{field_name: 0})
