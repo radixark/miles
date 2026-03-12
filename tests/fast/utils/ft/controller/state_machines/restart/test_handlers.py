@@ -43,12 +43,12 @@ class FakeActuator(SubsystemActuatorProtocol):
         self.started: bool = False
         self.start_run_id: str = "actuator-run-1"
 
-    async def stop(self) -> None:
-        self.stopped = True
-
     async def start(self) -> str:
         self.started = True
         return self.start_run_id
+
+    async def stop(self) -> None:
+        self.stopped = True
 
     async def get_status(self) -> JobStatus:
         index = min(self._call_count, len(self._status_sequence) - 1)

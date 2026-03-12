@@ -26,14 +26,14 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
         self._get_handle = get_handle
         self._cell_id = cell_id
 
-    async def stop(self) -> None:
-        logger.info("rollout_actuator_stop cell_id=%s", self._cell_id)
-        await self._get_handle().stop_cell.remote(self._cell_id)  # type: ignore[attr-defined]
-
     async def start(self) -> str:
         logger.info("rollout_actuator_start cell_id=%s", self._cell_id)
         result = await self._get_handle().start_cell.remote(self._cell_id)  # type: ignore[attr-defined]
         return str(result)
+
+    async def stop(self) -> None:
+        logger.info("rollout_actuator_stop cell_id=%s", self._cell_id)
+        await self._get_handle().stop_cell.remote(self._cell_id)  # type: ignore[attr-defined]
 
     async def get_status(self) -> JobStatus:
         return await self._get_handle().get_cell_status.remote(self._cell_id)  # type: ignore[attr-defined]

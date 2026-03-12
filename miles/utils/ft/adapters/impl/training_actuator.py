@@ -13,12 +13,12 @@ class TrainingSubsystemActuator(SubsystemActuatorProtocol):
     def __init__(self, main_job: MainJobProtocol) -> None:
         self._main_job = main_job
 
-    async def stop(self) -> None:
+    async def start(self) -> str:
         raise NotImplementedError(
             "Training subsystem-level restart not yet supported; use RestartingMainJob"
         )
 
-    async def start(self) -> str:
+    async def stop(self) -> None:
         raise NotImplementedError(
             "Training subsystem-level restart not yet supported; use RestartingMainJob"
         )

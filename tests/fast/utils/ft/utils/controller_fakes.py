@@ -78,21 +78,21 @@ class FakeMainJob(MainJobProtocol):
         self._submit_call_count: int = 0
         self._run_id: str = "fake-initial"
 
-    async def get_status(self) -> JobStatus:
-        index = min(self._call_count, len(self._status_sequence) - 1)
-        status = self._status_sequence[index]
-        self._call_count += 1
-        return status
-
-    async def stop(self, timeout_seconds: int = 300) -> None:
-        self._stopped = True
-
     async def start(self) -> str:
         self._submitted = True
         self._submit_call_count += 1
         self._call_count = 0
         self._run_id = f"fake-run-{self._submit_call_count}"
         return self._run_id
+
+    async def stop(self, timeout_seconds: int = 300) -> None:
+        self._stopped = True
+
+    async def get_status(self) -> JobStatus:
+        index = min(self._call_count, len(self._status_sequence) - 1)
+        status = self._status_sequence[index]
+        self._call_count += 1
+        return status
 
 
 # ---------------------------------------------------------------------------

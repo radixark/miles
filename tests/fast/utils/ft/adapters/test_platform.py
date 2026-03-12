@@ -77,12 +77,12 @@ class TestMainJobProtocol:
             def __init__(self) -> None:
                 self._status = JobStatus.PENDING
 
-            async def stop(self, timeout_seconds: int = 300) -> None:
-                self._status = JobStatus.STOPPED
-
             async def start(self) -> str:
                 self._status = JobStatus.RUNNING
                 return "run-abc"
+
+            async def stop(self, timeout_seconds: int = 300) -> None:
+                self._status = JobStatus.STOPPED
 
             async def get_status(self) -> JobStatus:
                 return self._status

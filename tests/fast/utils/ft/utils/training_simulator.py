@@ -95,16 +95,16 @@ class RemoteControlledMainJob(MainJobProtocol):
     def __init__(self, state_actor: ray.actor.ActorHandle) -> None:
         self._state = state_actor
 
-    async def get_status(self) -> JobStatus:
-        status_str: str = await self._state.get_status.remote()
-        return JobStatus(status_str)
+    async def start(self) -> str:
+        run_id: str = await self._state.submit.remote()
+        return run_id
 
     async def stop(self, timeout_seconds: int = 300) -> None:
         await self._state.stop.remote()
 
-    async def start(self) -> str:
-        run_id: str = await self._state.submit.remote()
-        return run_id
+    async def get_status(self) -> JobStatus:
+        status_str: str = await self._state.get_status.remote()
+        return JobStatus(status_str)
 
 
 @ray.remote(num_cpus=0, num_gpus=0)

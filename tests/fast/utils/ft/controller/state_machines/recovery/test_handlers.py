@@ -48,11 +48,11 @@ class _FakeActuator(SubsystemActuatorProtocol):
     def __init__(self, main_job: FakeMainJob | None = None) -> None:
         self._main_job = main_job or FakeMainJob()
 
-    async def stop(self) -> None:
-        pass
-
     async def start(self) -> str:
         return "actuator-run"
+
+    async def stop(self) -> None:
+        pass
 
     async def get_status(self) -> JobStatus:
         return await self._main_job.get_status()
