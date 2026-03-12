@@ -192,3 +192,57 @@ class TestKmsgFileReaderRealFile:
         assert reader.read_new_lines() == ["batch 2", "batch 3"]
 
         reader.close()
+
+
+class TestKmsgFileReaderCloseDuringRead:
+    """close() used to directly os.close(fd) without coordination. If a thread-pool
+    worker was still executing os.read(fd) (via asyncio.to_thread), the fd close
+    would cause OSError: Bad file descriptor. Fix: _closing threading.Event is set
+    before closing fd; read_new_lines checks it and returns early."""
+
+    def test_closing_flag_makes_read_return_empty(self, tmp_path: Path) -> None:
+        kmsg_file = tmp_path / "kmsg"
+        kmsg_file.write_text("")
+
+        reader = KmsgFileReader(kmsg_path=kmsg_file)
+        with open(kmsg_file, "a") as f:
+            f.write("data\n")
+
+        reader._closing.set()
+        assert reader.read_new_lines() == []
+        reader.close()
+
+    def test_close_sets_closing_before_fd_close(self, tmp_path: Path) -> None:
+        kmsg_file = tmp_path / "kmsg"
+        kmsg_file.write_bytes(b"")
+
+        reader = KmsgFileReader(kmsg_path=kmsg_file)
+        assert not reader._closing.is_set()
+
+        reader.close()
+        assert reader._closing.is_set()
+        assert reader._fd is None
+
+    def test_read_with_closed_fd_returns_empty_not_ebadf(self, tmp_path: Path) -> None:
+        """After close(), read_new_lines must return [] instead of raising EBADF."""
+        kmsg_file = tmp_path / "kmsg"
+        kmsg_file.write_bytes(b"")
+
+        reader = KmsgFileReader(kmsg_path=kmsg_file)
+        reader.close()
+        result = reader.read_new_lines()
+        assert result == []
+
+    def test_os_error_during_read_handled_gracefully(self, tmp_path: Path) -> None:
+        """If os.read raises OSError (e.g. EBADF from concurrent close),
+        read_new_lines returns what it has so far instead of crashing."""
+        kmsg_file = tmp_path / "kmsg"
+        kmsg_file.write_bytes(b"")
+
+        reader = KmsgFileReader(kmsg_path=kmsg_file)
+
+        with patch("os.read", side_effect=[b"line1\n", OSError("Bad file descriptor")]):
+            lines = reader.read_new_lines()
+
+        assert lines == ["line1"]
+        reader.close()

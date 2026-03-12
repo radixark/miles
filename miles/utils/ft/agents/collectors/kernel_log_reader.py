@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -22,6 +23,7 @@ class KmsgFileReader:
 
     def __init__(self, *, kmsg_path: Path = Path("/dev/kmsg")) -> None:
         self._fd: int | None = None
+        self._closing = threading.Event()
         fd = os.open(kmsg_path, os.O_RDONLY | os.O_NONBLOCK)
         try:
             os.lseek(fd, 0, os.SEEK_END)
@@ -31,22 +33,25 @@ class KmsgFileReader:
         self._fd = fd
 
     def read_new_lines(self) -> list[str]:
-        if self._fd is None:
+        if self._fd is None or self._closing.is_set():
             return []
 
         lines: list[str] = []
         while True:
+            if self._closing.is_set():
+                break
             try:
                 data = os.read(self._fd, 8192)
                 if not data:
                     break
                 lines.extend(data.decode("utf-8", errors="replace").splitlines())
-            except BlockingIOError:
+            except OSError:
                 break
 
         return lines
 
     def close(self) -> None:
+        self._closing.set()
         if self._fd is not None:
             try:
                 os.close(self._fd)
