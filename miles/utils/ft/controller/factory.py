@@ -159,7 +159,7 @@ def create_ft_controller(
         recovery_timeout_seconds=recovery_timeout_seconds,
         subsystem_configs=subsystem_configs,
         on_new_run=instance._activate_run,
-        rank_pids_provider=lambda node_id: training_rank_roster_box.value.get_rank_pids_for_node(node_id) if training_rank_roster_box.value is not None else {},
+        rank_pids_provider=lambda node_id: (r.get_rank_pids_for_node(node_id) if (r := training_rank_roster_box.value) is not None else {}),
         on_recovery_duration=duration_cb,
         controller_exporter=controller_exporter,
         registration_grace_ticks=registration_grace_ticks,
