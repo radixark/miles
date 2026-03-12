@@ -26,6 +26,8 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 )
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
+from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
+from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.subsystem_hub import SubsystemConfig
 from miles.utils.ft.utils.state_machine import StateHandler, run_stepper_to_convergence
 
@@ -122,11 +124,17 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         frozen_state = state.subsystems[requestor]
 
         logger.info("sub-SM %r requested main job restart (peek-and-freeze)", requestor)
-        await context.main_job.stop()
-        run_id = await context.main_job.start()
-
-        if context.on_new_run is not None:
-            context.on_new_run(run_id)
+        success = await stop_and_submit(
+            job=context.main_job,
+            on_new_run=context.on_new_run,
+        )
+        if not success:
+            await safe_notify(
+                context.notifier,
+                title="Main job restart failed",
+                content=f"stop_and_submit failed for requestor {requestor}",
+            )
+            return None
 
         return RestartingMainJobSt(
             requestor_name=requestor,

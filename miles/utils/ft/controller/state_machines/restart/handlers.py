@@ -108,20 +108,12 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestartingSt, Restart
         if ctx.restart_mode == RestartMode.MAIN_JOB:
             return ExternalRestartingMainJobSt(bad_node_ids=state.bad_node_ids)
 
-        try:
-            await ctx.actuator.stop()
-        except Exception:
-            logger.error("actuator_stop_failed", exc_info=True)
+        success = await stop_and_submit(
+            job=ctx.actuator,
+            on_new_run=ctx.on_new_run,
+        )
+        if not success:
             return RestartFailedSt(bad_node_ids=state.bad_node_ids)
-
-        try:
-            run_id = await ctx.actuator.start()
-        except Exception:
-            logger.error("actuator_start_failed", exc_info=True)
-            return RestartFailedSt(bad_node_ids=state.bad_node_ids)
-
-        if ctx.on_new_run is not None:
-            ctx.on_new_run(run_id)
 
         return StoppingAndRestartingSt(
             bad_node_ids=state.bad_node_ids,

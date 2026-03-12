@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol, SubsystemActuatorProtocol
+from miles.utils.ft.adapters.types import STOP_TRAINING_TIMEOUT_SECONDS, JobStatus, MainJobProtocol, SubsystemActuatorProtocol
 
 
 class TrainingSubsystemActuator(SubsystemActuatorProtocol):
@@ -18,7 +18,7 @@ class TrainingSubsystemActuator(SubsystemActuatorProtocol):
             "Training subsystem-level restart not yet supported; use RestartingMainJob"
         )
 
-    async def stop(self) -> None:
+    async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
         raise NotImplementedError(
             "Training subsystem-level restart not yet supported; use RestartingMainJob"
         )

@@ -132,7 +132,7 @@ class NodeManagerProtocol(ABC):
     async def get_bad_nodes(self) -> list[str]: ...
 
 
-class MainJobProtocol(ABC):
+class StoppableJobProtocol(ABC):
     @abstractmethod
     async def start(self) -> str: ...
 
@@ -143,15 +143,12 @@ class MainJobProtocol(ABC):
     async def get_status(self) -> JobStatus: ...
 
 
-class SubsystemActuatorProtocol(ABC):
-    @abstractmethod
-    async def start(self) -> str: ...
+class MainJobProtocol(StoppableJobProtocol):
+    pass
 
-    @abstractmethod
-    async def stop(self) -> None: ...
 
-    @abstractmethod
-    async def get_status(self) -> JobStatus: ...
+class SubsystemActuatorProtocol(StoppableJobProtocol):
+    pass
 
 
 class NotifierProtocol(ABC):

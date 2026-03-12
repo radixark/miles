@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
+from miles.utils.ft.adapters.types import STOP_TRAINING_TIMEOUT_SECONDS, JobStatus, SubsystemActuatorProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
         result = await self._get_handle().start_cell.remote(self._cell_id)  # type: ignore[attr-defined]
         return str(result)
 
-    async def stop(self) -> None:
+    async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
         logger.info("rollout_actuator_stop cell_id=%s", self._cell_id)
         await self._get_handle().stop_cell.remote(self._cell_id)  # type: ignore[attr-defined]
 

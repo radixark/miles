@@ -53,7 +53,7 @@ class _FakeActuator(SubsystemActuatorProtocol):
     async def start(self) -> str:
         return "actuator-run"
 
-    async def stop(self) -> None:
+    async def stop(self, timeout_seconds: int = 300) -> None:
         pass
 
     async def get_status(self) -> JobStatus:

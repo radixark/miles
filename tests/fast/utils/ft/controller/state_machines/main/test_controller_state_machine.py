@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
+from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier, make_failing_main_job
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
@@ -59,6 +59,7 @@ def _make_controller_context(
     *,
     main_job: FakeMainJob | None = None,
     subsystem_configs: dict[str, SubsystemConfig] | None = None,
+    notifier: FakeNotifier | None = None,
 ) -> MainContext:
     resolved_main_job = main_job or FakeMainJob()
     return MainContext(
@@ -72,7 +73,7 @@ def _make_controller_context(
             time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
             mini_wandb=MiniWandb(),
         ),
-        notifier=FakeNotifier(),
+        notifier=notifier or FakeNotifier(),
         node_manager=FakeNodeManager(),
         diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         cooldown=SlidingWindowThrottle(window_minutes=30.0, max_count=3),
@@ -406,3 +407,39 @@ class TestSubsystemSteppingOrder:
                 pass
 
         assert call_order == ["aa_first", "mm_middle", "zz_last"]
+
+
+# ---------------------------------------------------------------------------
+# H-3: _check_main_job_restart uses stop_and_submit — error handling
+# ---------------------------------------------------------------------------
+
+
+class TestMainJobRestartStopFailure:
+    @pytest.mark.asyncio
+    async def test_stop_failure_returns_none_and_notifies(self) -> None:
+        """H-3: Previously _check_main_job_restart called raw stop()+start()
+        with no error handling. Now it delegates to stop_and_submit which has
+        retry + fallback. When stop_and_submit returns False, the handler
+        returns None (no state transition) and sends a notification."""
+        main_job = make_failing_main_job(
+            fail_stop=True,
+            status_sequence=[JobStatus.RUNNING],
+        )
+        notifier = FakeNotifier()
+        stepper = create_main_stepper()
+
+        nested_state = _make_frozen_recovering_state()
+        subsystems: dict[str, SubsystemState] = {"rollout_0": nested_state}
+        state = NormalSt(subsystems=subsystems)
+        context = _make_controller_context(
+            main_job=main_job,
+            subsystem_configs={"rollout_0": _make_subsystem_config()},
+            notifier=notifier,
+        )
+
+        result = await _step_last(stepper, state, context)
+
+        assert result is None or isinstance(result, NormalSt)
+        assert not main_job._submitted
+        assert len(notifier.calls) >= 1
+        assert any("stop_and_submit failed" in call[1] for call in notifier.calls)
