@@ -87,3 +87,4 @@ class RestartContext(FtBaseModel):
     actuator: SubsystemActuatorProtocol
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig
     restart_mode: RestartMode
+    pending_timeout_seconds: int = 300

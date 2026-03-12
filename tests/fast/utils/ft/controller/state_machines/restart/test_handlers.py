@@ -75,6 +75,7 @@ def _make_context(
     actuator: SubsystemActuatorProtocol | None = None,
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
     restart_mode: RestartMode = RestartMode.SUBSYSTEM,
+    pending_timeout_seconds: int = 300,
 ) -> RestartContext:
     resolved_main_job = main_job or FakeMainJob()
     return RestartContext(
@@ -90,6 +91,7 @@ def _make_context(
         actuator=actuator or FakeActuator(),
         monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
         restart_mode=restart_mode,
+        pending_timeout_seconds=pending_timeout_seconds,
     )
 
 
@@ -319,6 +321,25 @@ class TestStoppingAndRestarting:
         state = StoppingAndRestartingSt(submitted=True, submit_time=datetime.now(timezone.utc))
         result = await _step_last(stepper, state, ctx)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_poll_pending_timeout_respects_configured_value(self) -> None:
+        """pending_timeout_seconds was hardcoded to 300s, causing slow-starting jobs
+        to be falsely marked as failed. Now reads from RestartContext."""
+        actuator = FakeActuator(status_sequence=[JobStatus.PENDING])
+        stepper = _make_stepper()
+
+        # Step 1: with a generous timeout (600s), 400s elapsed should NOT timeout
+        ctx = _make_context(actuator=actuator, pending_timeout_seconds=600)
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=400)
+        state = StoppingAndRestartingSt(submitted=True, submit_time=old_time)
+        result = await _step_last(stepper, state, ctx)
+        assert result is None
+
+        # Step 2: with a short timeout (60s), 400s elapsed should timeout
+        ctx = _make_context(actuator=actuator, pending_timeout_seconds=60)
+        result = await _step_last(stepper, state, ctx)
+        assert isinstance(result, RestartFailedSt)
 
     @pytest.mark.asyncio
     async def test_on_main_job_new_run_not_called_for_subsystem_restart(self) -> None:

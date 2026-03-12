@@ -30,7 +30,6 @@ from miles.utils.ft.utils.state_machine import StateHandler
 logger = logging.getLogger(__name__)
 
 _WANDB_ITERATION_METRIC = "iteration"
-_PENDING_TIMEOUT_SECONDS: int = 300
 
 
 def iteration_progress(state: MonitoringProgressSt, mini_wandb: MiniWandb) -> int:
@@ -132,8 +131,8 @@ class StoppingAndRestartingHandler(StateHandler[StoppingAndRestartingSt, Restart
 
         if state.submit_time is not None:
             elapsed = (datetime.now(timezone.utc) - state.submit_time).total_seconds()
-            if elapsed > _PENDING_TIMEOUT_SECONDS:
-                logger.warning("restart_pending_timeout elapsed=%.0f", elapsed)
+            if elapsed > ctx.pending_timeout_seconds:
+                logger.warning("restart_pending_timeout elapsed=%.0f timeout=%d", elapsed, ctx.pending_timeout_seconds)
                 return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         return None
