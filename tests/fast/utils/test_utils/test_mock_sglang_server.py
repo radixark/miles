@@ -23,7 +23,7 @@ def expected_logprobs(tokenizer, text: str) -> list[dict]:
     ]
 
 
-def expected_input_token_ids(tokenizer, messages: list[dict], tools: list[dict] | None) -> list[int]:
+def expected_prompt_token_ids(tokenizer, messages: list[dict], tools: list[dict] | None) -> list[int]:
     prompt_str = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, tools=tools)
     return tokenizer.encode(prompt_str, add_special_tokens=False)
 
@@ -262,7 +262,7 @@ class TestChatCompletionsEndpoint:
                     "index": 0,
                     "message": {"role": "assistant", "content": "\\boxed{6}", "tool_calls": None},
                     "logprobs": {"content": expected_logprobs(mock_server.tokenizer, "\\boxed{6}")},
-                    "input_token_ids": expected_input_token_ids(mock_server.tokenizer, messages, None),
+                    "prompt_token_ids": expected_prompt_token_ids(mock_server.tokenizer, messages, None),
                     "finish_reason": "stop",
                 }
             ],
@@ -296,7 +296,7 @@ class TestChatCompletionsEndpoint:
                     ],
                 },
                 "logprobs": {"content": expected_logprobs(server.tokenizer, tool_call_response)},
-                "input_token_ids": expected_input_token_ids(
+                "prompt_token_ids": expected_prompt_token_ids(
                     server.tokenizer,
                     [{"role": "user", "content": "What year is it?"}],
                     SAMPLE_TOOLS,
@@ -326,7 +326,7 @@ class TestChatCompletionsEndpoint:
                 "index": 0,
                 "message": {"role": "assistant", "content": response_text, "tool_calls": None},
                 "logprobs": {"content": expected_logprobs(server.tokenizer, response_text)},
-                "input_token_ids": expected_input_token_ids(
+                "prompt_token_ids": expected_prompt_token_ids(
                     server.tokenizer,
                     [{"role": "user", "content": "What's the weather?"}],
                     SAMPLE_TOOLS,
@@ -371,7 +371,7 @@ class TestChatCompletionsEndpoint:
                     ],
                 },
                 "logprobs": {"content": expected_logprobs(server.tokenizer, multi_tool_response)},
-                "input_token_ids": expected_input_token_ids(
+                "prompt_token_ids": expected_prompt_token_ids(
                     server.tokenizer,
                     [{"role": "user", "content": "What year and temperature?"}],
                     SAMPLE_TOOLS,

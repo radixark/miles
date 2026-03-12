@@ -14,8 +14,8 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
-ARG PATCH_VERSION=dev
-ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
+ARG MEGATRON_REPO=radixark/Megatron-LM
+ARG MEGATRON_BRANCH=miles-main
 
 ARG ENABLE_CUDA_13=0
 
@@ -29,7 +29,16 @@ WORKDIR /root/
 # ======================================== Apt dependencies =============================================
 
 RUN apt update
-RUN apt install -y nvtop rsync dnsutils
+# ethtool for network diagnostics
+RUN apt install -y nvtop rsync dnsutils ethtool
+
+# nccl-tests for diagnostics
+RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
+    cd /tmp/nccl-tests && \
+    git checkout ae98985f5599617be94042f4aa3637d10014ce89 && \
+    make -j$(nproc) CUDA_HOME=/usr/local/cuda && \
+    cp /tmp/nccl-tests/build/*_perf /usr/local/bin/ && \
+    rm -rf /tmp/nccl-tests
 
 # ====================================== Download pre-built wheels ============================================
 
@@ -54,7 +63,7 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.4.0
+RUN pip install flash-linear-attention==0.4.1
 RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
@@ -67,11 +76,11 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
 # apex
 RUN pip install /tmp/wheels/apex-*.whl
 
-RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
-    cd Megatron-LM && git checkout ${MEGATRON_COMMIT} && \
+RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
+    cd Megatron-LM && \
     pip install -e .
 
-RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 # RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/yushengsu-thu/Megatron-Bridge.git@merged-megatron-0.16.0rc0-miles --no-deps --no-build-isolation
@@ -93,17 +102,7 @@ RUN pip install "numpy<2"
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
 
-# ====================================== Patches ============================================
-
-COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
-RUN cd Megatron-LM && \
-    git update-index --refresh && \
-    git apply megatron.patch --3way && \
-    if grep -R -n '^<<<<<<< ' .; then \
-      echo "Patch failed to apply cleanly. Please resolve conflicts." && \
-      exit 1; \
-    fi && \
-    rm megatron.patch
+# ====================================== Install sglang-miles ============================================
 
 # Install sglang from sglang-miles branch
 RUN cd /sgl-workspace/sglang && \

@@ -120,6 +120,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to offload the rollout generator to CPU during training. This will always be true when --colocate is set.",
             )
 
+            parser.add_argument(
+                "--offload-rollout-level",
+                type=str,
+                nargs="+",
+                default=["kv_cache", "weight"],
+                help=(
+                    "Specifies what to offload during rollout when offload-rollout is set. "
+                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
+                    "Example: --offload-rollout-level kv_cache weight"
+                ),
+            )
+
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
 
@@ -207,6 +219,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Set to `-1` to disable chunking. "
                     "[Ref](https://github.com/sgl-project/sglang/pull/6318)"
                 ),
+            )
+            parser.add_argument(
+                "--allgather-cp",
+                action="store_true",
+                default=False,
             )
 
             return parser
@@ -560,6 +577,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=json.loads,
                 default="{}",
                 help="Extra arguments for the chat template processing (JSON string).",
+            )
+            parser.add_argument(
+                "--chat-template-path",
+                type=str,
+                default=None,
+                help="Path to a custom Jinja chat template file (.jinja), or 'autofix'. "
+                "Sets tokenizer.chat_template when loading via load_tokenizer, "
+                "and also sets --sglang-chat-template so the sglang server uses the same template. "
+                "If set to 'autofix', Miles will automatically select a fixed chat template "
+                "maintained internally that resolves train-inference token mismatch issues "
+                "in agentic workflows (e.g. tool-call trajectories). "
+                "The path must be accessible on all Ray worker nodes "
+                "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
             )
             parser.add_argument(
                 "--input-key",
@@ -1079,6 +1109,60 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_lora_arguments(parser):
+            """Add LoRA-related arguments for Megatron backend."""
+            parser.add_argument(
+                "--lora-rank",
+                type=int,
+                default=0,
+                help="LoRA rank. Set to 0 to disable LoRA (default: 0)",
+            )
+            parser.add_argument(
+                "--lora-alpha",
+                type=int,
+                default=16,
+                help="LoRA alpha for scaling (default: 16)",
+            )
+            parser.add_argument(
+                "--lora-dropout",
+                type=float,
+                default=0.0,
+                help="LoRA dropout rate (default: 0.0)",
+            )
+            parser.add_argument(
+                "--lora-type",
+                type=str,
+                default="lora",
+                choices=["lora", "canonical_lora"],
+                help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
+            )
+            parser.add_argument(
+                "--target-modules",
+                type=str,
+                default=None,
+                help="Target modules for LoRA. Use 'all-linear' or comma-separated module names "
+                "(e.g., 'q_proj,k_proj,v_proj,o_proj' for HF naming or 'linear_qkv,linear_proj' for Megatron naming)",
+            )
+            parser.add_argument(
+                "--exclude-modules",
+                type=str,
+                default=None,
+                help="Modules to exclude from LoRA (comma-separated)",
+            )
+            parser.add_argument(
+                "--lora-adapter-path",
+                type=str,
+                default=None,
+                help="Path to load pre-trained LoRA adapter weights (default: None)",
+            )
+            parser.add_argument(
+                "--lora-sync-from-tensor",
+                action="store_true",
+                default=False,
+                help="Sync LoRA weights via tensor instead of file (more efficient)",
+            )
+            return parser
+
         def add_router_arguments(parser):
             parser.add_argument(
                 "--use-miles-router",
@@ -1117,17 +1201,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=3,
                 help="Number of consecutive failures before marking a worker as unhealthy.",
-            )
-            parser.add_argument(
-                "--miles-router-enable-token-input-for-chat-completions",
-                action="store_true",
-                default=False,
-                help=(
-                    "This is an experimental feature, and only supports for text model."
-                    "Whether to enable token input for chat completions. If set, we will calculate "
-                    "the input_ids for the prompt part inside miles and add it to the request body."
-                    "This is reserved for cross turn token in under OAI format."
-                ),
             )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
@@ -1502,6 +1575,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--ci-disable-kl-checker", action="store_true", help="Disable KL divergence sanity checks in CI."
             )
             parser.add_argument(
+                "--ci-disable-logprobs-checker",
+                action="store_true",
+            )
+            parser.add_argument(
                 "--ci-metric-checker-key", type=str, default=None, help="Metric key to monitor for pass/fail in CI."
             )
             parser.add_argument(
@@ -1515,6 +1592,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--ci-load-grad-norm", type=str, default=None, help="Path to load gradient norms for CI verification."
+            )
+            parser.add_argument(
+                "--ci-save-model-hash",
+                action="store_true",
+            )
+            parser.add_argument(
+                "--ci-check-model-hash",
+                action="store_true",
             )
             return parser
 
@@ -1550,6 +1635,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
+        parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_router_arguments(parser)
@@ -1689,6 +1775,21 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
+    if args.chat_template_path == "autofix":
+        from miles.utils.chat_template_utils import try_get_fixed_chat_template
+
+        resolved = try_get_fixed_chat_template(args.hf_checkpoint)
+        if resolved is None:
+            logger.warning(
+                "--chat-template-path=autofix but no fix rule found for %s, using HF default", args.hf_checkpoint
+            )
+        args.chat_template_path = resolved
+
+    if args.chat_template_path is not None:
+        if not os.path.isfile(args.chat_template_path):
+            raise FileNotFoundError(f"--chat-template-path file not found: {args.chat_template_path}")
+        args.sglang_chat_template = args.chat_template_path
+
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
             raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
@@ -1723,6 +1824,27 @@ def miles_validate_args(args):
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
+
+    # Parse LoRA target modules
+    if args.lora_rank > 0:
+        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
+
+        if args.target_modules == "all-linear":
+            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        elif "," in args.target_modules:
+            modules = [m.strip() for m in args.target_modules.split(",")]
+        else:
+            modules = [args.target_modules]
+
+        if args.exclude_modules:
+            exclude_set = (
+                set(m.strip() for m in args.exclude_modules.split(","))
+                if "," in args.exclude_modules
+                else {args.exclude_modules}
+            )
+            modules = [m for m in modules if m not in exclude_set]
+
+        args.target_modules = modules
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -1818,6 +1940,10 @@ def miles_validate_args(args):
     if args.offload_rollout is None:
         args.offload_rollout = False
 
+    if args.offload_train:
+        args.disable_grad_buffers_cpu_backup = True
+        args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
 
@@ -1908,13 +2034,21 @@ def hf_validate_args(args, hf_config):
     if hasattr(hf_config, "text_config"):
         hf_config = hf_config.text_config
 
+    if hasattr(hf_config, "rope_parameters") and isinstance(hf_config.rope_parameters, dict):
+        if "rope_theta" in hf_config.rope_parameters:
+            hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
+
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
         ("intermediate_size", "ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
-        ("rms_norm_eps", "norm_epsilon", equal),
+        (
+            "rms_norm_eps",
+            "norm_epsilon" if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1" else "layernorm_epsilon",
+            equal,
+        ),
         ("rope_theta", "rotary_base", equal),
     ]:
         if hasattr(hf_config, hf_config_name):

@@ -93,11 +93,15 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
+            padding_mask = top_indices == -1
+            if padding_mask.any():
+                top_indices[padding_mask] = (
+                    torch.arange(padding_mask.sum(), device=top_indices.device, dtype=top_indices.dtype)
+                    % scores.shape[1]
+                )
+
             if return_probs:
-                if -1 in top_indices:
-                    return old_topk_fn(scores, topk, *args, **kwargs)
-                else:
-                    return scores.gather(1, top_indices), top_indices
+                return scores.gather(1, top_indices), top_indices
             else:
                 return top_indices
 

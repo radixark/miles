@@ -29,7 +29,18 @@ def dataclass_cli(func, env_var_prefix: str = "MILES_SCRIPT_"):
 
     def wrapped(**kwargs):
         data = dataclass_cls(**kwargs)
-        print(f"Execute command with args: {data}")
+        fields = dataclasses.fields(data)
+        max_key_len = max(len(f.name) for f in fields)
+        sep = "+" + "-" * (max_key_len + 2) + "+" + "-" * 52 + "+"
+        print(sep)
+        print(f"| {'Argument':<{max_key_len}} | {'Value':<50} |")
+        print(sep)
+        for f in fields:
+            val = str(getattr(data, f.name))
+            if len(val) > 50:
+                val = val[:47] + "..."
+            print(f"| {f.name:<{max_key_len}} | {val:<50} |")
+        print(sep)
         return func(data)
 
     wrapped.__signature__ = signature.replace(parameters=new_parameters)
