@@ -27,7 +27,7 @@ class RetentionEvictor:
         cutoff = datetime.now(timezone.utc) - self._retention
         empty_keys: list[SeriesKey] = []
 
-        for key, samples in self._store._series.items():
+        for key, samples in list(self._store._series.items()):
             while samples and samples[0].timestamp < cutoff:
                 samples.popleft()
             if not samples:

@@ -164,7 +164,7 @@ def _iter_matching(
     metric_name: str,
     label_filters: dict[str, str] | None,
 ) -> Iterator[tuple[dict[str, str], deque[TimeSeriesSample]]]:
-    for key in name_index.get(metric_name, []):
+    for key in list(name_index.get(metric_name, [])):
         samples = series.get(key)
         if not samples:
             continue
@@ -173,7 +173,7 @@ def _iter_matching(
         if label_filters and not _labels_match(labels, label_filters):
             continue
 
-        yield labels, samples
+        yield labels, deque(samples)
 
 
 def _labels_match(labels: dict[str, str], filters: dict[str, str]) -> bool:

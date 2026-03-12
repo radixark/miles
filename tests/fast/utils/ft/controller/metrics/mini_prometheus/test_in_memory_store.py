@@ -161,3 +161,70 @@ class TestRangeAggregations:
         df = store.changes("m", window=timedelta(seconds=30))
         assert len(df) == 1
         assert df["value"][0] == 2.0  # 1->2 and 2->5 are changes; 2->2 is not
+
+
+class TestQueryIterationSafetyAgainstConcurrentMutation:
+    """_iter_matching used to iterate the original name_index set and yield original
+    deque references. If eviction ran concurrently (across an asyncio await point),
+    index_set.discard() or del _series[key] would crash iteration with RuntimeError.
+    Fix: _iter_matching snapshots the index set with list() and yields deque copies."""
+
+    def test_iter_matching_yields_deque_snapshot_not_reference(self) -> None:
+        store = InMemoryMetricStore()
+        now = datetime.now(timezone.utc)
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=1.0)],
+            timestamp=now,
+        )
+
+        from miles.utils.ft.controller.metrics.mini_prometheus.query import _iter_matching
+
+        for _labels, samples in _iter_matching(
+            store._series, store._label_maps, store._name_index, "m", None
+        ):
+            key = list(store._series.keys())[0]
+            original = store._series[key]
+            assert samples is not original
+            assert list(samples) == list(original)
+
+    def test_evict_during_query_does_not_corrupt_results(self) -> None:
+        """Simulate: take query snapshot, then evict all data, then continue using snapshot."""
+        store = InMemoryMetricStore()
+        now = datetime.now(timezone.utc)
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=42.0)],
+            timestamp=now,
+        )
+
+        df_before = store.query_latest("m")
+        assert df_before["value"][0] == 42.0
+
+        from miles.utils.ft.controller.metrics.mini_prometheus.eviction import RetentionEvictor
+
+        evictor = RetentionEvictor(store=store, retention=timedelta(seconds=0))
+        evictor._evict_expired()
+
+        assert len(store._series) == 0
+        df_after = store.query_latest("m")
+        assert len(df_after) == 0
+
+    def test_concurrent_ingest_evict_query_stress(self) -> None:
+        """Stress test: interleave ingest (with eviction) and query_latest for many
+        rounds. Before the fix, this could raise RuntimeError on set/dict mutation."""
+        store = InMemoryMetricStore()
+        from miles.utils.ft.controller.metrics.mini_prometheus.eviction import RetentionEvictor
+
+        evictor = RetentionEvictor(store=store, retention=timedelta(seconds=1))
+
+        for i in range(500):
+            ts = datetime.now(timezone.utc) - timedelta(seconds=max(0, 5 - i * 0.01))
+            store.ingest_samples(
+                target_id="n",
+                samples=[GaugeSample(name="m", labels={"i": str(i % 10)}, value=float(i))],
+                timestamp=ts,
+            )
+            evictor.maybe_evict()
+            store.query_latest("m")
+            store.query_range("m", window=timedelta(seconds=30))

@@ -120,3 +120,31 @@ class TestEvictExpired:
         assert "metric_a" not in store._name_index
         assert "metric_b" in store._name_index
         assert len(store._series) == 1
+
+
+class TestEvictionIterationSafety:
+    """_evict_expired used to iterate self._store._series.items() directly.
+    If ingest_samples added a new key to _series concurrently (across an asyncio
+    await point), the dict would mutate during iteration causing RuntimeError.
+    Fix: _evict_expired snapshots _series.items() with list() before iterating."""
+
+    def test_ingest_during_eviction_does_not_crash(self) -> None:
+        """Simulate: start eviction scan, then ingest new data mid-scan.
+        The snapshot ensures the new key doesn't disrupt iteration."""
+        store = InMemoryMetricStore()
+        retention = timedelta(minutes=5)
+        evictor = RetentionEvictor(store=store, retention=retention)
+
+        now = datetime.now(timezone.utc)
+        _ingest_at(store, "metric_a", 1.0, now - timedelta(minutes=10))
+        _ingest_at(store, "metric_b", 2.0, now)
+
+        evictor._evict_expired()
+        assert "metric_a" not in store._name_index
+        assert "metric_b" in store._name_index
+
+        _ingest_at(store, "metric_c", 3.0, now)
+        evictor._last_eviction_time = None
+        evictor.maybe_evict()
+        assert "metric_b" in store._name_index
+        assert "metric_c" in store._name_index
