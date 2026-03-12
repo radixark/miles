@@ -3,13 +3,36 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
+from typing import Annotated, Literal, Union
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
+from miles.utils.ft.controller.subsystem import RestartMode
 from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+
+class MonitoringIterationProgressConfig(FtBaseModel):
+    """Training mode: confirm recovery after N successful iterations."""
+
+    mode: Literal["iteration_progress"] = "iteration_progress"
+    success_iterations: int = 10
+    timeout_seconds: int = 600
+
+
+class MonitoringSustainedAliveConfig(FtBaseModel):
+    """Rollout mode: confirm recovery after get_status() == RUNNING for N seconds."""
+
+    mode: Literal["sustained_alive"] = "sustained_alive"
+    alive_duration_seconds: int = 180
+    timeout_seconds: int = 600
+
+
+MonitoringConfig = Annotated[
+    Union[MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig],
+    Field(discriminator="mode"),
+]
 
 
 class ExternalExecutionResult(Enum):

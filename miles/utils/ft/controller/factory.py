@@ -17,12 +17,11 @@ from miles.utils.ft.controller.state_machines.main import (
 from miles.utils.ft.controller.state_machines.main.models import MainState
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
-from miles.utils.ft.controller.subsystem import (
+from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringIterationProgressConfig,
     MonitoringSustainedAliveConfig,
-    RestartMode,
-    SubsystemConfig,
 )
+from miles.utils.ft.controller.subsystem import RestartMode, SubsystemConfig
 from miles.utils.ft.controller.subsystem_hub import SubsystemHub
 from miles.utils.ft.controller.tick_loop import TickLoop
 from miles.utils.ft.controller.types import (

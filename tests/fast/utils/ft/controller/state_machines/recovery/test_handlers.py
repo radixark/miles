@@ -31,7 +31,8 @@ from miles.utils.ft.controller.state_machines.restart import (
     StoppingAndRestartingSt,
     create_restart_stepper,
 )
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, RestartMode
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
+from miles.utils.ft.controller.subsystem import RestartMode
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.state_machine import StateMachineStepper

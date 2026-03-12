@@ -17,7 +17,7 @@ from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashD
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
-from miles.utils.ft.controller.subsystem import MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringSustainedAliveConfig
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
 from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator

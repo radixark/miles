@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, SubsystemConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.subsystem import SubsystemConfig
 
 
 class TestMonitoringIterationProgressConfig:

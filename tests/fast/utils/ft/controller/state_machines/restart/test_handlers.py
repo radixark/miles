@@ -31,7 +31,8 @@ from miles.utils.ft.controller.state_machines.restart import (
     create_restart_stepper,
     iteration_progress,
 )
-from miles.utils.ft.controller.subsystem import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig, RestartMode
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.subsystem import RestartMode
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
