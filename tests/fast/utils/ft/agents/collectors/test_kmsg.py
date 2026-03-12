@@ -436,11 +436,10 @@ class TestDmesgTimeWindowBug:
         assert reader._last_dmesg_time == time_after_success
 
     @pytest.mark.anyio
-    async def test_dmesg_nonzero_returncode_advances_time(self) -> None:
-        """H-5 fix: a non-zero returncode still advances _last_dmesg_time because
-        the dmesg subprocess did execute — only OSError (subprocess never ran)
-        should preserve the time window.
-        """
+    async def test_dmesg_nonzero_returncode_does_not_advance_time(self) -> None:
+        """Non-zero returncode must NOT advance _last_dmesg_time so that
+        the failed window is retried on the next cycle, preventing
+        permanent loss of kernel logs."""
         collector = KmsgCollector(kmsg_path=Path("/nonexistent/kmsg"))
 
         with patch("subprocess.run") as mock_run:
@@ -469,7 +468,7 @@ class TestDmesgTimeWindowBug:
             )()
             await collector.collect()
 
-        assert reader._last_dmesg_time > time_after_first
+        assert reader._last_dmesg_time == time_after_first
 
 
 class TestKmsgCollectorReadLinesNoFallback:
