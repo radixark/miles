@@ -152,3 +152,36 @@ class TestLifecycleWithImmediateReturnStore:
         assert call_count < 20, (
             f"start() called {call_count} times — suggests busy-wait loop"
         )
+
+
+class TestScrapeLoopMaxRestarts:
+    def test_stops_after_max_restarts_exceeded(self) -> None:
+        """Previously the scrape loop retried forever on persistent failures,
+        flooding logs without escalation. Now it stops after _MAX_SCRAPE_RESTARTS."""
+        call_count = 0
+
+        async def _always_fail() -> None:
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("persistent failure")
+
+        store = AsyncMock()
+        store.start = _always_fail
+
+        async def _run() -> None:
+            import miles.utils.ft.controller.metrics.lifecycle as mod
+
+            original_delay = mod._SCRAPE_RESTART_DELAY_SECONDS
+            original_max = mod._MAX_SCRAPE_RESTARTS
+            mod._SCRAPE_RESTART_DELAY_SECONDS = 0.001
+            mod._MAX_SCRAPE_RESTARTS = 3
+            try:
+                task = await start_metric_store_task(store)
+                await asyncio.sleep(0.5)
+                assert task.done()
+                assert call_count == 3
+            finally:
+                mod._SCRAPE_RESTART_DELAY_SECONDS = original_delay
+                mod._MAX_SCRAPE_RESTARTS = original_max
+
+        asyncio.run(_run())
