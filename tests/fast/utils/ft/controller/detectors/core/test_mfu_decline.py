@@ -19,9 +19,10 @@ def _make_wandb_with_mfu(
 def _make_wandb_with_timed_mfu(
     entries: list[tuple[float, datetime]],
     run_id: str = "test-run",
+    max_age_minutes: float = 180.0,
 ) -> MiniWandb:
     """Create a MiniWandb where each MFU value has an explicit receive_time."""
-    wandb = MiniWandb(active_run_id=run_id)
+    wandb = MiniWandb(active_run_id=run_id, max_age=timedelta(minutes=max_age_minutes))
     for i, (value, timestamp) in enumerate(entries):
         wandb.log_step(
             run_id=run_id,
