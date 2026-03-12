@@ -7,7 +7,9 @@ import shutil
 import subprocess
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import ray
@@ -146,3 +148,124 @@ def poll_for_run_id(
             return status.active_run_id
         time.sleep(interval)
     raise TimeoutError("active_run_id not set within timeout")
+
+
+# ------------------------------------------------------------------
+# Multi-node Ray cluster (for MilesTestbed)
+# ------------------------------------------------------------------
+
+
+@dataclass
+class RayNodeInfo:
+    node_ip: str
+    ray_node_id: str
+    is_head: bool
+
+
+_MULTI_NODE_COUNT = 5
+
+
+def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInfo]:
+    """Start a multi-node Ray cluster using loopback aliases (127.0.0.x).
+
+    Each "node" runs on a different loopback IP, which lets Ray treat them
+    as separate nodes while staying on the same machine.
+    """
+    if ray.is_initialized():
+        ray.shutdown()
+    subprocess.run(["ray", "stop", "--force"], capture_output=True)
+    time.sleep(2)
+
+    temp_dir = Path(f"/tmp/ray_testbed_{uuid4().hex[:8]}")
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    head_ip = "127.0.0.1"
+    result = subprocess.run(
+        [
+            "ray", "start", "--head",
+            "--port=0",
+            f"--node-ip-address={head_ip}",
+            "--num-cpus=8",
+            "--num-gpus=0",
+            "--include-dashboard=true",
+            "--dashboard-host=127.0.0.1",
+            "--dashboard-port=0",
+            "--dashboard-agent-listen-port=0",
+            f"--temp-dir={temp_dir}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    match = re.search(r"--address='([^']+)'", result.stdout)
+    if not match:
+        raise RuntimeError(f"Could not parse GCS address from ray start output:\n{result.stdout}")
+    gcs_address = match.group(1)
+
+    for i in range(1, num_nodes):
+        node_ip = f"127.0.0.{i + 1}"
+        subprocess.run(
+            [
+                "ray", "start",
+                f"--address={gcs_address}",
+                f"--node-ip-address={node_ip}",
+                "--num-cpus=8",
+                "--num-gpus=0",
+                f"--temp-dir={temp_dir}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    ctx = ray.init(address=gcs_address)
+
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        nodes = ray.nodes()
+        alive = [n for n in nodes if n.get("Alive", False)]
+        if len(alive) >= num_nodes:
+            break
+        time.sleep(1.0)
+    else:
+        alive_count = len([n for n in ray.nodes() if n.get("Alive", False)])
+        raise RuntimeError(
+            f"Expected {num_nodes} alive Ray nodes, got {alive_count}"
+        )
+
+    node_infos: list[RayNodeInfo] = []
+    for node in ray.nodes():
+        if not node.get("Alive", False):
+            continue
+        node_ip = node["NodeManagerAddress"]
+        ray_node_id = node["NodeID"]
+        is_head = node_ip == head_ip
+        node_infos.append(RayNodeInfo(
+            node_ip=node_ip,
+            ray_node_id=ray_node_id,
+            is_head=is_head,
+        ))
+
+    logger.info(
+        "Multi-node Ray cluster started: %d nodes, temp_dir=%s",
+        len(node_infos), temp_dir,
+    )
+    return node_infos
+
+
+def _stop_multi_node_ray() -> None:
+    if ray.is_initialized():
+        ray.shutdown()
+    subprocess.run(["ray", "stop", "--force"], capture_output=True)
+
+
+@pytest.fixture(scope="session")
+def local_ray_nodes() -> Generator[list[RayNodeInfo], None, None]:
+    """Session-scoped multi-node Ray cluster for MilesTestbed tests."""
+    nodes = _start_multi_node_ray(num_nodes=_MULTI_NODE_COUNT)
+    try:
+        yield nodes
+    finally:
+        _stop_multi_node_ray()
