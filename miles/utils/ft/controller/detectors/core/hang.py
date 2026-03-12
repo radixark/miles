@@ -87,4 +87,4 @@ class HangDetector(BaseFaultDetector):
         if df is None or df.is_empty():
             return None
 
-        return df["value"][0]
+        return df["value"].min()

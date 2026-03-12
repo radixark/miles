@@ -10,7 +10,9 @@ from tests.fast.utils.ft.utils import (
 )
 
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
+from miles.utils.ft.controller.metrics.metric_names import AGENT_HEARTBEAT
 from miles.utils.ft.controller.types import ActionType
 
 
@@ -211,6 +213,49 @@ class TestGetCurrentPhaseEdgeCases:
         decision = detector.evaluate(ctx)
         assert decision.action == ActionType.NONE
         assert "unknown" in decision.reason.lower()
+
+
+class TestHangDetectorMultipleRank0Series:
+    def test_hang_detected_when_one_rank0_series_stalled(self) -> None:
+        """H-7: when multiple rank-0 series exist (e.g. stale + current),
+        the detector previously used df['value'][0] which could pick the
+        progressing series and miss the stalled one. Now uses min()."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # Series A (node-a): progressing
+        store.ingest_samples(
+            target_id="node-a",
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=100.0)],
+            timestamp=now - timedelta(minutes=5),
+        )
+        store.ingest_samples(
+            target_id="node-a",
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=200.0)],
+            timestamp=now - timedelta(minutes=1),
+        )
+
+        # Series B (node-b): stalled — zero changes
+        store.ingest_samples(
+            target_id="node-b",
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=50.0)],
+            timestamp=now - timedelta(minutes=5),
+        )
+        store.ingest_samples(
+            target_id="node-b",
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=50.0)],
+            timestamp=now - timedelta(minutes=1),
+        )
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+        assert decision.action == ActionType.ENTER_RECOVERY
 
 
 class TestHangDetectorValidation:
