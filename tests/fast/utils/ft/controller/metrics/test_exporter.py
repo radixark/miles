@@ -9,16 +9,23 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 
 
 class TestControllerExporterGauges:
-    def test_initial_mode_is_zero(self) -> None:
-        registry, _ = make_test_exporter()
-        assert get_sample_value(registry, mn.CONTROLLER_MODE) == 0.0
-
-    def test_update_mode(self) -> None:
+    def test_update_mode_default_subsystem(self) -> None:
+        # 2.7: mode gauge now uses per-subsystem labels instead of a single global value
         registry, exporter = make_test_exporter()
 
         exporter.update_mode(is_recovery=True)
 
-        assert get_sample_value(registry, mn.CONTROLLER_MODE) == 1.0
+        assert get_sample_value(registry, mn.CONTROLLER_MODE, labels={"subsystem": "training"}) == 1.0
+
+    def test_update_mode_custom_subsystem(self) -> None:
+        # 2.7: each subsystem gets its own labeled metric
+        registry, exporter = make_test_exporter()
+
+        exporter.update_mode(is_recovery=True, subsystem="networking")
+        exporter.update_mode(is_recovery=False, subsystem="training")
+
+        assert get_sample_value(registry, mn.CONTROLLER_MODE, labels={"subsystem": "networking"}) == 1.0
+        assert get_sample_value(registry, mn.CONTROLLER_MODE, labels={"subsystem": "training"}) == 0.0
 
     def test_update_tick_count_increments(self) -> None:
         registry, exporter = make_test_exporter()
@@ -29,12 +36,21 @@ class TestControllerExporterGauges:
 
         assert get_sample_value(registry, mn.CONTROLLER_TICK_COUNT + "_total") == 3.0
 
-    def test_update_recovery_phase(self) -> None:
+    def test_update_recovery_phase_default_subsystem(self) -> None:
+        # 2.7: recovery_phase gauge now uses per-subsystem labels
         registry, exporter = make_test_exporter()
 
         exporter.update_recovery_phase(2)
 
-        assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE) == 2.0
+        assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE, labels={"subsystem": "training"}) == 2.0
+
+    def test_update_recovery_phase_custom_subsystem(self) -> None:
+        # 2.7: each subsystem reports its own recovery phase
+        registry, exporter = make_test_exporter()
+
+        exporter.update_recovery_phase(3, subsystem="networking")
+
+        assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE, labels={"subsystem": "networking"}) == 3.0
 
     def test_update_main_job_status(self) -> None:
         registry, exporter = make_test_exporter()
@@ -59,6 +75,41 @@ class TestControllerExporterGauges:
 
         assert get_sample_value(registry, mn.TRAINING_LOSS_LATEST) == 1.0
         assert get_sample_value(registry, mn.TRAINING_MFU_LATEST) == 0.5
+
+
+class TestControllerExporterSubsystemState:
+    def test_update_subsystem_state_sets_mode_and_phase(self) -> None:
+        # 2.7: update_subsystem_state is a convenience method that sets both
+        # mode and recovery_phase for a named subsystem in one call
+        registry, exporter = make_test_exporter()
+
+        exporter.update_subsystem_state(subsystem="networking", is_recovery=True, recovery_phase_int=2)
+
+        assert get_sample_value(registry, mn.CONTROLLER_MODE, labels={"subsystem": "networking"}) == 1.0
+        assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE, labels={"subsystem": "networking"}) == 2.0
+
+    def test_update_from_state_iterates_all_subsystems(self) -> None:
+        # 2.7: previously update_from_state only reported a single hardcoded "training"
+        # subsystem; now it iterates the subsystem_modes dict
+        registry, exporter = make_test_exporter()
+
+        exporter.update_from_state(
+            job_status=JobStatus.RUNNING,
+            subsystem_modes={
+                "training": (True, 1),
+                "networking": (False, 0),
+            },
+            latest_loss=2.5,
+            latest_mfu=0.4,
+        )
+
+        assert get_sample_value(registry, mn.CONTROLLER_MODE, labels={"subsystem": "training"}) == 1.0
+        assert get_sample_value(registry, mn.CONTROLLER_MODE, labels={"subsystem": "networking"}) == 0.0
+        assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE, labels={"subsystem": "training"}) == 1.0
+        assert get_sample_value(registry, mn.CONTROLLER_RECOVERY_PHASE, labels={"subsystem": "networking"}) == 0.0
+        assert get_sample_value(registry, mn.MAIN_JOB_STATUS) == 1.0
+        assert get_sample_value(registry, mn.TRAINING_LOSS_LATEST) == 2.5
+        assert get_sample_value(registry, mn.TRAINING_MFU_LATEST) == 0.4
 
 
 class TestControllerExporterLastTickTimestamp:

@@ -14,7 +14,6 @@ from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import RECOVERY_STATE_TO_INT
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import (
-    ControllerMode,
     DiagnosticOrchestratorProtocol,
     MetricStore,
 )
@@ -140,22 +139,24 @@ class TickLoop:
         if job_status is None:
             return
 
-        main_state = self._extract_main_state()
-        is_recovery = isinstance(main_state, RecoveringSt)
-        phase_int = 0
-        if is_recovery and isinstance(main_state, RecoveringSt):
-            phase_int = RECOVERY_STATE_TO_INT.get(type(main_state.recovery), 0)
+        subsystem_modes = self._collect_subsystem_modes()
 
         self._controller_exporter.update_from_state(
             job_status=job_status,
-            mode=ControllerMode.RECOVERY if is_recovery else ControllerMode.MONITORING,
-            recovery_phase_int=phase_int,
+            subsystem_modes=subsystem_modes,
             latest_loss=self._metric_store.mini_wandb.latest(metric_name="loss"),
             latest_mfu=self._metric_store.mini_wandb.latest(metric_name="mfu"),
         )
 
-    def _extract_main_state(self) -> object:
+    def _collect_subsystem_modes(self) -> dict[str, tuple[bool, int]]:
         controller_state = self.state_machine.state
-        if isinstance(controller_state, NormalSt):
-            return controller_state.subsystems.get("training")
-        return None
+        if not isinstance(controller_state, NormalSt):
+            return {}
+        result: dict[str, tuple[bool, int]] = {}
+        for name, sub_state in controller_state.subsystems.items():
+            is_recovery = isinstance(sub_state, RecoveringSt)
+            phase_int = 0
+            if is_recovery:
+                phase_int = RECOVERY_STATE_TO_INT.get(type(sub_state.recovery), 0)
+            result[name] = (is_recovery, phase_int)
+        return result

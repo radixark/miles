@@ -87,9 +87,11 @@ class TestTickExceptionTriggersNotification:
 
 
 class TestUpdateExporterMetrics:
-    async def test_recovery_state_maps_to_phase_int(self) -> None:
-        """RecoveringSt → phase int from RECOVERY_STATE_TO_INT mapping."""
+    async def test_recovery_state_maps_to_phase_int_per_subsystem(self) -> None:
+        """2.7: RecoveringSt subsystem → per-subsystem phase int in subsystem_modes."""
         from datetime import datetime, timezone
+
+        from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 
         recovery_state = RealtimeChecksSt()
         subsystem_state = RecoveringSt(
@@ -100,7 +102,10 @@ class TestUpdateExporterMetrics:
 
         sm = MagicMock()
         sm.step = AsyncMock()
-        sm.state = NormalSt(subsystems={"training": subsystem_state})
+        sm.state = NormalSt(subsystems={
+            "training": subsystem_state,
+            "networking": DetectingAnomalySt(),
+        })
 
         loop = _make_tick_loop(state_machine=sm)
         exporter = MagicMock()
@@ -110,7 +115,8 @@ class TestUpdateExporterMetrics:
 
         exporter.update_from_state.assert_called_once()
         call_kwargs = exporter.update_from_state.call_args.kwargs
-        assert call_kwargs["recovery_phase_int"] == RECOVERY_STATE_TO_INT[RealtimeChecksSt]
+        assert call_kwargs["subsystem_modes"]["training"] == (True, RECOVERY_STATE_TO_INT[RealtimeChecksSt])
+        assert call_kwargs["subsystem_modes"]["networking"] == (False, 0)
 
     async def test_non_recovery_state_maps_to_phase_zero(self) -> None:
         """Non-RecoveringSt → phase int 0."""
@@ -126,26 +132,40 @@ class TestUpdateExporterMetrics:
 
         exporter.update_from_state.assert_called_once()
         call_kwargs = exporter.update_from_state.call_args.kwargs
-        assert call_kwargs["recovery_phase_int"] == 0
+        assert call_kwargs["subsystem_modes"] == {}
 
 
-class TestExtractMainState:
-    def test_returns_training_subsystem_for_normal_state(self) -> None:
+class TestCollectSubsystemModes:
+    def test_normal_state_with_subsystems(self) -> None:
+        """2.7: _collect_subsystem_modes replaces _extract_main_state, iterating
+        all subsystems instead of only looking at a hardcoded 'training' key."""
+        from datetime import datetime, timezone
+
+        from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
+
         sm = MagicMock()
-        training_state = MagicMock()
-        sm.state = NormalSt(subsystems={"training": training_state})
+        sm.state = NormalSt(subsystems={
+            "training": RecoveringSt(
+                recovery=RealtimeChecksSt(),
+                trigger=TriggerType.CRASH,
+                recovery_start_time=datetime.now(timezone.utc),
+            ),
+            "networking": DetectingAnomalySt(),
+        })
 
         loop = _make_tick_loop(state_machine=sm)
-        result = loop._extract_main_state()
-        assert result is training_state
+        result = loop._collect_subsystem_modes()
 
-    def test_returns_none_for_non_normal_state(self) -> None:
+        assert result["training"] == (True, RECOVERY_STATE_TO_INT[RealtimeChecksSt])
+        assert result["networking"] == (False, 0)
+
+    def test_non_normal_state_returns_empty(self) -> None:
         sm = MagicMock()
         sm.state = MagicMock(spec=MainState)
 
         loop = _make_tick_loop(state_machine=sm)
-        result = loop._extract_main_state()
-        assert result is None
+        result = loop._collect_subsystem_modes()
+        assert result == {}
 
 
 class TestRegistrationGraceTicks:
