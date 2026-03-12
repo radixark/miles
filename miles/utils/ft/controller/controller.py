@@ -126,6 +126,7 @@ class FtController:
         logger.info("run_activated run_id=%s", run_id)
 
     async def _tick(self) -> None:
+        assert self._tick_loop is not None, "tick_loop not initialized — factory must set it before run()"
         await self._tick_loop.tick()
 
     async def _stop_services(self, scrape_task: asyncio.Task[None]) -> None:
