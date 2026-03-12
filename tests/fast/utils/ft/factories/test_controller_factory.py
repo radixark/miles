@@ -114,11 +114,16 @@ class TestUnifiedFactory:
     """
 
     def test_controller_factory_module_deleted(self) -> None:
-        """controller/factory.py should no longer exist."""
-        import importlib
+        """controller/factory.py should no longer exist as a source file.
+        Uses file-system check instead of importlib because cached .pyc
+        files can make a deleted module still importable.
+        """
+        from pathlib import Path
 
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("miles.utils.ft.controller.factory")
+        import miles.utils.ft.controller as controller_pkg
+
+        factory_path = Path(controller_pkg.__file__).parent / "factory.py"
+        assert not factory_path.exists(), f"controller/factory.py still exists at {factory_path}"
 
     def test_assemble_ft_controller_builds_working_controller(self) -> None:
         """assemble_ft_controller is the direct-component entry point."""
