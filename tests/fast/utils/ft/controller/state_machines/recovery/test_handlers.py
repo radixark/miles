@@ -584,12 +584,11 @@ class TestNotifyHumansReasonField:
 
     @pytest.mark.asyncio
     async def test_final_restart_failed_sets_reason(self) -> None:
-        """evict_and_restart_final should set reason='final_restart_failed'
-        on its failed_next_state."""
+        """EvictingAndRestartingSt.evict_and_restart_final should set
+        reason='final_restart_failed' on its failed_next_state."""
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(RestartFailedSt()))
-        from miles.utils.ft.controller.state_machines.recovery.transitions import evict_and_restart_final
-        state = evict_and_restart_final(bad_node_ids=("node-X",))
+        state = EvictingAndRestartingSt.evict_and_restart_final(bad_node_ids=("node-X",))
         result = await _step_last(stepper, state, ctx)
         assert isinstance(result, NotifyHumansSt)
         assert result.reason == "final_restart_failed"

@@ -7,8 +7,10 @@ from pydantic import ConfigDict
 
 from miles.utils.ft.adapters.types import NotifierProtocol
 from miles.utils.ft.controller.state_machines.restart.models import (
+    EvictingSt,
     RestartContext,
     RestartState,
+    StoppingAndRestartingSt,
 )
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
@@ -26,6 +28,27 @@ class EvictingAndRestartingSt(RecoveryState):
     restart: RestartState
     failed_next_state: RecoveryState
 
+    @classmethod
+    def direct_restart(cls) -> EvictingAndRestartingSt:
+        return cls(
+            restart=StoppingAndRestartingSt(),
+            failed_next_state=StopTimeDiagnosticsSt(),
+        )
+
+    @classmethod
+    def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: tuple[str, ...]) -> EvictingAndRestartingSt:
+        return cls(
+            restart=EvictingSt(bad_node_ids=bad_node_ids),
+            failed_next_state=StopTimeDiagnosticsSt(),
+        )
+
+    @classmethod
+    def evict_and_restart_final(cls, *, bad_node_ids: tuple[str, ...]) -> EvictingAndRestartingSt:
+        return cls(
+            restart=EvictingSt(bad_node_ids=bad_node_ids),
+            failed_next_state=NotifyHumansSt(state_before="EvictingAndRestartingSt", reason="final_restart_failed"),
+        )
+
 
 class StopTimeDiagnosticsSt(RecoveryState):
     pass
@@ -38,6 +61,15 @@ class NotifyHumansSt(RecoveryState):
 
 class RecoveryDoneSt(RecoveryState):
     pass
+
+
+RECOVERY_STATE_TO_INT: dict[type[RecoveryState], int] = {
+    RealtimeChecksSt: 1,
+    EvictingAndRestartingSt: 2,
+    StopTimeDiagnosticsSt: 3,
+    NotifyHumansSt: 4,
+    RecoveryDoneSt: 5,
+}
 
 
 class RecoveryContext(FtBaseModel):

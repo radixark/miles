@@ -6,6 +6,7 @@ from miles.utils.ft.controller.state_machines.recovery.handlers import (
     recovery_timeout_check,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import (
+    RECOVERY_STATE_TO_INT,
     EvictingAndRestartingSt,
     NotifyHumansSt,
     RealtimeChecksSt,
@@ -13,11 +14,6 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryDoneSt,
     RecoveryState,
     StopTimeDiagnosticsSt,
-)
-from miles.utils.ft.controller.state_machines.recovery.transitions import (
-    direct_restart,
-    evict_and_restart_final,
-    evict_and_restart_next_stop_time_diag,
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
@@ -47,6 +43,7 @@ __all__ = [
     "NotifyHumansSt",
     "NotifyHumansHandler",
     "RECOVERY_TIMEOUT_SECONDS",
+    "RECOVERY_STATE_TO_INT",
     "RealtimeChecksSt",
     "RealtimeChecksHandler",
     "RecoveryContext",
@@ -55,8 +52,5 @@ __all__ = [
     "StopTimeDiagnosticsSt",
     "StopTimeDiagnosticsHandler",
     "create_recovery_stepper",
-    "direct_restart",
-    "evict_and_restart_final",
-    "evict_and_restart_next_stop_time_diag",
     "recovery_timeout_check",
 ]

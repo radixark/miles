@@ -14,11 +14,6 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     RecoveryState,
     StopTimeDiagnosticsSt,
 )
-from miles.utils.ft.controller.state_machines.recovery.transitions import (
-    direct_restart,
-    evict_and_restart_final,
-    evict_and_restart_next_stop_time_diag,
-)
 from miles.utils.ft.controller.state_machines.restart.models import RestartDoneSt, RestartFailedSt
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import TriggerType
@@ -45,12 +40,12 @@ async def recovery_timeout_check(
 class RealtimeChecksHandler(StateHandler[RealtimeChecksSt, RecoveryContext]):
     async def step(self, state: RealtimeChecksSt, ctx: RecoveryContext) -> RecoveryState:
         if state.pre_identified_bad_nodes:
-            return evict_and_restart_next_stop_time_diag(
+            return EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(
                 bad_node_ids=state.pre_identified_bad_nodes,
             )
 
         logger.info("realtime_checks_clean trigger=%s", ctx.trigger)
-        return direct_restart()
+        return EvictingAndRestartingSt.direct_restart()
 
 
 class EvictingAndRestartingHandler(StateHandler[EvictingAndRestartingSt, RecoveryContext]):
@@ -90,7 +85,7 @@ class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnosticsSt, RecoveryCon
 
         if result.bad_node_ids:
             logger.info("diagnosing_found_bad_nodes bad_nodes=%s", result.bad_node_ids)
-            return evict_and_restart_final(
+            return EvictingAndRestartingSt.evict_and_restart_final(
                 bad_node_ids=result.bad_node_ids,
             )
 
