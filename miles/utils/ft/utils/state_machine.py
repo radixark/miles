@@ -153,9 +153,9 @@ class StateMachine(Generic[StateT, ContextT]):
             async for new_state in self._stepper(self._state, context):
                 if new_state != self._state:
                     logger.info("%r -> %r", self._state, new_state)
-                self._state_history.append(new_state)
-                self._state = new_state
-                had_transition = True
+                    self._state_history.append(new_state)
+                    self._state = new_state
+                    had_transition = True
             if not had_transition:
                 return
 

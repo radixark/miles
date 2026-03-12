@@ -402,6 +402,19 @@ class TestStateMachineGenerator:
         assert caplog.text == ""
 
     @pytest.mark.asyncio
+    async def test_self_transition_not_recorded_in_history(self) -> None:
+        """Previously, yielding a state equal to the current state was still appended
+        to _state_history, filling it with near-duplicate entries. Now self-transitions
+        are skipped entirely (no history append, no state assignment, no had_transition).
+        """
+        stepper = _make_gen_stepper(SameStateGenHandler)
+        machine = StateMachine(initial_state=StateA(), stepper=stepper)
+        await machine.step(None)
+
+        assert machine.state == StateA()
+        assert len(machine.state_history) == 0
+
+    @pytest.mark.asyncio
     async def test_gen_then_regular_handler_chain(self) -> None:
         """Gen handler yields StateB(1) → regular StateBHandler chains: B(2) → B(3) → TerminalState."""
         stepper = _make_gen_stepper(SingleYieldGenHandler)
