@@ -472,11 +472,12 @@ class TestSubsystemSteppingOrder:
 
 class TestMainJobRestartStopFailure:
     @pytest.mark.asyncio
-    async def test_stop_failure_returns_none_and_notifies(self) -> None:
-        """H-3: Previously _check_main_job_restart called raw stop()+start()
-        with no error handling. Now it delegates to stop_and_submit which has
-        retry + fallback. When stop_and_submit returns False, the handler
-        returns None (no state transition) and sends a notification."""
+    async def test_stop_failure_sets_failed_result_and_notifies(self) -> None:
+        """When stop_and_submit fails, the requestor's state must be advanced
+        to ExternalExecutionResult.FAILED so recovery/restart can proceed.
+        Previously the handler returned None, leaving the requestor stuck in
+        ExternalRestartingMainJobSt(external_execution_result=None) and
+        causing repeated stop/start attempts every tick."""
         main_job = make_failing_main_job(
             fail_stop=True,
             status_sequence=[JobStatus.RUNNING],
@@ -495,7 +496,46 @@ class TestMainJobRestartStopFailure:
 
         result = await _step_last(stepper, state, context)
 
-        assert result is None or isinstance(result, NormalSt)
+        # Step 1: Verify we get a NormalSt back (not None)
+        assert isinstance(result, NormalSt)
+
+        # Step 2: Requestor state is advanced with FAILED result
+        requestor_state = result.subsystems["rollout_0"]
+        assert isinstance(requestor_state, RecoveringSt)
+        assert isinstance(requestor_state.recovery, EvictingAndRestartingSt)
+        assert isinstance(requestor_state.recovery.restart, ExternalRestartingMainJobSt)
+        assert requestor_state.recovery.restart.external_execution_result == ExternalExecutionResult.FAILED
+
+        # Step 3: No actual job submission occurred
         assert not main_job._submitted
+
+        # Step 4: Notification was sent
         assert len(notifier.calls) >= 1
         assert any("stop_and_submit failed" in call[1] for call in notifier.calls)
+
+    @pytest.mark.asyncio
+    async def test_stop_failure_does_not_trigger_repeated_restart_next_tick(self) -> None:
+        """Verify the fix eliminates repeated stop/start: after stop_and_submit
+        failure, _find_restart_requestor returns None because the requestor's
+        external_execution_result is now FAILED (not None)."""
+        main_job = make_failing_main_job(
+            fail_stop=True,
+            status_sequence=[JobStatus.RUNNING],
+        )
+        stepper = create_main_stepper()
+
+        nested_state = _make_frozen_recovering_state()
+        subsystems: dict[str, SubsystemState] = {"rollout_0": nested_state}
+        state = NormalSt(subsystems=subsystems)
+        context = _make_controller_context(
+            main_job=main_job,
+            subsystem_specs={"rollout_0": _make_subsystem_spec()},
+        )
+
+        result = await _step_last(stepper, state, context)
+        assert isinstance(result, NormalSt)
+
+        # Simulating next tick: _find_restart_requestor should not find a
+        # requestor since external_execution_result is now FAILED
+        from miles.utils.ft.controller.state_machines.main.handlers import _find_restart_requestor
+        assert _find_restart_requestor(result.subsystems) is None

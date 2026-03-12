@@ -121,7 +121,7 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         self,
         state: NormalSt,
         context: MainContext,
-    ) -> RestartingMainJobSt | None:
+    ) -> MainState | None:
         requestor = _find_restart_requestor(state.subsystems)
         if requestor is None:
             return None
@@ -152,7 +152,10 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
                 title="Main job restart failed",
                 content=f"stop_and_submit failed for requestor {requestor}",
             )
-            return None
+            updated_requestor = _update_external_execution_result(
+                frozen_state, ExternalExecutionResult.FAILED,
+            )
+            return NormalSt(subsystems={**state.subsystems, requestor: updated_requestor})
 
         return RestartingMainJobSt(
             requestor_name=requestor,
