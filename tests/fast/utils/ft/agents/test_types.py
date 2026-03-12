@@ -215,7 +215,7 @@ class TestDecisionFromNodeFaultsEphemeral:
         assert decision.action == ActionType.ENTER_RECOVERY
         assert decision.bad_node_ids == ["node-0"]
         assert "gpu error" in decision.reason
-        assert "nic flap" in decision.reason
+        assert "1 ephemeral fault(s) ignored" in decision.reason
 
     def test_ephemeral_only_returns_none_action(self) -> None:
         """All faults ephemeral -> NONE action (completely ignored)."""
