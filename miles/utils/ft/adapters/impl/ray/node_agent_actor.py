@@ -33,8 +33,8 @@ class _FtNodeAgentActorCls:
         self,
         *,
         builder: Callable[..., Any],
-        node_id: str = "",
-        ft_id: str = "",
+        node_id: str,
+        ft_id: str,
         **kwargs: object,
     ) -> None:
         self._ft_id = ft_id
