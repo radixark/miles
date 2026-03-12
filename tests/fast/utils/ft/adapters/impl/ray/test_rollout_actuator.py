@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -87,3 +88,12 @@ class TestRayRolloutActuator:
         actuator = RayRolloutActuator(get_handle=lambda: handle, cell_id="0")
         result = await actuator.get_status()
         assert result == status
+
+    async def test_stop_times_out_instead_of_hanging(self) -> None:
+        """stop() previously ignored timeout_seconds, awaiting the remote call
+        indefinitely. Now wraps with asyncio.wait_for and raises TimeoutError."""
+        handle = FakeRmHandle()
+        handle.stop_cell.remote = AsyncMock(side_effect=lambda *a: asyncio.sleep(999))
+        actuator = RayRolloutActuator(get_handle=lambda: handle, cell_id="0")
+        with pytest.raises(TimeoutError, match="timed out"):
+            await actuator.stop(timeout_seconds=0)

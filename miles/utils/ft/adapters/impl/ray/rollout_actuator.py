@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 
@@ -32,8 +33,16 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
         return str(result)
 
     async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
-        logger.info("rollout_actuator_stop cell_id=%s", self._cell_id)
-        await self._get_handle().stop_cell.remote(self._cell_id)  # type: ignore[attr-defined]
+        logger.info("rollout_actuator_stop cell_id=%s timeout=%d", self._cell_id, timeout_seconds)
+        try:
+            await asyncio.wait_for(
+                self._get_handle().stop_cell.remote(self._cell_id),  # type: ignore[attr-defined]
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"rollout actuator stop timed out after {timeout_seconds}s for cell_id={self._cell_id}"
+            ) from None
 
     async def get_status(self) -> JobStatus:
         return await self._get_handle().get_cell_status.remote(self._cell_id)  # type: ignore[attr-defined]
