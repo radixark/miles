@@ -12,7 +12,6 @@ from miles.utils.ft.adapters.types import (
     ft_controller_actor_name,
 )
 from miles.utils.ft.agents.types import DiagnosticResult
-from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)
@@ -63,14 +62,13 @@ class _FtNodeAgentActorCls:
     def get_exporter_address(self) -> str:
         return self._agent.get_exporter_address()
 
-    @graceful_degrade(msg="Failed to register node agent with controller")
     def _register_with_controller(self) -> None:
-        controller = ray.get_actor(ft_controller_actor_name(self._ft_id))
-
-        self_handle = ray.get_runtime_context().current_actor
         node_id = self._agent._node_id
         exporter_address = self._agent.get_exporter_address()
         node_metadata = self._agent.metadata
+
+        controller = ray.get_actor(ft_controller_actor_name(self._ft_id))
+        self_handle = ray.get_runtime_context().current_actor
 
         def _do_register() -> None:
             ray.get(
@@ -96,6 +94,10 @@ class _FtNodeAgentActorCls:
                 node_id,
                 exporter_address,
             )
+        else:
+            raise RuntimeError(
+                f"Failed to register node agent {node_id} after {_REGISTER_MAX_ATTEMPTS} attempts"
+            ) from result.exception
 
 
 FtNodeAgentActor = ray.remote(
