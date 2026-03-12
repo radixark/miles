@@ -1,6 +1,7 @@
 accelerate
 blobfile
 datasets
+frozendict
 httpx[http2]
 kubernetes_asyncio
 mcp[cli]
