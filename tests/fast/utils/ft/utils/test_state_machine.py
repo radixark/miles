@@ -7,7 +7,12 @@ import logging
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper, run_stepper_to_convergence
+from miles.utils.ft.utils.state_machine import (
+    StateMachine,
+    StateMachineStepper,
+    _to_async_gen,
+    run_stepper_to_convergence,
+)
 
 
 # -- Dummy states for testing --------------------------------------------------
@@ -538,3 +543,61 @@ class TestRunStepperToConvergenceMaxIterations:
 
         types = [type(s).__name__ for s in results]
         assert types == ["StateB", "StateA", "StateB", "StateA"]
+
+
+# -- Tests: _to_async_gen -----------------------------------------------------
+
+
+class TestToAsyncGen:
+    @pytest.mark.asyncio
+    async def test_coroutine_returning_value(self) -> None:
+        async def coro() -> int:
+            return 42
+
+        results = [x async for x in _to_async_gen(coro())]
+        assert results == [42]
+
+    @pytest.mark.asyncio
+    async def test_coroutine_returning_none(self) -> None:
+        async def coro() -> None:
+            return None
+
+        results = [x async for x in _to_async_gen(coro())]
+        assert results == [None]
+
+    @pytest.mark.asyncio
+    async def test_async_gen_multiple_items(self) -> None:
+        async def gen():
+            yield 1
+            yield 2
+            yield 3
+
+        results = [x async for x in _to_async_gen(gen())]
+        assert results == [1, 2, 3]
+
+    @pytest.mark.asyncio
+    async def test_async_gen_with_none_items(self) -> None:
+        """None values are yielded through — filtering is the caller's responsibility."""
+        async def gen():
+            yield "a"
+            yield None
+            yield "b"
+
+        results = [x async for x in _to_async_gen(gen())]
+        assert results == ["a", None, "b"]
+
+    @pytest.mark.asyncio
+    async def test_async_gen_empty(self) -> None:
+        async def gen():
+            return
+
+        results = [x async for x in _to_async_gen(gen())]
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_async_gen_single_item(self) -> None:
+        async def gen():
+            yield "only"
+
+        results = [x async for x in _to_async_gen(gen())]
+        assert results == ["only"]

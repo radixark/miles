@@ -18,16 +18,14 @@ StateT_contra = TypeVar("StateT_contra", bound=BaseModel, contravariant=True)
 ContextT_contra = TypeVar("ContextT_contra", contravariant=True)
 
 
-async def _to_async_gen(raw: Awaitable[T | None] | AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
-    """Normalize a coroutine or async generator into a non-None async generator."""
+async def _to_async_gen(raw: Awaitable[T] | AsyncGenerator[T, None]) -> AsyncGenerator[T, None]:
+    """Normalize a coroutine or async generator into a unified async generator."""
     if inspect.isasyncgen(raw):
         async for item in raw:
-            if item is not None:
-                yield item
+            yield item
     else:
         result = await raw
-        if result is not None:
-            yield result
+        yield result
 
 
 class StateHandler(ABC, Generic[StateT_contra, ContextT_contra]):
@@ -86,7 +84,8 @@ class StateMachineStepper(Generic[StateT, ContextT]):
             )
 
         async for item in _to_async_gen(handler(state, context)):
-            yield item
+            if item is not None:
+                yield item
 
 
 _MAX_CONVERGENCE_ITERATIONS = 50
