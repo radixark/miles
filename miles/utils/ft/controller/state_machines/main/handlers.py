@@ -89,6 +89,9 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         self._subsystem_stepper = create_subsystem_stepper()
 
     async def step(self, state: NormalSt, context: MainContext):  # type: ignore[override]
+        # Production invariant: subsystem topology is static after controller
+        # bootstrap, so state keys and config keys must always match.
+        # Keep assert here to fail fast on programmer/config wiring errors.
         assert set(state.subsystems.keys()) == set(context.shared.subsystem_specs.keys()), (
             f"subsystem keys out of sync: state={set(state.subsystems.keys())} "
             f"configs={set(context.shared.subsystem_specs.keys())}"
