@@ -19,7 +19,7 @@ from miles.utils.ft.controller.metrics.metric_names import XID_NON_AUTO_RECOVERA
 from miles.utils.ft.controller.types import ControllerStatus
 from miles.utils.ft.factories.controller import build_ft_controller
 from miles.utils.ft.factories.node_agent import build_node_agent
-from tests.fast.utils.ft.testbed.config import TestbedConfig, TestbedNodeConfig
+from tests.fast.utils.ft.testbed.config import TestbedConfig
 from tests.fast.utils.ft.testbed.ray.actor_group import TestbedRayTrainGroup
 from tests.fast.utils.ft.testbed.ray.rollout import TestbedRolloutManager
 from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.k8s_node_manager import TestbedNodeManager
@@ -192,7 +192,7 @@ class MilesTestbed:
             ray.get(node_agent.start.remote(), timeout=15)
             logger.info("Node agent deployed: %s → ray_node %s", node_id, ray_node_id)
 
-        # Step 7: If rollout configured, create TestbedRolloutManager
+        # Step 8: If rollout configured, create TestbedRolloutManager
         rollout_manager: ray.actor.ActorHandle | None = None
         if config.rollout_num_cells > 0 and config.rollout_nodes:
             rollout_cell_ids = _rollout_num_cells_to_ids(config.rollout_num_cells)
@@ -221,7 +221,7 @@ class MilesTestbed:
                     timeout=5,
                 )
 
-        # Step 8: Wait for training to stabilize
+        # Step 9: Wait for training to stabilize
         testbed = cls(
             config=config,
             ft_id=ft_id,
