@@ -5,6 +5,7 @@ import pytest
 
 from miles.utils.ft.controller.subsystem_hub.hub import SubsystemHub
 from miles.utils.ft.controller.subsystem_hub.training_rank_roster import TrainingRankRoster
+from miles.utils.ft.controller.types import NullScrapeTargetManager
 from miles.utils.ft.utils.box import Box
 
 
@@ -15,7 +16,10 @@ class TestTrainingRankRosterProperty:
             _ = hub.training_rank_roster
 
     def test_returns_roster_when_set(self) -> None:
-        roster = TrainingRankRoster()
+        roster = TrainingRankRoster(
+            run_id="test-run",
+            scrape_target_manager=NullScrapeTargetManager(),
+        )
         hub = SubsystemHub(training_rank_roster_box=Box(roster))
         assert hub.training_rank_roster is roster
 
