@@ -402,6 +402,27 @@ class TestJobRestartPending:
 # ---------------------------------------------------------------------------
 
 
+class TestSubsystemKeysSyncAssert:
+    @pytest.mark.asyncio
+    async def test_mismatched_subsystem_keys_raises_assertion_error(self) -> None:
+        """NormalHandler.step assumes subsystem_configs keys match
+        state.subsystems keys. If they diverge, a KeyError would occur
+        deep in the handler. An explicit assert catches this early."""
+        stepper = create_main_stepper()
+        state = NormalSt(subsystems={
+            "training": DetectingAnomalySt(),
+        })
+        context = _make_controller_context(
+            subsystem_configs={
+                "training": _make_subsystem_config(),
+                "rollout_0": _make_subsystem_config(),
+            },
+        )
+
+        with pytest.raises(AssertionError, match="subsystem keys out of sync"):
+            await _step_last(stepper, state, context)
+
+
 class TestSubsystemSteppingOrder:
     @pytest.mark.asyncio
     async def test_subsystems_stepped_in_sorted_order(self) -> None:

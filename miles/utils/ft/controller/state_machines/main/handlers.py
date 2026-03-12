@@ -86,6 +86,11 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         self._subsystem_stepper = create_subsystem_stepper()
 
     async def step(self, state: NormalSt, context: MainContext):  # type: ignore[override]
+        assert set(state.subsystems.keys()) == set(context.subsystem_configs.keys()), (
+            f"subsystem keys out of sync: state={set(state.subsystems.keys())} "
+            f"configs={set(context.subsystem_configs.keys())}"
+        )
+
         # Step 1: Step all subsystems to convergence
         curr_state = state
         del state
