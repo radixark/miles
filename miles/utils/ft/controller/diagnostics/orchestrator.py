@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from miles.utils.ft.adapters.types import DIAGNOSTIC_TIMEOUT_SECONDS, ClusterExecutorProtocol, NodeAgentProtocol
-from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult
+from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult, DiagnosticPipelineStatus
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol
 
@@ -66,6 +66,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             return DiagnosticPipelineResult(
                 bad_node_ids=[],
                 reason=f"diagnostic pipeline timed out after {self._pipeline_timeout_seconds}s",
+                status=DiagnosticPipelineStatus.TIMED_OUT,
             )
 
     async def _run_diagnostic_pipeline_inner(
@@ -106,15 +107,20 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                 return DiagnosticPipelineResult(
                     bad_node_ids=sorted(bad_node_ids),
                     reason=f"diagnostic failed on nodes: {bad_node_ids}",
+                    status=DiagnosticPipelineStatus.FOUND_BAD_NODES,
                 )
 
         if failed_executors:
             reason = f"no bad nodes found, but {len(failed_executors)} executor(s) failed: {failed_executors}"
+            status = DiagnosticPipelineStatus.EXECUTOR_FAILED
         else:
             reason = "all diagnostics passed — no bad nodes found"
+            status = DiagnosticPipelineStatus.PASSED
 
-        logger.info("diagnostic_pipeline_done reason=%s", reason)
+        logger.info("diagnostic_pipeline_done reason=%s status=%s", reason, status.value)
         return DiagnosticPipelineResult(
             bad_node_ids=[],
             reason=reason,
+            status=status,
+            failed_executors=failed_executors,
         )

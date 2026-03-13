@@ -12,6 +12,7 @@ from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrato
 
 from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
+from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineStatus
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestartingSt,
@@ -283,6 +284,42 @@ class TestStopTimeDiagnostics:
         result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
         assert isinstance(result, NotifyHumansSt)
         assert result.state_before == "StopTimeDiagnosticsSt"
+
+    @pytest.mark.asyncio
+    async def test_timed_out_pipeline_sets_diagnostics_timed_out_reason(self) -> None:
+        """Previously, pipeline timeout was treated identically to 'no bad nodes
+        found', making it impossible to distinguish real clean diagnostics from
+        timeout failures."""
+        diag = FakeDiagnosticOrchestrator(
+            result=DiagnosticPipelineResult(
+                bad_node_ids=[],
+                reason="timed out after 900s",
+                status=DiagnosticPipelineStatus.TIMED_OUT,
+            ),
+        )
+        stepper = _make_stepper()
+        result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
+        assert isinstance(result, NotifyHumansSt)
+        assert result.reason.startswith("diagnostics_timed_out")
+        assert "diagnostics_clean_no_bad_nodes" not in result.reason
+
+    @pytest.mark.asyncio
+    async def test_executor_failed_pipeline_sets_executor_failed_reason(self) -> None:
+        """Previously, executor failures were treated identically to 'no bad nodes
+        found', masking infrastructure problems as clean diagnostics."""
+        diag = FakeDiagnosticOrchestrator(
+            result=DiagnosticPipelineResult(
+                bad_node_ids=[],
+                reason="1 executor(s) failed: ['GpuExecutor']",
+                status=DiagnosticPipelineStatus.EXECUTOR_FAILED,
+                failed_executors=["GpuExecutor"],
+            ),
+        )
+        stepper = _make_stepper()
+        result = await _step(stepper, StopTimeDiagnosticsSt(), diagnostic_orchestrator=diag)
+        assert isinstance(result, NotifyHumansSt)
+        assert result.reason.startswith("diagnostics_executor_failed")
+        assert "diagnostics_clean_no_bad_nodes" not in result.reason
 
 
 # ---------------------------------------------------------------------------

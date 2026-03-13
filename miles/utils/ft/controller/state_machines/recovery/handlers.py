@@ -17,6 +17,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
 from miles.utils.ft.controller.state_machines.restart.models import RestartDoneSt, RestartFailedSt
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import TriggerType
+from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineStatus
 from miles.utils.ft.utils.state_machine import StateHandler
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,23 @@ class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnosticsSt, RecoveryCon
                 bad_node_ids=result.bad_node_ids,
             )
 
-        logger.info("diagnosing_all_passed trigger=%s", ctx.trigger)
-        return NotifyHumansSt(state_before="StopTimeDiagnosticsSt", reason="diagnostics_clean_no_bad_nodes")
+        reason = _diagnostic_notify_reason(result.status, result.reason)
+        logger.info("diagnosing_no_bad_nodes trigger=%s reason=%s", ctx.trigger, reason)
+        return NotifyHumansSt(state_before="StopTimeDiagnosticsSt", reason=reason)
+
+
+_STATUS_TO_REASON: dict[DiagnosticPipelineStatus, str] = {
+    DiagnosticPipelineStatus.PASSED: "diagnostics_clean_no_bad_nodes",
+    DiagnosticPipelineStatus.TIMED_OUT: "diagnostics_timed_out",
+    DiagnosticPipelineStatus.EXECUTOR_FAILED: "diagnostics_executor_failed",
+}
+
+
+def _diagnostic_notify_reason(status: DiagnosticPipelineStatus, raw_reason: str) -> str:
+    base = _STATUS_TO_REASON.get(status, f"diagnostics_unknown_{status.value}")
+    if status != DiagnosticPipelineStatus.PASSED and raw_reason:
+        return f"{base}: {raw_reason}"
+    return base
 
 
 class NotifyHumansHandler(StateHandler[NotifyHumansSt, RecoveryContext]):

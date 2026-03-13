@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from miles.utils.ft.utils.base_model import FtBaseModel
 
 
+class DiagnosticPipelineStatus(str, Enum):
+    PASSED = "passed"
+    FOUND_BAD_NODES = "found_bad_nodes"
+    EXECUTOR_FAILED = "executor_failed"
+    TIMED_OUT = "timed_out"
+
+
 class DiagnosticPipelineResult(FtBaseModel):
     bad_node_ids: list[str] = []
     reason: str = ""
+    status: DiagnosticPipelineStatus = DiagnosticPipelineStatus.PASSED
+    failed_executors: list[str] = []
 
 
 class DiagnosticResult(FtBaseModel):
