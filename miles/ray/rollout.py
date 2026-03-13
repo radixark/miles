@@ -141,6 +141,18 @@ class RolloutManager:
         start_time = time.time()
         self.rollout_id = rollout_id
         self.health_monitoring_resume()
+
+        min_alive_ratio = getattr(self.args, "min_alive_engine_ratio", 0.0) or 0.0
+        if min_alive_ratio > 0 and self.all_rollout_engines:
+            alive = sum(1 for e in self.all_rollout_engines if e is not None)
+            total = len(self.all_rollout_engines)
+            ratio = alive / total
+            if ratio < min_alive_ratio:
+                raise RuntimeError(
+                    f"Circuit breaker triggered: only {alive}/{total} engines alive "
+                    f"({ratio:.1%} < {min_alive_ratio:.1%}). Aborting generation."
+                )
+
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metrics = self._get_rollout_data(rollout_id=rollout_id)

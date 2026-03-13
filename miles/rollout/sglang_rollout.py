@@ -2,6 +2,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import time
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -87,19 +88,36 @@ class GenerateState(metaclass=SingletonMeta):
         self.aborted = False
 
     def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
+        episode_timeout = getattr(self.args, "episode_timeout", 0) or 0
         for group in samples:
-            self.pendings.add(
-                asyncio.create_task(
-                    # submit a group of samples as a single task.
-                    generate_and_rm_group(
-                        self.args,
-                        group,
-                        sampling_params=self.sampling_params.copy(),
-                        evaluation=False,
-                    )
-                )
+            coro = generate_and_rm_group(
+                self.args,
+                group,
+                sampling_params=self.sampling_params.copy(),
+                evaluation=False,
             )
+            if episode_timeout > 0:
+                coro = _with_episode_timeout(coro, episode_timeout, group)
+            self.pendings.add(asyncio.create_task(coro))
         self.remaining_batch_size += len(samples)
+
+
+async def _with_episode_timeout(
+    coro,
+    timeout: float,
+    group: list[Sample],
+) -> list[Sample]:
+    """Wrap a generate_and_rm_group coroutine with a per-episode timeout."""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(f"Episode timed out after {timeout}s, marking {len(group)} samples as ABORTED")
+        for sample in group:
+            sample.status = Sample.Status.ABORTED
+            if not hasattr(sample, "metadata") or sample.metadata is None:
+                sample.metadata = {}
+            sample.metadata["abort_reason"] = "episode_timeout"
+        return group
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
@@ -357,18 +375,38 @@ async def generate_rollout_async(
     # target_data_size is the total number of valid samples to get
     target_data_size = args.rollout_batch_size
 
+    rollout_step_timeout = getattr(args, "rollout_step_timeout", 0) or 0
+    rollout_start_time = time.monotonic()
+
     data = []
     all_data = []
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
     while len(data) < target_data_size:
+        if rollout_step_timeout > 0:
+            elapsed = time.monotonic() - rollout_start_time
+            if elapsed >= rollout_step_timeout:
+                logger.warning(
+                    f"Rollout step timeout ({rollout_step_timeout}s) exceeded after {elapsed:.1f}s "
+                    f"with {len(data)}/{target_data_size} samples collected. Aborting remaining tasks."
+                )
+                break
+
         while state.remaining_batch_size < target_data_size:
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
             state.submit_generate_tasks(samples)
 
+        wait_timeout = None
+        if rollout_step_timeout > 0:
+            wait_timeout = max(0.1, rollout_step_timeout - (time.monotonic() - rollout_start_time))
+
         # wait for the generation to finish
-        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
+        done, state.pendings = await asyncio.wait(
+            state.pendings, return_when=asyncio.FIRST_COMPLETED, timeout=wait_timeout
+        )
+        if not done:
+            continue
         for task in done:
             group: list[Sample] = task.result()
 
@@ -394,15 +432,24 @@ async def generate_rollout_async(
                 pbar.update(args.n_samples_per_prompt)
 
     pbar.close()
-    sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
-    logger.info(
-        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
-    )
+    if data:
+        sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
+        logger.info(
+            f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
+        )
 
     # there are still some unfinished requests, abort them
     aborted_samples = await abort(args, rollout_id)
 
-    assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
+    timed_out = rollout_step_timeout > 0 and len(data) < args.rollout_batch_size
+    if timed_out:
+        logger.warning(
+            f"Rollout step completed with partial data: {len(data)}/{args.rollout_batch_size} samples "
+            f"(timeout={rollout_step_timeout}s)"
+        )
+    assert timed_out or len(data) == args.rollout_batch_size, (
+        f"Got {len(data)} samples, expected {args.rollout_batch_size}"
+    )
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
     all_samples = sorted(
         all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
