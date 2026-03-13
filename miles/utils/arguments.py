@@ -1228,6 +1228,67 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["torch", "memray"],
                 default="torch",
             )
+            parser.add_argument(
+                "--use-rollout-profiler",
+                action="store_true",
+                default=False,
+                help="Enable profiler on rollout engines (SGLang) during rollout generation.",
+            )
+            parser.add_argument(
+                "--rollout-profile-rollout-start",
+                type=int,
+                default=0,
+                help="Start rollout_id (inclusive) to enable rollout profiler.",
+            )
+            parser.add_argument(
+                "--rollout-profile-rollout-end",
+                type=int,
+                default=1,
+                help="End rollout_id (exclusive) to enable rollout profiler.",
+            )
+            parser.add_argument(
+                "--rollout-profile-output-dir",
+                type=str,
+                default=None,
+                help="Directory to store rollout profiler traces. One subdirectory per rollout/engine will be created.",
+            )
+            parser.add_argument(
+                "--rollout-profile-start-step",
+                type=int,
+                default=None,
+                help="Optional rollout-engine internal profile start step passed to SGLang.",
+            )
+            parser.add_argument(
+                "--rollout-profile-num-steps",
+                type=int,
+                default=None,
+                help="Optional number of rollout-engine internal steps to profile, passed to SGLang.",
+            )
+            parser.add_argument(
+                "--rollout-profile-activities",
+                type=str,
+                nargs="+",
+                default=None,
+                help="Optional activity list passed to SGLang rollout profiler.",
+            )
+            parser.add_argument(
+                "--rollout-profile-by-stage",
+                action="store_true",
+                default=False,
+                help="Enable stage-level breakdown in rollout profiler (if supported by SGLang).",
+            )
+            parser.add_argument(
+                "--rollout-profile-with-stack",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Whether rollout profiler should collect Python stacks (if supported by SGLang).",
+            )
+            parser.add_argument(
+                "--rollout-profile-record-shapes",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Whether rollout profiler should record tensor shapes (if supported by SGLang).",
+            )
             parser.add_argument("--check-weight-update-equal", action="store_true")
             return parser
 
@@ -1743,6 +1804,18 @@ def miles_validate_args(args):
             "will not instantiate sglang servers and will only run the training process."
         )
         args.debug_train_only = True
+
+    if args.use_rollout_profiler:
+        assert not args.debug_train_only, "rollout profiler cannot be used with --debug-train-only."
+        assert (
+            args.rollout_profile_rollout_end > args.rollout_profile_rollout_start
+        ), "rollout_profile_rollout_end must be greater than rollout_profile_rollout_start."
+        if args.rollout_profile_start_step is not None:
+            assert args.rollout_profile_start_step >= 0, "rollout_profile_start_step must be >= 0."
+        if args.rollout_profile_num_steps is not None:
+            assert args.rollout_profile_num_steps > 0, "rollout_profile_num_steps must be > 0."
+        if args.rollout_profile_output_dir is None:
+            args.rollout_profile_output_dir = os.path.join(args.save or ".", "rollout_trace")
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.critic_num_gpus_per_node is None:
